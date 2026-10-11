@@ -3,9 +3,14 @@ name = "nomifun-voice-terminal"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["voice-skeleton"]
+voice-skeleton = []
+
 [dependencies]
 nomifun-common.workspace = true
 nomifun-api-types.workspace = true
+nomifun-audio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -68,6 +68,7 @@
     "successDesc": "AI Mate Voice Companion is connected and ready"
   },
   "settings": {
+    "nav": "Voice Companion",
     "sectionTitle": "Voice Capability",
     "sectionDesc": "Manage local acoustic models and voice interactions",
     "modelManagement": "Model Management",

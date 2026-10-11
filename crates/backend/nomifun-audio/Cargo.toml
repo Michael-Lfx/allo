@@ -15,6 +15,8 @@ silero-vad = ["dep:ort"]
 local-stt = ["dep:sherpa-onnx"]
 # Offline speaker diarization / voiceprint via sherpa-onnx (same native dep as local-stt).
 diarization = ["dep:sherpa-onnx"]
+# Wave 0 skeleton feature flag
+voice-skeleton = []
 
 [dependencies]
 async-trait = { workspace = true }

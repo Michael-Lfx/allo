@@ -35,6 +35,7 @@ pub mod runtime;
 pub mod session;
 pub mod stt;
 pub mod vad;
+pub mod voice_pipeline;
 pub mod voiceprint;
 
 pub use capture::{AudioCaptureSource, CaptureReadResult};
@@ -74,6 +75,10 @@ pub use stt::{
     SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt, try_load_sherpa,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
+pub use voice_pipeline::{
+    KwsWakeHit, PipelineConfig, SpscProducer, SpscRingBuffer, StubKwsDetector, StubKwsTrigger,
+    VoiceCapturePipeline,
+};
 pub use voiceprint::{
     FakeVoiceprintEncoder, VoiceprintEncoder, VoiceprintEntry, VoiceprintGallery, VoiceprintMatch,
     VoiceprintStore, cosine_similarity, embedding_from_blob, embedding_to_blob, slice_pcm_ms,

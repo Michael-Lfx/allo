@@ -806,6 +806,16 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    // Voice models management (desktop settings & AI Mate model distribution)
+    let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(
+        services.data_dir.join("models"),
+    ));
+    let voice_models_authenticated = protect_instance_owner(
+        nomifun_voice_models::voice_model_routes(voice_models_manager),
+        &auth_mw_state,
+        &instance_owner_state,
+    );
+
     // Unified agent listing/refresh/test routes + developer-mode eval lab.
     let agent_authenticated = protect_instance_owner(
         agent_routes(states.agent.clone()).merge(eval_routes(states.agent)),
@@ -1457,6 +1467,7 @@ pub fn create_router_with_all_state(
         .merge(remote_agent_authenticated)
         .merge(ssh_host_authenticated)
         .merge(meeting_authenticated)
+        .merge(voice_models_authenticated)
         .merge(agent_authenticated)
         .merge(model_failover_authenticated)
         .merge(connection_test_authenticated)

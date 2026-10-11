@@ -68,6 +68,7 @@
     "successDesc": "AI Mate 语音伴侣已连接并就绪"
   },
   "settings": {
+    "nav": "语音伴侣",
     "sectionTitle": "语音能力",
     "sectionDesc": "管理本地声学模型与语音交互功能",
     "modelManagement": "模型管理",

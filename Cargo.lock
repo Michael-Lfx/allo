@@ -229,6 +229,9 @@ dependencies = [
 name = "ai-mate"
 version = "1.6.0"
 dependencies = [
+ "axum",
+ "http 1.5.0",
+ "http-body-util",
  "nomifun-common",
  "serde",
  "serde_json",
@@ -236,7 +239,10 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.2",
+ "tower",
+ "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7098,6 +7104,7 @@ dependencies = [
  "nomifun-system",
  "nomifun-terminal",
  "nomifun-vimax",
+ "nomifun-voice-models",
  "nomifun-webhook",
  "nomifun-workshop",
  "percent-encoding",
@@ -8262,12 +8269,17 @@ dependencies = [
 name = "nomifun-voice-models"
 version = "1.6.0"
 dependencies = [
+ "axum",
+ "futures-util",
+ "http-body-util",
  "nomifun-api-types",
  "nomifun-common",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -8278,6 +8290,7 @@ dependencies = [
  "async-trait",
  "jsonschema",
  "nomifun-api-types",
+ "nomifun-audio",
  "nomifun-common",
  "serde",
  "serde_json",

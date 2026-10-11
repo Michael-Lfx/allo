@@ -19,6 +19,7 @@ import {
   System,
   Tool,
   TreeDiagram,
+  Voice,
 } from '@icon-park/react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -54,6 +55,7 @@ const iconByName: Record<Exclude<SettingsNavIcon, 'extension'>, React.ComponentT
   mcp: Tool,
   'cloud-login': CloudStorage,
   about: Info,
+  voice: Voice,
 };
 
 const MobileNavIcon: React.FC<{ item: SettingsNavItem }> = ({ item }) => {

@@ -2,9 +2,77 @@
 //! Covering:
 //! - T0-03: C3 Voice Decision JSON Schema & golden tests
 //! - T0-04: C4 Acoustic FSM state/event enumerations & declarative legal transitions (VT-0-04)
+//! - T0-12: VoiceSessionDriver and StubVoiceRouter (VT-0-01)
+//! - T0-13: PlaybackPipeline, AudioSink, and NullTts (VT-0-02)
 
-use nomifun_voice_terminal::contract::*;
+use std::sync::Arc;
+use nomifun_audio::EarconKind;
+use nomifun_voice_terminal::*;
 use serde_json::json;
+
+// ============================================================================
+// VT-0-01: Terminal Driver Wake to Listening
+// ============================================================================
+
+#[tokio::test]
+async fn test_vt_0_01_wake_to_listening() {
+    let mut driver = VoiceSessionDriver::new();
+    assert_eq!(driver.current_state(), AcousticState::Idle);
+    assert_eq!(driver.state_history(), &[AcousticState::Idle]);
+
+    let next = driver
+        .handle_event(AcousticEvent::WakeHit)
+        .expect("WakeHit must succeed from Idle");
+    assert_eq!(next, AcousticState::Listening);
+    assert_eq!(driver.current_state(), AcousticState::Listening);
+    assert_eq!(
+        driver.state_history(),
+        &[AcousticState::Idle, AcousticState::Listening]
+    );
+}
+
+// ============================================================================
+// VT-0-02: Stub Route -> NullTts -> PlaybackPipeline -> AudioSink
+// ============================================================================
+
+#[tokio::test]
+async fn test_vt_0_02_stub_route_tts_playback() {
+    let sink = Arc::new(TestAudioSink::new());
+    let pipeline = PlaybackPipeline::new(sink.clone());
+
+    // 1. Earcon wake.wav path produces output frames
+    pipeline
+        .play_earcon(EarconKind::Wake)
+        .await
+        .expect("play_earcon wake must succeed");
+    let earcon_frames = sink.frame_count();
+    assert!(earcon_frames > 0, "Earcon path must push non-empty frames");
+
+    // 2. Stub router triggers Chat decision
+    let router = StubVoiceRouter::chat("你好，我是 Flowy");
+    let decision = router.route("Hey Flowy").await.expect("stub route must succeed");
+    assert_eq!(decision.intent_type, IntentType::Chat);
+    let reply_text = decision.reply_tts.as_deref().unwrap();
+
+    // 3. NullTts generates chunks
+    let tts = NullTts::new();
+    let stream = tts
+        .synthesize_stream(reply_text, "zh-CN-XiaoxiaoNeural")
+        .await
+        .expect("synthesize_stream must succeed");
+
+    // 4. PlaybackPipeline processes stream
+    pipeline.play_stream(stream).await.expect("play_stream must succeed");
+    let total_frames = sink.frame_count();
+    assert!(
+        total_frames > earcon_frames,
+        "TTS stream must produce additional frames in audio sink"
+    );
+
+    for frame in sink.frames() {
+        assert!(!frame.is_empty(), "Audio frame must not be empty");
+    }
+}
 
 // ============================================================================
 // T0-03 / C3: Voice Decision JSON Schema Tests

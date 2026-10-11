@@ -10911,6 +10911,7 @@ export type I18nKey =
   | 'voice.progress.ratio'
   | 'voice.progress.speed'
   | 'voice.settings.modelManagement'
+  | 'voice.settings.nav'
   | 'voice.settings.sectionDesc'
   | 'voice.settings.sectionTitle'
   | 'voice.settings.voiceEnable'
