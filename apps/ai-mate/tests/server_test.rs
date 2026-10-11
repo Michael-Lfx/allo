@@ -1,15 +1,20 @@
+use std::sync::Arc;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use tempfile::tempdir;
 use tower::ServiceExt;
 
 use ai_mate::config::Config;
 use ai_mate::server::build_router;
+use nomifun_voice_models::ModelManager;
 
 #[tokio::test]
 async fn test_healthz_endpoint() {
     let config = Config::default();
-    let app = build_router(&config);
+    let temp_dir = tempdir().unwrap();
+    let manager = Arc::new(ModelManager::new(temp_dir.path()));
+    let app = build_router(&config, manager);
 
     let request = Request::builder()
         .uri("/healthz")
@@ -41,7 +46,9 @@ async fn test_healthz_endpoint() {
 #[tokio::test]
 async fn test_index_oobe_pairing_page_structure() {
     let config = Config::default();
-    let app = build_router(&config);
+    let temp_dir = tempdir().unwrap();
+    let manager = Arc::new(ModelManager::new(temp_dir.path()));
+    let app = build_router(&config, manager);
 
     let request = Request::builder()
         .uri("/")
@@ -128,9 +135,33 @@ async fn test_index_oobe_pairing_page_structure() {
 }
 
 #[tokio::test]
+async fn test_mounted_voice_model_status_endpoint() {
+    let config = Config::default();
+    let temp_dir = tempdir().unwrap();
+    let manager = Arc::new(ModelManager::new(temp_dir.path()));
+    let app = build_router(&config, manager);
+
+    let request = Request::builder()
+        .uri("/api/voice/models/status")
+        .method("GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.expect("handler must succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON response");
+
+    assert_eq!(json["state"]["status"], "NotInstalled");
+}
+
+#[tokio::test]
 async fn test_not_found_route() {
     let config = Config::default();
-    let app = build_router(&config);
+    let temp_dir = tempdir().unwrap();
+    let manager = Arc::new(ModelManager::new(temp_dir.path()));
+    let app = build_router(&config, manager);
 
     let request = Request::builder()
         .uri("/nonexistent_endpoint")

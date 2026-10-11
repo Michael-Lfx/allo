@@ -24,6 +24,7 @@ pub mod encode;
 pub mod events;
 pub mod frame;
 pub mod keepawake;
+pub mod kws;
 pub mod loopback;
 pub mod mic;
 pub mod mixer;
@@ -51,6 +52,7 @@ pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use events::spawn_meeting_event_bridge;
 pub use frame::{AudioChannel, TaggedFrame};
 pub use keepawake::KeepAwakeGuard;
+pub use kws::{KwsEngine, KwsEngineConfig, KwsResult};
 pub use loopback::LoopbackSource;
 pub use mic::MicSource;
 pub use mixer::DualTrackMixer;
@@ -72,7 +74,8 @@ pub use session::{
 };
 pub use stt::{
     CloudSttCallback, FakeSttCallback, MeetingCloudStt, NullSttCallback, SHERPA_ASR_MODEL_DIR_ENV,
-    SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt, try_load_sherpa,
+    SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt,
+    transcribe_test_pcm, try_load_sherpa,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
 pub use voice_pipeline::{

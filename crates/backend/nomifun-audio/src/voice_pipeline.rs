@@ -232,70 +232,138 @@ impl VoiceCapturePipeline {
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel::<CaptureReadResult>(128);
-        let worker_shared = Arc::clone(&shared);
 
-        let worker_handle = tokio::spawn(async move {
-            let max_backlog_samples = ((config.sample_rate as u64
-                * config.channels as u64
-                * config.backlog_limit_ms as u64)
-                / 1000) as usize;
+        let worker_handle = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let worker_shared = Arc::clone(&shared);
+            let tx = tx.clone();
+            let config = config.clone();
+            Some(handle.spawn(async move {
+                let max_backlog_samples = ((config.sample_rate as u64
+                    * config.channels as u64
+                    * config.backlog_limit_ms as u64)
+                    / 1000) as usize;
 
-            let mut raw_buf = vec![0.0f32; 1024];
-            let mut accumulator = Vec::<f32>::with_capacity(2048);
+                let mut raw_buf = vec![0.0f32; 4096];
+                let mut accumulator = Vec::<f32>::with_capacity(4096);
 
-            loop {
-                // 1. Check overflow and drop oldest samples if backlog > backlog_limit_ms
-                worker_shared.drop_oldest_if_overflow(max_backlog_samples);
+                loop {
+                    // 1. Check overflow and drop oldest samples if backlog > backlog_limit_ms
+                    worker_shared.drop_oldest_if_overflow(max_backlog_samples);
 
-                // 2. Read available samples from SPSC
-                let read = worker_shared.pop_slice(&mut raw_buf);
+                    // 2. Read available samples from SPSC
+                    let read = worker_shared.pop_slice(&mut raw_buf);
 
-                if read > 0 {
-                    let slice = &raw_buf[..read];
+                    if read > 0 {
+                        let slice = &raw_buf[..read];
 
-                    // Channel fold (mono average)
-                    let mono = if config.channels > 1 {
-                        downmix_to_mono(slice, config.channels as usize)
-                    } else {
-                        slice.to_vec()
-                    };
+                        // Channel fold (mono average)
+                        let mono = if config.channels > 1 {
+                            downmix_to_mono(slice, config.channels as usize)
+                        } else {
+                            slice.to_vec()
+                        };
 
-                    // Resample to 16kHz
-                    let resampled = if config.sample_rate != 16000 {
-                        resample_mono(&mono, config.sample_rate, 16000)
-                    } else {
-                        mono
-                    };
+                        // Resample to 16kHz
+                        let resampled = if config.sample_rate != 16000 {
+                            resample_mono(&mono, config.sample_rate, 16000)
+                        } else {
+                            mono
+                        };
 
-                    accumulator.extend_from_slice(&resampled);
+                        accumulator.extend_from_slice(&resampled);
 
-                    // Drain full chunks of chunk_size
-                    while accumulator.len() >= config.chunk_size {
-                        let chunk: Vec<f32> = accumulator.drain(..config.chunk_size).collect();
-                        if tx.send(CaptureReadResult::Chunk(chunk)).await.is_err() {
-                            return;
+                        // Drain full chunks of chunk_size
+                        while accumulator.len() >= config.chunk_size {
+                            let chunk: Vec<f32> = accumulator.drain(..config.chunk_size).collect();
+                            if tx.send(CaptureReadResult::Chunk(chunk)).await.is_err() {
+                                return;
+                            }
                         }
                     }
-                } else if worker_shared.is_closed() {
-                    // SPSC is closed and exhausted
-                    if !accumulator.is_empty() {
-                        let remaining = std::mem::take(&mut accumulator);
-                        let _ = tx.send(CaptureReadResult::Chunk(remaining)).await;
+
+                    if read == 0 {
+                        if worker_shared.is_closed() {
+                            // SPSC is closed and exhausted
+                            if !accumulator.is_empty() {
+                                let remaining = std::mem::take(&mut accumulator);
+                                let _ = tx.send(CaptureReadResult::Chunk(remaining)).await;
+                            }
+                            let _ = tx.send(CaptureReadResult::StreamClosed).await;
+                            break;
+                        } else {
+                            // Temporarily empty, yield to allow producer to push
+                            tokio::task::yield_now().await;
+                        }
                     }
-                    let _ = tx.send(CaptureReadResult::StreamClosed).await;
-                    break;
-                } else {
-                    // Temporarily empty, yield or briefly sleep to prevent busy-spinning
-                    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
                 }
-            }
-        });
+            }))
+        } else {
+            let worker_shared = Arc::clone(&shared);
+            let tx = tx.clone();
+            let config = config.clone();
+            std::thread::Builder::new()
+                .name("nomifun-voice-worker-thread".into())
+                .spawn(move || {
+                    let max_backlog_samples = ((config.sample_rate as u64
+                        * config.channels as u64
+                        * config.backlog_limit_ms as u64)
+                        / 1000) as usize;
+
+                    let mut raw_buf = vec![0.0f32; 4096];
+                    let mut accumulator = Vec::<f32>::with_capacity(4096);
+
+                    loop {
+                        worker_shared.drop_oldest_if_overflow(max_backlog_samples);
+                        let read = worker_shared.pop_slice(&mut raw_buf);
+
+                        if read > 0 {
+                            let slice = &raw_buf[..read];
+
+                            let mono = if config.channels > 1 {
+                                downmix_to_mono(slice, config.channels as usize)
+                            } else {
+                                slice.to_vec()
+                            };
+
+                            let resampled = if config.sample_rate != 16000 {
+                                resample_mono(&mono, config.sample_rate, 16000)
+                            } else {
+                                mono
+                            };
+
+                            accumulator.extend_from_slice(&resampled);
+
+                            while accumulator.len() >= config.chunk_size {
+                                let chunk: Vec<f32> = accumulator.drain(..config.chunk_size).collect();
+                                if tx.blocking_send(CaptureReadResult::Chunk(chunk)).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+
+                        if read == 0 {
+                            if worker_shared.is_closed() {
+                                if !accumulator.is_empty() {
+                                    let remaining = std::mem::take(&mut accumulator);
+                                    let _ = tx.blocking_send(CaptureReadResult::Chunk(remaining));
+                                }
+                                let _ = tx.blocking_send(CaptureReadResult::StreamClosed);
+                                break;
+                            } else {
+                                std::thread::yield_now();
+                            }
+                        }
+                    }
+                })
+                .ok();
+            None
+        };
 
         (
             Self {
                 receiver: rx,
                 shared,
-                _worker_handle: Some(worker_handle),
+                _worker_handle: worker_handle,
             },
             producer,
         )

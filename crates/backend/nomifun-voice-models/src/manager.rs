@@ -4,16 +4,22 @@
 //! - `interaction.zh.md` §3.4.4
 //! - `model-management.zh.md` §4
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use std::time::Instant;
+
+use tokio::sync::{broadcast, Mutex, RwLock};
+use tracing::{error, info};
 
 use nomifun_api_types::voice::{
     ModelInstallState, VoiceModelDeleteResponse, VoiceModelInstallRequest,
     VoiceModelInstallResponse, VoiceModelProgressEvent, VoiceModelStatusResponse,
 };
 
-use crate::layout::{check_model_layout, inspect_model_files};
+use crate::downloader::{MirrorConfig, ModelDownloader};
+use crate::layout::{check_model_layout, inspect_model_files, EXPECTED_FILES};
+use crate::verifier::{DOWNLOAD_FILES, ModelVerifier};
 
 /// Errors encountered during model lifecycle operations.
 #[derive(Debug, thiserror::Error)]
@@ -34,19 +40,38 @@ pub struct ModelManager {
     models_dir: PathBuf,
     state: Arc<RwLock<ModelInstallState>>,
     progress_tx: broadcast::Sender<VoiceModelProgressEvent>,
+    downloader: Arc<ModelDownloader>,
+    verifier: Arc<ModelVerifier>,
+    install_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl ModelManager {
-    /// Initializes a new `ModelManager` targeting the specified directory.
+    /// Initializes a new `ModelManager` targeting the specified directory with defaults.
     pub fn new(models_dir: impl AsRef<Path>) -> Self {
+        Self::with_config(
+            models_dir,
+            MirrorConfig::default_mirrors(),
+            crate::verifier::default_canonical_manifest(),
+        )
+    }
+
+    /// Initializes a `ModelManager` with custom mirrors and baseline verification manifest.
+    pub fn with_config(
+        models_dir: impl AsRef<Path>,
+        mirrors: Vec<MirrorConfig>,
+        baseline_manifest: HashMap<String, String>,
+    ) -> Self {
         let models_dir = models_dir.as_ref().to_path_buf();
         let initial_state = check_model_layout(&models_dir);
-        let (progress_tx, _) = broadcast::channel(64);
+        let (progress_tx, _) = broadcast::channel(128);
 
         Self {
             models_dir,
             state: Arc::new(RwLock::new(initial_state)),
             progress_tx,
+            downloader: Arc::new(ModelDownloader::new(mirrors)),
+            verifier: Arc::new(ModelVerifier::with_manifest(baseline_manifest)),
+            install_task: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -77,41 +102,214 @@ impl ModelManager {
         }
     }
 
-    /// Triggers model installation.
-    ///
-    /// In Wave 0 skeleton, this returns `ModelManagerError::NotImplemented`.
+    /// Triggers model installation asynchronously with idempotency protection.
     pub async fn install(
         &self,
         _req: Option<VoiceModelInstallRequest>,
     ) -> Result<VoiceModelInstallResponse, ModelManagerError> {
-        Err(ModelManagerError::NotImplemented(
-            "Model download and installation is not implemented in Wave 0 skeleton".into(),
-        ))
+        let current_state = self.state.read().await.clone();
+
+        // 1. Idempotency check: if already ready, reject smoothly
+        if current_state.is_ready() {
+            return Ok(VoiceModelInstallResponse {
+                accepted: false,
+                state: current_state,
+                message: Some("Models already installed and ready".into()),
+            });
+        }
+
+        // 2. Idempotency check: if already busy (in progress), reject duplicate request
+        if current_state.is_busy() {
+            return Ok(VoiceModelInstallResponse {
+                accepted: false,
+                state: current_state,
+                message: Some("Installation already in progress".into()),
+            });
+        }
+
+        // 3. Mark state as ProbingSource and broadcast event
+        self.set_state(ModelInstallState::ProbingSource).await;
+
+        // 4. Spawn background install task
+        let this = self.clone();
+        let handle = tokio::spawn(async move {
+            this.run_install_pipeline().await;
+        });
+
+        let mut task_guard = self.install_task.lock().await;
+        *task_guard = Some(handle);
+
+        Ok(VoiceModelInstallResponse {
+            accepted: true,
+            state: ModelInstallState::ProbingSource,
+            message: Some("Installation started".into()),
+        })
+    }
+
+    /// Internal asynchronous install pipeline execution.
+    async fn run_install_pipeline(&self) {
+        info!("Starting voice model installation pipeline");
+
+        // Step 1: Probe mirror sources
+        let mirror = match self.downloader.probe_best_source().await {
+            Ok(m) => m,
+            Err(e) => {
+                let reason = format!("Failed to probe mirror sources: {e}");
+                error!("{reason}");
+                self.set_state(ModelInstallState::Failed {
+                    reason,
+                    recoverable: true,
+                })
+                .await;
+                return;
+            }
+        };
+
+        info!("Selected mirror: {} ({})", mirror.id, mirror.base_url);
+
+        // Step 2: Download files with progress tracking
+        let total_files = DOWNLOAD_FILES.len();
+        let mut overall_downloaded: u64 = 0;
+        let mut total_estimated_bytes: u64 = 0;
+
+        // Estimate size if possible or use cumulative progress
+        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+            let file_index = idx + 1;
+            let target_path = self.models_dir.join(rel_path);
+
+            let start_time = Instant::now();
+            let mut file_downloaded_bytes: u64 = 0;
+
+            // Broadcast initial downloading state for this file
+            self.set_state(ModelInstallState::Downloading {
+                current_file: rel_path.to_string(),
+                file_index,
+                total_files,
+                downloaded_bytes: overall_downloaded,
+                total_bytes: total_estimated_bytes.max(overall_downloaded + 1),
+                progress_percent: if total_files > 0 {
+                    (idx as f32 / total_files as f32) * 100.0
+                } else {
+                    0.0
+                },
+                speed_bytes_per_sec: 0,
+            })
+            .await;
+
+            let download_result = self
+                .downloader
+                .download_with_failover(rel_path, &target_path, 0)
+                .await;
+
+            match download_result {
+                Ok(_) => {
+                    if let Ok(meta) = tokio::fs::metadata(&target_path).await {
+                        file_downloaded_bytes = meta.len();
+                    }
+                    overall_downloaded = overall_downloaded.saturating_add(file_downloaded_bytes);
+                    total_estimated_bytes = total_estimated_bytes.max(overall_downloaded);
+
+                    let elapsed = start_time.elapsed().as_secs_f64();
+                    let speed = if elapsed > 0.001 {
+                        (file_downloaded_bytes as f64 / elapsed) as u64
+                    } else {
+                        file_downloaded_bytes * 10
+                    };
+
+                    self.set_state(ModelInstallState::Downloading {
+                        current_file: rel_path.to_string(),
+                        file_index,
+                        total_files,
+                        downloaded_bytes: overall_downloaded,
+                        total_bytes: total_estimated_bytes,
+                        progress_percent: ((file_index as f32) / (total_files as f32)) * 100.0,
+                        speed_bytes_per_sec: speed,
+                    })
+                    .await;
+                }
+                Err(e) => {
+                    let reason = format!("Failed to download {rel_path}: {e}");
+                    error!("{reason}");
+                    self.set_state(ModelInstallState::Failed {
+                        reason,
+                        recoverable: true,
+                    })
+                    .await;
+                    return;
+                }
+            }
+        }
+
+        // Also fetch checksums.sha256 if available
+        let checksums_path = self.models_dir.join("checksums.sha256");
+        let _ = self
+            .downloader
+            .download_file_with_resume(&mirror, "checksums.sha256", &checksums_path)
+            .await;
+
+        // Ensure keywords.txt is present (compiled locally or default fallback)
+        let keywords_path = self.models_dir.join("kws/keywords.txt");
+        if !keywords_path.exists() {
+            // Try downloading from mirror first
+            if self
+                .downloader
+                .download_file_with_resume(&mirror, "kws/keywords.txt", &keywords_path)
+                .await
+                .is_err()
+            {
+                // Create standard default
+                if let Some(parent) = keywords_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                let _ = tokio::fs::write(&keywords_path, b"HEY FLOWY :1.0 #0.25 @1\n").await;
+            }
+        }
+
+        // Step 3: SHA256 Verification
+        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+            self.set_state(ModelInstallState::VerifyingSha256 {
+                current_file: rel_path.to_string(),
+                verified_files: idx,
+                total_files,
+            })
+            .await;
+        }
+
+        let verify_state = self.verifier.verify(&self.models_dir).await;
+        self.set_state(verify_state).await;
     }
 
     /// Deletes installed model files and resets the state to `NotInstalled`.
     pub async fn remove(&self) -> Result<VoiceModelDeleteResponse, ModelManagerError> {
+        // Abort running install task if active
+        let mut task_guard = self.install_task.lock().await;
+        if let Some(handle) = task_guard.take() {
+            handle.abort();
+        }
+
+        self.set_state(ModelInstallState::Removing).await;
+
         let (_, _, freed_bytes) = inspect_model_files(&self.models_dir);
 
         if self.models_dir.exists() {
-            // Delete expected files and clean up directories
-            for &rel in crate::layout::EXPECTED_FILES {
+            // Delete all expected model assets and part files
+            for &rel in EXPECTED_FILES {
                 let p = self.models_dir.join(rel);
                 if p.is_file() {
                     let _ = tokio::fs::remove_file(&p).await;
                 }
+                let part = PathBuf::from(format!("{}.part", p.display()));
+                if part.is_file() {
+                    let _ = tokio::fs::remove_file(&part).await;
+                }
             }
-            // Remove empty subdirectories if any
+            let _ = tokio::fs::remove_file(self.models_dir.join("checksums.sha256")).await;
             let _ = tokio::fs::remove_dir(self.models_dir.join("kws")).await;
             let _ = tokio::fs::remove_dir(self.models_dir.join("vad")).await;
             let _ = tokio::fs::remove_dir(self.models_dir.join("asr")).await;
         }
 
-        let mut state_guard = self.state.write().await;
-        *state_guard = ModelInstallState::NotInstalled;
-        let _ = self.progress_tx.send(VoiceModelProgressEvent::new(
-            ModelInstallState::NotInstalled,
-        ));
+        self.set_state(ModelInstallState::NotInstalled).await;
 
         Ok(VoiceModelDeleteResponse {
             success: true,

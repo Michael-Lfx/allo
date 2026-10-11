@@ -29,9 +29,8 @@ pub enum CaptureReadResult {
 pub trait AudioCaptureSource: Send + Sync {
     /// Read the next chunk of PCM audio samples.
     ///
-    /// Returns `None` when the source has been closed or exhausted (e.g. end
-    /// of a pre-recorded file in tests).
-    async fn read_chunk(&self) -> Option<Vec<f32>>;
+    /// Returns `CaptureReadResult` (Chunk / TemporarilyEmpty / StreamClosed / DeviceError).
+    async fn read_chunk(&self) -> CaptureReadResult;
 
     /// Sample rate in Hz (e.g. 16_000 or 44_100).
     fn sample_rate(&self) -> u32;
@@ -76,8 +75,11 @@ impl PcmReplaySource {
 
 #[async_trait]
 impl AudioCaptureSource for PcmReplaySource {
-    async fn read_chunk(&self) -> Option<Vec<f32>> {
-        self.chunks.lock().await.pop_front()
+    async fn read_chunk(&self) -> CaptureReadResult {
+        match self.chunks.lock().await.pop_front() {
+            Some(chunk) => CaptureReadResult::Chunk(chunk),
+            None => CaptureReadResult::StreamClosed,
+        }
     }
 
     fn sample_rate(&self) -> u32 {
@@ -98,14 +100,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn replay_source_yields_chunks_then_none() {
+    async fn replay_source_yields_chunks_then_closed() {
         let pcm = vec![0.1f32; 100];
         let src = PcmReplaySource::new("test", 16_000, pcm, 32);
         // first 3 full chunks + one partial
-        assert!(src.read_chunk().await.is_some());
-        assert!(src.read_chunk().await.is_some());
-        assert!(src.read_chunk().await.is_some());
-        assert!(src.read_chunk().await.is_some()); // partial (4 samples)
-        assert!(src.read_chunk().await.is_none());
+        assert!(matches!(src.read_chunk().await, CaptureReadResult::Chunk(_)));
+        assert!(matches!(src.read_chunk().await, CaptureReadResult::Chunk(_)));
+        assert!(matches!(src.read_chunk().await, CaptureReadResult::Chunk(_)));
+        assert!(matches!(src.read_chunk().await, CaptureReadResult::Chunk(_))); // partial (4 samples)
+        assert_eq!(src.read_chunk().await, CaptureReadResult::StreamClosed);
     }
 }

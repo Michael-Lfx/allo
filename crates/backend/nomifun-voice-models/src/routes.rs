@@ -74,18 +74,18 @@ async fn get_progress_handler(
 }
 
 /// POST /install -> Starts download and installation of voice models.
-///
-/// In Wave 0 skeleton, explicitly returns 501 NOT IMPLEMENTED.
 async fn install_handler(
-    State(_manager): State<Arc<ModelManager>>,
-    _payload: Option<Json<VoiceModelInstallRequest>>,
+    State(manager): State<Arc<ModelManager>>,
+    payload: Option<Json<VoiceModelInstallRequest>>,
 ) -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(serde_json::json!({
-            "error": "Model download and installation is not implemented in Wave 0 skeleton"
-        })),
-    )
+    match manager.install(payload.map(|Json(req)| req)).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 /// DELETE / -> Deletes local voice model files and resets state to `NotInstalled`.

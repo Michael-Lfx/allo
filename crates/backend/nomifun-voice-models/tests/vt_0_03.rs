@@ -77,7 +77,7 @@ async fn test_vt_0_03_sse_progress_channel_subscribable() {
 }
 
 #[tokio::test]
-async fn test_vt_0_03_install_returns_not_implemented_in_wave_0() {
+async fn test_vt_0_03_install_starts_pipeline() {
     let temp_dir = tempdir().expect("create temp dir");
     let manager = Arc::new(ModelManager::new(temp_dir.path()));
     let app = voice_model_routes(manager.clone());
@@ -92,8 +92,8 @@ async fn test_vt_0_03_install_returns_not_implemented_in_wave_0() {
     let resp = app.oneshot(req).await.expect("execute request");
     assert_eq!(
         resp.status(),
-        StatusCode::NOT_IMPLEMENTED,
-        "wave 0 skeleton install must explicitly return not implemented"
+        StatusCode::OK,
+        "install must accept and return 200 OK"
     );
 }
 
