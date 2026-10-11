@@ -116,17 +116,30 @@ impl OobeManager {
         self.state.read().await.is_paired
     }
 
-    /// Regenerates a fresh 6-digit pairing code and resets expiry/attempt counters.
-    /// Returns the new 6-digit code.
-    pub async fn regenerate_code(&self) -> String {
+    /// Regenerates a fresh 6-digit pairing code.
+    ///
+    /// Respects active lockout (cannot be bypassed by refresh) and resets code.
+    pub async fn regenerate_code(&self) -> Result<String, &'static str> {
         let mut guard = self.state.write().await;
+        let now = Instant::now();
+
+        if let Some(locked_until) = guard.locked_until {
+            if now < locked_until {
+                return Err("Device is currently locked out; pairing code cannot be regenerated");
+            }
+        }
+
+        if guard.is_paired {
+            return Err("Device is already paired");
+        }
+
         let new_code = generate_six_digit_code();
         guard.code = new_code.clone();
-        guard.created_at = Instant::now();
+        guard.created_at = now;
         guard.failed_attempts = 0;
         guard.locked_until = None;
         info!("Regenerated fresh OOBE pairing code.");
-        new_code
+        Ok(new_code)
     }
 
     /// Verifies an input pairing code against the current dynamic code.
@@ -276,13 +289,19 @@ async fn status_handler(State(oobe): State<OobeManager>) -> impl IntoResponse {
 }
 
 async fn refresh_handler(State(oobe): State<OobeManager>) -> impl IntoResponse {
-    let _ = oobe.regenerate_code().await;
-    let announcement = oobe.vocal_announcement_text().await;
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "refreshed",
-            "announcement": announcement,
-        })),
-    )
+    match oobe.regenerate_code().await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "refreshed"
+            })),
+        ),
+        Err(err) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": err
+            })),
+        ),
+    }
 }

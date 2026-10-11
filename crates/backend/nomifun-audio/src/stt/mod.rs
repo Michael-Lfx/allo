@@ -37,7 +37,7 @@ pub const SHERPA_ASR_MODEL_DIR_ENV: &str = "NOMI_SHERPA_ASR_MODEL_DIR";
 ///
 /// Transcribes PCM samples using the local Sherpa-onnx engine if available,
 /// or a fast acoustic matching fallback for test waveforms.
-pub async fn transcribe_test_pcm(pcm: &[f32], sample_rate: u32) -> Option<String> {
+pub async fn transcribe_test_pcm(pcm: &[f32], _sample_rate: u32) -> Option<String> {
     if pcm.is_empty() {
         return None;
     }
@@ -55,10 +55,5 @@ pub async fn transcribe_test_pcm(pcm: &[f32], sample_rate: u32) -> Option<String
         }
     }
 
-    let duration_sec = pcm.len() as f32 / sample_rate as f32;
-    if duration_sec >= 0.2 {
-        Some("分析最近日志".to_string())
-    } else {
-        None
-    }
+    None
 }

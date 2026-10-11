@@ -33,8 +33,7 @@ pub fn voice_model_routes(manager: Arc<ModelManager>) -> Router {
         .route("/", delete(delete_handler));
 
     Router::new()
-        .nest("/api/voice/models", sub_router.clone())
-        .merge(sub_router)
+        .nest("/api/voice/models", sub_router)
         .with_state(manager)
 }
 

@@ -161,7 +161,7 @@ async fn test_vt_4_03_code_regeneration_resets_counters() {
     let _ = oobe.verify_code("111111").await;
 
     // Regenerate code
-    let new_code = oobe.regenerate_code().await;
+    let new_code = oobe.regenerate_code().await.expect("regenerate code");
     assert_eq!(new_code.len(), 6);
     assert_ne!(new_code, "000000");
     assert_ne!(new_code, old_code);
@@ -170,4 +170,18 @@ async fn test_vt_4_03_code_regeneration_resets_counters() {
     let outcome = oobe.verify_code(&new_code).await;
     assert_eq!(outcome, VerifyOutcome::Success);
     assert!(oobe.is_paired().await);
+}
+
+#[tokio::test]
+async fn test_vt_4_03_lockout_cannot_be_bypassed_by_regeneration() {
+    let oobe = OobeManager::new();
+    for _ in 0..5 {
+        let _ = oobe.verify_code("000000").await;
+    }
+    // Now device is locked out
+    let res = oobe.regenerate_code().await;
+    assert!(res.is_err(), "Regeneration must fail when device is locked out");
+    // Verify it is still locked
+    let outcome = oobe.verify_code("000000").await;
+    assert!(matches!(outcome, VerifyOutcome::Locked { .. }));
 }

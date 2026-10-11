@@ -50,7 +50,7 @@ fn test_empty_models_section_defaults() {
 
     assert_eq!(
         config.models.models_dir,
-        PathBuf::from("/var/lib/ai-mate/models")
+        ai_mate::config::default_models_dir()
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 1500);
@@ -65,7 +65,7 @@ fn test_empty_toml_defaults() {
     assert_eq!(config, default_config);
     assert_eq!(
         config.models.models_dir,
-        PathBuf::from("/var/lib/ai-mate/models")
+        ai_mate::config::default_models_dir()
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 1500);

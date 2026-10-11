@@ -209,23 +209,71 @@ pub fn is_path_inside_sandbox(path_str: &str, sandbox_root: &Path) -> bool {
 
 /// Recursively inspects a command string for blocked command invocations and injection tricks.
 pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<String> {
+    // 0. Expand IFS whitespace variants
+    let normalized = cmd.replace("${IFS}", " ").replace("$IFS", " ");
+
     // 1. Detect subshells: $(...) or `...`
-    if let Some(sub) = extract_subshell(cmd) {
+    if let Some(sub) = extract_subshell(&normalized) {
         if let Some(matched) = inspect_command_string(&sub, blocked_commands) {
             return Some(matched);
         }
     }
 
-    // 2. Split into pipeline and chain segments outside quotes
-    let segments = split_command_segments(cmd);
-    for seg in segments {
+    // 2. Track variable assignments like A=rm; $A -rf /
+    let raw_segments = split_command_segments(&normalized);
+    let mut vars: HashMap<String, String> = HashMap::new();
+
+    // Check if the overall command pipes into a shell interpreter (e.g. echo ... | sh)
+    if normalized.contains('|') {
+        for seg in &raw_segments {
+            let seg_words = split_words(seg.trim());
+            if let Some(first) = seg_words.first() {
+                let exe = clean_executable_name(first);
+                if matches!(
+                    exe.as_str(),
+                    "sh" | "bash" | "zsh" | "dash" | "ksh" | "powershell" | "pwsh" | "python" | "perl"
+                ) {
+                    if seg_words.len() == 1 || (seg_words.len() == 2 && seg_words[1] == "-") {
+                        for prev_seg in &raw_segments {
+                            for blocked in blocked_commands {
+                                if prev_seg.contains(blocked) {
+                                    return Some(format!("{blocked} (piped to {exe})"));
+                                }
+                            }
+                        }
+                        return Some(format!("pipe to interpreter: {exe}"));
+                    }
+                }
+            }
+        }
+    }
+
+    for seg in raw_segments {
         let trimmed = seg.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        // Split segment into words
-        let words = split_words(trimmed);
+        // Track variable assignments
+        let seg_words = split_words(trimmed);
+        if let Some(assign_word) = seg_words.first() {
+            let assign_candidate = if assign_word == "export" || assign_word == "local" {
+                seg_words.get(1).cloned().unwrap_or_default()
+            } else {
+                assign_word.clone()
+            };
+            if let Some((k, v)) = assign_candidate.split_once('=') {
+                let clean_k = k.trim().to_string();
+                let clean_v = v.trim().trim_matches(|c| c == '\'' || c == '"').to_string();
+                if !clean_k.is_empty() {
+                    vars.insert(clean_k, clean_v);
+                }
+            }
+        }
+
+        // Expand variables from previous assignments
+        let expanded_seg = expand_local_vars(trimmed, &vars);
+        let words = split_words(&expanded_seg);
         if words.is_empty() {
             continue;
         }
@@ -261,14 +309,12 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
                 }
             }
             "xargs" => {
-                // xargs <command>
                 let remainder = words[idx + 1..].join(" ");
                 if let Some(matched) = inspect_command_string(&remainder, blocked_commands) {
                     return Some(matched);
                 }
             }
             "find" => {
-                // Check for find -delete or find ... -exec <cmd>
                 for (w_idx, w) in words.iter().enumerate() {
                     if w == "-delete" {
                         return Some("find -delete".to_string());
@@ -282,8 +328,31 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
                 }
             }
             "sh" | "bash" | "zsh" | "dash" | "ksh" => {
-                // sh -c "command"
                 if let Some(c_idx) = words.iter().position(|w| w == "-c") {
+                    if c_idx + 1 < words.len() {
+                        let inner = words[c_idx + 1..].join(" ");
+                        if let Some(matched) = inspect_command_string(&inner, blocked_commands) {
+                            return Some(matched);
+                        }
+                    }
+                }
+            }
+            "powershell" | "pwsh" => {
+                if let Some(c_idx) = words.iter().position(|w| {
+                    w.eq_ignore_ascii_case("-c") || w.eq_ignore_ascii_case("-command")
+                }) {
+                    if c_idx + 1 < words.len() {
+                        let inner = words[c_idx + 1..].join(" ");
+                        if let Some(matched) = inspect_command_string(&inner, blocked_commands) {
+                            return Some(matched);
+                        }
+                    }
+                }
+            }
+            "cmd" => {
+                if let Some(c_idx) = words.iter().position(|w| {
+                    w.eq_ignore_ascii_case("/c") || w.eq_ignore_ascii_case("/k")
+                }) {
                     if c_idx + 1 < words.len() {
                         let inner = words[c_idx + 1..].join(" ");
                         if let Some(matched) = inspect_command_string(&inner, blocked_commands) {
@@ -305,7 +374,14 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
         for (i, word) in words.iter().enumerate() {
             let cl = clean_executable_name(word);
             for blocked in blocked_commands {
-                if cl.eq_ignore_ascii_case(blocked) && (i == 0 || words[i - 1] == ";" || words[i - 1] == "&&" || words[i - 1] == "||" || words[i - 1] == ":" || words[i - 1] == "-exec") {
+                if cl.eq_ignore_ascii_case(blocked)
+                    && (i == 0
+                        || words[i - 1] == ";"
+                        || words[i - 1] == "&&"
+                        || words[i - 1] == "||"
+                        || words[i - 1] == ":"
+                        || words[i - 1] == "-exec")
+                {
                     return Some(cl.clone());
                 }
             }
@@ -313,9 +389,8 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
     }
 
     // Direct search for prompt injection patterns like "rm -rf" or "reboot" in unquoted fragments
-    let lower = cmd.to_ascii_lowercase();
+    let lower = normalized.to_ascii_lowercase();
     for blocked in blocked_commands {
-        // Look for occurrences of word boundaries with destructive arguments
         let blocked_pattern = format!(" {blocked} ");
         let blocked_start = format!("{blocked} ");
         let blocked_flag = format!(" {blocked} -");
@@ -325,12 +400,10 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
             || lower.contains(&blocked_flag)
             || lower.ends_with(&blocked_end)
         {
-            // Verify it is not inside an echo or grep benign argument
-            let words = split_words(cmd);
+            let words = split_words(&normalized);
             if let Some(first) = words.first() {
                 let first_clean = clean_executable_name(first);
-                if first_clean == "echo" || first_clean == "grep" {
-                    // Benign invocation where blocked word is inside string parameter
+                if (first_clean == "echo" || first_clean == "grep") && !normalized.contains('|') {
                     continue;
                 }
             }
@@ -341,10 +414,43 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
     None
 }
 
+fn expand_local_vars(seg: &str, vars: &HashMap<String, String>) -> String {
+    let mut expanded = seg.to_string();
+    for (name, val) in vars {
+        let pat1 = format!("${name}");
+        let pat2 = format!("${{{name}}}");
+        expanded = expanded.replace(&pat2, val).replace(&pat1, val);
+    }
+    expanded
+}
+
 fn extract_subshell(cmd: &str) -> Option<String> {
     if let Some(start) = cmd.find("$(") {
-        if let Some(end) = cmd[start..].find(')') {
-            return Some(cmd[start + 2..start + end].to_string());
+        let mut depth = 0;
+        let mut in_single = false;
+        let mut in_double = false;
+        let remainder = &cmd[start + 2..];
+        let mut end_idx = None;
+        for (idx, c) in remainder.char_indices() {
+            if c == '\'' && !in_double {
+                in_single = !in_single;
+            } else if c == '"' && !in_single {
+                in_double = !in_double;
+            } else if !in_single && !in_double {
+                if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    if depth == 0 {
+                        end_idx = Some(idx);
+                        break;
+                    } else {
+                        depth -= 1;
+                    }
+                }
+            }
+        }
+        if let Some(idx) = end_idx {
+            return Some(remainder[..idx].to_string());
         }
     }
     if let Some(start) = cmd.find('`') {
@@ -429,17 +535,72 @@ fn split_words(s: &str) -> Vec<String> {
 }
 
 fn clean_executable_name(raw: &str) -> String {
-    let s = raw.trim().trim_matches(|c| c == '\'' || c == '"' || c == '(' || c == ')' || c == '{' || c == '}');
-    // Remove directory prefixes
-    let path = Path::new(s);
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(s);
+    let s = raw
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"' || c == '(' || c == ')' || c == '{' || c == '}');
+    let stripped = if s.starts_with("${") && s.ends_with('}') {
+        &s[2..s.len() - 1]
+    } else if s.starts_with('$') {
+        &s[1..]
+    } else {
+        s
+    };
+    let path = Path::new(stripped);
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(stripped);
     let cleaned = file_name.trim_end_matches(".exe");
     cleaned.replace('\\', "")
 }
 
+/// Strips C-style (`/* ... */`) and single-line (`-- ...`) SQL comments.
+pub fn strip_sql_comments(query: &str) -> String {
+    let mut result = String::with_capacity(query.len());
+    let chars: Vec<char> = query.chars().collect();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            result.push(c);
+            i += 1;
+        } else if c == '"' && !in_single {
+            in_double = !in_double;
+            result.push(c);
+            i += 1;
+        } else if !in_single && !in_double {
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                if i + 1 < chars.len() {
+                    i += 2;
+                }
+                result.push(' ');
+            } else if c == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' && chars[i] != '\r' {
+                    i += 1;
+                }
+                result.push(' ');
+            } else {
+                result.push(c);
+                i += 1;
+            }
+        } else {
+            result.push(c);
+            i += 1;
+        }
+    }
+    result
+}
+
 /// Inspects SQL statements for blocked keywords.
 pub fn inspect_sql_query(query: &str, blocked_keywords: &[String]) -> Option<String> {
-    let statements: Vec<&str> = query.split(';').collect();
+    let stripped = strip_sql_comments(query);
+    let statements: Vec<&str> = stripped.split(';').collect();
     for stmt in statements {
         let words = split_words(stmt);
         for word in words {
@@ -449,6 +610,39 @@ pub fn inspect_sql_query(query: &str, blocked_keywords: &[String]) -> Option<Str
                     return Some(clean_word.to_ascii_uppercase());
                 }
             }
+        }
+    }
+    None
+}
+
+/// Checks command arguments for paths escaping the sandbox boundary.
+pub fn find_escaping_path_in_command(cmd: &str, sandbox_root: &Path) -> Option<String> {
+    let words = split_words(cmd);
+    for word in words {
+        let clean = word.trim_matches(|c| {
+            c == '\'' || c == '"' || c == '<' || c == '>' || c == ';' || c == '(' || c == ')'
+        });
+        if clean.is_empty() || clean.starts_with('-') {
+            continue;
+        }
+        if clean == "/dev/null"
+            || clean == "/dev/zero"
+            || clean == "/dev/stdin"
+            || clean == "/dev/stdout"
+            || clean == "/dev/stderr"
+        {
+            continue;
+        }
+        let looks_like_path = clean.starts_with('/')
+            || clean.starts_with('\\')
+            || clean.starts_with('~')
+            || clean.contains("..")
+            || (clean.len() >= 3
+                && clean.chars().nth(1) == Some(':')
+                && (clean.chars().nth(2) == Some('\\') || clean.chars().nth(2) == Some('/')));
+
+        if looks_like_path && !is_path_inside_sandbox(clean, sandbox_root) {
+            return Some(clean.to_string());
         }
     }
     None
@@ -535,6 +729,16 @@ impl ToolPolicyEngine {
                 matched_pattern: matched,
             };
             let prompt = format!("即将执行高危指令操作: {cmd}，确认请说确认");
+            return self.suspend_and_issue_token(request, reason, prompt);
+        }
+
+        // Path sandbox check for arguments in bash_run
+        if let Some(escaping) = find_escaping_path_in_command(cmd, &self.policy.sandbox_root) {
+            let reason = InterceptReason::SandboxPathEscape {
+                path: escaping.clone(),
+                sandbox_root: self.policy.sandbox_root.to_string_lossy().to_string(),
+            };
+            let prompt = format!("即将访问沙箱外部文件: {escaping}，确认请说确认");
             return self.suspend_and_issue_token(request, reason, prompt);
         }
 

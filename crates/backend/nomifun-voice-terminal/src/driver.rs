@@ -19,7 +19,15 @@ pub enum RouteError {
 
 #[async_trait]
 pub trait VoiceRouter: Send + Sync {
-    async fn route(&self, input: &str) -> Result<VoiceDecision, RouteError>;
+    async fn route(&self, input: &str) -> Result<VoiceDecision, RouteError> {
+        self.route_with_status(input, None).await
+    }
+
+    async fn route_with_status(
+        &self,
+        input: &str,
+        task_status: Option<&str>,
+    ) -> Result<VoiceDecision, RouteError>;
 }
 
 /// Controllable fixture router for tests.
@@ -72,12 +80,25 @@ impl VoiceRouter for StubVoiceRouter {
     async fn route(&self, _input: &str) -> Result<VoiceDecision, RouteError> {
         Ok(self.decision.clone())
     }
+
+    async fn route_with_status(
+        &self,
+        _input: &str,
+        _task_status: Option<&str>,
+    ) -> Result<VoiceDecision, RouteError> {
+        Ok(self.decision.clone())
+    }
 }
 
-/// Headless Voice Session Driver orchestrating FSM state transitions and event history.
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// Headless Voice Session Driver orchestrating FSM state transitions, event buffering, and watchdog timeouts.
 pub struct VoiceSessionDriver {
     fsm: AcousticFsm,
     history: Vec<AcousticState>,
+    pending_events: VecDeque<AcousticEvent>,
+    confirmation_deadline: Option<Instant>,
 }
 
 impl VoiceSessionDriver {
@@ -85,6 +106,8 @@ impl VoiceSessionDriver {
         Self {
             fsm: AcousticFsm::new(),
             history: vec![AcousticState::Idle],
+            pending_events: VecDeque::new(),
+            confirmation_deadline: None,
         }
     }
 
@@ -96,15 +119,61 @@ impl VoiceSessionDriver {
         &self.history
     }
 
+    pub fn pending_events_count(&self) -> usize {
+        self.pending_events.len()
+    }
+
     pub fn handle_event(&mut self, event: AcousticEvent) -> Result<AcousticState, IllegalTransitionError> {
+        // If an asynchronous background notification arrives while non-idle, queue it to avoid dropping
+        if (event == AcousticEvent::TaskSummaryReady || event == AcousticEvent::ToolPolicyIntercept)
+            && self.fsm.state() != AcousticState::Idle
+        {
+            self.pending_events.push_back(event);
+            return Ok(self.fsm.state());
+        }
+
         let next = self.fsm.transition(event)?;
         self.history.push(next);
+
+        // Manage 8-second confirmation watchdog timer
+        if next == AcousticState::ListeningConfirm || next == AcousticState::AwaitingConfirmation {
+            if self.confirmation_deadline.is_none() {
+                self.confirmation_deadline = Some(Instant::now() + Duration::from_secs(8));
+            }
+        } else {
+            self.confirmation_deadline = None;
+        }
+
+        // When returning to Idle, replay any queued asynchronous events
+        if next == AcousticState::Idle {
+            if let Some(queued) = self.pending_events.pop_front() {
+                return self.handle_event(queued);
+            }
+        }
+
         Ok(next)
+    }
+
+    /// Periodic watchdog check: fires ConfirmTimeout if 8-second confirmation window expires.
+    pub fn check_watchdog(&mut self) -> Result<Option<AcousticState>, IllegalTransitionError> {
+        let state = self.fsm.state();
+        if (state == AcousticState::ListeningConfirm || state == AcousticState::AwaitingConfirmation)
+            && let Some(deadline) = self.confirmation_deadline
+        {
+            if Instant::now() >= deadline {
+                self.confirmation_deadline = None;
+                let next = self.handle_event(AcousticEvent::ConfirmTimeout)?;
+                return Ok(Some(next));
+            }
+        }
+        Ok(None)
     }
 
     pub fn reset(&mut self) {
         self.fsm = AcousticFsm::new();
         self.history = vec![AcousticState::Idle];
+        self.pending_events.clear();
+        self.confirmation_deadline = None;
     }
 }
 

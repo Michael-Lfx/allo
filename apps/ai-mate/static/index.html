@@ -316,7 +316,7 @@
       height: 100%;
       background-color: var(--brand-color);
       transform-origin: left center;
-      transform: scaleX(0.15);
+      transform: scaleX(0);
       transition: transform var(--motion-state-duration) var(--motion-curve);
     }
 
@@ -460,7 +460,7 @@
 
       <div class="models-meta-row">
         <span id="modelsStageText">正在检查本地模型完整性...</span>
-        <span id="modelsMetricsText" class="tabular-nums">1/7</span>
+        <span id="modelsMetricsText" class="tabular-nums">-</span>
       </div>
     </section>
 
@@ -552,6 +552,39 @@
         });
       }
 
+      var lockoutTimer = null;
+
+      function startLockoutCountdown(seconds) {
+        var dict = i18n[currentLang] || i18n['zh-CN'];
+        var lockoutSlot = document.getElementById('otpLockoutSlot');
+        lockoutSlot.style.display = 'block';
+        realInput.disabled = true;
+        realInput.value = '';
+        updateBoxes('');
+        if (lockoutTimer) clearInterval(lockoutTimer);
+
+        var remaining = seconds;
+        function updateLockoutText() {
+          var mins = Math.floor(remaining / 60);
+          var secs = remaining % 60;
+          var timeStr = mins + ':' + (secs < 10 ? '0' : '') + secs;
+          lockoutSlot.textContent = dict.lockoutMessage + ' (' + timeStr + ')';
+        }
+        updateLockoutText();
+        lockoutTimer = setInterval(function() {
+          remaining -= 1;
+          if (remaining <= 0) {
+            clearInterval(lockoutTimer);
+            lockoutTimer = null;
+            lockoutSlot.style.display = 'none';
+            lockoutSlot.textContent = '';
+            realInput.disabled = false;
+          } else {
+            updateLockoutText();
+          }
+        }, 1000);
+      }
+
       realInput.addEventListener('input', function(e) {
         const cleaned = this.value.replace(/[^0-9]/g, '').slice(0, 6);
         this.value = cleaned;
@@ -559,8 +592,42 @@
         errorSlot.textContent = '';
 
         if (cleaned.length === 6) {
-          // Automatic single verification trigger
-          // In Wave 0 skeleton: placeholder for verification endpoint
+          fetch('/api/oobe/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: cleaned })
+          })
+          .then(function(res) {
+            return res.json().then(function(data) {
+              return { status: res.status, data: data };
+            });
+          })
+          .then(function(result) {
+            var data = result.data;
+            if (result.status === 200 && data.status === 'success') {
+              isPaired = true;
+              var pairingSection = document.querySelector('.pairing-section');
+              if (pairingSection) pairingSection.style.display = 'none';
+              var completionSection = document.getElementById('completionSection');
+              if (completionSection) {
+                completionSection.style.display = 'flex';
+              }
+              var statusText = document.getElementById('deviceStatusText');
+              if (statusText) statusText.textContent = (currentLang === 'zh-CN') ? i18n['zh-CN'].statusReady : i18n['en-US'].statusReady;
+            } else if (result.status === 429 || data.status === 'locked') {
+              var remainingSecs = data.lockout_remaining_secs || 900;
+              startLockoutCountdown(remainingSecs);
+            } else {
+              var dict = i18n[currentLang] || i18n['zh-CN'];
+              var attemptsMsg = data.attempts_remaining !== undefined ? ' (' + (currentLang === 'zh-CN' ? '剩余尝试: ' : 'Attempts left: ') + data.attempts_remaining + ')' : '';
+              errorSlot.textContent = dict.errorWrongCode + attemptsMsg;
+              realInput.value = '';
+              updateBoxes('');
+            }
+          })
+          .catch(function() {
+            errorSlot.textContent = (currentLang === 'zh-CN') ? '网络错误，请重试' : 'Network error, please retry';
+          });
         }
       });
 
@@ -586,6 +653,38 @@
           .catch(function() {});
       }
       checkOobeStatus();
+
+      // Subscribe to model progress SSE stream
+      function subscribeProgress() {
+        var evtSource = new EventSource('/api/voice/models/progress');
+        evtSource.onmessage = function(e) {
+          try {
+            var data = JSON.parse(e.data);
+            var fill = document.getElementById('progressFill');
+            var stageText = document.getElementById('modelsStageText');
+            var metricsText = document.getElementById('modelsMetricsText');
+            var badge = document.getElementById('modelsStatusBadge');
+
+            if (data.progress_percent !== undefined) {
+              var pct = Math.min(Math.max(data.progress_percent, 0), 100);
+              fill.style.transform = 'scaleX(' + (pct / 100) + ')';
+            }
+            if (data.file_index !== undefined && data.total_files !== undefined) {
+              metricsText.textContent = (data.file_index + 1) + '/' + data.total_files;
+            }
+            if (data.current_file) {
+              stageText.textContent = (currentLang === 'zh-CN' ? '正在下载: ' : 'Downloading: ') + data.current_file;
+            }
+            if (data.status === 'Ready' || data.state === 'Ready') {
+              fill.style.transform = 'scaleX(1.0)';
+              var dict = i18n[currentLang] || i18n['zh-CN'];
+              stageText.textContent = dict.modelsReady;
+              badge.textContent = dict.modelsReady;
+            }
+          } catch(err) {}
+        };
+      }
+      subscribeProgress();
     })();
   </script>
 </body>

@@ -199,20 +199,14 @@ impl ModelManager {
             let success = match download_result {
                 Ok(_) => true,
                 Err(e) => {
-                    warn!("Remote download for {rel_path} failed: {e}. Falling back to local offline provisioning.");
-                    match self.provision_offline_fallback_asset(rel_path, &target_path).await {
-                        Ok(_) => true,
-                        Err(prov_err) => {
-                            let reason = format!("Failed to download {rel_path}: {e} (offline fallback failed: {prov_err})");
-                            error!("{reason}");
-                            self.set_state(ModelInstallState::Failed {
-                                reason,
-                                recoverable: true,
-                            })
-                            .await;
-                            return;
-                        }
-                    }
+                    let reason = format!("Failed to download {rel_path}: {e}");
+                    error!("{reason}");
+                    self.set_state(ModelInstallState::Failed {
+                        reason,
+                        recoverable: true,
+                    })
+                    .await;
+                    return;
                 }
             };
 
@@ -224,10 +218,10 @@ impl ModelManager {
                 total_estimated_bytes = total_estimated_bytes.max(overall_downloaded);
 
                 let elapsed = start_time.elapsed().as_secs_f64();
-                let speed = if elapsed > 0.001 {
+                let speed = if elapsed > 0.05 {
                     (file_downloaded_bytes as f64 / elapsed) as u64
                 } else {
-                    file_downloaded_bytes * 10
+                    0
                 };
 
                 self.set_state(ModelInstallState::Downloading {
@@ -237,35 +231,19 @@ impl ModelManager {
                     downloaded_bytes: overall_downloaded,
                     total_bytes: total_estimated_bytes,
                     progress_percent: ((file_index as f32) / (total_files as f32)) * 100.0,
-                    speed_bytes_per_sec: speed.max(1024 * 1024),
+                    speed_bytes_per_sec: speed,
                 })
                 .await;
             }
         }
 
-        // Also fetch or generate checksums.sha256
+        // Also fetch checksums.sha256 from mirror if available
         let checksums_path = self.models_dir.join("checksums.sha256");
-        let mut fetched_checksums = false;
         if let Some(ref m) = mirror {
-            if self
+            let _ = self
                 .downloader
                 .download_file_with_resume(m, "checksums.sha256", &checksums_path)
-                .await
-                .is_ok()
-            {
-                fetched_checksums = true;
-            }
-        }
-        if !fetched_checksums {
-            // Write computed checksums for on-disk assets
-            let mut lines = Vec::new();
-            for &rel_path in DOWNLOAD_FILES {
-                let full_p = self.models_dir.join(rel_path);
-                if let Ok(hash) = crate::verifier::compute_file_sha256(&full_p).await {
-                    lines.push(format!("{hash}  {rel_path}"));
-                }
-            }
-            let _ = tokio::fs::write(&checksums_path, lines.join("\n") + "\n").await;
+                .await;
         }
 
         // Ensure keywords.txt is present (compiled locally or default fallback)
@@ -305,47 +283,7 @@ impl ModelManager {
         self.set_state(verify_state).await;
     }
 
-    /// Local offline fallback asset provisioner when remote candidate mirrors are unreachable.
-    async fn provision_offline_fallback_asset(
-        &self,
-        rel_path: &str,
-        target_path: &Path,
-    ) -> Result<u64, ModelManagerError> {
-        if let Some(parent) = target_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
 
-        let content: Vec<u8> = match rel_path {
-            "vad/silero_vad.onnx" => {
-                let candidate_paths = [
-                    PathBuf::from("crates/backend/nomifun-robot/assets/silero_vad.onnx"),
-                    PathBuf::from("../../crates/backend/nomifun-robot/assets/silero_vad.onnx"),
-                    PathBuf::from("assets/silero_vad.onnx"),
-                ];
-                let mut found = None;
-                for p in &candidate_paths {
-                    if let Ok(b) = tokio::fs::read(p).await {
-                        found = Some(b);
-                        break;
-                    }
-                }
-                found.unwrap_or_else(|| b"\x08\x07\x12\x0esilero-vad-onnx-model-binary-stream-v1.0.0".to_vec())
-            }
-            "kws/tokens.txt" => b"<blk> 0\nhey 1\nflowy 2\n<unk> 3\n".to_vec(),
-            "asr/tokens.txt" => b"<blank> 0\n<unk> 1\nhello 2\nworld 3\n".to_vec(),
-            "kws/encoder.int8.onnx" => b"\x08\x07\x12\x12kws-encoder-int8-onnx-model-binary-stream".to_vec(),
-            "kws/decoder.int8.onnx" => b"\x08\x07\x12\x12kws-decoder-int8-onnx-model-binary-stream".to_vec(),
-            "kws/joiner.int8.onnx" => b"\x08\x07\x12\x11kws-joiner-int8-onnx-model-binary-stream".to_vec(),
-            "asr/model.int8.onnx" => b"\x08\x07\x12\x15sensevoice-asr-int8-onnx-model-binary-stream".to_vec(),
-            other => format!("model-asset-fallback-{other}").into_bytes(),
-        };
-
-        // Brief delay (~50ms) to ensure smooth SSE client ingestion
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        tokio::fs::write(target_path, &content).await?;
-        Ok(content.len() as u64)
-    }
 
     /// Deletes installed model files and resets the state to `NotInstalled`.
     pub async fn remove(&self) -> Result<VoiceModelDeleteResponse, ModelManagerError> {

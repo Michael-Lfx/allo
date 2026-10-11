@@ -35,6 +35,26 @@ pub fn notify_watchdog() -> bool {
     true
 }
 
+/// Send a systemd READY=1 readiness notification.
+///
+/// Essential for Type=notify services so systemd marks the unit as active/running.
+pub fn notify_ready() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(socket_path) = std::env::var("NOTIFY_SOCKET") {
+            use std::os::unix::net::UnixDatagram;
+            if let Ok(socket) = UnixDatagram::unbound() {
+                let _ = socket.send_to(b"READY=1", socket_path);
+                info!("Dispatched READY=1 to systemd NOTIFY_SOCKET");
+                return true;
+            }
+        }
+    }
+
+    info!("Service initialization complete (ready)");
+    true
+}
+
 /// Spawn the periodic watchdog heartbeat task.
 pub fn start_watchdog_heartbeat(interval: Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {

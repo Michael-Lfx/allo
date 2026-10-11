@@ -81,9 +81,40 @@ impl FromStr for PreferMirror {
     }
 }
 
-/// Default function for serde `models_dir` field.
+/// Default function for serde `models_dir` field (platform-specific).
 pub fn default_models_dir() -> PathBuf {
-    PathBuf::from(DEFAULT_MODELS_DIR)
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data)
+                .join("Flowy")
+                .join("AI-Mate")
+                .join("models");
+        }
+        PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\models")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from(DEFAULT_MODELS_DIR)
+    }
+}
+
+/// Default path for the AI Mate configuration file (platform-specific).
+pub fn default_config_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data)
+                .join("Flowy")
+                .join("AI-Mate")
+                .join("config.toml");
+        }
+        PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\config.toml")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        PathBuf::from(DEFAULT_CONFIG_PATH)
+    }
 }
 
 /// Default function for serde `auto_download` field.
@@ -210,9 +241,9 @@ impl AiMateConfig {
     /// Load configuration from the default system path or fallback to defaults,
     /// then apply environment variable overrides.
     pub fn load() -> Result<Self, ConfigError> {
-        let default_path = Path::new(DEFAULT_CONFIG_PATH);
+        let default_path = default_config_path();
         if default_path.exists() {
-            Self::load_from_file(default_path)
+            Self::load_from_file(&default_path)
         } else {
             let mut config = Self::default();
             config.apply_env_overrides();
@@ -246,7 +277,7 @@ mod tests {
     #[test]
     fn test_models_config_defaults() {
         let models = ModelsConfig::default();
-        assert_eq!(models.models_dir, PathBuf::from(DEFAULT_MODELS_DIR));
+        assert_eq!(models.models_dir, default_models_dir());
         assert_eq!(models.auto_download, true);
         assert_eq!(models.probe_timeout_ms, 1500);
         assert_eq!(models.prefer_mirror, PreferMirror::Auto);
@@ -256,6 +287,6 @@ mod tests {
     fn test_env_override_empty_ignored() {
         let mut config = AiMateConfig::default();
         config.apply_env_overrides_from(|_| Some("   ".to_string()));
-        assert_eq!(config.models.models_dir, PathBuf::from(DEFAULT_MODELS_DIR));
+        assert_eq!(config.models.models_dir, default_models_dir());
     }
 }
