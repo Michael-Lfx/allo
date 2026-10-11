@@ -26,7 +26,23 @@ pub struct MirrorConfig {
 impl MirrorConfig {
     /// Returns default production mirrors in priority order.
     pub fn default_mirrors() -> Vec<Self> {
-        vec![
+        let mut mirrors = Vec::new();
+
+        // Support custom mirror override via environment variable
+        if let Ok(custom_url) = std::env::var("AI_MATE_MODEL_MIRROR_URL") {
+            let custom_url = custom_url.trim().to_string();
+            if !custom_url.is_empty() {
+                mirrors.push(Self {
+                    id: "custom_mirror".to_string(),
+                    base_url: custom_url.clone(),
+                    probe_url: Some(format!("{}/probe", custom_url.trim_end_matches('/'))),
+                    is_modelscope: false,
+                    is_fallback_cdn: false,
+                });
+            }
+        }
+
+        mirrors.extend(vec![
             Self {
                 id: "modelscope".to_string(),
                 base_url: "https://modelscope.cn/api/v1/models/flowy-ai/voice-models/repo?Revision=master&FilePath=".to_string(),
@@ -48,7 +64,9 @@ impl MirrorConfig {
                 is_modelscope: false,
                 is_fallback_cdn: true,
             },
-        ]
+        ]);
+
+        mirrors
     }
 }
 
@@ -89,6 +107,7 @@ impl ModelDownloader {
     /// Initializes a downloader with the provided mirror candidate list.
     pub fn new(mirrors: Vec<MirrorConfig>) -> Self {
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(1500))
             .timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -297,8 +316,10 @@ impl ModelDownloader {
         // Attempt 1: Probe and download from best primary mirror
         let primary_mirror = self.probe_best_source().await;
         let mut last_error = None;
+        let mut primary_id = None;
 
         if let Ok(mirror) = primary_mirror {
+            primary_id = Some(mirror.id.clone());
             match self.download_file_with_resume(&mirror, rel_path, target_path).await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -308,14 +329,16 @@ impl ModelDownloader {
             }
         }
 
-        // Attempt 2: Fallback to official CDN
+        // Attempt 2: Fallback to official CDN (only if different from primary)
         if let Some(cdn_mirror) = self.mirrors.iter().find(|m| m.is_fallback_cdn) {
-            info!("Failing over to fallback CDN source {}", cdn_mirror.id);
-            match self.download_file_with_resume(cdn_mirror, rel_path, target_path).await {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    error!("Fallback CDN mirror failed: {e}");
-                    return Err(e);
+            if primary_id.as_deref() != Some(&cdn_mirror.id) {
+                info!("Failing over to fallback CDN source {}", cdn_mirror.id);
+                match self.download_file_with_resume(cdn_mirror, rel_path, target_path).await {
+                    Ok(_) => return Ok(()),
+                    Err(e) => {
+                        error!("Fallback CDN mirror failed: {e}");
+                        return Err(e);
+                    }
                 }
             }
         }

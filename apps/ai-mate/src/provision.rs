@@ -40,30 +40,24 @@ pub async fn check_and_auto_download(config: &Config, manager: &Arc<ModelManager
         "Auto-download enabled and models missing. Transitioning to ProbingSource and launching installer."
     );
 
-    // 1. Immediately transition to ProbingSource per specification:
-    // "NotInstalled --> ProbingSource: 触发安装 (桌面 GUI 点击 / 无屏 auto_download)"
-    // This broadcasts a VoiceModelProgressEvent to the SSE channel, projecting to the pairing page.
-    manager.set_state(ModelInstallState::ProbingSource).await;
-
-    // 2. Spawn the asynchronous model installation in the background
-    let manager_clone = manager.clone();
-    tokio::spawn(async move {
-        match manager_clone.install(None).await {
-            Ok(resp) => {
-                info!(
-                    accepted = resp.accepted,
-                    state = ?resp.state,
-                    "Auto-download installation task completed or progressing."
-                );
-            }
-            Err(err) => {
-                warn!(
-                    error = %err,
-                    "ModelManager::install returned error during auto-provisioning."
-                );
-            }
+    // Launch model installation pipeline.
+    // manager.install transitions state to ProbingSource, broadcasts the SSE event,
+    // and asynchronously runs run_install_pipeline in a background task.
+    match manager.install(None).await {
+        Ok(resp) => {
+            info!(
+                accepted = resp.accepted,
+                state = ?resp.state,
+                "Auto-download installation task initiated."
+            );
         }
-    });
+        Err(err) => {
+            warn!(
+                error = %err,
+                "ModelManager::install returned error during auto-provisioning."
+            );
+        }
+    }
 
     true
 }

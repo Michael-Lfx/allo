@@ -151,10 +151,11 @@ const VoiceSettings: React.FC = () => {
     };
   }, []);
 
-  // Apply SSE state update with 200ms throttle for progress events
+  // Apply SSE state update with 200ms throttle for continuous downloading progress events
   const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire, immediate = false) => {
+    const isProgress = stateWire.status === 'Downloading';
     const now = Date.now();
-    if (!immediate && now - lastProgressUpdateRef.current < SSE_PROGRESS_THROTTLE_MS) {
+    if (!immediate && isProgress && now - lastProgressUpdateRef.current < SSE_PROGRESS_THROTTLE_MS) {
       return;
     }
     lastProgressUpdateRef.current = now;

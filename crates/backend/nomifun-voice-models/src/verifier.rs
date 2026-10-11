@@ -121,27 +121,62 @@ impl ModelVerifier {
             return ModelInstallState::NotInstalled;
         }
 
+        // Check if on-disk checksums.sha256 exists (for Scene C offline copy / fallback)
+        let on_disk_manifest = {
+            let checksums_path = models_dir.join("checksums.sha256");
+            if checksums_path.is_file() {
+                if let Ok(content) = tokio::fs::read_to_string(&checksums_path).await {
+                    Some(parse_checksums_file(&content))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         // Level 2: Verify each downloaded file against authoritative baseline
         for rel_path in DOWNLOAD_FILES {
-            if let Some(expected_hash) = self.baseline_manifest.get(*rel_path) {
-                let full_path = models_dir.join(rel_path);
-                match compute_file_sha256(&full_path).await {
-                    Ok(actual_hash) => {
-                        if !actual_hash.eq_ignore_ascii_case(expected_hash) {
-                            return ModelInstallState::Failed {
-                                reason: format!(
-                                    "Checksum mismatch for {rel_path}: expected {expected_hash}, got {actual_hash}"
-                                ),
-                                recoverable: true,
-                            };
+            let expected_hash = self.baseline_manifest.get(*rel_path);
+            let full_path = models_dir.join(rel_path);
+
+            match compute_file_sha256(&full_path).await {
+                Ok(actual_hash) => {
+                    let is_placeholder = expected_hash
+                        .map(|h| h.chars().all(|c| c == '0'))
+                        .unwrap_or(true);
+
+                    if !is_placeholder {
+                        // Strict baseline check
+                        if let Some(expected) = expected_hash {
+                            if !actual_hash.eq_ignore_ascii_case(expected) {
+                                return ModelInstallState::Failed {
+                                    reason: format!(
+                                        "Checksum mismatch for {rel_path}: expected {expected}, got {actual_hash}"
+                                    ),
+                                    recoverable: true,
+                                };
+                            }
+                        }
+                    } else if let Some(ref disk_manifest) = on_disk_manifest {
+                        // In placeholder mode, check against on-disk checksums.sha256 if present
+                        if let Some(expected_disk) = disk_manifest.get(*rel_path) {
+                            if !actual_hash.eq_ignore_ascii_case(expected_disk) {
+                                return ModelInstallState::Failed {
+                                    reason: format!(
+                                        "Checksum mismatch for {rel_path}: expected {expected_disk}, got {actual_hash}"
+                                    ),
+                                    recoverable: true,
+                                };
+                            }
                         }
                     }
-                    Err(e) => {
-                        return ModelInstallState::Failed {
-                            reason: format!("Failed to read {rel_path} for SHA256 check: {e}"),
-                            recoverable: true,
-                        };
-                    }
+                }
+                Err(e) => {
+                    return ModelInstallState::Failed {
+                        reason: format!("Failed to read {rel_path} for SHA256 check: {e}"),
+                        recoverable: true,
+                    };
                 }
             }
         }
