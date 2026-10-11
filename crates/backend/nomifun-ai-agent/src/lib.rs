@@ -47,6 +47,8 @@ pub mod runtime_registry;
 pub mod conversation_title_completer;
 pub mod terminal_title_completer;
 pub mod types;
+pub mod tool_policy;
+pub use tool_policy::*;
 
 // ── Agent-layer re-exports (the seam) ──────────────────────────────────────
 // Backend crates reach the agent (nomi-*) layer ONLY through nomifun-ai-agent.
