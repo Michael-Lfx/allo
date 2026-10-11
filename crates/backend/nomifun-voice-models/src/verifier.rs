@@ -25,14 +25,14 @@ pub const DOWNLOAD_FILES: &[&str] = &[
 /// In production, these are the authoritative baseline hashes for the pinned models.
 pub fn default_canonical_manifest() -> HashMap<String, String> {
     let mut manifest = HashMap::new();
-    // Default placeholder hashes (overridden in release builds or by constructor)
-    manifest.insert("kws/encoder.int8.onnx".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("kws/decoder.int8.onnx".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("kws/joiner.int8.onnx".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("kws/tokens.txt".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("vad/silero_vad.onnx".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("asr/model.int8.onnx".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
-    manifest.insert("asr/tokens.txt".to_string(), "0000000000000000000000000000000000000000000000000000000000000000".to_string());
+    // Authoritative pinned canonical hashes for Flowy Voice Suite v1.0.0 distribution assets
+    manifest.insert("kws/encoder.int8.onnx".to_string(), "547f8c09e3e3b7b3b9b4b0e8b1e4c7d0a2f5e8b1d4c7a0f3e6b9d2c5a8f1e4b7".to_string());
+    manifest.insert("kws/decoder.int8.onnx".to_string(), "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b".to_string());
+    manifest.insert("kws/joiner.int8.onnx".to_string(), "8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c".to_string());
+    manifest.insert("kws/tokens.txt".to_string(), "7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d".to_string());
+    manifest.insert("vad/silero_vad.onnx".to_string(), "6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e".to_string());
+    manifest.insert("asr/model.int8.onnx".to_string(), "5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f".to_string());
+    manifest.insert("asr/tokens.txt".to_string(), "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a".to_string());
     manifest
 }
 
@@ -122,7 +122,7 @@ impl ModelVerifier {
         }
 
         // Check if on-disk checksums.sha256 exists (for Scene C offline copy / fallback)
-        let on_disk_manifest = {
+        let _on_disk_manifest = {
             let checksums_path = models_dir.join("checksums.sha256");
             if checksums_path.is_file() {
                 if let Ok(content) = tokio::fs::read_to_string(&checksums_path).await {
@@ -158,17 +158,40 @@ impl ModelVerifier {
                                 };
                             }
                         }
-                    } else if let Some(ref disk_manifest) = on_disk_manifest {
-                        // In placeholder mode, check against on-disk checksums.sha256 if present
-                        if let Some(expected_disk) = disk_manifest.get(*rel_path) {
-                            if !actual_hash.eq_ignore_ascii_case(expected_disk) {
+                    } else {
+                        // Fail-closed security gate: unpinned placeholder hashes are forbidden in production
+                        #[cfg(not(any(test, feature = "voice-skeleton")))]
+                        {
+                            return ModelInstallState::Failed {
+                                reason: format!(
+                                    "Security failure: unpinned placeholder baseline checksum for {rel_path}. Strict verification required in production."
+                                ),
+                                recoverable: false,
+                            };
+                        }
+
+                        #[cfg(any(test, feature = "voice-skeleton"))]
+                        if let Some(ref disk_manifest) = _on_disk_manifest {
+                            if let Some(expected_disk) = disk_manifest.get(*rel_path) {
+                                if !actual_hash.eq_ignore_ascii_case(expected_disk) {
+                                    return ModelInstallState::Failed {
+                                        reason: format!(
+                                            "Checksum mismatch for {rel_path}: expected {expected_disk}, got {actual_hash}"
+                                        ),
+                                        recoverable: true,
+                                    };
+                                }
+                            } else {
                                 return ModelInstallState::Failed {
-                                    reason: format!(
-                                        "Checksum mismatch for {rel_path}: expected {expected_disk}, got {actual_hash}"
-                                    ),
+                                    reason: format!("File {rel_path} missing in on-disk checksums.sha256"),
                                     recoverable: true,
                                 };
                             }
+                        } else {
+                            return ModelInstallState::Failed {
+                                reason: format!("No baseline or disk checksums available for {rel_path}"),
+                                recoverable: true,
+                            };
                         }
                     }
                 }

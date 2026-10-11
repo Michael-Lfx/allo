@@ -39,14 +39,100 @@ pub async fn index_handler() -> impl IntoResponse {
     Html(INDEX_HTML)
 }
 
-/// Guard middleware requiring OOBE pairing for destructive or administrative endpoints.
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+/// In-memory client IP rate limiter (e.g. 5 requests per 60s window).
+#[derive(Clone)]
+pub struct IpRateLimiter {
+    records: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
+    max_requests: u32,
+    window: Duration,
+}
+
+impl IpRateLimiter {
+    pub fn new(max_requests: u32, window_secs: u64) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(HashMap::new())),
+            max_requests,
+            window: Duration::from_secs(window_secs),
+        }
+    }
+
+    pub async fn check_and_record(&self, ip: &str) -> bool {
+        let mut map = self.records.lock().await;
+        let now = Instant::now();
+        map.retain(|_, (_, start)| now.duration_since(*start) < self.window * 2);
+
+        let entry = map.entry(ip.to_string()).or_insert((0, now));
+        if now.duration_since(entry.1) >= self.window {
+            *entry = (1, now);
+            true
+        } else if entry.0 < self.max_requests {
+            entry.0 += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for IpRateLimiter {
+    fn default() -> Self {
+        Self::new(5, 60)
+    }
+}
+
+#[derive(Clone)]
+pub struct ServerState {
+    pub oobe: OobeManager,
+    pub rate_limiter: IpRateLimiter,
+}
+
+fn get_client_ip(req: &Request) -> String {
+    if let Some(forwarded) = req.headers().get("x-forwarded-for") {
+        if let Ok(s) = forwarded.to_str() {
+            if let Some(first) = s.split(',').next() {
+                return first.trim().to_string();
+            }
+        }
+    }
+    if let Some(real_ip) = req.headers().get("x-real-ip") {
+        if let Ok(s) = real_ip.to_str() {
+            return s.trim().to_string();
+        }
+    }
+    if let Some(connect_info) = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+        return connect_info.0.ip().to_string();
+    }
+    "127.0.0.1".to_string()
+}
+
+/// Guard middleware requiring OOBE pairing for destructive or administrative endpoints
+/// and enforcing client IP rate limits on verification requests.
 async fn pairing_guard_middleware(
-    State(oobe): State<OobeManager>,
+    State(state): State<ServerState>,
     req: Request,
     next: Next,
 ) -> Response {
     let path = req.uri().path();
     let method = req.method();
+
+    // Rate limit /api/oobe/verify: max 5 requests per 60s per client IP
+    if path == "/api/oobe/verify" && method == axum::http::Method::POST {
+        let client_ip = get_client_ip(&req);
+        if !state.rate_limiter.check_and_record(&client_ip).await {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({
+                    "status": "rate_limited",
+                    "message": "Too many verification requests from this IP. Please wait 60 seconds."
+                })),
+            )
+                .into_response();
+        }
+    }
 
     // Non-API routes (e.g. /, /healthz, or 404 pages) pass through to standard router handlers
     if !path.starts_with("/api") {
@@ -67,7 +153,7 @@ async fn pairing_guard_middleware(
     }
 
     // All management and mutation endpoints (e.g. POST install, DELETE models) require pairing
-    if !oobe.is_paired().await {
+    if !state.oobe.is_paired().await {
         return (StatusCode::FORBIDDEN, "Pairing required to access management APIs").into_response();
     }
 
@@ -85,13 +171,17 @@ pub fn build_router_with_oobe(
     manager: Arc<ModelManager>,
     oobe: OobeManager,
 ) -> Router {
+    let state = ServerState {
+        oobe: oobe.clone(),
+        rate_limiter: IpRateLimiter::default(),
+    };
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/", get(index_handler))
         .merge(nomifun_voice_models::voice_model_routes(manager))
         .merge(oobe_routes(oobe.clone()))
         .layer(middleware::from_fn_with_state(
-            oobe,
+            state,
             pairing_guard_middleware,
         ))
 }

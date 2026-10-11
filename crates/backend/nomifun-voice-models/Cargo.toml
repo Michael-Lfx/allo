@@ -3,6 +3,9 @@ name = "nomifun-voice-models"
 version.workspace = true
 edition.workspace = true
 
+[features]
+voice-skeleton = []
+
 [dependencies]
 axum.workspace = true
 futures-util.workspace = true

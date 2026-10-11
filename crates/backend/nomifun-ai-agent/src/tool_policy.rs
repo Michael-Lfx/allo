@@ -367,6 +367,24 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
                     return Some(matched);
                 }
             }
+            "python" | "python3" | "node" | "perl" | "ruby" => {
+                if let Some(c_idx) = words.iter().position(|w| {
+                    *w == "-c" || *w == "-e" || *w == "--eval"
+                }) {
+                    if c_idx + 1 < words.len() {
+                        let inner = words[c_idx + 1..].join(" ");
+                        let clean_inner = inner.trim_matches(|c| c == '\'' || c == '"');
+                        for blocked in blocked_commands {
+                            if contains_word_boundary(clean_inner, blocked) {
+                                return Some(format!("{blocked} (in {cleaned_exe} code)"));
+                            }
+                        }
+                        if let Some(matched) = inspect_command_string(clean_inner, blocked_commands) {
+                            return Some(matched);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -389,17 +407,8 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
     }
 
     // Direct search for prompt injection patterns like "rm -rf" or "reboot" in unquoted fragments
-    let lower = normalized.to_ascii_lowercase();
     for blocked in blocked_commands {
-        let blocked_pattern = format!(" {blocked} ");
-        let blocked_start = format!("{blocked} ");
-        let blocked_flag = format!(" {blocked} -");
-        let blocked_end = format!(" {blocked}");
-        if lower.contains(&blocked_pattern)
-            || lower.starts_with(&blocked_start)
-            || lower.contains(&blocked_flag)
-            || lower.ends_with(&blocked_end)
-        {
+        if contains_word_boundary(&normalized, blocked) {
             let words = split_words(&normalized);
             if let Some(first) = words.first() {
                 let first_clean = clean_executable_name(first);
@@ -412,6 +421,37 @@ pub fn inspect_command_string(cmd: &str, blocked_commands: &[String]) -> Option<
     }
 
     None
+}
+
+/// Checks if `word` appears with word boundaries (not part of a larger identifier) in `text`.
+pub fn contains_word_boundary(text: &str, word: &str) -> bool {
+    let text_lower = text.to_ascii_lowercase();
+    let word_lower = word.to_ascii_lowercase();
+    let mut start = 0;
+    while let Some(pos) = text_lower[start..].find(&word_lower) {
+        let abs_pos = start + pos;
+        let end_pos = abs_pos + word_lower.len();
+
+        let prev_ok = if abs_pos == 0 {
+            true
+        } else {
+            let prev_char = text_lower[..abs_pos].chars().next_back().unwrap();
+            !prev_char.is_alphanumeric() && prev_char != '_' && prev_char != '-' && prev_char != '.'
+        };
+
+        let next_ok = if end_pos == text_lower.len() {
+            true
+        } else {
+            let next_char = text_lower[end_pos..].chars().next().unwrap();
+            !next_char.is_alphanumeric() && next_char != '_' && next_char != '-'
+        };
+
+        if prev_ok && next_ok {
+            return true;
+        }
+        start = abs_pos + 1;
+    }
+    false
 }
 
 fn expand_local_vars(seg: &str, vars: &HashMap<String, String>) -> String {

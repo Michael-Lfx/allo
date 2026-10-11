@@ -49,6 +49,7 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+nomifun-audio = { path = ".", features = ["voice-skeleton"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tower = { workspace = true }

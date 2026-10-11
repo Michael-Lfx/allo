@@ -7215,6 +7215,7 @@ dependencies = [
  "cpal",
  "dashmap",
  "nomifun-api-types",
+ "nomifun-audio",
  "nomifun-auth",
  "nomifun-common",
  "nomifun-db",

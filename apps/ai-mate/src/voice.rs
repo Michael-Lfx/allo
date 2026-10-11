@@ -12,11 +12,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+use nomifun_audio::capture::CaptureReadResult;
+use nomifun_audio::kws::KwsEngine;
+use nomifun_audio::vad::{EnergyVad, VadBackend, VadConfig};
 use nomifun_audio::EarconKind;
 use nomifun_audio::voice_pipeline::{PipelineConfig, SpscProducer, VoiceCapturePipeline};
 use nomifun_voice_models::ModelManager;
-use nomifun_voice_terminal::contract::AcousticEvent;
-use nomifun_voice_terminal::driver::VoiceSessionDriver;
+use nomifun_voice_terminal::contract::{AcousticEvent, AcousticState, IntentType};
+use nomifun_voice_terminal::driver::{VoiceRouter, VoiceSessionDriver};
 use nomifun_voice_terminal::playback::{ChannelAudioSink, PlaybackPipeline};
 use nomifun_voice_terminal::router::QwenVoiceRouter;
 
@@ -29,8 +32,8 @@ pub struct VoiceCompanionRuntime {
     driver: Arc<Mutex<VoiceSessionDriver>>,
     playback: Arc<PlaybackPipeline>,
     router: Arc<QwenVoiceRouter>,
-    _capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
-    _spsc_producer: SpscProducer,
+    capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
+    spsc_producer: SpscProducer,
 }
 
 impl VoiceCompanionRuntime {
@@ -55,8 +58,8 @@ impl VoiceCompanionRuntime {
                 driver,
                 playback,
                 router,
-                _capture_pipeline: Arc::new(Mutex::new(capture_pipeline)),
-                _spsc_producer: producer,
+                capture_pipeline: Arc::new(Mutex::new(capture_pipeline)),
+                spsc_producer: producer,
             },
             playback_rx,
         )
@@ -72,6 +75,14 @@ impl VoiceCompanionRuntime {
 
     pub fn router(&self) -> Arc<QwenVoiceRouter> {
         Arc::clone(&self.router)
+    }
+
+    pub fn capture_pipeline(&self) -> Arc<Mutex<VoiceCapturePipeline>> {
+        Arc::clone(&self.capture_pipeline)
+    }
+
+    pub fn spsc_producer(&self) -> &SpscProducer {
+        &self.spsc_producer
     }
 
     /// Check if device is paired and models are ready.
@@ -102,16 +113,190 @@ impl VoiceCompanionRuntime {
         }
     }
 
-    /// Starts the background watchdog and maintenance loop.
+    /// Starts the background audio event pump and watchdog loop.
     pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
         let driver = Arc::clone(&self.driver);
+        let capture = Arc::clone(&self.capture_pipeline);
+        let playback = Arc::clone(&self.playback);
+        let router = Arc::clone(&self.router);
+        let oobe = Arc::clone(&self.oobe_manager);
+        let models = Arc::clone(&self.model_manager);
+
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut kws = KwsEngine::load_default().unwrap_or_else(|_| {
+                KwsEngine::new(nomifun_audio::kws::KwsEngineConfig::default()).unwrap()
+            });
+            let mut vad = EnergyVad::new(VadConfig::default());
+            let mut utterance_pcm = Vec::<f32>::new();
+            let mut speech_started = false;
+            let mut listen_start: Option<std::time::Instant> = None;
+
             loop {
-                interval.tick().await;
-                let mut d = driver.lock().await;
-                if let Ok(Some(next)) = d.check_watchdog() {
-                    info!(state = ?next, "Watchdog timeout transitioned FSM state");
+                // 1. Check FSM watchdog timers (e.g. 8-second confirmation timeout)
+                {
+                    let mut d = driver.lock().await;
+                    if let Ok(Some(next)) = d.check_watchdog() {
+                        info!(state = ?next, "Watchdog timeout transitioned FSM state");
+                    }
+                }
+
+                // 2. Fetch next PCM audio chunk from capture pipeline
+                let chunk_result = {
+                    let mut cap = capture.lock().await;
+                    cap.try_next_chunk()
+                };
+
+                let chunk = match chunk_result {
+                    CaptureReadResult::Chunk(samples) => samples,
+                    CaptureReadResult::TemporarilyEmpty => {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    CaptureReadResult::StreamClosed | CaptureReadResult::DeviceError(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
+
+                let current_state = {
+                    let d = driver.lock().await;
+                    d.current_state()
+                };
+
+                match current_state {
+                    AcousticState::Idle => {
+                        // Standby: feed audio chunk to Keyword Spotter
+                        if let Some(wake_res) = kws.process_pcm_chunk(&chunk) {
+                            info!(keyword = %wake_res.keyword, score = wake_res.score, "Wake hit detected");
+                            if !oobe.is_paired().await {
+                                warn!("Wake received but device is not yet paired via OOBE");
+                                let _ = playback.play_earcon(EarconKind::Alert).await;
+                            } else if !models.get_status().await.state.is_ready() {
+                                warn!("Wake received but voice models are not yet installed");
+                                let _ = playback.play_earcon(EarconKind::Alert).await;
+                            } else {
+                                let mut d = driver.lock().await;
+                                if let Ok(next) = d.handle_event(AcousticEvent::WakeHit) {
+                                    info!(state = ?next, "Wake accepted, transitioning to Listening");
+                                    drop(d);
+                                    let _ = playback.play_earcon(EarconKind::Wake).await;
+                                    vad.reset();
+                                    utterance_pcm.clear();
+                                    speech_started = false;
+                                    listen_start = Some(std::time::Instant::now());
+                                }
+                            }
+                        }
+                    }
+
+                    AcousticState::Listening => {
+                        // User speech capture: accumulate PCM samples
+                        utterance_pcm.extend_from_slice(&chunk);
+
+                        // Enforce 6-second silence timeout if no speech detected
+                        if !speech_started
+                            && let Some(start) = listen_start
+                            && start.elapsed() > std::time::Duration::from_secs(6)
+                        {
+                            warn!("Listening timed out (6s silence)");
+                            let mut d = driver.lock().await;
+                            let _ = d.handle_event(AcousticEvent::ListenTimeout);
+                            utterance_pcm.clear();
+                            kws.reset();
+                            vad.reset();
+                            continue;
+                        }
+
+                        // Feed frame to VAD detector
+                        let is_active = vad.process_frame(&chunk);
+                        if is_active {
+                            speech_started = true;
+                        } else if speech_started {
+                            // User paused / end of utterance detected
+                            info!(samples = utterance_pcm.len(), "SpeechEnd detected by VAD, transitioning to Deciding");
+                            speech_started = false;
+                            listen_start = None;
+
+                            let mut d = driver.lock().await;
+                            if let Ok(AcousticState::Deciding) = d.handle_event(AcousticEvent::SpeechEnd) {
+                                drop(d);
+
+                                // Perform ASR transcription and intent routing
+                                let text_opt = nomifun_audio::stt::transcribe_test_pcm(&utterance_pcm, 16000).await;
+                                utterance_pcm.clear();
+
+                                let decision = if let Some(ref text) = text_opt {
+                                    info!(text = %text, "ASR transcription produced text");
+                                    match router.route(text).await {
+                                        Ok(dec) => Some(dec),
+                                        Err(err) => {
+                                            warn!(error = %err, "Routing error");
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                let mut d = driver.lock().await;
+                                if let Some(dec) = decision {
+                                    match dec.intent_type {
+                                        IntentType::Ignore => {
+                                            let _ = d.handle_event(AcousticEvent::IntentIgnore);
+                                        }
+                                        IntentType::Chat => {
+                                            let _ = d.handle_event(AcousticEvent::IntentChat);
+                                            drop(d);
+                                            let _ = playback.play_earcon(EarconKind::Done).await;
+                                            let mut d2 = driver.lock().await;
+                                            let _ = d2.handle_event(AcousticEvent::PlaybackDone);
+                                        }
+                                        IntentType::TaskControl => {
+                                            let _ = d.handle_event(AcousticEvent::IntentTaskControl);
+                                            drop(d);
+                                            let _ = playback.play_earcon(EarconKind::Done).await;
+                                            let mut d2 = driver.lock().await;
+                                            let _ = d2.handle_event(AcousticEvent::PlaybackDone);
+                                        }
+                                        IntentType::AgentTask => {
+                                            if dec.requires_confirmation == Some(true) {
+                                                let _ = d.handle_event(AcousticEvent::ConfirmationRequired);
+                                                drop(d);
+                                                let _ = playback.play_earcon(EarconKind::Alert).await;
+                                                let mut d2 = driver.lock().await;
+                                                let _ = d2.handle_event(AcousticEvent::PromptDone);
+                                            } else {
+                                                let _ = d.handle_event(AcousticEvent::IntentAgentTask);
+                                                drop(d);
+                                                let _ = playback.play_earcon(EarconKind::Done).await;
+                                                let mut d2 = driver.lock().await;
+                                                let _ = d2.handle_event(AcousticEvent::TaskAccepted);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    let _ = d.handle_event(AcousticEvent::IntentIgnore);
+                                }
+                                kws.reset();
+                                vad.reset();
+                            }
+                        }
+                    }
+
+                    AcousticState::FollowUpListening => {
+                        // 4-second follow-up window
+                        if let Some(start) = listen_start {
+                            if start.elapsed() > std::time::Duration::from_secs(4) {
+                                let mut d = driver.lock().await;
+                                let _ = d.handle_event(AcousticEvent::FollowUpTimeout);
+                                listen_start = None;
+                            }
+                        } else {
+                            listen_start = Some(std::time::Instant::now());
+                        }
+                    }
+
+                    _ => {}
                 }
             }
         })
@@ -147,9 +332,16 @@ mod tests {
         assert!(frame.is_some());
         assert!(!frame.unwrap().is_empty());
 
-        // Verify worker task spawns cleanly
-        let worker = runtime.start_worker();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        worker.abort();
+        // Verify worker task spawns and pumps cleanly
+        let handle = runtime.start_worker();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(!handle.is_finished());
+
+        // Push test silent PCM frames through SPSC producer
+        let silent_chunk = vec![0.0f32; 320];
+        runtime.spsc_producer().push(&silent_chunk);
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        handle.abort();
     }
 }
