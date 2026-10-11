@@ -67,7 +67,11 @@ impl MicSource {
         let stop_thread = Arc::clone(&stop);
         let prod_thread = producer.clone();
 
-        let err_fn = |err| error!("cpal mic stream error: {err}");
+        let prod_err = prod_thread.clone();
+        let err_fn = move |err: cpal::StreamError| {
+            error!("cpal mic stream error: {err}");
+            prod_err.signal_device_error(format!("cpal mic stream error: {err}"));
+        };
 
         let join = std::thread::Builder::new()
             .name("nomifun-mic-cpal".into())
@@ -122,6 +126,7 @@ impl MicSource {
                     }
                     other => {
                         error!("unsupported mic sample format {other:?} on device '{name}'");
+                        prod_thread.signal_device_error(format!("unsupported mic sample format {other:?}"));
                         return;
                     }
                 };
@@ -130,12 +135,14 @@ impl MicSource {
                     Ok(s) => s,
                     Err(e) => {
                         error!("build input stream '{name}': {e}");
+                        prod_thread.signal_device_error(format!("build input stream '{name}': {e}"));
                         return;
                     }
                 };
 
                 if let Err(e) = stream.play() {
                     error!("start mic stream '{name}': {e}");
+                    prod_thread.signal_device_error(format!("start mic stream '{name}': {e}"));
                     return;
                 }
 

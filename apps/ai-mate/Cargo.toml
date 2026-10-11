@@ -23,6 +23,9 @@ tracing-subscriber = { workspace = true }
 thiserror.workspace = true
 axum = { workspace = true }
 tower-http = { workspace = true }
+rand.workspace = true
+chrono.workspace = true
+sysinfo.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

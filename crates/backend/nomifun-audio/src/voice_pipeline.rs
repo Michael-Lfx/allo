@@ -30,6 +30,7 @@ struct SpscShared {
     tail: AtomicUsize,
     closed: AtomicBool,
     overflow_count: AtomicU64,
+    device_error: std::sync::Mutex<Option<String>>,
 }
 
 impl SpscShared {
@@ -46,6 +47,7 @@ impl SpscShared {
             tail: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             overflow_count: AtomicU64::new(0),
+            device_error: std::sync::Mutex::new(None),
         }
     }
 
@@ -122,6 +124,17 @@ impl SpscShared {
         self.closed.store(true, Ordering::Release);
     }
 
+    fn set_device_error(&self, err: String) {
+        if let Ok(mut g) = self.device_error.lock() {
+            *g = Some(err);
+        }
+        self.closed.store(true, Ordering::Release);
+    }
+
+    fn take_device_error(&self) -> Option<String> {
+        self.device_error.lock().ok().and_then(|mut g| g.take())
+    }
+
     fn overflow_count(&self) -> u64 {
         self.overflow_count.load(Ordering::Relaxed)
     }
@@ -177,6 +190,11 @@ impl SpscProducer {
     /// Closes the capture stream.
     pub fn close(&self) {
         self.shared.close();
+    }
+
+    /// Signals an underlying hardware/driver device error.
+    pub fn signal_device_error(&self, err: impl Into<String>) {
+        self.shared.set_device_error(err.into());
     }
 
     /// Checks if the stream has been closed.
@@ -288,7 +306,11 @@ impl VoiceCapturePipeline {
                                 let remaining = std::mem::take(&mut accumulator);
                                 let _ = tx.send(CaptureReadResult::Chunk(remaining)).await;
                             }
-                            let _ = tx.send(CaptureReadResult::StreamClosed).await;
+                            if let Some(err) = worker_shared.take_device_error() {
+                                let _ = tx.send(CaptureReadResult::DeviceError(err)).await;
+                            } else {
+                                let _ = tx.send(CaptureReadResult::StreamClosed).await;
+                            }
                             break;
                         } else {
                             // Temporarily empty, yield to allow producer to push
@@ -347,7 +369,11 @@ impl VoiceCapturePipeline {
                                     let remaining = std::mem::take(&mut accumulator);
                                     let _ = tx.blocking_send(CaptureReadResult::Chunk(remaining));
                                 }
-                                let _ = tx.blocking_send(CaptureReadResult::StreamClosed);
+                                if let Some(err) = worker_shared.take_device_error() {
+                                    let _ = tx.blocking_send(CaptureReadResult::DeviceError(err));
+                                } else {
+                                    let _ = tx.blocking_send(CaptureReadResult::StreamClosed);
+                                }
                                 break;
                             } else {
                                 std::thread::yield_now();

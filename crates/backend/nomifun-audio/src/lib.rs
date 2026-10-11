@@ -23,6 +23,7 @@ pub mod earcon;
 pub mod encode;
 pub mod events;
 pub mod frame;
+pub mod hotplug;
 pub mod keepawake;
 pub mod kws;
 pub mod loopback;
@@ -51,6 +52,7 @@ pub use earcon::{
 pub use encode::{encode_track_default, pcm_to_m4a, pcm_to_wav, write_track_m4a};
 pub use events::spawn_meeting_event_bridge;
 pub use frame::{AudioChannel, TaggedFrame};
+pub use hotplug::{HotplugState, HotplugStats, UsbHotplugWatchdog, UsbHotplugWatchdogConfig};
 pub use keepawake::KeepAwakeGuard;
 pub use kws::{KwsEngine, KwsEngineConfig, KwsResult};
 pub use loopback::LoopbackSource;
