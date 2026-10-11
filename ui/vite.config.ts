@@ -78,6 +78,33 @@ function iconParkPlugin() {
   };
 }
 
+function safari15RegexCompatPlugin(): Plugin {
+  // Vite `target: safari15.5` does not downlevel lookbehind. WebKitGTK 2.38
+  // (Safari 16 JSC) throws `Invalid regular expression: invalid group specifier
+  // name` when evaluating GFM email autolink's `(?<=...)`. `previous()` in the
+  // same module already rejects non-boundary matches, so dropping the
+  // lookbehind keeps the page loadable without changing match groups.
+  const gfmLookbehind = '(?<=^|\\s|\\p{P}|\\p{S})';
+  const gfmLookbehindEscaped = '(?<=^|\\\\s|\\\\p{P}|\\\\p{S})';
+  return {
+    name: 'safari15-regex-compat',
+    enforce: 'pre',
+    transform(code, id) {
+      const normalized = id.replace(/\\/g, '/');
+      if (!normalized.includes('mdast-util-gfm-autolink-literal')) return null;
+      if (!code.includes('(?<=')) return null;
+      const next = code.includes(gfmLookbehind)
+        ? code.replaceAll(gfmLookbehind, '')
+        : code.replaceAll(gfmLookbehindEscaped, '');
+      if (next === code) {
+        this.warn(`mdast-util-gfm-autolink-literal lookbehind regex changed shape: ${id}`);
+        return null;
+      }
+      return { code: next, map: null };
+    },
+  };
+}
+
 const src = resolve(__dirname, 'src');
 const ocRoot = resolve(src, 'renderer/pages/videoCanvas/oc');
 const buildId = manifest.frontend_build_id;
@@ -152,7 +179,14 @@ export default defineConfig(({ mode }) => {
     },
     // Tailwind v4 powers the ported open-ai-canvas (oc/) utility classes + globals.css.
     // UnoCSS remains for the rest of allo UI.
-    plugins: [iconParkPlugin(), react(), tailwindcss(), UnoCSS({ ...unoConfig }), uiBuildManifestPlugin()],
+    plugins: [
+      safari15RegexCompatPlugin(),
+      iconParkPlugin(),
+      react(),
+      tailwindcss(),
+      UnoCSS({ ...unoConfig }),
+      uiBuildManifestPlugin(),
+    ],
     define: {
       __NOMI_BUILD_ID__: JSON.stringify(buildId),
       __NOMI_CODEMIRROR_VERSIONS__: JSON.stringify(codeMirrorRuntimeVersions),

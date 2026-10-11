@@ -1464,6 +1464,36 @@ fn configure_loopback_no_proxy() {
     }
 }
 
+/// Default `WEBKIT_DISABLE_DMABUF_RENDERER=1` on Linux, before the WebView is
+/// created. The DMA-BUF renderer needs a driver/GBM path that many Linux
+/// desktops (and the Houmo aarch64 AppImage, whose `AppRun` already sets
+/// `WEBKIT_DISABLE_COMPOSITING_MODE=1`) do not provide; when it fails WebKit
+/// paints the whole window black. WebKit 2.42+ honors the flag as the standard
+/// black-window fix, and 2.38 ignores it, so setting it is either a fix or a
+/// no-op. An explicit host value always wins.
+///
+/// We deliberately do NOT set `WEBKIT_DISABLE_COMPOSITING_MODE` here — the
+/// packaged AppRun already decides that per machine type.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn webkit_disable_dmabuf_default(current: Option<&std::ffi::OsStr>) -> Option<&'static str> {
+    current.is_none().then_some("1")
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_webkit_env() {
+    if let Some(value) = webkit_disable_dmabuf_default(
+        std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").as_deref(),
+    ) {
+        // SAFETY: called from `main` before any Tauri/WebKit runtime threads exist.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", value);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_linux_webkit_env() {}
+
 #[cfg(all(test, target_os = "macos"))]
 mod keep_awake_tests {
     use super::acquire_keep_awake;
@@ -2999,6 +3029,7 @@ fn main() -> std::process::ExitCode {
     }
 
     configure_loopback_no_proxy();
+    configure_linux_webkit_env();
 
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,
     // mirroring the nomicore bin's ordering. `default_data_dir` resolves the
@@ -3490,6 +3521,15 @@ mod tests {
         assert!(geometry.min_height <= available_height);
         assert!(geometry.min_width <= geometry.initial_width);
         assert!(geometry.min_height <= geometry.initial_height);
+    }
+
+    #[test]
+    fn linux_webkit_dmabuf_default_only_fills_a_missing_value() {
+        use std::ffi::OsStr;
+
+        assert_eq!(webkit_disable_dmabuf_default(None), Some("1"));
+        assert_eq!(webkit_disable_dmabuf_default(Some(OsStr::new("0"))), None);
+        assert_eq!(webkit_disable_dmabuf_default(Some(OsStr::new(""))), None);
     }
 
     #[test]

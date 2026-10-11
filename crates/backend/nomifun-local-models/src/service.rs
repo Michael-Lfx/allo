@@ -874,7 +874,8 @@ impl LocalModelsService {
         let context = houmo::server_context(&runtime_dir, &program);
 
         let context_size = requested.context_size.unwrap_or(model.context_size).max(1);
-        let port = pick_free_port()?;
+        let port = houmo_listen_port()?;
+        let cpu = prepare_houmo_cpu();
         let api_key = format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple());
         let provider_id = {
             let mut persisted = self.persisted.lock().await;
@@ -897,10 +898,11 @@ impl LocalModelsService {
                 &model,
                 &program,
                 &context.cwd,
-                context.env,
+                context.lib_dir,
                 port,
                 &api_key,
                 context_size,
+                cpu,
             )
             .await
         {
@@ -927,7 +929,7 @@ impl LocalModelsService {
                 name: model.display_name.clone(),
                 base_url: format!("http://127.0.0.1:{port}/v1"),
                 api_key: api_key.clone(),
-                model: model.id.clone(),
+                model: model.display_name.clone(),
                 context_size,
             };
             if let Err(error) = publisher.publish(&spec).await {
@@ -962,29 +964,52 @@ impl LocalModelsService {
         model: &HoumoModel,
         program: &Path,
         cwd: &Path,
-        env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+        lib_dir: Option<PathBuf>,
         port: u16,
         api_key: &str,
         context_size: u64,
+        cpu: Option<u32>,
     ) -> LocalModelResult<ProcessRef> {
         let model_dir = Self::model_dir(&self.root, &model.id);
+        // Linux binds `0.0.0.0` so the LAN can open the llama.cpp WebUI, which
+        // probes `/props` without an `Authorization` header. An `--api-key`
+        // would 401 that probe and show "Server unavailable", so Linux omits it
+        // and serves the LAN unauthenticated. Other hosts stay on loopback with
+        // the random key that guards them.
+        let api_key = if cfg!(target_os = "linux") {
+            None
+        } else {
+            Some(api_key)
+        };
         let args = build_houmo_args(
-            &model.id,
+            &model.display_name,
             &model.main_gguf,
             model.mmproj.as_deref(),
             context_size,
             &model_dir,
+            houmo_listen_host(),
             port,
             api_key,
         );
+        // `LD_LIBRARY_PATH` cannot go through `ProcessRequest.env`: the process
+        // runtime boundary rejects loader variables for every sandbox, so pass
+        // it through `env(1)` in argv instead. Linux then pins the server to the
+        // fastest core through `taskset`; every other host launches the program
+        // directly.
+        let (program, args) =
+            houmo::wrap_with_library_path(program.to_path_buf(), args, lib_dir);
+        let (program, args) = match cpu {
+            Some(cpu) => houmo::wrap_with_cpu_affinity(program, args, cpu),
+            None => (program, args),
+        };
         let request = ProcessRequest {
             owner: ProcessOwner::new(Uuid::now_v7(), Uuid::now_v7()),
             command: CommandSpec::Program {
-                program: program.as_os_str().to_os_string(),
+                program: program.into_os_string(),
                 args: args.into_iter().map(Into::into).collect(),
             },
             cwd: cwd.to_path_buf(),
-            env,
+            env: std::collections::BTreeMap::new(),
             transport: Transport::Pipe,
             policy: ProcessPolicy {
                 output_limit_bytes: 4 * 1024 * 1024,
@@ -1401,6 +1426,50 @@ fn model_files_present(model: &ModelManifest, root: &Path) -> bool {
 /// Sum of every file's declared size for a model.
 fn model_total(model: &ModelManifest) -> u64 {
     model.files.iter().map(|file| file.file_size).sum()
+}
+
+/// The listen host for a Houmo `llama-server`.
+///
+/// Linux binds every interface so the NPU box can serve the LAN; it launches
+/// without `--api-key` so the llama.cpp WebUI can reach it unauthenticated.
+/// Other hosts stay on loopback, where the random `--api-key` still guards it.
+fn houmo_listen_host() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    }
+}
+
+/// The listen port for a Houmo `llama-server`.
+///
+/// Linux pins the fixed port the X3588 reference script uses, failing loudly
+/// when it is taken rather than falling back to a dynamic one. Other hosts
+/// keep picking a free port.
+fn houmo_listen_port() -> LocalModelResult<u16> {
+    if cfg!(target_os = "linux") {
+        ensure_fixed_port_free(houmo::HOUMO_LINUX_PORT)?;
+        Ok(houmo::HOUMO_LINUX_PORT)
+    } else {
+        pick_free_port()
+    }
+}
+
+/// Probe the fixed Linux Houmo port so a busy port aborts the launch with a
+/// clear error. The listener is dropped immediately; the server re-binds it.
+fn ensure_fixed_port_free(port: u16) -> LocalModelResult<()> {
+    TcpListener::bind(("0.0.0.0", port))
+        .map(drop)
+        .map_err(|error| {
+            LocalModelError::Launch(format!("Houmo port {port} is already in use: {error}"))
+        })
+}
+
+/// Best-effort CPU preparation before a Houmo launch: on Linux this raises the
+/// cpufreq governors and returns the highest-frequency core to pin to. Other
+/// hosts (and read-only sysfs) return `None` and launch unchanged.
+fn prepare_houmo_cpu() -> Option<u32> {
+    houmo::prepare_linux_cpu()
 }
 
 fn pick_free_port() -> LocalModelResult<u16> {

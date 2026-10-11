@@ -12,10 +12,8 @@
  * Uses the host `tar` (available on modern Windows / macOS / Linux).
  */
 import { access, chmod, copyFile, mkdir, readdir, rm, stat, writeFile, readFile } from "node:fs/promises";
-import { createWriteStream } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { pipeline } from "node:stream/promises";
 import { spawnSync } from "node:child_process";
 
 const RG_VERSION = "15.2.0";
@@ -140,16 +138,48 @@ async function pathExists(path) {
 }
 
 async function download(url, dest) {
-  const headers = { "User-Agent": "allo/ensure-bundled-rg" };
+  const proxy =
+    process.env.https_proxy ||
+    process.env.HTTPS_PROXY ||
+    process.env.http_proxy ||
+    process.env.HTTP_PROXY ||
+    "";
+  const args = [
+    "-fL",
+    "--retry",
+    "8",
+    "--retry-delay",
+    "2",
+    "--max-time",
+    "120",
+    "-A",
+    "allo/ensure-bundled-rg",
+    "-o",
+    dest,
+  ];
+  if (proxy) {
+    args.push("-x", proxy);
+  }
   if (process.env.GITHUB_TOKEN) {
-    headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-    headers.Accept = "application/octet-stream";
+    args.push("-H", `Authorization: Bearer ${process.env.GITHUB_TOKEN}`);
+    args.push("-H", "Accept: application/octet-stream");
   }
-  const res = await fetch(url, { headers });
-  if (!res.ok || !res.body) {
-    throw new Error(`download failed HTTP ${res.status} for ${url}`);
+  const urls = [
+    url,
+    `https://gh-proxy.com/${url}`,
+    `https://ghfast.top/${url}`,
+  ];
+  let lastErr = "";
+  for (const candidate of urls) {
+    const attempt = [...args, candidate];
+    const curl = spawnSync("curl", attempt, { encoding: "utf8" });
+    if (curl.status === 0) {
+      return;
+    }
+    lastErr = curl.stderr || curl.stdout || String(curl.status);
+    console.warn(`[ensure-bundled-rg] download failed for ${candidate}: ${lastErr.trim()}`);
   }
-  await pipeline(res.body, createWriteStream(dest));
+  throw new Error(`curl download failed: ${lastErr}`);
 }
 
 async function findFile(dir, targetName) {

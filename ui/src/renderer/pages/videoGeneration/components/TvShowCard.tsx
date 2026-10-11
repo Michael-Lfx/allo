@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popconfirm } from '@arco-design/web-react';
 import { Delete, Like, VideoOne } from '@icon-park/react';
+import { pauseMediaElement, playMediaElement } from '../mediaPlayback';
 import type { TvShowVideo } from '../types';
 import styles from '../index.module.css';
 
@@ -42,14 +43,14 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
   const handleEnter = () => {
     setHovering(true);
     if (previewUrl) setLoadVideo(true);
-    void videoRef.current?.play().catch(() => undefined);
+    playMediaElement(videoRef.current);
   };
 
   const handleLeave = () => {
     setHovering(false);
     const el = videoRef.current;
     if (!el) return;
-    el.pause();
+    pauseMediaElement(el);
     window.setTimeout(() => {
       const node = videoRef.current;
       if (node && node.paused) {
@@ -60,7 +61,7 @@ const TvShowCard: React.FC<TvShowCardProps> = ({
 
   useEffect(() => {
     if (!hovering || !previewUrl) return;
-    void videoRef.current?.play().catch(() => undefined);
+    playMediaElement(videoRef.current);
   }, [hovering, previewUrl]);
 
   return (

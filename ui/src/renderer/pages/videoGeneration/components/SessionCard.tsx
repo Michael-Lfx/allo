@@ -8,6 +8,7 @@ import type { SessionSummary, VimaxRunStatus, VimaxWorkflow } from '../types';
 import { isCanvasTvShow, isCanvasWorkflow, normalizeWorkflow } from '../workflowKind';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import { prefetchVideoWorkspace } from '../prefetch';
+import { pauseMediaElement, playMediaElement } from '../mediaPlayback';
 import { stageLabel } from '../stageI18n';
 import styles from '../index.module.css';
 
@@ -154,16 +155,14 @@ const SessionCard: React.FC<SessionCardProps> = ({
     setLoadVideo(true);
     const el = videoRef.current;
     if (!el || !videoUrl) return;
-    void el.play().catch(() => {
-      /* autoplay may be blocked; ignore */
-    });
+    playMediaElement(el);
   };
 
   const handleLeave = () => {
     setHovering(false);
     const el = videoRef.current;
     if (!el) return;
-    el.pause();
+    pauseMediaElement(el);
     window.setTimeout(() => {
       const node = videoRef.current;
       if (node && node.paused) {
@@ -175,9 +174,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
   useEffect(() => {
     const element = videoRef.current;
     if (!hovering || !element || !videoUrl) return;
-    void element.play().catch(() => {
-      /* autoplay may be blocked; ignore */
-    });
+    playMediaElement(element);
   }, [hovering, videoUrl]);
 
   return (

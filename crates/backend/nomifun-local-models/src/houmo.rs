@@ -7,8 +7,7 @@
 //! through the dedicated Houmo `HLIELLama` runtime, separate from the builtin
 //! `llama.cpp` Vulkan runtime.
 
-use std::collections::{BTreeMap, HashSet};
-use std::ffi::OsString;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -104,6 +103,19 @@ struct RemoteModel {
     description: Option<String>,
 }
 
+/// Fixed Linux Houmo listen port, matching the X3588 reference `load_9b.sh`.
+pub(crate) const HOUMO_LINUX_PORT: u16 = 11888;
+
+/// Linux sysfs cpufreq root the Houmo launch reads and writes.
+pub(crate) const CPUFREQ_ROOT: &str = "/sys/devices/system/cpu";
+
+/// The Linux `taskset` binary used to pin the NPU server to a single core.
+pub(crate) const TASKSET_PATH: &str = "/usr/bin/taskset";
+
+/// The Linux `env(1)` binary used to set `LD_LIBRARY_PATH` from `argv` instead
+/// of the process environment (which the process-runtime boundary rejects).
+pub(crate) const ENV_PATH: &str = "/usr/bin/env";
+
 /// Windows dev install of the Houmo `llama-server`. Linux aarch64 uses the
 /// `bin/llama-server` from the downloaded `HLIELLama` package.
 const WINDOWS_SERVER: &str = r"D:\houmo-HLIELLama-xh2\bin\llama-server.exe";
@@ -150,37 +162,174 @@ pub(crate) fn server_program_from(runtime_dir: &Path, override_path: Option<&str
     }
 }
 
-/// The working directory and environment a Houmo `llama-server` needs.
+/// The working directory and library directory a Houmo `llama-server` needs.
 pub(crate) struct ServerContext {
     pub cwd: PathBuf,
-    pub env: BTreeMap<OsString, OsString>,
+    /// The extracted package `lib/`, or `None` when the program lives outside
+    /// the package (Windows dev install or `HOUMO_LLAMA_SERVER` override).
+    pub lib_dir: Option<PathBuf>,
 }
 
 /// Resolve the launch context for a `llama-server` program.
 ///
-/// A program inside the extracted package root runs from that root with
-/// `LD_LIBRARY_PATH` pointing at its `lib/` folder. Anything else (the Windows
-/// dev install or a `HOUMO_LLAMA_SERVER` override) runs from the binary's own
-/// directory with no extra environment.
+/// A program inside the extracted package root runs from that root with its
+/// `lib/` folder as the library directory (applied later through `env(1)`, see
+/// [`wrap_with_library_path`]). Anything else (the Windows dev install or a
+/// `HOUMO_LLAMA_SERVER` override) runs from the binary's own directory with no
+/// extra library path.
 pub(crate) fn server_context(runtime_dir: &Path, program: &Path) -> ServerContext {
     let root = package_root(runtime_dir);
     if program.starts_with(&root) {
-        let mut env = BTreeMap::new();
-        env.insert(
-            OsString::from("LD_LIBRARY_PATH"),
-            root.join(UNIX_LIB_REL).into_os_string(),
-        );
-        ServerContext { cwd: root, env }
+        ServerContext {
+            cwd: root.clone(),
+            lib_dir: Some(root.join(UNIX_LIB_REL)),
+        }
     } else {
         let cwd = program
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| runtime_dir.to_path_buf());
-        ServerContext {
-            cwd,
-            env: BTreeMap::new(),
+        ServerContext { cwd, lib_dir: None }
+    }
+}
+
+// Linux CPU preparation for the Houmo NPU runtime.
+//
+// The reference X3588 launch script raises every cpufreq governor to
+// `performance` and pins `llama-server` to the highest-frequency core with
+// `taskset`. Both steps are best effort: a read-only sysfs or a missing
+// `taskset` only logs and leaves the launch untouched.
+
+/// The numeric index of a `cpuN` sysfs directory, or `None` for any other name.
+fn cpu_index(name: &str) -> Option<u32> {
+    name.strip_prefix("cpu")?.parse().ok()
+}
+
+/// Read one CPU's `cpufreq/scaling_max_freq`, in kHz, when it is present.
+fn read_scaling_max_freq(cpu_dir: &Path) -> Option<u64> {
+    let text = std::fs::read_to_string(cpu_dir.join("cpufreq").join("scaling_max_freq")).ok()?;
+    text.trim().parse().ok()
+}
+
+/// The CPU whose `scaling_max_freq` is highest, or `None` when no cpufreq data
+/// is readable (a non-Linux host, a container without sysfs, …).
+pub(crate) fn best_performance_cpu(cpufreq_root: &Path) -> Option<u32> {
+    let entries = std::fs::read_dir(cpufreq_root).ok()?;
+    let mut best: Option<(u32, u64)> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(index) = cpu_index(&name.to_string_lossy()) else {
+            continue;
+        };
+        let Some(freq) = read_scaling_max_freq(&entry.path()) else {
+            continue;
+        };
+        match best {
+            Some((_, best_freq)) if best_freq >= freq => {}
+            _ => best = Some((index, freq)),
         }
     }
+    best.map(|(index, _)| index)
+}
+
+/// Write `performance` to every readable CPU governor. Missing files and
+/// permission errors are skipped, never fatal; no `sudo` is attempted.
+pub(crate) fn set_performance_governor(cpufreq_root: &Path) {
+    let Ok(entries) = std::fs::read_dir(cpufreq_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if cpu_index(&name.to_string_lossy()).is_none() {
+            continue;
+        }
+        let path = entry.path().join("cpufreq").join("scaling_governor");
+        if let Err(error) = std::fs::write(&path, "performance")
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(path = %path.display(), %error, "could not set CPU governor to performance");
+        }
+    }
+}
+
+/// Best-effort CPU preparation before a Linux Houmo launch: raise the
+/// governors first, then return the highest-frequency core to pin to.
+pub(crate) fn prepare_linux_cpu() -> Option<u32> {
+    let root = Path::new(CPUFREQ_ROOT);
+    set_performance_governor(root);
+    best_performance_cpu(root)
+}
+
+/// [`wrap_with_cpu_affinity`] using the standard `/usr/bin/taskset`.
+pub(crate) fn wrap_with_cpu_affinity(
+    program: PathBuf,
+    args: Vec<String>,
+    cpu: u32,
+) -> (PathBuf, Vec<String>) {
+    wrap_with_taskset(program, args, cpu, Path::new(TASKSET_PATH))
+}
+
+/// [`wrap_with_library_path`] using the standard `/usr/bin/env`.
+pub(crate) fn wrap_with_library_path(
+    program: PathBuf,
+    args: Vec<String>,
+    lib_dir: Option<PathBuf>,
+) -> (PathBuf, Vec<String>) {
+    wrap_with_env(program, args, lib_dir, Path::new(ENV_PATH))
+}
+
+/// Wrap `program` so `LD_LIBRARY_PATH=<lib_dir>` reaches it.
+///
+/// The variable is passed as an `env(1)` argument rather than through
+/// `ProcessRequest.env`, which the `nomi-process-runtime` boundary refuses for
+/// every sandbox (including Houmo's `UnrestrictedLocalOwner`). The result is
+/// `env LD_LIBRARY_PATH=<lib> <program> <args>` when there is a library
+/// directory and `env` exists at `env_path`, otherwise the original pair (with
+/// a debug log). `env` execs the server, so the supervised PID is still
+/// `llama-server` and health/stop keep working.
+fn wrap_with_env(
+    program: PathBuf,
+    args: Vec<String>,
+    lib_dir: Option<PathBuf>,
+    env_path: &Path,
+) -> (PathBuf, Vec<String>) {
+    let Some(lib_dir) = lib_dir else {
+        return (program, args);
+    };
+    if !env_path.is_file() {
+        tracing::debug!(
+            path = %env_path.display(),
+            "env(1) not found; launching without LD_LIBRARY_PATH"
+        );
+        return (program, args);
+    }
+    let mut wrapped_args = Vec::with_capacity(args.len() + 2);
+    wrapped_args.push(format!("LD_LIBRARY_PATH={}", lib_dir.to_string_lossy()));
+    wrapped_args.push(program.to_string_lossy().into_owned());
+    wrapped_args.extend(args);
+    (env_path.to_path_buf(), wrapped_args)
+}
+
+/// Wrap `program` so it runs pinned to `cpu`.
+///
+/// The result is `taskset -c N <program> <args>` when `taskset` exists at
+/// `taskset_path`, otherwise the original pair. `taskset` execs the server, so
+/// the supervised PID is still `llama-server` and health/stop keep working.
+fn wrap_with_taskset(
+    program: PathBuf,
+    args: Vec<String>,
+    cpu: u32,
+    taskset_path: &Path,
+) -> (PathBuf, Vec<String>) {
+    if !taskset_path.is_file() {
+        return (program, args);
+    }
+    let mut wrapped_args = Vec::with_capacity(args.len() + 3);
+    wrapped_args.push("-c".to_owned());
+    wrapped_args.push(cpu.to_string());
+    wrapped_args.push(program.to_string_lossy().into_owned());
+    wrapped_args.extend(args);
+    (taskset_path.to_path_buf(), wrapped_args)
 }
 
 /// True for catalog ids this module mints (`houmo-108`).
@@ -607,8 +756,8 @@ mod tests {
         let context = server_context(runtime_dir, &program);
         assert_eq!(context.cwd, runtime_dir.join("houmo-HLIELLama-xh2"));
         assert_eq!(
-            context.env.get(&OsString::from("LD_LIBRARY_PATH")),
-            Some(&runtime_dir.join("houmo-HLIELLama-xh2").join("lib").into_os_string())
+            context.lib_dir,
+            Some(runtime_dir.join("houmo-HLIELLama-xh2").join("lib"))
         );
     }
 
@@ -618,7 +767,125 @@ mod tests {
         let program = Path::new("override/llama-server");
         let context = server_context(runtime_dir, program);
         assert_eq!(context.cwd, PathBuf::from("override"));
-        assert!(context.env.is_empty());
+        assert_eq!(context.lib_dir, None);
+    }
+
+    fn write_cpu(root: &Path, index: u32, max_freq: u64, governor: &str) {
+        let cpufreq = root.join(format!("cpu{index}")).join("cpufreq");
+        std::fs::create_dir_all(&cpufreq).unwrap();
+        std::fs::write(cpufreq.join("scaling_max_freq"), max_freq.to_string()).unwrap();
+        std::fs::write(cpufreq.join("scaling_governor"), governor).unwrap();
+    }
+
+    fn read_governor(root: &Path, index: u32) -> String {
+        std::fs::read_to_string(
+            root.join(format!("cpu{index}"))
+                .join("cpufreq")
+                .join("scaling_governor"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_best_cpu_is_the_highest_scaling_max_freq() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_cpu(dir.path(), 0, 1_800_000, "ondemand");
+        write_cpu(dir.path(), 1, 2_400_000, "schedutil");
+        write_cpu(dir.path(), 2, 2_100_000, "powersave");
+        assert_eq!(best_performance_cpu(dir.path()), Some(1));
+    }
+
+    #[test]
+    fn a_missing_sysfs_root_is_skipped_without_panicking() {
+        let root = Path::new("/no/such/cpufreq");
+        assert_eq!(best_performance_cpu(root), None);
+        // Writing to a root that does not exist must be a no-op.
+        set_performance_governor(root);
+    }
+
+    #[test]
+    fn governors_are_raised_to_performance_and_missing_files_are_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_cpu(dir.path(), 0, 1_800_000, "ondemand");
+        write_cpu(dir.path(), 1, 2_400_000, "powersave");
+        // cpu2 has a freq but no governor file; a stray non-cpu directory is
+        // ignored. Neither may panic.
+        let cpufreq = dir.path().join("cpu2").join("cpufreq");
+        std::fs::create_dir_all(&cpufreq).unwrap();
+        std::fs::write(cpufreq.join("scaling_max_freq"), "900000").unwrap();
+        std::fs::create_dir_all(dir.path().join("cpuidle")).unwrap();
+
+        set_performance_governor(dir.path());
+
+        assert_eq!(read_governor(dir.path(), 0), "performance");
+        assert_eq!(read_governor(dir.path(), 1), "performance");
+        assert_eq!(best_performance_cpu(dir.path()), Some(1));
+    }
+
+    #[test]
+    fn wrap_with_library_path_prefixes_env_and_keeps_the_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let env = dir.path().join("env");
+        std::fs::write(&env, b"#!/bin/sh\n").unwrap();
+        let program = PathBuf::from("/opt/houmo/bin/llama-server");
+        let args = vec!["-m".to_owned(), "model.gguf".to_owned()];
+        let lib_dir = PathBuf::from("/opt/houmo/lib");
+        let (wrapped_program, wrapped_args) =
+            wrap_with_env(program, args.clone(), Some(lib_dir), &env);
+        assert_eq!(wrapped_program, env);
+        assert_eq!(wrapped_args[0], "LD_LIBRARY_PATH=/opt/houmo/lib");
+        assert_eq!(wrapped_args[1], "/opt/houmo/bin/llama-server");
+        assert_eq!(&wrapped_args[2..], args.as_slice());
+    }
+
+    #[test]
+    fn without_a_library_dir_the_launch_is_unchanged() {
+        let program = PathBuf::from("/opt/houmo/bin/llama-server");
+        let args = vec!["-m".to_owned(), "model.gguf".to_owned()];
+        let (wrapped_program, wrapped_args) =
+            wrap_with_env(program.clone(), args.clone(), None, Path::new(ENV_PATH));
+        assert_eq!(wrapped_program, program);
+        assert_eq!(wrapped_args, args);
+    }
+
+    #[test]
+    fn without_env_the_launch_is_unchanged() {
+        let program = PathBuf::from("/opt/houmo/bin/llama-server");
+        let args = vec!["-m".to_owned(), "model.gguf".to_owned()];
+        let (wrapped_program, wrapped_args) = wrap_with_env(
+            program.clone(),
+            args.clone(),
+            Some(PathBuf::from("/opt/houmo/lib")),
+            Path::new("/no/such/env"),
+        );
+        assert_eq!(wrapped_program, program);
+        assert_eq!(wrapped_args, args);
+    }
+
+    #[test]
+    fn wrap_with_taskset_prefixes_the_command_and_keeps_the_server() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let taskset = dir.path().join("taskset");
+        std::fs::write(&taskset, b"#!/bin/sh\n").unwrap();
+        let program = PathBuf::from("/opt/houmo/bin/llama-server");
+        let args = vec!["-m".to_owned(), "model.gguf".to_owned()];
+        let (wrapped_program, wrapped_args) =
+            wrap_with_taskset(program, args.clone(), 7, &taskset);
+        assert_eq!(wrapped_program, taskset);
+        assert_eq!(wrapped_args[0], "-c");
+        assert_eq!(wrapped_args[1], "7");
+        assert_eq!(wrapped_args[2], "/opt/houmo/bin/llama-server");
+        assert_eq!(&wrapped_args[3..], args.as_slice());
+    }
+
+    #[test]
+    fn without_taskset_the_launch_is_unchanged() {
+        let program = PathBuf::from("/opt/houmo/bin/llama-server");
+        let args = vec!["-m".to_owned(), "model.gguf".to_owned()];
+        let (wrapped_program, wrapped_args) =
+            wrap_with_taskset(program.clone(), args.clone(), 3, Path::new("/no/such/taskset"));
+        assert_eq!(wrapped_program, program);
+        assert_eq!(wrapped_args, args);
     }
 
     #[test]

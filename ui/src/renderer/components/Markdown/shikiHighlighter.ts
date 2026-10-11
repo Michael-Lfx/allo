@@ -53,7 +53,8 @@ const getHighlighterPromise = (): Promise<Highlighter> => {
   highlighterPromise ??= createHighlighterCore({
     themes: [githubLightDefault, githubDarkDefault],
     langs: [],
-    engine: createJavaScriptRegexEngine(),
+    // WebKitGTK 2.38 JSC has no lookbehind; skip patterns the JS engine cannot compile.
+    engine: createJavaScriptRegexEngine({ forgiving: true }),
   }).then((instance) => {
     highlighter = instance;
     return instance;

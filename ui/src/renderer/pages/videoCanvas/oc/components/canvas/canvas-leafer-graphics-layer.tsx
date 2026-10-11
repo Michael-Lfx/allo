@@ -4,7 +4,7 @@ import { Group, Leafer, Path, Rect } from "leafer-ui";
 import { activeConnectionPath, canvasConnectionPath } from "@oc/components/canvas/canvas-connections";
 import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
 import { diffConnectionDrawList } from "@oc/lib/canvas/canvas-connection-draw-list";
-import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, type CanvasNodeDragPreview } from "@oc/lib/canvas/canvas-live-viewport";
+import { subscribeCanvasGraphicsViewportPreview, subscribeCanvasNodeDragPreview, subscribeCanvasSelectionPreview, canvasLayerTransform, type CanvasNodeDragPreview } from "@oc/lib/canvas/canvas-live-viewport";
 import { calculateCanvasPreviewTransform, sameCanvasViewport, shouldRebaseCanvasRaster } from "@oc/lib/canvas/canvas-leafer-viewport";
 import { canvasActiveNodeId, canvasRelatedHighlight } from "@oc/lib/canvas/canvas-related-highlight";
 import { useCanvasInteractionStore } from "@oc/stores/canvas/use-canvas-interaction-store";
@@ -116,7 +116,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
             overlay.leafer.resize(size);
             syncViewport(rasterViewportRef.current, size.width, size.height, underlay, overlay, propsRef.current);
             if (isViewportPreview(container, viewportRef.current, rasterViewportRef.current)) {
-                applyScenePreview(viewportRef.current, rasterViewportRef.current, underlay, overlay);
+                applyScenePreview(viewportRef.current, rasterViewportRef.current, isSoftwareRasterContainer(container), underlay, overlay);
             }
         };
         const resizeObserver = new ResizeObserver(resize);
@@ -133,7 +133,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
                     resetScenePreview(underlay, overlay);
                     return;
                 }
-                applyScenePreview(next, rasterViewportRef.current, underlay, overlay);
+                applyScenePreview(next, rasterViewportRef.current, isSoftwareRasterContainer(container), underlay, overlay);
                 return;
             }
             resetScenePreview(underlay, overlay);
@@ -202,7 +202,7 @@ export function CanvasLeaferGraphicsLayer(props: CanvasLeaferGraphicsLayerProps)
         const rect = container.getBoundingClientRect();
         syncViewport(rasterViewportRef.current, rect.width, rect.height, underlay, overlay, resolvedProps);
         if (isViewportPreview(container, viewportRef.current, rasterViewportRef.current)) {
-            applyScenePreview(viewportRef.current, rasterViewportRef.current, underlay, overlay);
+            applyScenePreview(viewportRef.current, rasterViewportRef.current, isSoftwareRasterContainer(container), underlay, overlay);
         }
     }, [alignmentGuides, props.containerRef, props.theme]);
 
@@ -448,13 +448,19 @@ function isViewportPreview(container: HTMLDivElement, viewport: ViewportTransfor
     return container.dataset.canvasViewportInteracting === "true" && !sameCanvasViewport(viewport, rasterViewport);
 }
 
-function applyScenePreview(viewport: ViewportTransform, rasterViewport: ViewportTransform, ...scenes: LeaferScene[]) {
+function isSoftwareRasterContainer(container: HTMLDivElement) {
+    return container.dataset.canvasSoftwareRaster === "true";
+}
+
+function applyScenePreview(viewport: ViewportTransform, rasterViewport: ViewportTransform, softwareRaster: boolean, ...scenes: LeaferScene[]) {
     // 将已栅格画面的屏幕坐标映射到实时视口，缩放手势期间不触碰 Leafer 场景树。
     const { ratio, x, y } = calculateCanvasPreviewTransform(viewport, rasterViewport);
+    const transform = canvasLayerTransform(x, y, ratio, softwareRaster);
     for (const scene of scenes) {
         scene.host.style.transformOrigin = "0 0";
-        scene.host.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${ratio})`;
-        scene.host.style.willChange = "transform";
+        scene.host.style.transform = transform;
+        // 软件光栅路径禁用 will-change，避免 WebKitGTK 关闭合成时把整层涂黑。
+        scene.host.style.willChange = softwareRaster ? "" : "transform";
         scene.host.dataset.canvasLeaferPreview = "true";
     }
 }

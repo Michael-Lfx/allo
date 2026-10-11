@@ -3243,6 +3243,20 @@
         will-change: transform;
     }
 
+    /* Linux 桌面壳（WebKitGTK，禁用合成）软件光栅路径：CSS `zoom` 下的 replaced
+       content 会被整层涂黑，因此世界层只保留单一 2D transform 并直接带完整缩放
+       （`--canvas-live-scale`），光栅层 zoom 归 1。静态回退与交互态都要覆盖，
+       且不再声明 will-change。 */
+    [data-canvas-software-raster="true"] .canvas-world-layer,
+    [data-canvas-software-raster="true"][data-canvas-viewport-interacting="true"] .canvas-world-layer {
+        transform: translate(var(--canvas-live-x), var(--canvas-live-y)) scale(var(--canvas-live-scale));
+        will-change: auto;
+    }
+
+    [data-canvas-software-raster="true"] .canvas-world-raster-layer {
+        zoom: 1;
+    }
+
     [data-canvas-viewport-interacting="true"] .canvas-node-shell.aceternity-comet-card,
     [data-canvas-viewport-interacting="true"] .canvas-node-shell.aceternity-comet-card:hover {
         box-shadow: none !important;

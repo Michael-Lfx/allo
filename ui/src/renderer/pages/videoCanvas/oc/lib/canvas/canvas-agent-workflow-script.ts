@@ -123,8 +123,24 @@ function alignShotCount(shots: ReturnType<typeof parseShotsFromText>, imageCount
     return [...shots, ...extras];
 }
 
+function splitAfterSentencePunct(text: string): string[] {
+    const parts: string[] = [];
+    let buf = '';
+    for (const ch of text) {
+        buf += ch;
+        if (ch === '。' || ch === '！' || ch === '？' || ch === '!' || ch === '?' || ch === '\n') {
+            const trimmed = buf.trim();
+            if (trimmed) parts.push(trimmed);
+            buf = '';
+        }
+    }
+    const rest = buf.trim();
+    if (rest) parts.push(rest);
+    return parts;
+}
+
 function splitEvenly(text: string, count: number) {
-    const sentences = text.split(/(?<=[。！？!?\n])/).map((part) => part.trim()).filter(Boolean);
+    const sentences = splitAfterSentencePunct(text);
     if (sentences.length >= count) {
         const size = Math.ceil(sentences.length / count);
         return Array.from({ length: count }, (_, index) => sentences.slice(index * size, (index + 1) * size).join("").trim() || text);

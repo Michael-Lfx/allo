@@ -15,6 +15,7 @@ import {
 } from "@oc/lib/canvas/canvas-spatial-grid";
 import { useThemeStore } from "@oc/stores/use-theme-store";
 import type { ViewportTransform } from "@oc/types/canvas";
+import { needsWebKitSoftwareRaster } from "@renderer/utils/platform";
 
 type InfiniteCanvasProps = {
     containerRef: React.RefObject<HTMLDivElement | null>;
@@ -54,6 +55,8 @@ type PinchState = {
 export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundMode = "lines", onViewportChange, onViewportPreviewChange, onCanvasMouseDown, boxSelectEnabled = false, onCanvasDoubleClick, onCanvasDeselect, onContextMenu, onDrop, onFileDragEnter, onFileDragLeave, onFileDragOver, graphicsLayer, children }: InfiniteCanvasProps) {
     const colorTheme = useThemeStore((state) => state.theme);
     const resolvedAppearance = resolveCanvasAppearance(appearance, colorTheme);
+    // Linux 桌面壳（WebKitGTK 关闭合成）走 2D transform，禁用 CSS zoom / translate3d。
+    const softwareRaster = needsWebKitSoftwareRaster();
     const panState = useRef({
         isPanning: false,
         pointerId: -1,
@@ -386,6 +389,7 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
             ref={containerRef}
             className={`relative h-full w-full select-none overflow-hidden touch-none ${isPanning ? "cursor-grabbing" : boxSelectEnabled ? "cursor-crosshair" : "cursor-grab"}`}
             data-infinite-canvas=""
+            data-canvas-software-raster={softwareRaster ? "true" : undefined}
             data-canvas-hide-node-headers={viewport.k < 0.35 ? "true" : "false"}
             data-canvas-low-scale={viewport.k < 0.32 ? "true" : "false"}
             style={{
@@ -413,7 +417,7 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
             }}
             onDrop={onDrop}
         >
-            <CanvasGrid appearance={appearance} mode={backgroundMode} />
+            <CanvasGrid appearance={appearance} mode={backgroundMode} softwareRaster={softwareRaster} />
             {graphicsLayer}
             <div
                 data-canvas-world-layer
@@ -427,7 +431,7 @@ export function InfiniteCanvas({ containerRef, viewport, appearance, backgroundM
     );
 }
 
-function CanvasGrid({ appearance, mode }: { appearance?: CanvasAppearance; mode: CanvasBackgroundMode }) {
+function CanvasGrid({ appearance, mode, softwareRaster }: { appearance?: CanvasAppearance; mode: CanvasBackgroundMode; softwareRaster: boolean }) {
     const colorTheme = useThemeStore((state) => state.theme);
     if (mode === "blank") return null;
     const palette = resolveCanvasGridPalette(appearance, colorTheme, mode);
@@ -443,13 +447,20 @@ function CanvasGrid({ appearance, mode }: { appearance?: CanvasAppearance; mode:
                 inset: mode === "dots" ? "calc(-1 * var(--canvas-dot-grid-size))" : "calc(-1 * var(--canvas-grid-major-size))",
                 backgroundImage,
                 backgroundSize: canvasGridBackgroundSize(mode === "dots" ? "dots" : "lines"),
+                // Linux 桌面壳（WebKitGTK 关闭合成）禁用 3D transform / will-change。
                 transform: mode === "dots"
-                    ? "translate3d(var(--canvas-dot-grid-x), var(--canvas-dot-grid-y), 0)"
-                    : "translate3d(var(--canvas-grid-x), var(--canvas-grid-y), 0)",
-                willChange: "transform",
+                    ? gridLayerTransform("--canvas-dot-grid-x", "--canvas-dot-grid-y", softwareRaster)
+                    : gridLayerTransform("--canvas-grid-x", "--canvas-grid-y", softwareRaster),
+                willChange: softwareRaster ? "auto" : "transform",
             }}
         />
     );
+}
+
+function gridLayerTransform(xVar: string, yVar: string, softwareRaster: boolean) {
+    const x = `var(${xVar})`;
+    const y = `var(${yVar})`;
+    return softwareRaster ? `translate(${x}, ${y})` : `translate3d(${x}, ${y}, 0)`;
 }
 
 function wheelDeltaToPixels(delta: number, deltaMode: number) {

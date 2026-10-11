@@ -10,6 +10,7 @@ import { Popconfirm, Spin, Tag } from '@arco-design/web-react';
 import { Delete, VideoOne, LoadingOne } from '@icon-park/react';
 import { canvasMediaUrl, type GenerationTaskView } from '../../videoCanvas/api';
 import { prefetchVideoClipResult } from '../prefetch';
+import { pauseMediaElement, playMediaElement } from '../mediaPlayback';
 import styles from '../index.module.css';
 
 function formatRelativeTime(ms: number, t: ReturnType<typeof useTranslation>['t']): string {
@@ -113,9 +114,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({
     if (!el || !videoUrl || !inView) return;
     el.muted = true;
     const play = () => {
-      void el.play().catch(() => {
-        // Autoplay can still fail; the first decoded frame remains visible.
-      });
+      playMediaElement(el);
     };
     if (el.readyState >= 2) {
       play();
@@ -124,7 +123,7 @@ const GenerationTaskCard: React.FC<GenerationTaskCardProps> = ({
     }
     return () => {
       el.removeEventListener('canplay', play);
-      if (!el.paused) el.pause();
+      pauseMediaElement(el);
     };
   }, [videoUrl, inView]);
 

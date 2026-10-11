@@ -11,6 +11,7 @@ import {
   isInAppCampaignPath,
   pickCampaignLocalizedText,
 } from '../campaign';
+import { pauseMediaElement, playMediaElement } from '../mediaPlayback';
 import type { CampaignCarouselItem } from '../types';
 import styles from '../campaign.module.css';
 
@@ -59,9 +60,9 @@ const CampaignCarousel: React.FC = () => {
     videoRefs.current.forEach((video, i) => {
       if (!video) return;
       if (i === index && inView) {
-        void video.play().catch(() => undefined);
+        playMediaElement(video);
       } else {
-        video.pause();
+        pauseMediaElement(video);
       }
     });
   }, [index, inView, items]);

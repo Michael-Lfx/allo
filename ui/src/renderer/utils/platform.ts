@@ -74,6 +74,27 @@ export const isWindows = (): boolean => hostOs() === 'windows';
  */
 export const isLinux = (): boolean => hostOs() === 'linux';
 
+/**
+ * Whether the renderer must use the software-raster compatibility path.
+ *
+ * The desktop shell on Linux runs on WebKitGTK, not Chromium. When the host
+ * disables GPU compositing / DMA-BUF (the Houmo aarch64 AppImage sets
+ * `WEBKIT_DISABLE_COMPOSITING_MODE=1`, and `apps/desktop/src/main.rs` defaults
+ * `WEBKIT_DISABLE_DMABUF_RENDERER=1`), WebKit 2.38 paints CSS-`zoom`ed replaced
+ * content (DOM nodes, the Leafer canvas, `<video>`) and GStreamer video
+ * overlays as solid black — the whole infinite canvas layer goes black and
+ * every video shows an empty `bg-black` box.
+ *
+ * On that path the canvas must avoid CSS `zoom` and 3D/composited transforms
+ * (`translate3d`, `will-change`), and `<video>` must be re-blitted frame by
+ * frame with Canvas2D. Windows (WebView2) and macOS (WKWebView) keep the
+ * compositing fast path, and the WebUI browser is a normal Chromium/Gecko
+ * runtime, so this is Linux-desktop-shell only.
+ *
+ * 是否需要走软件光栅兼容路径（Linux 桌面壳，WebKitGTK 关闭合成时）。
+ */
+export const needsWebKitSoftwareRaster = (): boolean => isDesktopShell() && isLinux();
+
 function isAbsoluteAssetUrl(url: string): boolean {
   return /^[a-z][a-z\d+.-]*:/i.test(url) || url.startsWith('//');
 }

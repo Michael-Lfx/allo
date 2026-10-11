@@ -125,14 +125,20 @@ pub(crate) fn normalize_options(
 /// The binary is the Houmo NPU build, not the downloaded Vulkan runtime, so
 /// this stays on the flags that server accepts for a downloaded GGUF: the
 /// model, its mmproj, the listen address, and the catalog context size.
+///
+/// `api_key` is optional: Linux opens the LAN WebUI and passes `None` so
+/// `llama-server` starts without authentication, while other hosts keep the
+/// random key. An empty key is treated the same as `None` so a blank value can
+/// never produce a `--api-key ""` that locks the server out.
 pub(crate) fn build_houmo_args(
     alias: &str,
     main_gguf: &str,
     mmproj: Option<&str>,
     context_size: u64,
     model_dir: &Path,
+    host: &str,
     port: u16,
-    api_key: &str,
+    api_key: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "--jinja".to_owned(),
@@ -141,14 +147,16 @@ pub(crate) fn build_houmo_args(
         "--port".to_owned(),
         port.to_string(),
         "--host".to_owned(),
-        "127.0.0.1".to_owned(),
+        host.to_owned(),
         "--alias".to_owned(),
         alias.to_owned(),
-        "--api-key".to_owned(),
-        api_key.to_owned(),
-        "--ctx-size".to_owned(),
-        context_size.max(1).to_string(),
     ];
+    if let Some(api_key) = api_key.filter(|key| !key.is_empty()) {
+        args.push("--api-key".to_owned());
+        args.push(api_key.to_owned());
+    }
+    args.push("--ctx-size".to_owned());
+    args.push(context_size.max(1).to_string());
     if let Some(mmproj) = mmproj {
         args.push("--mmproj".to_owned());
         args.push(model_dir.join(mmproj).to_string_lossy().into_owned());
@@ -410,14 +418,16 @@ mod tests {
 
     #[test]
     fn houmo_args_load_the_gguf_with_the_fixed_server_flags() {
+        let alias = "Qwen3.6_35b-a3b_256k_b1_2core_1chip(dynamic)";
         let args = build_houmo_args(
-            "houmo-108",
+            alias,
             "HiModel.gguf",
             Some("mmproj.gguf"),
             262_144,
             Path::new(r"D:\models\houmo-108"),
-            18080,
-            "secret",
+            "0.0.0.0",
+            11_888,
+            Some("secret"),
         );
         assert!(args.windows(2).any(|pair| {
             pair[0] == "-m" && pair[1].ends_with("HiModel.gguf")
@@ -425,9 +435,58 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--mmproj" && pair[1].ends_with("mmproj.gguf")
         }));
-        assert!(args.windows(2).any(|pair| pair[0] == "--port" && pair[1] == "18080"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--host" && pair[1] == "0.0.0.0"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--port" && pair[1] == "11888"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--alias" && pair[1] == alias));
+        assert!(args.windows(2).any(|pair| pair[0] == "--api-key" && pair[1] == "secret"));
         assert!(args.windows(2).any(|pair| pair[0] == "--ctx-size" && pair[1] == "262144"));
         assert!(!args.iter().any(|arg| arg == "--model-draft" || arg == "draft-mtp"));
+    }
+
+    #[test]
+    fn houmo_args_omit_the_api_key_when_absent() {
+        let args = build_houmo_args(
+            "houmo-108",
+            "HiModel.gguf",
+            None,
+            4_096,
+            Path::new("/models/houmo-108"),
+            "0.0.0.0",
+            11_888,
+            None,
+        );
+        assert!(!args.iter().any(|arg| arg == "--api-key"));
+    }
+
+    #[test]
+    fn houmo_args_treat_an_empty_api_key_as_absent() {
+        let args = build_houmo_args(
+            "houmo-108",
+            "HiModel.gguf",
+            None,
+            4_096,
+            Path::new("/models/houmo-108"),
+            "0.0.0.0",
+            11_888,
+            Some(""),
+        );
+        assert!(!args.iter().any(|arg| arg == "--api-key"));
+    }
+
+    #[test]
+    fn houmo_args_keep_loopback_when_asked_for_it() {
+        let args = build_houmo_args(
+            "houmo-108",
+            "HiModel.gguf",
+            None,
+            4_096,
+            Path::new("/models/houmo-108"),
+            "127.0.0.1",
+            18080,
+            Some("secret"),
+        );
+        assert!(args.windows(2).any(|pair| pair[0] == "--host" && pair[1] == "127.0.0.1"));
+        assert!(args.windows(2).any(|pair| pair[0] == "--port" && pair[1] == "18080"));
     }
 
     #[test]

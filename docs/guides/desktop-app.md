@@ -195,6 +195,30 @@ code-signing certificate.
 **The window opens to a blank white area.**
 Make sure the WebView runtime is installed (WebView2 on Windows 10 needs the Evergreen Bootstrapper). On Linux, `libwebkit2gtk-4.1-0` is required.
 
+**On Linux the infinite canvas goes black and every video shows an empty black box.**
+This is a WebKitGTK software-raster symptom: when the host disables GPU
+compositing or DMA-BUF (some packaged builds set
+`WEBKIT_DISABLE_COMPOSITING_MODE=1`; the app itself defaults
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` on Linux, which WebKit 2.42+ honors), CSS
+`zoom`/`translate3d` on the world layer and the native GStreamer `<video>`
+overlay are painted as solid black. The renderer detects the Linux desktop shell
+and automatically switches to a compatibility path: the canvas uses a single 2D
+transform instead of CSS `zoom`/`translate3d`, and `<video>` frames are mirrored
+onto a Canvas2D overlay. Windows (WebView2) and macOS (WKWebView) keep the
+compositing fast path, and the WebUI browser is unaffected.
+
+If the canvas recovers but videos stay black, the decoder itself is failing
+rather than the compositor. Generated clips are almost all H.264/MP4, so the
+host (or the packaged AppImage) needs a GStreamer H.264 decoder:
+
+```bash
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly
+```
+
+Packaged aarch64 AppImages that do not bundle `libgst*` plugins depend on these
+system packages; without them `<video>` reports `videoWidth === 0` and the player
+shows the localized load-failure message instead of a silent black frame.
+
 **The Linux build compiles ~1300 crates and then fails with `rust-lld: error: unable to find library -lgbm`.**
 `gbm-sys` requests `-lgbm` from a source-level `#[link]` attribute, so nothing detects the missing library until the final link step. Install `libgbm-dev` — the runtime `libgbm1` package does not ship the unversioned `libgbm.so` — and re-run; only the link is redone, not the crates. See [Linux system packages](#linux-system-packages-debianubuntu).
 

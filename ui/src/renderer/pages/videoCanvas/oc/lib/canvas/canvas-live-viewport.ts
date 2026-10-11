@@ -22,9 +22,21 @@ type NodeDragPreviewDomState = {
 const nodeDragPreviewDomStates = new WeakMap<HTMLDivElement, NodeDragPreviewDomState>();
 const liveViewportElements = new WeakMap<HTMLDivElement, { worldLayer: HTMLElement | null; gridLayer: HTMLElement | null }>();
 
+/**
+ * 视口层变换字符串。默认走 `translate3d` 合成快路（Chromium/WebView2/WKWebView）。
+ * Linux 桌面壳（WebKitGTK 关闭合成）上台 `translate3d` 会被涂黑，退化为纯 2D
+ * `translate` + `scale`，与 `.canvas-world-layer` 的静态回退保持一致。
+ */
+export function canvasLayerTransform(x: number, y: number, scale: number, softwareRaster = false): string {
+    return softwareRaster
+        ? `translate(${x}px, ${y}px) scale(${scale})`
+        : `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+}
+
 export function applyCanvasLiveViewport(container: HTMLDivElement | null, viewport: ViewportTransform, notify = true) {
     if (!container) return;
     const committedScale = Number(container.style.getPropertyValue("--canvas-committed-scale")) || viewport.k;
+    const softwareRaster = container.dataset.canvasSoftwareRaster === "true";
     let elements = liveViewportElements.get(container);
     if (!elements) {
         elements = {
@@ -40,8 +52,12 @@ export function applyCanvasLiveViewport(container: HTMLDivElement | null, viewpo
     if (worldLayer) {
         // 平移期间直接更新合成层，避免修改容器继承变量导致所有节点重新计算样式。
         worldLayer.style.transformOrigin = "0 0";
-        worldLayer.style.transform = `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.k / committedScale})`;
-        worldLayer.style.willChange = container.dataset.canvasViewportInteracting === "true" ? "transform" : "";
+        // 正常路径把缩放交给光栅层的 CSS `zoom`（此处只补交互期的差值倍率）；
+        // 软件光栅路径 `zoom` 固定为 1，世界层必须直接带上完整缩放 k。
+        const scale = softwareRaster ? viewport.k : viewport.k / committedScale;
+        worldLayer.style.transform = canvasLayerTransform(viewport.x, viewport.y, scale, softwareRaster);
+        // 软件光栅路径不启用 will-change（合成层在 WebKitGTK 关闭合成时会整层涂黑）。
+        worldLayer.style.willChange = !softwareRaster && container.dataset.canvasViewportInteracting === "true" ? "transform" : "";
     }
     container.style.setProperty("--canvas-live-x", `${viewport.x}px`);
     container.style.setProperty("--canvas-live-y", `${viewport.y}px`);
