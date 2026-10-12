@@ -645,6 +645,28 @@ teaching_style: crate::models::TeachingStyle::Standard,
             user: &str,
             _max_tokens: u32,
         ) -> Result<String, AppError> {
+            self.record(model_override, user)
+        }
+
+        /// 生长管线（教练批/概念评审）走 json 接缝（g4）：脚本 completer 同
+        /// 一口径回包。
+        async fn complete_json_with_thinking(
+            &self,
+            model_override: Option<(&str, &str)>,
+            _system: &str,
+            user: &str,
+            _max_tokens: u32,
+        ) -> Result<String, AppError> {
+            self.record(model_override, user)
+        }
+    }
+
+    impl ScriptedCompleter {
+        fn record(
+            &self,
+            model_override: Option<(&str, &str)>,
+            user: &str,
+        ) -> Result<String, AppError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             *self.last_user.lock().unwrap() = Some(user.to_owned());
             *self.last_override.lock().unwrap() =
