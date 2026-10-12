@@ -19,6 +19,9 @@
   不与概念建立任何连接；投影永不落盘；顺序权威 = 教练 + 账本；普查 / 交付账 / selectable
   过滤 / NoFrontier 终态均已退役。xyflow 已被 learnhub 验证弃用（边渲染缺陷），可视化用
   dagre 算坐标 + 自绘 SVG。
+- **课程边界（用户 2026-10-12 强调，最高优先）**：知识结构**仅限课程内部生效、跨课程
+  隔离**；概念登记表**跨课程**；两层**永不直接关联**——投影不 join 登记表、不做块→概念
+  名字匹配、可视化不互渲染。已固化进 CONTEXT.md（Structure 词条）。
 - **环境差异**：allo 是 axum + SQLite 多用户（web/桌面双宿主），learnhub 是单机文件为真相。
   SQLite 替代文件时：结构源仍整篇单字段快照存储，投影运行时重算。
 - **工作区状态**：分支 `feat/learn0928`（HEAD bab7a4a8e）有 15 个文件未提交改动（growth
@@ -33,6 +36,11 @@
 
 ## Decisions so far
 
+- [知识结构可视化：图选型与落地形态](tickets/p1-visualization-prototype.md)（原型取消，
+  直接裁决）：首版三图——思维导图 / 关系图谱（dagre LR，边方向反转 assumes=门）/ 学习
+  路线（主干子图 + 传递闭包补前导），矩阵顺带、地铁图砍；数据源 = structure_json 投影
+  结构块图，概念网图形化留后续；宿主 = 工作区新增「结构图」Tab；v1 不引 echarts；详情层
+  非权威标注等 learnhub 形态机械采纳。
 - [结构化输出基建：按 ADR-0014 建多少？](tickets/g4-structured-output-infra.md)：新基建
   覆盖全部生成面（structure/地形/教练批/概念评审）——**教练批同期全迁**（反推荐，用户
   明示；容错 deserializer 退役、重试对齐 ≤3 带条款报告、全量重验）；桥层新增 json 接缝
@@ -66,7 +74,10 @@
 
 ## Not yet specified
 
-- 建课向导的生成进度与结构可视化衔接形态——等可视化原型（p1）落定。
+- 建课向导的生成进度与结构可视化衔接形态——可视化宿主已定（结构图 Tab），剩进度事件
+  与生成态展示的细节，实施时定。
+- 概念网图形化投影（learning_lesson_concepts → 节点-边）——概念表 Tab 已覆盖跨课程
+  概念面，结构块图上线后有需要再议。
 - 传统课程（`course_kind='traditional'`）是否同享结构生成管线。
 - blocks 40–80 规模对前端渲染性能与 WS 进度事件的影响。
 
