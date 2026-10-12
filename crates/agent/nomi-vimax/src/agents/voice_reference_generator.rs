@@ -35,6 +35,14 @@ impl VoiceReferenceGenerator {
         registry: &mut HashMap<String, HashMap<String, HashMap<String, String>>>,
         film_language: OutputLanguage,
     ) -> VimaxResult<usize> {
+        let pending = characters.iter().any(|ch| {
+            ch.needs_identity_assets()
+                && ch.voice_profile.as_ref().is_some_and(|v| v.is_usable())
+                && !has_usable_voice_ref(registry, &ch.identifier_in_scene)
+        });
+        if !pending {
+            return Ok(0);
+        }
         self.services.require_token().await?;
         let model = self.resolve_tts_model().await?;
         let mut generated = 0usize;
@@ -42,6 +50,9 @@ impl VoiceReferenceGenerator {
 
         for ch in characters {
             if !ch.needs_identity_assets() {
+                continue;
+            }
+            if has_usable_voice_ref(registry, &ch.identifier_in_scene) {
                 continue;
             }
             let Some(vp) = ch.voice_profile.as_ref().filter(|v| v.is_usable()) else {

@@ -347,10 +347,10 @@ impl ScriptFilmPipeline {
         emit_pct(
             &progress,
             "voice_references_start",
-            "正在生成角色音色参考音频",
+            "正在同步音色库并绑定角色参考音频",
             24.0,
         );
-        if let Some(flowy) = self.backends.flowy.clone() {
+        {
             let registry_path = self.working_dir.join("character_portraits_registry.json");
             let mut registry: HashMap<String, HashMap<String, HashMap<String, String>>> =
                 if registry_path.exists() {
@@ -359,25 +359,46 @@ impl ScriptFilmPipeline {
                     HashMap::new()
                 };
             let portraits_dir = self.working_dir.join("character_portraits");
-            let voice_gen = VoiceReferenceGenerator::new(flowy);
-            if let Ok(n) = voice_gen
-                .ensure_voice_references(
-                    &characters,
-                    &portraits_dir,
-                    &mut registry,
-                    crate::planning::resolve_output_language(&[script]),
-                )
-                .await
-            {
-                let _ = write_json_artifact(&registry_path, &registry).await;
-                if n > 0 {
-                    emit_pct(
-                        &progress,
-                        "voice_references_done",
-                        &format!("已生成 {n} 条音色参考"),
-                        26.0,
-                    );
+            let film_language = crate::planning::resolve_output_language(&[script]);
+            let bank_n = crate::voice_bank::bind_clips(
+                &characters,
+                &portraits_dir,
+                &mut registry,
+                film_language,
+            )
+            .await
+            .unwrap_or(0);
+            let still_need_tts = characters.iter().any(|ch| {
+                ch.needs_identity_assets()
+                    && ch.voice_profile.as_ref().is_some_and(|v| v.is_usable())
+                    && !crate::agents::has_usable_voice_ref(&registry, &ch.identifier_in_scene)
+            });
+            let tts_n = if still_need_tts {
+                if let Some(flowy) = self.backends.flowy.clone() {
+                    let voice_gen = VoiceReferenceGenerator::new(flowy);
+                    voice_gen
+                        .ensure_voice_references(
+                            &characters,
+                            &portraits_dir,
+                            &mut registry,
+                            film_language,
+                        )
+                        .await
+                        .unwrap_or(0)
+                } else {
+                    0
                 }
+            } else {
+                0
+            };
+            let _ = write_json_artifact(&registry_path, &registry).await;
+            if bank_n + tts_n > 0 {
+                emit_pct(
+                    &progress,
+                    "voice_references_done",
+                    &format!("已绑定 {bank_n} 条音色库参考，TTS 补 {tts_n} 条"),
+                    26.0,
+                );
             }
         }
 

@@ -108,6 +108,12 @@ Thumbs.db
 .absorb_tmp/
 # Staged ffmpeg archives for CDN upload (large binaries, never commit)
 .ffmpeg-upload/
+# Local short-drama voice-bank wavs / zip prepared for ModelScope upload
+/staging/voice-bank/wav/
+/staging/voice-bank/_tmp/
+/staging/voice-bank-*.zip
+/staging/voice-bank-version.json
+/staging/_probe_*.py
 .jspace/
 
 .codebuddy/
