@@ -22,23 +22,10 @@ export function BlockDetail({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const colorFor = useMemo(
-    () => buildGroupPalette(structure.spines.map((spine) => spine.name)),
-    [structure.spines]
-  );
+  const colorFor = buildGroupPalette(structure.spines.map((spine) => spine.name));
   const relations = structure.edges.filter(
     (edge) => edge.source === block.name || edge.target === block.name
   );
-  const stageLabel = (stage: BlockView['stage']) => {
-    switch (stage) {
-      case '入门':
-        return t('learningGraphStructStage_entry');
-      case '进阶':
-        return t('learningGraphStructStage_intermediate');
-      default:
-        return t('learningGraphStructStage_advanced');
-    }
-  };
   const relationLabel = (type: string) => {
     switch (type) {
       case 'assumes':
