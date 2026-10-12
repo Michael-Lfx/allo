@@ -199,7 +199,12 @@ impl ModelManager {
             let success = match download_result {
                 Ok(_) => true,
                 Err(e) => {
-                    let reason = format!("Failed to download {rel_path}: {e}");
+                    let reason = match &e {
+                        crate::downloader::DownloaderError::AllMirrorsFailed => {
+                            "无法连接到模型镜像源 (ModelScope)。请检查网络或运行 `python scripts/prepare-voice-models.py` 预先下载模型".to_string()
+                        }
+                        other => format!("Failed to download {rel_path}: {other}。可运行 `python scripts/prepare-voice-models.py` 离线部署"),
+                    };
                     error!("{reason}");
                     self.set_state(ModelInstallState::Failed {
                         reason,
@@ -237,13 +242,25 @@ impl ModelManager {
             }
         }
 
-        // Also fetch checksums.sha256 from mirror if available
+        // Also fetch checksums.sha256 from mirror if available, or write authoritative checksums
         let checksums_path = self.models_dir.join("checksums.sha256");
+        let mut fetched_checksums = false;
         if let Some(ref m) = mirror {
-            let _ = self
+            if self
                 .downloader
                 .download_file_with_resume(m, "checksums.sha256", &checksums_path)
-                .await;
+                .await
+                .is_ok()
+            {
+                fetched_checksums = true;
+            }
+        }
+        if !fetched_checksums && !checksums_path.exists() {
+            let mut content = String::new();
+            for (path, hash) in self.verifier.baseline_manifest() {
+                content.push_str(&format!("{hash}  {path}\n"));
+            }
+            let _ = tokio::fs::write(&checksums_path, content).await;
         }
 
         // Ensure keywords.txt is present (compiled locally or default fallback)

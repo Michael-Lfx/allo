@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Mirror source endpoint configuration.
 #[derive(Debug, Clone)]
@@ -45,28 +45,99 @@ impl MirrorConfig {
         mirrors.extend(vec![
             Self {
                 id: "modelscope".to_string(),
-                base_url: "https://modelscope.cn/api/v1/models/flowy-ai/voice-models/repo?Revision=master&FilePath=".to_string(),
-                probe_url: Some("https://modelscope.cn/api/v1/models/flowy-ai/voice-models".to_string()),
+                base_url: "https://modelscope.cn".to_string(),
+                probe_url: Some(
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt"
+                        .to_string(),
+                ),
                 is_modelscope: true,
                 is_fallback_cdn: false,
             },
             Self {
-                id: "github".to_string(),
-                base_url: "https://github.com/flowy-ai/voice-models/releases/download/v1.0.0".to_string(),
-                probe_url: Some("https://github.com/flowy-ai/voice-models/releases/tag/v1.0.0".to_string()),
+                id: "hf_mirror".to_string(),
+                base_url: "https://hf-mirror.com".to_string(),
+                probe_url: Some(
+                    "https://hf-mirror.com/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/tokens.txt"
+                        .to_string(),
+                ),
                 is_modelscope: false,
                 is_fallback_cdn: false,
-            },
-            Self {
-                id: "flowy_cdn".to_string(),
-                base_url: "https://cdn.flowy.ai/models/voice/v1.0.0".to_string(),
-                probe_url: Some("https://cdn.flowy.ai/models/voice/v1.0.0/checksums.sha256".to_string()),
-                is_modelscope: false,
-                is_fallback_cdn: true,
             },
         ]);
 
         mirrors
+    }
+
+    /// Resolves concrete download URL for a relative model asset path.
+    pub fn resolve_url(&self, rel_path: &str) -> String {
+        let clean_path = rel_path.replace('\\', "/");
+        if self.is_modelscope && self.base_url.contains("modelscope.cn") {
+            match clean_path.as_str() {
+                "kws/encoder.int8.onnx" => {
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
+                }
+                "kws/decoder.int8.onnx" => {
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
+                }
+                "kws/joiner.int8.onnx" => {
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx".to_string()
+                }
+                "kws/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                "kws/keywords.txt" => {
+                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=keywords.txt".to_string()
+                }
+                "vad/silero_vad.onnx" => {
+                    "https://modelscope.cn/api/v1/models/manyeyes/silero-vad-onnx/repo?Revision=master&FilePath=silero_vad.onnx".to_string()
+                }
+                "asr/model.int8.onnx" => {
+                    "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=model.int8.onnx".to_string()
+                }
+                "asr/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                other => {
+                    format!("{}/{}", self.base_url.trim_end_matches('/'), other)
+                }
+            }
+        } else if self.id == "hf_mirror"
+            || self.base_url.contains("hf-mirror.com")
+            || self.base_url.contains("huggingface.co")
+        {
+            let base = self.base_url.trim_end_matches('/');
+            match clean_path.as_str() {
+                "kws/encoder.int8.onnx" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
+                }
+                "kws/decoder.int8.onnx" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
+                }
+                "kws/joiner.int8.onnx" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
+                }
+                "kws/tokens.txt" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/tokens.txt")
+                }
+                "kws/keywords.txt" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/keywords.txt")
+                }
+                "vad/silero_vad.onnx" => {
+                    format!("{base}/csukuangfj/silero-vad-onnx/resolve/main/silero_vad.onnx")
+                }
+                "asr/model.int8.onnx" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/resolve/main/model.int8.onnx")
+                }
+                "asr/tokens.txt" => {
+                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/resolve/main/tokens.txt")
+                }
+                other => {
+                    format!("{base}/{other}")
+                }
+            }
+        } else {
+            format!("{}/{}", self.base_url.trim_end_matches('/'), clean_path)
+        }
     }
 }
 
@@ -177,9 +248,12 @@ impl ModelDownloader {
         }
 
         if successful.is_empty() {
-            // If probe failed, fall back to first CDN mirror or first mirror
+            // If probe failed (e.g. strict firewall on HEAD), fall back to first mirror candidate
             if let Some(cdn) = self.mirrors.iter().find(|m| m.is_fallback_cdn) {
                 return Ok(cdn.clone());
+            }
+            if let Some(first) = self.mirrors.first() {
+                return Ok(first.clone());
             }
             return Err(DownloaderError::AllMirrorsFailed);
         }
@@ -211,7 +285,7 @@ impl ModelDownloader {
         rel_path: &str,
         target_path: &Path,
     ) -> Result<u64, DownloaderError> {
-        let url = format!("{}/{}", mirror.base_url.trim_end_matches('/'), rel_path);
+        let url = mirror.resolve_url(rel_path);
         let part_path = PathBuf::from(format!("{}.part", target_path.display()));
 
         if let Some(parent) = target_path.parent() {
@@ -313,32 +387,32 @@ impl ModelDownloader {
         target_path: &Path,
         _expected_total_bytes: u64,
     ) -> Result<(), DownloaderError> {
-        // Attempt 1: Probe and download from best primary mirror
-        let primary_mirror = self.probe_best_source().await;
         let mut last_error = None;
-        let mut primary_id = None;
+        let mut tried_ids = std::collections::HashSet::new();
 
-        if let Ok(mirror) = primary_mirror {
-            primary_id = Some(mirror.id.clone());
+        // Attempt 1: Probe and download from best primary mirror
+        if let Ok(mirror) = self.probe_best_source().await {
+            tried_ids.insert(mirror.id.clone());
             match self.download_file_with_resume(&mirror, rel_path, target_path).await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
-                    warn!("Primary mirror {} failed ({}), attempting failover to CDN", mirror.id, e);
+                    warn!("Primary mirror {} failed ({}), attempting failover", mirror.id, e);
                     last_error = Some(e);
                 }
             }
         }
 
-        // Attempt 2: Fallback to official CDN (only if different from primary)
-        if let Some(cdn_mirror) = self.mirrors.iter().find(|m| m.is_fallback_cdn) {
-            if primary_id.as_deref() != Some(&cdn_mirror.id) {
-                info!("Failing over to fallback CDN source {}", cdn_mirror.id);
-                match self.download_file_with_resume(cdn_mirror, rel_path, target_path).await {
-                    Ok(_) => return Ok(()),
-                    Err(e) => {
-                        error!("Fallback CDN mirror failed: {e}");
-                        return Err(e);
-                    }
+        // Attempt 2: Fallback to remaining mirrors (including fallback CDN)
+        for mirror in &self.mirrors {
+            if tried_ids.contains(&mirror.id) {
+                continue;
+            }
+            info!("Failing over to candidate mirror {} for {}", mirror.id, rel_path);
+            match self.download_file_with_resume(mirror, rel_path, target_path).await {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    warn!("Failover mirror {} failed: {e}", mirror.id);
+                    last_error = Some(e);
                 }
             }
         }
