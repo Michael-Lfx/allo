@@ -53,14 +53,10 @@ pub(crate) const COACH_MAX_TOKENS: u32 = 32768;
 /// with the JSON verdict — a truncated verdict parses as garbage and the
 /// pipeline degrades to PASS, so give the deliberation room.
 pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 16384;
-/// Endpoint proposal: a few anchors with degree statements. Thinking ON via
-/// [`complete_coach`]; same reasoning-shares-the-ceiling arithmetic.
-pub(crate) const ENDPOINT_PROPOSAL_MAX_TOKENS: u32 = 16384;
-/// Compass markdown: per-endpoint remaining-route summary. The compass is a
-/// planning artifact (dual-perspective capability enumeration + representation
-/// tracks) and runs with thinking ON (see [`complete_coach`]); reasoning
-/// shares this ceiling with the ~6000-char markdown body.
-pub(crate) const COMPASS_MAX_TOKENS: u32 = 16384;
+/// First-batch entry-domain survey: a menu of 4-8 bottom-rung action
+/// sentences. Thinking ON via [`complete_coach`]; same
+/// reasoning-shares-the-ceiling arithmetic.
+pub(crate) const ENTRY_SURVEY_MAX_TOKENS: u32 = 16384;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code
@@ -118,7 +114,7 @@ const COMPLETE_CALL_TIMEOUT_SECS: u64 = 180;
 const COACH_CALL_TIMEOUT_SECS: u64 = 480;
 
 /// [`complete`] for the learning pipeline's judgment-heavy stages (coach
-/// growth batches, endpoint proposal, concept review): thinking stays ON —
+/// growth batches, entry survey, concept review): thinking stays ON —
 /// these calls decide what and how to teach, which is deliberation work, not
 /// lookup — with a timeout to match.
 pub(crate) async fn complete_coach(

@@ -29,8 +29,8 @@ use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use nomifun_learning::LearningCompleter;
 
 use crate::factory::provider_config::{
-    one_shot_completion_no_thinking_text_or_reasoning, one_shot_completion_text_or_reasoning,
-    resolve_provider_config, user_message,
+    one_shot_completion_json_text_or_reasoning, one_shot_completion_no_thinking_text_or_reasoning,
+    one_shot_completion_text_or_reasoning, resolve_provider_config, user_message,
 };
 use crate::knowledge_completer::resolve_default_model;
 
@@ -41,6 +41,43 @@ pub struct LiveLearningCompleter {
     pub provider_model_repo: Arc<dyn IProviderModelRepository>,
     pub encryption_key: [u8; 32],
     pub workspace: PathBuf,
+}
+
+impl LiveLearningCompleter {
+    /// Resolve the explicit `(provider_id, model)` pick, or fall back to the
+    /// enabled default. Shared by every channel.
+    async fn resolve_model(
+        &self,
+        model_override: Option<(&str, &str)>,
+    ) -> Result<(String, String), AppError> {
+        match model_override {
+            Some((provider_id, model)) => Ok((provider_id.to_owned(), model.to_owned())),
+            None => resolve_default_model(&self.provider_repo, &self.provider_model_repo)
+                .await
+                .ok_or_else(|| {
+                    AppError::Conflict(
+                        "learning generation unavailable: no enabled provider/model is configured"
+                            .into(),
+                    )
+                }),
+        }
+    }
+
+    async fn config_for(
+        &self,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<nomi_config::config::Config, AppError> {
+        resolve_provider_config(
+            &self.provider_repo,
+            &self.provider_model_repo,
+            &self.encryption_key,
+            provider_id,
+            model,
+            &self.workspace,
+        )
+        .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -141,6 +178,66 @@ impl LearningCompleter for LiveLearningCompleter {
                         attempt,
                         %error,
                         "transient provider error on learning coach call — retrying once"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    async fn complete_json(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let (provider_id, model) = self.resolve_model(model_override).await?;
+        let cfg = self.config_for(&provider_id, &model).await?;
+        one_shot_completion_json_text_or_reasoning(
+            &cfg,
+            system,
+            vec![user_message(user)],
+            max_tokens,
+            true,
+        )
+        .await
+    }
+
+    /// Artifact-contract calls (structure + terrain generation) deliberate
+    /// before emitting their JSON, so thinking stays ON; the transient-retry
+    /// semantics match [`complete_with_thinking`]. A provider without
+    /// json_object support fails the call loudly — course creation surfaces
+    /// the reason instead of silently degrading to text mode.
+    async fn complete_json_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let (provider_id, model) = self.resolve_model(model_override).await?;
+        let cfg = self.config_for(&provider_id, &model).await?;
+        let mut attempt = 1;
+        loop {
+            match one_shot_completion_json_text_or_reasoning(
+                &cfg,
+                system,
+                vec![user_message(user)],
+                max_tokens,
+                false,
+            )
+            .await
+            {
+                Err(error @ AppError::BadGateway(_)) if attempt == 1 => {
+                    attempt += 1;
+                    tracing::warn!(
+                        provider = %provider_id,
+                        model = %model,
+                        attempt,
+                        %error,
+                        "transient provider error on learning artifact call — retrying once"
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                 }

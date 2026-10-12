@@ -2158,6 +2158,7 @@ impl AgentEngine {
                     temperature: None,
                     retain_provider_round,
                     isolate_malformed_tool_calls: true,
+                    json_object: false,
                 },
                 slot: &mut self.messages,
             };

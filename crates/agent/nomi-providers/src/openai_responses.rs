@@ -534,6 +534,13 @@ impl LlmProvider for OpenAIResponsesProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        if request.json_object {
+            return Err(ProviderError::Config(
+                "provider does not support response_format json_object; \
+                 structured output needs a chat-completions OpenAI-compatible provider"
+                    .into(),
+            ));
+        }
         let client = crate::http_client();
         let url = self.endpoint();
         let retain = self.retain_round(request);

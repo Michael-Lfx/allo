@@ -234,6 +234,7 @@ pub(crate) async fn run_agent_loop(
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
         let mut rx = open_stream_with_retry(provider.as_ref(), &request, sink).await?;
 

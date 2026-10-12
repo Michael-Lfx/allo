@@ -572,6 +572,45 @@ pub async fn one_shot_completion_no_thinking_text_or_reasoning(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
+    };
+
+    let rx = provider
+        .stream(&request)
+        .await
+        .map_err(provider_error_to_app_error)?;
+    drain_text_or_reasoning(rx, |_, _| {}).await
+}
+
+/// One-shot JSON-mode completion: the provider is asked to guarantee a
+/// syntactically valid JSON object (`response_format: json_object`) and the
+/// reply drains with the reasoning fallback. `disable_thinking` mirrors the
+/// two non-json channels (see [`one_shot_completion_no_thinking_text_or_reasoning`]
+/// for why auxiliary JSON disables thinking). There is no text-mode fallback:
+/// a provider without json_object support rejects the request and the error
+/// surfaces as-is — reply legality is the structured-output contract's
+/// foundation, so degrading silently would poison it.
+pub async fn one_shot_completion_json_text_or_reasoning(
+    cfg: &Config,
+    system: &str,
+    messages: Vec<Message>,
+    max_tokens: u32,
+    disable_thinking: bool,
+) -> Result<String, AppError> {
+    let provider: Arc<dyn LlmProvider> = create_provider(cfg);
+
+    let request = LlmRequest {
+        model: cfg.model.clone(),
+        system: system.to_owned(),
+        messages,
+        tools: vec![],
+        max_tokens: Some(max_tokens),
+        thinking: (disable_thinking).then_some(ThinkingConfig::Disabled),
+        reasoning_effort: None,
+        temperature: None,
+        retain_provider_round: false,
+        isolate_malformed_tool_calls: false,
+        json_object: true,
     };
 
     let rx = provider
@@ -604,6 +643,7 @@ pub async fn one_shot_completion_title(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -633,6 +673,7 @@ pub async fn streaming_completion(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -663,6 +704,7 @@ pub async fn streaming_completion_no_thinking(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -699,6 +741,7 @@ pub async fn streaming_completion_kinded(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;
@@ -733,6 +776,7 @@ pub async fn streaming_completion_text_or_reasoning(
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     };
 
     let rx = provider.stream(&request).await.map_err(provider_error_to_app_error)?;

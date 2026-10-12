@@ -46,9 +46,6 @@ pub struct GenerateCourseRequest {
     /// 缺省为传统课程。
     #[serde(default)]
     pub course_kind: CourseKind,
-    /// 学习图课程的初始终点锚（向导里确认/编辑过的列表；为空时由 AI 提议）。
-    #[serde(default)]
-    pub endpoints: Vec<EndpointInput>,
     /// 讲解风格（standard/socratic/feynman）；缺省 standard。
     #[serde(default)]
     pub teaching_style: Option<TeachingStyle>,
@@ -62,23 +59,6 @@ pub struct LearningGraphGenerationStatus {
     pub running: bool,
     pub topic: Option<String>,
     pub elapsed_secs: Option<u64>,
-}
-
-/// 终点锚提议请求（建课向导第二步的 AI 提议）。
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProposeEndpointsRequest {
-    pub description: String,
-    #[serde(default)]
-    pub provider_id: Option<ProviderId>,
-    #[serde(default)]
-    pub model: Option<String>,
-}
-
-/// AI 提议的一条终点锚（标题 + 一句程度声明）。
-#[derive(Debug, Clone, Serialize)]
-pub struct ProposedEndpointView {
-    pub title: String,
-    pub goal_note: String,
 }
 
 impl GenerateCourseRequest {
@@ -1254,38 +1234,6 @@ pub struct CourseSummary {
     pub tags: Vec<String>,
 }
 
-/// 学习图课程视图的一条终点锚：标题 + 一句程度声明 + 教练裁决的完成位；
-/// `lesson_id` 是它的零正文标记课时行（不是学习节点，永不出现在可学列表）。
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphEndpointView {
-    pub endpoint_id: String,
-    pub lesson_id: LearningLessonId,
-    pub title: String,
-    pub goal_note: String,
-    pub completed: bool,
-    pub declared_at: i64,
-}
-
-/// 终点锚创建/编辑输入：标题 + 一句程度声明。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EndpointInput {
-    pub title: String,
-    #[serde(default)]
-    pub goal_note: String,
-}
-
-/// 终点锚的部分编辑输入：None = 不改动；completed 可由用户置位/重开
-/// （与教练裁决同权，ADR-0009 Amendment 1）。
-#[derive(Debug, Clone, Deserialize)]
-pub struct EndpointUpdateInput {
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub goal_note: Option<String>,
-    #[serde(default)]
-    pub completed: Option<bool>,
-}
-
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
 /// ——建议先复习供给节点（候选仍可从学习记录进入，软闸只降推荐优先级）。
 #[derive(Debug, Clone, Serialize)]
@@ -1302,19 +1250,15 @@ pub struct GraphBlockedView {
     pub due_count: i64,
 }
 
-/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：终点锚 + 罗盘 +
-/// 就绪集推荐与水位读数。没有先修边、没有锁定态——发布即就绪（ADR-0009）；
-/// 节点本体就是模块课时，图视图只承载生长语义。
+/// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位
+/// 读数。没有先修边、没有锁定态——发布即就绪（ADR-0009）；节点本体就是
+/// 模块课时，图视图只承载生长语义。
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningGraphView {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
     /// 学习范围（scope 分析文本）。
     pub scope: String,
-    /// 罗盘（逐终点剩余路线摘要），终点变更时重画；None = 尚未画出。
-    pub compass: Option<String>,
-    pub compass_updated_at: Option<i64>,
-    pub endpoints: Vec<GraphEndpointView>,
     /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序；被 R 软闸挡住的
     /// 候选不出现在这里，进 `blocked`）。
     pub recommended: Vec<LearningLessonId>,

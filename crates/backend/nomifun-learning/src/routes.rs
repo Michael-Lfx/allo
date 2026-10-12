@@ -15,7 +15,7 @@ use url::form_urlencoded;
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
-    EndpointUpdateInput, GenerateCourseRequest, GenerateLessonActivityRequest,
+    GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
     RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
     UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
@@ -29,10 +29,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route(
-            "/api/learning/graph/propose-endpoints",
-            post(propose_graph_endpoints),
-        )
         .route(
             "/api/learning/courses/generate/status",
             get(learning_graph_generation_status),
@@ -52,18 +48,6 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/courses/{id}/graph/concepts",
             get(graph_concepts),
-        )
-        .route(
-            "/api/learning/courses/{id}/graph/compass/redraw",
-            post(redraw_graph_compass),
-        )
-        .route(
-            "/api/learning/courses/{id}/graph/endpoints",
-            post(add_graph_endpoint),
-        )
-        .route(
-            "/api/learning/courses/{id}/graph/endpoints/{endpoint_id}",
-            put(update_graph_endpoint).delete(delete_graph_endpoint),
         )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
@@ -216,34 +200,6 @@ async fn cancel_learning_graph_generation(
     }))))
 }
 
-/// 手动重画罗盘（UI 罗盘卡的"重画"入口）。
-async fn redraw_graph_compass(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    let course_id = parse_id::<LearningCourseId>(id)?;
-    state
-        .service
-        .redraw_graph_compass(&user.id, &course_id)
-        .await?;
-    Ok(Json(ApiResponse::ok(())))
-}
-
-/// 为学习目标提议终点锚（建课向导第二步的 AI 提议；失败返回空列表）。
-async fn propose_graph_endpoints(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Json(request): Json<crate::models::ProposeEndpointsRequest>,
-) -> Result<Json<ApiResponse<Vec<crate::models::ProposedEndpointView>>>, AppError> {
-    Ok(Json(ApiResponse::ok(
-        state
-            .service
-            .propose_graph_endpoints(&user.id, &request)
-            .await?,
-    )))
-}
-
 /// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
@@ -278,47 +234,6 @@ async fn graph_concepts(
     Ok(Json(ApiResponse::ok(
         state.service.graph_concepts(&course_id, &user.id).await?,
     )))
-}
-
-async fn add_graph_endpoint(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-    Json(request): Json<crate::models::EndpointInput>,
-) -> Result<Json<ApiResponse<crate::models::GraphEndpointView>>, AppError> {
-    let course_id = parse_id::<LearningCourseId>(id)?;
-    Ok(Json(ApiResponse::ok(
-        state.service.add_endpoint(&user.id, &course_id, &request).await?,
-    )))
-}
-
-async fn update_graph_endpoint(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path((id, endpoint_id)): Path<(String, String)>,
-    Json(request): Json<EndpointUpdateInput>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    let course_id = parse_id::<LearningCourseId>(id)?;
-    let endpoint_id = parse_id::<nomifun_common::LearningEndpointId>(endpoint_id)?;
-    state
-        .service
-        .update_endpoint(&user.id, &course_id, &endpoint_id, &request)
-        .await?;
-    Ok(Json(ApiResponse::ok(())))
-}
-
-async fn delete_graph_endpoint(
-    State(state): State<LearningRouterState>,
-    Extension(user): Extension<CurrentUser>,
-    Path((id, endpoint_id)): Path<(String, String)>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    let course_id = parse_id::<LearningCourseId>(id)?;
-    let endpoint_id = parse_id::<nomifun_common::LearningEndpointId>(endpoint_id)?;
-    state
-        .service
-        .delete_endpoint(&user.id, &course_id, &endpoint_id)
-        .await?;
-    Ok(Json(ApiResponse::ok(())))
 }
 
 async fn get_course(

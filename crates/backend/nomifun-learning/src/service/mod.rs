@@ -7,7 +7,7 @@ pub(super) use std::sync::{Arc, Mutex, RwLock};
 pub(super) use chrono::Datelike;
 pub(super) use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
-    LearningCourseId, LearningEnrollmentId, LearningEndpointId, LearningGrowthBatchId,
+    LearningCourseId, LearningEnrollmentId, LearningGrowthBatchId,
     LearningLessonId, LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId,
     UuidV7Error, generate_id, now_ms,
 };
