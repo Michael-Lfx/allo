@@ -29,7 +29,8 @@ use nomifun_db::{IProviderModelRepository, IProviderRepository};
 use nomifun_learning::LearningCompleter;
 
 use crate::factory::provider_config::{
-    one_shot_completion_no_thinking_text_or_reasoning, resolve_provider_config, user_message,
+    one_shot_completion_no_thinking_text_or_reasoning, one_shot_completion_text_or_reasoning,
+    resolve_provider_config, user_message,
 };
 use crate::knowledge_completer::resolve_default_model;
 
@@ -78,6 +79,74 @@ impl LearningCompleter for LiveLearningCompleter {
             max_tokens,
         )
         .await
+    }
+
+    /// The learning-graph coach is the one judgment-heavy stage in the
+    /// pipeline: picking entry domains and descending the prerequisite ladder
+    /// is deliberation work, and a no-thinking flash model answers it with a
+    /// shallow "chapter 1 of a textbook" lookup (observed 2026-09-29: four
+    /// straight batches of ε-δ / 排列组合 entries against a zero baseline).
+    /// Thinking stays ON here — mirroring learnhub's coach loop, whose call
+    /// records show the domain survey happening in the reasoning channel —
+    /// and the text-or-reasoning drain still recovers the answer when the
+    /// provider leaves `content` empty. Callers raise the budget accordingly:
+    /// reasoning tokens come out of the same `max_tokens` ceiling.
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let (provider_id, model) = match model_override {
+            Some((provider_id, model)) => (provider_id.to_owned(), model.to_owned()),
+            None => resolve_default_model(&self.provider_repo, &self.provider_model_repo)
+                .await
+                .ok_or_else(|| {
+                    AppError::Conflict(
+                        "learning generation unavailable: no enabled provider/model is configured"
+                            .into(),
+                    )
+                })?,
+        };
+        let cfg = resolve_provider_config(
+            &self.provider_repo,
+            &self.provider_model_repo,
+            &self.encryption_key,
+            &provider_id,
+            &model,
+            &self.workspace,
+        )
+        .await?;
+        // Transient provider blips (nginx 502 between us and the model) arrive
+        // in ~2s and would otherwise kill a whole growth batch instantly — the
+        // 2026-09-29 fresh-course run died that way on its first coach call.
+        // One quick retry matches learnhub's "整路重跑恰一次" failure
+        // semantics; real configuration errors (4xx) are not retried.
+        let mut attempt = 1;
+        loop {
+            match one_shot_completion_text_or_reasoning(
+                &cfg,
+                system,
+                vec![user_message(user)],
+                max_tokens,
+            )
+            .await
+            {
+                Err(error @ AppError::BadGateway(_)) if attempt == 1 => {
+                    attempt += 1;
+                    tracing::warn!(
+                        provider = %provider_id,
+                        model = %model,
+                        attempt,
+                        %error,
+                        "transient provider error on learning coach call — retrying once"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
+                other => return other,
+            }
+        }
     }
 }
 

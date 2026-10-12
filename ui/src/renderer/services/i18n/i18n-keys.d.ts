@@ -3387,6 +3387,7 @@ export type I18nKey =
   | 'learning.courseDescription'
   | 'learning.courseDescriptionPlaceholder'
   | 'learning.courses'
+  | 'learning.createSubmit'
   | 'learning.createTitle'
   | 'learning.deleteCourse'
   | 'learning.deleteCourseConfirm'
