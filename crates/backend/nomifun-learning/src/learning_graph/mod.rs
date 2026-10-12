@@ -94,9 +94,9 @@ pub struct ProposedNode {
     /// 学习分钟预算；常规 5–30，极困难最多 60（门放行 1–60）。
     #[serde(default)]
     pub minutes: Option<u16>,
-    /// 难度 1–5（标尺见 COACH_SYSTEM）：深度水位的申报面——本批最高难度
-    /// 不得超过已落库批次数 + 2（见 [`validate_batch_depth`]）。缺省按 2
-    /// （入门档）处理：早批漏报被收紧，晚批漏报不影响。
+    /// 难度 1–5（标尺见 COACH_SYSTEM）：呈现序（结构参考材料排序）与花名册
+    /// 仍消费；**深度水位确定性门已退役**（g3：档位比较是精度剧场）——难度
+    /// 诚实性由 AI 概念评审门作语义兜底。缺省按 2（入门档）处理。
     #[serde(default)]
     pub difficulty: Option<u8>,
     #[serde(default)]
@@ -303,77 +303,6 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
         ConceptTier::Teach => "能教",
     }
 }
-// ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
-
-/// Scope call: ONE light call that resolves what the goal description
-/// actually covers. The output is REFERENCE material for the coach prompt;
-/// failure degrades to a scope-free start, never to a hard error.
-const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先厘清这个目标到底覆盖什么。
-只回复一个 JSON 对象，形状如下：
-{
-  "goal": "完成整个学习后应达到的最终状态——可检验的能力描述",
-  "baseline": "学习者被假定的起点状态",
-  "scope": "一句话界定该目标覆盖什么、从哪里开始",
-  "blocks": ["大块概念一", "大块概念二"]
-}
-规则：
-- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
-- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知；只有用户明确说出自己已具备的知识或技能时，才照实记录。
-- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度，须与 goal 和 baseline 保持一致。
-- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。数量不固定：复杂的目标多列，简单的目标少列。
-- 用学习目标的语言书写。
-- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
-
-/// Resolved scope reference fed into the coach.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ScopeAnalysis {
-    pub goal: String,
-    pub baseline: String,
-    pub scope: String,
-    pub blocks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawScope {
-    #[serde(default)]
-    goal: String,
-    #[serde(default)]
-    baseline: String,
-    #[serde(default)]
-    scope: String,
-    #[serde(default, deserialize_with = "de_string_list")]
-    blocks: Vec<String>,
-}
-
-fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
-    let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
-    Some(ScopeAnalysis {
-        goal: parsed.goal.trim().to_owned(),
-        baseline: parsed.baseline.trim().to_owned(),
-        scope: parsed.scope.trim().to_owned(),
-        blocks: parsed.blocks,
-    })
-}
-
-/// One scope call, best-effort: any failure degrades to `None`.
-pub(crate) async fn analyze_scope(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    topic: &str,
-) -> Option<ScopeAnalysis> {
-    let user = format!("Learning goal: {topic}");
-    let raw = crate::generation::complete(
-        completer,
-        model_override,
-        SCOPE_SYSTEM,
-        &user,
-        crate::generation::LEARNING_GRAPH_SCOPE_MAX_TOKENS,
-    )
-    .await
-    .ok()?;
-    parse_scope_reply(&raw)
-}
-
 // ── Coach draft ────────────────────────────────────────────────────────────
 
 /// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
@@ -399,7 +328,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - teaches 标本课把该概念教到什么档位；assumes 标本课假定学习者已把该概念掌握到什么档位。
 - assumes 必须被已教账（既往批次已落库的 teaches）以不低于所假定档位覆盖，否则整批被打回——不存在的「先锁后面再补」。同批兄弟的 teaches 与本批铸名不构成供给：同批节点没有学习先后、必须同时就绪，谁也不依赖谁。
 【起点纪律】
-- 学习者的真实起点 = 【范围参考】里的基线（未声明即彻底零基础）。判断一个节点是不是合格入口，看基线，不看它在教材里的位置：「简单」「基础」「入门」「第一章」都不等于零基础可起步。
+- 学习者的真实起点 = 【学习目标】里的基础声明（未声明即彻底零基础）。判断一个节点是不是合格入口，看基线，不看它在教材里的位置：「简单」「基础」「入门」「第一章」都不等于零基础可起步。
 - 零基础校验：入口节点直接用到的每个概念，要么本节点就教它（写进 teaches、随批铸名），要么属于课程外通用常识（时间、方位、日常活动一类）；既像常识又像本课概念的两可词，按概念对待。
 - 「入门教材第一章」不等于零基础入口：第一章默认读者已带着该领域的日常底子，零基础学习者没有——这些概念只是离目标更近的台阶，不是入口。例：目标「业余段位围棋」的真入口是「数出棋盘上一块棋的气」，而不是「用大雪崩定式处理小目挂角」；目标「家庭手冲咖啡」的真入口是「按粉水比称出一次冲煮的粉与水」，而不是「用三段注水矫正萃取率」。
 - 入口素材从学习目标「往下问」得来：目标只是路线的上层，它依赖的通用语言——操作工具、认读记号、基本量与单位、分类与命名、简单判断与比较——才是入口层的素材。对目标逐层往下追问「基线学习者现在连什么都不会，第一步从哪算起」，把最底层那一格摆出来；起点够不够低的唯一标准是基线学习者今天拿到节点就能开始，而不是它长得像该方向的入门课。
@@ -408,8 +337,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【节点纪律】
 - 节点是单次学习会话（动作句），常规 5-30 分钟，极困难最多 60 分钟。
 - 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
-- 难度标尺（difficulty 1-5，如实申报）：1=生活经验直接上手；2=单概念入门（认读、模仿、单步操作）；3=单概念应用（多步计算、变式练习）；4=多概念综合/形式化引入（记号体系、复合结构）；5=严格证明与抽象推理。
-- 深度水位（硬门）：本批最高难度 ≤ 已落库批次数 + 2。台阶只解决「能不能长」，深度要分批爬：形式化/证明类（4-5）等台阶铺满低档之后再长；批内保留梯度，不要全部落在同一档。
+- 难度标尺（difficulty 1-5，如实申报）：1=生活经验直接上手；2=单概念入门（认读、模仿、单步操作）；3=单概念应用（多步计算、变式练习）；4=多概念综合/形式化引入（记号体系、复合结构）；5=严格证明与抽象推理。形式化/证明类内容不得压档。
 - 一次会话能消化的新东西有限：新授概念是会话的稀缺资源，一个节点通常只引入 1 个核心概念、至多 2 个，标题相应只写一个动作；会话时长用练习与变式撑，不用多讲几个概念撑——把一章的新概念塞进一个节点不是自含，是过载，正路是拆成台阶。
 - 同一主题可螺旋重现（不同深度、不同动作词），标题不得完全相同。
 - 从易到难：新节点优先长在当前就绪前沿的临近难度上，不突兀拔高。
@@ -432,83 +360,107 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 4. 本批新增节点数 ≤ 缺口数；
 5. 每个节点的起点假设都在基线或已教账内——没有把「教材第一章」当零基础入口，也没有为了覆盖目标方向长出基线够不着的节点；
 6. 每个节点的 purpose 都有日常经验切口，且教的是还需要教的学科概念——纯生活动作（成人已会的）和写不出切口的中层内容，都换掉。
-7. 每个节点的 difficulty 都按标尺如实申报，且本批最高难度不超水位（已落库批次数 + 2）。
+7. 每个节点的 difficulty 都按标尺如实申报（形式化/证明类不得压档）。
 【输出】
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
 
 /// Everything the coach needs, rendered once into the opening user message.
+/// 字段序不是渲染序——渲染按 g3 裁定的 9 块注意力序（见 [`CoachContext::render`]）。
 #[derive(Debug, Clone, Default)]
 pub struct CoachContext {
-    /// 学习目标（scope 解析出的 goal，回退课程标题）。
+    /// 块 1：学习目标（课程行 learning_goal，回退标题）。
     pub goal: String,
-    /// 基线/范围参考（scope 解析，可为空）。
-    pub scope_reference: String,
-    /// 花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」；
+    /// 块 1 附注：程度声明（结构产物标量回执；空 = 未提供）。
+    pub proficiency_statement: String,
+    /// 块 1 附注：基础声明（地形产物回执；空 = 纯零基础假设）。
+    pub learner_basis: String,
+    /// 块 2：结构参考材料——全量块摊开（learnhub reference.rs 行格式，纯结构
+    /// 事实、不裁剪候选面、不限批范围；教练可围绕参考装箱也可自拟）。
+    pub structure_reference: String,
+    /// 块 3：前置地形门口（`- [G1]（硬前置）判据` 行列表；首批入口重点参照、
+    /// 其后软参照；空 = 无结构快照，教练自行盘点）。
+    pub terrain_doors: String,
+    /// 块 5：花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」；
     /// 卡点节点行带 ⚑ 前缀。
     pub roster: String,
-    /// 已教概念账（canonical@最高档 的列表）。
+    /// 块 6：已教概念账（canonical@最高档 的列表）。
     pub taught_summary: String,
-    /// 覆盖读数（共用存量 met/skipped/pending + 概念档位足迹；纯展示）。
+    /// 块 7：覆盖读数（共用存量 met/skipped/pending + 概念档位足迹；纯展示）。
     pub coverage_gauge: String,
-    /// 行为摘要（近窗趋势/卡点/保留率；空窗为空串，整块省略）。
+    /// 块 8：行为摘要（近窗趋势/卡点/保留率；空窗为空串，整块省略）。
     pub behavior_digest: String,
-    /// 当前就绪节点数（缺口 = READY_TARGET − ready）。
+    /// 块 4：当前就绪节点数（缺口 = READY_TARGET − ready）。
     pub ready_count: usize,
-    /// 登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
+    /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
-    /// 前置地形门口（结构产物 terrain 的 G 判据，`- [G1]（硬前置）判据` 行
-    /// 列表；空 = 课程无结构快照，教练自行盘点）。g2 裁决：地形门口是入口
-    /// 域盘点的结构化替代，首批重点呈现。
-    pub terrain_doors: String,
 }
 
 impl CoachContext {
+    /// 9 块渲染，顺序即注意力序（g3 裁决）：学习目标（+程度/基础声明）→
+    /// 结构参考材料 → 地形门口 → 当前就绪 → 花名册 → 已教概念账 →
+    /// 覆盖读数（纯展示）→ 行为摘要 → 登记表切片。
     pub(crate) fn render(&self) -> String {
         let gap = READY_TARGET.saturating_sub(self.ready_count);
         let mut text = String::new();
+        // 块 1：学习目标（+程度/基础声明附注）。
         text.push_str(&format!("【学习目标】\n{}\n", self.goal));
-        if !self.scope_reference.is_empty() {
-            text.push_str(&format!("\n【范围参考】\n{}\n", self.scope_reference));
+        if !self.proficiency_statement.is_empty() || !self.learner_basis.is_empty() {
+            text.push_str(&format!(
+                "（程度声明：{}\n基础声明：{}\n）\n",
+                if self.proficiency_statement.is_empty() { "未声明" } else { &self.proficiency_statement },
+                if self.learner_basis.is_empty() { "未声明（按纯零基础处理）" } else { &self.learner_basis },
+            ));
         }
-        // 首级判据（learnhub 同款机制的裁剪版）：前沿为空（花名册为空）时本批
-        // 铺的是坡道的第一级，裁决契约与常规批次不同——放在上下文最前（学习
-        // 目标之后、一切机制读数之前），先于细节占领注意力。有地形门口时首批
-        // 照门口落节点（g2：门口是入口域盘点的结构化替代）。
-        if self.roster.is_empty() {
-            if self.terrain_doors.is_empty() {
-                text.push_str(
-                    "\n【首级判据——本批是坡道的第一级台阶】\n\
-                     1. 先回答再动笔：零基础走到下面的目标，此刻最该并行学哪几个底层域？把域清单写进 note，每个域挑最底层的一格摆一个入口节点，直到铺满缺口。列域时逐个再往下问一层：「这个域的入口域是什么」——底层方向常常比目标还多。\n",
-                );
+        // 块 2：结构参考材料（全量块摊开；纯参考，不裁剪候选面、不做判定）。
+        if !self.structure_reference.is_empty() {
+            text.push_str(&format!(
+                "\n【结构参考材料（全量块摊开：课程内参考地图，只回答「这门课有哪些知识地形」；它是参考不是限制——围绕它装箱或自拟都可，学习顺序权威在你）】\n{}\n",
+                self.structure_reference
+            ));
+        }
+        // 块 3：前置地形门口（首批入口重点参照；其后软参照）。
+        if !self.terrain_doors.is_empty() {
+            let framing = if self.roster.is_empty() {
+                "首批入口重点参照：本批节点逐门落在门口判据的底层台阶上——每个入口节点 = 门口之下最底层的、还需要教学才会的那一格，措辞可微调、可拆分，但不得换成更高层的对象；标「可自检」的门口已具备的格子不重教"
             } else {
-                text.push_str(&format!(
-                    "\n【首级判据——本批是坡道的第一级台阶】\n\
-                     1. 前置地形门口已由结构产物给出（见下）。本批节点逐门落在门口判据的底层台阶上——每个入口节点 = 门口之下最底层的、还需要教学才会的那一格，措辞可微调、可拆分，但不得换成更高层的对象，也不得漏掉任何一格；铺满缺口为止。标「可自检」的门口已具备的格子不重教。\n{}\n",
-                    self.terrain_doors
-                ));
-            }
+                "软参照：门口以下是假设已会的前置，不是本课教学单元"
+            };
+            text.push_str(&format!(
+                "\n【前置地形门口（{framing}）】\n{}\n",
+                self.terrain_doors
+            ));
+        }
+        // 首批凝练纪律（g3：删 6 条规则长文，收缩为结构材料摊开 + 门口参考 +
+        // 两条纪律 + 空账本机械地板）。
+        if self.roster.is_empty() {
             text.push_str(
-                "2. 方向性先决：每个入口 = 动作句 + 某个目标方向上的对象；与目标没有可辨认推进关系的通用技能句（「拆步骤」「说清输入输出」一类任何课程都能套的话）不合格。\n\
-                 3. 选型标尺（只在朝目标推进的候选之间比较）：① 单一行为单元——一次可完成的学习行为，不是一串待学内容；② 零复合概念——名字连缀两个可独立教学的对象（「与/和/及」连接），或要先解释名字本身才能开学的行话泛称，都不合格；③ 常识可直接起步——不依赖任何尚未教的概念。\n\
-                 4. 名词自检与降层：候选标题里的每个领域名词，问「这个名字要不要先教才能用」——要教的就不是入口；把它换成它所依赖的更底层动作，或由本节点直接从日常经验把它建立起来。警惕把「该方向教材的第一章」当入口——第一章默认读者已带着领域底子，那是中层，不是底层。\n\
-                 5. 宁简勿繁：同向候选之间取更简的那个；简是选择偏好，不是朝目标推进的替代品。\n",
+                "\n【首批纪律（花名册为空）】\n\
+                 - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
+                 - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。\n\
+                 - 已教账为空 ⇒ 本批 assumes 必须全空（机械地板：空账不供给任何概念）。\n",
             );
         }
+        // 块 4：当前就绪。
         text.push_str(&format!(
             "\n【当前就绪】{ready} 个（目标 7 个，缺口 {gap} 个）\n",
             ready = self.ready_count
         ));
-        text.push_str(&format!("\n【花名册】\n{}\n", if self.roster.is_empty() { "（课程还是空的——本批是第一批：全是入口节点，各自自带引入所教概念（teaches + 铸名），assumes 只能留空或假定课程外常识）" } else { &self.roster }));
+        // 块 5：花名册。
+        text.push_str(&format!("\n【花名册】\n{}\n", if self.roster.is_empty() { "（课程还是空的——本批是第一批：全是入口节点，各自自带引入所教概念（teaches + 铸名），assumes 必须全空）" } else { &self.roster }));
+        // 块 6：已教概念账。
         text.push_str(&format!(
             "\n【已教概念账】\n{}\n",
             if self.taught_summary.is_empty() { "（空——本批节点不得依赖本批产出的概念：assumes 只能留空或假定课程外常识，需要前提的概念留到下一批）" } else { &self.taught_summary }
         ));
+        // 块 7：覆盖读数（纯展示）。
         if !self.coverage_gauge.is_empty() {
             text.push_str(&format!("\n【覆盖读数（纯展示，不构成本批依据）】\n{}\n", self.coverage_gauge));
         }
+        // 块 8：行为摘要。
         if !self.behavior_digest.is_empty() {
             text.push_str(&format!("\n【行为摘要】\n{}\n", self.behavior_digest));
         }
+        // 块 9：概念登记表切片。
         if !self.registry_excerpt.is_empty() {
             text.push_str(&format!("\n【概念登记表（邻近切片，铸名前先查撞名）】\n{}\n", self.registry_excerpt));
         }
@@ -765,19 +717,20 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 - 本批节点同批落地、没有学习先后，因此批内互不依赖：节点只许依赖既往批次已教的概念，学习者可能从本批任意节点起步。凡以「批内先后顺序」为由的问题一律不成立——同批无顺序，但同批也无互相依赖。
 - 事实以材料为准：【已教概念账】【花名册】与待批 JSON 里的 mints 是全部事实源——名单里有的就是有，没有的才是没有；不要凭印象断言「某概念没人教过」。
 
-【判据——逐节点核对三条】
+【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
 2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
+4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
 【不算问题，一律不报】
-- 分钟数长短、要不要拆分节点、难度与措辞偏好、教学法优化建议——这些是教练职权。
+- 分钟数长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
 回复严格 JSON：
 - 通过：{ "verdict": "pass" }
-- 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title", "issue": "问题是什么，指名具体概念", "advice": "一条可执行的修复提示" } ] }
+- 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title|difficulty", "issue": "问题是什么，指名具体概念", "advice": "一条可执行的修复提示" } ] }
 问题按严重度降序，至多 8 条；每条都必须是你能从材料确认的硬伤，issue 写清缺的是什么概念；一条硬伤都没有就 pass，绝不为了「显得尽责」凑问题。只输出 JSON，不要任何解释。"#;
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,
@@ -822,58 +775,6 @@ pub(crate) async fn concept_review(
             }
         })
         .unwrap_or_default()
-}
-
-/// 形式化内容的特征词（标题侧；purpose 允许「为后续证明打基础」式方向性
-/// 提及，不作判据）。出现即要求难度 ≥3——形式化/证明类内容按标尺至少是
-/// 多概念综合（4）起步，标 1-2 属虚标（深度水位的逃逸口，确定性封堵）。
-const FORMAL_TITLE_MARKERS: [&str; 5] = ["证明", "严格", "形式化", "公理", "ε-δ"];
-
-/// 节点申报难度（缺省按入门档 2 收紧早批漏报）。
-fn declared_difficulty(node: &ProposedNode) -> u8 {
-    node.difficulty.unwrap_or(2)
-}
-
-/// 深度水位门（确定性）：本批最高难度 ≤ 已落库批次数 + 2，且 ≤ 5。台阶
-/// 只解决「能不能长」（依赖覆盖），深度水位解决「能长多快」——形式化/
-/// 证明类内容（难度 4-5）要等台阶铺满低档之后才合法，不是第二批就该
-/// 出场的东西（2026-09-29 实测：第二批直接长出 ε-δ/∀∃/黎曼和）。
-pub fn validate_batch_depth(
-    batch: &ProposedBatch,
-    applied_batches: usize,
-) -> Vec<GateError> {
-    let mut errors = Vec::new();
-    // 虚标护栏先跑：标题带形式化特征词的节点按 4 计入水位（并要求如实申报）。
-    let mut effective_max: u8 = 0;
-    for node in &batch.nodes {
-        let mut declared = declared_difficulty(node);
-        let formal = FORMAL_TITLE_MARKERS
-            .iter()
-            .any(|marker| node.title.contains(marker));
-        if formal && declared < 3 {
-            errors.push(GateError {
-                kind: "difficulty_dishonest",
-                message: format!(
-                    "节点「{}」的标题带形式化/证明特征（{marker_list}），申报难度 {declared} 属虚标——按标尺如实申报（形式化/证明类 ≥4）；若确属入门内容，把节点内容改为直观版本而不是压档位",
-                    node.title.trim(),
-                    marker_list = FORMAL_TITLE_MARKERS.join("/"),
-                ),
-            });
-            declared = declared.max(4);
-        }
-        effective_max = effective_max.max(declared);
-    }
-    let allowance = (applied_batches as u8).saturating_add(2).min(5);
-    if effective_max > allowance {
-        errors.push(GateError {
-            kind: "difficulty_leap",
-            message: format!(
-                "本批最高难度 {effective_max} 超过深度水位 {allowance}（本课程已落库 {applied} 批，每批最多涨 2 档）——台阶只解决「能不能长」，深度要分批爬：先把当前层跑满应用与变式，形式化/证明类内容（难度 4-5）留给后面的批次",
-                applied = applied_batches,
-            ),
-        });
-    }
-    errors
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1574,61 +1475,36 @@ mod tests {
         assert!(rendered.contains("把就绪节点补到 7 个") == false, "the number contract lives in the system prompt");
     }
 
-    /// 首批 + 地形门口菜单：首级判据第 1 条切换为「照门口落节点」并内联门口；
-    /// 非首批不渲染首级判据；无结构快照（门口为空）时教练自行盘点。
+    /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；
+    /// 非首批不渲染首批纪律、门口换软参照框架语。
     #[test]
-    fn coach_context_renders_terrain_doors_menu_on_first_batch() {
-        let with_doors = CoachContext {
+    fn coach_context_renders_structure_reference_and_first_batch_discipline() {
+        let with_material = CoachContext {
             roster: String::new(),
+            structure_reference: "- 块A(a)|主题描述|入门|主干一|无前置".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
             ..Default::default()
         };
-        let rendered = with_doors.render();
-        assert!(rendered.contains("前置地形门口已由结构产物给出"), "{rendered}");
+        let rendered = with_material.render();
+        assert!(rendered.contains("结构参考材料"), "{rendered}");
+        assert!(rendered.contains("- 块A(a)|主题描述|入门|主干一|无前置"), "{rendered}");
+        assert!(rendered.contains("首批入口重点参照"), "{rendered}");
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
-        assert!(!rendered.contains("先回答再动笔"), "doors replace the inline survey branch");
+        assert!(rendered.contains("首批纪律"), "{rendered}");
+        assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
 
         let doorless = CoachContext { roster: String::new(), ..Default::default() };
         let rendered = doorless.render();
-        assert!(rendered.contains("先回答再动笔"), "{rendered}");
+        assert!(rendered.contains("首批纪律"), "{rendered}");
+        assert!(!rendered.contains("前置地形门口"), "no doors block when snapshot missing: {rendered}");
 
         let later_batch = CoachContext {
             roster: "在学 | 节点A".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解方程".into(),
             ..Default::default()
         };
-        assert!(!later_batch.render().contains("首级判据"));
-    }
-
-    /// 深度水位门：难度随已落库批次数爬升（每批 +2，封顶 5）；标题带形式化
-    /// 特征词而申报低档 = 虚标，按 4 计入并要求如实申报。
-    #[test]
-    fn validate_batch_depth_caps_by_applied_batches() {
-        let mut formal = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
-        formal.difficulty = Some(4);
-        let mut plain = node("在数轴上表示一个数", vec![], vec![]);
-        plain.difficulty = Some(2);
-
-        // 第一批（0 批落库，水位 2）：入门批合法，形式化批打回。
-        let errors = validate_batch_depth(&batch_of(vec![plain.clone()]), 0);
-        assert!(errors.is_empty(), "{errors:?}");
-        let errors = validate_batch_depth(&batch_of(vec![formal.clone()]), 0);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].kind, "difficulty_leap");
-
-        // 漏报按入门档收紧：第一批合法（2 ≤ 2），但内容带形式化特征词 →
-        // 虚标打回，且按 4 计入水位 → 同时超水位。
-        let mut undeclared = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
-        undeclared.difficulty = None;
-        let errors = validate_batch_depth(&batch_of(vec![undeclared]), 0);
-        assert!(
-            errors.iter().any(|e| e.kind == "difficulty_dishonest"),
-            "{errors:?}"
-        );
-        assert!(errors.iter().any(|e| e.kind == "difficulty_leap"), "{errors:?}");
-
-        // 两批落库（水位 4）：形式化批放行。
-        let errors = validate_batch_depth(&batch_of(vec![formal]), 2);
-        assert!(errors.is_empty(), "{errors:?}");
+        let rendered = later_batch.render();
+        assert!(!rendered.contains("首批纪律"), "later batches: no first-batch discipline");
+        assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
     }
 }

@@ -40,7 +40,7 @@ pub(crate) const REFLECTION_GRADING_MAX_TOKENS: u32 = 2048;
 /// Pre-generation scope analysis: a coarse block checklist JSON. Generous
 /// budget so a complex goal can enumerate a long, strictly-complete
 /// checklist without the reply being cut off mid-array.
-pub(crate) const LEARNING_GRAPH_SCOPE_MAX_TOKENS: u32 = 8192;
+pub(crate) const OUTLINE_SCOPE_MAX_TOKENS: u32 = 8192;
 /// Coach growth batch: ≤7 nodes with concept references + mints + notes.
 /// Coach calls run with thinking ON (see [`complete_coach`]) and reasoning
 /// tokens share this output ceiling with the JSON reply — learnhub's coach
