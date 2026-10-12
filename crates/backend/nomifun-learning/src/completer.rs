@@ -26,4 +26,20 @@ pub trait LearningCompleter: Send + Sync {
         user: &str,
         max_tokens: u32,
     ) -> Result<String, AppError>;
+
+    /// Judgment-heavy planning call (learning-graph coach): thinking stays ON
+    /// so the model can actually deliberate (survey entry domains, descend the
+    /// prerequisite ladder) before emitting the JSON contract; the drain still
+    /// prefers `content` and only falls back to the reasoning channel when the
+    /// provider leaves it empty. The default delegates to [`complete`] so test
+    /// doubles and conservative implementors keep working.
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        self.complete(model_override, system, user, max_tokens).await
+    }
 }

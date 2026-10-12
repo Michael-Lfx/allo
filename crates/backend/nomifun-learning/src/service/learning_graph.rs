@@ -12,6 +12,11 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
+/// 生长修复循环的总稿数上限（首稿 + 至多 N-1 次打回重裁）。结构门/概念评审
+/// 打回时把报告喂回教练重裁再试，而非直接失败；该上限只是成本/超时护栏，
+/// 并非"两次即弃"的语义。
+const GROWTH_MAX_DRAFTS: usize = 4;
+
 impl LearningService {
 
     // ── Endpoint proposal（建课向导第二步）───────────────────────────────
@@ -177,10 +182,17 @@ impl LearningService {
             let spawn_override = spawn_override
                 .as_ref()
                 .map(|(provider, model)| (provider, model.as_str()));
-            let _ = service
-                .regen_compass(&course, &owner, spawn_override)
-                .await;
-            let _ = service.kick_growth(&owner, &course, true, spawn_override).await;
+            // 并行：罗盘开思考后要画约一分钟，串行会把首生长再拖一分钟；
+            // 首批上下文本就不加载罗盘，生长不依赖它。
+            let compass = service.regen_compass(&course, &owner, spawn_override);
+            let growth = service.kick_growth(&owner, &course, true, spawn_override);
+            let (compass_result, growth_result) = tokio::join!(compass, growth);
+            if let Err(error) = compass_result {
+                tracing::warn!(course = course.as_str(), %error, "initial compass regen failed");
+            }
+            if let Err(error) = growth_result {
+                tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
+            }
         });
 
         self.course_detail(&course_id, Some(user_id)).await
@@ -295,6 +307,15 @@ impl LearningService {
     ) -> Result<(), AppError> {
         let course_id = &engine.course_id;
         let _run = self.begin_growth_run(course_id);
+        let model_label = match engine.model_override() {
+            Some((provider, model)) => format!("{}/{}", provider.as_str(), model),
+            None => "default".to_owned(),
+        };
+        tracing::info!(
+            course = course_id.as_str(),
+            model = %model_label,
+            "learning graph growth run started"
+        );
         // phase 字段对齐前端过程视图的形状约定（started/round/failed）。
         self.emit_graph_event(
             course_id,
@@ -410,21 +431,70 @@ impl LearningService {
             .model_override
             .as_ref()
             .map(|(provider, model)| (provider, model.as_str()));
-        let context = self.build_coach_context(course_id, engine, completer.as_ref()).await?;
+        let mut context = self.build_coach_context(course_id, engine, completer.as_ref()).await?;
+        // 首批先盘点后起草：入口域盘点是独立调用，只看目标与基线——8 条大学级
+        // 终点锚不出现在它的视野里，锚定从结构上断掉（教练随后照菜单落节点）。
+        // 盘点失败降级为空，教练退回自行盘点（首级判据的内联分支）。
+        if context.roster.is_empty() && context.entry_survey.is_empty() {
+            let survey = crate::learning_graph::survey_entry_domains(
+                completer.as_ref(),
+                model_override,
+                &context.goal,
+                &context.scope_reference,
+            )
+            .await;
+            if let Some(domains) = survey {
+                tracing::info!(
+                    course = course_id.as_str(),
+                    domains = domains.len(),
+                    "entry-domain survey completed for first batch"
+                );
+                context.entry_survey = crate::learning_graph::render_entry_survey(&domains);
+            }
+        }
+        tracing::info!(
+            course = course_id.as_str(),
+            prompt_chars = context.render().len(),
+            "coach context assembled"
+        );
 
-        // 至多两稿：首稿 + 一次打回重裁（结构门与概念评审共用重裁预算）。
+        // 修复循环：教练起草 → 结构门/概念评审打回时把报告喂回教练重裁再试，
+        // 直到某一稿同时过门与评审即落库；仅当重裁预算耗尽才失败。
         let mut batch = crate::learning_graph::coach_draft(
             completer.as_ref(),
             model_override,
             &context,
         )
         .await?;
-        for attempt in 0..2 {
+        tracing::info!(
+            course = course_id.as_str(),
+            draft = 1,
+            nodes = batch.nodes.len(),
+            mints = batch.mints.len(),
+            batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+            "coach proposed growth batch"
+        );
+        let mut draft_no = 1usize;
+        loop {
             let gates = self.gate_batch(course_id, &batch).await?;
             if !gates.is_empty() {
-                if attempt == 1 {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    draft = draft_no,
+                    gate_count = gates.len(),
+                    report = %crate::learning_graph::format_gate_report(&gates),
+                    "growth batch rejected by structural gates"
+                );
+                if draft_no >= GROWTH_MAX_DRAFTS {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        drafts = draft_no,
+                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+                        "growth failed: structural gates rejected every draft"
+                    );
                     return Err(AppError::UnprocessableEntity(format!(
-                        "生长批次两稿均未通过结构门：\n{}",
+                        "生长批次 {} 稿均未通过结构门：\n{}",
+                        draft_no,
                         crate::learning_graph::format_gate_report(&gates)
                     )));
                 }
@@ -436,9 +506,18 @@ impl LearningService {
                     completer.as_ref(),
                     model_override,
                     &context,
+                    &batch,
                     &crate::learning_graph::format_gate_report(&gates),
                 )
                 .await?;
+                draft_no += 1;
+                tracing::info!(
+                    course = course_id.as_str(),
+                    draft = draft_no,
+                    nodes = batch.nodes.len(),
+                    batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+                    "coach redrafted growth batch after gate rejection"
+                );
                 continue;
             }
             let problems = crate::learning_graph::concept_review(
@@ -449,9 +528,23 @@ impl LearningService {
             )
             .await;
             if !problems.is_empty() {
-                if attempt == 1 {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    draft = draft_no,
+                    problem_count = problems.len(),
+                    report = %crate::learning_graph::format_review_problems(&problems),
+                    "growth batch rejected by concept review"
+                );
+                if draft_no >= GROWTH_MAX_DRAFTS {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        drafts = draft_no,
+                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+                        "growth failed: concept review rejected every draft"
+                    );
                     return Err(AppError::UnprocessableEntity(format!(
-                        "生长批次两稿均未通过概念评审：\n{}",
+                        "生长批次 {} 稿均未通过概念评审：\n{}",
+                        draft_no,
                         crate::learning_graph::format_review_problems(&problems)
                     )));
                 }
@@ -463,10 +556,23 @@ impl LearningService {
                     completer.as_ref(),
                     model_override,
                     &context,
+                    &batch,
                     &crate::learning_graph::format_review_problems(&problems),
                 )
                 .await?;
+                draft_no += 1;
+                tracing::info!(
+                    course = course_id.as_str(),
+                    draft = draft_no,
+                    nodes = batch.nodes.len(),
+                    batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+                    "coach redrafted growth batch after concept-review rejection"
+                );
+                continue;
             }
+            // 门与评审都过：立即落库，不再对同一稿重复评估（评审非确定，
+            // 重复跑可能把已过稿误杀）。
+            break;
         }
         if batch.nodes.is_empty() {
             // 空手批：不落档案（run_growth 删 pending 行），终点裁决仍生效
@@ -591,6 +697,7 @@ impl LearningService {
             behavior_digest,
             ready_count,
             registry_excerpt,
+            entry_survey: String::new(),
         })
     }
 
@@ -785,10 +892,14 @@ impl LearningService {
         course_id: &LearningCourseId,
         batch: &crate::learning_graph::ProposedBatch,
     ) -> Result<Vec<crate::learning_graph::GateError>, AppError> {
-        // 已教账（名字 → 最高档）：全部课程的 teaches。
+        // 已教账（名字 → 最高档）：全部**存活**课程的 teaches（孤儿课时不算
+        // 供给，口径与 taught_ledger 一致）。
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT reg.canonical, lc.tier FROM learning_lesson_concepts lc \
              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
              WHERE lc.role = 'teaches'",
         )
         .fetch_all(&self.pool)
@@ -826,13 +937,27 @@ impl LearningService {
         .into_iter()
         .collect();
 
-        Ok(crate::learning_graph::validate_batch(
+        let mut errors = crate::learning_graph::validate_batch(
             batch,
             &coverage,
             &registry_names,
             &endpoint_titles,
             &existing_titles,
-        ))
+        );
+        // 深度水位：已落库批次数决定本批允许的最高难度（每批最多涨 2 档）。
+        let applied_batches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        errors.extend(crate::learning_graph::validate_batch_depth(
+            batch,
+            applied_batches.max(0) as usize,
+        ));
+        Ok(errors)
     }
 
     /// 落库：铸名 → 节点 → 概念网 → 完成裁决 → 批次档案，单事务。
@@ -916,8 +1041,8 @@ impl LearningService {
             sqlx::query(
                 "INSERT INTO learning_lessons \
                  (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-                  content_generated) \
-                 VALUES (?, ?, ?, '', ?, ?, ?, 0)",
+                  difficulty, content_generated) \
+                 VALUES (?, ?, ?, '', ?, ?, ?, ?, 0)",
             )
             .bind(lesson_id.as_str())
             .bind(&module_id)
@@ -925,6 +1050,7 @@ impl LearningService {
             .bind(node.purpose.trim())
             .bind(next_position + offset as i64)
             .bind(minutes)
+            .bind(i64::from(node.difficulty.unwrap_or(2)))
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
@@ -1034,10 +1160,17 @@ impl LearningService {
 
     // ── Readiness（就绪集合的读取侧）────────────────────────────────────
 
-    /// 全局已教账：concept_id → 最高已教档位（跨课程）。
-    async fn taught_ledger(&self) -> Result<crate::learning_graph::ConceptCoverage, AppError> {
+    /// 全局已教账：concept_id → 最高已教档位（跨课程，但只计**存活课程**——
+    /// 已删课程的孤儿课时不再供给：它们不可达、不可推荐，却会把新课的入口
+    /// 层向上顶（2026-09-29 实测：删课重建后新课首批直接长出 ε-δ/∀∃，因为
+    /// 幽灵供给「已覆盖」了底层格）。
+    pub(super) async fn taught_ledger(&self) -> Result<crate::learning_graph::ConceptCoverage, AppError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT concept_id, tier FROM learning_lesson_concepts WHERE role = 'teaches'",
+            "SELECT lc.concept_id, lc.tier FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             WHERE lc.role = 'teaches'",
         )
         .fetch_all(&self.pool)
         .await
@@ -1483,6 +1616,10 @@ impl LearningService {
         if !assumed_concepts.is_empty() {
             let mut query = sqlx::QueryBuilder::new(
                 "SELECT lc.concept_id, lc.lesson_id FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                    AND c.deleted_at IS NULL \
                  WHERE lc.role = 'teaches' AND lc.concept_id IN (",
             );
             let mut separated = query.separated(", ");
@@ -1729,7 +1866,7 @@ impl LearningService {
         // 跨课程来源：还有哪些别的课程在教这些概念。
         let mut other_courses: HashMap<String, Vec<String>> = HashMap::new();
         for row in &sqlx::query(
-            "SELECT lc.concept_id, c.title FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_courses c ON c.course_id = m.course_id              WHERE lc.role = 'teaches' AND m.course_id <> ?",
+            "SELECT lc.concept_id, c.title FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL              WHERE lc.role = 'teaches' AND m.course_id <> ?",
         )
         .bind(course_id.as_str())
         .fetch_all(&self.pool)

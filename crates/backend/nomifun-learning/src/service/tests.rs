@@ -1863,43 +1863,66 @@ teaching_style: crate::models::TeachingStyle::Standard,
 
     /// 图课程的目录级删除（不勾“同时删除复习数据”）：概念网引用随课时行
     /// 一并保留（复习体系继续引用），课程行消失即可——ADR-0009 之后不存在
-    /// 会泄漏的前置边表。
+    /// 目录删除（软删语义，ADR-0009 后续裁定）：课程行留墓碑（名称 +
+    /// deleted_at 状态位，遗留数据凭 course_id 归账），课时/模块/概念网边
+    /// 物理删除（不勾复习删除也一样——复习题不靠课时行续命），概念登记表
+    /// 保留；供给侧随之清零，删课重建后新课从真·零基础起步。
     #[tokio::test]
-    async fn graph_course_catalog_delete_keeps_lessons_and_concept_web() {
+    async fn graph_course_catalog_delete_tombstones_and_purges_content() {
         let (service, _knowledge, owner_id) = job_test_service().await;
         let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
-        service
-            .delete_course(
-                &nomifun_common::LearningCourseId::parse(&course_id).unwrap(),
-                &owner_id,
-                false,
-            )
-            .await
-            .unwrap();
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        // 删除前：种子课时把「向量基础」教到能教档，已教账有供给
+        //（taught_ledger 的键是 concept_id——供给侧行按 id 流转）。
         let pool = service.pool_for_tests();
-        let courses: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_courses WHERE course_id = ?",
+        let concept_id: String = sqlx::query_scalar(
+            "SELECT concept_id FROM learning_concept_registry WHERE canonical = '向量基础'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let ledger_before = service.taught_ledger().await.unwrap();
+        assert!(ledger_before.contains_key(&concept_id), "{:?}", ledger_before.keys());
+        service.delete_course(&course, &owner_id, false).await.unwrap();
+        // 墓碑：课程行还在，deleted_at 已置位；列表不再出现。
+        let (title, deleted_at): (String, Option<i64>) = sqlx::query_as(
+            "SELECT title, deleted_at FROM learning_courses WHERE course_id = ?",
         )
         .bind(&course_id)
         .fetch_one(pool)
         .await
         .unwrap();
-        assert_eq!(courses, 0, "the catalog row must disappear");
+        assert_eq!(title, "图课程");
+        assert!(deleted_at.is_some(), "tombstone must carry the deleted marker");
+        let listed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(listed, 0, "tombstoned course must leave the catalog list");
+        // 内容删净：课时、概念网边全空（不勾复习删除也一样）。
         let lessons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons")
             .fetch_one(pool)
             .await
             .unwrap();
-        assert_eq!(
-            lessons, 3,
-            "reviewable content (nodes + endpoint marker) must survive the catalog delete"
-        );
+        assert_eq!(lessons, 0, "course content must be purged on catalog delete");
         let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lesson_concepts")
             .fetch_one(pool)
             .await
             .unwrap();
-        assert_eq!(
-            refs, 2,
-            "concept web refs stay attached to their surviving lessons"
+        assert_eq!(refs, 0, "concept web refs go with their lessons");
+        // 概念登记表保留（未勾复习删除），但供给已清零——新课不再继承幽灵地基。
+        let registry: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(registry, 1, "registry survives the unchecked delete");
+        let ledger_after = service.taught_ledger().await.unwrap();
+        assert!(
+            !ledger_after.contains_key(&concept_id),
+            "purged lessons must stop supplying coverage: {ledger_after:?}"
         );
     }
 
@@ -2861,22 +2884,23 @@ async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
 }
 
 /// 生长落库路径（服务级）：scripted completer 让教练起草一个合法批次
-/// （铸名 + 两个批内自足节点），kick_growth 后批次经结构门与概念评审
+/// （铸名 + 两个互不依赖的入口节点），kick_growth 后批次经结构门与概念评审
 /// 落库——登记表、节点、概念网边、批次档案各就各位。
 #[tokio::test]
 async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
-    // 批内自足：极限 随批铸名并由首节点教到「知道」，第二节点假定同档
-    // ——结构门放行；评审 completer 返回同 JSON，problems 缺省为空即通过。
+    // 同批互不依赖：第二节点只假定既往批次已教的「向量基础」（种子节点 A
+    // 已教到能教档，已教账覆盖）——结构门放行；评审 completer 返回同 JSON，
+    // problems 缺省为空即通过。
     let batch_json = r#"{
         "nodes": [
             {"title": "用定义计算极限", "purpose": "首批基节点", "minutes": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
             {"title": "用极限法则求切线", "purpose": "衔接节点", "minutes": 20,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
-             "assumes": [{"name": "极限", "tier": "know"}]}
+             "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
