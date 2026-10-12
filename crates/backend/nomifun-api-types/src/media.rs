@@ -72,10 +72,13 @@ pub struct MediaCreditsCheckinRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaCreditsUsageByType {
+    #[serde(default)]
     pub server_time: String,
+    #[serde(default)]
     pub balance: i64,
     #[serde(default)]
     pub include_team_seat: bool,
+    #[serde(default)]
     pub list: Vec<MediaCreditsUsageTypeItem>,
 }
 
@@ -88,8 +91,11 @@ pub struct MediaCreditsUsageTypeItem {
     pub title: Option<String>,
     #[serde(default)]
     pub title_en: Option<String>,
+    #[serde(default)]
     pub total: i64,
+    #[serde(default)]
     pub used: i64,
+    #[serde(default)]
     pub remaining: i64,
     #[serde(default)]
     pub buckets: Vec<MediaCreditsUsageBucket>,
@@ -98,9 +104,13 @@ pub struct MediaCreditsUsageTypeItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaCreditsUsageBucket {
+    #[serde(default)]
     pub expire_at: Option<String>,
+    #[serde(default)]
     pub total: i64,
+    #[serde(default)]
     pub used: i64,
+    #[serde(default)]
     pub remaining: i64,
     #[serde(default)]
     pub source_code: Option<String>,
@@ -123,6 +133,22 @@ mod credit_history_tests {
     fn month_validation_is_strict_and_unicode_safe() {
         for value in ["2026-01", "2026-12", "0001-01"] { assert!(valid_credits_month(value)); }
         for value in ["2026-00", "2026-13", "2026-1", "0000-01", "2026-10&x=1", "你你-1", ""] { assert!(!valid_credits_month(value)); }
+    }
+
+    #[test]
+    fn cloud_usage_tolerates_missing_source_fields() {
+        let usage: MediaCreditsUsageByType = serde_json::from_value(serde_json::json!({
+            "list":[{"type":"PACK"}]
+        })).unwrap();
+        assert_eq!(usage.server_time, "");
+        assert_eq!(usage.balance, 0);
+        assert_eq!(usage.list.len(), 1);
+        assert_eq!(usage.list[0].total, 0);
+        assert_eq!(usage.list[0].remaining, 0);
+        assert!(usage.list[0].buckets.is_empty());
+        let bucket: MediaCreditsUsageBucket = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(bucket.expire_at.is_none());
+        assert_eq!(bucket.remaining, 0);
     }
 
     #[test]

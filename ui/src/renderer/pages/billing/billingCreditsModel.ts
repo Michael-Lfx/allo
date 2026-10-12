@@ -42,9 +42,22 @@ export function recordDate(record: Pick<IMediaCreditsCheckinRecord, 'dayKey' | '
 }
 
 export function expiringBuckets(usage: IMediaCreditsUsageByType) {
+  // A malformed server clock must not silently hide every batch; fall back to
+  // the local clock so valid future expiry dates still surface.
+  const serverNow = Date.parse(usage.serverTime);
+  const cutoff = Number.isFinite(serverNow) ? serverNow : Date.now();
   return usage.list.flatMap((source) => source.buckets
     .filter((bucket) => bucket.remaining > 0 && bucket.expireAt &&
-      Number.isFinite(Date.parse(bucket.expireAt)) && Date.parse(bucket.expireAt) > Date.parse(usage.serverTime))
+      Number.isFinite(Date.parse(bucket.expireAt)) && Date.parse(bucket.expireAt) > cutoff)
     .map((bucket) => ({ ...bucket, type: source.type })))
     .sort((a, b) => Date.parse(a.expireAt!) - Date.parse(b.expireAt!));
+}
+
+/**
+ * Track automatic values (today's month/date) only while the user has not
+ * chosen something else: `current` equal to the previous automatic value is
+ * replaced by `next`, any manual divergence is preserved.
+ */
+export function adoptAutomaticValue(previous: string, next: string, current: string): string {
+  return current === previous ? next : current;
 }

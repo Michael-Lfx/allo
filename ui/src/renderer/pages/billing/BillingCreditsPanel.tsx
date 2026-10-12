@@ -5,7 +5,7 @@ import { ipcBridge } from '@/common';
 import type { IMediaCreditsCheckinRecord, IMediaCreditsCheckinRecords, IMediaCreditsUsageByType } from '@/common/adapter/ipcBridge';
 import { useCredits } from '@renderer/hooks/context/CreditsContext';
 import { getCurrentCronTimeZone } from '@renderer/pages/cron/cronUtils';
-import { calendarDays, expiringBuckets, monthKey, recordDate, zonedDayKey } from './billingCreditsModel';
+import { adoptAutomaticValue, calendarDays, expiringBuckets, monthKey, recordDate, zonedDayKey } from './billingCreditsModel';
 
 type ReadState<T> = { status: 'loading' } | { status: 'ready'; data: T } | { status: 'error' };
 
@@ -29,14 +29,17 @@ export default function BillingCreditsPanel({ onPurchase, onPacks, onReady }: { 
   const [retry, setRetry] = useState(0);
   const [celebrate, setCelebrate] = useState(false);
   const receiptRef = useRef(credits.checkInReceipt);
-  const initialMonthRef = useRef(currentMonth);
+  // The server-resolved check-in day can differ from the local fallback within
+  // the same month (clock skew), so both the month and the selected day follow
+  // the automatic value until the user picks a different one.
+  const automaticDayRef = useRef({ month: currentMonth, date: todayDate });
   useEffect(() => {
-    if (currentMonth === initialMonthRef.current) return;
-    const previousMonth = initialMonthRef.current;
-    setMonth((value) => value === previousMonth ? currentMonth : value);
-    setSelected((value) => value === localDate ? todayDate : value);
-    initialMonthRef.current = currentMonth;
-  }, [currentMonth, localDate, todayDate]);
+    const previous = automaticDayRef.current;
+    if (previous.month === currentMonth && previous.date === todayDate) return;
+    automaticDayRef.current = { month: currentMonth, date: todayDate };
+    setMonth((value) => adoptAutomaticValue(previous.month, currentMonth, value));
+    setSelected((value) => adoptAutomaticValue(previous.date, todayDate, value));
+  }, [currentMonth, todayDate]);
   useEffect(() => {
     if (records.status !== 'loading' && usage.status !== 'loading') onReady();
   }, [records.status, usage.status, onReady]);

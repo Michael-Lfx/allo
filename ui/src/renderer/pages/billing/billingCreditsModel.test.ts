@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { calendarDays, expiringBuckets, recordDate, zonedDayKey } from './billingCreditsModel';
+import { adoptAutomaticValue, calendarDays, expiringBuckets, recordDate, zonedDayKey } from './billingCreditsModel';
 
 describe('credit history view model', () => {
   test('uses Monday-first fixed-size calendars, including leap months', () => {
@@ -24,5 +24,16 @@ describe('credit history view model', () => {
     const bucket = (expireAt: string | null, remaining: number) => ({ expireAt, remaining, total: 100, used: 0 });
     const actual = expiringBuckets({ serverTime: '2026-10-12T00:00:00Z', balance: 100, includeTeamSeat: true, list: [{ type: 'PACK', total: 100, used: 0, remaining: 100, buckets: [bucket('2027-01-01', 10), bucket('2026-10-01', 10), bucket(null, 10), bucket('2026-10-13', 20), bucket('2026-10-14', 0)] }] });
     expect(actual.map((row) => row.remaining)).toEqual([20, 10]);
+  });
+  test('keeps valid future batches when the server clock is malformed', () => {
+    const bucket = (expireAt: string | null, remaining: number) => ({ expireAt, remaining, total: 100, used: 0 });
+    const actual = expiringBuckets({ serverTime: 'garbage', balance: 100, includeTeamSeat: true, list: [{ type: 'PACK', total: 100, used: 0, remaining: 100, buckets: [bucket('2999-01-01T00:00:00Z', 20), bucket('2000-01-01T00:00:00Z', 10)] }] });
+    expect(actual.map((row) => row.remaining)).toEqual([20]);
+  });
+  test('tracks automatic month/date only while the user has not diverged', () => {
+    expect(adoptAutomaticValue('2026-11-01', '2026-11-02', '2026-11-01')).toBe('2026-11-02');
+    expect(adoptAutomaticValue('2026-10', '2026-11', '2026-10')).toBe('2026-11');
+    expect(adoptAutomaticValue('2026-11-01', '2026-11-02', '2026-10-20')).toBe('2026-10-20');
+    expect(adoptAutomaticValue('2026-10', '2026-11', '2026-08')).toBe('2026-08');
   });
 });

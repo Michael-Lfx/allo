@@ -1466,7 +1466,7 @@ const NomiSendBox: React.FC<{
       modelSelection.handleSelectModel,
       modelSelection.modelPicker,
       modelSelectionDisabled,
-        t,
+      t,
     ]
   );
 
