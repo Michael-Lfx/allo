@@ -524,20 +524,17 @@ impl LearningService {
         let taught = self.taught_sections_for_lessons(&teacher_ids).await?;
         let prerequisite_path = render_prerequisite_path(&assumes, &teachers, &taught);
 
-        // 3) 后续：同课程位于本课之后的节点（终点标记课时除外），按
-        //    position 升序——衔接参照，不是依赖关系。
+        // 3) 后续：同课程位于本课之后的节点，按 position 升序——衔接参照，
+        //    不是依赖关系。
         let upcoming_rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT l.position, l.title FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE m.course_id = ? \
                AND l.position > (SELECT position FROM learning_lessons WHERE lesson_id = ?) \
-               AND l.lesson_id NOT IN \
-                 (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?) \
              ORDER BY l.position, l.lesson_id",
         )
         .bind(course_id.as_str())
         .bind(lesson_id.as_str())
-        .bind(course_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -574,14 +571,12 @@ impl LearningService {
             forbidden_concepts = render_forbidden_descendants(&descendants);
         }
 
-        // 5) 本课程学习节点总数（终点标记课时不是学习节点）。
+        // 5) 本课程学习节点总数。
         let total_nodes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
-             WHERE m.course_id = ? AND l.lesson_id NOT IN \
-               (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?)",
+             WHERE m.course_id = ?",
         )
-        .bind(course_id.as_str())
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await

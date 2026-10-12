@@ -34,9 +34,9 @@ pub use learning_graph::ConceptTier;
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
-    DueReview, EndpointInput, EndpointUpdateInput, GenerateCourseRequest, GenerateLessonRequest,
+    DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
-    GraphEndpointView, GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
+    GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
     LessonView,
     ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,

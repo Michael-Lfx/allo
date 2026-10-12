@@ -53,13 +53,12 @@ impl LearningCourseSink for LiveLearningCourseSink {
         };
         let request = GenerateCourseRequest {
             // The agent tool surface only covers traditional courses; the
-            // learning-graph flow is HTTP/创建向导 only (endpoint anchors are
-            // confirmed in the wizard, not via the agent tool).
+            // learning-graph flow is HTTP/创建向导 only (structure generation
+            // is driven from the course wizard, not via the agent tool).
             course_kind: CourseKind::Traditional,
             knowledge_base_id: req.kb_id,
             description: req.description,
             domain: req.domain,
-            endpoints: Vec::new(),
             provider_id,
             model: req.model,
             mode,

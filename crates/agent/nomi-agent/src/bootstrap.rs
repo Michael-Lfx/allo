@@ -129,6 +129,7 @@ impl nomi_browser::extract::ExtractModel for SessionExtractModel {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
         let rx = crate::observation::stream_llm(
             self.provider.as_ref(),
@@ -191,6 +192,7 @@ impl SessionVisualLocator {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
 
         let rx = crate::observation::stream_llm(

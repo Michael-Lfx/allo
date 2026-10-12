@@ -1,7 +1,8 @@
 //! Learning-graph growth engine (ADR-0009): a course is never pre-built as a
-//! DAG. It starts from a handful of ENDPOINT ANCHORS (title + a one-line
-//! degree statement, stored as marker lessons) and GROWS one small batch of
+//! DAG. It starts from a single learning goal and GROWS one small batch of
 //! nodes at a time whenever the ready stock drops below the trigger level.
+//! Growth has no automatic terminal state — the learner closes a course by
+//! archiving it, and the machine never judges「长完了」(ADR-0010).
 //!
 //! Dependencies live entirely in the CONCEPT WEB: every node declares which
 //! concepts it `teaches` and which it `assumes`, each at a TIER
@@ -11,11 +12,17 @@
 //! NOW. Cross-course readiness falls out of the global concept registry.
 //!
 //! The coach is a SINGLE LLM call (the whole roster + coverage gauge +
-//! compass is injected into the prompt; a growth batch is ≤7 nodes, far too
-//! small to justify the old multi-round draft loop). Deterministic gates
-//! hold the decision power; one repair retry gets the gate report, then an
-//! independent AI concept review runs (advisory-but-blocking once, degraded
-//! to pass when unavailable).
+//! behavior digest is injected into the prompt; a growth batch is ≤7 nodes,
+//! far too small to justify the old multi-round draft loop). Deterministic
+//! gates hold the decision power; one repair retry gets the gate report,
+//! then an independent AI concept review runs (advisory-but-blocking once,
+//! degraded to pass when unavailable).
+//!
+//! The knowledge STRUCTURE artifact (spines/blocks/edges snapshot, gd.*
+//! contract) lives in [`structure_contract`] and stays reference-only: it
+//! feeds no gate, holds no content, and never touches the concept web.
+
+pub mod structure_contract;
 
 use std::collections::{HashMap, HashSet};
 
@@ -106,23 +113,13 @@ pub struct ConceptMint {
     pub definition: String,
 }
 
-/// 教练对一条终点锚的裁决：置完成或重开（双向，误标可逆——ADR-0009
-/// Amendment 1）。机器只落教练的裁决位，永不自动置位。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EndpointVerdict {
-    pub title: String,
-    pub completed: bool,
-}
-
-/// 一批生长提案：节点 + 铸名 + 教练裁决的终点完成位 + 批注。
+/// 一批生长提案：节点 + 铸名 + 批注。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProposedBatch {
     #[serde(default)]
     pub nodes: Vec<ProposedNode>,
     #[serde(default)]
     pub mints: Vec<ConceptMint>,
-    #[serde(default)]
-    pub completed_endpoints: Vec<EndpointVerdict>,
     #[serde(default)]
     pub note: String,
 }
@@ -155,13 +152,11 @@ pub type ConceptCoverage = HashMap<String, ConceptTier>;
 /// - **就绪即发布**：每条 assumes 必须被全局已教账（既往批次已落库的
 ///   teaches）以不低于所假定档位覆盖——同批兄弟的 teaches 与本批铸名不构成
 ///   供给：同批节点没有学习先后、必须同时就绪，谁也不依赖谁。不满足的节点
-///   不存在「入库后锁定」，直接打回；
-/// - 终点保护：完成裁决的标题必须是真实终点；节点不得冒用终点标题。
+///   不存在「入库后锁定」，直接打回。
 pub fn validate_batch(
     batch: &ProposedBatch,
     coverage: &ConceptCoverage,
     registry_names: &HashSet<String>,
-    endpoint_titles: &HashSet<String>,
     existing_titles: &HashSet<String>,
 ) -> Vec<GateError> {
     let mut errors = Vec::new();
@@ -243,10 +238,10 @@ pub fn validate_batch(
                 message: format!("批内节点标题重复：{title}"),
             });
         }
-        if existing_titles.contains(&key) || endpoint_titles.contains(&key) {
+        if existing_titles.contains(&key) {
             errors.push(GateError {
                 kind: "title_duplicate",
-                message: format!("节点标题与课程已有节点/终点重复：{title}"),
+                message: format!("节点标题与课程已有节点重复：{title}"),
             });
         }
         let minutes = node.minutes.unwrap_or(10);
@@ -295,22 +290,8 @@ pub fn validate_batch(
         }
     }
 
-    for verdict in &batch.completed_endpoints {
-        let key = verdict.title.trim().to_lowercase();
-        if !endpoint_titles.contains(&key) {
-            errors.push(GateError {
-                kind: "endpoint_unknown",
-                message: format!(
-                    "完成裁决的终点「{title}」不存在——终点保护：只能裁决已声明的终点",
-                    title = verdict.title.trim()
-                ),
-            });
-        }
-    }
-
     errors
 }
-
 /// 档位的中文显示名（提示词与门消息共用这一份，i18n 另有对应键）。
 pub fn tier_zh(tier: ConceptTier) -> &'static str {
     match tier {
@@ -320,7 +301,7 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
     }
 }
 
-/// 一条入口域盘点：域名 + 该域最底层一格的动作句 + 它服务的终点方向。
+/// 一条入口域盘点：域名 + 该域最底层一格的动作句 + 它服务的目标方向。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntryDomain {
     pub name: String,
@@ -378,12 +359,11 @@ fn parse_entry_survey(raw: &str) -> Option<Vec<EntryDomain>> {
 
 /// First-batch entry-domain survey: ONE thinking call that answers「零基础走到
 /// 目标，此刻最该并行学哪几个底层域、每个域的最底层一格是什么动作」BEFORE the
-/// coach sees the endpoint anchors or the gates. The split is deliberate —
-/// granular university-level endpoints anchor the entry level up to「教材第
-/// 一章」(the 2026-09-29 eight-endpoint course kept minting 中学层 entries);
-/// a survey that never sees them cannot be anchored by them, and the coach
-/// then drafts against a fixed menu. Failure degrades to None (the coach
-/// surveys inline, as before).
+/// coach sees the gates. The split is deliberate — granular university-level
+/// goals anchor the entry level up to「教材第一章」(the 2026-09-29 eight-endpoint
+/// course kept minting 中学层 entries); a survey that never sees the goal
+/// statement cannot be anchored by it, and the coach then drafts against a
+/// fixed menu. Failure degrades to None (the coach surveys inline, as before).
 pub(crate) async fn survey_entry_domains(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -396,7 +376,7 @@ pub(crate) async fn survey_entry_domains(
         model_override,
         ENTRY_SURVEY_SYSTEM,
         &user,
-        crate::generation::ENDPOINT_PROPOSAL_MAX_TOKENS,
+        crate::generation::ENTRY_SURVEY_MAX_TOKENS,
     )
     .await
     .ok()?;
@@ -421,9 +401,8 @@ pub(crate) fn render_entry_survey(domains: &[EntryDomain]) -> String {
 // ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
 
 /// Scope call: ONE light call that resolves what the goal description
-/// actually covers. The output is REFERENCE material for the coach prompt
-/// and the endpoint proposal; failure degrades to a scope-free start, never
-/// to a hard error.
+/// actually covers. The output is REFERENCE material for the coach prompt;
+/// failure degrades to a scope-free start, never to a hard error.
 const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先厘清这个目标到底覆盖什么。
 只回复一个 JSON 对象，形状如下：
 {
@@ -440,7 +419,7 @@ const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先�
 - 用学习目标的语言书写。
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
 
-/// Resolved scope reference fed into the coach / endpoint proposal.
+/// Resolved scope reference fed into the coach.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScopeAnalysis {
     pub goal: String,
@@ -490,136 +469,6 @@ pub(crate) async fn analyze_scope(
     parse_scope_reply(&raw)
 }
 
-// ── Endpoint proposal (course creation) ────────────────────────────────────
-
-/// Coach 提议的一条终点：标题 + 一句程度声明。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProposedEndpoint {
-    pub title: String,
-    #[serde(default)]
-    pub goal_note: String,
-}
-
-const ENDPOINT_PROPOSAL_SYSTEM: &str = r#"你负责为一个新的学习目标提议若干条「终点锚」。终点是学习的方向标记：学习者抵达终点时应当具备什么能力。
-只回复一个 JSON 对象，形状如下：
-{
-  "endpoints": [
-    { "title": "终点名（名词短语，如：独立完成一元二次方程的求解）", "goal_note": "一句程度声明：抵达时能做到什么、到什么程度" }
-  ]
-}
-规则：
-- 每条终点必须指向一个可检验的能力状态，而不是「学完某本书」这类过程描述。
-- 目标单一清晰时提议 1 条即可；目标含多个相互独立的努力方向时才拆成多条，数量不封顶——但每条都必须是真实独立的努力方向，不为凑数硬拆。
-- 终点标题用学习目标的语言书写，20 字以内。
-- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
-
-/// Propose initial endpoints for a new course (best-effort: failure returns
-/// an empty list — the user types endpoints by hand in the wizard).
-pub(crate) async fn propose_endpoints(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    topic: &str,
-    scope: Option<&ScopeAnalysis>,
-) -> Vec<ProposedEndpoint> {
-    let mut user = format!("学习目标：{topic}");
-    if let Some(scope) = scope {
-        if !scope.goal.is_empty() {
-            user.push_str(&format!("\n\n目标解析：{}", scope.goal));
-        }
-        if !scope.blocks.is_empty() {
-            user.push_str(&format!("（覆盖：{}）", scope.blocks.join("、")));
-        }
-    }
-    let Ok(raw) = crate::generation::complete_coach(
-        completer,
-        model_override,
-        ENDPOINT_PROPOSAL_SYSTEM,
-        &user,
-        crate::generation::ENDPOINT_PROPOSAL_MAX_TOKENS,
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    #[derive(Deserialize)]
-    struct RawEndpoints {
-        #[serde(default, deserialize_with = "de_option_list")]
-        endpoints: Vec<RawEndpoint>,
-    }
-    #[derive(Deserialize)]
-    struct RawEndpoint {
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        goal_note: String,
-    }
-    crate::generation::parse_json_object::<RawEndpoints>(&raw)
-        .ok()
-        .map(|parsed| {
-            parsed
-                .endpoints
-                .into_iter()
-                .filter_map(|endpoint| {
-                    let title = endpoint.title.trim().to_owned();
-                    if title.is_empty() {
-                        None
-                    } else {
-                        Some(ProposedEndpoint { title, goal_note: endpoint.goal_note.trim().to_owned() })
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-// ── Compass ────────────────────────────────────────────────────────────────
-
-const COMPASS_SYSTEM: &str = r#"你是学习图的统筹规划者，负责重画「罗盘」：把学习者当前水平到每条终点程度声明之间的差距，分解为学习者要具备的「他能做的事」——每一项是那个程度状态的一个构成部分。
-输入是课程的学习目标、全部终点锚（含程度声明），必要时附已教概念概览（现状参照：已覆盖的面标 ☑ 并从简，剩余路线铺未覆盖的差距）。
-输出 Markdown（不写代码围栏、不用任何 # 标题）：每个终点一节——节头一行 `- **终点名**：`（照抄终点锚标题），节下若干条目，每条一行，格式：
-`- **阶段名**：一句话（推进程度声明的哪个维度）（深度：知道|会用|能教）（切入：建议入手表征）（台阶：面内从易到难的递进链，箭头相连）`
-规则：
-- 程度驱动：每条都要说得出它推进程度声明的哪个维度（深度/广度/综合运用）；只复述教科书目录、说不出「为了什么」的条目不合格；这段距离上的主要能力面都要铺到，铺不到目标的量级即不合格。
-- 完整覆盖：先从领域知识结构出发枚举，再从「学习者在实际中要做的事」出发枚举，两边对照——只出现在一边的整块能力就是疑似遗漏，补进清单；宁多勿少，能力面太多时把同质细面并成粗条目，覆盖不缩、条目更粗。
-- 条目并列，不表达先后：条内的台阶是难度递进不是学习顺序；「底座/基础」一类措辞不构成先学后学的依据。
-- 深度档按该终点需要标；同一能力面可以出现在多个终点下（同时服务多个方向是常态），各标各的深度。
-- 切入表征按本学科的实际传统取材（图示、符号式、实物操作、言语描述、图表清单……不受这份名单限制）。
-- 不写时间估算、不写进度百分比、不写「将完成/保证」；用「方向/大致/候选」等措辞。
-- 全部条目合计不超过约 6000 字——路线是方向草图，不是全图集。"#;
-
-/// Draw (or redraw) the compass for a course. Failure surfaces as an error —
-/// the compass is regenerated in the background and retried on the next
-/// endpoint change or growth.
-pub(crate) async fn draw_compass(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    goal: &str,
-    endpoints: &[(String, String)],
-    taught_summary: Option<&str>,
-) -> Result<String, AppError> {
-    let mut user = format!("学习目标：{goal}\n\n终点锚：");
-    if endpoints.is_empty() {
-        user.push_str("（暂无）");
-    }
-    for (title, note) in endpoints {
-        user.push_str(&format!("\n- {title}：{note}"));
-    }
-    if let Some(taught) = taught_summary {
-        if !taught.is_empty() {
-            user.push_str(&format!("\n\n已教概念：{taught}"));
-        }
-    }
-    // 罗盘是规划产物（双视角枚举 + 表征轨），思考开启——与教练/评审同通道。
-    crate::generation::complete_coach(
-        completer,
-        model_override,
-        COMPASS_SYSTEM,
-        &user,
-        crate::generation::COMPASS_MAX_TOKENS,
-    )
-    .await
-}
-
 // ── Coach draft ────────────────────────────────────────────────────────────
 
 /// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
@@ -638,7 +487,6 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
     }
   ],
   "mints": [ { "canonical": "新概念名（只登记名字，铸名≠教）", "aliases": ["别名"], "definition": "一句话定义" } ],
-  "completed_endpoints": [],
   "note": "一句话批注：本批为什么长这些节点"
 }
 【档位】
@@ -648,10 +496,10 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 【起点纪律】
 - 学习者的真实起点 = 【范围参考】里的基线（未声明即彻底零基础）。判断一个节点是不是合格入口，看基线，不看它在教材里的位置：「简单」「基础」「入门」「第一章」都不等于零基础可起步。
 - 零基础校验：入口节点直接用到的每个概念，要么本节点就教它（写进 teaches、随批铸名），要么属于课程外通用常识（时间、方位、日常活动一类）；既像常识又像本课概念的两可词，按概念对待。
-- 「入门教材第一章」不等于零基础入口：第一章默认读者已带着该领域的日常底子，零基础学习者没有——这些概念只是离终点更近的台阶，不是入口。例：目标「业余段位围棋」的真入口是「数出棋盘上一块棋的气」，而不是「用大雪崩定式处理小目挂角」；目标「家庭手冲咖啡」的真入口是「按粉水比称出一次冲煮的粉与水」，而不是「用三段注水矫正萃取率」。
-- 入口素材从终点「往下问」得来：终点方向只是路线的上层，它们各自依赖的通用语言——操作工具、认读记号、基本量与单位、分类与命名、简单判断与比较——才是入口层的素材。对每个方向往下追问「基线学习者现在连什么都不会，第一步从哪算起」，把最底层那一格摆出来；起点够不够低的唯一标准是基线学习者今天拿到节点就能开始，而不是它长得像该方向的入门课。
-- 方向感优先级：学习者当下最缺的台阶 > 终点覆盖 > 罗盘路线。贴着概念网的最前沿往终点方向长，不直线冲终点——为逼近终点而长出基线够不着的节点，是比停摆更坏的错误。
-- 慢就是快：横向补实与向下补基同为推进——发现已教概念脚下悬空（教了它，但它依赖的通用语言没人教过）时，补教那个底座也是朝终点的实质推进；坡道的质量与坡道的长度同等重要，不以前进牺牲认知依赖的完整性。
+- 「入门教材第一章」不等于零基础入口：第一章默认读者已带着该领域的日常底子，零基础学习者没有——这些概念只是离目标更近的台阶，不是入口。例：目标「业余段位围棋」的真入口是「数出棋盘上一块棋的气」，而不是「用大雪崩定式处理小目挂角」；目标「家庭手冲咖啡」的真入口是「按粉水比称出一次冲煮的粉与水」，而不是「用三段注水矫正萃取率」。
+- 入口素材从学习目标「往下问」得来：目标只是路线的上层，它依赖的通用语言——操作工具、认读记号、基本量与单位、分类与命名、简单判断与比较——才是入口层的素材。对目标逐层往下追问「基线学习者现在连什么都不会，第一步从哪算起」，把最底层那一格摆出来；起点够不够低的唯一标准是基线学习者今天拿到节点就能开始，而不是它长得像该方向的入门课。
+- 方向感优先级：学习者当下最缺的台阶优先——贴着概念网的最前沿往目标方向长，不直线冲终点。为逼近目标而长出基线够不着的节点，是比停摆更坏的错误。
+- 慢就是快：横向补实与向下补基同为推进——发现已教概念脚下悬空（教了它，但它依赖的通用语言没人教过）时，补教那个底座也是朝目标的实质推进；坡道的质量与坡道的长度同等重要，不以前进牺牲认知依赖的完整性。
 【节点纪律】
 - 节点是单次学习会话（动作句），常规 5-30 分钟，极困难最多 60 分钟。
 - 日常经验切口：每个节点的 purpose 必须点出从哪段日常经验引入——但切口只是引入方式，节点内容永远是学科概念：教的是把日常能力升级为学科语言的那一格（例：围棋课把「把什么归为一类」的分类经验升级为棋子的死活与归属判断，手冲咖啡课把「看茶叶沉浮」的观察经验升级为萃取状态的判读）。成人已会的纯生活动作没有教学价值，不合格；「该领域教材的第一章」默认读者已带领域底子，越过学科底层直奔第一章同样不合格。
@@ -670,15 +518,14 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 行为摘要给出近窗正确率趋势、卡点节点与真实保留率：生长方向优先回应卡点——在卡点节点附近补铺垫或对比节点，而不是无视它继续铺新域。
 - 但不要为单个卡点堆同质节点：一次至多一个针对性的回应节点。
 【数量契约】
-- 本次生长：把就绪节点补到 7 个。当前就绪 X 个、缺口 7-X 个，则本批新增节点 ≤ 7-X 个且至多 7 个；缺口为 0 时输出空 nodes（或仅裁决终点完成）。
-- 缺口就是本批的铺开面，通常铺得满：入口层天然是宽的——终点之下往往有比终点更多的底层方向，每个方向的最底层台阶各摆一个入口节点，直到铺满 7 个；真穷尽了互不依赖的独立方向才允许少长，并在 note 里逐一点名已铺的方向（举证不是偷懒）。例：目标「独立做出一款小游戏」，入口层可以同时铺编程语言、平面绘图、关卡设计、操作手感、叙事节奏、音效、发布渠道——底层方向常常比终点还多。
-- 终点完成裁决只基于覆盖读数：存量无待办（已学达标+已跳过=全部）才考虑把终点写进 completed_endpoints；已学达标为 0 时零学习证据，绝不构成完成。completed=false 表示重开。拿不准就留空。
+- 本次生长：把就绪节点补到 7 个。当前就绪 X 个、缺口 7-X 个，则本批新增节点 ≤ 7-X 个且至多 7 个；缺口为 0 时输出空 nodes。
+- 缺口就是本批的铺开面，通常铺得满：入口层天然是宽的——目标之下往往有比预期更多的底层方向，每个方向的最底层台阶各摆一个入口节点，直到铺满 7 个；真穷尽了互不依赖的独立方向才允许少长，并在 note 里逐一点名已铺的方向（举证不是偷懒）。例：目标「独立做出一款小游戏」，入口层可以同时铺编程语言、平面绘图、关卡设计、操作手感、叙事节奏、音效、发布渠道——底层方向常常比预想还多。
 【提交前自查】输出前逐条核对，任何一条不满足就先改再输出：
 1. 每个 teaches/assumes 的名字都能在登记表、已教账或本批 mints 里找到；
 2. 每条 assumes 的概念都已由既往批次教到了不低于所假定档位（本批兄弟的 teaches 与本批铸名不算数）；
 3. mints 与登记表、批内彼此都不撞名；纯登记、无人引用的新名字删掉；
 4. 本批新增节点数 ≤ 缺口数；
-5. 每个节点的起点假设都在基线或已教账内——没有把「教材第一章」当零基础入口，也没有为了覆盖终点方向长出基线够不着的节点；
+5. 每个节点的起点假设都在基线或已教账内——没有把「教材第一章」当零基础入口，也没有为了覆盖目标方向长出基线够不着的节点；
 6. 每个节点的 purpose 都有日常经验切口，且教的是还需要教的学科概念——纯生活动作（成人已会的）和写不出切口的中层内容，都换掉。
 7. 每个节点的 difficulty 都按标尺如实申报，且本批最高难度不超水位（已落库批次数 + 2）。
 【输出】
@@ -691,18 +538,12 @@ pub struct CoachContext {
     pub goal: String,
     /// 基线/范围参考（scope 解析，可为空）。
     pub scope_reference: String,
-    /// 罗盘全文（缺罗盘时先重画再生长，因此基本非空）。
-    pub compass: String,
-    /// 罗盘陈旧读数：罗盘重画之后又落了多少批（>0 时附陈旧标记）。
-    pub compass_stale_batches: usize,
     /// 花名册行：「状态 | 标题 | 分钟 | teaches(概念@档) | assumes(概念@档)」；
     /// 卡点节点行带 ⚑ 前缀。
     pub roster: String,
     /// 已教概念账（canonical@最高档 的列表）。
     pub taught_summary: String,
-    /// 终点锚清单（标题 + 程度声明）。
-    pub endpoints: String,
-    /// 覆盖读数（共用存量 met/skipped/pending + 概念档位足迹）。
+    /// 覆盖读数（共用存量 met/skipped/pending + 概念档位足迹；纯展示）。
     pub coverage_gauge: String,
     /// 行为摘要（近窗趋势/卡点/保留率；空窗为空串，整块省略）。
     pub behavior_digest: String,
@@ -722,30 +563,14 @@ impl CoachContext {
         if !self.scope_reference.is_empty() {
             text.push_str(&format!("\n【范围参考】\n{}\n", self.scope_reference));
         }
-        // 罗盘降权（learnhub ADR-0113 同款取舍的裁剪版）：首批（花名册为空）
-        // 不加载罗盘——它罗列的是通往终点的剩余路线，对「零基础入口选什么」
-        // 只有牵引没有帮助；非首批保留，但标注为软参照。
-        if !self.roster.is_empty() && !self.compass.is_empty() {
-            text.push_str(&format!(
-                "\n【罗盘（远期方向软参照：条目并列无先后，不构成本批内容清单，更不构成起点依据）】\n{}\n",
-                self.compass
-            ));
-            if self.compass_stale_batches > 0 {
-                text.push_str(&format!(
-                    "（注意：该罗盘画于 {} 批之前，可能过时——以下方已教概念账与覆盖读数为当前事实源）\n",
-                    self.compass_stale_batches
-                ));
-            }
-        }
         // 首级判据（learnhub 同款机制的裁剪版）：前沿为空（花名册为空）时本批
         // 铺的是坡道的第一级，裁决契约与常规批次不同——放在上下文最前（学习
-        // 目标之后、一切机制读数之前），先于细节占领注意力。罗盘已按首批降权
-        // 省略，这里把理由讲给教练。
+        // 目标之后、一切机制读数之前），先于细节占领注意力。
         if self.roster.is_empty() {
             if self.entry_survey.is_empty() {
                 text.push_str(
                     "\n【首级判据——本批是坡道的第一级台阶】\n\
-                     1. 先回答再动笔：零基础走到下面的终点，此刻最该并行学哪几个底层域？把域清单写进 note，每个域挑最底层的一格摆一个入口节点，直到铺满缺口。列域时逐个再往下问一层：「这个域的入口域是什么」——底层方向常常比终点还多。\n",
+                     1. 先回答再动笔：零基础走到下面的目标，此刻最该并行学哪几个底层域？把域清单写进 note，每个域挑最底层的一格摆一个入口节点，直到铺满缺口。列域时逐个再往下问一层：「这个域的入口域是什么」——底层方向常常比目标还多。\n",
                 );
             } else {
                 text.push_str(&format!(
@@ -755,11 +580,10 @@ impl CoachContext {
                 ));
             }
             text.push_str(
-                "2. 方向性先决：每个入口 = 动作句 + 某个终点方向上的对象；与任何终点都没有可辨认推进关系的通用技能句（「拆步骤」「说清输入输出」一类任何课程都能套的话）不合格。\n\
-                 3. 选型标尺（只在朝终点推进的候选之间比较）：① 单一行为单元——一次可完成的学习行为，不是一串待学内容；② 零复合概念——名字连缀两个可独立教学的对象（「与/和/及」连接），或要先解释名字本身才能开学的行话泛称，都不合格；③ 常识可直接起步——不依赖任何尚未教的概念。\n\
+                "2. 方向性先决：每个入口 = 动作句 + 某个目标方向上的对象；与目标没有可辨认推进关系的通用技能句（「拆步骤」「说清输入输出」一类任何课程都能套的话）不合格。\n\
+                 3. 选型标尺（只在朝目标推进的候选之间比较）：① 单一行为单元——一次可完成的学习行为，不是一串待学内容；② 零复合概念——名字连缀两个可独立教学的对象（「与/和/及」连接），或要先解释名字本身才能开学的行话泛称，都不合格；③ 常识可直接起步——不依赖任何尚未教的概念。\n\
                  4. 名词自检与降层：候选标题里的每个领域名词，问「这个名字要不要先教才能用」——要教的就不是入口；把它换成它所依赖的更底层动作，或由本节点直接从日常经验把它建立起来。警惕把「该方向教材的第一章」当入口——第一章默认读者已带着领域底子，那是中层，不是底层。\n\
-                 5. 宁简勿繁：同向候选之间取更简的那个；简是选择偏好，不是朝终点推进的替代品。\n\
-                 6. 本批未附罗盘：入口域来自你的教学判断与零基础学习者的现实——罗盘的全图分解会把起点拉高、把域收窄。\n",
+                 5. 宁简勿繁：同向候选之间取更简的那个；简是选择偏好，不是朝目标推进的替代品。\n",
             );
         }
         text.push_str(&format!(
@@ -771,12 +595,8 @@ impl CoachContext {
             "\n【已教概念账】\n{}\n",
             if self.taught_summary.is_empty() { "（空——本批节点不得依赖本批产出的概念：assumes 只能留空或假定课程外常识，需要前提的概念留到下一批）" } else { &self.taught_summary }
         ));
-        text.push_str(&format!(
-            "\n【终点锚（方向标记：判断本批长什么，看学习者当下最缺的台阶，不看终点还差多少）】\n{}\n",
-            if self.endpoints.is_empty() { "（暂无——只长节点，不要裁决任何终点）" } else { &self.endpoints }
-        ));
         if !self.coverage_gauge.is_empty() {
-            text.push_str(&format!("\n【覆盖读数（存量——完成裁决的依据）】\n{}\n", self.coverage_gauge));
+            text.push_str(&format!("\n【覆盖读数（纯展示，不构成本批依据）】\n{}\n", self.coverage_gauge));
         }
         if !self.behavior_digest.is_empty() {
             text.push_str(&format!("\n【行为摘要】\n{}\n", self.behavior_digest));
@@ -796,50 +616,8 @@ struct RawBatch {
     nodes: Vec<RawNode>,
     #[serde(default)]
     mints: Vec<RawMint>,
-    #[serde(default, deserialize_with = "de_endpoint_verdicts")]
-    completed_endpoints: Vec<EndpointVerdict>,
     #[serde(default)]
     note: String,
-}
-
-/// Tolerate the two verdict shapes the model emits: `{"title","completed"}`
-/// objects (documented) or bare title strings (missing field means "mark
-/// complete" — the common direction).
-fn de_endpoint_verdicts<'de, D>(deserializer: D) -> Result<Vec<EndpointVerdict>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum RawVerdict {
-        Title(String),
-        Full {
-            #[serde(default)]
-            title: String,
-            #[serde(default = "default_completed")]
-            completed: bool,
-        },
-    }
-    fn default_completed() -> bool {
-        true
-    }
-    let parsed = match Option::<Vec<RawVerdict>>::deserialize(deserializer)? {
-        Some(verdicts) => verdicts,
-        None => Vec::new(),
-    };
-    Ok(parsed
-        .into_iter()
-        .filter_map(|verdict| match verdict {
-            RawVerdict::Title(title) => {
-                let title = title.trim().to_owned();
-                (!title.is_empty()).then(|| EndpointVerdict { title, completed: true })
-            }
-            RawVerdict::Full { title, completed } => {
-                let title = title.trim().to_owned();
-                (!title.is_empty()).then(|| EndpointVerdict { title, completed })
-            }
-        })
-        .collect())
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1006,7 +784,6 @@ pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
                 definition: mint.definition.trim().to_owned(),
             })
             .collect(),
-        completed_endpoints: parsed.completed_endpoints,
         note: parsed.note.trim().to_owned(),
     };
     Ok(batch)
@@ -1048,7 +825,7 @@ pub(crate) async fn coach_redraft(
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用、minutes 与终点裁决原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 minutes 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render()
     );
     let raw = crate::generation::complete_coach(
@@ -1522,9 +1299,9 @@ pub fn fold_behavior_digest(
     }
 }
 
-/// 终点覆盖读数（共用存量，ADR-0009 Amendment 1）：所有终点共用同一份
-/// 「已学达标 / 已跳过 / 未达标」+ 概念档位足迹。完成裁决的决断输入，
-/// 永不自动置位完成。
+/// 覆盖读数（共用存量，ADR-0009 Amendment 1）：所有节点共用的
+/// 「已学达标 / 已跳过 / 未达标」+ 概念档位足迹。纯展示徽章，永不作判定
+/// （ADR-0010：终点裁决退役后它不再进任何门）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CoverageReading {
     pub total: usize,
@@ -1536,8 +1313,8 @@ pub struct CoverageReading {
     pub tier_footprint: Vec<(ConceptTier, usize)>,
 }
 
-/// 渲染覆盖读数；存量清空时给出「继续生长 or 标记完成」的决断提示
-/// （learnhub cleared 同款语义——决断输入，非完成判据）。
+/// 渲染覆盖读数；存量清空时给出「继续生长」的提示（纯展示徽章——它永不
+/// 作判定，覆盖满格也不构成任何自动终态，ADR-0010）。
 pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
     let pending = reading.total.saturating_sub(reading.met + reading.skipped);
     let footprint = if reading.tier_footprint.is_empty() {
@@ -1556,7 +1333,7 @@ pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
     };
     if pending == 0 {
         return format!(
-            "存量无待办（已学达标 {}、已跳过 {}；跳过≠学会；{footprint}）——考虑继续生长新节点，或把覆盖了这些内容的终点标记完成（已学达标为 0 时不构成完成证据）。",
+            "存量无待办（已学达标 {}、已跳过 {}；跳过≠学会；{footprint}）——考虑继续生长新节点，或以归档收尾课程。",
             reading.met, reading.skipped
         );
     }
@@ -1606,7 +1383,7 @@ mod tests {
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
-        ProposedBatch { nodes, mints: Vec::new(), completed_endpoints: Vec::new(), note: String::new() }
+        ProposedBatch { nodes, mints: Vec::new(), note: String::new() }
     }
 
     #[test]
@@ -1630,10 +1407,9 @@ mod tests {
                 ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
                 ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
             ],
-            completed_endpoints: vec![],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
 
         // 依赖既往批次的概念合法：已教账覆盖到所假定档位即放行。
@@ -1644,14 +1420,13 @@ mod tests {
                 vec![reference("因式分解", ConceptTier::Apply)],
             )],
             mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() }],
-            completed_endpoints: vec![],
             note: String::new(),
         };
         let mut coverage = ConceptCoverage::new();
         coverage.insert("因式分解".to_owned(), ConceptTier::Apply);
         let mut registry = HashSet::new();
         registry.insert("因式分解".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
     }
 
@@ -1668,10 +1443,9 @@ mod tests {
                 ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
                 ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
             ],
-            completed_endpoints: vec![],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new());
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].kind, "assumes_uncovered");
     }
@@ -1691,20 +1465,19 @@ mod tests {
         coverage.insert("勾股定理".to_owned(), ConceptTier::Know);
         let mut registry = HashSet::new();
         registry.insert("勾股定理".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, "assumes_uncovered");
     }
 
     #[test]
-    fn validate_batch_enforces_batch_size_title_and_endpoint_protection() {
+    fn validate_batch_enforces_batch_size_and_title_rules() {
         let nodes: Vec<ProposedNode> = (0..8)
             .map(|index| node(&format!("节点{index}"), vec![], vec![]))
             .collect();
         let errors = validate_batch(
             &batch_of(nodes),
             &ConceptCoverage::new(),
-            &HashSet::new(),
             &HashSet::new(),
             &HashSet::new(),
         );
@@ -1716,20 +1489,8 @@ mod tests {
             &batch_of(vec![node("已有节点", vec![], vec![])]),
             &ConceptCoverage::new(),
             &HashSet::new(),
-            &HashSet::new(),
             &existing,
         );
-        assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
-
-        let mut endpoints = HashSet::new();
-        endpoints.insert("真实终点".to_owned());
-        let mut batch = batch_of(vec![node("真实终点", vec![], vec![])]);
-        batch.completed_endpoints = vec![EndpointVerdict {
-            title: "不存在的终点".into(),
-            completed: true,
-        }];
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &endpoints, &HashSet::new());
-        assert!(errors.iter().any(|error| error.kind == "endpoint_unknown"));
         assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
     }
 
@@ -1740,10 +1501,9 @@ mod tests {
         let batch = ProposedBatch {
             nodes: vec![node("新节点", vec![reference("既有概念", ConceptTier::Know)], vec![reference("幽灵概念", ConceptTier::Know)])],
             mints: vec![ConceptMint { canonical: "既有概念".into(), aliases: vec![], definition: String::new() }],
-            completed_endpoints: vec![],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &registry, &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &registry, &HashSet::new());
         assert!(errors.iter().any(|error| error.kind == "mint_collision"));
         assert!(errors.iter().any(|error| error.kind == "concept_unresolved"));
     }
@@ -1789,7 +1549,6 @@ mod tests {
                   "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
             ],
             "mints": [],
-            "completed_endpoints": [],
             "note": "n"
         }"#;
         let batch = parse_coach_reply(raw).unwrap();
@@ -1802,31 +1561,6 @@ mod tests {
     #[test]
     fn parse_coach_reply_rejects_garbage() {
         assert!(parse_coach_reply("sure, here is the plan...").is_err());
-    }
-
-    /// 终点裁决的两种容错形状：文档化的 {title, completed} 对象与裸标题
-    /// 字符串（缺字段视为置完成——常见方向）。
-    #[test]
-    fn parse_coach_reply_tolerates_verdict_shapes() {
-        let raw = r#"{
-            "nodes": [],
-            "mints": [],
-            "completed_endpoints": [
-                { "title": "独立交易", "completed": true },
-                { "title": "读懧行情", "completed": false },
-                "裸标题终点"
-            ],
-            "note": ""
-        }"#;
-        let batch = parse_coach_reply(raw).unwrap();
-        assert_eq!(
-            batch.completed_endpoints,
-            vec![
-                EndpointVerdict { title: "独立交易".into(), completed: true },
-                EndpointVerdict { title: "读懧行情".into(), completed: false },
-                EndpointVerdict { title: "裸标题终点".into(), completed: true },
-            ]
-        );
     }
 
     fn attempt(lesson: &str, day: i64, correct: bool) -> DigestAttempt {
@@ -1896,7 +1630,7 @@ mod tests {
         assert!(digest.render(&HashMap::new()).is_empty());
     }
 
-    /// 覆盖读数：存量构成 + 档位足迹 + 清空态的决断提示。
+    /// 覆盖读数：存量构成 + 档位足迹 + 清空态提示（纯展示，不作判定）。
     #[test]
     fn coverage_gauge_renders_shared_stock_and_cleared_state() {
         let reading = CoverageReading {
@@ -1921,35 +1655,7 @@ mod tests {
             tier_footprint: vec![],
         });
         assert!(cleared.contains("存量无待办"), "{cleared}");
-        assert!(cleared.contains("已学达标为 0 时不构成完成证据"), "{cleared}");
-    }
-
-    /// 罗盘降权：首批（花名册为空）不加载罗盘——剩余路线对零基础入口只有
-    /// 牵引没有帮助；非首批渲染时，重画后又落了批的陈旧提示照附。
-    #[test]
-    fn coach_context_marks_stale_compass() {
-        let first_batch = CoachContext {
-            ready_count: 2,
-            compass: "罗盘正文".into(),
-            compass_stale_batches: 3,
-            ..Default::default()
-        };
-        assert!(
-            !first_batch.render().contains("罗盘正文"),
-            "first batch must not load the compass"
-        );
-
-        let stale = CoachContext {
-            ready_count: 2,
-            roster: "在学 | 节点A".into(),
-            compass: "罗盘正文".into(),
-            compass_stale_batches: 3,
-            ..Default::default()
-        };
-        let rendered = stale.render();
-        assert!(rendered.contains("罗盘正文"), "{rendered}");
-        assert!(rendered.contains("画于 3 批之前"), "{rendered}");
-        assert!(rendered.contains("已教概念账与覆盖读数为当前事实源"), "{rendered}");
+        assert!(cleared.contains("以归档收尾"), "{cleared}");
     }
 
     #[test]
