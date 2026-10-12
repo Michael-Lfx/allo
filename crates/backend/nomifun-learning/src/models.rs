@@ -1402,8 +1402,6 @@ pub struct TerrainDoorView {
 pub struct LearningGraphView {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
-    /// 学习范围（scope 分析文本）。
-    pub scope: String,
     /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序；被 R 软闸挡住的
     /// 候选不出现在这里，进 `blocked`）。
     pub recommended: Vec<LearningLessonId>,

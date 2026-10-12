@@ -1,5 +1,21 @@
 use super::*;
 
+/// 结构快照里的程度声明回执（内容生成的项目级 grounding；learning_scope 列
+/// 随结构改造退役——快照标量是新的单源）。无快照或标量为空返回空串。
+fn structure_degree_statement(snapshot: Option<String>) -> String {
+    snapshot
+        .as_deref()
+        .and_then(|snapshot| serde_json::from_str::<serde_json::Value>(snapshot).ok())
+        .and_then(|envelope| {
+            envelope
+                .get("structure")
+                .and_then(|structure| structure.get("proficiency_statement"))
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
+}
+
 impl LearningService {
 
     /// Repair a lesson figure that failed to render: the broken source and
@@ -353,7 +369,7 @@ impl LearningService {
         let module_title: String = lesson.try_get("module_title").map_err(internal)?;
 
         let course = sqlx::query(
-            "SELECT title, learning_goal, learning_scope FROM learning_courses WHERE course_id = ?",
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
@@ -364,10 +380,9 @@ impl LearningService {
             .try_get::<Option<String>, _>("learning_goal")
             .map_err(internal)?
             .unwrap_or_default();
-        let scope: String = course
-            .try_get::<Option<String>, _>("learning_scope")
-            .map_err(internal)?
-            .unwrap_or_default();
+        let degree_statement = structure_degree_statement(
+            course.try_get("structure_json").map_err(internal)?,
+        );
 
         // 一次载入概念网口径的拓扑上下文（前置 = assumes 的概念与跨课程
         // 教它的节点；禁止清单 = 下游节点标题）。
@@ -392,7 +407,7 @@ impl LearningService {
             adjacent_context: String::new(),
             graph: Some(GraphLessonContext {
                 goal,
-                scope,
+                degree_statement,
                 prerequisite_path,
                 upcoming_nodes,
             }),
@@ -660,7 +675,7 @@ impl LearningService {
                 let (prerequisite_path, _upcoming, forbidden, _total) =
                     self.graph_node_topology(&course_id, lesson_id).await?;
                 let course = sqlx::query(
-                    "SELECT learning_goal, learning_scope FROM learning_courses WHERE course_id = ?",
+                    "SELECT learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
                 )
                 .bind(course_id.as_str())
                 .fetch_one(&self.pool)
@@ -670,11 +685,11 @@ impl LearningService {
                     .try_get::<Option<String>, _>("learning_goal")
                     .map_err(internal)?
                     .unwrap_or_default();
-                let scope: String = course
-                    .try_get::<Option<String>, _>("learning_scope")
-                    .map_err(internal)?
-                    .unwrap_or_default();
-                let mut context_text = format!("学习目标：{}\n学习范围：{}", goal.trim(), scope.trim());
+                let degree_statement = structure_degree_statement(
+                    course.try_get("structure_json").map_err(internal)?,
+                );
+                let mut context_text =
+                    format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
                 if !prerequisite_path.trim().is_empty() {
                     context_text.push_str(&format!(
                         "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{prerequisite_path}"

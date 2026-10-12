@@ -43,8 +43,9 @@ pub struct LessonExcerpt {
 pub struct GraphLessonContext {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
-    /// 学习图的学习范围（scope 分析文本）。
-    pub scope: String,
+    /// 结构快照回执的程度声明（达成后能独立做成什么；learning_scope 列随
+    /// 结构改造退役）。
+    pub degree_statement: String,
     /// 预渲染：本课 assumes 的概念 + 跨课程教这些概念的节点摘要（离题最近
     /// 的教师优先，超长截断），让生成知道「学习者此刻已经会什么」。节点内
     /// 容是共享课程资产，不含任何用户个人进度。

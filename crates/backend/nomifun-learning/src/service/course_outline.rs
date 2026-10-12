@@ -59,7 +59,7 @@ impl LearningService {
                 ))
             }
         };
-        let scope = crate::learning_graph::analyze_scope(
+        let scope = crate::course_outline::scope::analyze_scope(
             completer.as_ref(),
             model_override,
             &scope_topic,

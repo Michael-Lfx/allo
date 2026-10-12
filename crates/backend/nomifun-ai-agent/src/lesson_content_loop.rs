@@ -497,7 +497,7 @@ fn audit_report(
 /// bridging target, and the grounding (the cited excerpt for the kb flow,
 /// the course brief for the description flow). Learning-graph nodes
 /// (`context.graph` = Some) swap the outline/brief sections for
-/// graph-scoped sections: goal, scope, the concept-web prerequisite
+/// graph-scoped sections: goal, the degree statement, the concept-web prerequisite
 /// summary, and the downstream nodes (ADR-0009).
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
@@ -506,9 +506,9 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
     match graph {
         Some(graph) => {
             text.push_str(&format!(
-                "学习图节点（「本节点」是你要写的课时——只写它的范围，不越界讲后续节点，不重复前置节点已覆盖的内容）：\n学习目标：{}\n学习范围：{}\n",
+                "学习图节点（「本节点」是你要写的课时——只写它的范围，不越界讲后续节点，不重复前置节点已覆盖的内容）：\n学习目标：{}\n程度声明：{}\n",
                 graph.goal.trim(),
-                graph.scope.trim()
+                graph.degree_statement.trim()
             ));
         }
         None if !context.outline_tree.is_empty() => {
@@ -578,7 +578,7 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
         }
         None if graph.is_some() => {
             text.push_str(
-                "\n学习图节点没有课程简报：内容忠于学习目标、学习范围与前置/后续节点段落。\n",
+                "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
             );
         }
         None => {
@@ -1010,14 +1010,14 @@ mod tests {
         context.excerpt = None;
         context.graph = Some(GraphLessonContext {
             goal: "通盘认识期权交易".into(),
-            scope: "聚焦场内标准期权，不含结构性产品".into(),
+            degree_statement: "聚焦场内标准期权，不含结构性产品".into(),
             prerequisite_path: "1. 什么是衍生品 — 先建立衍生品框架\n".into(),
             upcoming_nodes: "- 期权定价基础（为理解希腊字母铺垫）\n".into(),
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("学习图节点"));
         assert!(text.contains("学习目标：通盘认识期权交易"));
-        assert!(text.contains("学习范围：聚焦场内标准期权"));
+        assert!(text.contains("程度声明：聚焦场内标准期权"));
         assert!(text.contains("前置路径"));
         assert!(text.contains("1. 什么是衍生品"));
         assert!(text.contains("后续节点"));
@@ -1032,7 +1032,7 @@ mod tests {
         // 起点/终点节点：无前置与无后续的措辞分支。
         context.graph = Some(GraphLessonContext {
             goal: "通盘认识期权交易".into(),
-            scope: "聚焦场内标准期权".into(),
+            degree_statement: "聚焦场内标准期权".into(),
             prerequisite_path: String::new(),
             upcoming_nodes: String::new(),
         });

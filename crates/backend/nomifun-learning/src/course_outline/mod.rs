@@ -5,6 +5,7 @@
 //! The audit vocabulary below is shared with the lesson draft's audit.
 
 pub mod draft;
+pub(crate) mod scope;
 
 use serde::{Deserialize, Serialize};
 
