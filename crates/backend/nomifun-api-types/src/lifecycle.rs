@@ -19,6 +19,11 @@ pub struct SystemInfoResponse {
     /// history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_dir_change: Option<WorkDirChangeStatus>,
+    /// Set when the boot layer had to recreate a missing work root (the user
+    /// deleted the folder). The previous workspace contents are gone; the UI
+    /// should tell the user instead of silently continuing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_dir_recreated: Option<WorkDirRecreatedStatus>,
     /// Capabilities supplied by the host composition. The renderer must use
     /// this contract instead of inferring the runtime from browser globals.
     #[serde(default)]
@@ -90,6 +95,15 @@ pub enum WorkDirChangeState {
     None,
     Completed,
     Failed,
+}
+
+/// Last recorded boot-layer recreation of a missing work root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkDirRecreatedStatus {
+    pub work_dir: String,
+    /// Unix epoch milliseconds of the recreation.
+    pub recreated_at: i64,
 }
 
 /// Response for `POST /api/system/support-logs/pack`.
@@ -283,6 +297,7 @@ mod tests {
             platform: "linux".into(),
             arch: "x64".into(),
             work_dir_change: None,
+            work_dir_recreated: None,
             runtime_capabilities: RuntimeCapabilities::web(),
             managed_free_models_enabled: false,
         };
@@ -296,6 +311,8 @@ mod tests {
         );
         assert_eq!(json["platform"], "linux");
         assert_eq!(json["arch"], "x64");
+        // Optional statuses stay omitted when absent.
+        assert!(json.get("work_dir_recreated").is_none());
         // Verify snake_case
         assert!(json.get("cacheDir").is_none());
     }
@@ -310,12 +327,18 @@ mod tests {
             platform: "darwin".into(),
             arch: "arm64".into(),
             work_dir_change: None,
+            work_dir_recreated: Some(WorkDirRecreatedStatus {
+                work_dir: "D:/d/tmp".into(),
+                recreated_at: 1_760_000_000_000,
+            }),
             runtime_capabilities: RuntimeCapabilities::desktop(),
             managed_free_models_enabled: true,
         };
         let serialized = serde_json::to_string(&original).unwrap();
         let parsed: SystemInfoResponse = serde_json::from_str(&serialized).unwrap();
         assert_eq!(parsed, original);
+        let json = serde_json::to_value(&original).unwrap();
+        assert_eq!(json["work_dir_recreated"]["work_dir"], "D:/d/tmp");
     }
 
     // -- UpdateCheckRequest --

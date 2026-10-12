@@ -363,8 +363,10 @@ const CompanionSessionGroup: React.FC<Props> = ({
     const modelReady = modelReadyOf(c);
     const companionRobots = robotsByCompanion.get(c.companion_id) ?? [];
     const statusLevel = c.status?.level ?? 1;
-    const levelKey = `nomi.levels.l${Math.min(Math.max(1, statusLevel), 5)}`;
+    const levelIndex = Math.min(Math.max(1, statusLevel), 5);
+    const levelKey = `nomi.levels.l${levelIndex}`;
     const levelTitle = t(levelKey, { defaultValue: '' });
+    const levelBadgeText = t(`nomi.levels.badge.l${levelIndex}`, { defaultValue: levelTitle });
     const mood = c.status?.mood || 'content';
     const moodKey = `nomi.moods.${mood}`;
     const moodText = t(moodKey, { defaultValue: mood });
@@ -405,23 +407,28 @@ const CompanionSessionGroup: React.FC<Props> = ({
               <div className='flex items-center justify-between gap-4px'>
                 <span
                   className={classNames(
-                    'text-13px font-600 leading-16px truncate min-w-0',
+                    'flex-1 text-13px font-600 leading-16px truncate min-w-0',
                     active ? '!text-primary-6' : 'text-t-primary'
                   )}
                 >
                   {c.name}
                 </span>
-                <span className='shrink-0 text-10px px-5px py-0.5px rd-full bg-primary-1 text-primary-6 font-medium border border-solid border-primary-2'>
-                  Lv{statusLevel} {levelTitle}
+                <span
+                  className='shrink-0 max-w-[55%] truncate text-10px px-5px py-0.5px rd-full bg-primary-1 text-primary-6 font-medium border border-solid border-primary-2'
+                  title={`Lv${statusLevel} · ${levelTitle}`}
+                >
+                  Lv{statusLevel} {levelBadgeText}
                 </span>
               </div>
-              <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary'>
-                <span className='flex items-center gap-2px text-t-secondary'>
-                  <span>{moodEmoji}</span>
-                  <span>{moodText}</span>
+              <div className='flex items-center gap-6px text-11px leading-14px text-t-tertiary min-w-0'>
+                <span className='flex items-center gap-2px text-t-secondary min-w-0'>
+                  <span className='shrink-0'>{moodEmoji}</span>
+                  <span className='truncate' title={moodText}>
+                    {moodText}
+                  </span>
                 </span>
                 {isDesktopOn && (
-                  <span className='text-10px text-success-6 bg-success-1 px-4px py-0.5px rd-3px font-normal'>
+                  <span className='shrink-0 text-10px text-success-6 bg-success-1 px-4px py-0.5px rd-3px font-normal'>
                     {t('nomi.overview.companionOn', { defaultValue: '桌面已显示' })}
                   </span>
                 )}
@@ -459,16 +466,30 @@ const CompanionSessionGroup: React.FC<Props> = ({
 
           {/* Bottom stats row: Memories and Skills */}
           <div className='mt-6px grid grid-cols-2 gap-4px text-10px text-t-tertiary'>
-            <div className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'>
+            <div
+              className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'
+              title={t('nomi.overview.memories', { defaultValue: '记忆' })}
+            >
               <span>🧠</span>
               <span className='truncate'>
-                <span className='font-600 text-t-primary'>{c.status?.memories_active ?? 0}</span> {t('nomi.overview.memories', { defaultValue: '记忆' })}
+                <span className='font-600 text-t-primary'>{c.status?.memories_active ?? 0}</span>
+                <span className='flowy-companion-stat-label'>
+                  {' '}
+                  {t('nomi.overview.memories', { defaultValue: '记忆' })}
+                </span>
               </span>
             </div>
-            <div className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'>
+            <div
+              className='flex items-center gap-4px bg-fill-2 px-6px py-2px rd-4px truncate'
+              title={t('nomi.overview.skillsActive', { defaultValue: '技能' })}
+            >
               <span>⚡</span>
               <span className='truncate'>
-                <span className='font-600 text-t-primary'>{c.status?.skills_active ?? 0}</span> {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
+                <span className='font-600 text-t-primary'>{c.status?.skills_active ?? 0}</span>
+                <span className='flowy-companion-stat-label'>
+                  {' '}
+                  {t('nomi.overview.skillsActive', { defaultValue: '技能' })}
+                </span>
               </span>
             </div>
           </div>

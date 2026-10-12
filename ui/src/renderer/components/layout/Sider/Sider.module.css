@@ -182,6 +182,38 @@
   }
 }
 
+/* History tab labels share fixed thirds with a 15px icon; "Projects" needs the
+   full text budget before icons fit, so drop icons below the width where the
+   longest locale label still fits beside them. */
+.historyTabsContainer {
+  container-name: flowy-sider-tabs;
+  container-type: inline-size;
+}
+
+@container flowy-sider-tabs (max-width: 216px) {
+  :global(.flowy-sider-tab-icon) {
+    display: none;
+  }
+}
+
+/* Companion stat pills fall back to icon + count when the label no longer fits
+   the half-width track (longest of "0 专精技能" / "0 Skills"). The label is
+   visually hidden with a clip (not display:none) so screen readers keep the
+   "Memories" / "Skills" semantics while the pill shrinks. */
+@container flowy-sider (max-width: 196px) {
+  :global(.flowy-companion-stat-label) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
 .scrollArea::-webkit-scrollbar {
   width: 0;
   height: 0;

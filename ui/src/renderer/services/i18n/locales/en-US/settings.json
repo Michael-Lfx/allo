@@ -685,6 +685,7 @@
   "workDirDesktopOnly": "The working directory can only be changed in the desktop app.",
   "workDirRelocating": "Migrating the working directory and restarting",
   "workDirRelocatingDesc": "Please keep the app open. It will return to the previous page after migration.",
+  "workDirRecreatedNotice": "The workspace folder was missing and has been recreated: {{path}}. Previous workspace contents may be gone.",
   "workDirRelocationFailed": "Working-directory migration failed. The app continues using the previous working directory.",
   "workDirRelocationBackup": "Previous conversations backup",
   "settingsSiderErrorTitle": "Settings sidebar failed to load",

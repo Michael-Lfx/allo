@@ -2254,6 +2254,15 @@ fn consume_pending_relocation_inner(
             "work-dir relocation completed but pending control files could not be cleaned"
         );
     }
+    // The workspace root moved on purpose; a boot-recreation notice about the
+    // old root is now stale.
+    if let Err(error) = crate::work_dir_notice::clear(data_dir) {
+        tracing::warn!(
+            target: "work_dir_relocation",
+            error = %error,
+            "work-dir relocation completed but the stale work-dir recreation notice could not be cleared"
+        );
+    }
     Ok((plan.clone(), rollback_copy))
 }
 

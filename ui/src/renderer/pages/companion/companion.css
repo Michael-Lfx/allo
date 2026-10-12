@@ -477,7 +477,7 @@
   border-radius: 15px;
   border: none;
   background: var(--primary);
-  color: #fff;
+  color: var(--button-primary-text, #fff);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -489,8 +489,8 @@
 }
 
 .nomi-companion-chatbar button.nomi-companion-send:disabled {
-  background: var(--bg-2);
-  color: var(--text-secondary);
+  background: var(--button-primary-disabled-bg, var(--bg-2));
+  color: var(--button-primary-disabled-text, var(--text-secondary));
   cursor: default;
 }
 
@@ -608,7 +608,7 @@
   border-radius: 14px;
   border: none;
   background: var(--primary);
-  color: #fff;
+  color: var(--button-primary-text, #fff);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -620,8 +620,8 @@
 }
 
 .nomi-companion-composer__send:disabled {
-  background: var(--bg-2);
-  color: var(--text-secondary);
+  background: var(--button-primary-disabled-bg, var(--bg-2));
+  color: var(--button-primary-disabled-text, var(--text-secondary));
   cursor: default;
 }
 

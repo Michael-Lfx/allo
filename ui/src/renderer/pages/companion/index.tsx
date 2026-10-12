@@ -12,6 +12,7 @@ import { extractResponseTextChunk } from '@/common/chat/displayText';
 import MarkdownView from '@/renderer/components/Markdown';
 import LocalImageView from '@/renderer/components/media/LocalImageView';
 import { usePasteService } from '@/renderer/hooks/file/usePasteService';
+import { useCompositionInput } from '@/renderer/hooks/chat/useCompositionInput';
 import { imageExts, type FileMetadata } from '@/renderer/services/FileService';
 import { useUploadState } from '@/renderer/hooks/file/useUploadState';
 import { buildDisplayMessage } from '@/renderer/utils/file/messageFiles';
@@ -37,6 +38,7 @@ import type { CompanionActivity as RabbitActivity, CompanionMood as RabbitMood }
 import {
   pickHostMonitor,
   resolveDeskRestoreLayout,
+  shouldRebaseDeskRestore,
   type MonitorLayout,
 } from './memoryPanelGeometry';
 import { useDetachedMemoryPanel } from './useDetachedMemoryPanel';
@@ -135,6 +137,7 @@ const parseCompanionIdFromHash = (): CompanionId | null => {
  */
 const CompanionPage: React.FC = () => {
   const { t } = useTranslation();
+  const { isImeActive, compositionHandlers } = useCompositionInput();
   const [companionId, setCompanionId] = useState<CompanionId | null>(parseCompanionIdFromHash);
   const [profile, setProfile] = useState<ICompanionProfile | null>(null);
   const [mood, setMood] = useState<RabbitMood>('content');
@@ -448,9 +451,21 @@ const CompanionPage: React.FC = () => {
                 width: session.anchor.width / session.scaleFactor,
                 height: session.anchor.height / session.scaleFactor,
               };
+          // The session froze its anchor before a possible drag. When the window
+          // now rests on a different monitor, rebase the desk rect on the current
+          // rectangle (bottom-center, clamped into that monitor) instead of
+          // restoring the stale anchor across screens.
+          const [currentPos, currentSize] = await Promise.all([win.outerPosition(), win.outerSize()]);
+          const currentRect: GeomRect = {
+            x: currentPos.x,
+            y: currentPos.y,
+            width: currentSize.width,
+            height: currentSize.height,
+          };
+          const rebase = shouldRebaseDeskRestore(currentRect, session.hostMonitorId, monitors);
           const restored = resolveDeskRestoreLayout({
-            anchor: session.anchor,
-            originalMonitorId: session.hostMonitorId,
+            anchor: rebase ? currentRect : session.anchor,
+            originalMonitorId: rebase ? null : session.hostMonitorId,
             monitors,
             logicalDesk,
           });
@@ -465,10 +480,37 @@ const CompanionPage: React.FC = () => {
                 if (expandedWindowRequestedModeRef.current !== null) return;
                 void syncExpandedWindow(null);
               }, 120);
+            } else {
+              // Give up on the native resize: release the session so drag
+              // persistence, snapping, and the next expansion recapture are not
+              // frozen for the rest of the window's life.
+              console.warn('[companion] releasing expanded session after failed desk-size restoration');
+              expandedWindowSessionRef.current = null;
+              expandedWindowRestoreRetriesRef.current = 0;
+              lastLocalMoveAt.current = Date.now();
             }
             return;
           }
           await win.setPosition(new PhysicalPosition(restored.rect.x, restored.rect.y));
+          if (rebase) {
+            // Keep the healed position authoritative: the config-updated echo
+            // would otherwise replay the pre-drag saved coords after the 2s guard.
+            lastLocalMoveAt.current = Date.now();
+            const rebasedCompanionId = cfg?.companion_id;
+            if (rebasedCompanionId) {
+              void ipcBridge.companion.patchCompanion
+                .invoke({
+                  companion_id: rebasedCompanionId,
+                  patch: { appearance: { companion_x: restored.rect.x, companion_y: restored.rect.y } },
+                })
+                .then((saved) => {
+                  if (!saved) return;
+                  profileRef.current = saved;
+                  setProfile(saved);
+                })
+                .catch(() => {});
+            }
+          }
           expandedWindowSessionRef.current = null;
           expandedWindowRestoreRetriesRef.current = 0;
           return;
@@ -1828,6 +1870,7 @@ const CompanionPage: React.FC = () => {
       {(bubbleRunning || remoteRunning) && (
         <button
           type='button'
+          data-button-shape='circle'
           className='nomi-companion-reaction'
           title={t('nomi.companion.interrupt')}
           onClick={(e) => {
@@ -1843,6 +1886,7 @@ const CompanionPage: React.FC = () => {
       {bubble && (
         <button
           type='button'
+          data-button-shape='circle'
           className='nomi-companion-reaction'
           title={t('nomi.companion.dismiss')}
           onClick={(e) => {
@@ -1940,6 +1984,7 @@ const CompanionPage: React.FC = () => {
             <button
               ref={unreadBadgeRef}
               type='button'
+              data-button-shape='pill'
               className='nomi-companion-badge'
               data-companion-hit
               aria-label={t('nomi.tabs.suggestions')}
@@ -1984,6 +2029,7 @@ const CompanionPage: React.FC = () => {
                 <div key={`${path}-${i}`} className='nomi-companion-composer__thumb'>
                   <LocalImageView src={path} alt='' />
                   <button
+                    data-button-shape='circle'
                     className='nomi-companion-composer__thumb-x'
                     title={t('nomi.companion.collapse')}
                     onClick={() => setAttachedFiles((prev) => prev.filter((_, idx) => idx !== i))}
@@ -2002,8 +2048,10 @@ const CompanionPage: React.FC = () => {
             onChange={(e) => setComposerText(e.target.value)}
             onFocus={onComposerFocus}
             onPaste={onComposerPaste}
+            onCompositionStartCapture={compositionHandlers.onCompositionStartCapture}
+            onCompositionEndCapture={compositionHandlers.onCompositionEndCapture}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !isImeActive(e)) {
                 e.preventDefault();
                 void sendComposer();
               }
@@ -2012,6 +2060,7 @@ const CompanionPage: React.FC = () => {
           <div className='nomi-companion-composer__bar'>
             <button
               type='button'
+              data-button-shape='circle'
               className='nomi-companion-composer__attach'
               title={t('nomi.companion.attachImage')}
               disabled={sendboxUpload.isUploading}
@@ -2035,10 +2084,15 @@ const CompanionPage: React.FC = () => {
               )}
             </button>
             <div className='spacer' />
-            <button className='nomi-companion-composer__ghost' onClick={collapseComposer}>
+            <button
+              data-button-shape='pill'
+              className='nomi-companion-composer__ghost'
+              onClick={collapseComposer}
+            >
               {t('nomi.companion.collapse')}
             </button>
             <button
+              data-button-shape='pill'
               className='nomi-companion-composer__send'
               disabled={
                 (!composerText.trim() && attachedFiles.length === 0) ||
@@ -2063,8 +2117,10 @@ const CompanionPage: React.FC = () => {
             placeholder={t('nomi.companion.chatPlaceholder', { name: profile?.name || 'Flowy' })}
             onChange={(e) => setInput(e.target.value)}
             onPaste={onComposerPaste}
+            onCompositionStartCapture={compositionHandlers.onCompositionStartCapture}
+            onCompositionEndCapture={compositionHandlers.onCompositionEndCapture}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void sendChat();
+              if (e.key === 'Enter' && !isImeActive(e)) void sendChat();
             }}
           />
           <div className='nomi-companion-iconbtn' title={t('nomi.companion.expand')} onClick={openComposer}>
@@ -2085,6 +2141,7 @@ const CompanionPage: React.FC = () => {
             </svg>
           </div>
           <button
+            data-button-shape='pill'
             className='nomi-companion-send'
             disabled={!input.trim()}
             onClick={() => void sendChat()}

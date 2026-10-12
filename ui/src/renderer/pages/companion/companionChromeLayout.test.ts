@@ -25,6 +25,29 @@ describe('desktop companion chrome layout', () => {
     expect(figureIndex).toBeGreaterThan(badgeIndex);
   });
 
+  test('keeps send controls on the shared button shape and theme token contract', () => {
+    const shapeAttrs = companionSource.match(/data-button-shape='(pill|circle)'/g) ?? [];
+    expect(shapeAttrs.filter((attr) => attr.includes('pill'))).toHaveLength(4);
+    expect(shapeAttrs.filter((attr) => attr.includes('circle'))).toHaveLength(4);
+
+    // Send / collapse controls keep their pill opt-in right next to the class.
+    expect(companionSource).toMatch(/data-button-shape='pill'\s+className='nomi-companion-send'/);
+    expect(companionSource).toMatch(/data-button-shape='pill'\s+className='nomi-companion-composer__send'/);
+    expect(companionSource).toMatch(/data-button-shape='circle'\s+className='nomi-companion-reaction'/);
+
+    expect(companionCss.match(/var\(--button-primary-text, #fff\)/g) ?? []).toHaveLength(2);
+    expect(companionCss.match(/var\(--button-primary-disabled-bg, var\(--bg-2\)\)/g) ?? []).toHaveLength(2);
+    expect(companionCss.match(/var\(--button-primary-disabled-text, var\(--text-secondary\)\)/g) ?? []).toHaveLength(2);
+  });
+
+  test('hardens expanded restore against cross-monitor drags and IME submits', () => {
+    expect(memoryGeometrySource.includes('shouldRebaseDeskRestore')).toBe(true);
+    expect(companionSource.includes('shouldRebaseDeskRestore')).toBe(true);
+    expect(companionSource.includes('releasing expanded session after failed desk-size restoration')).toBe(true);
+    expect(companionSource.includes('useCompositionInput')).toBe(true);
+    expect(companionSource.match(/isImeActive\(e\)/g) ?? []).toHaveLength(2);
+  });
+
   test('uses a detached controller instead of shared memory expansion', () => {
     expect(companionSource.includes('useDetachedMemoryPanel')).toBe(true);
     expect(companionSource.includes("showSuggestions ? 'memory'")).toBe(false);

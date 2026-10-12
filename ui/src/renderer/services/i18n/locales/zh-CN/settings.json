@@ -685,6 +685,7 @@
   "workDirDesktopOnly": "工作目录只能在桌面应用中修改。",
   "workDirRelocating": "正在迁移工作目录并重启",
   "workDirRelocatingDesc": "请勿关闭应用，迁移完成后会自动恢复到原页面。",
+  "workDirRecreatedNotice": "工作区目录曾丢失，已自动重建：{{path}}。历史工作区内容可能已不在。",
   "workDirRelocationFailed": "工作目录迁移失败，应用继续使用旧工作目录。",
   "workDirRelocationBackup": "旧会话备份",
   "settingsSiderErrorTitle": "设置侧栏加载失败",

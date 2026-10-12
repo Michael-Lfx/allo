@@ -1,6 +1,6 @@
 //! Resolve the conversation workspace directory.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Priority: `--work-dir` CLI flag → pending atomic work-root reset → pending
@@ -107,6 +107,53 @@ pub(crate) fn resolve_work_dir(
     Ok(data_dir.to_path_buf())
 }
 
+/// Recreate a missing work root before the strict lock checks run.
+///
+/// The persisted binding itself is trusted (absolute, well-formed); a missing
+/// directory therefore means the folder was deleted, not that the root should
+/// move. Recreating it restores the same root instead of silently rebinding to
+/// a different one, and records a notice so the settings UI can tell the user
+/// the previous workspace contents are gone. When the path cannot be created
+/// (unmounted volume, occupied by a file, permissions) boot fails with an
+/// actionable message instead of parking conversations somewhere else.
+pub(crate) fn ensure_work_dir(work_dir: &Path, data_dir: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(work_dir) {
+        // Existing entries (including files and reparse points) keep their
+        // current, stricter rejection in `acquire_work_root_lock`.
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect work dir {}", work_dir.display()));
+        }
+    }
+
+    std::fs::create_dir_all(work_dir).map_err(|error| {
+        anyhow::anyhow!(
+            "work dir {} is missing and could not be recreated: {error}. Recreate the folder, \
+             or remove the path override (--work-dir or {}) to fall back to the data dir, \
+             then restart.",
+            work_dir.display(),
+            data_dir
+                .join(nomifun_common::dir_config::DIR_CONFIG_FILE)
+                .display()
+        )
+    })?;
+    tracing::warn!(
+        target: "boot",
+        work_dir = %work_dir.display(),
+        "recreated a missing work dir; previous workspace contents are gone"
+    );
+    if let Err(error) = nomifun_common::work_dir_notice::record(data_dir, work_dir) {
+        tracing::warn!(
+            target: "boot",
+            error = %error,
+            "could not record the work-dir recreation notice"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +163,57 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("nomifun-wdres-{tag}-{}", now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn missing_work_dir_is_recreated_and_noticed() {
+        let data_dir = temp_data_dir("recreate");
+        let work_dir = data_dir.join("nested/workspace");
+        assert!(!work_dir.exists());
+
+        ensure_work_dir(&work_dir, &data_dir).unwrap();
+
+        assert!(work_dir.is_dir());
+        let notice = nomifun_common::work_dir_notice::read(&data_dir).unwrap();
+        assert_eq!(notice.work_dir, work_dir.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn existing_work_dir_is_left_untouched_without_a_notice() {
+        let data_dir = temp_data_dir("existing");
+        let work_dir = temp_data_dir("existing-ws");
+
+        ensure_work_dir(&work_dir, &data_dir).unwrap();
+
+        assert!(nomifun_common::work_dir_notice::read(&data_dir).is_none());
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&work_dir);
+    }
+
+    #[test]
+    fn file_occupied_work_dir_defers_to_the_strict_lock_checks() {
+        let data_dir = temp_data_dir("occupied");
+        let work_dir = data_dir.join("blocked");
+        std::fs::write(&work_dir, b"file").unwrap();
+
+        // A file at the path is not "missing": `ensure_work_dir` must not
+        // replace it; the strict lock rejects it with its own message later.
+        ensure_work_dir(&work_dir, &data_dir).unwrap();
+        assert!(nomifun_common::work_dir_notice::read(&data_dir).is_none());
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn work_dir_under_a_file_fails_with_the_path_in_the_error() {
+        let data_dir = temp_data_dir("blocked-parent");
+        std::fs::write(data_dir.join("blocked"), b"file").unwrap();
+        let work_dir = data_dir.join("blocked/workspace");
+
+        let error = ensure_work_dir(&work_dir, &data_dir).unwrap_err();
+
+        assert!(error.to_string().contains(&work_dir.display().to_string()));
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[test]

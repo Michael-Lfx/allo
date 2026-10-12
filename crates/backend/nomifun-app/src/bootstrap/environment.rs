@@ -20,7 +20,7 @@ use crate::cli::Cli;
 use super::builtin_skills::materialize_builtin_skills;
 use super::server_lock::{BootServerLockAuthority, ServerLock, acquire_server_lock};
 use super::tracing_init::{LogGuards, init_tracing};
-use super::work_dir::resolve_work_dir;
+use super::work_dir::{ensure_work_dir, resolve_work_dir};
 
 /// Resolved environment needed by all non-MCP subcommands.
 pub struct ServerEnvironment {
@@ -351,6 +351,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
             (source, source_lock)
         }
     } else {
+        ensure_work_dir(&requested_work_dir, &data_dir)?;
         let external = acquire_distinct_work_root_lock(
             &data_root_work_lock,
             &requested_work_dir,
@@ -359,6 +360,17 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
             .as_ref()
             .map(|lock| lock.protected_root().to_path_buf())
             .unwrap_or_else(|| data_root_work_lock.protected_root().to_path_buf());
+        // A missing owner marker with a matching data-side binding is
+        // reclaimed here (covers a deleted directory as well as deleted
+        // contents); mismatched or foreign roots fall through to the strict
+        // dataset checks below.
+        nomifun_common::factory_reset::restore_missing_work_root_owner(
+            &data_dir,
+            &work_dir,
+        )
+        .context(
+            "restore a missing work-root owner marker for the resolved work directory",
+        )?;
         (work_dir, external)
     };
 
