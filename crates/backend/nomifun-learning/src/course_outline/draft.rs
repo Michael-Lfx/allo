@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::learning_graph::ScopeAnalysis;
+use super::scope::ScopeAnalysis;
 use crate::generation::{Blueprint, BlueprintLesson, BlueprintModule};
 use crate::models::SourceSpan;
 

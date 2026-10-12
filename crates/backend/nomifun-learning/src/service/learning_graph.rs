@@ -53,40 +53,23 @@ impl LearningService {
             optional_statement(request.learner_basis.as_deref(), "learner basis")?;
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
         let _slot = self.acquire_generation_slot(user_id, "learning-graph-create".to_owned())?;
-
-        let completer = self.course_completer()?;
-        // Scope 分析：尽力而为，失败降级为无参考起步。
-        let scope = crate::learning_graph::analyze_scope(
-            completer.as_ref(),
-            model_override,
-            &topic,
-        )
-        .await;
+        // 提前校验生成依赖可用（未配置 provider 时建课即明确报错，而不是
+        // 让它静默进入后台任务）。
+        self.course_completer()?;
 
         let course_id = LearningCourseId::new();
         let module_id = LearningModuleId::new();
         let now = now_ms();
-        let goal_text = scope
-            .as_ref()
-            .map(|scope| scope.goal.clone())
-            .unwrap_or_default();
-        let scope_text = scope
-            .as_ref()
-            .map(|scope| {
-                format!("{}（基线：{}）", scope.scope, scope.baseline)
-            })
-            .unwrap_or_default();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
              (course_id, title, description, domain, version, course_kind, learning_goal, \
-              learning_scope, created_at, updated_at) \
-             VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, ?, ?, ?)",
+              created_at, updated_at) \
+             VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(&topic)
-        .bind(if goal_text.is_empty() { topic.as_str() } else { goal_text.as_str() })
-        .bind(&scope_text)
+        .bind(&topic)
         .bind(now)
         .bind(now)
         .execute(&mut *transaction)
@@ -111,7 +94,7 @@ impl LearningService {
         let owner = user_id.clone();
         let course = course_id.clone();
         let structure_input = crate::learning_graph::structure_gen::StructureInput {
-            goal: if goal_text.is_empty() { topic.clone() } else { goal_text.clone() },
+            goal: topic.clone(),
             proficiency_statement,
             learner_basis,
         };
@@ -668,10 +651,9 @@ impl LearningService {
         self.apply_batch(course_id, engine, pending, &batch).await
     }
 
-    /// 教练上下文：目标/范围/地形门口/花名册/已教账/覆盖读数/登记表切片。
-    /// 地形门口从本课 structure_json 快照的 terrain 产物重读（课程内铁律：
-    /// 只读本课快照，不触碰概念登记表）；无快照 = 门口块为空，教练退回自行
-    /// 盘点（首级判据的内联分支）。
+    /// 教练上下文（g3 九块）：结构参考材料与地形门口从本课 structure_json
+    /// 快照重读（课程内铁律：只读本课快照，不触碰概念登记表）；无快照 =
+    /// 两块均为空，教练退回自行盘点。
     async fn build_coach_context(
         &self,
         course_id: &LearningCourseId,
@@ -679,7 +661,7 @@ impl LearningService {
         _completer: &dyn LearningCompleter,
     ) -> Result<crate::learning_graph::CoachContext, AppError> {
         let course = sqlx::query(
-            "SELECT title, learning_goal, learning_scope, structure_json \
+            "SELECT title, learning_goal, structure_json \
              FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
@@ -688,14 +670,45 @@ impl LearningService {
         .map_err(internal)?;
         let title: String = course.try_get("title").map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
-        let scope: String = course.try_get("learning_scope").map_err(internal)?;
         let snapshot: Option<String> = course.try_get("structure_json").map_err(internal)?;
-        let terrain = snapshot
+        let envelope = snapshot
             .as_deref()
             .map(serde_json::from_str::<serde_json::Value>)
             .transpose()
-            .map_err(internal)?
+            .map_err(internal)?;
+        let structure = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.get("structure").cloned());
+        let terrain = envelope
+            .as_ref()
             .and_then(|envelope| envelope.get("terrain").cloned());
+        // 块 1 附注（程度/基础声明）：结构/地形产物的标量回执。
+        let proficiency_statement = structure
+            .as_ref()
+            .map(|structure| {
+                structure
+                    .get("proficiency_statement")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        let learner_basis = terrain
+            .as_ref()
+            .map(|terrain| {
+                terrain
+                    .get("learner_basis_assumed")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        // 块 2：结构参考材料（全量块摊开，呈现序 = 难度档/前置链深/主干序/块序）。
+        let structure_reference = structure
+            .as_ref()
+            .map(crate::learning_graph::structure_view::render_reference_lines)
+            .unwrap_or_default();
+        // 块 3：前置地形门口。
         let terrain_doors = terrain
             .as_ref()
             .map(render_terrain_doors)
@@ -719,7 +732,9 @@ impl LearningService {
 
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
-            scope_reference: scope,
+            proficiency_statement,
+            learner_basis,
+            structure_reference,
             terrain_doors,
             roster,
             taught_summary,
@@ -964,19 +979,8 @@ impl LearningService {
             &registry_names,
             &existing_titles,
         );
-        // 深度水位：已落库批次数决定本批允许的最高难度（每批最多涨 2 档）。
-        let applied_batches: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches \
-             WHERE course_id = ? AND status = 'applied'",
-        )
-        .bind(course_id.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-        errors.extend(crate::learning_graph::validate_batch_depth(
-            batch,
-            applied_batches.max(0) as usize,
-        ));
+        // 深度水位门已退役（g3：档位比较是精度剧场）——难度诚实性由 AI 概念
+        // 评审门作语义兜底。
         Ok(errors)
     }
 
@@ -1314,15 +1318,13 @@ impl LearningService {
         user_id: Option<&UserId>,
     ) -> Result<crate::models::LearningGraphView, AppError> {
         let course = sqlx::query(
-            "SELECT learning_goal, learning_scope \
-             FROM learning_courses WHERE course_id = ?",
+            "SELECT learning_goal FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
-        let scope: String = course.try_get("learning_scope").map_err(internal)?;
 
         // R 软闸分桶：结构就绪集合不变（ready_count 是水位口径），被挡的
         // 候选从推荐里剔除并出建议（ADR-0009 Amendment 1）。
@@ -1335,7 +1337,6 @@ impl LearningService {
 
         Ok(crate::models::LearningGraphView {
             goal,
-            scope,
             recommended,
             blocked,
             ready_count,

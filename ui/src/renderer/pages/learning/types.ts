@@ -354,7 +354,6 @@ export interface GraphBlockedView {
  * LearningStructureView（GET graph/structure）。 */
 export interface LearningGraphView {
   goal: string;
-  scope: string;
   /** 下一步推荐学习的节点（就绪集 ≤10；被 R 软闸挡住的进 blocked） */
   recommended: string[];
   /** R 软闸建议（≤3 条，按供给节点回忆率升序） */

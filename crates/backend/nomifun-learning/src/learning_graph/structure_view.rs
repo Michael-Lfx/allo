@@ -8,7 +8,6 @@
 //! 依赖分层（层号 = assumes 前置链深度，L0 = 无前置的块；层号不是排期）、
 //! 枢纽出入度（assumes + composes 的端点计数，方向反转展示归前端）。
 
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::models::{
@@ -301,7 +300,6 @@ fn build_terrain(terrain: &Value) -> Option<TerrainView> {
         .map(|items| {
             items
                 .iter()
-
                 .map(|door| TerrainDoorView {
                     id: text(door, "id"),
                     criterion: text(door, "criterion"),
@@ -319,6 +317,70 @@ fn build_terrain(terrain: &Value) -> Option<TerrainView> {
         doors,
     })
 }
+
+/// 结构参考材料行渲染（教练上下文块 2，g3 裁决的行格式与呈现序）：
+/// `- 块名(slug)|主题一句|难度档|主干|无前置` 或 `…|前置:A、B`；
+/// 呈现序 = 难度档 / 前置链深 / 主干序 / 块序。纯结构事实，不裁剪候选面。
+pub(crate) fn render_reference_lines(structure: &Value) -> String {
+    let view = build_structure(structure);
+    if view.blocks.is_empty() {
+        return String::new();
+    }
+    let mut prereqs: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for edge in &view.edges {
+        if edge.edge_type != "assumes" {
+            continue;
+        }
+        prereqs
+            .entry(edge.source.as_str())
+            .or_default()
+            .push(edge.target.as_str());
+    }
+    let spine_order: std::collections::HashMap<&str, usize> = view
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| (group.spine.as_str(), index))
+        .collect();
+    let stage_rank = |stage: &str| match stage {
+        "入门" => 0usize,
+        "进阶" => 1,
+        "高级" => 2,
+        _ => 3,
+    };
+    let mut rows: Vec<(usize, usize, usize, usize, String)> = view
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let note = if block.note.trim().is_empty() { "—" } else { block.note.trim() };
+            let tail = match prereqs.get(block.name.as_str()) {
+                Some(targets) if !targets.is_empty() => {
+                    format!("前置:{}", targets.join("、"))
+                }
+                _ => "无前置".to_owned(),
+            };
+            let line = format!(
+                "- {}({})|{}|{}|{}|{}",
+                block.name, block.slug, note, block.stage, block.spine, tail
+            );
+            (
+                stage_rank(&block.stage),
+                block.layer,
+                spine_order.get(block.spine.as_str()).copied().unwrap_or(usize::MAX),
+                index,
+                line,
+            )
+        })
+        .collect();
+    rows.sort_by_key(|(stage, layer, spine, index, _)| (*stage, *layer, *spine, *index));
+    rows.into_iter()
+        .map(|(_, _, _, _, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 
 #[cfg(test)]
 mod tests {
