@@ -30,6 +30,12 @@ pub use lesson_draft::{
 pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput};
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::structure_contract::{
+    reconcile_doors as reconcile_structure_doors,
+    validate_terrain as validate_terrain_artifact,
+    validate_structure as validate_structure_artifact,
+};
+pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, CourseDetail,

@@ -69,6 +69,8 @@
             .unwrap();
         GenerateCourseRequest {
             course_kind: crate::models::CourseKind::Traditional,
+            proficiency_statement: None,
+            learner_basis: None,
             teaching_style: None,
             knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
             description: None,

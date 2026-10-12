@@ -46,6 +46,13 @@ pub struct GenerateCourseRequest {
     /// 缺省为传统课程。
     #[serde(default)]
     pub course_kind: CourseKind,
+    /// 学习图课程的程度声明（可选，g2 输入最小化）：达成后能独立做成什么；
+    /// 缺省由结构生成依据目标扩写。
+    #[serde(default)]
+    pub proficiency_statement: Option<String>,
+    /// 学习图课程的学习者基础声明（可选）：缺省按纯零基础画地形。
+    #[serde(default)]
+    pub learner_basis: Option<String>,
     /// 讲解风格（standard/socratic/feynman）；缺省 standard。
     #[serde(default)]
     pub teaching_style: Option<TeachingStyle>,

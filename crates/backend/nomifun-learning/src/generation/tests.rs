@@ -399,6 +399,8 @@
         let id = KnowledgeBaseId::new();
         let request = GenerateCourseRequest {
             course_kind: crate::models::CourseKind::Traditional,
+            proficiency_statement: None,
+            learner_basis: None,
             teaching_style: None,
             knowledge_base_id: Some(id.clone()),
             description: None,

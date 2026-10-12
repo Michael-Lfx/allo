@@ -64,6 +64,8 @@ impl LearningCourseSink for LiveLearningCourseSink {
             mode,
             // The agent tool does not (yet) take a style argument; courses
             // generated through it use the standard section writer.
+            proficiency_statement: None,
+            learner_basis: None,
             teaching_style: None,
         };
         let job_id = self

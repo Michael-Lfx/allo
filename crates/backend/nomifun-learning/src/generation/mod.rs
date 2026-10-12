@@ -272,8 +272,8 @@ pub(crate) use self::blueprint::{
     validate_blueprint,
 };
 pub(crate) use self::completer::{
-    complete, complete_coach, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
-    COACH_MAX_TOKENS, CONCEPT_REVIEW_MAX_TOKENS, ENTRY_SURVEY_MAX_TOKENS,
+    complete, complete_coach, complete_json_coach, repair_figure, ACTIVITIES_MAX_TOKENS, BLUEPRINT_MAX_TOKENS,
+    COACH_MAX_TOKENS, CONCEPT_REVIEW_MAX_TOKENS, STRUCTURE_MAX_TOKENS,
     LEARNING_GRAPH_SCOPE_MAX_TOKENS, REFLECTION_GRADING_MAX_TOKENS, SECTION_BODY_MAX_TOKENS,
     SECTION_OUTLINE_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };

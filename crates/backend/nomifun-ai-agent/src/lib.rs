@@ -1,6 +1,7 @@
 //! Agent runtime lifecycle, per-conversation runtime registration, and skill management.
 pub(crate) mod runtime_state;
 pub mod agent_eval;
+pub mod archiving_completer;
 pub mod agent_trace;
 pub mod artifact_store;
 pub mod boot_process_reaper;

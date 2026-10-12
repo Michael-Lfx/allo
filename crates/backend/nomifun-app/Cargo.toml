@@ -255,6 +255,8 @@ silero-vad = ["nomifun-robot/silero-vad"]
 local-stt = ["nomifun-audio/local-stt"]
 
 [dependencies]
+tempfile = "3"
+
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
 nomifun-db.workspace = true
