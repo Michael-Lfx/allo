@@ -4,13 +4,7 @@ import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import type {
-  CourseDetail,
-  EndpointInput,
-  GenerateCourseRequest,
-  ProposedEndpointView,
-  TeachingStyle,
-} from '../types';
+import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
 /** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
@@ -36,13 +30,13 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const { choice: modelChoice, setChoice: setModelChoice } = useLearningAutogenModel();
   const [generateVisible, setGenerateVisible] = useState(false);
   // 创建课程对话框：方式一（从知识库生成）/ 方式二（描述直接生成，无知识库参与）/
-  // 方式三（学习图 beta：目标 → AI 提议终点 → 确认 → 建课并首生长）；默认描述生成
+  // 方式三（学习图 beta：目标 + 可选程度/基础声明 → 建课并生成知识结构）；默认描述生成
   const [creationTab, setCreationTab] = useState<'base' | 'description' | 'graph'>('description');
-  // 学习图向导步：目标输入 → 终点确认（AI 提议，可增删改）
-  const [graphStep, setGraphStep] = useState<'goal' | 'endpoints'>('goal');
-  const [proposingEndpoints, setProposingEndpoints] = useState(false);
-  const [draftEndpoints, setDraftEndpoints] = useState<EndpointInput[]>([]);
   const [creationDescription, setCreationDescription] = useState('');
+  // 学习图建课的可选声明（g2 输入最小化）：程度声明（缺省由结构生成扩写）、
+  // 基础声明（缺省按纯零基础画地形）。
+  const [graphProficiency, setGraphProficiency] = useState('');
+  const [graphBasis, setGraphBasis] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
@@ -109,59 +103,32 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     [t, setBusyId]
   );
 
-  // 学习图向导第一步：目标 → AI 提议 1-3 条终点锚进入第二步（失败降级为
-  // 空列表，用户手填即可，绝不阻塞建课）。
-  const proposeGraphEndpoints = useCallback(async () => {
-    const description = creationDescription.trim();
-    if (!description) {
-      Message.warning(t('learning.describeRequired'));
-      return;
-    }
-    setProposingEndpoints(true);
-    try {
-      const proposed: ProposedEndpointView[] = await learningApi.proposeGraphEndpoints({
-        description,
-        provider_id: modelChoice?.provider_id,
-        model: modelChoice?.model,
-      });
-      setDraftEndpoints(
-        proposed.length > 0 ? proposed.map((endpoint) => ({ ...endpoint })) : [{ title: '', goal_note: '' }]
-      );
-      setGraphStep('endpoints');
-    } catch (actionError) {
-      Message.error(errorMessage(t, actionError));
-    } finally {
-      setProposingEndpoints(false);
-    }
-  }, [creationDescription, modelChoice, t]);
-
-  // 学习图向导第二步：确认终点锚 → 建课（终点点位随请求提交；首生长在
-  // 后台启动，进度走悬浮指示条）。
+  // 学习图建课（单步向导）：目标 + 可选程度/基础声明 → 建课；知识结构生成
+  // 与首生长在后台启动（结构进度走工作区 WS structure_* 事件）。
   const confirmGraphCreation = useCallback(async () => {
     const description = creationDescription.trim();
     if (!description) {
       Message.warning(t('learning.describeRequired'));
       return;
     }
-    const endpoints = draftEndpoints
-      .map((endpoint) => ({
-        title: endpoint.title.trim(),
-        goal_note: endpoint.goal_note?.trim() ?? '',
-      }))
-      .filter((endpoint) => endpoint.title.length > 0);
-    if (endpoints.length === 0) {
-      Message.warning(t('learning.learningGraphEndpointRequired'));
-      return;
-    }
     await generateCourse({
       course_kind: 'learning_graph',
       description,
-      endpoints,
+      proficiency_statement: graphProficiency.trim() || undefined,
+      learner_basis: graphBasis.trim() || undefined,
       teaching_style: teachingStyle,
       provider_id: modelChoice?.provider_id,
       model: modelChoice?.model,
     });
-  }, [creationDescription, draftEndpoints, generateCourse, modelChoice, teachingStyle]);
+  }, [
+    creationDescription,
+    generateCourse,
+    graphBasis,
+    graphProficiency,
+    modelChoice,
+    teachingStyle,
+    t,
+  ]);
 
   // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
   // 已填写课程简报。校验失败时提示并停留在表单。
@@ -281,17 +248,15 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setSelectedKnowledgeBaseId,
     generationDomain,
     setGenerationDomain,
+    graphProficiency,
+    setGraphProficiency,
+    graphBasis,
+    setGraphBasis,
     generation,
     openGenerator,
     openCreateForm,
     submitGeneration,
-    proposeGraphEndpoints,
     confirmGraphCreation,
-    graphStep,
-    setGraphStep,
-    proposingEndpoints,
-    draftEndpoints,
-    setDraftEndpoints,
     retryGeneration,
     closeGenerator,
     refreshGenerationStatus,

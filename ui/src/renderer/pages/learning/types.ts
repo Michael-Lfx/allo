@@ -46,8 +46,10 @@ export interface GenerateCourseRequest {
   model?: string;
   /** 讲解风格（课程级）：standard 标准 / socratic 苏格拉底 / feynman 费曼 */
   teaching_style?: TeachingStyle;
-  /** 学习图课程的初始终点锚（为空时由 AI 提议） */
-  endpoints?: EndpointInput[];
+  /** 学习图课程的程度声明（可选）：达成后能独立做成什么；缺省由结构生成依据目标扩写 */
+  proficiency_statement?: string;
+  /** 学习图课程的学习者基础声明（可选）：缺省按纯零基础画地形 */
+  learner_basis?: string;
 }
 
 /** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
@@ -56,19 +58,6 @@ export interface LearningGraphGenerationStatus {
   running: boolean;
   topic: string | null;
   elapsed_secs: number | null;
-}
-
-/** 终点锚提议请求（建课向导第二步的 AI 提议） */
-export interface ProposeEndpointsRequest {
-  description: string;
-  provider_id?: string;
-  model?: string;
-}
-
-/** AI 提议的一条终点锚 */
-export interface ProposedEndpointView {
-  title: string;
-  goal_note: string;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
@@ -349,29 +338,6 @@ export interface SetTagsRequest {
 /** 概念掌握档位：知道 < 会用 < 能教 */
 export type ConceptTier = 'know' | 'apply' | 'teach';
 
-/** 终点锚：标题 + 一句程度声明；lesson_id 是它的零正文标记课时行 */
-export interface GraphEndpointView {
-  endpoint_id: string;
-  lesson_id: string;
-  title: string;
-  goal_note: string;
-  completed: boolean;
-  declared_at: number;
-}
-
-/** 终点锚创建/编辑输入 */
-export interface EndpointInput {
-  title: string;
-  goal_note?: string;
-}
-
-/** 终点锚部分编辑输入：undefined = 不改动；completed 用户可置位/重开 */
-export interface EndpointUpdateInput {
-  title?: string;
-  goal_note?: string;
-  completed?: boolean;
-}
-
 /** R 软闸的一条建议：结构就绪但供给节点已遗忘——建议先复习供给节点 */
 export interface GraphBlockedView {
   lesson_id: string;
@@ -383,15 +349,12 @@ export interface GraphBlockedView {
   due_count: number;
 }
 
-/** 图视图（挂在 CourseDetail.graph 下）：终点锚 + 罗盘 + 就绪集与水位。
- * 没有先修边、没有锁定态——发布即就绪。 */
+/** 图视图（挂在 CourseDetail.graph 下）：就绪集与水位。
+ * 没有先修边、没有锁定态——发布即就绪。结构读侧投影走独立的
+ * LearningStructureView（GET graph/structure）。 */
 export interface LearningGraphView {
   goal: string;
   scope: string;
-  /** 罗盘（逐终点剩余路线摘要），终点变更时重画；null = 尚未画出 */
-  compass: string | null;
-  compass_updated_at: number | null;
-  endpoints: GraphEndpointView[];
   /** 下一步推荐学习的节点（就绪集 ≤10；被 R 软闸挡住的进 blocked） */
   recommended: string[];
   /** R 软闸建议（≤3 条，按供给节点回忆率升序） */
