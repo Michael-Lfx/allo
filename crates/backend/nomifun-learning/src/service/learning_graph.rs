@@ -1769,14 +1769,45 @@ impl LearningService {
         .map_err(internal)?;
         let title: String = course.try_get("title").map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
-        let scope: String = course.try_get("learning_scope").map_err(internal)?;
         let snapshot: Option<String> = course.try_get("structure_json").map_err(internal)?;
-        let terrain = snapshot
+        let envelope = snapshot
             .as_deref()
             .map(serde_json::from_str::<serde_json::Value>)
             .transpose()
-            .map_err(internal)?
+            .map_err(internal)?;
+        let structure = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.get("structure").cloned());
+        let terrain = envelope
+            .as_ref()
             .and_then(|envelope| envelope.get("terrain").cloned());
+        // 块 1 附注（程度/基础声明）：结构/地形产物的标量回执。
+        let proficiency_statement = structure
+            .as_ref()
+            .map(|structure| {
+                structure
+                    .get("proficiency_statement")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        let learner_basis = terrain
+            .as_ref()
+            .map(|terrain| {
+                terrain
+                    .get("learner_basis_assumed")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        // 块 2：结构参考材料（全量块摊开，呈现序 = 难度档/前置链深/主干序/块序）。
+        let structure_reference = structure
+            .as_ref()
+            .map(crate::learning_graph::structure_view::render_reference_lines)
+            .unwrap_or_default();
+        // 块 3：前置地形门口。
         let terrain_doors = terrain
             .as_ref()
             .map(render_terrain_doors)
@@ -2674,7 +2705,6 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
-        let scope: String = course.try_get("learning_scope").map_err(internal)?;
 
         // R 软闸分桶：结构就绪集合不变（ready_count 是水位口径），被挡的
         // 候选从推荐里剔除并出建议（ADR-0009 Amendment 1）。
@@ -2687,7 +2717,6 @@ impl LearningService {
 
         Ok(crate::models::LearningGraphView {
             goal,
-            scope,
             recommended,
             blocked,
             ready_count,

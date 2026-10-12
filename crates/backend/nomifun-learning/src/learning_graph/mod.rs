@@ -367,77 +367,6 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
         ConceptTier::Teach => "能教",
     }
 }
-// ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
-
-/// Scope call: ONE light call that resolves what the goal description
-/// actually covers. The output is REFERENCE material for the coach prompt;
-/// failure degrades to a scope-free start, never to a hard error.
-const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先厘清这个目标到底覆盖什么。
-只回复一个 JSON 对象，形状如下：
-{
-  "goal": "完成整个学习后应达到的最终状态——可检验的能力描述",
-  "baseline": "学习者被假定的起点状态",
-  "scope": "一句话界定该目标覆盖什么、从哪里开始",
-  "blocks": ["大块概念一", "大块概念二"]
-}
-规则：
-- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
-- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知；只有用户明确说出自己已具备的知识或技能时，才照实记录。
-- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度，须与 goal 和 baseline 保持一致。
-- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。数量不固定：复杂的目标多列，简单的目标少列。
-- 用学习目标的语言书写。
-- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
-
-/// Resolved scope reference fed into the coach.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ScopeAnalysis {
-    pub goal: String,
-    pub baseline: String,
-    pub scope: String,
-    pub blocks: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawScope {
-    #[serde(default)]
-    goal: String,
-    #[serde(default)]
-    baseline: String,
-    #[serde(default)]
-    scope: String,
-    #[serde(default, deserialize_with = "de_string_list")]
-    blocks: Vec<String>,
-}
-
-fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
-    let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
-    Some(ScopeAnalysis {
-        goal: parsed.goal.trim().to_owned(),
-        baseline: parsed.baseline.trim().to_owned(),
-        scope: parsed.scope.trim().to_owned(),
-        blocks: parsed.blocks,
-    })
-}
-
-/// One scope call, best-effort: any failure degrades to `None`.
-pub(crate) async fn analyze_scope(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    topic: &str,
-) -> Option<ScopeAnalysis> {
-    let user = format!("Learning goal: {topic}");
-    let raw = crate::generation::complete(
-        completer,
-        model_override,
-        SCOPE_SYSTEM,
-        &user,
-        crate::generation::LEARNING_GRAPH_SCOPE_MAX_TOKENS,
-    )
-    .await
-    .ok()?;
-    parse_scope_reply(&raw)
-}
-
 // ── Coach draft ────────────────────────────────────────────────────────────
 
 /// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
@@ -548,10 +477,6 @@ pub struct CoachContext {
     pub ready_count: usize,
     /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
-    /// 前置地形门口（结构产物 terrain 的 G 判据，`- [G1]（硬前置）判据` 行
-    /// 列表；空 = 课程无结构快照，教练自行盘点）。g2 裁决：地形门口是入口
-    /// 域盘点的结构化替代，首批重点呈现。
-    pub terrain_doors: String,
 }
 
 impl CoachContext {
@@ -785,20 +710,12 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 
 【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
-2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
-3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
+2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。
+3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
-【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
-- 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）。逐条裁决「复用 | 新铸」：
-- 裁**复用** = 该名字其实是既有概念的另一投影：把它写进输出顶层 `reuse` 数组（`{ "name": "<提名名>", "concept_id": "<登记表概念 id>" }`）；concept_id 必须是评审材料里出现过的真实 id——优先本提名的候选，相关提名候选里指向同一概念的值同样可用；编造即违约。复用的概念不铸新行，提名名落为该概念的活跃别名。
-- 裁**新铸** = 提名确实是新概念：不写进 reuse 即可（缺省新铸）。
-- **new_aliases 提名的语义就是「既有概念的新名字」——必须裁复用**；你认为它该是新概念时不要裁决，整批会被打回并指点它改走 mints。
-- 判据：候选集的定义近邻/名字近形只是机械线索；拿不准时按「同一概念用了两个不同名字应复用既有名」（判据 3）与候选定义比对裁决。
-
 【不算问题，一律不报】
-- est 长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
-- 重教/复访已教概念：同一概念再次 teaches 完全合法（螺旋加深、换角度变式——概念不可学完）；已教账里有该概念不构成问题，除非同一角度同一深度的重复（标题与既有节点完全相同——结构门已拦）。
+- 分钟数长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
@@ -914,58 +831,6 @@ pub(crate) async fn concept_review(
             }
         })
         .unwrap_or_default()
-}
-
-/// 形式化内容的特征词（标题侧；purpose 允许「为后续证明打基础」式方向性
-/// 提及，不作判据）。出现即要求难度 ≥3——形式化/证明类内容按标尺至少是
-/// 多概念综合（4）起步，标 1-2 属虚标（深度水位的逃逸口，确定性封堵）。
-const FORMAL_TITLE_MARKERS: [&str; 5] = ["证明", "严格", "形式化", "公理", "ε-δ"];
-
-/// 节点申报难度（缺省按入门档 2 收紧早批漏报）。
-fn declared_difficulty(node: &ProposedNode) -> u8 {
-    node.difficulty.unwrap_or(2)
-}
-
-/// 深度水位门（确定性）：本批最高难度 ≤ 已落库批次数 + 2，且 ≤ 5。台阶
-/// 只解决「能不能长」（依赖覆盖），深度水位解决「能长多快」——形式化/
-/// 证明类内容（难度 4-5）要等台阶铺满低档之后才合法，不是第二批就该
-/// 出场的东西（2026-09-29 实测：第二批直接长出 ε-δ/∀∃/黎曼和）。
-pub fn validate_batch_depth(
-    batch: &ProposedBatch,
-    applied_batches: usize,
-) -> Vec<GateError> {
-    let mut errors = Vec::new();
-    // 虚标护栏先跑：标题带形式化特征词的节点按 4 计入水位（并要求如实申报）。
-    let mut effective_max: u8 = 0;
-    for node in &batch.nodes {
-        let mut declared = declared_difficulty(node);
-        let formal = FORMAL_TITLE_MARKERS
-            .iter()
-            .any(|marker| node.title.contains(marker));
-        if formal && declared < 3 {
-            errors.push(GateError {
-                kind: "difficulty_dishonest",
-                message: format!(
-                    "节点「{}」的标题带形式化/证明特征（{marker_list}），申报难度 {declared} 属虚标——按标尺如实申报（形式化/证明类 ≥4）；若确属入门内容，把节点内容改为直观版本而不是压档位",
-                    node.title.trim(),
-                    marker_list = FORMAL_TITLE_MARKERS.join("/"),
-                ),
-            });
-            declared = declared.max(4);
-        }
-        effective_max = effective_max.max(declared);
-    }
-    let allowance = (applied_batches as u8).saturating_add(2).min(5);
-    if effective_max > allowance {
-        errors.push(GateError {
-            kind: "difficulty_leap",
-            message: format!(
-                "本批最高难度 {effective_max} 超过深度水位 {allowance}（本课程已落库 {applied} 批，每批最多涨 2 档）——台阶只解决「能不能长」，深度要分批爬：先把当前层跑满应用与变式，形式化/证明类内容（难度 4-5）留给后面的批次",
-                applied = applied_batches,
-            ),
-        });
-    }
-    errors
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1977,61 +1842,36 @@ mod tests {
         assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
     }
 
-    /// 首批 + 地形门口菜单：首级判据第 1 条切换为「照门口落节点」并内联门口；
-    /// 非首批不渲染首级判据；无结构快照（门口为空）时教练自行盘点。
+    /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；
+    /// 非首批不渲染首批纪律、门口换软参照框架语。
     #[test]
-    fn coach_context_renders_terrain_doors_menu_on_first_batch() {
-        let with_doors = CoachContext {
+    fn coach_context_renders_structure_reference_and_first_batch_discipline() {
+        let with_material = CoachContext {
             roster: String::new(),
+            structure_reference: "- 块A(a)|主题描述|入门|主干一|无前置".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
             ..Default::default()
         };
-        let rendered = with_doors.render();
-        assert!(rendered.contains("前置地形门口已由结构产物给出"), "{rendered}");
+        let rendered = with_material.render();
+        assert!(rendered.contains("结构参考材料"), "{rendered}");
+        assert!(rendered.contains("- 块A(a)|主题描述|入门|主干一|无前置"), "{rendered}");
+        assert!(rendered.contains("首批入口重点参照"), "{rendered}");
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
-        assert!(!rendered.contains("先回答再动笔"), "doors replace the inline survey branch");
+        assert!(rendered.contains("首批纪律"), "{rendered}");
+        assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
 
         let doorless = CoachContext { roster: String::new(), ..Default::default() };
         let rendered = doorless.render();
-        assert!(rendered.contains("先回答再动笔"), "{rendered}");
+        assert!(rendered.contains("首批纪律"), "{rendered}");
+        assert!(!rendered.contains("前置地形门口"), "no doors block when snapshot missing: {rendered}");
 
         let later_batch = CoachContext {
             roster: "在学 | 节点A".into(),
             terrain_doors: "- [G1]（硬前置）能用配方法解方程".into(),
             ..Default::default()
         };
-        assert!(!later_batch.render().contains("首级判据"));
-    }
-
-    /// 深度水位门：难度随已落库批次数爬升（每批 +2，封顶 5）；标题带形式化
-    /// 特征词而申报低档 = 虚标，按 4 计入并要求如实申报。
-    #[test]
-    fn validate_batch_depth_caps_by_applied_batches() {
-        let mut formal = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
-        formal.difficulty = Some(4);
-        let mut plain = node("在数轴上表示一个数", vec![], vec![]);
-        plain.difficulty = Some(2);
-
-        // 第一批（0 批落库，水位 2）：入门批合法，形式化批打回。
-        let errors = validate_batch_depth(&batch_of(vec![plain.clone()]), 0);
-        assert!(errors.is_empty(), "{errors:?}");
-        let errors = validate_batch_depth(&batch_of(vec![formal.clone()]), 0);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].kind, "difficulty_leap");
-
-        // 漏报按入门档收紧：第一批合法（2 ≤ 2），但内容带形式化特征词 →
-        // 虚标打回，且按 4 计入水位 → 同时超水位。
-        let mut undeclared = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
-        undeclared.difficulty = None;
-        let errors = validate_batch_depth(&batch_of(vec![undeclared]), 0);
-        assert!(
-            errors.iter().any(|e| e.kind == "difficulty_dishonest"),
-            "{errors:?}"
-        );
-        assert!(errors.iter().any(|e| e.kind == "difficulty_leap"), "{errors:?}");
-
-        // 两批落库（水位 4）：形式化批放行。
-        let errors = validate_batch_depth(&batch_of(vec![formal]), 2);
-        assert!(errors.is_empty(), "{errors:?}");
+        let rendered = later_batch.render();
+        assert!(!rendered.contains("首批纪律"), "later batches: no first-batch discipline");
+        assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
     }
 }

@@ -609,7 +609,7 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
         }
         None if graph.is_some() => {
             text.push_str(
-                "\n学习图节点没有课程简报：内容忠于学习目标、学习范围与前置/后续节点段落。\n",
+                "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
             );
         }
         None => {

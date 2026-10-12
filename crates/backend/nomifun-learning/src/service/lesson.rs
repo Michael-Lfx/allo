@@ -1072,7 +1072,7 @@ impl LearningService {
                 );
                 let mut context_text =
                     format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
-                if !topology.prerequisite_path.trim().is_empty() {
+                if !prerequisite_path.trim().is_empty() {
                     context_text.push_str(&format!(
                         "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{}",
                         topology.prerequisite_path

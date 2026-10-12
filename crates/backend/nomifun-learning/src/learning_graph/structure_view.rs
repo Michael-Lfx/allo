@@ -8,7 +8,6 @@
 //! 依赖分层（层号 = assumes 前置链深度，L0 = 无前置的块；层号不是排期）、
 //! 枢纽出入度（assumes + composes 的端点计数，方向反转展示归前端）。
 
-use serde::Serialize;
 use serde_json::Value;
 
 use crate::models::{
