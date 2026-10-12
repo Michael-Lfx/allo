@@ -12,10 +12,10 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
-/// 生长修复循环的总稿数上限（首稿 + 至多 N-1 次打回重裁）。结构门/概念评审
-/// 打回时把报告喂回教练重裁再试，而非直接失败；该上限只是成本/超时护栏，
+/// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
+/// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
 /// 并非"两次即弃"的语义。
-const GROWTH_MAX_DRAFTS: usize = 4;
+const GROWTH_MAX_ATTEMPTS: usize = 3;
 
 impl LearningService {
 
@@ -519,122 +519,118 @@ impl LearningService {
             "coach context assembled"
         );
 
-        // 修复循环：教练起草 → 结构门/概念评审打回时把报告喂回教练重裁再试，
-        // 直到某一稿同时过门与评审即落库；仅当重裁预算耗尽才失败。
-        let mut batch = crate::learning_graph::coach_draft(
-            completer.as_ref(),
-            model_override,
-            &context,
-        )
-        .await?;
-        tracing::info!(
-            course = course_id.as_str(),
-            draft = 1,
-            nodes = batch.nodes.len(),
-            mints = batch.mints.len(),
-            batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-            "coach proposed growth batch"
-        );
-        let mut draft_no = 1usize;
-        loop {
-            let gates = self.gate_batch(course_id, &batch).await?;
-            if !gates.is_empty() {
-                tracing::warn!(
-                    course = course_id.as_str(),
-                    draft = draft_no,
-                    gate_count = gates.len(),
-                    report = %crate::learning_graph::format_gate_report(&gates),
-                    "growth batch rejected by structural gates"
-                );
-                if draft_no >= GROWTH_MAX_DRAFTS {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        drafts = draft_no,
-                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-                        "growth failed: structural gates rejected every draft"
-                    );
-                    return Err(AppError::UnprocessableEntity(format!(
-                        "生长批次 {} 稿均未通过结构门：\n{}",
-                        draft_no,
-                        crate::learning_graph::format_gate_report(&gates)
-                    )));
-                }
-                self.emit_graph_event(course_id, "growth_redraft", serde_json::json!({
-                    "stage": "gates",
-                    "problems": crate::learning_graph::format_gate_report(&gates),
-                }));
-                batch = crate::learning_graph::coach_redraft(
+        // 修复循环（g4：与结构门面同款——≤3 轮，每轮把**逐条款报告**
+        // （ng.*）注入重试装配）：教练起草/重裁 → 形状与语义门/概念评审打回
+        // 时把报告喂回重裁再试，直到某一稿同时过门与评审即落库；仅当预算
+        // 耗尽才失败。首轮解析失败（无上一稿可点修）直接带报告重新起草。
+        let mut previous: Option<crate::learning_graph::ProposedBatch> = None;
+        let mut feedback = String::new();
+        let mut last = String::from("(未执行)");
+        let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
+        for attempt in 1..=GROWTH_MAX_ATTEMPTS {
+            let drafted = match &previous {
+                Some(previous) => crate::learning_graph::coach_redraft(
                     completer.as_ref(),
                     model_override,
                     &context,
-                    &batch,
-                    &crate::learning_graph::format_gate_report(&gates),
+                    previous,
+                    &feedback,
                 )
-                .await?;
-                draft_no += 1;
-                tracing::info!(
+                .await
+                .map_err(|error| error.to_string()),
+                None => crate::learning_graph::coach_draft(
+                    completer.as_ref(),
+                    model_override,
+                    &context,
+                    &feedback,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            };
+            let candidate = match drafted {
+                Ok(candidate) => candidate,
+                Err(report) => {
+                    // 形状违约/传输错误：报告已带条款编号（或原始错误），
+                    // 注入下一轮重新起草。
+                    last = report;
+                    feedback = last.clone();
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        attempt,
+                        report = %feedback,
+                        "coach draft failed — regenerating with feedback"
+                    );
+                    continue;
+                }
+            };
+            tracing::info!(
+                course = course_id.as_str(),
+                attempt,
+                nodes = candidate.nodes.len(),
+                mints = candidate.mints.len(),
+                batch_json = %serde_json::to_string(&candidate).unwrap_or_default(),
+                "coach proposed growth batch"
+            );
+            let gates = self.gate_batch(course_id, &candidate).await?;
+            if !gates.is_empty() {
+                let report = crate::learning_graph::format_gate_report(&gates);
+                tracing::warn!(
                     course = course_id.as_str(),
-                    draft = draft_no,
-                    nodes = batch.nodes.len(),
-                    batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-                    "coach redrafted growth batch after gate rejection"
+                    attempt,
+                    gate_count = gates.len(),
+                    report = %report,
+                    "growth batch rejected by structural gates"
                 );
+                self.emit_graph_event(course_id, "growth_redraft", serde_json::json!({
+                    "stage": "gates",
+                    "problems": report,
+                }));
+                last = report.clone();
+                feedback = report;
+                previous = Some(candidate);
                 continue;
             }
             let problems = crate::learning_graph::concept_review(
                 completer.as_ref(),
                 model_override,
-                &batch,
+                &candidate,
                 &context,
             )
             .await;
             if !problems.is_empty() {
+                let report = crate::learning_graph::format_review_problems(&problems);
                 tracing::warn!(
                     course = course_id.as_str(),
-                    draft = draft_no,
+                    attempt,
                     problem_count = problems.len(),
-                    report = %crate::learning_graph::format_review_problems(&problems),
+                    report = %report,
                     "growth batch rejected by concept review"
                 );
-                if draft_no >= GROWTH_MAX_DRAFTS {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        drafts = draft_no,
-                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-                        "growth failed: concept review rejected every draft"
-                    );
-                    return Err(AppError::UnprocessableEntity(format!(
-                        "生长批次 {} 稿均未通过概念评审：\n{}",
-                        draft_no,
-                        crate::learning_graph::format_review_problems(&problems)
-                    )));
-                }
                 self.emit_graph_event(course_id, "growth_redraft", serde_json::json!({
                     "stage": "concept_review",
-                    "problems": crate::learning_graph::format_review_problems(&problems),
+                    "problems": report,
                 }));
-                batch = crate::learning_graph::coach_redraft(
-                    completer.as_ref(),
-                    model_override,
-                    &context,
-                    &batch,
-                    &crate::learning_graph::format_review_problems(&problems),
-                )
-                .await?;
-                draft_no += 1;
-                tracing::info!(
-                    course = course_id.as_str(),
-                    draft = draft_no,
-                    nodes = batch.nodes.len(),
-                    batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
-                    "coach redrafted growth batch after concept-review rejection"
-                );
+                last = report.clone();
+                feedback = report;
+                previous = Some(candidate);
                 continue;
             }
             // 门与评审都过：立即落库，不再对同一稿重复评估（评审非确定，
             // 重复跑可能把已过稿误杀）。
+            batch = Some(candidate);
             break;
         }
+        let Some(batch) = batch else {
+            tracing::warn!(
+                course = course_id.as_str(),
+                attempts = GROWTH_MAX_ATTEMPTS,
+                last = %last,
+                "growth failed: retry budget exhausted"
+            );
+            return Err(AppError::UnprocessableEntity(format!(
+                "生长批次 {GROWTH_MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）：\n{last}"
+            )));
+        };
         if batch.nodes.is_empty() {
             // 空手批：不落档案（run_growth 删 pending 行），无节点可补
             // ——就绪已满或确实无可长方向。
