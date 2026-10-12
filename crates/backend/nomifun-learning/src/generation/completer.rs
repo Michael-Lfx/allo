@@ -180,7 +180,7 @@ pub(crate) async fn complete_json_coach(
                 "structure artifact call timed out"
             );
             AppError::Timeout(format!(
-                "structure artifact call exceeded {COACH_CALL_TIMEOUT_SECS}s"
+                "json coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"
             ))
         })?
 }

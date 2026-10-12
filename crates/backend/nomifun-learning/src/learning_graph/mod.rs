@@ -677,7 +677,7 @@ pub(crate) async fn coach_redraft(
         "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 minutes 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render()
     );
-    let raw = crate::generation::complete_coach(
+    let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
         &coach_system(),
@@ -797,19 +797,13 @@ pub(crate) async fn concept_review(
     batch: &ProposedBatch,
     context: &CoachContext,
 ) -> Vec<ReviewProblem> {
-    #[derive(Deserialize)]
-    struct RawVerdict {
-        #[serde(default)]
-        verdict: String,
-        #[serde(default)]
-        problems: Vec<ReviewProblem>,
-    }
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
     let user = format!(
         "{}\n\n【待审批次】\n{batch_json}",
         context.render()
     );
-    let raw = match crate::generation::complete_coach(
+    // JSON 接缝 + thinking ON（g4：全部生成面统一）。
+    let raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
         CONCEPT_REVIEW_SYSTEM,
@@ -822,15 +816,32 @@ pub(crate) async fn concept_review(
         Ok(raw) => raw,
         Err(_) => return Vec::new(),
     };
-    crate::generation::parse_json_object::<RawVerdict>(&raw)
-        .map(|verdict| {
-            if verdict.verdict == "pass" {
-                Vec::new()
-            } else {
-                verdict.problems.into_iter().take(8).collect()
-            }
-        })
-        .unwrap_or_default()
+    // 输出契约（ng.review.*）：verdict 词表 + problems 形状。评审自身不可用
+    // （调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的批次）。
+    let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    if growth_contract::validate_review(&value)
+        .into_iter()
+        .any(|violation| !violation.warning)
+    {
+        tracing::warn!(
+            raw_head = %raw.chars().take(400).collect::<String>(),
+            "concept review reply violated its contract — degrading to PASS"
+        );
+        return Vec::new();
+    }
+    #[derive(Deserialize)]
+    struct Verdict {
+        #[serde(default)]
+        verdict: String,
+        #[serde(default)]
+        problems: Vec<ReviewProblem>,
+    }
+    match serde_json::from_value::<Verdict>(value) {
+        Ok(verdict) if verdict.verdict == "reject" => verdict.problems.into_iter().take(8).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1600,7 +1611,10 @@ mod tests {
     /// 被机械归一（可机械判定的不送模型——真机 round 4 死链的引信），
     /// 回包照常装填；语义违规（est 超范围）仍打回，归一不造值。
     #[test]
-    fn parse_coach_reply_tolerates_string_minutes_and_chinese_tiers() {
+    /// g4：容错 deserializer 已退役——字符串 minutes 与中文档位不再是
+    /// 「容忍解析」，而是带条款报告的违约（报告进重试装配）。
+    #[test]
+    fn parse_coach_reply_rejects_legacy_tolerant_shapes_with_clause_report() {
         let raw = r#"{
             "nodes": [
                 { "title": "用配方法解方程", "purpose": "p", "minutes": "15",
@@ -1609,6 +1623,25 @@ mod tests {
             ],
             "mints": [],
             "note": "n"
+        }"#;
+        let error = parse_coach_reply(raw).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("ng.nodes.minutes"), "{message}");
+        assert!(message.contains("ng.refs.tier"), "{message}");
+    }
+
+    /// 严格路径的正向：契约合规的回包按结构装填并做 trim 归一。
+    #[test]
+    fn parse_coach_reply_accepts_contract_compliant_reply() {
+        let raw = r#"{
+            "nodes": [
+                { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
+                  "minutes": 15, "difficulty": 3,
+                  "teaches": [{"name": " 配方法 ", "tier": "apply"}],
+                  "assumes": [{"name": "一元二次方程", "tier": "know"}] }
+            ],
+            "mints": [ { "canonical": " 配方法 ", "aliases": [" 配方 "], "definition": "" } ],
+            "note": " n "
         }"#;
         let batch = parse_coach_reply(raw).unwrap();
         assert_eq!(batch.nodes[0].est, Some(15), "string est digits normalize");

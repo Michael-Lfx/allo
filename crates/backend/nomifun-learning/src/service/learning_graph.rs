@@ -12,10 +12,10 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
-/// 生长修复循环的总稿数上限（首稿 + 至多 N-1 次打回重裁）。结构门/概念评审
-/// 打回时把报告喂回教练重裁再试，而非直接失败；该上限只是成本/超时护栏，
+/// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
+/// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
 /// 并非"两次即弃"的语义。
-const GROWTH_MAX_DRAFTS: usize = 4;
+const GROWTH_MAX_ATTEMPTS: usize = 3;
 
 impl LearningService {
 
@@ -1220,135 +1220,45 @@ impl LearningService {
         // （ng.*）注入重试装配）：教练起草/重裁 → 形状与语义门/概念评审打回
         // 时把报告喂回重裁再试，直到某一稿同时过门与评审即落库；仅当预算
         // 耗尽才失败。首轮解析失败（无上一稿可点修）直接带报告重新起草。
-        // 重试机制（二轮 t1）：同指纹早停（连败两次即停）+「未点名被改」
-        // 机械守卫（豁免早停、原地重试恰一次不占预算）+ 重裁出口容量定向
-        // 打回；每轮起草/重裁/评审前后有取消检查点（loop 头 + select! 竞速）。
-        let cancel_err = || {
-            AppError::Conflict(crate::service::CANCELLED_MESSAGE.to_owned())
-        };
         let mut previous: Option<crate::learning_graph::ProposedBatch> = None;
         let mut feedback = String::new();
         let mut last = String::from("(未执行)");
-        let mut prev_fingerprint: Option<String> = None;
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
-        let mut batch_rulings: Option<HashMap<String, String>> = None;
-        let mut attempts_used = 0usize;
-        let mut stop_reason = "exhausted";
-        'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
-            attempts_used = attempt;
-            if token.is_cancelled() {
-                stop_reason = "cancelled";
-                break 'budget;
-            }
-            let mut in_place_retried = false;
-            // ── 起草/重裁（guard 的原地重试在本 attempt 内恰一次）────────
-            let mut candidate = 'drafting: loop {
-                if token.is_cancelled() {
-                    // stop_reason 已由外层/本轮置位；无赋值必要。
-                    break 'budget;
+        for attempt in 1..=GROWTH_MAX_ATTEMPTS {
+            let drafted = match &previous {
+                Some(previous) => crate::learning_graph::coach_redraft(
+                    completer.as_ref(),
+                    model_override,
+                    &context,
+                    previous,
+                    &feedback,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+                None => crate::learning_graph::coach_draft(
+                    completer.as_ref(),
+                    model_override,
+                    &context,
+                    &feedback,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            };
+            let candidate = match drafted {
+                Ok(candidate) => candidate,
+                Err(report) => {
+                    // 形状违约/传输错误：报告已带条款编号（或原始错误），
+                    // 注入下一轮重新起草。
+                    last = report;
+                    feedback = last.clone();
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        attempt,
+                        report = %feedback,
+                        "coach draft failed — regenerating with feedback"
+                    );
+                    continue;
                 }
-                let drafted = match previous.as_ref() {
-                    Some(previous) => {
-                        crate::learning_graph::coach_redraft(
-                            completer,
-                            model_override,
-                            &context,
-                            previous,
-                            &feedback,
-                        )
-                        .await
-                        .map_err(|error| AttemptFail::generation(error.to_string()))
-                    }
-                    None => crate::learning_graph::coach_draft(
-                        completer,
-                        model_override,
-                        &context,
-                        &feedback,
-                    )
-                    .await
-                    .map_err(|error| AttemptFail::generation(error.to_string())),
-                };
-                let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
-                    match drafted {
-                        Ok(candidate) => {
-                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比）。
-                            if let Some(prev_ref) = previous.as_ref() {
-                                if let Some(violation) =
-                                    redraft_guard_violation(prev_ref, &candidate, &feedback)
-                                {
-                                    if !in_place_retried {
-                                        // 原地重试恰一次（不占轮预算）：带守
-                                        // 卫原因对最新一稿点修，评审上下文保留。
-                                        in_place_retried = true;
-                                        tracing::warn!(
-                                            course = course_id.as_str(),
-                                            attempt,
-                                            "coach redraft edited unnamed nodes — in-place retry with the guard reason"
-                                        );
-                                        feedback = violation;
-                                        previous = Some(candidate);
-                                        continue 'drafting;
-                                    }
-                                    // 二次越权 = 本 attempt 失败，计轮推进
-                                    //（guard 豁免早停——固定文案 ≠ 同输出）。
-                                    tracing::warn!(
-                                        course = course_id.as_str(),
-                                        attempt,
-                                        "coach redraft violated the point-edit guard twice — attempt consumed"
-                                    );
-                                    Err(AttemptFail::guard(violation))
-                                } else {
-                                    Ok(candidate)
-                                }
-                            } else {
-                                Ok(candidate)
-                            }
-                        }
-                        Err(mut fail) => {
-                            // 容量守卫（重裁出口）：ng.batch.size 整批违规改判
-                            // 定向重装指令（专用条款码），起草轮执法单源不变。
-                            if previous.is_some() && is_batch_size_violation(&fail.report) {
-                                fail.report = redraft_capacity_report(
-                                    previous.as_ref().expect("redraft has previous"),
-                                );
-                            }
-                            Err(fail)
-                        }
-                    };
-                let candidate = match outcome {
-                    Ok(candidate) => candidate,
-                    Err(fail) => {
-                        // 本 attempt 失败收口：早停判据 + 报告回灌。
-                        let guard = fail.guard;
-                        let fingerprint = normalize_report(&fail.report);
-                        if should_stop_early(
-                            attempt,
-                            &fingerprint,
-                            prev_fingerprint.as_deref(),
-                            guard,
-                        ) {
-                            tracing::warn!(
-                                course = course_id.as_str(),
-                                attempt,
-                                "growth failed with the same fingerprint twice — stopping early (retry budget not burned)"
-                            );
-                            stop_reason = "early_stop";
-                            last = fail.report;
-                            break 'budget;
-                        }
-                        prev_fingerprint = if guard { None } else { Some(fingerprint) };
-                        last = fail.report.clone();
-                        feedback = fail.report;
-                        tracing::warn!(
-                            course = course_id.as_str(),
-                            attempt,
-                            report = %feedback,
-                            "coach draft failed — regenerating with feedback"
-                        );
-                        continue 'budget;
-                    }
-                };
-                break 'drafting candidate;
             };
             tracing::info!(
                 course = course_id.as_str(),
@@ -1405,11 +1315,12 @@ impl LearningService {
             )
             .await;
             if !problems.is_empty() {
+                let report = crate::learning_graph::format_review_problems(&problems);
                 tracing::warn!(
                     course = course_id.as_str(),
-                    draft = draft_no,
+                    attempt,
                     problem_count = problems.len(),
-                    report = %crate::learning_graph::format_review_problems(&problems),
+                    report = %report,
                     "growth batch rejected by concept review"
                 );
                 if draft_no >= GROWTH_MAX_DRAFTS {
