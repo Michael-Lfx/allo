@@ -14,7 +14,10 @@ export type BillingEntrySource =
   | 'video_launch'
   | 'canvas_credits';
 
+export type BillingTarget = 'checkin' | 'purchase' | 'packs';
+
 export type BillingEntryState = {
+  target?: BillingTarget;
   source?: BillingEntrySource;
   balance?: number | null;
 };
@@ -54,6 +57,7 @@ export function readBillingEntryState(state: unknown): BillingEntryState {
   const value = state as BillingEntryState;
   return {
     source: value.source,
+    target: value.target === 'checkin' || value.target === 'purchase' || value.target === 'packs' ? value.target : undefined,
     balance: typeof value.balance === 'number' ? value.balance : null,
   };
 }

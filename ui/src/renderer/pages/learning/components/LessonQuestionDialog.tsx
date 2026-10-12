@@ -158,6 +158,12 @@ export function LessonQuestionDialog({
 
   /** 生成失败时保留表单与错误提示，用户可直接重试（后端内部已带一次校正重试） */
   const generate = async () => {
+    if (!modelChoice) {
+      const message = t('learning.form.modelPending');
+      setGenerateError(message);
+      Message.warning(message);
+      return;
+    }
     setGenerating(true);
     setGenerateError(null);
     try {

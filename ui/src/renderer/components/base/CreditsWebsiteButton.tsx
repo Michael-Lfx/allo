@@ -1,15 +1,17 @@
-import { ShoppingCart } from '@icon-park/react';
+import { Calendar, ShoppingCart } from '@icon-park/react';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { resolveCreditsBubbleState } from '@/renderer/utils/credits/creditsBubbleModel';
+import type { BillingTarget } from '@renderer/pages/billing/billingRoute';
 import { openInAppBilling } from '@renderer/utils/openInAppBilling';
 
 type CreditsWebsiteButtonProps = {
   /** xs = 侧栏底部（14px 紧凑内联图标）；sm = 18px 独立方块；md = 22px 设置页 */
   size?: 'xs' | 'sm';
+  target?: BillingTarget;
   variant?: 'icon' | 'pill';
   className?: string;
 };
@@ -20,6 +22,7 @@ type CreditsWebsiteButtonProps = {
   */
 const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   size = 'sm',
+  target = 'purchase',
   variant = 'icon',
   className,
 }) => {
@@ -27,12 +30,13 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
   const navigate = useNavigate();
   const credits = useCredits();
   const { balance } = credits;
-  const label = t('billing.openBilling');
+  const label = t(target === 'checkin' ? 'billing.panel.entry' : 'billing.openBilling');
+  const EntryIcon = target === 'checkin' ? Calendar : ShoppingCart;
 
   const bubbleState = resolveCreditsBubbleState(credits);
 
   const openBilling = () => {
-    openInAppBilling(navigate, { source: 'sider', balance });
+    openInAppBilling(navigate, { source: 'sider', balance, target });
   };
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
@@ -61,7 +65,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
           className
         )}
       >
-        <ShoppingCart
+        <EntryIcon
           theme='outline'
           size='10'
           strokeWidth={2.8}
@@ -95,7 +99,7 @@ const CreditsWebsiteButton: React.FC<CreditsWebsiteButtonProps> = ({
         className
       )}
     >
-      <ShoppingCart
+      <EntryIcon
         theme='outline'
         size={isXs ? '10.5' : '13'}
         strokeWidth={isXs ? 3 : 3.5}

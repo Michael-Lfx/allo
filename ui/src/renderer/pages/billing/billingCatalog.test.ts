@@ -10,8 +10,23 @@ import {
   localizedPlanName,
   plansForPeriod,
   purchasablePacks,
+  formatBillingPointsText,
+  planBenefitRows,
   type BillingPlan,
 } from './billingCatalog';
+
+test('formats catalog credit quantities without altering dates or SKU identifiers', () => {
+  expect(formatBillingPointsText('10000积分加量包', 'zh-CN')).toBe('10,000积分加量包');
+  expect(formatBillingPointsText('10000 credits (valid for 365 days)', 'en-US')).toBe('10,000 credits (valid for 365 days)');
+  expect(formatBillingPointsText('50,000积分 · 2026-10-12 · PACK10000', 'zh-CN')).toBe('50,000积分 · 2026-10-12 · PACK10000');
+});
+
+test('keeps bilingual catalog benefits and validity while removing repeated shared pack copy', () => {
+  const plan = { id: 1, benefitList: ['每月加赠10000积分（1年有效）', '可购买积分加量包', '优先客服'], benefitListEn: ['10,000 credits monthly (valid for 1 year)', 'Can purchase credit packs', 'Priority support'] };
+  expect(planBenefitRows(plan, 'zh-CN')).toEqual([{ text: '每月加赠10,000积分', expiry: '1年有效' }, { text: '优先客服', expiry: undefined }]);
+  expect(planBenefitRows(plan, 'en-US')).toEqual([{ text: '10,000 credits monthly', expiry: 'valid for 1 year' }, { text: 'Priority support', expiry: undefined }]);
+  expect(planBenefitRows({ id: 2 }, 'en-US')).toEqual([]);
+});
 
 const plans: BillingPlan[] = [
   { id: 1, code: 'free', planPeriod: 'MONTH', currency: 'USD', currentPriceCent: 0 },

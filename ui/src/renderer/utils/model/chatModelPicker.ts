@@ -51,6 +51,46 @@ export interface ChatModelPickerViewModel {
   otherProviderGroups: TaskModelGroup[];
 }
 
+/** Entering Auto never silently selects a more expensive tier. */
+export function defaultAutoOption(options: readonly ChatModelOption[], selected?: ChatModelOption): ChatModelOption | undefined {
+  if (selected?.family === 'auto') {
+    const current = options.find((option) => option.key === selected.key);
+    if (current) return current;
+  }
+  return options.find((option) => option.autoTier === 'cost');
+}
+
+export function defaultChatModelOption(viewModel: ChatModelPickerViewModel): ChatModelOption | undefined {
+  return defaultAutoOption(viewModel.autoModels) ?? viewModel.cloudModels[0] ??
+    allChatModelOptions(viewModel).find((option) => option.family !== 'auto');
+}
+
+export type ResolvedModelChoice = { provider_id: string; model: string };
+
+/**
+ * Resolve a persisted provider+model choice against the catalog. While the
+ * catalog is unresolved (loading or failed) the persisted choice is trusted
+ * as-is: an unverified explicit selection must never silently degrade into a
+ * backend default. Only an authoritative catalog may invalidate it, in which
+ * case the default model is used. Returns null when no concrete model can be
+ * resolved yet, so callers can block model-less requests.
+ */
+export function resolvePersistedModelChoice(
+  viewModel: ChatModelPickerViewModel,
+  stored: { provider_id?: string; model?: string } | undefined,
+  catalogResolved: boolean
+): ResolvedModelChoice | null {
+  if (stored?.provider_id && stored.model) {
+    if (!catalogResolved || findChatModelOption(viewModel, stored.provider_id, stored.model)) {
+      return { provider_id: stored.provider_id, model: stored.model };
+    }
+  }
+  if (!catalogResolved) return null;
+  const fallbackOption = defaultChatModelOption(viewModel);
+  if (!fallbackOption) return null;
+  return { provider_id: fallbackOption.provider.id, model: fallbackOption.model };
+}
+
 const isModelTrait = (value: ModelTrait, expected: ModelTrait): boolean => value === expected;
 
 const detailForModel = (provider: IProvider, model: string): ProviderModelResponse | undefined =>

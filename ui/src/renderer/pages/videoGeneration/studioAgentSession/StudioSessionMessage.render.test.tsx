@@ -13,8 +13,11 @@ import StudioSessionMessageView from './StudioSessionMessage';
 import type { StudioSessionMessage } from './types';
 
 const testCredits = {
+  checkInReceipt: null,
+  checkInFailed: false,
   balance: 0,
   authenticated: false,
+  balanceConfirmed: false,
   lastCheckInDayKey: 0,
   isFetchingBalance: false,
   isCheckingIn: false,

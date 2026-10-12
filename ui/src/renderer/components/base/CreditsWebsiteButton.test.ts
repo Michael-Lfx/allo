@@ -15,9 +15,10 @@ const enCommon = JSON.parse(
 );
 
 describe('credits website button', () => {
-  test('uses a shopping cart icon instead of refresh', () => {
-    expect(componentSource.includes("import { ShoppingCart }")).toBe(true);
-    expect(componentSource.includes('<ShoppingCart')).toBe(true);
+  test('uses calendar for history and shopping cart for purchases', () => {
+    expect(componentSource.includes("import { Calendar, ShoppingCart }")).toBe(true);
+    expect(componentSource.includes("target === 'checkin' ? Calendar : ShoppingCart")).toBe(true);
+    expect(siderUserMenuSource.includes("size='xs' target='checkin'")).toBe(true);
     expect(componentSource.includes('Refresh')).toBe(false);
   });
 
@@ -34,7 +35,7 @@ describe('credits website button', () => {
   });
 
   test('exposes the i18n purchase label as both the accessible name and hover title', () => {
-    expect(componentSource.includes("t('billing.openBilling')")).toBe(true);
+    expect(componentSource.includes("'billing.panel.entry' : 'billing.openBilling'")).toBe(true);
     expect(componentSource.includes('aria-label={label}')).toBe(true);
     expect(componentSource.includes('title={label}')).toBe(true);
   });

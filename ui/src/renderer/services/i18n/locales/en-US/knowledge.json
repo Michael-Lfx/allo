@@ -235,6 +235,7 @@
     "modelSelectTooltip": "Model used by AI generate / polish (defaults to the system default)",
     "modelUnavailable": "Unavailable",
     "modelUnavailableHint": "This explicitly configured model is no longer available. Choose another model or Default Model.",
+    "modelPending": "The model list is not ready yet. Please wait and retry, or pick a model first.",
     "name": "Name",
     "namePlaceholder": "e.g. Team conventions, Domain glossary",
     "nameRequired": "Please enter a name",

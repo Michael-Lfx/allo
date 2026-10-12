@@ -49,6 +49,101 @@ pub struct MediaCreditsResponse {
     pub authenticated: bool,
 }
 
+/// Read-only cloud credit history. Dates and day keys are resolved upstream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsCheckinRecords {
+    pub month: String,
+    pub total_check_in_days: i64,
+    pub list: Vec<MediaCreditsCheckinRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsCheckinRecord {
+    pub date: String,
+    pub day: u32,
+    pub day_key: i64,
+    pub check_in_at: String,
+    pub granted_points: i64,
+    pub time_zone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsUsageByType {
+    pub server_time: String,
+    pub balance: i64,
+    #[serde(default)]
+    pub include_team_seat: bool,
+    pub list: Vec<MediaCreditsUsageTypeItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsUsageTypeItem {
+    #[serde(rename = "type")]
+    pub usage_type: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub title_en: Option<String>,
+    pub total: i64,
+    pub used: i64,
+    pub remaining: i64,
+    #[serde(default)]
+    pub buckets: Vec<MediaCreditsUsageBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCreditsUsageBucket {
+    pub expire_at: Option<String>,
+    pub total: i64,
+    pub used: i64,
+    pub remaining: i64,
+    #[serde(default)]
+    pub source_code: Option<String>,
+}
+
+pub fn valid_credits_month(month: &str) -> bool {
+    let bytes = month.as_bytes();
+    bytes.len() == 7
+        && bytes[4] == b'-'
+        && bytes.iter().enumerate().all(|(i, b)| i == 4 || b.is_ascii_digit())
+        && month[..4].parse::<u32>().is_ok_and(|year| year > 0)
+        && month[5..].parse::<u32>().is_ok_and(|month| (1..=12).contains(&month))
+}
+
+#[cfg(test)]
+mod credit_history_tests {
+    use super::*;
+
+    #[test]
+    fn month_validation_is_strict_and_unicode_safe() {
+        for value in ["2026-01", "2026-12", "0001-01"] { assert!(valid_credits_month(value)); }
+        for value in ["2026-00", "2026-13", "2026-1", "0000-01", "2026-10&x=1", "你你-1", ""] { assert!(!valid_credits_month(value)); }
+    }
+
+    #[test]
+    fn cloud_history_preserves_day_keys_and_credit_buckets() {
+        let records: MediaCreditsCheckinRecords = serde_json::from_value(serde_json::json!({
+            "month":"2026-10", "totalCheckInDays":114,
+            "list":[{"date":"2026-10-12","day":12,"dayKey":20261012,"checkInAt":"2026-10-11T23:30:00Z","grantedPoints":3000,"timeZone":"Asia/Shanghai"}]
+        })).unwrap();
+        assert_eq!(records.list[0].day_key, 20261012);
+        assert_eq!(records.total_check_in_days, 114);
+        let usage: MediaCreditsUsageByType = serde_json::from_value(serde_json::json!({
+            "serverTime":"2026-10-12T00:00:00Z","balance":3000,"includeTeamSeat":false,
+            "list":[{"type":"DAILY_CHECKIN","title":"签到","titleEn":"Check-in","total":3000,"used":0,"remaining":3000,
+                "buckets":[{"expireAt":"2027-10-12T00:00:00Z","total":3000,"used":0,"remaining":3000}]}]
+        })).unwrap();
+        assert_eq!(usage.server_time, "2026-10-12T00:00:00Z");
+        assert_eq!(usage.list[0].buckets[0].expire_at.as_deref(), Some("2027-10-12T00:00:00Z"));
+        assert_eq!(serde_json::to_value(usage).unwrap()["list"][0]["type"], "DAILY_CHECKIN");
+    }
+}
+
 /// Per-turn Flowy credit usage (`GET /api/media/credits/usage-by-turn`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]

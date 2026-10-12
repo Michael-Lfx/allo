@@ -174,6 +174,35 @@ impl MediaApiService {
         })
     }
 
+    async fn credit_history_session(&self) -> Result<(FlowyApiClient, nomifun_cloud::ServerSession), AppError> {
+        let cfg = self.gateway_config();
+        if !flowy_media_exposed(&cfg) {
+            return Err(AppError::Unauthorized("Cloud credits unavailable".into()));
+        }
+        let api = FlowyApiClient::new(&cfg.server).map_err(|e| AppError::Internal(e.to_string()))?;
+        let session = nomifun_cloud::ServerSession::from_config(&cfg.server, &self.data_dir);
+        if session.access_token().await.map_err(|e| AppError::Internal(e.to_string()))?
+            .is_none_or(|token| token.trim().is_empty()) {
+            return Err(AppError::Unauthorized("Cloud sign-in required".into()));
+        }
+        Ok((api, session))
+    }
+
+    pub async fn credits_checkin_records(&self, month: String) -> Result<nomifun_api_types::MediaCreditsCheckinRecords, AppError> {
+        if !nomifun_api_types::valid_credits_month(&month) {
+            return Err(AppError::BadRequest("month must be YYYY-MM".into()));
+        }
+        let (api, session) = self.credit_history_session().await?;
+        api.credits_checkin_records(&session, &month).await.map_err(nomifun_cloud::ServerClientError::into_app_error)
+    }
+
+    pub async fn credits_usage_by_type(&self) -> Result<nomifun_api_types::MediaCreditsUsageByType, AppError> {
+        let (api, session) = self.credit_history_session().await?;
+        // Team-seat batches explain part of the usable balance, so the expiry
+        // view requests them too instead of filtering them out.
+        api.get_credits_usage_by_type(&session, true).await.map_err(nomifun_cloud::ServerClientError::into_app_error)
+    }
+
     /// Perform the Flowy daily check-in. `time_zone` is the client's IANA
     /// timezone (e.g. "Asia/Shanghai"); the upstream server resolves the day
     /// boundary from it. The response carries the post-check-in `balance`, so
@@ -440,6 +469,15 @@ mod tests {
     use super::*;
     use nomi_config::DEFAULT_WECHAT_FLOWY_SERVER_BASE;
     use nomifun_api_types::UpdateMediaSettingsRequest;
+
+    #[tokio::test]
+    async fn credit_history_requires_a_session_and_valid_month() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = MediaApiService::new(dir.path().to_path_buf()).unwrap();
+        assert!(matches!(svc.credits_checkin_records("2026-13".into()).await, Err(AppError::BadRequest(_))));
+        assert!(matches!(svc.credits_checkin_records("2026-10".into()).await, Err(AppError::Unauthorized(_))));
+        assert!(matches!(svc.credits_usage_by_type().await, Err(AppError::Unauthorized(_))));
+    }
 
     #[test]
     fn new_applies_default_base_url_when_config_missing() {

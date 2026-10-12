@@ -131,3 +131,21 @@ export function localizedPackName(pack: BillingCreditPack, locale: string): stri
 export function purchasablePacks(packs: BillingCreditPack[], currency: BillingCurrency): BillingCreditPack[] {
   return packs.filter((pack) => isCurrencyItem(pack, currency) && Number(pack.priceCent ?? 0) > 0);
 }
+
+/** Group credit quantities in catalog copy without rewriting dates or SKU codes. */
+export function formatBillingPointsText(text: string, locale: string): string {
+  return text.replace(/(?<![\dA-Za-z_.])\d[\d,]*(?=\s*(?:积分|credits?\b|points?\b))/gi,
+    (value) => Number(value.replaceAll(',', '')).toLocaleString(locale));
+}
+
+export function planBenefitRows(plan: BillingPlan, locale: string) {
+  const benefits = locale.toLowerCase().startsWith('zh') ? plan.benefitList : plan.benefitListEn;
+  return [...new Set(benefits?.map((text) => text.trim()).filter(Boolean) ?? [])]
+    // This shared capability is already explained once in the credit-pack section.
+    .filter((text) => !/^(?:可购买积分(?:加量)?包|can (?:buy|purchase) (?:additional )?credit packs)\.?$/i.test(text))
+    .map((text) => {
+      const formatted = formatBillingPointsText(text, locale);
+      const expiry = formatted.match(/\s*[（(]([^（）()]*?(?:有效|valid|expir)[^（）()]*)[）)]\s*$/i);
+      return { text: expiry ? formatted.slice(0, expiry.index).trim() : formatted, expiry: expiry?.[1] };
+    });
+}

@@ -28,11 +28,18 @@ struct UsageByTurnQuery {
     turn_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CheckinRecordsQuery {
+    month: String,
+}
+
 pub fn media_routes(state: MediaRouterState) -> Router {
     Router::new()
         .route("/api/media/settings", get(get_settings).patch(update_settings))
         .route("/api/media/credits", get(get_credits))
         .route("/api/media/credits/checkin", post(checkin))
+        .route("/api/media/credits/checkin-records", get(checkin_records))
+        .route("/api/media/credits/usage-by-type", get(usage_by_type))
         .route("/api/media/credits/usage-by-turn", get(usage_by_turn))
         .route("/api/media/models", get(list_models))
         .route("/api/media/workflows/history", get(workflow_history))
@@ -72,6 +79,19 @@ async fn usage_by_turn(
     Ok(Json(ApiResponse::ok(
         state.service.credits_usage_by_turn(query.turn_id).await?,
     )))
+}
+
+async fn checkin_records(
+    State(state): State<MediaRouterState>,
+    Query(query): Query<CheckinRecordsQuery>,
+) -> Result<Json<ApiResponse<nomifun_api_types::MediaCreditsCheckinRecords>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.credits_checkin_records(query.month).await?)))
+}
+
+async fn usage_by_type(
+    State(state): State<MediaRouterState>,
+) -> Result<Json<ApiResponse<nomifun_api_types::MediaCreditsUsageByType>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.credits_usage_by_type().await?)))
 }
 
 async fn list_models(

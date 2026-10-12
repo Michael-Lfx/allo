@@ -3,11 +3,13 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
 import { ipcBridge } from '@/common';
+import type { IMediaCreditsCheckinResult } from '@/common/adapter/ipcBridge';
 import { getCurrentCronTimeZone } from '@renderer/pages/cron/cronUtils';
 import { emitter } from '@/renderer/utils/emitter';
 import { useCloudAuth } from './CloudAuthContext';
@@ -134,8 +136,14 @@ let globalLastTriggerByScene: Record<RefreshScene, number> = {
 
 // --- Context value -----------------------------------------------------------
 export interface CreditsContextValue {
+  checkInReceipt: IMediaCreditsCheckinResult | null;
+  checkInFailed: boolean;
   balance: number;
   authenticated: boolean;
+  /** True only after a server response authoritatively carried the balance. */
+  balanceConfirmed: boolean;
+  /** Account identity shared by every account-scoped credits surface. */
+  accountId?: string;
   lastCheckInDayKey: number;
   isFetchingBalance: boolean;
   isCheckingIn: boolean;
@@ -160,6 +168,7 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
 
   const [balance, setBalance] = useState(0);
   const [authenticated, setAuthenticated] = useState(false);
+  const [balanceConfirmed, setBalanceConfirmed] = useState(false);
   const [lastCheckInDayKey, setLastCheckInDayKey] = useState<number>(() => loadDayKey(currentAccountId));
   const [isFetchingBalance, setIsFetchingBalance] = useState(false);
 
@@ -175,6 +184,8 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     }
   }, []);
   const [isCheckingIn, setIsCheckingIn] = useState(false);
+  const [checkInReceipt, setCheckInReceipt] = useState<IMediaCreditsCheckinResult | null>(null);
+  const [checkInFailed, setCheckInFailed] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState(0);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
 
@@ -186,6 +197,24 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   const pendingBalanceRefreshRef = useRef(false);
   const lastCheckInDayKeyRef = useRef(lastCheckInDayKey);
   const currentAccountIdRef = useRef(currentAccountId);
+  const requestEpochRef = useRef(0);
+
+  useLayoutEffect(() => {
+    requestEpochRef.current += 1;
+    currentAccountIdRef.current = currentAccountId;
+    isFetchingBalanceRef.current = false;
+    isCheckingInRef.current = false;
+    pendingBalanceRefreshRef.current = false;
+    setIsFetchingBalance(false);
+    setIsCheckingIn(false);
+    setCheckInReceipt(null);
+    setCheckInFailed(false);
+    setBalance(0);
+    setAuthenticated(false);
+    setBalanceConfirmed(false);
+    setLastRefreshAt(0);
+    return () => { requestEpochRef.current += 1; };
+  }, [currentAccountId, isAuthenticated]);
 
   useEffect(() => {
     lastCheckInDayKeyRef.current = lastCheckInDayKey;
@@ -196,21 +225,25 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   }, [currentAccountId]);
 
   const fetchBalance = useCallback(async () => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || currentAccountId !== currentAccountIdRef.current) return;
     if (isFetchingBalanceRef.current) {
       pendingBalanceRefreshRef.current = true;
       return;
     }
     isFetchingBalanceRef.current = true;
     setIsFetchingBalance(true);
+    const epoch = requestEpochRef.current;
     try {
       const result = await ipcBridge.media.getCredits.invoke();
+      if (epoch !== requestEpochRef.current) return;
       setBalance(result.balance);
       setAuthenticated(result.authenticated);
+      setBalanceConfirmed(result.authenticated);
       setLastRefreshAt(Date.now());
     } catch (error) {
       console.warn('Credits balance fetch failed:', error);
     } finally {
+      if (epoch !== requestEpochRef.current) return;
       isFetchingBalanceRef.current = false;
       setIsFetchingBalance(false);
       if (pendingBalanceRefreshRef.current) {
@@ -218,7 +251,7 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
         void fetchBalance();
       }
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentAccountId]);
 
   // Perform the daily check-in. Returns true only when a FRESH check-in ran
   // AND authoritatively set `balance` (server granted points this call). Returns
@@ -227,7 +260,7 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
   // balance fetch), or on failure. The server-confirmed `dayKey` is persisted on
   // any successful call so we never re-hit the endpoint same-day.
   const checkIn = useCallback(async (): Promise<boolean> => {
-    if (!isAuthenticated || isCheckingInRef.current) return false;
+    if (!isAuthenticated || currentAccountId !== currentAccountIdRef.current || isCheckingInRef.current) return false;
     // Local dedup: once per local day per account. (The server dedups too.)
     const todayKey = getTodayKey();
     if (todayKey <= lastCheckInDayKeyRef.current) return false;
@@ -236,11 +269,19 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     const accountId = currentAccountIdRef.current;
     isCheckingInRef.current = true;
     setIsCheckingIn(true);
+    setCheckInFailed(false);
+    const epoch = requestEpochRef.current;
     try {
       const result = await ipcBridge.media.checkin.invoke({
         timeZone: getCurrentCronTimeZone(),
       });
+      if (epoch !== requestEpochRef.current) return false;
       setAuthenticated(result.authenticated);
+      if (!result.authenticated) {
+        setCheckInFailed(true);
+        return false;
+      }
+      setCheckInReceipt(result);
       const dayKey =
         typeof result.dayKey === 'number' && result.dayKey > 0 ? result.dayKey : todayKey;
       setLastCheckInDayKey(dayKey);
@@ -252,18 +293,26 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
       // zero out the display; let the caller refresh via fetchBalance instead.
       if (!result.alreadyCheckedIn) {
         setBalance(result.balance);
+        setBalanceConfirmed(true);
         setLastRefreshAt(Date.now());
         return true;
       }
+      // Repeated check-in confirms authentication, not the balance: leave
+      // `balanceConfirmed` untouched so a failed follow-up fetch never renders
+      // the initial zero as a confirmed balance.
       return false;
     } catch (error) {
+      if (epoch !== requestEpochRef.current) return false;
+      setCheckInFailed(true);
       console.warn('Daily check-in failed:', error);
       return false;
     } finally {
-      isCheckingInRef.current = false;
-      setIsCheckingIn(false);
+      if (epoch === requestEpochRef.current) {
+        isCheckingInRef.current = false;
+        setIsCheckingIn(false);
+      }
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, currentAccountId]);
 
   // --- Manual refresh with 5s cooldown (bypasses scene throttle) -------------
   const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -307,6 +356,7 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
     if (!isAuthenticated) {
       setBalance(0);
       setAuthenticated(false);
+      setBalanceConfirmed(false);
       setLastRefreshAt(0);
       setLastCheckInDayKey(0);
       lastCheckInDayKeyRef.current = 0;
@@ -411,8 +461,12 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
 
   const value = useMemo<CreditsContextValue>(
     () => ({
+      checkInReceipt,
+      checkInFailed,
       balance,
       authenticated: isAuthenticated && authenticated,
+      balanceConfirmed,
+      accountId: currentAccountId,
       lastCheckInDayKey,
       isFetchingBalance,
       isCheckingIn,
@@ -424,9 +478,13 @@ export const CreditsProvider: React.FC<React.PropsWithChildren> = ({ children })
       manualRefresh,
     }),
     [
+      checkInReceipt,
+      checkInFailed,
       balance,
       isAuthenticated,
       authenticated,
+      balanceConfirmed,
+      currentAccountId,
       lastCheckInDayKey,
       isFetchingBalance,
       isCheckingIn,

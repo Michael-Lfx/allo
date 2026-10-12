@@ -11,7 +11,7 @@ import React, { useId, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useChatModelTriggerExpansion } from '@/renderer/components/model/useChatModelTriggerExpansion';
 import type { AutoTier, ChatModelOption } from '@/renderer/utils/model/chatModelPicker';
-import { AUTO_TIER_LABEL_FALLBACK, AUTO_TIER_ORDER } from '@/renderer/utils/model/chatModelPicker';
+import { AUTO_TIER_LABEL_FALLBACK, AUTO_TIER_ORDER, defaultAutoOption } from '@/renderer/utils/model/chatModelPicker';
 
 export interface AutoTierSelectorProps {
   options: readonly ChatModelOption[];
@@ -55,10 +55,7 @@ const AutoTierSelector: React.FC<AutoTierSelectorProps> = ({
         })
       : t('conversation.modelPicker.autoTier.unknown', { defaultValue: 'Auto' });
 
-  const current =
-    selected?.family === 'auto'
-      ? selected
-      : orderedOptions.find((option) => option.autoTier === 'balance') ?? orderedOptions[0];
+  const current = defaultAutoOption(orderedOptions, selected);
   const strategyTriggerExpansion = useChatModelTriggerExpansion({
     enabled: !disabled && orderedOptions.length > 1,
     expandedWidth: 108,

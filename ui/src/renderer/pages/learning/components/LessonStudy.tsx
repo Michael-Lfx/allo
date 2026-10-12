@@ -706,6 +706,10 @@ export function LessonBlock({
   // 本地详情（sections 随之更新），无需整页刷新。feedback 为可选学习
   // 建议（ADR-0007），留空即同分布重生成。
   const rewriteSection = async (section: Section, feedback?: string) => {
+    if (!modelChoice) {
+      Message.warning(t('learning.form.modelPending'));
+      return;
+    }
     setsectionBusyKey(section.section_key);
     try {
       const updated = await learningApi.rewriteLessonSection(current.id, section.section_key, {

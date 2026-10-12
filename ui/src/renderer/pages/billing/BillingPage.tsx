@@ -2,6 +2,7 @@ import { Select } from '@arco-design/web-react';
 import classNames from 'classnames';
 import { QRCodeSVG } from 'qrcode.react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useReducedMotion } from 'motion/react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ipcBridge } from '@/common';
@@ -19,6 +20,8 @@ import {
   availablePlanPeriods,
   currentPlanKeys,
   isCurrentPlan,
+  isFreePlan,
+  formatBillingPointsText,
   localizedPackName,
   localizedPlanName,
   planActionState,
@@ -47,6 +50,10 @@ import {
   type BillingPlanPeriod,
 } from './billingCheckout';
 import { readBillingCurrency, readBillingEntryState, writeBillingCurrency } from './billingRoute';
+import type { BillingTarget } from './billingRoute';
+import BillingCreditsPanel from './BillingCreditsPanel';
+import BillingPlanBenefits from './BillingPlanBenefits';
+import { scrollBillingTo } from './billingNavigation';
 import './billing.css';
 
 type WizardStep = 'catalog' | 'confirm' | 'pay' | 'success';
@@ -118,7 +125,7 @@ const BillingPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { status: cloudStatus, whoami } = useCloudAuth();
-  const { fetchBalance } = useCredits();
+  const { fetchBalance, accountId } = useCredits();
   const [step, setStep] = useState<WizardStep>('catalog');
   const [currency, setCurrencyState] = useState<BillingCurrency>(() => readBillingCurrency());
   const [catalogs, setCatalogs] = useState<Record<BillingCurrency, CatalogEntry>>(() => ({
@@ -136,10 +143,56 @@ const BillingPage: React.FC = () => {
   const abortPollRef = useRef(false);
   const pollingOrderRef = useRef('');
   const catalogLoadRef = useRef(0);
+  const payTaskRef = useRef(0);
   const entryRef = useRef(readBillingEntryState(location.state));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cancelScrollRef = useRef<() => void>(() => {});
+  const lastEntryRef = useRef('');
+  const reducedMotion = useReducedMotion();
+  const [creditsLayoutReady, setCreditsLayoutReady] = useState(false);
+  const creditsReady = useCallback(() => setCreditsLayoutReady(true), []);
+  // Layout readiness belongs to the loaded panel, not to one navigation: a
+  // same-page re-entry must keep it (the panel is already mounted and will not
+  // fire `onReady` again). Only an account switch invalidates it.
+  useEffect(() => setCreditsLayoutReady(false), [accountId]);
+  // Invalidate the in-flight payment flow (order initialization + polling) so a
+  // stale response can never reopen checkout or hijack the wizard step.
+  const cancelPaymentFlow = useCallback(() => {
+    payTaskRef.current += 1;
+    abortPollRef.current = true;
+    pollingOrderRef.current = '';
+    setPending(false);
+    setPayLoading(false);
+  }, []);
+  const navigationKeyRef = useRef(location.key);
+  useEffect(() => {
+    if (navigationKeyRef.current === location.key) return;
+    navigationKeyRef.current = location.key;
+    if (!readBillingEntryState(location.state).target) return;
+    // A new sidebar entry returns to the catalog; no cloud order is changed.
+    cancelPaymentFlow();
+    setStep('catalog');
+  }, [cancelPaymentFlow, location.key, location.state]);
+
+  const scrollToTarget = useCallback((target: BillingTarget) => {
+    cancelScrollRef.current();
+    const container = containerRef.current;
+    const section = container?.querySelector<HTMLElement>(`#billing-${target}`);
+    if (container && section) cancelScrollRef.current = scrollBillingTo(container, section, !!reducedMotion);
+  }, [reducedMotion]);
 
   const locale = i18n.language;
+  const points = (value: number) => value.toLocaleString(locale);
   const catalog = catalogs[currency];
+  useEffect(() => {
+    if (step !== 'catalog' || cloudStatus !== 'authenticated' || !creditsLayoutReady || catalog.status === 'loading' || lastEntryRef.current === location.key) return;
+    const entry = readBillingEntryState(location.state);
+    if (!entry.target) { lastEntryRef.current = location.key; return; }
+    const frame = requestAnimationFrame(() => { lastEntryRef.current = location.key; scrollToTarget(entry.target!); });
+    return () => { cancelAnimationFrame(frame); cancelScrollRef.current(); };
+  }, [location.key, location.state, catalog.status, step, cloudStatus, creditsLayoutReady, scrollToTarget]);
+
+  useEffect(() => () => cancelScrollRef.current(), []);
   const plans = catalog.plans as BillingPlan[];
   const periods = useMemo(() => availablePlanPeriods(plans), [plans]);
   const visiblePlans = useMemo(() => plansForPeriod(plans, period, currency), [currency, period, plans]);
@@ -153,6 +206,8 @@ const BillingPage: React.FC = () => {
     [catalog.packs, currency]
   );
   const attemptCurrency = attempt?.currency ?? currency;
+  const selectedPlan = attempt?.itemType === 'plan' ? catalogs[attempt.currency].plans.find((item) => item.id === attempt.itemId) : undefined;
+  const selectedPack = attempt?.itemType === 'pack' ? catalogs[attempt.currency].packs.find((item) => item.id === attempt.itemId) : undefined;
   const selectedCoupon = coupons.find((coupon) => coupon.id === couponId);
   const estimatedTotal = estimateTotalCents(attempt?.amountCent ?? 0, selectedCoupon?.discountCent ?? 0);
   const amountLabel = formatMoneyFromCents(estimatedTotal, attemptCurrency, locale);
@@ -253,20 +308,23 @@ const BillingPage: React.FC = () => {
   }, [attempt, step]);
 
   const waitForPaid = useCallback(
-    async (session: PaySession) => {
+    async (session: PaySession, isCurrent: () => boolean = () => true) => {
       const paidOrderNo = session.orderNo;
       if (!paidOrderNo || pollingOrderRef.current === paidOrderNo) return;
       pollingOrderRef.current = paidOrderNo;
       setPending(true);
       setPayError(null);
       abortPollRef.current = false;
+      // A stale flow (left the step / newer payment task) must neither settle
+      // the UI nor refresh the balance from an obsolete order.
+      const stale = () => abortPollRef.current || !isCurrent();
       try {
         const decision = await settlePaidCheckout({
           fetchOrder: () => ipcBridge.cloud.getOrderByNo.invoke({ orderNo: paidOrderNo }),
           refreshCredits: fetchBalance,
-          isAborted: () => abortPollRef.current,
+          isAborted: stale,
         });
-        if (abortPollRef.current) return;
+        if (stale()) return;
         if (decision === 'paid') {
           setPaySession(null);
           setStep('success');
@@ -280,7 +338,7 @@ const BillingPage: React.FC = () => {
           error_code: 'unpaid',
         });
       } catch (error) {
-        if (abortPollRef.current) return;
+        if (stale()) return;
         setPayError(errorMessage(error, t('billing.pay.failed')));
         trackFunnelEvent('billing_pay_failed', {
           feature: 'billing',
@@ -291,21 +349,24 @@ const BillingPage: React.FC = () => {
         if (pollingOrderRef.current === paidOrderNo) {
           pollingOrderRef.current = '';
         }
-        setPending(false);
+        // Only the active task owns the shared pending flag; a stale task must
+        // not clear a newer task's waiting state.
+        if (isCurrent()) setPending(false);
       }
     },
     [fetchBalance, t]
   );
 
   const openCheckout = useCallback(
-    (session: PaySession) => {
+    (session: PaySession, isCurrent: () => boolean) => {
+      if (!isCurrent()) return;
       setPaySession(session);
       setPayError(null);
       setPending(false);
       setStep('pay');
       trackFunnelEvent('billing_pay_started', { feature: 'billing', pay_channel: session.channel });
       // Both channels finish outside the page (WeChat scan / browser checkout), so poll right away.
-      void waitForPaid(session);
+      void waitForPaid(session, isCurrent);
     },
     [waitForPaid]
   );
@@ -320,6 +381,10 @@ const BillingPage: React.FC = () => {
 
   const beginPayment = async () => {
     if (!attempt) return;
+    // Claim a payment task; every await below re-checks it so leaving the step
+    // (sidebar re-entry, back, retry) discards stale initialization results.
+    const task = ++payTaskRef.current;
+    const isCurrent = () => payTaskRef.current === task;
     setPayLoading(true);
     setPayError(null);
     abortPollRef.current = false;
@@ -334,12 +399,14 @@ const BillingPage: React.FC = () => {
           planPeriod: checkout.planPeriod,
         })
       );
+      if (!isCurrent()) return;
       if (!hasPayChannel(channels, payChannel)) {
         throw new Error(
           t(payChannel === WECHAT_PAY_CHANNEL ? 'billing.confirm.wechatMissing' : 'billing.confirm.channelMissing')
         );
       }
       const order = await ipcBridge.cloud.createOrder.invoke(buildCreateOrderPayload(checkout));
+      if (!isCurrent()) return;
       const orderNo = String(order.orderNo ?? '').trim();
       if (!orderNo) {
         throw new Error(t('billing.pay.initError'));
@@ -350,10 +417,11 @@ const BillingPage: React.FC = () => {
         if (!codeUrl) {
           codeUrl = extractWechatCodeUrl(await ipcBridge.cloud.payOrder.invoke({ orderNo }));
         }
+        if (!isCurrent()) return;
         if (!codeUrl) {
           throw new Error(t('billing.wechat.initError'));
         }
-        openCheckout({ channel: 'wechatpay', orderNo, codeUrl, currency: checkout.currency });
+        openCheckout({ channel: 'wechatpay', orderNo, codeUrl, currency: checkout.currency }, isCurrent);
         return;
       }
 
@@ -362,6 +430,7 @@ const BillingPage: React.FC = () => {
         const init = await ipcBridge.cloud.initAirwallex.invoke({ orderNo });
         intent = extractAirwallexIntent(init, { allowIdFallback: true });
       }
+      if (!isCurrent()) return;
       if (!intent) {
         throw new Error(t('billing.pay.initError'));
       }
@@ -374,21 +443,22 @@ const BillingPage: React.FC = () => {
         shopperName: whoami?.username,
         shopperEmail: whoami?.email,
       });
-      openCheckout({ channel: 'airwallex', orderNo, checkoutUrl, currency: checkout.currency });
-      await openHostedCheckout(checkoutUrl);
+      if (!isCurrent()) return;
+      openCheckout({ channel: 'airwallex', orderNo, checkoutUrl, currency: checkout.currency }, isCurrent);
+      // Never open the external hosted page for an abandoned task.
+      if (isCurrent()) await openHostedCheckout(checkoutUrl);
     } catch (error) {
+      if (!isCurrent()) return;
       setPayError(errorMessage(error, t('billing.pay.initError')));
     } finally {
-      setPayLoading(false);
+      if (isCurrent()) setPayLoading(false);
     }
   };
 
   const retryPay = () => {
-    abortPollRef.current = true;
-    pollingOrderRef.current = '';
+    cancelPaymentFlow();
     setPaySession(null);
     setPayError(null);
-    setPending(false);
     if (!attempt) {
       setStep('catalog');
       return;
@@ -400,7 +470,6 @@ const BillingPage: React.FC = () => {
   const renderHero = () => (
     <header className='billing-hero'>
       <h1>{t('billing.title')}</h1>
-      <p>{t('billing.description')}</p>
     </header>
   );
 
@@ -430,12 +499,15 @@ const BillingPage: React.FC = () => {
   const payTitleKey = paySession?.channel === WECHAT_PAY_CHANNEL ? 'billing.wechat.title' : 'billing.hosted.title';
 
   return (
-    <div className='app-page-shell billing-stage'>
+    <div ref={containerRef} className='app-page-shell billing-stage'>
       <div className={classNames('billing-shell', step !== 'catalog' && 'is-focus')}>
         {renderHero()}
 
         {step === 'catalog' ? (
           <div className='billing-section'>
+            <BillingCreditsPanel key={accountId ?? 'account'} onReady={creditsReady} onPurchase={() => scrollToTarget('purchase')} onPacks={() => scrollToTarget('packs')} />
+            <section id='billing-purchase' tabIndex={-1} className='billing-purchase-area' aria-labelledby='billing-purchase-title'>
+            <div className='billing-section-head'><h2 id='billing-purchase-title'>{t('billing.catalog.plans')}</h2><button className='billing-btn billing-btn-text' onClick={() => scrollToTarget('checkin')}>{t('billing.panel.entry')}</button></div>
             <div className='billing-catalog-toolbar'>
               <div className='billing-period' role='radiogroup' aria-label={t('billing.currency.label')}>
                 {BILLING_CURRENCIES.map((nextCurrency) => (
@@ -451,7 +523,13 @@ const BillingPage: React.FC = () => {
                   </button>
                 ))}
               </div>
-              <p>{t(currencyHintKey[currency])}</p>
+              {periods.length > 1 ? (
+                <div className='billing-period' role='group' aria-label={t('billing.panel.periodLabel')}>
+                  {periods.map((nextPeriod) => (
+                    <button key={nextPeriod} type='button' aria-pressed={nextPeriod === period} className={classNames({ 'is-active': nextPeriod === period })} onClick={() => setPeriod(nextPeriod)}>{t(periodLabelKey[nextPeriod])}</button>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             {catalog.status === 'loading' ? (
@@ -468,23 +546,6 @@ const BillingPage: React.FC = () => {
                 ) : null}
 
                 <section className='billing-section'>
-                  <div className='billing-section-head'>
-                    <h2>{t('billing.catalog.plans')}</h2>
-                    {periods.length > 1 ? (
-                      <div className='billing-period'>
-                        {periods.map((nextPeriod) => (
-                          <button
-                            key={nextPeriod}
-                            type='button'
-                            className={classNames({ 'is-active': nextPeriod === period })}
-                            onClick={() => setPeriod(nextPeriod)}
-                          >
-                            {t(periodLabelKey[nextPeriod])}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
                   {visiblePlans.length === 0 ? (
                     <p className='billing-empty'>{t('billing.catalog.emptyPlans')}</p>
                   ) : (
@@ -493,14 +554,12 @@ const BillingPage: React.FC = () => {
                         const action = planActionState(plan, currency, currentKeys);
                         return (
                           <article key={plan.id} className='billing-plan'>
-                            <h3>{localizedPlanName(plan, locale)}</h3>
+                            <div className='billing-plan-head'><h3>{localizedPlanName(plan, locale)}</h3>
                             {isCurrentPlan(plan, currentKeys) ? (
                               <span className='billing-plan-mark'>{t('billing.catalog.current')}</span>
-                            ) : null}
-                            <p className='billing-price'>{money(plan.currentPriceCent)}</p>
-                            {plan.grantPoints ? (
-                              <p className='billing-meta'>{t('billing.catalog.credits', { count: Number(plan.grantPoints) })}</p>
-                            ) : null}
+                            ) : null}</div>
+                            <p className='billing-price'>{money(plan.currentPriceCent)}{!isFreePlan(plan) && <span className='billing-price-period'>{t(periodLabelKey[period])}</span>}</p>
+                            <BillingPlanBenefits plan={plan} locale={locale} />
                             <BillingButton
                               disabled={action !== 'select'}
                               onClick={() =>
@@ -515,7 +574,7 @@ const BillingPage: React.FC = () => {
                               }
                             >
                               {action === 'select'
-                                ? t('billing.catalog.select')
+                                ? t('billing.panel.selectPlan', { name: localizedPlanName(plan, locale) })
                                 : action === 'current'
                                   ? t('billing.catalog.current')
                                   : t('billing.catalog.freeIncluded')}
@@ -527,10 +586,12 @@ const BillingPage: React.FC = () => {
                   )}
                 </section>
 
-                <section className='billing-section'>
+                <p className='billing-payment-hint'>{t(currencyHintKey[currency])}</p>
+                <section id='billing-packs' tabIndex={-1} className='billing-section'>
                   <div className='billing-section-head'>
                     <h2>{t('billing.catalog.packs')}</h2>
                   </div>
+                  <p className='billing-meta'>{t('billing.panel.packDescription')}</p>
                   {visiblePacks.length === 0 ? (
                     <p className='billing-empty'>{t('billing.catalog.emptyPacks')}</p>
                   ) : (
@@ -538,10 +599,8 @@ const BillingPage: React.FC = () => {
                       {visiblePacks.map((pack) => (
                         <article key={pack.id} className='billing-pack-row'>
                           <div>
-                            <h3>{localizedPackName(pack, locale)}</h3>
-                            {pack.points ? (
-                              <p className='billing-meta'>{t('billing.catalog.credits', { count: Number(pack.points) })}</p>
-                            ) : null}
+                            <h3>{pack.points != null ? t('billing.panel.packAmount', { points: points(pack.points) }) : formatBillingPointsText(localizedPackName(pack, locale), locale)}</h3>
+                            <p className='billing-meta'>{t('billing.panel.once')} · {pack.validDays ? t('billing.panel.validDays', { count: pack.validDays }) : t('billing.panel.expiryUnknown')}</p>
                           </div>
                           <p className='billing-price'>{money(pack.priceCent)}</p>
                           <BillingButton
@@ -555,7 +614,7 @@ const BillingPage: React.FC = () => {
                               })
                             }
                           >
-                            {t('billing.catalog.select')}
+                            {t('billing.panel.buyPack')}
                           </BillingButton>
                         </article>
                       ))}
@@ -564,17 +623,23 @@ const BillingPage: React.FC = () => {
                 </section>
               </>
             )}
+            </section>
           </div>
         ) : null}
 
         {step === 'confirm' && attempt ? (
           <section className='billing-confirm'>
             <h2>{t('billing.confirm.title')}</h2>
+            <div className='billing-purchase-note'>
+              <strong>{t(attempt.itemType === 'plan' ? 'billing.panel.planKind' : 'billing.panel.packKind')}</strong>
+              {selectedPlan && <BillingPlanBenefits plan={selectedPlan} locale={locale} />}
+              {selectedPack && <><p>{t('billing.panel.packGrant', { points: points(Number(selectedPack.points ?? 0)) })}</p><p>{selectedPack.validDays ? t('billing.panel.validDays', { count: selectedPack.validDays }) : t('billing.panel.expiryUnknown')}</p></>}
+            </div>
             <div className='billing-ticket'>
               <dl>
                 <div className='billing-ticket-row'>
                   <dt>{t('billing.confirm.item')}</dt>
-                  <dd>{attempt.name}</dd>
+                  <dd>{formatBillingPointsText(attempt.name, locale)}</dd>
                 </div>
                 <div className='billing-ticket-row'>
                   <dt>{t('billing.confirm.amount')}</dt>
@@ -613,7 +678,7 @@ const BillingPage: React.FC = () => {
             </div>
             {payError ? <p className='billing-banner billing-banner-error'>{payError}</p> : null}
             <div className='billing-actions'>
-              <BillingButton variant='ghost' onClick={() => setStep('catalog')}>
+              <BillingButton variant='ghost' onClick={() => { cancelPaymentFlow(); setStep('catalog'); }}>
                 {t('billing.confirm.back')}
               </BillingButton>
               <BillingButton busy={payLoading} onClick={() => void beginPayment()}>

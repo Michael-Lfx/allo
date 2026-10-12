@@ -72,7 +72,8 @@
   "form": {
     "modelSelectTooltip": "现场评测使用的模型。默认取第一个已启用的对话模型。",
     "modelUnavailable": "不可用",
-    "modelUnavailableHint": "已保存的模型当前不可用。请另选模型或改用默认模型。"
+    "modelUnavailableHint": "已保存的模型当前不可用。请另选模型或改用默认模型。",
+    "modelPending": "模型列表尚未就绪，请稍候重试或先选择模型。"
   },
   "status": {
     "loading": "准备中",

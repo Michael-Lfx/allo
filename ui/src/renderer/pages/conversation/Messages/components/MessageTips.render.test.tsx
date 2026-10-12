@@ -30,8 +30,11 @@ const userMessageId = parseMessageId('019b0000-0000-7000-8000-000000000912');
 const errorMessageId = parseMessageId('019b0000-0000-7000-8000-000000000913');
 
 const mockCreditsContext: CreditsContextValue = {
+  checkInReceipt: null,
+  checkInFailed: false,
   balance: 100,
   authenticated: true,
+  balanceConfirmed: true,
   lastCheckInDayKey: 0,
   isFetchingBalance: false,
   isCheckingIn: false,

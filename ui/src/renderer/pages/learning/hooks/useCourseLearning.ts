@@ -42,11 +42,12 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
     [modelChoice]
   );
 
-  // 预生成下一课时：尽力而为，失败不影响学习流程（用户仍可手动点击生成）
+  // 预生成下一课时：尽力而为，失败不影响学习流程（用户仍可手动点击生成）；
+  // 模型未就绪时直接跳过，绝不用后端默认模型发起隐式生成。
   const prefetching = useRef(new Set<string>());
   const prefetchLesson = useCallback(
     async (id: string) => {
-      if (prefetching.current.has(id)) return;
+      if (!modelChoice || prefetching.current.has(id)) return;
       prefetching.current.add(id);
       try {
         await learningApi.generateLesson(id, generateRequest());
@@ -57,12 +58,17 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
         prefetching.current.delete(id);
       }
     },
-    [generateRequest, load]
+    [generateRequest, load, modelChoice]
   );
 
-  // 按需生成单个课时：生成当前课时并刷新；随后尽力预生成紧随其后的未生成课时
+  // 按需生成单个课时：生成当前课时并刷新；随后尽力预生成紧随其后的未生成课时。
+  // 模型未就绪时阻止无模型请求，不用后端默认模型代替用户选择。
   const generateLesson = useCallback(
     async (lesson: Lesson, allLessons?: Lesson[]) => {
+      if (!modelChoice) {
+        Message.warning(t('learning.form.modelPending'));
+        return;
+      }
       setBusyId(lesson.id);
       try {
         await learningApi.generateLesson(lesson.id, generateRequest());
@@ -78,7 +84,7 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
         setBusyId(null);
       }
     },
-    [generateRequest, load, prefetchLesson, setBusyId, t]
+    [generateRequest, load, modelChoice, prefetchLesson, setBusyId, t]
   );
 
   const updateProgress = useCallback(
@@ -98,6 +104,10 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
 
   const submitAttempt = useCallback(
     async (activity: Activity, response: unknown) => {
+      if (!modelChoice) {
+        Message.warning(t('learning.form.modelPending'));
+        return;
+      }
       setBusyId(activity.id);
       try {
         const result = await learningApi.submitAttempt(activity.id, attemptRequest(response));
@@ -109,7 +119,7 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
         setBusyId(null);
       }
     },
-    [attemptRequest, load, t, setBusyId]
+    [attemptRequest, load, modelChoice, t, setBusyId]
   );
 
   return {
