@@ -42,28 +42,16 @@ impl MirrorConfig {
             }
         }
 
-        mirrors.extend(vec![
-            Self {
-                id: "modelscope".to_string(),
-                base_url: "https://modelscope.cn".to_string(),
-                probe_url: Some(
-                    "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt"
-                        .to_string(),
-                ),
-                is_modelscope: true,
-                is_fallback_cdn: false,
-            },
-            Self {
-                id: "hf_mirror".to_string(),
-                base_url: "https://hf-mirror.com".to_string(),
-                probe_url: Some(
-                    "https://hf-mirror.com/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/tokens.txt"
-                        .to_string(),
-                ),
-                is_modelscope: false,
-                is_fallback_cdn: false,
-            },
-        ]);
+        mirrors.push(Self {
+            id: "modelscope".to_string(),
+            base_url: "https://modelscope.cn".to_string(),
+            probe_url: Some(
+                "https://modelscope.cn/api/v1/models/pkufool/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/repo?Revision=master&FilePath=tokens.txt"
+                    .to_string(),
+            ),
+            is_modelscope: true,
+            is_fallback_cdn: false,
+        });
 
         mirrors
     }
@@ -178,15 +166,16 @@ impl ModelDownloader {
     /// Initializes a downloader with the provided mirror candidate list.
     pub fn new(mirrors: Vec<MirrorConfig>) -> Self {
         let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_millis(1500))
-            .timeout(Duration::from_secs(60))
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Flowy/1.6.1")
+            .connect_timeout(Duration::from_millis(3000))
+            .timeout(Duration::from_secs(120))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
         Self {
             mirrors,
             client,
-            probe_timeout: Duration::from_millis(1500),
+            probe_timeout: Duration::from_millis(3000),
         }
     }
 
