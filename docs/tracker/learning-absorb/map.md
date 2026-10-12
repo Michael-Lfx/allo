@@ -33,6 +33,11 @@
 
 ## Decisions so far
 
+- [结构化输出基建：按 ADR-0014 建多少？](tickets/g4-structured-output-infra.md)：新基建
+  覆盖全部生成面（structure/地形/教练批/概念评审）——**教练批同期全迁**（反推荐，用户
+  明示；容错 deserializer 退役、重试对齐 ≤3 带条款报告、全量重验）；桥层新增 json 接缝
+  （解析留 learning 侧）；provider 不支持 json_object 即报错（fail loud，不降级）；仅新
+  管线提示词资产化（教练批契约迁移与提示词内联解耦）；analyze_scope 随之退役。
 - [结构与生长的边界](tickets/g3-structure-vs-growth-boundary.md)：教练上下文重排为 9 块
   （结构参考材料全量块摊开取代范围参考、地形门口首批重点、覆盖读数改纯展示）；深度水位门
   退役、反虚标职能移概念评审门（difficulty 字段保留）；首级判据 learnhub 式重写；就绪即
