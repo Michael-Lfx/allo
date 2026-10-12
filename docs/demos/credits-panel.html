@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flowy · 积分与购买 Demo</title>
+  <!-- Standalone design demo. No account API, credentials, or payment requests. -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style>
+    :root { color-scheme:dark; --canvas:oklch(17% .014 285);--side:oklch(23% .027 285);--panel:oklch(21% .017 285);--hover:oklch(27% .024 285);--ink:oklch(94% .008 285);--muted:oklch(70% .018 285);--line:oklch(33% .018 285);--accent:oklch(74% .14 280);--accent-ink:oklch(19% .022 285);--soft:oklch(28% .04 280);--ok:oklch(80% .12 167);--ok-bg:oklch(26% .038 167);--warning:oklch(82% .12 78);--warning-bg:oklch(26% .03 78); }
+    [data-theme="light"] { color-scheme:light;--canvas:oklch(98% .005 285);--side:oklch(95% .012 285);--panel:oklch(99% .003 285);--hover:oklch(94% .014 285);--ink:oklch(25% .025 285);--muted:oklch(49% .023 285);--line:oklch(87% .014 285);--accent:oklch(48% .19 280);--accent-ink:oklch(98% .005 285);--soft:oklch(93% .028 280);--ok:oklch(39% .09 167);--ok-bg:oklch(95% .025 167);--warning:oklch(43% .09 78);--warning-bg:oklch(96% .025 78); }
+    * { box-sizing:border-box; } body { margin:0; background:var(--canvas);color:var(--ink);font:14px/1.5 "Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif; }
+    button,select { font:inherit; } button,a,select,summary { -webkit-tap-highlight-color:transparent; } button { cursor:pointer; } button:disabled { cursor:default;opacity:.45; } a { color:inherit; } button:focus-visible,a:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
+    .muted { color:var(--muted); } .line { border-color:var(--line); } .panel { background:var(--panel); } .accent { color:var(--accent); } .btn { display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:transparent;white-space:nowrap;transition:background 140ms; }
+    .btn:hover:not(:disabled),.day:hover:not(:disabled) { background:var(--hover); } .primary { background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600; } .primary:hover:not(:disabled) { background:var(--accent);filter:brightness(1.07); }
+    .icon { width:40px;padding:0;font-size:20px; } .day { min-height:76px;border:1px solid transparent;border-radius:8px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;position:relative; }
+    .day.today .date { outline:1px solid var(--accent);outline-offset:4px;border-radius:50%; } .day.selected { background:var(--soft);border-color:var(--accent); } .day.signed .date { font-weight:600; } .day.future { color:var(--muted); } .day .date { min-width:22px;line-height:22px;text-align:center; } .day .grant { color:var(--muted);font-size:11px; } .day .check { color:var(--ok);font-size:12px;position:absolute;right:14%;top:13px; }
+    .seg button { padding:7px 14px;border-radius:6px;min-height:36px;white-space:nowrap; } .seg button[aria-pressed="true"] { background:var(--soft);color:var(--ink);font-weight:600; } .status-ok { background:var(--ok-bg);color:var(--ok); } .status-warning { background:var(--warning-bg);color:var(--warning); }
+    .source-row { display:grid;grid-template-columns:1fr auto;gap:12px;padding:10px 0;border-bottom:1px solid var(--line); } details summary { cursor:pointer;list-style:none; } details summary::-webkit-details-marker { display:none; } details[open] .chevron { transform:rotate(90deg); } .chevron { display:inline-block;transition:transform 140ms; } [hidden] { display:none !important; }
+    .demo-toolbar { position:sticky;top:0;z-index:30;background:var(--side);border-bottom:1px solid var(--line); } .nav-item { padding:9px 12px;border-radius:7px;display:flex;gap:10px;align-items:center; } .sidebar { background:var(--side);border-right:1px solid var(--line);position:sticky;top:var(--toolbar-height,49px);height:calc(100dvh - var(--toolbar-height,49px)); }
+    .account-popup { position:absolute;bottom:78px;left:0;right:0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);box-shadow:0 12px 32px oklch(12% .015 285 / .25);z-index:20; }
+    .account-popup[hidden] { display:none; } .account-popup:not([hidden]) { animation:reveal 180ms ease-out; } @keyframes reveal { from { opacity:0;transform:translateY(6px); } to { opacity:1;transform:translateY(0); } }
+    .calendar-content { min-height:390px; } .rule-line { display:flex;gap:8px;align-items:baseline; } .rule-dot { color:var(--accent); } .purchase-note { border:1px solid var(--line);border-radius:8px;padding:12px 16px;background:var(--panel); } #purchase { min-height:calc(100dvh - var(--toolbar-height,49px) - 40px); } dialog::backdrop { background:oklch(12% .014 285 / .65); }
+    @media(max-width:639px) { .day { min-height:54px; } .day .grant { display:none; } .day .check { right:6px;top:5px;font-size:10px; } }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none !important;scroll-behavior:auto !important; } }
+  </style>
+</head>
+<body>
+  <div class="demo-toolbar flex flex-wrap items-center justify-between gap-3 px-4 py-2 text-xs">
+    <span class="muted"><strong class="accent">设计 DEMO</strong> · 示例数据 · 不连接账户、不真实签到或付款</span>
+    <div class="flex flex-wrap items-center gap-3">
+      <label for="scenario" class="muted">查看状态</label>
+      <select id="account-plan" class="panel rounded-md border line px-2 py-1" aria-label="切换演示套餐"><option>Free</option><option>Pro</option><option>Ultra</option></select>
+      <select id="scenario" class="panel rounded-md border line px-2 py-1" aria-label="查看演示状态">
+        <option value="success">签到已到账</option><option value="pending">今日未签到</option><option value="failed">签到失败</option><option value="calendar-error">月历加载失败</option><option value="empty">本月暂无记录</option>
+      </select>
+      <button id="theme" class="btn !min-h-8 !px-3 !py-1" aria-label="切换浅色主题">☼ 浅色</button>
+      <button class="btn !min-h-8 !px-3 !py-1" data-target="checkin">签到入口</button><button class="btn !min-h-8 !px-3 !py-1" data-target="purchase">充值入口</button>
+    </div>
+  </div>
+  <div class="flex min-h-[calc(100vh-49px)]">
+    <aside class="sidebar hidden w-[216px] shrink-0 flex-col px-3 py-5 lg:flex" aria-label="应用导航示意">
+      <div class="flex items-center gap-3 px-2 pb-6"><span class="flex size-9 items-center justify-center rounded-lg panel text-xl font-bold">F</span><div><strong class="text-xl">Flowy</strong><div class="muted text-xs">工作空间</div></div></div>
+      <div class="nav-item border line"><span class="text-lg">＋</span>新建对话</div><div class="nav-item muted mt-2">⌕　搜索</div>
+      <div class="mt-5 flex justify-around border line rounded-lg py-3 muted" aria-hidden="true"><span>▤</span><span>▥</span><span>◷</span><span>♩</span></div>
+      <div class="mt-3 flex justify-around text-xs muted border line rounded-lg py-3"><span>项目</span><span>视频</span><span>桌宠</span></div>
+      <div class="mt-4 px-3 py-4 panel rounded-xl border line"><div class="flex items-center gap-2"><span aria-hidden="true">🐇</span><strong>伙伴</strong><span class="ml-auto muted text-xs">平静</span></div><div class="mt-3 muted text-xs">与你一起完成今天的工作</div></div>
+      <div class="relative mt-auto border-t line pt-4 px-2">
+        <div id="account-popup" class="account-popup" hidden><div class="flex flex-wrap items-center justify-between gap-2 rounded-lg p-2" style="background:var(--soft)"><span class="muted text-xs">积分余额</span><strong id="popup-balance" class="tabular-nums">18,600</strong><button class="btn !min-h-8 !px-2 !py-1" data-target="purchase">🛒 充值</button></div><div class="nav-item muted mt-2">桌面伙伴</div><div class="nav-item muted">语言 · 简体中文</div><div class="nav-item muted">换肤</div><div class="nav-item muted">联系客服</div><p class="muted text-xs px-2 pt-2">气泡“充值”定位购买下单区域</p></div>
+        <button id="account-toggle" class="text-left w-full" aria-expanded="false" aria-controls="account-popup"><span class="text-sm">demo@flowy.example</span></button>
+        <div class="mt-1 flex items-center gap-2 text-xs muted"><span id="sidebar-balance">18,600</span><button id="balance-entry" class="rounded px-2 py-1 accent" data-target="checkin" title="签到与积分记录" aria-label="签到与积分记录"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4m10-4v4M3 10h18m-12 5 2 2 4-4"/></svg></button></div>
+      </div>
+    </aside>
+    <main class="min-w-0 flex-1">
+      <div class="mx-auto max-w-[1120px] px-4 pb-16 pt-7 sm:px-8 sm:pt-10">
+        <header class="flex flex-wrap items-start justify-between gap-5">
+          <div><h1 class="text-2xl font-semibold tracking-tight">积分与购买</h1><p class="mt-2 muted">查看签到到账与积分有效期，也可以在这里购买套餐或积分包。</p></div>
+          <div class="flex gap-2"><button id="refresh" class="btn" aria-label="刷新积分记录">↻ 刷新</button><a href="#purchase" data-target="purchase" class="btn primary no-underline">购买套餐 ↓</a></div>
+        </header>
+
+        <section id="credits" class="mt-7 border-b line pb-7 scroll-mt-5" aria-labelledby="balance-title">
+          <div class="flex flex-wrap items-end justify-between gap-4"><div class="flex items-baseline gap-3"><h2 id="balance-title" class="muted text-sm">可用积分</h2><span id="balance" class="text-2xl font-semibold tabular-nums">18,600</span><span id="current-plan" class="text-xs muted border line rounded px-2 py-1">Free · 当前套餐</span></div><span id="updated" class="muted text-xs">更新于 10:32 · 示例</span></div>
+          <div id="status" class="status-ok mt-4 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3" role="status" aria-live="polite"></div>
+        </section>
+
+        <div id="checkin" tabindex="-1" class="grid gap-8 py-7 md:grid-cols-[minmax(0,1.8fr)_minmax(240px,1fr)]">
+          <section aria-labelledby="calendar-title" class="min-w-0">
+            <div class="flex flex-wrap items-baseline justify-between gap-2"><h2 id="calendar-title" class="text-base font-semibold">每日签到</h2><span id="counts" class="muted text-xs tabular-nums"></span></div>
+            <div class="mt-4 flex items-center justify-between gap-2"><div class="flex items-center gap-1"><button id="prev" class="btn icon" aria-label="上一个月">‹</button><h3 id="month" class="w-32 text-center font-semibold"></h3><button id="next" class="btn icon" aria-label="下一个月">›</button></div><button id="current" class="accent text-xs px-2 py-2 rounded" hidden>回到本月</button></div>
+            <div id="calendar-body" class="calendar-content mt-3">
+              <div class="grid grid-cols-7 text-center muted text-xs pb-2" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+              <div id="calendar" class="grid grid-cols-7 gap-1" role="group" aria-label="每月签到日期"></div>
+            </div>
+            <div id="calendar-error" class="calendar-content mt-5 border line rounded-lg p-6 text-center" hidden><p class="font-medium">签到记录加载失败</p><p class="mt-2 muted text-sm">暂时无法确认本月记录，已显示的余额不受影响。</p><button id="retry-calendar" class="btn mt-4">重试加载</button></div>
+            <div id="calendar-empty" class="muted text-xs mt-3" hidden>本月暂无签到记录，打开应用后会自动尝试今日签到。</div>
+            <div class="flex flex-wrap gap-4 mt-3 text-xs muted"><span><span style="color:var(--ok)">✓</span> 已签到</span><span><span class="accent">○</span> 今天</span><span><span class="accent">▢</span> 选中日期</span></div>
+            <div id="day-detail" class="mt-4 min-h-14 border-t line pt-3 text-sm" aria-live="polite"></div>
+          </section>
+
+          <aside class="min-w-0 border-t line pt-6 md:border-t-0 md:border-l md:pl-7 md:pt-0" aria-label="积分来源及规则">
+            <div class="flex justify-between items-center gap-2"><h2 class="text-base font-semibold">积分到期时间</h2><span class="text-xs muted">示例批次</span></div>
+            <div id="today-expiry" class="source-row mt-2"><div><div id="checkin-expiry">今天 24:00</div><div class="muted text-xs mt-1">每日签到积分</div></div><div class="text-right tabular-nums"><strong id="expiring-checkin" style="color:var(--warning)">1,000</strong><div class="muted text-xs mt-1">积分</div></div></div>
+            <div class="source-row"><div><div>2027年9月30日</div><div class="muted text-xs mt-1">购买积分包</div></div><div class="text-right tabular-nums">12,000<span class="block muted text-xs mt-1">积分</span></div></div>
+            <details class="mt-4"><summary class="accent text-sm">查看全部积分来源 <span class="chevron">›</span></summary><dl class="mt-2 text-sm"><div class="source-row"><dt>签到积分</dt><dd id="checkin-source" class="tabular-nums">1,000</dd></div><div class="source-row"><dt>购买积分包</dt><dd class="tabular-nums">12,000</dd></div><div class="source-row"><dt>套餐赠送</dt><dd class="tabular-nums">5,600</dd></div></dl></details>
+            <section id="rules" class="mt-7 scroll-mt-5"><h2 class="text-base font-semibold">积分说明</h2><div class="mt-3 space-y-3 text-sm"><p><strong id="daily-rule">Free 每日签到 1,000 积分</strong><br><span id="daily-validity" class="muted">当日有效，未使用部分当日清零。</span></p><p><strong>签到与套餐加赠分别到账</strong><br><span class="muted">日历记录每日签到，月度加赠单独计入积分来源。</span></p></div><details class="mt-3 text-sm"><summary class="accent">全部套餐积分规则 <span class="chevron">›</span></summary><div class="mt-3 space-y-3 muted"><p><strong style="color:var(--ink)">Free</strong>：每日签到 1,000 积分，当日清零。</p><p><strong style="color:var(--ink)">Pro</strong>：每日签到 3,000、每月加赠 10,000 积分，两类均为 1 年有效。</p><p><strong style="color:var(--ink)">Ultra</strong>：每日签到 5,000、每月加赠 50,000 积分，两类均为 1 年有效。</p><p>购买加量包：有效期以对应商品与到账批次为准。</p></div></details><a href="#packs-section" data-target="packs-section" class="inline-block accent text-sm mt-4">需要更多积分？补充积分 ↓</a></section>
+          </aside>
+        </div>
+
+        <section id="purchase" tabindex="-1" class="border-t line pt-7 scroll-mt-5" aria-labelledby="purchase-title">
+          <div class="flex flex-wrap items-center justify-between gap-4"><div><h2 id="purchase-title" class="text-lg font-semibold">购买套餐与积分包</h2><p id="currency-hint" class="mt-1 muted text-xs">美元使用空中云汇支付页，人民币使用微信支付。</p></div><div class="seg flex border line rounded-lg p-1" aria-label="购买币种"><button data-currency="USD" aria-pressed="true">美元 USD</button><button data-currency="CNY" aria-pressed="false">人民币 CNY</button></div></div>
+          <div class="purchase-note mt-5 flex flex-wrap justify-between items-center gap-3"><p class="text-sm muted">需要每日签到与每月赠送，选择会员套餐；需要单次增加余额，选择积分加量包。</p><a href="#checkin" data-target="checkin" class="accent text-sm">查看签到 ↑</a></div>
+          <div class="mt-6 flex flex-wrap items-center justify-between gap-3"><div><h3 class="font-semibold">会员套餐</h3><p class="muted text-xs mt-1">每日签到 + 每月加赠 + 对应客服权益</p></div><div class="seg flex border line rounded-lg p-1" aria-label="套餐周期"><button data-period="month" aria-pressed="true">月付</button><button data-period="year" aria-pressed="false">年付</button></div></div>
+          <div id="plans" class="grid gap-3 mt-4 sm:grid-cols-3"></div>
+          <section id="packs-section" tabindex="-1" class="mt-8 border-t line pt-6"><div class="flex flex-wrap justify-between gap-3"><div><h3 class="font-semibold">积分加量包 · 单次购买</h3><p class="muted text-sm mt-1">只补充积分，不开通或升级会员。Free、Pro、Ultra 均可购买。</p></div><span class="muted text-xs">购买后一次到账</span></div><div id="packs" class="mt-4 space-y-3"></div></section>
+          <p class="mt-5 text-xs muted">设计演示：余额、记录、人民币价格及积分包价格为样例；套餐积分权益按提供的官网截图。年付报价待读取真实目录。购买仅展示订单摘要，不创建订单或发起支付。</p>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 panel border line rounded-lg px-5 py-3 text-sm max-w-[calc(100vw-32px)] shadow-lg" role="status" hidden></div>
+  <dialog id="order-preview" class="panel border line rounded-xl p-6 w-[min(480px,calc(100vw-32px))]" style="color:var(--ink)"><form method="dialog"><div class="flex justify-between items-center gap-4"><h2 class="font-semibold text-lg">购买内容确认 · 演示</h2><button class="btn icon" aria-label="关闭购买摘要">×</button></div><div id="order-summary" class="mt-5 space-y-3 text-sm"></div><p class="muted text-xs mt-5">正式版本在此继续现有结账流程；本演示不会创建订单或付款。</p><button class="btn primary w-full mt-5">知道了</button></form></dialog>
+  <script>
+    // Reusable standalone view model: replace fixtures with verified DTOs during implementation.
+    const DEMO_TODAY = new Date(2026,9,12);
+    const records = new Map([
+      ['2026-10',[1,2,5,6,8,9,11,12]], ['2026-09',[1,3,4,7,9,10,14,16,18,21,23,24,28,30]], ['2026-08',[3,5,7,10,12,17,19,21,24,26,28,31]]
+    ]);
+    const state = {year:2026,month:9,day:12,scenario:'success',currency:'USD',period:'month',plan:'Free'};
+    const benefits = {Free:{daily:1000,monthly:0,service:'在线人工客服'},Pro:{daily:3000,monthly:10000,service:'优先客服通道'},Ultra:{daily:5000,monthly:50000,service:'VIP 专属客服通道'}};
+    const $ = id => document.getElementById(id);
+    const number = n => n.toLocaleString('zh-CN');
+    const key = () => `${state.year}-${String(state.month+1).padStart(2,'0')}`;
+    function signedDays() {
+      if (state.scenario==='empty') return [];
+      const days = [...(records.get(key()) || [])];
+      return key()==='2026-10' && ['pending','failed'].includes(state.scenario) ? days.filter(d=>d!==12) : days;
+    }
+    function toast(text) { $('toast').textContent=text; $('toast').hidden=false; clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,2800); }
+    function renderStatus() {
+      const bad=['failed','pending','empty'].includes(state.scenario);
+      const daily=benefits[state.plan].daily,total=17600+(bad?0:daily);
+      $('balance').textContent=number(total);
+      $('sidebar-balance').textContent=number(total);
+      $('popup-balance').textContent=number(total);
+      $('checkin-source').textContent=number(bad?0:daily);
+      $('current-plan').textContent=`${state.plan} · 当前套餐`;
+      $('expiring-checkin').textContent=number(daily);
+      $('expiring-checkin').style.color=state.plan==='Free'?'var(--warning)':'var(--ink)';
+      $('checkin-expiry').textContent=state.plan==='Free'?'今天 24:00':'2027年10月12日';
+      $('daily-rule').textContent=`${state.plan} 每日签到 ${number(daily)} 积分`;
+      $('daily-validity').textContent=state.plan==='Free'?'当日有效，未使用部分当日清零。':'每次签到积分 1 年有效，以到账批次截止时间为准。';
+      $('today-expiry').hidden=bad;
+      $('status').className=`${bad?'status-warning':'status-ok'} mt-4 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3`;
+      $('status').innerHTML=bad ? `<span><strong>${state.scenario==='failed'?'! 未能确认今日签到到账':'○ 今日签到尚未完成'}</strong><span class="ml-2 text-xs">登录后自动签到，可手动重试</span></span><button id="retry-checkin" class="btn !min-h-8 !py-1">重试签到</button>` : `<span><strong>✓ 今日签到已到账</strong><span class="ml-3 font-semibold tabular-nums">+${number(daily)} 积分</span></span><span class="text-xs">10:32 · 自动签到</span>`;
+      if(bad) $('retry-checkin').onclick=()=>{ const btn=$('retry-checkin');btn.disabled=true;btn.textContent='确认到账中…';setTimeout(()=>{state.scenario='success';$('scenario').value='success';render();toast('演示：今日签到已到账，日历与余额已同步。');},650); };
+    }
+    function renderCalendar() {
+      const days=signedDays(),thisMonth=key()==='2026-10';
+      $('month').textContent=`${state.year}年${state.month+1}月`;
+      $('counts').textContent=state.scenario==='calendar-error'?'签到次数待确认':`本月 ${days.length} 天 · 累计 ${state.scenario==='empty'?0:state.scenario==='success'||state.scenario==='calendar-error'?114:113} 天`;
+      $('next').disabled=state.year===2026 && state.month===9;
+      $('current').hidden=thisMonth;
+      $('calendar-error').hidden=state.scenario!=='calendar-error';
+      $('calendar-body').hidden=state.scenario==='calendar-error';
+      $('calendar-empty').hidden=days.length>0 || state.scenario==='calendar-error';
+      $('day-detail').hidden=state.scenario==='calendar-error';
+      const count=new Date(state.year,state.month+1,0).getDate();
+      const offset=(new Date(state.year,state.month,1).getDay()+6)%7;
+      state.day=Math.min(state.day,count);
+      $('calendar').replaceChildren();
+      for(let i=0;i<offset;i++){const blank=document.createElement('span');blank.setAttribute('aria-hidden','true');$('calendar').append(blank);}
+      for(let d=1;d<=count;d++){
+        const signed=days.includes(d),today=thisMonth&&d===12,future=new Date(state.year,state.month,d)>DEMO_TODAY;
+        const button=document.createElement('button');button.type='button';button.className=`day ${signed?'signed':''} ${today?'today':''} ${d===state.day?'selected':''} ${future?'future':''}`;
+        button.setAttribute('aria-label',`${state.month+1}月${d}日${today?'，今天':''}，${signed?`已签到，到账${number(benefits[state.plan].daily)}积分`:future?'未来日期':'无签到记录'}`);
+        button.setAttribute('aria-pressed',String(d===state.day));
+        if(today) button.setAttribute('aria-current','date');
+        button.innerHTML=`<span class="date tabular-nums">${d}</span>${signed?`<span class="check" aria-hidden="true">✓</span><span class="grant tabular-nums">+${number(benefits[state.plan].daily)}</span>`:'<span class="grant" aria-hidden="true">&nbsp;</span>'}`;
+        button.onclick=()=>{state.day=d;renderCalendar();};
+        button.onkeydown=e=>{const delta={ArrowLeft:-1,ArrowRight:1,ArrowUp:-7,ArrowDown:7}[e.key];if(delta!==undefined){e.preventDefault();const next=Math.min(count,Math.max(1,d+delta));state.day=next;renderCalendar();$('calendar').querySelectorAll('button')[next-1].focus();}};
+        $('calendar').append(button);
+      }
+      const signed=days.includes(state.day),future=new Date(state.year,state.month,state.day)>DEMO_TODAY;
+      $('day-detail').innerHTML=`<span class="muted">${state.month+1}月${state.day}日</span><span class="ml-3">${signed?`✓ 已到账 <strong class="tabular-nums">${number(benefits[state.plan].daily)}</strong> 积分 <span class="muted ml-2 text-xs">10:32 · 示例</span>`:future?'尚未到该日':'该日无签到记录'}</span>`;
+    }
+    function renderPurchase() {
+      document.querySelectorAll('[data-currency]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.currency===state.currency)));
+      document.querySelectorAll('[data-period]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.period===state.period)));
+      const prices=state.currency==='USD'?[0,18,39.99]:[0,126,279.93];
+      const money=n=>state.currency==='USD'?`US$${n.toFixed(2)}`:`¥${n.toFixed(2)}`;
+      $('plans').innerHTML=['Free','Pro','Ultra'].map((name,i)=>{
+        const b=benefits[name],current=name===state.plan,yearUnknown=state.period==='year'&&i>0;
+        const label=current?(i?'续费 '+name:'当前套餐'):i?(state.plan==='Free'?'开通 ':'变更为 ')+name:'免费套餐';
+        return `<article class="border line rounded-lg p-5 flex flex-col" style="${current?'border-color:var(--accent)':''}"><div class="flex items-center justify-between gap-2"><h4 class="text-lg font-semibold">${name}</h4>${current?'<span class="text-xs accent">当前套餐</span>':''}</div><p class="mt-4 text-2xl font-semibold tabular-nums">${yearUnknown?'年付报价待加载':money(prices[i])}${yearUnknown?'':`<span class="text-xs font-normal muted"> / ${i?'月':'永久免费'}</span>`}</p><div class="mt-5 space-y-4 text-sm"><div class="rule-line"><span class="rule-dot">●</span><div><strong>每日签到 ${number(b.daily)} 积分</strong><p class="muted text-xs mt-1">${i?'每次到账后 1 年有效':'当日清零'}</p></div></div><div class="rule-line"><span class="rule-dot">●</span><div><strong>${i?`每月加赠 ${number(b.monthly)} 积分`:'可购买积分加量包'}</strong><p class="muted text-xs mt-1">${i?'与签到积分分别到账，1 年有效':'单次补充余额，不改变会员身份'}</p></div></div><p class="muted text-xs">${b.service}</p></div><div class="pt-6 mt-auto"><button class="btn ${i?'primary':''} w-full" ${!i||yearUnknown?'disabled':''} data-buy="${name}" data-kind="plan">${yearUnknown?'年付报价待加载':label}</button></div></article>`;
+      }).join('');
+      $('packs').innerHTML=[10000,50000].map((points,i)=>`<article class="border line rounded-lg p-4 flex flex-wrap items-center gap-4"><div class="flex-1 min-w-40"><h4 class="font-semibold">一次到账 ${number(points)} 积分</h4><p class="muted text-xs mt-1">单次购买 · 不附带每日签到或每月赠送权益</p><p class="muted text-xs mt-1">有效期以商品与到账批次为准</p></div><div class="text-right"><strong class="text-lg tabular-nums">${money(state.currency==='USD'?[4.99,19.99][i]:[35,139][i])}</strong><p class="muted text-xs">/ 次</p></div><button class="btn" data-buy="${points}" data-kind="pack">购买 ${number(points)} 积分</button></article>`).join('');
+      document.querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{
+        const plan=b.dataset.kind==='plan',name=b.dataset.buy;
+        $('order-summary').innerHTML=plan?`<p class="muted">商品类型：${state.period==='month'?'月付':'年付'}会员套餐</p><p class="text-lg font-semibold">${name} 会员</p><p>每日签到 ${number(benefits[name].daily)} 积分</p><p>每月加赠 ${number(benefits[name].monthly)} 积分</p><p class="muted">两类积分分别到账，均为 1 年有效。</p>`:`<p class="muted">商品类型：单次积分加量包</p><p class="text-lg font-semibold">一次到账 ${number(Number(name))} 积分</p><p>会员身份维持 ${state.plan}，每日签到与月度赠送权益不变。</p><p class="muted">积分有效期将在真实商品结账摘要中明确展示。</p>`;
+        $('order-preview').showModal();
+      });
+    }
+    function render(){renderStatus();renderCalendar();renderPurchase();}
+    $('scenario').onchange=e=>{state.scenario=e.target.value;render();};
+    $('theme').onclick=()=>{const dark=document.documentElement.dataset.theme==='dark';document.documentElement.dataset.theme=dark?'light':'dark';$('theme').textContent=dark?'☾ 深色':'☼ 浅色';$('theme').setAttribute('aria-label',dark?'切换深色主题':'切换浅色主题');};
+    $('prev').onclick=()=>{state.month--;if(state.month<0){state.month=11;state.year--;}state.day=1;renderCalendar();};
+    $('next').onclick=()=>{state.month++;if(state.month>11){state.month=0;state.year++;}state.day=1;renderCalendar();};
+    $('current').onclick=()=>{state.year=2026;state.month=9;state.day=12;renderCalendar();};
+    $('retry-calendar').onclick=()=>{state.scenario='success';$('scenario').value='success';render();toast('演示：签到记录加载成功。');};
+    $('refresh').onclick=()=>{const b=$('refresh');b.disabled=true;b.textContent='↻ 更新中…';setTimeout(()=>{b.disabled=false;b.textContent='↻ 刷新';$('updated').textContent='刚刚更新 · 示例';toast('演示：积分与签到记录已刷新。');},600);};
+    $('account-plan').onchange=e=>{state.plan=e.target.value;render();};
+    function closeAccount(){ $('account-popup').hidden=true;$('account-toggle').setAttribute('aria-expanded','false'); }
+    $('account-toggle').onclick=()=>{const open=$('account-popup').hidden;$('account-popup').hidden=!open;$('account-toggle').setAttribute('aria-expanded',String(open));};
+    document.addEventListener('click',e=>{if(!$('account-popup').parentElement.contains(e.target))closeAccount();});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')closeAccount();});
+    let cancelScroll=()=>{};
+    function navigateTo(id){
+      closeAccount();cancelScroll();
+      const target=$(id);if(!target)return;
+      const topBar=document.querySelector('.demo-toolbar').getBoundingClientRect().height;
+      const destination=Math.max(0,Math.min(document.documentElement.scrollHeight-innerHeight,target.getBoundingClientRect().top+scrollY-topBar-20));
+      history.replaceState(null,'','#'+id);
+      const focus=()=>target.focus({preventScroll:true});
+      if(matchMedia('(prefers-reduced-motion: reduce)').matches){scrollTo(0,destination);focus();return;}
+      const from=scrollY,start=performance.now(),duration=Math.min(450,Math.max(280,Math.abs(destination-from)*.25));let frame;
+      const cleanup=()=>{for(const event of ['wheel','touchstart','pointerdown','keydown'])window.removeEventListener(event,interrupt);cancelScroll=()=>{};};
+      const interrupt=e=>{if(e.type==='keydown'&&!['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(e.key))return;cancelAnimationFrame(frame);cleanup();};
+      cancelScroll=()=>{cancelAnimationFrame(frame);cleanup();};
+      for(const event of ['wheel','touchstart','pointerdown','keydown'])window.addEventListener(event,interrupt,{passive:true});
+      const step=now=>{const t=Math.min(1,(now-start)/duration);scrollTo(0,from+(destination-from)*(1-Math.pow(1-t,5)));if(t<1)frame=requestAnimationFrame(step);else{cleanup();focus();}};
+      frame=requestAnimationFrame(step);
+    }
+    document.querySelectorAll('[data-target]').forEach(b=>b.onclick=e=>{e.preventDefault();navigateTo(b.dataset.target);});
+    new ResizeObserver(entries=>document.documentElement.style.setProperty('--toolbar-height',entries[0].target.getBoundingClientRect().height+'px')).observe(document.querySelector('.demo-toolbar'));
+    document.querySelectorAll('[data-currency]').forEach(b=>b.onclick=()=>{state.currency=b.dataset.currency;renderPurchase();});
+    document.querySelectorAll('[data-period]').forEach(b=>b.onclick=()=>{state.period=b.dataset.period;renderPurchase();});
+    render();
+  </script>
+</body>
+</html>
+

@@ -59,6 +59,26 @@ describe('hidden billing route', () => {
     }
   });
 
+  test('same-page re-entry keeps layout readiness and keys the panel by the shared account id', () => {
+    const page = read('./BillingPage.tsx');
+    // Readiness belongs to the loaded panel/account, not to one navigation: a
+    // repeated sidebar entry must not clear it (the mounted panel never fires
+    // `onReady` again), otherwise the anchor scroll can never run.
+    expect(page.split('setCreditsLayoutReady(false)').length - 1).toBe(1);
+    expect(page.includes('useEffect(() => setCreditsLayoutReady(false), [accountId])')).toBe(true);
+    expect(page.includes("key={accountId ?? 'account'}")).toBe(true);
+  });
+
+  test('leaving the payment step invalidates the in-flight payment task', () => {
+    const page = read('./BillingPage.tsx');
+    expect(page.includes('const payTaskRef = useRef(0);')).toBe(true);
+    expect(page.includes('const task = ++payTaskRef.current;')).toBe(true);
+    expect(page.split('if (!isCurrent()) return;').length - 1).toBeGreaterThanOrEqual(4);
+    expect(page.includes('isAborted: stale')).toBe(true);
+    expect(page.includes('void waitForPaid(session, isCurrent);')).toBe(true);
+    expect(page.includes('cancelPaymentFlow(); setStep')).toBe(true);
+  });
+
   test('shows a WeChat QR in-page and opens the Airwallex hosted page in the browser', () => {
     const page = read('./BillingPage.tsx');
     expect(page).toContain('billing-plan-grid');
@@ -104,12 +124,20 @@ describe('in-app billing entry', () => {
       calls.push(args);
     }) as never;
     openInAppBilling(navigate, { source: 'sider', balance: 12 });
-    expect(calls).toEqual([[BILLING_PATH, { state: { source: 'sider', balance: 12 } }]]);
+    expect(calls).toEqual([[BILLING_PATH, { state: { source: 'sider', balance: 12, target: 'purchase' } }]]);
   });
 
   test('reads entry state defensively', () => {
     expect(readBillingEntryState(null)).toEqual({});
-    expect(readBillingEntryState({ source: 'sider', balance: 'x' })).toEqual({ source: 'sider', balance: null });
+    expect(readBillingEntryState({ source: 'sider', balance: 'x' })).toEqual({ source: 'sider', balance: null, target: undefined });
+  });
+
+  test('preserves explicit anchor intent and rejects unknown targets', () => {
+    const calls: unknown[][] = [];
+    openInAppBilling(((...args: unknown[]) => calls.push(args)) as never, { target: 'checkin' });
+    expect(calls).toEqual([[BILLING_PATH, { state: { source: undefined, balance: null, target: 'checkin' } }]]);
+    expect(readBillingEntryState({ target: 'packs' }).target).toBe('packs');
+    expect(readBillingEntryState({ target: 'unknown' }).target).toBeUndefined();
   });
 });
 

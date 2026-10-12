@@ -296,6 +296,8 @@ pub use mcp_declarations::{
     ResolvedNomiMcpServer, set_server_enabled_in_source,
 };
 pub use media::{
+    MediaCreditsCheckinRecords, MediaCreditsCheckinRecord, MediaCreditsUsageByType,
+    MediaCreditsUsageTypeItem, MediaCreditsUsageBucket, valid_credits_month,
     MediaCreditsCheckinRequest, MediaCreditsCheckinResponse, MediaCreditsResponse,
     MediaModelListResponse, MediaModelOption, MediaSettingsResponse, MediaTurnCreditUsage,
     MediaTurnCreditUsageCall, MediaWorkflowHistoryItem, MediaWorkflowHistoryResponse,

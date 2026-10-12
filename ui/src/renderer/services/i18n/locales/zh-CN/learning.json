@@ -68,7 +68,8 @@
   "form": {
     "modelSelectTooltip": "学习所用 AI 模型（反思题批改、课程生成、任务重试；不选则用系统默认）",
     "modelUnavailable": "配置不可用",
-    "modelUnavailableHint": "此前选择的模型已不可用，请重新选择模型或“默认模型”。"
+    "modelUnavailableHint": "此前选择的模型已不可用，请重新选择模型或“默认模型”。",
+    "modelPending": "模型列表尚未就绪，请稍候重试或先选择模型。"
   },
   "import": "导入课程包",
   "importTitle": "导入通用课程包",

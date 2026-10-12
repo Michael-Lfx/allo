@@ -68,7 +68,8 @@
   "form": {
     "modelSelectTooltip": "AI model used by learning (reflection grading, course generation, job retry; defaults to the system default)",
     "modelUnavailable": "Unavailable",
-    "modelUnavailableHint": "This explicitly configured model is no longer available. Choose another model or Default Model."
+    "modelUnavailableHint": "This explicitly configured model is no longer available. Choose another model or Default Model.",
+    "modelPending": "The model list is not ready yet. Please wait and retry, or pick a model first."
   },
   "import": "Import course pack",
   "importTitle": "Import a generic course pack",

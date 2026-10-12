@@ -114,6 +114,10 @@ const CreateStudio: React.FC<CreateStudioProps> = ({
     invoke: () => Promise<T>,
   ): Promise<T | undefined> => {
     if (busy) return undefined;
+    if (!modelChoice) {
+      Message.warning(t('knowledge.form.modelPending'));
+      return undefined;
+    }
     setBusy(true);
     const session = aiSessionRef.current;
     try {

@@ -72,7 +72,8 @@
   "form": {
     "modelSelectTooltip": "Model used by the live eval harness. Default uses the first enabled chat model.",
     "modelUnavailable": "Unavailable",
-    "modelUnavailableHint": "This saved model is no longer available. Choose another model or Default Model."
+    "modelUnavailableHint": "This saved model is no longer available. Choose another model or Default Model.",
+    "modelPending": "The model list is not ready yet. Please wait and retry, or pick a model first."
   },
   "status": {
     "loading": "Loading",

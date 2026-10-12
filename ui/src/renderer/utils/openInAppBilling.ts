@@ -9,6 +9,7 @@ import { BILLING_PATH, type BillingEntryState } from '@renderer/pages/billing/bi
 export function openInAppBilling(navigate: NavigateFunction, context: BillingEntryState = {}): void {
   const state: BillingEntryState = {
     source: context.source,
+    target: context.target ?? 'purchase',
     balance: context.balance ?? null,
   };
   navigate(BILLING_PATH, { state });

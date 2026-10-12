@@ -233,6 +233,17 @@ impl FlowyApiClient {
             .await
     }
 
+    pub async fn credits_checkin_records(
+        &self,
+        session: &ServerSession,
+        month: &str,
+    ) -> Result<nomifun_api_types::MediaCreditsCheckinRecords, ServerClientError> {
+        if !nomifun_api_types::valid_credits_month(month) {
+            return Err(ServerClientError::Http("month must be YYYY-MM".into()));
+        }
+        self.get_data(&format!("/credits/checkinRecords?month={month}"), Some(session)).await
+    }
+
     /// Query credits consumed by one agent turn (`X-Flowy-Turn-Id`).
     pub async fn get_credits_usage_by_turn(
         &self,
@@ -479,6 +490,53 @@ mod api_tests {
     use nomi_config::ServerConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn credits_history_proxies_cloud_paths_and_preserves_batches() {
+        use wiremock::matchers::query_param;
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/credits/checkinRecords"))
+            .and(query_param("month", "2026-10"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code":200,"data":{"month":"2026-10","totalCheckInDays":114,"list":[
+                    {"date":"2026-10-12","day":12,"dayKey":20261012,"checkInAt":"2026-10-12T01:00:00Z","grantedPoints":3000,"timeZone":"Asia/Shanghai"}
+                ]}
+            }))).expect(1).mount(&server).await;
+        Mock::given(method("GET")).and(path("/credits/usageByType"))
+            .and(query_param("includeTeamSeat", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code":200,"data":{"serverTime":"2026-10-12T01:00:00Z","balance":3000,"includeTeamSeat":true,"list":[
+                    {"type":"DAILY_CHECKIN","total":3000,"used":0,"remaining":3000,"buckets":[
+                        {"expireAt":"2027-10-12T01:00:00Z","total":3000,"used":0,"remaining":3000}
+                    ]}
+                ]}
+            }))).expect(1).mount(&server).await;
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = ServerSession::from_config(&config, dir.path());
+        session.save_tokens(crate::session::ServerTokens::from_jwt("jwt-credit-history".into())).await.unwrap();
+        let records = api.credits_checkin_records(&session, "2026-10").await.unwrap();
+        assert_eq!(records.total_check_in_days, 114);
+        assert_eq!(records.list[0].day_key, 20261012);
+        let usage = api.get_credits_usage_by_type(&session, true).await.unwrap();
+        assert_eq!(usage.list[0].buckets[0].remaining, 3000);
+        assert!(usage.list[0].buckets[0].expire_at.is_some());
+        assert!(api.credits_checkin_records(&session, "2026-10&x=1").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn credits_history_does_not_replace_cloud_errors_with_empty_records() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/credits/checkinRecords"))
+            .respond_with(ResponseTemplate::new(503)).mount(&server).await;
+        let config = test_config(&server.uri());
+        let api = FlowyApiClient::new(&config).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let session = ServerSession::from_config(&config, dir.path());
+        session.save_tokens(crate::session::ServerTokens::from_jwt("jwt-credit-error".into())).await.unwrap();
+        assert!(api.credits_checkin_records(&session, "2026-10").await.is_err());
+    }
 
     fn test_config(base_url: &str) -> ServerConfig {
         ServerConfig {

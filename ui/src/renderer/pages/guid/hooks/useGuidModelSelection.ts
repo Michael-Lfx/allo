@@ -9,7 +9,7 @@ import type { ConfigKeyMap } from '@/common/config/configKeys';
 import { configService } from '@/common/config/configService';
 import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import {
-  allChatModelOptions,
+  defaultChatModelOption,
   buildChatModelPickerViewModel,
   type ChatModelPickerViewModel,
 } from '@/renderer/utils/model/chatModelPicker';
@@ -199,10 +199,7 @@ export const useGuidModelSelection = (agentKey: ProviderAgentKey = 'nomi'): Guid
 
       if (!exactMatch || !resolvedUseModel) {
         // Fall back to the first available model: Auto model -> Cloud model -> first available model in catalog
-        const fallbackOption =
-          modelPicker.autoModels[0] ??
-          modelPicker.cloudModels[0] ??
-          allChatModelOptions(modelPicker)[0];
+        const fallbackOption = defaultChatModelOption(modelPicker);
 
         if (fallbackOption) {
           setDefaultModelUnavailable(false);

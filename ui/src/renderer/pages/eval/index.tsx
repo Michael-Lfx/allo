@@ -267,6 +267,11 @@ const EvalPage: React.FC = () => {
   };
 
   const start = async () => {
+    const modelChoice = evalModel.choice;
+    if (!modelChoice) {
+      setError(t('eval.form.modelPending'));
+      return;
+    }
     setBusy('run');
     setError(null);
     setPanel('run');
@@ -276,9 +281,8 @@ const EvalPage: React.FC = () => {
         limit,
         n_trials: trialsLocked ? 1 : nTrials,
         task_profile: taskProfile,
-        ...(evalModel.choice
-          ? { provider_id: evalModel.choice.provider_id, model: evalModel.choice.model }
-          : {}),
+        provider_id: modelChoice.provider_id,
+        model: modelChoice.model,
       });
       setRun(next);
     } catch (actionError) {

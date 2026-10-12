@@ -104,6 +104,7 @@ import {
 import {
   AUTO_TIER_LABEL_FALLBACK,
   allChatModelOptions,
+  defaultAutoOption,
   findChatModelOption,
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
@@ -1451,20 +1452,12 @@ const NomiSendBox: React.FC<{
       const catalogOptions = allChatModelOptions(modelSelection.modelPicker);
       const selected =
         value === 'flowy-auto-family'
-          ? findChatModelOption(
-              modelSelection.modelPicker,
-              modelSelection.current_model?.id,
-              modelSelection.current_model?.use_model
-            )?.family === 'auto'
-            ? findChatModelOption(
-                modelSelection.modelPicker,
-                modelSelection.current_model?.id,
-                modelSelection.current_model?.use_model
-              )
-            : modelSelection.modelPicker.autoModels.find((option) => option.autoTier === 'balance') ??
-              modelSelection.modelPicker.autoModels[0]
+          ? defaultAutoOption(modelSelection.modelPicker.autoModels, findChatModelOption(modelSelection.modelPicker, modelSelection.current_model?.id, modelSelection.current_model?.use_model))
           : catalogOptions.find((option) => option.key === value);
-      if (!selected) return;
+      if (!selected) {
+        if (value === 'flowy-auto-family') Message.warning(t('billing.autoEconomyUnavailable'));
+        return;
+      }
       void modelSelection.handleSelectModel(selected.provider, selected.model);
     },
     [
@@ -1473,6 +1466,7 @@ const NomiSendBox: React.FC<{
       modelSelection.handleSelectModel,
       modelSelection.modelPicker,
       modelSelectionDisabled,
+      t,
     ]
   );
 
@@ -1522,7 +1516,7 @@ const NomiSendBox: React.FC<{
       modelSelection.current_model?.id,
       modelSelection.current_model?.use_model
     );
-    const autoFamilyOption = modelSelection.modelPicker.autoModels[0];
+    const autoFamilyOption = defaultAutoOption(modelSelection.modelPicker.autoModels, currentCatalogOption);
     const toMobileModelOption = (option: (typeof catalogOptions)[number]): MobileActionSheetOption => {
       const providerName = providerLabel(option.provider);
       const creditRate = formatCreditRateMultiplier(option.creditRate);
@@ -1546,13 +1540,14 @@ const NomiSendBox: React.FC<{
           modelSelection.current_model?.use_model === option.model,
       };
     };
-    const autoModelOptions: MobileActionSheetOption[] = autoFamilyOption
+    const autoModelOptions: MobileActionSheetOption[] = modelSelection.modelPicker.autoModels.length > 0
       ? [
           {
             key: 'flowy-auto-family',
+            disabled: !autoFamilyOption,
             label: t('conversation.modelPicker.auto', { defaultValue: 'Auto' }),
-            description: `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto mode' })} · ${autoTierLabel(
-              currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'balance'
+            description: !autoFamilyOption ? t('billing.autoEconomyUnavailable') : `${t('conversation.modelPicker.autoTierTitle', { defaultValue: 'Auto mode' })} · ${autoTierLabel(
+              currentCatalogOption?.family === 'auto' ? currentCatalogOption.autoTier : 'cost'
             )}`,
             active: currentCatalogOption?.family === 'auto',
           },

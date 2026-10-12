@@ -206,29 +206,10 @@ pub struct CreditsBalance {
     pub balance: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct CreditsUsageByType {
-    #[serde(default)]
-    pub server_time: Option<String>,
-    #[serde(default)]
-    pub include_team_seat: Option<bool>,
-    #[serde(default)]
-    pub list: Vec<CreditsUsageTypeItem>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CreditsUsageTypeItem {
-    #[serde(rename = "type")]
-    pub usage_type: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub total: i64,
-    #[serde(default)]
-    pub used: i64,
-    #[serde(default)]
-    pub remaining: i64,
-}
+pub use nomifun_api_types::{
+    MediaCreditsUsageByType as CreditsUsageByType,
+    MediaCreditsUsageTypeItem as CreditsUsageTypeItem,
+};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

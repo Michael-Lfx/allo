@@ -1001,6 +1001,10 @@ const KnowledgeDetailPage: React.FC = () => {
 
   const handleAutogen = async () => {
     if (!id || autogenLoading) return;
+    if (!modelChoice) {
+      Message.warning(t('knowledge.form.modelPending'));
+      return;
+    }
     setAutogenLoading(true);
     try {
       const res = await ipcBridge.knowledge.autogenBase.invoke({ knowledge_base_id: id, ...(modelChoice ?? {}) });

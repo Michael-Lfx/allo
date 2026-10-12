@@ -196,7 +196,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     ? t('common.userMenu.creditsUnavailable', { defaultValue: '—' })
     : isFetchingBalance && lastRefreshAt === 0
       ? t('common.userMenu.loadingCredits', { defaultValue: '加载中…' })
-      : String(balance);
+      : balance.toLocaleString(i18n.language);
 
   const unreadBadge = unreadCount > 99 ? '99+' : String(unreadCount);
   const supportLabel = hasUnread
@@ -409,7 +409,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
                 onMouseEnter={() => setCreditsHovered(true)}
                 onMouseLeave={() => setCreditsHovered(false)}
               >
-                <CreditsWebsiteButton size='xs' />
+                <CreditsWebsiteButton size='xs' target='checkin' />
               </span>
             ) : null}
           </span>

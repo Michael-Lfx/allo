@@ -103,9 +103,13 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
   // 已填写课程简报。校验失败时提示并停留在表单。
   const submitGeneration = useCallback(async () => {
+    if (!modelChoice) {
+      Message.warning(t('learning.form.modelPending'));
+      return;
+    }
     const modelFields = {
-      provider_id: modelChoice?.provider_id,
-      model: modelChoice?.model,
+      provider_id: modelChoice.provider_id,
+      model: modelChoice.model,
     };
     if (creationTab === 'base') {
       if (!selectedKnowledgeBaseId) {
@@ -158,6 +162,10 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     // 续建（草稿仍存活时接续，404/409 再回退全量）。
     if (failed.request.course_kind !== 'learning_graph' || failed.status === 'cancelled') {
       void generateCourse(failed.request);
+      return;
+    }
+    if (!modelChoice) {
+      Message.warning(t('learning.form.modelPending'));
       return;
     }
     setBusyId('generate');

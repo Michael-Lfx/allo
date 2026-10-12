@@ -17,9 +17,9 @@ import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSe
 import ChatModelPickerMenu from '@/renderer/components/model/ChatModelPickerMenu';
 import {
   AUTO_TIER_LABEL_FALLBACK,
-  allChatModelOptions,
   buildChatModelPickerViewModel,
   findChatModelOption,
+  resolvePersistedModelChoice,
   type AutoTier,
 } from '@/renderer/utils/model/chatModelPicker';
 
@@ -34,9 +34,10 @@ const STORAGE_KEY = 'learning.autogenModel';
 
 /**
  * Persisted-default selection for the learning AI calls. Reads/writes
- * `learning.autogenModel`. When no stored choice exists, automatically
- * resolves to the best available model (Auto model -> Cloud model -> first
- * available catalog model) so that a concrete provider+model is always sent.
+ * `learning.autogenModel`. A stored choice is honored even before the catalog
+ * settles; only an authoritative catalog may replace an unavailable one with
+ * the default model. `choice` is null while no concrete model can be resolved,
+ * so callers must block model-less requests.
  */
 export function useLearningAutogenModel() {
   const [stored] = useConfig(STORAGE_KEY);
@@ -44,25 +45,13 @@ export function useLearningAutogenModel() {
 
   const modelPicker = useMemo(() => buildChatModelPickerViewModel(groups), [groups]);
 
-  const fallbackChoice = useMemo<LearningModelChoice>(() => {
-    const fallbackOption =
-      modelPicker.autoModels.find((opt) => opt.autoTier === 'balance') ??
-      modelPicker.autoModels[0] ??
-      modelPicker.cloudModels[0] ??
-      allChatModelOptions(modelPicker)[0];
-    if (!fallbackOption) return null;
-    return {
-      provider_id: fallbackOption.provider.id,
-      model: fallbackOption.model,
-    };
-  }, [modelPicker]);
-
-  const choice = useMemo<LearningModelChoice>(() => {
-    if (stored?.provider_id && stored?.model) {
-      return { provider_id: stored.provider_id, model: stored.model };
-    }
-    return fallbackChoice;
-  }, [stored?.provider_id, stored?.model, fallbackChoice]);
+  // `isLoading` also covers the failed state (SWR clears data on error), so an
+  // error keeps the catalog unresolved and the persisted choice stays trusted.
+  const catalogResolved = !isLoading && !error;
+  const choice = useMemo<LearningModelChoice>(
+    () => resolvePersistedModelChoice(modelPicker, stored, catalogResolved) as LearningModelChoice,
+    [stored?.provider_id, stored?.model, modelPicker, catalogResolved]
+  );
 
   const setChoice = useCallback(async (next: LearningModelChoice) => {
     if (next) {

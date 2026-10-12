@@ -13,11 +13,10 @@ const source = readFileSync(
 );
 
 describe('learning explicit model preference', () => {
-  test('uses ChatModelPickerMenu and resolves fallback auto/cloud model when unset', () => {
+  test('uses ChatModelPickerMenu and resolves through the persisted-choice resolver', () => {
     expect(source.includes('ChatModelPickerMenu')).toBe(true);
     expect(source.includes('buildChatModelPickerViewModel(groups)')).toBe(true);
-    expect(source.includes('modelPicker.autoModels')).toBe(true);
-    expect(source.includes('allChatModelOptions(modelPicker)')).toBe(true);
+    expect(source.includes('resolvePersistedModelChoice(modelPicker, stored, catalogResolved)')).toBe(true);
     expect(source.includes('findChatModelOption')).toBe(true);
   });
 

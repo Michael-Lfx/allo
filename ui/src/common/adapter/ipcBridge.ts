@@ -7688,6 +7688,12 @@ export interface IMediaCredits {
   authenticated: boolean;
 }
 
+export interface IMediaCreditsCheckinRecord { date: string; day: number; dayKey: number; checkInAt: string; grantedPoints: number; timeZone: string; }
+export interface IMediaCreditsCheckinRecords { month: string; totalCheckInDays: number; list: IMediaCreditsCheckinRecord[]; }
+export interface IMediaCreditsUsageBucket { expireAt?: string | null; total: number; used: number; remaining: number; sourceCode?: string | null; }
+export interface IMediaCreditsUsageTypeItem { type: string; title?: string | null; titleEn?: string | null; total: number; used: number; remaining: number; buckets: IMediaCreditsUsageBucket[]; }
+export interface IMediaCreditsUsageByType { serverTime: string; balance: number; includeTeamSeat: boolean; list: IMediaCreditsUsageTypeItem[]; }
+
 export interface IMediaCreditsCheckinParams {
   timeZone: string;
 }
@@ -7754,6 +7760,8 @@ export const media = {
   getSettings: httpGet<IMediaSettings, void>('/api/media/settings'),
   updateSettings: httpPatch<IMediaSettings, IUpdateMediaSettings>('/api/media/settings'),
   getCredits: httpGet<IMediaCredits, void>('/api/media/credits'),
+  getCheckinRecords: httpGet<IMediaCreditsCheckinRecords, { month: string }>((p) => '/api/media/credits/checkin-records?month=' + encodeURIComponent(p.month)),
+  getCreditsUsageByType: httpGet<IMediaCreditsUsageByType, void>('/api/media/credits/usage-by-type'),
   checkin: httpPost<IMediaCreditsCheckinResult, IMediaCreditsCheckinParams>(
     '/api/media/credits/checkin',
     (p) => ({ timeZone: p.timeZone })

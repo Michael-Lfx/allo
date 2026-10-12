@@ -5,8 +5,11 @@ import type { TaskModelGroup } from '@/renderer/hooks/agent/useModelsForTask';
 import {
   AUTO_TIER_LABEL_FALLBACK,
   allChatModelOptions,
+  defaultAutoOption,
+  defaultChatModelOption,
   buildChatModelPickerViewModel,
   findChatModelOption,
+  resolvePersistedModelChoice,
 } from './chatModelPicker';
 
 const provider = (id: string, details: Array<Record<string, unknown>>): IProvider =>
@@ -25,6 +28,26 @@ const group = (providerValue: IProvider, models: string[]): TaskModelGroup => ({
 });
 
 describe('chat model picker view model', () => {
+  test('defaults to economy without changing display order or explicit choices', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, ['intelligence', 'balance', 'cost'].map((tier) => ({
+      model: `auto-${tier}`, params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: tier },
+    })));
+    const view = buildChatModelPickerViewModel([group(flowy, flowy.models)]);
+    expect(view.autoModels[0]?.autoTier).toBe('intelligence');
+    expect(defaultChatModelOption(view)?.autoTier).toBe('cost');
+    expect(defaultAutoOption(view.autoModels)?.autoTier).toBe('cost');
+    expect(defaultAutoOption(view.autoModels, view.autoModels[0])?.autoTier).toBe('intelligence');
+    expect(defaultAutoOption(view.autoModels, { ...view.autoModels[0]!, family: 'cloud' })?.autoTier).toBe('cost');
+  });
+
+  test('missing economy never silently upgrades to another Auto tier', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [{ model: 'smart', params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: 'intelligence' } }, { model: 'cloud', params: {} }]);
+    const view = buildChatModelPickerViewModel([group(flowy, flowy.models)]);
+    expect(defaultAutoOption(view.autoModels)).toBeUndefined();
+    expect(defaultChatModelOption(view)?.model).toBe('cloud');
+    expect(defaultChatModelOption({ ...view, cloudModels: [] })).toBeUndefined();
+    expect(defaultAutoOption(view.autoModels, view.autoModels[0])?.model).toBe('smart');
+  });
   test('keeps the user-facing Auto tier fallback labels stable', () => {
     expect(AUTO_TIER_LABEL_FALLBACK).toEqual({
       intelligence: 'Smart',
@@ -228,5 +251,42 @@ describe('chat model picker view model', () => {
     const option = buildChatModelPickerViewModel([group(flowy, ['AIPC-cloud'])]).cloudModels[0];
 
     expect(option?.showcase).toEqual({ icon: '', taglineKey: undefined, recommended: false });
+  });
+
+  test('persisted choices survive an unresolved catalog and fall back only after it settles', () => {
+    const flowy = provider(FLOWY_BUILTIN_PROVIDER_ID, [
+      {
+        model: 'AIPC-auto-cost',
+        params: { _flowy_catalog_family: 'auto', _flowy_catalog_auto_tier: 'cost' },
+        traits: [],
+      },
+      { model: 'AIPC-cloud', params: { _flowy_catalog_family: 'cloud' }, traits: [] },
+    ]);
+    const viewModel = buildChatModelPickerViewModel([
+      group(flowy, ['AIPC-auto-cost', 'AIPC-cloud']),
+    ]);
+    const stored = { provider_id: FLOWY_BUILTIN_PROVIDER_ID, model: 'AIPC-cloud' };
+
+    expect(resolvePersistedModelChoice(viewModel, stored, false)).toEqual({
+      provider_id: FLOWY_BUILTIN_PROVIDER_ID,
+      model: 'AIPC-cloud',
+    });
+    expect(resolvePersistedModelChoice(viewModel, stored, true)).toEqual({
+      provider_id: FLOWY_BUILTIN_PROVIDER_ID,
+      model: 'AIPC-cloud',
+    });
+    expect(resolvePersistedModelChoice(viewModel, { provider_id: 'gone', model: 'deleted' }, false)).toEqual({
+      provider_id: 'gone',
+      model: 'deleted',
+    });
+    expect(resolvePersistedModelChoice(viewModel, { provider_id: 'gone', model: 'deleted' }, true)).toEqual({
+      provider_id: FLOWY_BUILTIN_PROVIDER_ID,
+      model: 'AIPC-auto-cost',
+    });
+    expect(resolvePersistedModelChoice(viewModel, undefined, false)).toBeNull();
+    expect(resolvePersistedModelChoice(viewModel, undefined, true)?.model).toBe('AIPC-auto-cost');
+    expect(
+      resolvePersistedModelChoice({ autoModels: [], cloudModels: [], otherProviderGroups: [] }, undefined, true)
+    ).toBeNull();
   });
 });

@@ -14,6 +14,7 @@ import { Menu } from '@arco-design/web-react';
 import React, { type CSSProperties } from 'react';
 import {
   allChatModelOptions,
+  defaultAutoOption,
   AUTO_TIER_LABEL_FALLBACK,
   type AutoTier,
   type ChatModelOption,
@@ -68,12 +69,9 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
   const autoOptions = options.filter((option) => option.family === 'auto');
   const cloudOptions = options.filter((option) => option.family === 'cloud');
   const hasModels = options.length > 0;
-  const currentAutoOption =
-    (selectedOption?.family === 'auto' ? optionsByKey.get(selectedOption.key) : undefined) ??
-    autoOptions.find((option) => option.autoTier === 'balance') ??
-    autoOptions[0];
+  const currentAutoOption = defaultAutoOption(autoOptions, selectedOption);
   const autoTierForDisplay =
-    selectedOption?.family === 'auto' ? currentAutoOption?.autoTier : currentAutoOption?.autoTier ?? 'balance';
+    selectedOption?.family === 'auto' ? currentAutoOption?.autoTier : currentAutoOption?.autoTier ?? 'cost';
   const autoTaglineKey = autoTierTaglineKey(autoTierForDisplay);
   const selectedKey =
     selectedOption?.family === 'auto' ? FLOWY_AUTO_FAMILY_MENU_KEY : selectedOption?.key;
@@ -178,6 +176,8 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
           <Menu.ItemGroup title={t('conversation.modelPicker.autoModels', { defaultValue: 'Auto models' })}>
             <Menu.Item
               key={FLOWY_AUTO_FAMILY_MENU_KEY}
+              disabled={!currentAutoOption}
+              title={!currentAutoOption ? t('billing.autoEconomyUnavailable') : undefined}
               data-testid='chat-model-option-auto'
               className={`chat-model-picker-menu-item ${selectedOption?.family === 'auto' ? '!bg-2' : ''}`.trim()}
               aria-selected={selectedOption?.family === 'auto'}
@@ -199,7 +199,7 @@ const ChatModelPickerMenu: React.FC<ChatModelPickerMenuProps> = ({
                 </div>
                 <span className='chat-model-picker-menu-meta flex w-88px shrink-0 items-center justify-end gap-8px text-12px text-t-tertiary'>
                   <span className='truncate'>
-                    {labelForTier(autoTierForDisplay, t)}
+                    {currentAutoOption ? labelForTier(autoTierForDisplay, t) : t('billing.autoEconomyUnavailable')}
                   </span>
                   {selectedOption?.family === 'auto' && <span aria-hidden='true'>✓</span>}
                 </span>
