@@ -1005,6 +1005,14 @@ pub fn create_router_with_all_state(
         nomifun_db::SqlitePluginSnapshotRepository::new(services.database.pool().clone()),
     );
     let import_root = services.work_dir.join("agent-store-imports");
+    // Plugin-level snapshot assets (`import/assets` · `import/asset`, doc `38`):
+    // one provider over the immutable import snapshot cache, shared by the wire
+    // face and the export adapter (`with_assets` below), so the pack's `assets`
+    // address space and the byte face are the same thing by construction (I1).
+    let snapshot_assets: std::sync::Arc<dyn nomifun_app_server::SnapshotAssetProvider> =
+        std::sync::Arc::new(crate::app_server_snapshot_assets::AppServerSnapshotAssets::new(
+            import_root.clone(),
+        ));
     // Shared Agent Store Installer: used by the `installs` capability and by
     // marketplace remove-cascade (uninstalls snapshots imported from a market).
     let installer: std::sync::Arc<dyn nomifun_app_server::InstallProvider> = std::sync::Arc::new(
@@ -1187,7 +1195,8 @@ pub fn create_router_with_all_state(
             // first gate is the host's `[expert_export]` policy, so "wired" never
             // means "exportable". What it hands out is a *definition* — the
             // persona, the model hints, skill references and the team roster —
-            // never execution semantics, credentials or skill bytes.
+            // never execution semantics, credentials or skill bytes. The asset
+            // provider above fills the pack's `assets` list (doc `38` I1).
             expert_packs: Some(Arc::new(
                 crate::app_server_expert_export::AppServerExpertExport::new(
                     plugin_snapshot_repository.clone(),
@@ -1197,7 +1206,8 @@ pub fn create_router_with_all_state(
                         ),
                     ),
                     services.expert_export_policy.clone(),
-                ),
+                )
+                .with_assets(snapshot_assets.clone()),
             )),
             // The same facade every other host surface uses: `team/run` materializes
             // the Team template and reverse-maps the Leader's execution here.
@@ -1223,6 +1233,11 @@ pub fn create_router_with_all_state(
                     services.work_dir.join("agent-store-markets"),
                 ),
             )),
+            // Plugin-level snapshot asset read face (`import/assets` ·
+            // `import/asset`, doc `38`). Same `import_root` the public display
+            // asset route reads, so a snapshot id admits the same directories on
+            // both faces.
+            snapshot_assets: Some(snapshot_assets.clone()),
             snapshot_assets_root: Some(import_root.clone()),
     };
     // D-SDK-1 ①: warm the default marketplaces at startup instead of waiting for

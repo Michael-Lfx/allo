@@ -24,14 +24,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use nomifun_api_types::{
-    APP_SERVER_EXPERT_PACK_FORMAT, AppServerExpertConnectorRef, AppServerExpertModel,
+    APP_SERVER_EXPERT_PACK_FORMAT, AppServerExpertAssetKind, AppServerExpertAssetRef,
+    AppServerExpertConnectorRef, AppServerExpertModel,
     AppServerExpertModelRef, AppServerExpertPack, AppServerExpertPackKind, AppServerExpertPersona,
     AppServerExpertProvenance, AppServerExpertRuntimeBinding, AppServerExpertSkillRef,
     AppServerExpertTeamPack, AppServerExpertToolPolicy, PresetOverrides, PresetTarget,
     ResolvedPresetSnapshot,
 };
 use nomifun_app_server::agent_store::ExpertExportPolicy;
-use nomifun_app_server::{ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES};
+use nomifun_app_server::{
+    ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES, SkillFileBytes, SkillFileError,
+    SnapshotAssetProvider,
+};
 use nomifun_common::AppError;
 use nomifun_db::{IPluginSnapshotRepository, PluginSnapshotComponentRow};
 
@@ -109,6 +113,14 @@ pub struct AppServerExpertExport {
     repo: Arc<dyn IPluginSnapshotRepository>,
     presets: Arc<dyn ExpertPresetReader>,
     policy: ExpertExportPolicy,
+    /// The plugin-level asset inventory of a snapshot (`avatars/`, `bin/`,
+    /// `scripts/`), by reference (doc `38`). Optional by wire shape, not by
+    /// laziness: a host that wires no provider emits packs with an empty
+    /// `assets` list, and `capabilities.snapshot_assets` is how a consumer tells
+    /// that apart from "this package ships none". Production wires the *same*
+    /// provider instance `import/assets` serves, so the pack's address space
+    /// and the byte face cannot drift.
+    assets: Option<Arc<dyn SnapshotAssetProvider>>,
 }
 
 impl AppServerExpertExport {
@@ -117,7 +129,60 @@ impl AppServerExpertExport {
         presets: Arc<dyn ExpertPresetReader>,
         policy: ExpertExportPolicy,
     ) -> Self {
-        Self { repo, presets, policy }
+        Self { repo, presets, policy, assets: None }
+    }
+
+    /// Inject the asset provider that fills the pack's `assets` list (doc `38`).
+    pub fn with_assets(mut self, assets: Arc<dyn SnapshotAssetProvider>) -> Self {
+        self.assets = Some(assets);
+        self
+    }
+
+    /// The plugin-level assets of the pack's snapshot, after policy.
+    ///
+    /// `None` (no provider) and `Some(vec![])` (provider answered, package
+    /// ships none) are different facts on the wire; both serialize to an empty
+    /// list, and the capability bit is what distinguishes them. The policy's
+    /// `scripts = false` subtraction drops `kind: "script"` entries here —
+    /// exactly the scope of that key: the pack contract, not the byte face.
+    async fn pack_assets(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<Vec<AppServerExpertAssetRef>, ExpertPackError> {
+        let Some(provider) = self.assets.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let listing = provider
+            .assets(snapshot_id)
+            .await
+            .map_err(|error| ExpertPackError::Internal(format!("snapshot assets: {error:?}")))?;
+        let filtered: Vec<AppServerExpertAssetRef> = listing
+            .assets
+            .into_iter()
+            .filter(|asset| {
+                self.policy.includes_scripts() || asset.kind != AppServerExpertAssetKind::Script
+            })
+            .collect();
+        // The policy can only subtract, never reorder or duplicate: the provider
+        // already returned the inventory sorted by `path` (doc `32` §4.4 keeps
+        // two exports byte-identical).
+        Ok(filtered)
+    }
+
+    /// The package's declared avatar, only when the pack can actually serve it.
+    ///
+    /// The invariant is stronger than "declared": the path must be one of the
+    /// entries this very pack lists, so `pack.avatar` can never name a file a
+    /// consumer cannot fetch through `import/asset` (doc `38` D8).
+    fn declared_avatar(value: &serde_json::Value, assets: &[AppServerExpertAssetRef]) -> Option<String> {
+        let avatar = string_field(value, "avatar")?.trim().to_owned();
+        if avatar.is_empty() {
+            return None;
+        }
+        assets
+            .iter()
+            .any(|asset| asset.path == avatar)
+            .then_some(avatar)
     }
 
     /// The host's gate, evaluated **before** any read.
@@ -156,10 +221,27 @@ impl AppServerExpertExport {
     }
 
     /// One AgentDefinition row as a pack. Callers have already admitted the id.
+    ///
+    /// `assets` / `avatar` are the *snapshot-scoped* fields: the caller computes
+    /// them once per snapshot and passes them in, so a team's N member packs do
+    /// not each re-walk the same three directories — members always receive the
+    /// empty list (doc `38` D7), and only the top-level pack names the declared
+    /// avatar.
     async fn agent_pack(
         &self,
         row: &PluginSnapshotComponentRow,
         content_digest: &str,
+    ) -> Result<AppServerExpertPack, ExpertPackError> {
+        self.agent_pack_with(row, content_digest, &[], false).await
+    }
+
+    /// [`Self::agent_pack`] with the snapshot-scoped fields filled in.
+    async fn agent_pack_with(
+        &self,
+        row: &PluginSnapshotComponentRow,
+        content_digest: &str,
+        assets: &[AppServerExpertAssetRef],
+        top_level: bool,
     ) -> Result<AppServerExpertPack, ExpertPackError> {
         let value = payload(row);
         let preset_id = recorded_preset_id(row).ok_or_else(|| {
@@ -220,6 +302,15 @@ impl AppServerExpertExport {
             // grant). Mapping one here would invent authority the import never
             // established.
             connectors: Vec::new(),
+            // Snapshot-scoped fields: members receive the empty list and no
+            // avatar — the plugin's assets belong to the pack, not to each
+            // member (doc `38` D7).
+            assets: assets.to_vec(),
+            avatar: if top_level {
+                Self::declared_avatar(&value, assets)
+            } else {
+                None
+            },
             tool_policy: AppServerExpertToolPolicy {
                 tools: string_array(&value, "tools"),
                 disallowed_tools: string_array(&value, "disallowed_tools"),
@@ -362,7 +453,8 @@ impl ExpertPackProvider for AppServerExpertExport {
             .find(|row| row.component_id == agent_id)
             .ok_or_else(|| ExpertPackError::NotFound(format!("agent {agent_id} not found")))?;
         let digest = self.content_digest(&row.snapshot_id).await;
-        let pack = self.agent_pack(&row, &digest).await?;
+        let assets = self.pack_assets(&row.snapshot_id).await?;
+        let pack = self.agent_pack_with(&row, &digest, &assets, true).await?;
         Self::enforce_size(&pack)?;
         Ok(pack)
     }
@@ -377,6 +469,10 @@ impl ExpertPackProvider for AppServerExpertExport {
             .ok_or_else(|| ExpertPackError::NotFound(format!("team {team_id} not found")))?;
         let value = payload(&row);
         let digest = self.content_digest(&row.snapshot_id).await;
+        // Snapshot-scoped, computed once for the whole roster: every member
+        // ships inside the same plugin, so the pack carries one list and the
+        // member packs carry none (doc `38` D7).
+        let assets = self.pack_assets(&row.snapshot_id).await?;
 
         // Roster order and de-duplication mirror `team_run::resolve_team_members`
         // exactly: the leader first, then each declared member, and an Agent
@@ -409,6 +505,8 @@ impl ExpertPackProvider for AppServerExpertExport {
             members.push(self.agent_pack(member_row, &digest).await?);
         }
 
+        // Computed before `assets` is moved into the pack.
+        let avatar = Self::declared_avatar(&value, &assets);
         let pack = AppServerExpertPack {
             pack_format: APP_SERVER_EXPERT_PACK_FORMAT,
             kind: AppServerExpertPackKind::Team,
@@ -434,6 +532,12 @@ impl ExpertPackProvider for AppServerExpertExport {
             },
             skills: self.team_skills(&row.snapshot_id).await?,
             connectors: self.team_connectors(&row.snapshot_id).await?,
+            assets,
+            // The *team row's* declared avatar, not the leader's: the plugin
+            // manifest declares one package avatar (`avatars/team.png`), and it
+            // is the top-level pack that names it. The invariant that it must
+            // also be listed in `assets` lives in `declared_avatar` (doc `38` D8).
+            avatar,
             // A team declares no tool surface of its own: its members' policies
             // are what the runtime applies, and each member pack carries its own.
             tool_policy: AppServerExpertToolPolicy {
@@ -1022,6 +1126,7 @@ mod tests {
         let denied = ExpertExportPolicy::from_declared(&AgentStoreExpertExport {
             enabled: None,
             deny: Some(vec![AGENT_ID.to_owned()]),
+            scripts: None,
         });
         let provider = exporter(repo.clone(), FakePresets::with(&[]), denied);
         assert!(matches!(
@@ -1033,6 +1138,7 @@ mod tests {
         let off = ExpertExportPolicy::from_declared(&AgentStoreExpertExport {
             enabled: Some(false),
             deny: None,
+            scripts: None,
         });
         let provider = exporter(repo, FakePresets::with(&[]), off);
         assert!(is_policy_denied(provider.export_team(TEAM_ID).await));
@@ -1101,7 +1207,197 @@ mod tests {
             assert!(!json.contains("npx"), "transport command leaked");
             assert!(!json.contains("\"env\""), "connector env leaked");
             assert!(!json.contains("internal/traceability"), "source_uri leaked");
-            assert!(!json.contains("avatars/lead.png"), "asset path leaked");
+            // Doc `38` reverses half of the old rule: the *declared avatar path*
+            // now travels in the pack — but only as a snapshot-relative path
+            // backed by the `assets` list, never as a host URL or an absolute
+            // path, and only when the asset provider is wired (it is not here).
+            assert!(!json.contains("avatars/lead.png"), "asset path leaked without a provider");
+            assert!(!json.contains("/api/app-server/"), "host URL leaked");
+            assert!(!json.contains("C:\\"), "absolute path leaked");
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Plugin-level assets (doc `38`)
+    // ---------------------------------------------------------------
+
+    /// Deterministic fake of the snapshot-asset seam. Serves a fixed inventory
+    /// (sorted, as the production provider guarantees) so the adapter's policy
+    /// and avatar invariants can be pinned without a filesystem.
+    struct FakeAssets {
+        inventory: Vec<AppServerExpertAssetRef>,
+    }
+
+    impl FakeAssets {
+        fn demo() -> Self {
+            Self {
+                inventory: vec![
+                    asset("avatars/lead.png", AppServerExpertAssetKind::Avatar),
+                    asset("avatars/team.png", AppServerExpertAssetKind::Avatar),
+                    asset("bin/init_task.py", AppServerExpertAssetKind::Script),
+                    asset("scripts/check.sh", AppServerExpertAssetKind::Script),
+                ],
+            }
+        }
+    }
+
+    fn asset(path: &str, kind: AppServerExpertAssetKind) -> AppServerExpertAssetRef {
+        AppServerExpertAssetRef {
+            path: path.to_owned(),
+            kind,
+            size: 42,
+            digest: "a".repeat(64),
+        }
+    }
+
+    #[async_trait]
+    impl SnapshotAssetProvider for FakeAssets {
+        async fn assets(
+            &self,
+            snapshot_id: &str,
+        ) -> Result<nomifun_api_types::AppServerImportAssetList, SkillFileError> {
+            Ok(nomifun_api_types::AppServerImportAssetList {
+                snapshot_id: snapshot_id.to_owned(),
+                assets: self.inventory.clone(),
+                truncated: false,
+            })
+        }
+
+        async fn read(
+            &self,
+            _snapshot_id: &str,
+            _path: &str,
+        ) -> Result<SkillFileBytes, SkillFileError> {
+            Ok(SkillFileBytes {
+                bytes: b"bytes".to_vec(),
+                content_type: "application/octet-stream".to_owned(),
+            })
+        }
+    }
+
+    fn exporter_with_assets(
+        repo: Arc<dyn IPluginSnapshotRepository>,
+        presets: FakePresets,
+        policy: ExpertExportPolicy,
+        assets: FakeAssets,
+    ) -> AppServerExpertExport {
+        AppServerExpertExport::new(repo, Arc::new(presets), policy).with_assets(Arc::new(assets))
+    }
+
+    /// The standard fixture with assets wired.
+    async fn ready_with_assets(policy: ExpertExportPolicy) -> AppServerExpertExport {
+        let repo = seeded_repo("persona").await;
+        install(
+            &repo,
+            &[
+                (AGENT_ID, "preset", LEAD_PRESET),
+                (MEMBER_ID, "preset", MEMBER_PRESET),
+                (TEAM_ID, "preset", "preset-team"),
+                (SKILL_ID, "skill", SKILL_PATH),
+                (CONNECTOR_ID, "connector", MCP_SERVER_ID),
+            ],
+        )
+        .await;
+        exporter_with_assets(repo, recorded_presets(), policy, FakeAssets::demo())
+    }
+
+    #[tokio::test]
+    async fn the_top_level_pack_carries_assets_and_members_carry_none() {
+        let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+
+        let paths: Vec<&str> = pack.assets.iter().map(|a| a.path.as_str()).collect();
+        // Sorted by `path` — the provider's guarantee, asserted here so a
+        // reorder cannot slip through and break export determinism.
+        assert_eq!(
+            paths,
+            vec!["avatars/lead.png", "avatars/team.png", "bin/init_task.py", "scripts/check.sh"]
+        );
+        for member in &pack.team.as_ref().unwrap().members {
+            assert!(
+                member.assets.is_empty(),
+                "member pack {} must carry no assets (doc 38 D7)",
+                member.id
+            );
+            assert!(member.avatar.is_none(), "member pack must name no avatar");
+        }
+
+        // A single-agent export is its own top-level pack and carries the same
+        // snapshot-scoped list.
+        let agent = provider.export_agent(AGENT_ID).await.expect("export");
+        assert_eq!(agent.assets.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn the_declared_avatar_is_the_team_rows_and_only_when_listed() {
+        // The lead's payload declares `avatars/lead.png`; the team row's payload
+        // declares none. The top-level pack's `avatar` therefore stays absent —
+        // the team row is the package, and the leader's payload value must not
+        // be borrowed for it.
+        let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+        assert!(pack.avatar.is_none());
+
+        // A single agent *is* the package: its declared avatar is listed, so it
+        // travels.
+        let agent = provider.export_agent(AGENT_ID).await.expect("export");
+        assert_eq!(agent.avatar.as_deref(), Some("avatars/lead.png"));
+
+        // And when the declaration points outside the asset roots, the field
+        // disappears rather than naming an unfetchable file (doc `38` D8).
+        let repo = seeded_repo("persona").await;
+        install(
+            &repo,
+            &[(AGENT_ID, "preset", LEAD_PRESET)],
+        )
+        .await;
+        let unlisted = FakeAssets {
+            inventory: vec![asset("avatars/team.png", AppServerExpertAssetKind::Avatar)],
+        };
+        let provider = exporter_with_assets(
+            repo,
+            FakePresets::with(&[LEAD_PRESET]),
+            ExpertExportPolicy::allow_all(),
+            unlisted,
+        );
+        let agent = provider.export_agent(AGENT_ID).await.expect("export");
+        assert!(
+            agent.avatar.is_none(),
+            "an avatar outside the pack's own asset list must not travel"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_policy_subtracts_scripts_but_not_avatars() {
+        let policy = ExpertExportPolicy::from_declared(&AgentStoreExpertExport {
+            enabled: None,
+            deny: None,
+            scripts: Some(false),
+        });
+        let provider = ready_with_assets(policy).await;
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+
+        let kinds: Vec<_> = pack.assets.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                AppServerExpertAssetKind::Avatar,
+                AppServerExpertAssetKind::Avatar
+            ]
+        );
+        assert_eq!(pack.avatar.as_deref(), None);
+    }
+
+    #[tokio::test]
+    async fn a_host_without_the_asset_seam_exports_an_empty_list() {
+        // The old `ready()` helper: no `with_assets`. Export must keep working,
+        // with `assets: []` and no `avatar` — and `capabilities.snapshot_assets`
+        // is the documented signal that distinguishes this from "ships none".
+        let provider = ready("persona").await;
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+        assert!(pack.assets.is_empty());
+        assert!(pack.avatar.is_none());
     }
 }

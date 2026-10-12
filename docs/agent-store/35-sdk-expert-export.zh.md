@@ -178,6 +178,13 @@ export async function materializePack(
       └── git-tools/
 ```
 
+> **演进（2026-10-12，doc `38`）**：`fp-14` / `pack_format 2` 起目录里多了一层——
+> `pack.assets` 的插件级资产按快照相对路径落位（`avatars/…`、`bin/…`、`scripts/…`），
+> `ExportResult` 新增 `writtenAssets`。上面的两棵树由此成为**完整的插件根**：团自带脚本
+> 按 `PLUGIN_ROOT/bin/init_task.py`（技能目录上方两级）与 `../../../avatars` 的寻址全部成立。
+> 错误语义沿用本节：`import/asset` 在清单成功后读失败 = 宿主 I/O 故障 ⇒ **抛**，与
+> `skill/file` 同判。
+
 ---
 
 ### 3.3 模块三：关键边界与容错处理

@@ -128,7 +128,10 @@ impl AppServerSkillFiles {
 /// `canonicalize` + `starts_with` pass in [`AppServerSkillFiles::read`] is the
 /// real guard for anything that could leave it. Only a **leading** `.` (`"."`,
 /// `"./a"`) is seen as `CurDir` and refused here.
-fn reject_unsafe_relative(path: &str) -> Result<(), SkillFileError> {
+/// `pub(crate)` for the snapshot-asset face (`app_server_snapshot_assets.rs`),
+/// which applies the same lexical pass to the same shape of caller-supplied
+/// relative path.
+pub(crate) fn reject_unsafe_relative(path: &str) -> Result<(), SkillFileError> {
     if path.is_empty() {
         return Err(SkillFileError::InvalidRequest("path must not be empty".into()));
     }
@@ -238,7 +241,9 @@ fn collect_files(root: &Path) -> (Vec<AppServerSkillFile>, bool) {
 /// is never loaded as a document in this origin. If the gate is ever relaxed,
 /// these two entries become a stored-XSS vector and must be forced to
 /// `text/plain` (`Content-Disposition: attachment`).
-fn content_type_for(path: &str) -> &'static str {
+/// `pub(crate)` for the snapshot-asset face, which shares the same table: an
+/// asset's content type and a skill file's are the same kind of payload.
+pub(crate) fn content_type_for(path: &str) -> &'static str {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
         "md" | "markdown" => "text/markdown; charset=utf-8",

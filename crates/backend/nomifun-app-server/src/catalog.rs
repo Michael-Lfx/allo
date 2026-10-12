@@ -13,7 +13,8 @@ use nomifun_api_types::{
     AppServerAgentDetail, AppServerAgentSummary, AppServerCompatibilityTriple,
     AppServerConnectorCallResult, AppServerConnectorCredential, AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
-    AppServerConnectorSummary, AppServerExpertPack, AppServerImportDetail, AppServerImportRequest,
+    AppServerConnectorSummary, AppServerExpertPack, AppServerImportAssetList, AppServerImportDetail,
+    AppServerImportRequest,
     AppServerImportResult, AppServerImportSummary, AppServerInstallReplaceResult,
     AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
@@ -89,6 +90,45 @@ pub trait SkillFileProvider: Send + Sync {
     /// One file's bytes, addressed by its skill-relative `path`.
     async fn read(&self, skill_id: &str, path: &str) -> Result<SkillFileBytes, SkillFileError>;
 }
+
+/// Read-side plugin-level **snapshot assets** (`import/assets`, `import/asset`,
+/// doc `38`).
+///
+/// The files beside the skills in an immutable import snapshot — `avatars/`,
+/// `bin/`, `scripts/` — are what an expert pack's `assets` names, and this is
+/// the byte face behind it. The trait is shared by both consumers on purpose:
+/// the export adapter lists it to fill the pack, and the wire face serves it to
+/// a caller, so the address space cannot drift between "what the pack promises"
+/// and "what `import/asset` reads".
+///
+/// Implementations are responsible for path safety, exactly as
+/// [`SkillFileProvider`]: an implementation that trusts `path` turns an
+/// authenticated endpoint into an arbitrary local file read. The protocol layer
+/// does not re-check it.
+///
+/// The error type is [`SkillFileError`] deliberately: the four variants map
+/// one-to-one onto the same stable wire codes the skill face already
+/// documents, and a second error enum would duplicate that mapping for nothing.
+#[async_trait]
+pub trait SnapshotAssetProvider: Send + Sync {
+    /// Every plugin-level asset inside the snapshot, sorted by `path`.
+    async fn assets(&self, snapshot_id: &str) -> Result<AppServerImportAssetList, SkillFileError>;
+
+    /// One asset's bytes, addressed by its snapshot-relative `path`.
+    async fn read(&self, snapshot_id: &str, path: &str)
+    -> Result<SkillFileBytes, SkillFileError>;
+}
+
+/// Largest single asset file the snapshot-asset face will serve.
+///
+/// Same value as [`MAX_SKILL_FILE_BYTES`], kept as a **separate constant** on
+/// purpose: the two budgets are two independent wire-shape decisions, and
+/// raising the skill file cap must not silently widen what a plugin-level
+/// `bin/` can push over the wire (or the reverse).
+pub const MAX_SNAPSHOT_ASSET_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Largest asset inventory this face will return. Beyond it `truncated` is set.
+pub const MAX_SNAPSHOT_ASSET_ENTRIES: usize = 512;
 
 /// Read-side Connector catalog + status/probe (`connector/list|get|status|test`).
 ///

@@ -66,12 +66,12 @@ export class SkillClient {
 }
 
 /**
- * Decode base64 to bytes.
+ * Decode base64 to bytes (shared with the snapshot asset face, doc 38).
  *
  * `atob` is used when present (browsers, Bun, Node 16+) and a manual decode
  * otherwise, so the package keeps working on a bare Node without a DOM lib.
  */
-function decodeBase64(content: string): Uint8Array {
+export function decodeBase64(content: string): Uint8Array {
   if (typeof atob === "function") {
     const binary = atob(content);
     const bytes = new Uint8Array(binary.length);

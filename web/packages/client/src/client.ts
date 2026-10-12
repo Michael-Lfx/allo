@@ -15,6 +15,8 @@ import {
   APP_SERVER_PROTOCOL_VERSION,
   type ClientCapabilities,
   type ClientInfo,
+  type ImportAssetContent,
+  type ImportAssetList,
   type ImportDetail,
   type ImportRequest,
   type ImportResult,
@@ -35,6 +37,7 @@ import {
   type StoreList,
 } from "@flowy-agent-store/protocol";
 import { AgentClient } from "./agents";
+import { decodeBase64 } from "./skills";
 import { ConversationClient } from "./conversations";
 import { ConnectorClient } from "./connectors";
 import { RunClient } from "./runs";
@@ -179,6 +182,31 @@ export class AppServerClient {
   /** One immutable snapshot with its standardized components. */
   async getImport(snapshotId: string): Promise<ImportDetail> {
     return this.transport.request<ImportDetail>("import/get", { snapshot_id: snapshotId });
+  }
+
+  /**
+   * The plugin-level asset inventory of one snapshot (`import/assets`, doc 38):
+   * the `avatars/`, `bin/` and `scripts/` files beside the skills, sorted by
+   * path with a sha256 each. This is the same address space `readImportAsset`
+   * accepts and an `ExpertPack.assets` names — one provider, one whitelist.
+   * Check `capabilities.snapshot_assets` first.
+   */
+  async listImportAssets(snapshotId: string): Promise<ImportAssetList> {
+    return this.transport.request<ImportAssetList>("import/assets", { snapshot_id: snapshotId });
+  }
+
+  /**
+   * One plugin-level asset's bytes, over the WebSocket binding (`import/asset`,
+   * doc 38). Base64 on the wire, decoded to `Uint8Array` here — the same
+   * envelope `skills.readFile()` decodes. Persona text and skill bodies are
+   * deliberately not reachable through this face.
+   */
+  async readImportAsset(snapshotId: string, path: string): Promise<Uint8Array> {
+    const asset = await this.transport.request<ImportAssetContent>("import/asset", {
+      snapshot_id: snapshotId,
+      path,
+    });
+    return decodeBase64(asset.content);
   }
 
   /** Install a snapshot into the runtime (roadmap Phase 2). */

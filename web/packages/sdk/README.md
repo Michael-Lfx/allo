@@ -55,6 +55,7 @@ const result = await exportTeam(harness, teamId, "./frontend-backend-experts");
 
 result.pack;                 // ExpertPack —— 内存里也拿得到，不落盘也能用
 result.writtenSkills;        // 实际写入的技能名（去重后）
+result.writtenAssets;        // 实际写入的插件级资产路径（doc 38，快照相对路径）
 result.danglingSkills;       // 声明了但本机取不到的技能：{ id, error }，如实上报，不静默跳过
 ```
 
@@ -66,11 +67,21 @@ result.danglingSkills;       // 声明了但本机取不到的技能：{ id, err
   persona.md                 # 仅 agent 形态（团没有自己的 persona）
   members/<id>/persona.md    # 仅 team 形态，每个成员一个
   skills/<name>/…            # 团包级技能与成员声明合并去重后的技能字节
+  avatars/… bin/… scripts/…  # 插件级资产（doc 38 / pack_format 2）：按快照相对路径落位，
+                             # 字节走 client.readImportAsset；目录因此是完整的插件根
 ```
 
 团的技能有**两个来源**，`materializePack` 把两者合并后按 id 去重：顶层 `pack.skills`（该团**包级**声明、
 装机时已物化到托管技能根目录的技能）与 `team.members[].skills`（各成员 frontmatter 的 `skills:` 声明）。
 官方团大多**只在包级声明**技能（例如 `stock-partner-team`：包级 3 个、7 名成员零声明），所以两者都要算进来。
+
+插件级资产（`avatars/`、`bin/`、`scripts/`，与 `skills/` 平级）由 `pack.assets` **按引用**列出
+（`{path, kind: "avatar"|"script", size, digest}`，按 `path` 排序），`materializePack` 逐条拉字节后按
+快照相对路径落盘，`ExportResult.writtenAssets` 记录实际写出的路径。`kind` 是类别标注不是许可——宿主
+自己从不执行插件级脚本，字节按 0644 交付，怎么用是消费方的决定；运营者可用 `[expert_export] scripts = false`
+把这一类从包里减掉。资产是**快照作用域**的：成员 pack 的 `assets` 恒为空表，读顶层 pack；宿主能力位
+`snapshot_assets` 为 false 时同样恒空（区分「没接」与「没有」）。很多团的自带脚本按插件根寻址
+（如 `render.py` 的 `PLUGIN_ROOT/bin/init_task.py`），物化目录现在真的满足这个假设。
 
 错误语义：wire 导出失败（`agent_not_installed` / `agent_disabled` / `policy_denied` /
 `version_mismatch` / `response_too_large`…）**先于任何写盘**，不留半成品目录；`skill/files`

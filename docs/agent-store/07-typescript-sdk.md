@@ -117,6 +117,7 @@ export interface Transport {
 #### 1. 专家与团队导出 (`export()`)
 - `agents.export(id)` / `teams.export(id)`：返回便携式 `ExpertPack`。这是**唯一携带 Persona 正文的通道**（`get` 方法刻意省略 Persona 正文以减轻网络开销）。
 - 导出的只是静态配置定义，不含底层运行时执行语义；外部运行时必须自行实现调度。
+- `fp-14`（`pack_format 2`，doc `38`）起包内多两类**按引用**内容：`assets`（插件级 `avatars/` `bin/` `scripts/` 清单，字节走 `client.readImportAsset(snapshotId, path)`）与 `avatar`（包级头像的快照相对路径，仅当它列在 `assets` 里）；SDK 的 `exportAgent` / `exportTeam` / `materializePack` 会把资产一并落盘（`ExportResult.writtenAssets`），物化目录因此是完整的插件根布局。资产面受能力位 `snapshot_assets` 门禁；成员 pack 的 `assets` 恒为空表（快照作用域，读顶层）。
 
 #### 2. 连接器动态凭据与免市场注册 (`register()`)
 - `credentials(id)` / `setCredentials(id, values)`：填入用户专属 API Key / Token。响应中敏感字段一律脱敏，永不返回明文 Secret。

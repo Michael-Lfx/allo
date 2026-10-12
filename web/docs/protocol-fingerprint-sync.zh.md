@@ -26,7 +26,7 @@ Flowy Agent Store 的 App Server 通过 WebSocket / JSON-RPC 暴露公开服务�
 3. **正则扫描误伤**：全仓扫描 `"20xx-xx-xx"` 时，会与 MCP 协议版本（如 `2025-11-25`）、历史夹具 `published_at`（如 `2000-01-01`）等无辜字符串混淆。
 
 ### 2.2 现行形态规范
-- 当前统一采用纯计数器形态：**`fp-<n>`**（例如 `fp-1`, `fp-2`, ..., `fp-13`）；
+- 当前统一采用纯计数器形态：**`fp-<n>`**（例如 `fp-1`, `fp-2`, ..., `fp-14`）；
 - 计数器保留了指纹唯一有用的性质——**全序与单调性**；
 - 每次协议面变更后，计数器**严格加 1**，绝对禁止复用或回滚历史指纹值。
 
@@ -46,12 +46,12 @@ Flowy Agent Store 的 App Server 通过 WebSocket / JSON-RPC 暴露公开服务�
 
 ### 4.1 全量落点清单 (7 个本仓文件 10 处 + 独立站点仓 2 处)
 
-每当升级指纹（例如 `fp-12` → `fp-13`），必须同步修改以下全部落点：
+每当升级指纹（例如 `fp-13` → `fp-14`），必须同步修改以下全部落点：
 
 | 仓库 | 文件路径 | 对应常量或断言内容 |
 |---|---|---|
-| **本仓 (allo)** | `crates/backend/nomifun-app-server/src/lib.rs` | `pub const PROTOCOL_VERSION: &str = "fp-13";` (真源) |
-| **本仓 (allo)** | `web/packages/protocol/src/protocol.ts` | `export const APP_SERVER_PROTOCOL_VERSION = "fp-13";` (真源) |
+| **本仓 (allo)** | `crates/backend/nomifun-app-server/src/lib.rs` | `pub const PROTOCOL_VERSION: &str = "fp-14";` (真源) |
+| **本仓 (allo)** | `web/packages/protocol/src/protocol.ts` | `export const APP_SERVER_PROTOCOL_VERSION = "fp-14";` (真源) |
 | **本仓 (allo)** | `web/packages/client/src/http-transport.ts` | 请求头或握手载荷中的指纹字段 |
 | **本仓 (allo)** | `web/packages/sdk/src/readiness.test.ts` | 单元测试中的指纹期望值断言 |
 | **本仓 (allo)** | `web/scripts/mock-server.ts` | Mock 服务端握手响应体中的协议版本 |

@@ -69,8 +69,15 @@
  * entries installed from an `auto_update` market (official sources only, and
  * never a `connector` or a component the user switched off by hand). Both
  * methods are mapped, so the documented route split becomes `55 / 80`.
+ * **`fp-14` gives the expert pack its plugin-level assets** (doc `38`):
+ * `import/assets` lists the `avatars/`, `bin/` and `scripts/` files of an
+ * immutable snapshot (sorted, sha256-digested) and `import/asset` serves one of
+ * them base64; `ExpertPack` gains an `assets` list and a declared `avatar` path
+ * (`pack_format 2`), so an exported team can materialize a directory the
+ * package's own scripts recognize as the plugin root. Both methods are
+ * WebSocket-only, so the documented route split becomes `55 / 82`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-13";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-14";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -217,6 +224,15 @@ export interface Capabilities {
    * grey out a button and assume that is the whole answer.
    */
   expert_export: boolean;
+  /**
+   * The plugin-level **snapshot asset** read face (`import/assets` /
+   * `import/asset`, doc 38) — and, because they are the same provider, the
+   * guarantee that an `ExpertPack.assets` list is meaningful. Separate from
+   * `expert_export` on purpose: a host can serve asset bytes without the
+   * export seam, and an export host without this provider emits packs with an
+   * empty `assets` list.
+   */
+  snapshot_assets: boolean;
 }
 
 export interface WorkspaceRef { id: string }
@@ -1178,6 +1194,35 @@ export interface ImportDetail extends ImportSummary {
   components: ImportComponent[];
 }
 
+/**
+ * `import/assets` response: the plugin-level asset inventory of one immutable
+ * snapshot (doc 38).
+ *
+ * Exactly the address space `import/asset` accepts and an `ExpertPack.assets`
+ * names — the three faces share one provider and one whitelist, so a consumer
+ * can never see a path it cannot fetch. Persona text, skill bodies and the
+ * manifest are deliberately not listed.
+ */
+export interface ImportAssetList {
+  snapshot_id: string;
+  /** Sorted by `path`; only `avatars/`, `bin/` and `scripts/` are listed. */
+  assets: ExpertAssetRef[];
+  /** The inventory hit its ceiling and is incomplete. Never silently truncated. */
+  truncated: boolean;
+}
+
+/**
+ * `import/asset` over the WebSocket binding: base64, because JSON has no byte
+ * string. Same envelope as `skill/file`.
+ */
+export interface ImportAssetContent {
+  snapshot_id: string;
+  path: string;
+  content_type: string;
+  encoding: "base64";
+  content: string;
+}
+
 // ---------------------------------------------------------------------------
 // Installer / runtime registration (docs/agent-store/05 §4.5, roadmap Phase 2)
 // ---------------------------------------------------------------------------
@@ -1602,9 +1647,38 @@ export interface TeamDetail extends TeamSummary {
  * contract for third-party runtimes**. Gate on this one; the fingerprint is
  * about whether your client can talk to the host at all.
  */
-export const APP_SERVER_EXPERT_PACK_FORMAT = 1;
+export const APP_SERVER_EXPERT_PACK_FORMAT = 2;
 
 export type ExpertPackKind = "agent" | "team";
+
+/**
+ * Which plugin-level asset directory a reference came from (doc 38).
+ *
+ * `script` covers `bin/` **and** `scripts/` — the importer's own script
+ * component folds both into one. Honest label, not a permission: the host never
+ * executes plugin-level scripts and the snapshot copies them 0644, so the bytes
+ * arrive without an executable bit. This is the one field a consumer can use to
+ * decline executable content without parsing paths.
+ */
+export type ExpertAssetKind = "avatar" | "script";
+
+/**
+ * One plugin-level asset the pack carries, **by reference** (doc 38).
+ *
+ * The files beside the skills — `avatars/`, `bin/`, `scripts/` — are part of
+ * what a package ships, and the team's own instructions routinely assume the
+ * plugin root holds them (`skills/md-to-html/scripts/render.py` resolves
+ * `PLUGIN_ROOT/bin/init_task.py` two levels above its skill). The bytes stay on
+ * `import/asset`; nothing is inlined, for the same reason skills are not.
+ */
+export interface ExpertAssetRef {
+  /** Snapshot-relative path, POSIX-separated, e.g. `bin/init_task.py`. */
+  path: string;
+  kind: ExpertAssetKind;
+  size: number;
+  /** Single-file sha256, lowercase hex — same rule as `skill/files`. */
+  digest: string;
+}
 
 /** The expert's persona — the only body of text this face carries. */
 export interface ExpertPersona {
@@ -1732,6 +1806,26 @@ export interface ExpertPack {
    */
   skills: ExpertSkillRef[];
   connectors: ExpertConnectorRef[];
+  /**
+   * The package's plugin-level assets (`avatars/`, `bin/`, `scripts/`), by
+   * reference, sorted by `path` (doc 38).
+   *
+   * **Snapshot-scoped, so a member pack always carries an empty list**: the
+   * whole roster ships inside one plugin. Empty also means "this host wired no
+   * asset provider" — `capabilities.snapshot_assets` distinguishes that from
+   * "this package ships none". Fetch the bytes with
+   * `listImportAssets()` / `readImportAsset()`.
+   */
+  assets: ExpertAssetRef[];
+  /**
+   * The package's declared avatar as a **snapshot-relative path** (the
+   * `plugin.json` `avatar` value, e.g. `avatars/team.png`). Top-level pack only,
+   * and only when that exact file is listed in `assets` — the pack never names
+   * a file a consumer cannot fetch. A host-local *URL* stays excluded (doc 32
+   * §2); a path resolvable against the pack's own asset list is the portable
+   * half of that decision.
+   */
+  avatar?: string | null;
   tool_policy: ExpertToolPolicy;
   /** Present exactly when `kind === "team"`. */
   team?: ExpertTeamPack | null;

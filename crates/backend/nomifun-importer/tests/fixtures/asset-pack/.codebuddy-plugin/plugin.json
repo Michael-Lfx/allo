@@ -1,0 +1,18 @@
+{
+  "name": "asset-pack",
+  "version": "1.0.0",
+  "description": "Fixture with plugin-level assets: avatars, bin and scripts beside the skills",
+  "expertType": "team",
+  "agentName": "asset-pack-lead",
+  "teamInfo": {
+    "leadAgent": "asset-pack-lead",
+    "memberAgents": ["asset-pack-worker"]
+  },
+  "agents": ["./agents/asset-pack-lead.md", "./agents/asset-pack-worker.md"],
+  "skills": ["./skills/hello"],
+  "avatar": "avatars/team.png",
+  "members": [
+    { "id": "asset-pack-lead", "name": { "en": "Lead", "zh": "队长" }, "role": "lead", "avatar": "avatars/team.png" },
+    { "id": "asset-pack-worker", "name": { "en": "Worker", "zh": "队员" }, "role": "member", "avatar": "avatars/asset-pack-worker.png" }
+  ]
+}
