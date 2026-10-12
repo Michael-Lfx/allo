@@ -270,7 +270,7 @@ pub use lifecycle::{
     UpdateCheckRequest,
     UpdateCheckResult, UpdateReleaseInfo, UpdateWorkDirRequest, UpdateWorkDirResponse,
     ReplaceWorkDirRelocationRequest, RuntimeCapabilities, RuntimeKind,
-    WorkDirChangeState, WorkDirChangeStatus, WorkDirRelocationBackup,
+    WorkDirChangeState, WorkDirChangeStatus, WorkDirRecreatedStatus, WorkDirRelocationBackup,
     WorkDirRelocationCalculationMode, WorkDirRelocationErrorClass,
     WorkDirRelocationOperation, WorkDirRelocationOperationState,
     WorkDirRelocationResponse,

@@ -7166,6 +7166,7 @@ export type I18nKey =
   | 'settings.workDirChangeConfirmContent'
   | 'settings.workDirChangeConfirmTitle'
   | 'settings.workDirDesktopOnly'
+  | 'settings.workDirRecreatedNotice'
   | 'settings.workDirRelocating'
   | 'settings.workDirRelocatingDesc'
   | 'settings.workDirRelocationBackup'

@@ -412,6 +412,11 @@ const SystemModalContent: React.FC = () => {
             {systemInfo.workDirChange.rollbackCopy && ` · ${t('settings.workDirRelocationBackup')}: ${systemInfo.workDirChange.rollbackCopy}`}
           </SettingsStatus>
         )}
+        {systemInfo?.workDirRecreated && (
+          <SettingsStatus tone='warning' className='mt-8px'>
+            {t('settings.workDirRecreatedNotice', { path: systemInfo.workDirRecreated.workDir })}
+          </SettingsStatus>
+        )}
         {error && <SettingsStatus tone='error' className='mt-8px'>{error} <FeedbackButton className='ml-6px' /></SettingsStatus>}
       </SettingsGroup>
 

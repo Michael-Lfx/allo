@@ -20,7 +20,7 @@ use crate::cli::Cli;
 use super::builtin_skills::materialize_builtin_skills;
 use super::server_lock::{BootServerLockAuthority, ServerLock, acquire_server_lock};
 use super::tracing_init::{LogGuards, init_tracing};
-use super::work_dir::resolve_work_dir;
+use super::work_dir::{ensure_work_dir, resolve_work_dir};
 
 /// Resolved environment needed by all non-MCP subcommands.
 pub struct ServerEnvironment {
@@ -351,6 +351,7 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
             (source, source_lock)
         }
     } else {
+        ensure_work_dir(&requested_work_dir, &data_dir)?;
         let external = acquire_distinct_work_root_lock(
             &data_root_work_lock,
             &requested_work_dir,

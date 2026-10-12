@@ -1173,6 +1173,10 @@ export const application = {
           rollback_copy?: string;
           error?: string;
         };
+        work_dir_recreated?: {
+          work_dir: string;
+          recreated_at: number;
+        };
       },
       void
     >('/api/system/info'),
@@ -1197,6 +1201,12 @@ export const application = {
             targetWorkDir: raw.work_dir_change.target_work_dir,
             rollbackCopy: raw.work_dir_change.rollback_copy,
             error: raw.work_dir_change.error,
+          }
+        : undefined,
+      workDirRecreated: raw.work_dir_recreated
+        ? {
+            workDir: raw.work_dir_recreated.work_dir,
+            recreatedAt: raw.work_dir_recreated.recreated_at,
           }
         : undefined,
     })

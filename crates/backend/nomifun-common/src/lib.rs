@@ -14,6 +14,7 @@ mod error;
 mod execution_authority;
 pub mod factory_reset;
 pub mod work_dir_relocation;
+pub mod work_dir_notice;
 mod fsname;
 mod hooks;
 mod id;

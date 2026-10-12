@@ -1,4 +1,4 @@
-use nomifun_api_types::SystemInfoResponse;
+use nomifun_api_types::{SystemInfoResponse, WorkDirRecreatedStatus};
 use nomifun_common::storage_paths;
 
 /// Map Rust `std::env::consts::OS` to the Node.js-compatible platform name
@@ -80,6 +80,20 @@ fn resolve_storage_generation() -> String {
         .unwrap_or_else(|_| "uninitialized".to_owned())
 }
 
+/// Read the boot-layer work-root recreation notice from the data dir, if any.
+///
+/// `init_environment` exports `NOMIFUN_DATA_DIR` before any service starts, so
+/// the notice file written during boot is visible here for the settings UI.
+fn read_work_dir_recreated_notice() -> Option<WorkDirRecreatedStatus> {
+    let data_dir = env_path(&["NOMIFUN_DATA_DIR", "FLOWY_DATA_DIR"])?;
+    let notice =
+        nomifun_common::work_dir_notice::read(std::path::Path::new(&data_dir))?;
+    Some(WorkDirRecreatedStatus {
+        work_dir: notice.work_dir,
+        recreated_at: notice.recreated_at,
+    })
+}
+
 /// Build the system info response from the current runtime environment.
 pub fn get_system_info() -> SystemInfoResponse {
     SystemInfoResponse {
@@ -90,6 +104,7 @@ pub fn get_system_info() -> SystemInfoResponse {
         platform: map_platform().to_owned(),
         arch: map_arch().to_owned(),
         work_dir_change: None,
+        work_dir_recreated: read_work_dir_recreated_notice(),
         runtime_capabilities: nomifun_api_types::RuntimeCapabilities::web(),
         managed_free_models_enabled: false,
     }
