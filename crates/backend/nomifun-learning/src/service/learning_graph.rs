@@ -19,12 +19,13 @@ const GROWTH_MAX_DRAFTS: usize = 4;
 
 impl LearningService {
 
-    // ── Course creation（建课 = 学习目标 + 首生长）────────────────────────
+    // ── Course creation（建课 = 学习目标 → 知识结构生成 → 首生长）────────
 
     /// 学习图课程创建入口（`GenerateCourseRequest.course_kind = learning_graph`）：
-    /// 描述即学习目标。课程落库后**首生长在后台启动**——接口立即返回课程
-    /// 详情，生长进度走 WS 与 generation_registry（状态/取消端点共用）。
-    /// 知识结构生成（structure_json 快照）随后续管线接入。
+    /// 描述即学习目标，程度/基础声明可选（g2 输入最小化）。课程落库后
+    /// **知识结构生成在后台启动**（双产物契约门 → structure_json 快照原子
+    /// 落列，WS structure_* 事件驱动），随后**首生长**接续——接口立即返回
+    /// 课程详情，进度走 WS 与 generation_registry（状态/取消端点共用）。
     pub(crate) async fn generate_learning_graph_course(
         &self,
         user_id: &UserId,
@@ -44,6 +45,12 @@ impl LearningService {
         if topic.chars().count() > 200 {
             return Err(AppError::BadRequest("learning graph topic is too long".into()));
         }
+        let proficiency_statement = optional_statement(
+            request.proficiency_statement.as_deref(),
+            "proficiency statement",
+        )?;
+        let learner_basis =
+            optional_statement(request.learner_basis.as_deref(), "learner basis")?;
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
         let _slot = self.acquire_generation_slot(user_id, "learning-graph-create".to_owned())?;
 
@@ -97,23 +104,214 @@ impl LearningService {
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
 
-        // 首生长在后台：创建接口不等模型。后台任务要求 'static：模型偏好先
-        // 持有化再入任务。
+        // 结构生成 → 首生长都在后台串行（首生的门口参照来自结构产物的地形；
+        // 结构失败不阻断生长——铁律：结构对生长不供内容）。后台任务要求
+        // 'static：模型偏好先持有化再入任务。
         let service = self.clone();
         let owner = user_id.clone();
         let course = course_id.clone();
+        let structure_input = crate::learning_graph::structure_gen::StructureInput {
+            goal: if goal_text.is_empty() { topic.clone() } else { goal_text.clone() },
+            proficiency_statement,
+            learner_basis,
+        };
         let spawn_override = model_override
             .map(|(provider, model)| (provider.clone(), model.to_owned()));
         tokio::spawn(async move {
             let spawn_override = spawn_override
                 .as_ref()
                 .map(|(provider, model)| (provider, model.as_str()));
+            if let Err(error) = service
+                .run_structure_generation(&course, &owner, spawn_override, &structure_input)
+                .await
+            {
+                tracing::warn!(course = course.as_str(), %error, "structure generation failed");
+            }
             if let Err(error) = service.kick_growth(&owner, &course, true, spawn_override).await {
                 tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
             }
         });
 
         self.course_detail(&course_id, Some(user_id)).await
+    }
+
+    // ── Structure generation（知识结构生成：双产物契约门 → 快照落列）────
+
+    /// 运行知识结构生成：门面双产物过 gd.* 契约门 + 门口对账后，快照信封
+    /// 原子写入 `structure_json`（重跑覆盖）。WS structure_started/completed/
+    /// failed 三事件驱动前端；失败明示原因（含 provider 不支持 json_object），
+    /// 课程保留、快照不动（重试 = 本方法重入）。
+    pub async fn run_structure_generation(
+        &self,
+        course_id: &LearningCourseId,
+        user_id: &UserId,
+        model_override: Option<(&ProviderId, &str)>,
+        input: &crate::learning_graph::structure_gen::StructureInput,
+    ) -> Result<(), AppError> {
+        self.require_live_graph_course(course_id).await?;
+        // 每课程一把 slot 锁：进行中的生成让重复触发报冲突。
+        let slot_key = format!("learning-structure-{}", course_id.as_str());
+        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        self.emit_graph_event(
+            course_id,
+            "structure_started",
+            serde_json::json!({
+                "phase": "started",
+                "text": "正在生成知识结构与前置地形…",
+            }),
+        );
+        let completer = self.course_completer()?;
+        let result = crate::learning_graph::structure_gen::generate_structure_artifacts(
+            completer.as_ref(),
+            model_override,
+            input,
+        )
+        .await;
+        match result {
+            Ok(artifacts) => {
+                let envelope = crate::learning_graph::structure_gen::snapshot_envelope(
+                    &artifacts.structure,
+                    &artifacts.terrain,
+                    now_ms(),
+                );
+                let snapshot = serde_json::to_string(&envelope).map_err(internal)?;
+                sqlx::query(
+                    "UPDATE learning_courses SET structure_json = ?, updated_at = ? \
+                     WHERE course_id = ?",
+                )
+                .bind(&snapshot)
+                .bind(now_ms())
+                .bind(course_id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+                let blocks = artifacts
+                    .structure
+                    .get("blocks")
+                    .and_then(|blocks| blocks.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                let doors = artifacts
+                    .terrain
+                    .get("doors")
+                    .and_then(|doors| doors.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                tracing::info!(
+                    course = course_id.as_str(),
+                    blocks,
+                    doors,
+                    "knowledge structure snapshot stored"
+                );
+                self.emit_graph_event(
+                    course_id,
+                    "structure_completed",
+                    serde_json::json!({
+                        "phase": "completed",
+                        "blocks": blocks,
+                        "doors": doors,
+                    }),
+                );
+                Ok(())
+            }
+            Err(error) => {
+                self.emit_graph_event(
+                    course_id,
+                    "structure_failed",
+                    serde_json::json!({
+                        "phase": "failed",
+                        "error": error.to_string(),
+                    }),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// 重跑知识结构生成（g2：重生成 = 换参考地图不换课，快照原子覆盖）。
+    /// 输入从存量恢复：目标 = learning_goal（回退标题）；程度/基础声明从现有
+    /// 快照回读（无快照则缺省映射）。后台执行，进度走 WS 事件。
+    pub async fn regenerate_structure(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<bool, AppError> {
+        self.require_live_graph_course(course_id).await?;
+        let course = sqlx::query(
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let title: String = course.try_get("title").map_err(internal)?;
+        let goal: String = course.try_get("learning_goal").map_err(internal)?;
+        let snapshot: Option<String> = course.try_get("structure_json").map_err(internal)?;
+        let envelope: Option<serde_json::Value> = snapshot
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(internal)?;
+        let structure = envelope
+            .as_ref()
+            .and_then(|envelope| envelope.get("structure"));
+        let terrain = envelope.as_ref().and_then(|envelope| envelope.get("terrain"));
+        let proficiency = structure
+            .and_then(|structure| structure.get("proficiency_statement"))
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_owned);
+        // 地形的 learner_basis_assumed 是回执（缺省时为「纯零基础（未声明）」）——
+        // 回读它等于原样重申同一假设，重生成语义不变。
+        let basis = terrain
+            .and_then(|terrain| terrain.get("learner_basis_assumed"))
+            .and_then(|value| value.as_str())
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_owned);
+        let input = crate::learning_graph::structure_gen::StructureInput {
+            goal: if goal.trim().is_empty() { title } else { goal },
+            proficiency_statement: proficiency,
+            learner_basis: basis,
+        };
+        let service = self.clone();
+        let owner = user_id.clone();
+        let course = course_id.clone();
+        let spawn_override =
+            model_override.map(|(provider, model)| (provider.clone(), model.to_owned()));
+        tokio::spawn(async move {
+            let spawn_override = spawn_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str()));
+            if let Err(error) = service
+                .run_structure_generation(&course, &owner, spawn_override, &input)
+                .await
+            {
+                tracing::warn!(course = course.as_str(), %error, "structure regeneration failed");
+            }
+        });
+        Ok(true)
+    }
+
+    /// 学习图课程守卫（对齐软删语义）：存在、未软删、且是学习图课程。
+    async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
+        let row: Option<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT course_kind, deleted_at FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some((kind, deleted_at)) = row else {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        };
+        if deleted_at.is_some() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        if kind != CourseKind::LearningGraph.as_str() {
+            return Err(AppError::NotFound(format!("learning graph course {course_id}")));
+        }
+        Ok(())
     }
 
     // ── Growth（就绪 < 3 触发 / 手动 / 建课后首生长，共用一条管道）────────
@@ -331,27 +529,7 @@ impl LearningService {
             .model_override
             .as_ref()
             .map(|(provider, model)| (provider, model.as_str()));
-        let mut context = self.build_coach_context(course_id, engine, completer.as_ref()).await?;
-        // 首批先盘点后起草：入口域盘点是独立调用，只看目标与基线——8 条大学级
-        // 终点锚不出现在它的视野里，锚定从结构上断掉（教练随后照菜单落节点）。
-        // 盘点失败降级为空，教练退回自行盘点（首级判据的内联分支）。
-        if context.roster.is_empty() && context.entry_survey.is_empty() {
-            let survey = crate::learning_graph::survey_entry_domains(
-                completer.as_ref(),
-                model_override,
-                &context.goal,
-                &context.scope_reference,
-            )
-            .await;
-            if let Some(domains) = survey {
-                tracing::info!(
-                    course = course_id.as_str(),
-                    domains = domains.len(),
-                    "entry-domain survey completed for first batch"
-                );
-                context.entry_survey = crate::learning_graph::render_entry_survey(&domains);
-            }
-        }
+        let context = self.build_coach_context(course_id, engine, completer.as_ref()).await?;
         tracing::info!(
             course = course_id.as_str(),
             prompt_chars = context.render().len(),
@@ -490,7 +668,10 @@ impl LearningService {
         self.apply_batch(course_id, engine, pending, &batch).await
     }
 
-    /// 教练上下文：目标/范围/花名册/已教账/覆盖读数/登记表切片。
+    /// 教练上下文：目标/范围/地形门口/花名册/已教账/覆盖读数/登记表切片。
+    /// 地形门口从本课 structure_json 快照的 terrain 产物重读（课程内铁律：
+    /// 只读本课快照，不触碰概念登记表）；无快照 = 门口块为空，教练退回自行
+    /// 盘点（首级判据的内联分支）。
     async fn build_coach_context(
         &self,
         course_id: &LearningCourseId,
@@ -498,7 +679,7 @@ impl LearningService {
         _completer: &dyn LearningCompleter,
     ) -> Result<crate::learning_graph::CoachContext, AppError> {
         let course = sqlx::query(
-            "SELECT title, learning_goal, learning_scope \
+            "SELECT title, learning_goal, learning_scope, structure_json \
              FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
@@ -508,6 +689,17 @@ impl LearningService {
         let title: String = course.try_get("title").map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
         let scope: String = course.try_get("learning_scope").map_err(internal)?;
+        let snapshot: Option<String> = course.try_get("structure_json").map_err(internal)?;
+        let terrain = snapshot
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(internal)?
+            .and_then(|envelope| envelope.get("terrain").cloned());
+        let terrain_doors = terrain
+            .as_ref()
+            .map(render_terrain_doors)
+            .unwrap_or_default();
 
         let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
         let coverage_gauge = self.render_coverage_gauge(course_id, &engine.user_id).await?;
@@ -528,13 +720,13 @@ impl LearningService {
         Ok(crate::learning_graph::CoachContext {
             goal: if goal.is_empty() { title } else { goal },
             scope_reference: scope,
+            terrain_doors,
             roster,
             taught_summary,
             coverage_gauge,
             behavior_digest,
             ready_count,
             registry_excerpt,
-            entry_survey: String::new(),
         })
     }
 
@@ -1704,6 +1896,41 @@ impl LearningService {
             .collect::<Vec<_>>()
             .join("\n"))
     }
+}
+
+/// 可选声明输入的归一：去空白、空串视为未提供、限长（结构产物标量的上游）。
+fn optional_statement(raw: Option<&str>, label: &str) -> Result<Option<String>, AppError> {
+    let Some(text) = raw.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    if text.chars().count() > 500 {
+        return Err(AppError::BadRequest(format!("{label} is too long")));
+    }
+    Ok(Some(text.to_owned()))
+}
+
+/// 地形门口的教练上下文渲染（课程内读侧重算）：每门一行
+/// `- [G1]（硬前置）判据`，判据即地形产物原文。
+fn render_terrain_doors(terrain: &serde_json::Value) -> String {
+    let Some(doors) = terrain.get("doors").and_then(|doors| doors.as_array()) else {
+        return String::new();
+    };
+    doors
+        .iter()
+        .filter_map(|door| {
+            let id = door.get("id")?.as_str()?.trim();
+            let criterion = door.get("criterion")?.as_str()?.trim();
+            if id.is_empty() || criterion.is_empty() {
+                return None;
+            }
+            let kind = match door.get("kind").and_then(|kind| kind.as_str()) {
+                Some("self_check") => "可自检",
+                _ => "硬前置",
+            };
+            Some(format!("- [{id}]（{kind}）{criterion}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 生长进行中的批行（生长开始时落库的 pending 行；seq 已在落库时分配）。

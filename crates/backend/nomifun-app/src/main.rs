@@ -31,7 +31,8 @@ fn main() -> Result<ExitCode> {
     // it is the parent backend's authoritative export, not a boot decision.
     let owns_data_root = matches!(
         cli.command,
-        None | Some(Command::Doctor) | Some(Command::Backup { .. })
+        None | Some(Command::Doctor) | Some(Command::LearningSmoke { .. })
+            | Some(Command::Backup { .. })
     );
     if owns_data_root {
         cli.data_dir =
@@ -64,6 +65,9 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode> {
         Some(Command::McpBrowserStdio) => Ok(commands::run_browser_stdio().await),
         Some(Command::TerminalHook { event }) => Ok(commands::run_terminal_hook(event).await),
         Some(Command::Doctor) => commands::run_doctor(&cli, &merged_path).await,
+        Some(Command::LearningSmoke { command }) => {
+            commands::run_learning_smoke(&cli, command.clone()).await
+        }
         Some(Command::Tools) => Ok(commands::run_tools().await),
         Some(Command::Call {
             name,

@@ -53,10 +53,10 @@ pub(crate) const COACH_MAX_TOKENS: u32 = 32768;
 /// with the JSON verdict — a truncated verdict parses as garbage and the
 /// pipeline degrades to PASS, so give the deliberation room.
 pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 16384;
-/// First-batch entry-domain survey: a menu of 4-8 bottom-rung action
-/// sentences. Thinking ON via [`complete_coach`]; same
-/// reasoning-shares-the-ceiling arithmetic.
-pub(crate) const ENTRY_SURVEY_MAX_TOKENS: u32 = 16384;
+/// Structure artifact generation (structure + terrain, gd.* contract): the
+/// reply carries 40–80 block entries plus the terrain doors, with thinking ON
+/// sharing this ceiling (see [`complete_json_coach`]).
+pub(crate) const STRUCTURE_MAX_TOKENS: u32 = 16384;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code
@@ -142,6 +142,40 @@ pub(crate) async fn complete_coach(
                 "coach call timed out"
             );
             AppError::Timeout(format!("coach call exceeded {COACH_CALL_TIMEOUT_SECS}s"))
+        })?
+}
+
+/// JSON-mode sibling of [`complete_coach`]: artifact-contract generation
+/// (structure + terrain) runs the full prompt as the user message on the
+/// json seam with thinking ON, under the same timeout arithmetic — reasoning
+/// tokens share the ceiling with the JSON reply, and a truncated artifact
+/// surfaces as a contract violation instead of a parse hang.
+pub(crate) async fn complete_json_coach(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    system: &str,
+    user: &str,
+) -> Result<String, AppError> {
+    let call = async {
+        completer
+            .complete_json_with_thinking(
+                model_override.map(|(id, model)| (id.as_str(), model)),
+                system,
+                user,
+                crate::generation::STRUCTURE_MAX_TOKENS,
+            )
+            .await
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(COACH_CALL_TIMEOUT_SECS), call)
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                timeout_secs = COACH_CALL_TIMEOUT_SECS,
+                "structure artifact call timed out"
+            );
+            AppError::Timeout(format!(
+                "structure artifact call exceeded {COACH_CALL_TIMEOUT_SECS}s"
+            ))
         })?
 }
 
