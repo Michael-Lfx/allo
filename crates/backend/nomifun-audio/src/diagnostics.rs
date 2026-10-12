@@ -26,13 +26,12 @@ async fn asr_test_handler(
 ) -> Json<VoiceAsrTestResponse> {
     let req = payload.map(|Json(r)| r).unwrap_or_default();
     let start = std::time::Instant::now();
-    let sample_rate = if req.sample_rate == 0 { 16_000 } else { req.sample_rate };
 
     // 1. Resolve PCM samples either from provided base64 audio or from system mic recording
-    let pcm = match req.audio_base64 {
+    let (pcm, header_sample_rate) = match req.audio_base64 {
         Some(ref b64) if !b64.trim().is_empty() => {
             match decode_audio_base64(b64) {
-                Ok(samples) => samples,
+                Ok(res) => res,
                 Err(err) => {
                     return Json(VoiceAsrTestResponse {
                         success: false,
@@ -46,7 +45,7 @@ async fn asr_test_handler(
         _ => {
             // No audio provided: record ~2.5s snippet from default system mic
             match record_mic_snippet(std::time::Duration::from_millis(2500)).await {
-                Ok(samples) => samples,
+                Ok(samples) => (samples, None),
                 Err(err) => {
                     return Json(VoiceAsrTestResponse {
                         success: false,
@@ -57,6 +56,14 @@ async fn asr_test_handler(
                 }
             }
         }
+    };
+
+    let sample_rate = if req.sample_rate != 0 {
+        req.sample_rate
+    } else if let Some(sr) = header_sample_rate {
+        sr
+    } else {
+        16_000
     };
 
     if pcm.is_empty() {
@@ -91,7 +98,7 @@ async fn asr_test_handler(
 
 /// Decodes base64 payload into mono f32 PCM samples.
 /// Supports RIFF WAVE header parsing or raw 16-bit signed PCM.
-fn decode_audio_base64(b64: &str) -> Result<Vec<f32>, String> {
+fn decode_audio_base64(b64: &str) -> Result<(Vec<f32>, Option<u32>), String> {
     use base64::Engine;
     // Strip optional data:audio/...;base64, prefix
     let clean_b64 = if let Some(idx) = b64.find(";base64,") {
@@ -118,11 +125,11 @@ fn decode_audio_base64(b64: &str) -> Result<Vec<f32>, String> {
             let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
             samples.push(sample as f32 / i16::MAX as f32);
         }
-        Ok(samples)
+        Ok((samples, None))
     }
 }
 
-fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
+fn parse_wav_pcm(wav: &[u8]) -> Result<(Vec<f32>, Option<u32>), String> {
     if wav.len() < 44 {
         return Err("WAV data too short".into());
     }
@@ -131,6 +138,7 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
     let mut audio_format = 1u16; // 1 = PCM, 3 = IEEE Float
     let mut channels = 1u16;
     let mut bits_per_sample = 16u16;
+    let mut wav_sample_rate = 16_000u32;
     let mut found_fmt = false;
 
     while cursor + 8 <= wav.len() {
@@ -147,9 +155,12 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
             if cursor + 16 <= wav.len() {
                 audio_format = u16::from_le_bytes([wav[cursor], wav[cursor + 1]]);
                 channels = u16::from_le_bytes([wav[cursor + 2], wav[cursor + 3]]);
-                // [cursor+4..cursor+8] is sample_rate
-                // [cursor+8..cursor+12] is byte_rate
-                // [cursor+12..cursor+14] is block_align
+                wav_sample_rate = u32::from_le_bytes([
+                    wav[cursor + 4],
+                    wav[cursor + 5],
+                    wav[cursor + 6],
+                    wav[cursor + 7],
+                ]);
                 bits_per_sample = u16::from_le_bytes([wav[cursor + 14], wav[cursor + 15]]);
                 found_fmt = true;
             }
@@ -157,7 +168,7 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
             let data_end = (cursor + chunk_size).min(wav.len());
             let data_bytes = &wav[cursor..data_end];
 
-            return match (audio_format, bits_per_sample, channels) {
+            let samples = match (audio_format, bits_per_sample, channels) {
                 // 16-bit PCM mono
                 (1, 16, 1) => {
                     let mut samples = Vec::with_capacity(data_bytes.len() / 2);
@@ -211,7 +222,8 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
                         ))
                     }
                 }
-            };
+            }?;
+            return Ok((samples, if found_fmt { Some(wav_sample_rate) } else { None }));
         }
 
         // RIFF chunks are padded to even number of bytes
@@ -246,8 +258,9 @@ mod tests {
         wav.extend_from_slice(&0i16.to_le_bytes());
         wav.extend_from_slice(&16384i16.to_le_bytes());
 
-        let samples = parse_wav_pcm(&wav).expect("should parse valid mono wav");
+        let (samples, sr) = parse_wav_pcm(&wav).expect("should parse valid mono wav");
         assert_eq!(samples.len(), 2);
+        assert_eq!(sr, Some(16000));
         assert!((samples[0] - 0.0).abs() < 1e-4);
         assert!((samples[1] - 0.5).abs() < 1e-3);
     }
@@ -277,8 +290,9 @@ mod tests {
         wav.extend_from_slice(&32767i16.to_le_bytes());
         wav.extend_from_slice(&32767i16.to_le_bytes());
 
-        let samples = parse_wav_pcm(&wav).expect("should parse valid stereo wav");
+        let (samples, sr) = parse_wav_pcm(&wav).expect("should parse valid stereo wav");
         assert_eq!(samples.len(), 2);
+        assert_eq!(sr, Some(16000));
         assert!((samples[0] - 0.25).abs() < 1e-2);
         assert!((samples[1] - 1.0).abs() < 1e-2);
     }

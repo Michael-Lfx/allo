@@ -198,13 +198,24 @@ pub fn is_path_inside_sandbox(path_str: &str, sandbox_root: &Path) -> bool {
 
     let norm_str = normalized.to_string_lossy().replace('\\', "/");
     let sandbox_str = norm_sandbox.to_string_lossy().replace('\\', "/");
-    let sandbox_prefix = if sandbox_str.ends_with('/') {
-        sandbox_str
+
+    let is_windows_path = cfg!(windows)
+        || (norm_str.len() >= 2 && norm_str.as_bytes()[1] == b':')
+        || (sandbox_str.len() >= 2 && sandbox_str.as_bytes()[1] == b':');
+
+    let (norm_cmp, sandbox_cmp) = if is_windows_path {
+        (norm_str.to_ascii_lowercase(), sandbox_str.to_ascii_lowercase())
     } else {
-        format!("{sandbox_str}/")
+        (norm_str, sandbox_str)
     };
 
-    norm_str == norm_sandbox.to_string_lossy().replace('\\', "/") || norm_str.starts_with(&sandbox_prefix)
+    let sandbox_prefix = if sandbox_cmp.ends_with('/') {
+        sandbox_cmp.clone()
+    } else {
+        format!("{sandbox_cmp}/")
+    };
+
+    norm_cmp == sandbox_cmp || norm_cmp.starts_with(&sandbox_prefix)
 }
 
 /// Recursively inspects a command string for blocked command invocations and injection tricks.

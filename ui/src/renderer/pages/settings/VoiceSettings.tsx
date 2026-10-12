@@ -460,6 +460,7 @@ const VoiceSettings: React.FC = () => {
     setAsrResult(null);
 
     let audioBase64: string | undefined = undefined;
+    let recordedSampleRate = 16000;
     if (typeof window !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
       try {
         setAsrRecording(true);
@@ -469,10 +470,11 @@ const VoiceSettings: React.FC = () => {
 
         if (AudioContextClass) {
           const audioCtx = new AudioContextClass({ sampleRate: 16000 });
+          const actualSampleRate = audioCtx.sampleRate || 16000;
           const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               channelCount: 1,
-              sampleRate: 16000,
+              sampleRate: actualSampleRate,
               echoCancellation: true,
               noiseSuppression: true,
             },
@@ -515,7 +517,7 @@ const VoiceSettings: React.FC = () => {
           }
 
           if (merged.length > 0) {
-            const wavBuffer = encodeWavPcm(merged, 16000);
+            const wavBuffer = encodeWavPcm(merged, actualSampleRate);
             const blob = new Blob([wavBuffer], { type: 'audio/wav' });
             const reader = new FileReader();
             audioBase64 = await new Promise<string>((resolve) => {
@@ -524,6 +526,7 @@ const VoiceSettings: React.FC = () => {
               };
               reader.readAsDataURL(blob);
             });
+            recordedSampleRate = actualSampleRate;
           }
         }
       } catch {
@@ -542,7 +545,7 @@ const VoiceSettings: React.FC = () => {
         },
         body: JSON.stringify({
           audio_base64: audioBase64,
-          sample_rate: 16000,
+          sample_rate: recordedSampleRate,
         }),
       });
       if (response.ok) {

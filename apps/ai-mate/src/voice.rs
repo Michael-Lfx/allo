@@ -34,7 +34,9 @@ pub struct VoiceCompanionRuntime {
     router: Arc<QwenVoiceRouter>,
     capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
     spsc_producer: SpscProducer,
-    _mic_source: Option<Arc<nomifun_audio::MicSource>>,
+    /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
+    #[allow(dead_code)]
+    mic_source: Option<Arc<nomifun_audio::MicSource>>,
 }
 
 impl VoiceCompanionRuntime {
@@ -74,7 +76,7 @@ impl VoiceCompanionRuntime {
                 router,
                 capture_pipeline,
                 spsc_producer: producer,
-                _mic_source: mic_source,
+                mic_source,
             },
             playback_rx,
         )

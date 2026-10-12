@@ -263,6 +263,7 @@ impl VoiceCapturePipeline {
 
                 let mut raw_buf = vec![0.0f32; 4096];
                 let mut accumulator = Vec::<f32>::with_capacity(4096);
+                let mut empty_spins = 0u32;
 
                 loop {
                     // 1. Check overflow and drop oldest samples if backlog > backlog_limit_ms
@@ -272,6 +273,7 @@ impl VoiceCapturePipeline {
                     let read = worker_shared.pop_slice(&mut raw_buf);
 
                     if read > 0 {
+                        empty_spins = 0;
                         let slice = &raw_buf[..read];
 
                         // Channel fold (mono average)
@@ -313,8 +315,12 @@ impl VoiceCapturePipeline {
                             }
                             break;
                         } else {
-                            // Temporarily empty, yield to allow producer to push
-                            tokio::task::yield_now().await;
+                            empty_spins = empty_spins.saturating_add(1);
+                            if empty_spins < 100 {
+                                tokio::task::yield_now().await;
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                            }
                         }
                     }
                 }
@@ -333,12 +339,14 @@ impl VoiceCapturePipeline {
 
                     let mut raw_buf = vec![0.0f32; 4096];
                     let mut accumulator = Vec::<f32>::with_capacity(4096);
+                    let mut empty_spins = 0u32;
 
                     loop {
                         worker_shared.drop_oldest_if_overflow(max_backlog_samples);
                         let read = worker_shared.pop_slice(&mut raw_buf);
 
                         if read > 0 {
+                            empty_spins = 0;
                             let slice = &raw_buf[..read];
 
                             let mono = if config.channels > 1 {
@@ -376,7 +384,12 @@ impl VoiceCapturePipeline {
                                 }
                                 break;
                             } else {
-                                std::thread::yield_now();
+                                empty_spins = empty_spins.saturating_add(1);
+                                if empty_spins < 100 {
+                                    std::thread::yield_now();
+                                } else {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
                             }
                         }
                     }

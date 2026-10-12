@@ -102,6 +102,8 @@ pub struct VoiceSessionDriver {
 }
 
 impl VoiceSessionDriver {
+    pub const MAX_HISTORY_CAPACITY: usize = 256;
+
     pub fn new() -> Self {
         Self {
             fsm: AcousticFsm::new(),
@@ -134,6 +136,9 @@ impl VoiceSessionDriver {
 
         let next = self.fsm.transition(event)?;
         self.history.push(next);
+        if self.history.len() > Self::MAX_HISTORY_CAPACITY {
+            self.history.remove(0);
+        }
 
         // Manage 8-second confirmation watchdog timer
         if next == AcousticState::ListeningConfirm || next == AcousticState::AwaitingConfirmation {
