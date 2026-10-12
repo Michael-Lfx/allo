@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "ai-mate"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "axum",
  "chrono",
@@ -8275,7 +8275,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-voice-models"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "axum",
  "futures-util",
@@ -8296,7 +8296,7 @@ dependencies = [
 
 [[package]]
 name = "nomifun-voice-terminal"
-version = "1.6.0"
+version = "1.6.1"
 dependencies = [
  "async-trait",
  "futures-util",
