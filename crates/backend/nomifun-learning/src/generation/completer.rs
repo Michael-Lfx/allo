@@ -53,12 +53,10 @@ pub(crate) const COACH_MAX_TOKENS: u32 = 32768;
 /// with the JSON verdict — a truncated verdict parses as garbage and the
 /// pipeline degrades to PASS, so give the deliberation room.
 pub(crate) const CONCEPT_REVIEW_MAX_TOKENS: u32 = 16384;
-/// Structure artifact generation (structure + terrain, gd.* contract): the
-/// reply carries 40–80 block entries plus the terrain doors, with thinking ON
-/// sharing this ceiling (see [`complete_json_coach`]) — the same 13k+
-/// reasoning share applies here, and this is the pipeline's largest reply,
-/// so the budget sits at 2× the coach turn.
-pub(crate) const STRUCTURE_MAX_TOKENS: u32 = 65536;
+/// First-batch entry-domain survey: a menu of 4-8 bottom-rung action
+/// sentences. Thinking ON via [`complete_coach`]; same
+/// reasoning-shares-the-ceiling arithmetic.
+pub(crate) const ENTRY_SURVEY_MAX_TOKENS: u32 = 16384;
 
 
 /// Figure-repair stage: one model call that receives the broken figure code

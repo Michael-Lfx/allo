@@ -1907,8 +1907,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let module_id = nomifun_common::LearningModuleId::new();
         let lesson_a = nomifun_common::LearningLessonId::new();
         let lesson_b = nomifun_common::LearningLessonId::new();
-        let endpoint_id = nomifun_common::LearningEndpointId::new();
-        let endpoint_lesson_id = nomifun_common::LearningLessonId::new();
         let concept_id = nomifun_common::LearningConceptId::new();
         let now = now_ms();
         sqlx::query(
@@ -3140,7 +3138,6 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     assert_eq!(graph.recommended.len(), 2);
     assert_eq!(graph.ready_target, crate::learning_graph::READY_TARGET);
     assert_eq!(graph.ready_trigger, crate::learning_graph::READY_TRIGGER);
-    assert!(graph.compass.is_none());
 
     // 教学降档到「会用」：假定「能教」的节点不再就绪。
     sqlx::query(
@@ -3157,94 +3154,6 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     let _ = prep_course;
 }
 
-/// 终点锚 CRUD（服务路径）：add_endpoint 成对落终点行 + 零正文标记课时
-/// 行；图视图列出终点；delete_endpoint 一并清理两行；未知终点 404。
-#[tokio::test]
-async fn endpoint_add_and_delete_roundtrip_cleans_marker_lesson() {
-    let database = nomifun_db::init_database_memory().await.unwrap();
-    let owner_id = nomifun_db::installation_owner_id(database.pool())
-        .await
-        .unwrap();
-    let owner = UserId::parse(owner_id).unwrap();
-    let service = LearningService::new(database.pool().clone());
-    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
-    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
-
-    let view = service
-        .add_endpoint(
-            &owner,
-            &course,
-            &crate::models::EndpointInput {
-                title: "  能独立建模  ".into(),
-                goal_note: "拿到真实数据也能建模".into(),
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(view.title, "能独立建模", "endpoint title is trimmed");
-    assert!(!view.completed, "fresh endpoints are never completed");
-    let endpoints: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
-    )
-    .bind(&course_id)
-    .fetch_one(database.pool())
-    .await
-    .unwrap();
-    assert_eq!(endpoints, 2, "fixture endpoint + the new one");
-    let marker: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
-            .bind(view.lesson_id.as_str())
-            .fetch_one(database.pool())
-            .await
-            .unwrap();
-    assert_eq!(marker, 1, "the endpoint marker lesson row exists");
-
-    // 图视图列出两条终点。
-    let detail = service
-        .course_detail(&course, Some(&owner))
-        .await
-        .unwrap();
-    let graph = detail.graph.expect("graph view on a graph course");
-    assert_eq!(graph.endpoints.len(), 2);
-    assert!(
-        graph
-            .endpoints
-            .iter()
-            .any(|endpoint| endpoint.endpoint_id == view.endpoint_id)
-    );
-
-    // 删除终点连带清理标记课时行。
-    let endpoint = nomifun_common::LearningEndpointId::parse(&view.endpoint_id).unwrap();
-    service
-        .delete_endpoint(&owner, &course, &endpoint)
-        .await
-        .unwrap();
-    let endpoints: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_course_endpoints WHERE course_id = ?",
-    )
-    .bind(&course_id)
-    .fetch_one(database.pool())
-    .await
-    .unwrap();
-    assert_eq!(endpoints, 1);
-    let marker: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = ?")
-            .bind(view.lesson_id.as_str())
-            .fetch_one(database.pool())
-            .await
-            .unwrap();
-    assert_eq!(marker, 0, "the marker lesson row is cleaned up");
-
-    // 未知终点删除 404。
-    let error = service
-        .delete_endpoint(&owner, &course, &nomifun_common::LearningEndpointId::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(error, AppError::NotFound(_)));
-}
-
-/// 轮询等待后台生长落库（后台任务与测试共享 current_thread 运行时，
-/// 每次 await 让出即推进一步；超时则失败）。
 async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
     for _ in 0..500 {
         // 只等 applied 批：pending 行在生长开始即落库，等它会抢在落库前返回。
@@ -3355,7 +3264,6 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
             {"canonical": "求导法则", "aliases": [], "definition": ""}
         ],
-        "completed_endpoints": [],
         "note": "首批两节点"
     }"#;
     let completer = ScriptedCompleter::new(batch_json, false);
@@ -3805,24 +3713,6 @@ async fn growth_idle_batch_leaves_no_batch_row() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    assert_eq!(completed, 1, "verdict applies even without a batch");
-    let rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
-    )
-    .bind(course.as_str())
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    if rows != 0 {
-        let (status, seq, node_ids, note): (String, i64, String, String) = sqlx::query_as(
-            "SELECT status, seq, node_ids_json, note FROM learning_growth_batches WHERE course_id = ?",
-        )
-        .bind(course.as_str())
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        panic!("debug leftover: status={status} seq={seq} nodes={node_ids} note={note}");
-    }
     assert_eq!(rows, 0, "idle growth must not leave a batch row behind");
 }
 
@@ -3839,7 +3729,6 @@ async fn growth_auto_triggers_on_lesson_completion() {
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []}
         ],
         "mints": [ { "canonical": "极限", "aliases": [], "definition": "" } ],
-        "completed_endpoints": [],
         "note": "完成触发的补货批"
     }"#;
     let completer = ScriptedCompleter::new(batch_json, false);

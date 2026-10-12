@@ -81,23 +81,6 @@ pub struct LearningGraphGenerationStatus {
     pub elapsed_secs: Option<u64>,
 }
 
-/// 终点锚提议请求（建课向导第二步的 AI 提议）。
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProposeEndpointsRequest {
-    pub description: String,
-    #[serde(default)]
-    pub provider_id: Option<ProviderId>,
-    #[serde(default)]
-    pub model: Option<String>,
-}
-
-/// AI 提议的一条终点锚（标题 + 一句程度声明）。
-#[derive(Debug, Clone, Serialize)]
-pub struct ProposedEndpointView {
-    pub title: String,
-    pub goal_note: String,
-}
-
 impl GenerateCourseRequest {
     /// 归一后的用户目标（知识库流）：trim 后为空即 `None`（缺省回退库名），
     /// 超长按 [`COURSE_GOAL_MAX_CHARS`] 截断。整体文本即目标，不做形态判断。
@@ -1581,10 +1564,6 @@ pub struct LearningGraphView {
     pub goal: String,
     /// 学习范围（scope 分析文本）。
     pub scope: String,
-    /// 罗盘（逐终点剩余路线摘要），终点变更时重画；None = 尚未画出。
-    pub compass: Option<String>,
-    pub compass_updated_at: Option<i64>,
-    pub endpoints: Vec<GraphEndpointView>,
     /// 「下一步推荐学习的节点」（就绪集 ≤10，花名册序；被 R 软闸挡住的
     /// 候选不出现在这里，进 `blocked`）。
     pub recommended: Vec<LearningLessonId>,

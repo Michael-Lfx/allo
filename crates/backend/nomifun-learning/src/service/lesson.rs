@@ -927,13 +927,10 @@ impl LearningService {
              JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE m.course_id = ? \
                AND l.position > (SELECT position FROM learning_lessons WHERE lesson_id = ?) \
-               AND l.lesson_id NOT IN \
-                 (SELECT lesson_id FROM learning_course_endpoints WHERE course_id = ?) \
              ORDER BY l.position, l.lesson_id",
         )
         .bind(course_id.as_str())
         .bind(lesson_id.as_str())
-        .bind(course_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
