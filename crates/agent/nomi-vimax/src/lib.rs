@@ -23,6 +23,7 @@ pub mod session;
 pub mod shot_packet;
 pub mod skills;
 pub mod video_quality;
+pub mod voice_bank;
 
 pub use creative::{
     build_canvas_document, scan_session_film, CreativeFilm, CreativeMediaFile, IngestedMedia,

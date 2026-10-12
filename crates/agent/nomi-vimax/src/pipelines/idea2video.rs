@@ -279,7 +279,7 @@ impl Idea2VideoPipeline {
             emit_pct(
                 &progress,
                 "voice_references_start",
-                "正在生成角色音色参考音频",
+                "正在同步音色库并绑定角色参考音频",
                 43.0,
             );
             match film

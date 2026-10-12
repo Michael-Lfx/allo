@@ -205,7 +205,7 @@ impl Script2VideoPipeline {
                 emit_pct(
                     &progress,
                     "voice_references_start",
-                    "正在生成角色音色参考音频",
+                    "正在同步音色库并绑定角色参考音频",
                     24.0,
                 );
                 match self
@@ -851,17 +851,13 @@ impl Script2VideoPipeline {
         Ok(registry)
     }
 
-    /// TTS voice-reference clips for cast members (category=8 models).
+    /// Per-character `reference_audio` clips: voice-bank first, TTS only if needed.
     pub(crate) async fn ensure_character_voice_references(
         &self,
         characters: &[CharacterInScene],
         film_language: crate::planning::OutputLanguage,
         progress: &Option<ProgressCallback>,
     ) -> VimaxResult<()> {
-        let Some(flowy) = self.backends.flowy.clone() else {
-            tracing::warn!("Flowy services unavailable — skipping voice reference TTS");
-            return Ok(());
-        };
         let film_root = resolve_film_root(&self.working_dir);
         let portraits_dir = film_root.join("character_portraits");
         let registry_path = film_root.join("character_portraits_registry.json");
@@ -871,10 +867,40 @@ impl Script2VideoPipeline {
             } else {
                 HashMap::new()
             };
-        let voice_gen = VoiceReferenceGenerator::new(flowy);
-        let n = voice_gen
-            .ensure_voice_references(characters, &portraits_dir, &mut registry, film_language)
-            .await?;
+        emit(
+            progress,
+            "voice_references_start",
+            "正在同步短剧音色库并绑定角色参考音频",
+        );
+        let bank_n =
+            crate::voice_bank::bind_clips(characters, &portraits_dir, &mut registry, film_language)
+                .await?;
+        let still_need_tts = characters.iter().any(|ch| {
+            ch.needs_identity_assets()
+                && ch.voice_profile.as_ref().is_some_and(|v| v.is_usable())
+                && !crate::agents::has_usable_voice_ref(&registry, &ch.identifier_in_scene)
+        });
+        let tts_n = if still_need_tts {
+            if let Some(flowy) = self.backends.flowy.clone() {
+                let voice_gen = VoiceReferenceGenerator::new(flowy);
+                voice_gen
+                    .ensure_voice_references(
+                        characters,
+                        &portraits_dir,
+                        &mut registry,
+                        film_language,
+                    )
+                    .await?
+            } else {
+                tracing::warn!(
+                    "Flowy services unavailable and voice bank did not cover every speaker"
+                );
+                0
+            }
+        } else {
+            0
+        };
+        let n = bank_n + tts_n;
         write_json_artifact(&registry_path, &registry).await?;
         if film_root != self.working_dir {
             write_json_artifact(
@@ -887,7 +913,7 @@ impl Script2VideoPipeline {
             emit(
                 progress,
                 "voice_references_done",
-                &format!("generated {n} voice reference clip(s)"),
+                &format!("bound {bank_n} voice-bank clip(s), synthesized {tts_n} TTS fallback(s)"),
             );
         }
         Ok(())

@@ -1,0 +1,15 @@
+Flowy short-drama voice bank 1.1.0
+
+This pack is assembled from third-party samples for Seedance/Wan reference_audio:
+
+- FLEURS Mandarin read speech — CC-BY-4.0, Google FLEURS
+- AISHELL / WeNet / FunASR / CAM++ / SenseVoice / sherpa-onnx demo wavs (Apache-2.0 / MIT)
+- F5-TTS reference clips — MIT
+- CosyVoice demo prompts — Apache-2.0, FunAudioLLM/CosyVoice
+- OpenVoice demo speakers — MIT, myshell-ai/OpenVoice
+- EmotiVoice intro clip — Apache-2.0
+- Piper TTS speaker samples — MIT, https://github.com/rhasspy/piper
+- Optional Windows SAPI renders generated on the build machine
+
+Replace any clip with a recording you own before shipping if you need a
+single-license pack. Runtime clients only consume the wav + manifest.
