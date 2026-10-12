@@ -54,6 +54,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/graph/structure/regenerate",
             post(regenerate_graph_structure),
         )
+        .route(
+            "/api/learning/courses/{id}/graph/structure",
+            get(get_structure_view),
+        )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
@@ -227,6 +231,19 @@ async fn graph_history(
     let course_id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.graph_history(&course_id, &user.id).await?,
+    )))
+}
+
+/// 知识结构读侧投影（200 恒答、structure: null = 未生成；软删/不存在 404）。
+/// 前端结构图 Tab 以 WS structure_* 事件触发重取本接口。
+async fn get_structure_view(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::LearningStructureView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.structure_view(&course_id).await?,
     )))
 }
 

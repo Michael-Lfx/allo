@@ -16,6 +16,7 @@ import type {
   GraphConceptRowView,
   GraphEndpointView,
   GraphHistoryView,
+  LearningStructureView,
   MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
@@ -92,6 +93,23 @@ export const learningApi = {
     httpRequest<GraphConceptRowView[]>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
+  // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口
+  graphStructure: (courseId: string) =>
+    httpRequest<LearningStructureView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure`
+    ),
+  // 重跑知识结构生成（换参考地图不换课）；进度走 WS structure_* 事件
+  regenerateGraphStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
+      request
     ),
   // 终点锚 CRUD（任何变更后端自动重画罗盘）
   addGraphEndpoint: (courseId: string, request: EndpointInput) =>

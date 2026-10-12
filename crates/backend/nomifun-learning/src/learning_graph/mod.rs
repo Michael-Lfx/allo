@@ -24,6 +24,7 @@
 
 pub mod structure_contract;
 pub mod structure_gen;
+pub mod structure_view;
 pub mod structure_prompts;
 
 use std::collections::{HashMap, HashSet};
@@ -1607,7 +1608,6 @@ mod tests {
         formal.difficulty = Some(4);
         let mut plain = node("在数轴上表示一个数", vec![], vec![]);
         plain.difficulty = Some(2);
-        let undeclared = node("求函数在具体输入下的函数值", vec![], vec![]);
 
         // 第一批（0 批落库，水位 2）：入门批合法，形式化批打回。
         let errors = validate_batch_depth(&batch_of(vec![plain.clone()]), 0);

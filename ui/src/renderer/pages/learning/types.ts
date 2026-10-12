@@ -404,6 +404,139 @@ export interface LearningGraphView {
   growth_running: boolean;
 }
 
+/** 结构读侧投影（GET /courses/{id}/graph/structure，always 200）：
+ * structure = null 表示知识结构未生成（Missing 合法空状态，生成中态由
+ * WS structure_* 事件表达）；投影运行时重算、永不落盘；严格课程内——
+ * 只读本课 structure_json 快照，不 join 概念登记表 */
+export interface LearningStructureView {
+  course_id: string;
+  structure: StructureView | null;
+  terrain: TerrainView | null;
+  /** 快照生成时刻（ms）；null = 未生成 */
+  generated_at: number | null;
+}
+
+/** 结构产物读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /
+ * 枢纽出入度；层号 = 依赖深度，不是排期） */
+export interface StructureView {
+  scalars: StructureScalarsView;
+  domain: StructureDomainView;
+  spines: SpineView[];
+  blocks: BlockView[];
+  edges: StructureEdgeView[];
+  gaps: StructureGapView[];
+  quality: StructureQualityView[];
+  /** 主干分组（块表序保持） */
+  groups: SpineGroupView[];
+  /** 块名集（升序） */
+  block_names: string[];
+  /** 主干×阶段矩阵格 */
+  matrix: MatrixRowView[];
+  /** 枢纽 Top10（assumes + composes 出入度和降序） */
+  hubs: HubView[];
+}
+
+export interface StructureScalarsView {
+  goal: string;
+  /** capability | coverage */
+  goal_type: string;
+  proficiency_statement: string;
+  /** 理论 | 工程 | 历史 | 技能 */
+  domain_type: string;
+  form_reference: string;
+  /** 名录 | 章节 */
+  source_tier: string;
+  generated_by: string;
+  disclaimer: string;
+}
+
+export interface StructureDomainView {
+  core_definition: string;
+  includes: string[];
+  excludes: string[];
+  /** 引用前置地形的门口编号（G1..Gn），由生成侧对账 */
+  prerequisite_doors: string[];
+  audience: string;
+  scenarios: string[];
+  granularity: string;
+}
+
+export interface SpineView {
+  name: string;
+  definition: string;
+  key_points: string[];
+  instance: string;
+  thin_spine: boolean | null;
+  reason: string;
+}
+
+/** 块视图行：layer = assumes 前置链深度（L0 起算，层号不是排期）；
+ * no_prereq = 本块不做任何 assumes 边之源 */
+export interface BlockView {
+  name: string;
+  slug: string;
+  spine: string;
+  /** 入门 | 进阶 | 高级 */
+  stage: string;
+  note: string;
+  layer: number;
+  no_prereq: boolean;
+}
+
+export interface StructureEdgeView {
+  source: string;
+  target: string;
+  /** assumes | composes | contrasts（assumes：source = 需求方、target = 前置） */
+  edge_type: string;
+  /** know | use | teach */
+  tier: string;
+  note: string;
+}
+
+export interface StructureGapView {
+  item: string;
+  direction: string;
+}
+
+export interface StructureQualityView {
+  check: string;
+  /** met | unmet */
+  status: string;
+  reason: string;
+}
+
+export interface SpineGroupView {
+  spine: string;
+  block_names: string[];
+}
+
+export interface MatrixRowView {
+  spine: string;
+  entryway: string[];
+  intermediate: string[];
+  advanced: string[];
+}
+
+export interface HubView {
+  name: string;
+  in_degree: number;
+  out_degree: number;
+}
+
+/** 前置地形读侧视图：门口列表 + 标量回执 */
+export interface TerrainView {
+  learner_basis_assumed: string;
+  disclaimer: string;
+  doors: TerrainDoorView[];
+}
+
+export interface TerrainDoorView {
+  id: string;
+  criterion: string;
+  /** hard | self_check */
+  kind: string;
+}
+
 /** 学习记录视图：批次时间线（倒序）——生长史即课程史 */
 export interface GraphHistoryView {
   batches: GraphBatchView[];

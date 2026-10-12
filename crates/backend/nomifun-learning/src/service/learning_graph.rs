@@ -1275,6 +1275,36 @@ impl LearningService {
 
     // ── Views（图视图 / 学习记录 / 概念表）───────────────────────────────
 
+    /// 知识结构读侧投影（wayfinder 票 t1）：课程不存在或已软删 → 404；
+    /// 否则 200 恒答（structure: null = 未生成）。IO 只有这一次快照行读，
+    /// 重算是 `structure_view::build_structure_view` 纯函数；**不 join 概念
+    /// 登记表**（课程边界铁律）。
+    pub async fn structure_view(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::LearningStructureView, AppError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT structure_json FROM learning_courses \
+             WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let Some((snapshot,)) = row else {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        };
+        let envelope = snapshot
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(internal)?;
+        Ok(crate::learning_graph::structure_view::build_structure_view(
+            course_id.clone(),
+            envelope.as_ref(),
+        ))
+    }
+
     /// 组装学习图课程视图：就绪集推荐 + 水位读数。
     /// DAG 画布已不存在——节点本体就是模块课时，图视图只承载生长语义
     /// （结构读侧投影走独立的 structure 视图接口）。
@@ -1756,14 +1786,6 @@ impl LearningService {
         .ok()
         .flatten();
         kind.and_then(|kind| CourseKind::try_from(kind.as_str()).ok())
-    }
-
-    async fn require_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
-        if self.course_kind(course_id).await == Some(CourseKind::LearningGraph) {
-            Ok(())
-        } else {
-            Err(AppError::NotFound(format!("learning graph course {course_id}")))
-        }
     }
 
     fn course_completer(&self) -> Result<Arc<dyn LearningCompleter>, AppError> {

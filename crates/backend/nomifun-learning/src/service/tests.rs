@@ -2769,6 +2769,75 @@ async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
     panic!("growth batch did not land in time");
 }
 
+/// 结构读侧投影（t1）：未生成 = 200 形状全空（Missing）；有快照 = 预计算面
+/// 就位；软删 = 404。投影不触碰概念登记表——空登记表照常成影。
+#[tokio::test]
+async fn structure_view_serves_missing_filled_and_soft_deleted_courses() {
+    let (service, _knowledge, _owner) = job_test_service().await;
+    let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+
+    // 未生成：200 恒答、structure/terrain 均 None。
+    let view = service.structure_view(&course).await.unwrap();
+    assert!(view.structure.is_none());
+    assert!(view.terrain.is_none());
+    assert!(view.generated_at.is_none());
+
+    // 快照就位：预计算面（主干/块/边/门口）可见。
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": 1000,
+        "structure": {
+            "goal": "能独立求解", "goal_type": "capability",
+            "proficiency_statement": "p", "domain_type": "理论",
+            "form_reference": "F", "source_tier": "名录",
+            "generated_by": "m", "disclaimer": "d",
+            "domain": { "core_definition": "c", "includes": ["i1", "i2", "i3"],
+                        "excludes": ["e1", "e2", "e3"], "prerequisite_doors": ["G1"],
+                        "audience": "a", "scenarios": ["s1", "s2"], "granularity": "g" },
+            "spines": [
+                { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
+            ],
+            "blocks": [
+                { "name": "块A", "slug": "a", "spine": "主干一", "stage": "入门", "note": "n" }
+            ],
+            "edges": [],
+            "gaps": [{ "item": "g", "direction": "d" }],
+            "quality": [{ "check": "c", "status": "met" }]
+        },
+        "terrain": {
+            "goal": "能独立求解", "learner_basis_assumed": "纯零基础（未声明）",
+            "generated_by": "m", "disclaimer": "d",
+            "doors": [{ "id": "G1", "criterion": "能解 x²=p", "kind": "hard" }]
+        }
+    });
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(serde_json::to_string(&envelope).unwrap())
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let view = service.structure_view(&course).await.unwrap();
+    let structure = view.structure.expect("filled snapshot");
+    assert_eq!(structure.scalars.goal, "能独立求解");
+    assert_eq!(structure.blocks.len(), 1);
+    assert_eq!(structure.blocks[0].layer, 0);
+    assert!(structure.blocks[0].no_prereq);
+    assert_eq!(structure.matrix[0].entryway, vec!["块A"]);
+    let terrain = view.terrain.expect("terrain present");
+    assert_eq!(terrain.doors[0].id, "G1");
+    assert_eq!(view.generated_at, Some(1000));
+
+    // 软删：墓碑课程 404（对齐软删守卫语义）。
+    sqlx::query("UPDATE learning_courses SET deleted_at = 1 WHERE course_id = ?")
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let error = service.structure_view(&course).await.unwrap_err();
+    assert!(matches!(error, AppError::NotFound(_)), "{error:?}");
+}
+
 /// 生长落库路径（服务级）：scripted completer 让教练起草一个合法批次
 /// （铸名 + 两个互不依赖的入口节点），kick_growth 后批次经结构门与概念评审
 /// 落库——登记表、节点、概念网边、批次档案各就各位。
