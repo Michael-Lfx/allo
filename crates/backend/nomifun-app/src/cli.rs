@@ -400,6 +400,45 @@ pub enum LearningSmokeCommand {
         #[arg(long, default_value_t = 3)]
         calls: usize,
     },
+    /// 生长冒烟：立课 → 生长批 ×N（批间用确定性学习者替身完成节点驱动再
+    /// 生长），机械判据 = 首批 assumes 全空（空登记表机械地板）+ 每批就绪即
+    /// 发布（既往供给覆盖）+ 铸名不撞；失败非零退出。
+    Grow {
+        /// 学习目标（必填）。
+        #[arg(long)]
+        goal: String,
+        /// 生长批数（批间自动完成全部节点驱动下一批）。
+        #[arg(long, default_value_t = 1)]
+        batches: usize,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 端到端合龙：结构生成 → 首批生长 → 教练循环 ×N（确定性学习者替身
+    /// 程序化完成节点驱动再生长）→ 逐项自检；EXIT=0 判据。
+    Loop {
+        /// 学习目标（必填）。
+        #[arg(long)]
+        goal: String,
+        /// 教练循环轮数（结构 + 生长批 ×N）。
+        #[arg(long, default_value_t = 2)]
+        rounds: usize,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[cfg(test)]

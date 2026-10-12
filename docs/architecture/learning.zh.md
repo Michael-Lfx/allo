@@ -1,6 +1,7 @@
 # 学习域（Learning）
 
-> **最后维护：** 2026-09-28 · 核对基准：分支 `feat/learn0928`（学习图重构，ADR-0009） ·
+> **最后维护：** 2026-10-12 · 核对基准：分支 `feat/learn0928`（学习图吸收 learnhub：
+> 终点/罗盘退役 + 知识结构与可视化，ADR-0010） ·
 > 文档性质：现行架构文档（基于源码逐项核对）
 
 [`nomifun-learning`](../../crates/backend/nomifun-learning/) 是构建在知识库之上的
@@ -8,13 +9,18 @@
 学习图（beta，概念网生长模型）与课程练习，并用 FSRS 算法调度复习。前端入口
 是 `/learn` 与 `/learn/:id`（别名 `/settings/learn`）。
 
+> 学习图的知识结构产物（structure/terrain 双产物的 gd.* 机器契约、快照存储与
+> 重试纪律）单独立契：[`docs/contracts/learning-structure-artifacts.md`](../contracts/learning-structure-artifacts.md)。
+> 生长批产物的 ng.* 条款与教练上下文九块的构成见本文与 `learning_graph` 源码。
+
 ## Crate 构成
 
 领域依赖刻意收敛为 `nomifun-knowledge` + `nomifun-db` + `fsrs`。模块：
 `generation`（legacy 一次性管线 + 提示词常量）/ `scheduler` / `service` /
 `routes` / `models` / `state` / `learning_graph`（概念网生长域核：档位、
-就绪判定、结构门、教练/罗盘/终点提议的单次 LLM 调用）/ `course_outline`
-（大纲草稿）。
+就绪判定、结构门、教练单次 LLM 调用、结构生成门面 `structure_gen` 与契约
+`structure_contract`/`growth_contract`/`structure_view`）/ `course_outline`
+（大纲草稿 + 范围分析 `scope`）。
 
 与 agent 引擎的关系（ADR-0009 后的现行形态）：**两条**生成流（课程大纲 /
 课时内容）由两轮 agent 循环驱动（`CourseOutlineAgentEngine` /
@@ -35,16 +41,21 @@
   大纲（modules/lessons）导入即落库；课时正文在学习者打开该课时
   时按需生成（`content_generated` 列支撑幂等），分节落
   `learning_lesson_sections`（ADR-0002）；
-- **learning_graph**（beta）—— **从终点锚开始生长，不预铺大纲**
-  （ADR-0009）：建课 = 学习目标 + 1-3 条终点锚（标题 + 一句程度声明，
-  AI 提议 + 用户确认，向导见 `CreateCourseDialog`）；依赖由**概念网**表达
-  （节点 `teaches`/`assumes` 概念 × 档位 know<apply<teach），没有先修边、
-  没有锁定态——结构门保证任何发布的节点当下就能学。教练按批次生长：
-  就绪存量 < 3（节点完成时自动检查）或手动按钮触发，每批 ≤7 个新节点，
-  目标把就绪补到 7；每批落 `learning_growth_batches` 出生档案。终点任何
-  变更自动重画**罗盘**（逐终点剩余路线摘要，落 `learning_courses.compass_md`，
-  UI 默认收起）。概念本身登记在全局跨课程的 `learning_concept_registry`
-  （canonical + 别名联合唯一，生长按需铸名）。
+- **learning_graph**（beta）—— **先成结构地图，再从概念网生长**（ADR-0009 /
+  ADR-0010）：建课单步向导 = 学习目标（必填）+ 程度声明/基础声明（可选）；
+  后台先跑**知识结构生成**（双产物 structure + 前置地形，gd.* 契约门 +
+  门口对账 + ≤3 轮带条款反馈重试 → `learning_courses.structure_json` 单字段
+  快照原子落列，重跑覆盖），随后首生长接续（结构失败不阻断生长——结构对生长
+  不供内容、不做判定）。依赖由**概念网**表达（节点 `teaches`/`assumes` 概念 ×
+  档位 know<apply<teach），没有先修边、没有锁定态——结构门保证任何发布的节点
+  当下就能学。教练按批次生长：就绪存量 < 3（节点完成时自动检查）或手动按钮
+  触发，每批 ≤7 个新节点，目标把就绪补到 7；教练批走 json 接缝 + ng.* 条款
+  门（shape `validate_proposal` + DB 语义 `validate_batch`）+ AI 概念评审
+  （语义兜底，不可用保守放行），≤3 轮带条款报告重试；每批落
+  `learning_growth_batches` 出生档案。读侧投影 `structure_view` 纯函数
+  （零 IO 零 LLM，课程内作用域）支撑前端结构图 Tab。**终点锚与罗盘已整体
+  退役**（迁移 071；方向感由结构投影承担）。概念本身登记在全局跨课程的
+  `learning_concept_registry`（canonical + 别名联合唯一，生长按需铸名）。
 
 三条生成流的修复循环以更高的推理档位运行（`REPAIR_REASONING_EFFORT`，
 learnhub「修复轮升思考档」的等价物）；生成循环保持 provider 默认档。
@@ -103,14 +114,20 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 （节降级兜底标记落库，ADR-0008）、
 `066_retire_graph_dag_and_concepts.sql`（**退役**：旧 DAG 图课程数据与
 per-course 概念体系五表全部删除，ADR-0009）、
-`067_concept_web_growth.sql`（概念登记表 / 终点锚 / 概念网边
-`learning_lesson_concepts(role,tier)` / 生长批次 + 罗盘列）。
+`067_concept_web_growth.sql`（概念登记表 / 概念网边
+`learning_lesson_concepts(role,tier)` / 生长批次）、`068` 批行状态机、
+`069` 课程软删墓碑、`070` 课时难度列、
+`071_retire_endpoints_compass_structure_snapshot.sql`（**退役**：终点表 + 标记
+课时行 + `compass_md`/`compass_updated_at` 列删除；新增
+`learning_courses.structure_json` 结构快照列，ADR-0010）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/状态/取消/删除/标签/注册/诊断）、
-`/api/learning/graph/propose-endpoints`（建课向导的终点提议）、
-`/api/learning/courses/{id}/graph/grow|history|concepts|endpoints*`
-（生长/学习记录/概念表/终点锚 CRUD）、
+`/api/learning/courses/{id}/graph/grow|history|concepts`
+（生长/学习记录/概念表）、
+`/api/learning/courses/{id}/graph/structure`（结构读侧投影：200 恒答、
+`structure: null` = 未生成；软删/不存在 404）与
+`.../graph/structure/regenerate`（重跑生成；进度走 WS structure_* 事件）、
 `/api/learning/course-jobs*`、`/api/learning/lessons/{id}`（详情按需加载）、
 `/api/learning/lessons/{id}/progress|generate|activities*`、`/api/learning/activities/{id}/attempts`、
 `/api/learning/reviews/*`、`/api/learning/checkins/today`、
@@ -119,19 +136,40 @@ HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/(custom-)questions*`、`/api/learning/tags`。
 
 生成/生长进度经 WebSocket 推送：`learning.course-generation` /
-`learning.lesson-generation`（学习图生长帧带 `kind=learning_graph` 与
-`event` 细分名）。
+`learning.lesson-generation`（学习图帧带 `kind=learning_graph` 与 `event` 细分
+名：growth_* 与 structure_started/completed/failed）。
 
 ## 前端
 
 `ui/src/renderer/pages/learning/`：CourseWorkspace（分节 stepper、按需拉取
-课时详情）、LearningGraphWorkspace（终点锚 chips + 收起罗盘 + 就绪 x/7
-补充节点 + 三视图：学习 / 学习记录批次时间线 / 概念表）、
-CreateCourseDialog（学习图两步向导：目标 → 终点确认）、
+课时详情）、LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
+四视图：学习 / 学习记录批次时间线 / 概念表 / **结构图**——思维导图、关系
+图谱（dagre 分层、assumes=门方向反转）、学习路线（主干子图 + 传递闭包自动
+补前导）、矩阵；投影非权威标注收敛在详情层与页脚）、
+CreateCourseDialog（学习图单步向导：目标 + 可选程度/基础声明）、
 ReviewSession、CourseJobTable、CheckinPanel、MemoryHealthPanel（复习横幅
 下的记忆健康折叠条）、QuestionManager、
 LearningModelSelector 等；hooks `useCourseLearning` / `useReviewSession` /
 `useCourseJobs` / `useCourseCreation` / `useCheckinStatus`。
+
+## 真机冒烟（无头）
+
+`nomicore learning-smoke`（`nomifun-app/src/commands/learning_smoke.rs`，
+wayfinder 票 s1）：与应用同接线（DB pool → LearningService +
+set_generation_dependencies；provider 凭据复用 `resolve_provider_config` 现链），
+缺省从零临时 SQLite（`--db` 可指开发库）。四档：
+
+- `structure`：结构生成双产物过 gd.* 契约门 + 门口对账 + 落列，落列后重读
+  重验（失败非零退出）；
+- `grow`：生长批 ×N（批间确定性学习者替身程序化完成节点驱动再生长）；
+  判据 = 首批 assumes 全空（空登记表机械地板）+ 每批就绪即发布 + 铸名不撞；
+- `json`：json_object 能力读数（读数面非门禁，唯一硬判据 = 全灭 0/n；
+  探测调用直调内层 completer，不入档案）；
+- `loop`：结构 → 首批 → 教练循环 ×N 端到端合龙，EXIT=0 判据。
+
+运行必挂 `nomifun_ai_agent::ArchivingCompleter`（每次调用的
+prompt/response/耗时落 `<data-dir>/observation/learning-smoke/<run>/`
+JSONL）；生产运行不挂（零开销）。
 
 ## 相关但独立的 harness
 
