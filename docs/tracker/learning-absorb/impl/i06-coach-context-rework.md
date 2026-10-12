@@ -2,8 +2,8 @@
 id: i06
 title: "教练上下文重排 + 既有门调整（g3 清单）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [i02]
 part_of: ../map.md
 ---
@@ -26,8 +26,43 @@ part_of: ../map.md
 
 **Status:** ready-for-agent
 
-- [ ] 9 块新构成 + 全量块摊开行格式与呈现序
-- [ ] validate_batch_depth + FORMAL_TITLE_MARKERS 删除，评审门扩难度诚实判据
-- [ ] 首级判据重写（含空账本地板提示）
-- [ ] analyze_scope / SCOPE_SYSTEM 退役，learning_scope 不再写读
-- [ ] `cargo test -p nomifun-learning` 全绿（service/tests.rs 既有用例为底）
+- [x] 9 块新构成 + 全量块摊开行格式与呈现序
+- [x] validate_batch_depth + FORMAL_TITLE_MARKERS 删除，评审门扩难度诚实判据
+- [x] 首级判据重写（含空账本地板提示）
+- [x] analyze_scope / SCOPE_SYSTEM 退役，learning_scope 不再写读
+- [x] `cargo test -p nomifun-learning` 全绿（service/tests.rs 既有用例为底）
+
+## Resolution
+
+**速览**：全项落地，commit `3f155b9d8`（feat/learn0928）。
+
+- **9 块重排**（顺序即注意力序，`CoachContext::render` 头注写明）：学习目标
+  （+程度/基础声明附注，来自结构/地形产物的标量回执）→ 结构参考材料（全量块
+  摊开，行格式 `- 块名(slug)|主题一句|难度档|主干|无前置`/`|前置:A、B`，呈现序
+  = 难度档/前置链深/主干序/块序，新纯函数 `structure_view::render_reference_lines`）
+  → 地形门口（首批「首批入口重点参照」框架语 + 逐门落格纪律；其后「软参照」）
+  → 当前就绪 → 花名册 → 已教概念账 → 覆盖读数（纯展示）→ 行为摘要 → 登记表
+  切片。
+- **首级判据重写**：6 条规则长文（含入口域盘点两态分支）删除，收缩为
+  「首批纪律」三行——入门档起步 + 动作句/单一行为单元/「要么教它要么是常识，
+  简单≠常识」+ 空账本 ⇒ assumes 必空机械地板；COACH_SYSTEM 的起点纪律首条
+  改指【学习目标】的基础声明、删除深度水位纪律、自查第 7 条改「如实申报
+  （形式化/证明类不得压档）」。
+- **水位门退役**：`validate_batch_depth` + `FORMAL_TITLE_MARKERS` + 专属测试
+  删除；`gate_batch` 去掉 applied_batches 查询；`ProposedNode.difficulty` 保留
+  （呈现序/花名册仍消费，070 列不动）。评审门扩第 4 条判据「难度诚实与阶段/
+  档位相符」（与结构参考材料同名块档位对照、可附拆分建议），problems 的
+  field 词表加 `difficulty`。
+- **analyze_scope 退役（实施偏差）**：核查发现裁决前提漏列消费方——传统课程
+  agent 大纲管线（`course_outline`，scope blocks 覆盖率账）仍在调用它。按
+  「不回归既有功能」处理：`SCOPE_SYSTEM`/`ScopeAnalysis`/解析/调用整体原样
+  迁移到新模块 `course_outline/scope.rs`（含独立 de_string_list），token 常量
+  更名 `OUTLINE_SCOPE_MAX_TOKENS`；**学习图侧**彻底不写读 learning_scope
+  （建课 learning_goal=原始目标、不写 scope 列；`LearningGraphView.scope` 字段
+  与 TS 镜像删除；教练上下文不再读该列）。
+- **连带迁移**：图课程课时内容生成的 grounding 从 `learning_scope` 文本改为
+  快照的 `proficiency_statement`（`GraphLessonContext.scope` → `degree_statement`，
+  引擎 prompt「学习范围：」→「程度声明：」，断言同步）。
+- 验证：learning 168 测全绿；workspace check 干净；学习页 typecheck 零错误；
+  全量并发跑中 ai-agent 两个失败（factory/nomi、provider_health）隔离重跑
+  皆过——既有并发 flaky，与本次无关。
