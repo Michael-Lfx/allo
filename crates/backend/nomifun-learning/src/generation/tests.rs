@@ -406,7 +406,6 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
-            endpoints: Vec::new(),
         };
         assert_eq!(request.knowledge_base_id, Some(id));
     }

@@ -311,10 +311,6 @@ define_entity_id!(
     LearningConceptId
 );
 define_entity_id!(
-    /// Globally unique endpoint-anchor identifier.
-    LearningEndpointId
-);
-define_entity_id!(
     /// Globally unique growth-batch identifier.
     LearningGrowthBatchId
 );

@@ -268,6 +268,13 @@ impl LlmProvider for VertexProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        if request.json_object {
+            return Err(ProviderError::Config(
+                "provider does not support response_format json_object; \
+                 structured output needs an OpenAI-compatible provider"
+                    .into(),
+            ));
+        }
         let url = self.build_url(&request.model);
         let body = self.build_request_body(request)?;
 
@@ -412,6 +419,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         }
     }
 
@@ -429,6 +437,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
 
         let error = provider.build_request_body(&request).unwrap_err();

@@ -75,6 +75,7 @@ fn request(model: &str, messages: Vec<Message>, tools: Vec<ToolDef>) -> LlmReque
         temperature: Some(0.0),
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     }
 }
 

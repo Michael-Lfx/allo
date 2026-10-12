@@ -67,7 +67,6 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_activities",
     "learning_attempts",
     "learning_concept_registry",
-    "learning_course_endpoints",
     "learning_course_tags",
     "learning_courses",
     "learning_course_jobs",
@@ -169,7 +168,6 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
     ("learning_concept_registry", "concept_id"),
-    ("learning_course_endpoints", "endpoint_id"),
     ("learning_courses", "course_id"),
     ("learning_course_jobs", "job_id"),
     ("learning_checkins", "checkin_id"),
@@ -283,7 +281,6 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
     ("learning_concept_registry", "concept_id"),
-    ("learning_course_endpoints", "endpoint_id"),
     ("learning_courses", "course_id"),
     ("learning_course_jobs", "job_id"),
     ("learning_course_jobs", "session_id"),
@@ -886,10 +883,6 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_lesson_progress", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_lesson_progress_enrollment_id", Cascade),
     text_ref!("learning_lesson_progress", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_progress_lesson_id", Cascade),
     text_ref!("learning_lesson_sections", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_sections_lesson_id", Cascade),
-    // Endpoint anchors: a course-scoped marker whose lesson row is the pure
-    // direction marker (no content, never scheduled).
-    text_ref!("learning_course_endpoints", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_endpoints_course", Cascade),
-    text_ref!("learning_course_endpoints", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_course_endpoints_lesson", Cascade),
     text_ref!("learning_attempts", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_attempts_enrollment_id", Cascade),
     text_ref!("learning_attempts", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_attempts_activity_id", Cascade),
     // Growth batches belong to their course: deleting the course removes the
@@ -3040,8 +3033,6 @@ mod tests {
         let lesson_a = nomifun_common::LearningLessonId::new();
         let lesson_b = nomifun_common::LearningLessonId::new();
         let enrollment_id = nomifun_common::LearningEnrollmentId::new();
-        let endpoint_id = nomifun_common::LearningEndpointId::new();
-        let endpoint_lesson_id = nomifun_common::LearningLessonId::new();
         let concept_id = nomifun_common::LearningConceptId::new();
         let batch_id = nomifun_common::LearningGrowthBatchId::new();
         sqlx::query(
@@ -3112,28 +3103,6 @@ mod tests {
             .await
             .unwrap();
         }
-        // 终点锚：标记课时行 + 终点行。
-        sqlx::query(
-            "INSERT INTO learning_lessons \
-             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-             content_generated) VALUES (?, ?, '终点', '', '', 2, 1, 0)",
-        )
-        .bind(endpoint_lesson_id.as_str())
-        .bind(module_id.as_str())
-        .execute(pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO learning_course_endpoints \
-             (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
-             VALUES (?, ?, ?, '终点', '', 1)",
-        )
-        .bind(endpoint_id.as_str())
-        .bind(course_id.as_str())
-        .bind(endpoint_lesson_id.as_str())
-        .execute(pool)
-        .await
-        .unwrap();
         // 生长批次出生档案（节点清单引用两个节点）。
         let node_ids = serde_json::to_string(&[lesson_a.as_str(), lesson_b.as_str()]).unwrap();
         sqlx::query(
@@ -3161,18 +3130,10 @@ mod tests {
             .await
             .expect("orphans must not strand the boot gate");
 
-        // A writable open repairs the RequireParent rows (endpoint rows and
-        // growth batches hang off course_id) and keeps the designed
-        // historical state (module, lessons, enrollment, concept web).
+        // A writable open repairs the RequireParent rows (growth batches hang
+        // off course_id) and keeps the designed historical state (module,
+        // lessons, enrollment, concept web).
         let repaired = repair_logical_reference_orphans(pool).await.unwrap();
-        assert!(
-            repaired.iter().any(|finding| {
-                finding.child_table == "learning_course_endpoints"
-                    && finding.child_column == "course_id"
-                    && finding.count == 1
-            }),
-            "the orphaned endpoint row must be repaired: {repaired:?}"
-        );
         assert!(
             repaired.iter().any(|finding| {
                 finding.child_table == "learning_growth_batches"
@@ -3181,12 +3142,6 @@ mod tests {
             }),
             "the orphaned growth batch must be repaired: {repaired:?}"
         );
-        let endpoints: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM learning_course_endpoints")
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        assert_eq!(endpoints, 0, "endpoint rows must not outlive their course");
         let batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_growth_batches")
             .fetch_one(pool)
             .await
@@ -3204,7 +3159,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            historical, 7,
+            historical, 6,
             "reviewable content and the concept web must survive repair"
         );
         let findings = audit_logical_reference_orphans(pool).await.unwrap();

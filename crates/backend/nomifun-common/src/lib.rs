@@ -73,7 +73,7 @@ pub use id::{
     EntityId, FLOWY_BUILTIN_PROVIDER_ID, FigureId, GOOGLE_AUTH_PROVIDER_ID, WallpaperId,
     IdmmInterventionId, KnowledgeBaseId, KnowledgeBindingId,
     LearningActivityId, LearningAttemptId, LearningGraphId, LearningConceptId,
-    LearningCourseId, LearningEnrollmentId, LearningEndpointId, LearningGrowthBatchId,
+    LearningCourseId, LearningEnrollmentId, LearningGrowthBatchId,
     LearningLessonId, LearningModuleId, LearningReviewItemId, LearningTagId,
     McpServerId, MessageId,
     PersistedArtifactId, PresetId, PresetTagId, PreviewSnapshotId, ProviderId,
