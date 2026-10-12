@@ -30,6 +30,11 @@
 
 ## Decisions so far
 
+- [结构生成契约与存储落点](tickets/g2-structure-contract-and-storage.md)：structure 契约
+  全量引入 + 向导输入最小化（目标/程度声明/基础声明，后两项可选，goal_type/domain_type 由
+  LLM 自判）；前置地形独立产物 + 门口对账，入口域盘点退役；双调用 + 整批重试 ≤3 带反馈；
+  `learning_courses.structure_json` 单字段快照、重跑覆盖；不产人读文档（读侧投影承担）；
+  新建条款化契约文档 `docs/contracts/learning-structure-artifacts.md`。
 - [终点锚体系：删除、降级还是改造？](tickets/g1-endpoint-anchors-fate.md)：完全删除终点
   体系（表/提议端点/向导第 2 步/完成裁决/停摆臂第二臂/保护条款/UI/i18n）；存量破坏性
   DROP；生长无自动终态（只留空图臂，覆盖读数纯展示）；罗盘跟随终点退役。人读概览交给
@@ -46,8 +51,7 @@
 
 ## Not yet specified
 
-- 建课向导新交互流（单步：目标输入 → 结构生成进度 → 结构可视化衔接的形态）——等
-  「结构生成契约」与可视化原型落定。
+- 建课向导的生成进度与结构可视化衔接形态——等可视化原型（p1）落定。
 - LLM 调用观测存档（learnhub `ArchivingExecutor` 的对应物）在多用户服务端的形态。
 - 传统课程（`course_kind='traditional'`）是否同享结构生成管线。
 - blocks 40–80 规模对前端渲染性能与 WS 进度事件的影响。
