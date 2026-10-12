@@ -36,6 +36,7 @@ import type {
 import { LessonBlock } from './LessonStudy';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
+import { StructureGraphTab } from './structure/StructureGraphTab';
 
 const { Text, Title, Paragraph } = Typography;
 
@@ -453,6 +454,9 @@ const LearningGraphWorkspace: React.FC<{
         </Tabs.TabPane>
         <Tabs.TabPane key='concepts' title={t('learning.learningGraphTabConcepts')}>
           <ConceptTable courseId={detail.course.id} />
+        </Tabs.TabPane>
+        <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
+          <StructureGraphTab view={structure} />
         </Tabs.TabPane>
       </Tabs>
       </div>
