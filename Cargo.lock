@@ -7215,6 +7215,7 @@ dependencies = [
  "base64 0.22.1",
  "cpal",
  "dashmap",
+ "dirs 6.0.0",
  "nomifun-api-types",
  "nomifun-audio",
  "nomifun-auth",

@@ -30,7 +30,7 @@ tempfile = "3"
 nomifun-app = { workspace = true, features = [
     "telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix",
     "mattermost", "slack", "twitch", "nostr", "qqbot",
-    "bedrock", "silero-vad",
+    "bedrock", "silero-vad", "local-stt",
 ] }
 nomifun-common.workspace = true
 nomifun-runtime.workspace = true

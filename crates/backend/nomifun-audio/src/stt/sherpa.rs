@@ -119,40 +119,66 @@ fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
     }
     if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(PathBuf::from) {
         let asr_sub = ai_mate.join("asr");
-        if asr_sub.is_dir() {
+        if is_valid_asr_dir(&asr_sub) {
             return Some(asr_sub);
         }
-        if ai_mate.is_dir() && ai_mate.join("tokens.txt").is_file() {
+        if is_valid_asr_dir(&ai_mate) {
             return Some(ai_mate);
         }
     }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("Flowy").join("Nomi").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("Nomi-dev").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("AI-Mate").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("models").join("voice").join("asr"));
+        candidates.push(local_app_data.join("flowy").join("models").join("voice").join("asr"));
+    }
+
     #[cfg(target_os = "windows")]
     {
-        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            let candidates = [
-                PathBuf::from(&local_app_data).join("Flowy").join("AI-Mate").join("models").join("asr"),
-                PathBuf::from(&local_app_data).join("Flowy").join("models").join("asr"),
-            ];
-            for c in candidates {
-                if c.is_dir() && c.join("tokens.txt").is_file() {
-                    return Some(c);
-                }
-            }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let local_path = PathBuf::from(local);
+            candidates.push(local_path.join("Flowy").join("Nomi").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("Nomi-dev").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("AI-Mate").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("models").join("voice").join("asr"));
+            candidates.push(local_path.join("flowy").join("models").join("voice").join("asr"));
         }
     }
+
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".flowy").join("models").join("voice").join("asr"));
+        candidates.push(home.join(".flowy").join("models").join("asr"));
+    }
+
     #[cfg(not(target_os = "windows"))]
     {
-        let candidates = [
-            PathBuf::from("/var/lib/ai-mate/models/asr"),
-            PathBuf::from("/etc/ai-mate/models/asr"),
-        ];
-        for c in candidates {
-            if c.is_dir() && c.join("tokens.txt").is_file() {
-                return Some(c);
-            }
+        candidates.push(PathBuf::from("/var/lib/ai-mate/models/asr"));
+        candidates.push(PathBuf::from("/etc/ai-mate/models/asr"));
+    }
+
+    for c in candidates {
+        if is_valid_asr_dir(&c) {
+            return Some(c);
         }
     }
     None
+}
+
+/// Checks whether a candidate directory has tokens.txt and a non-empty SenseVoice model file.
+fn is_valid_asr_dir(dir: &Path) -> bool {
+    if !dir.is_dir() || !dir.join("tokens.txt").is_file() {
+        return false;
+    }
+    ["model.int8.onnx", "model.onnx"].iter().any(|name| {
+        let p = dir.join(name);
+        std::fs::metadata(&p).map(|m| m.len() >= 1_000_000).unwrap_or(false)
+    })
 }
 
 /// Expected layout (SenseVoice):
@@ -180,6 +206,15 @@ fn sense_voice_config(dir: &Path) -> Result<OfflineRecognizerConfig, SherpaSttEr
                 dir.display()
             ))
         })?;
+
+    let model_len = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
+    if model_len < 1_000_000 {
+        return Err(SherpaSttError(format!(
+            "SenseVoice 模型文件 '{}' 异常 (仅 {} 字节，完整模型约 238MB)。请在【设置 - 语音伴侣】中重新下载安装语音模型套件。",
+            model.display(),
+            model_len
+        )));
+    }
 
     let mut config = OfflineRecognizerConfig::default();
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
@@ -225,7 +260,9 @@ mod tests {
     fn sense_voice_config_detects_files() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("tokens.txt"), "a\n").unwrap();
-        fs::write(dir.path().join("model.int8.onnx"), b"fake").unwrap();
+        // Write >= 1MB to pass model integrity size validation
+        let dummy_model = vec![0u8; 1_000_001];
+        fs::write(dir.path().join("model.int8.onnx"), dummy_model).unwrap();
         let cfg = sense_voice_config(dir.path()).unwrap();
         assert!(cfg.model_config.tokens.unwrap().ends_with("tokens.txt"));
         assert!(
@@ -235,5 +272,14 @@ mod tests {
                 .unwrap()
                 .ends_with("model.int8.onnx")
         );
+    }
+
+    #[test]
+    fn small_model_file_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("tokens.txt"), "a\n").unwrap();
+        fs::write(dir.path().join("model.int8.onnx"), b"tiny-stub-48-bytes").unwrap();
+        let err = sense_voice_config(dir.path()).unwrap_err();
+        assert!(err.0.contains("异常") || err.0.contains("238MB"));
     }
 }

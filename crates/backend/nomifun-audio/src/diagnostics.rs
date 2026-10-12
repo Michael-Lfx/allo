@@ -8,7 +8,7 @@ use nomifun_api_types::voice::{
 };
 
 use crate::mic::{probe_default_device, record_mic_snippet};
-use crate::stt::transcribe_test_pcm;
+use crate::stt::transcribe_test_pcm_detailed;
 
 /// Axum routes for voice device and ASR test diagnostics.
 pub fn voice_diagnostics_routes() -> Router {
@@ -75,9 +75,24 @@ async fn asr_test_handler(
         });
     }
 
-    // 2. Perform ASR transcription via SenseVoice model
-    match transcribe_test_pcm(&pcm, sample_rate).await {
-        Some(text) if !text.trim().is_empty() => {
+    // 2. Check audio energy (RMS) to distinguish silence/muted mic from ASR model failure
+    let sum_sq: f32 = pcm.iter().map(|&s| s * s).sum();
+    let rms = (sum_sq / pcm.len() as f32).sqrt();
+
+    if rms < 0.005 {
+        return Json(VoiceAsrTestResponse {
+            success: false,
+            text: String::new(),
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(format!(
+                "麦克风录音音量过低或静音 (RMS={rms:.4})。检测到声音输入微弱，若使用的是远程虚拟音频设备，请检查远程软件的声音重定向或麦克风开关。"
+            )),
+        });
+    }
+
+    // 3. Perform ASR transcription via SenseVoice model with 16kHz resampling
+    match transcribe_test_pcm_detailed(&pcm, sample_rate).await {
+        Ok(text) => {
             Json(VoiceAsrTestResponse {
                 success: true,
                 text,
@@ -85,12 +100,12 @@ async fn asr_test_handler(
                 error: None,
             })
         }
-        _ => {
+        Err(err) => {
             Json(VoiceAsrTestResponse {
                 success: false,
                 text: String::new(),
                 duration_ms: start.elapsed().as_millis() as u64,
-                error: Some("ASR produced no transcription (audio may be silent, or SenseVoice model not installed)".to_string()),
+                error: Some(err),
             })
         }
     }
@@ -305,5 +320,25 @@ mod tests {
         let res = decode_audio_base64(&b64);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("WebM audio format not supported"));
+    }
+
+    #[tokio::test]
+    async fn test_asr_handler_silence_rejection() {
+        use base64::Engine;
+        // 16000 samples of flat silence (zeros)
+        let silence_pcm = vec![0.0f32; 16000];
+        let mut raw_bytes = Vec::with_capacity(silence_pcm.len() * 2);
+        for &s in &silence_pcm {
+            let i = (s * i16::MAX as f32) as i16;
+            raw_bytes.extend_from_slice(&i.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&raw_bytes);
+        let req = VoiceAsrTestRequest {
+            audio_base64: Some(b64),
+            sample_rate: 16000,
+        };
+        let Json(resp) = asr_test_handler(Some(Json(req))).await;
+        assert!(!resp.success);
+        assert!(resp.error.as_deref().unwrap_or("").contains("静音") || resp.error.as_deref().unwrap_or("").contains("RMS"));
     }
 }
