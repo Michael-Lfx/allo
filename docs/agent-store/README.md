@@ -1,7 +1,7 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
 > 状态：导航总览（全目录 42 份核心方案已全面完成标准化重构）  
-> 当前版本：`0.1.0-beta.8` | 协议契约指纹：`fp-13` | 核心方法计数：55 WebSocket 专属方法 / 80 双端映射端点  
+> 当前版本：`0.1.0-beta.9` | 协议契约指纹：`fp-14` | 核心方法计数：55 WebSocket 专属方法 / 82 双端映射端点  
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
 ---
@@ -146,6 +146,7 @@ flowchart TD
 | [`32-expert-pack-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/32-expert-pack-export.zh.md) | 专家与专家团可移植定义导出（`ExpertPack`）、R1~R11 接入责任清单 | ✅ 已实施 |
 | [`33-memory-master-switch.zh.md`](file:///c:/workspace/allo/docs/agent-store/33-memory-master-switch.zh.md) | 内置记忆系统总开关 `[memory] enabled`、四面同步关闭防御 | ✅ 已实现 |
 | [`34-connector-user-credentials.zh.md`](file:///c:/workspace/allo/docs/agent-store/34-connector-user-credentials.zh.md) | 用户 Key/Token 输入表单、Per-principal 命名空间隔离、自带 Server 注册 | ✅ 已实施 |
+| [`38-expert-pack-assets.zh.md`](file:///c:/workspace/allo/docs/agent-store/38-expert-pack-assets.zh.md) | 专家包插件级资产（avatars/bin/scripts）：`import/assets`·`import/asset`、`pack_format 2`、`[expert_export] scripts` 减项 | ✅ 已实施 |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
@@ -294,6 +295,20 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-12 实施 `38`：导出补齐插件级资产，尚未发版）
+
+用户实测 `exportTeam()` 发现：团的技能能导出了，但**原始专家团的 `bin/` 文件、头像文件都没导出**。定位结论是「两件事」：头像（`avatars/`）是 doc `32` §2 刻意排除 `avatar_url` 的既定决定、只缺**可移植形态**；插件级 `bin/` `scripts/` 则是 `02` §9「执行安全模型落地前不启用」的产品边界。用户拍板**连可执行内容一起导**（含字节），方案与实现见 [`38-expert-pack-assets.zh.md`](38-expert-pack-assets.zh.md)：
+
+1. **实测底数**（官方 experts 市场 zip：303 MB / 14,713 文件 / 381 插件 / 3 团）：361/381 插件带插件级 `avatars/`（403 文件约 109 MB）、17 个带 `bin/` 或 `scripts/`；样本 `stock-partner-team` 1.0.7 = `bin/init_task{,.cmd,.py}` + 8 张头像共 1075 KB。**技能内部**的 `bin/`/`scripts/` 本来就能导（`skill/files`，单文件 2 MiB、无扩展过滤）；缺的只有**插件级**（`skills/` 的兄弟目录）。真实样本团的脚本就按插件根寻址（`render.py` 的 `PLUGIN_ROOT = SCRIPT_DIR.parents[2]`、`embed_avatars.py` 的 `../../../avatars`），所以导出目录此前是**残缺的插件根**。
+2. **wire（`fp-13 → fp-14`，计数 `55 / 80 → 55 / 82`）**：新增两个 **WebSocket-only** 方法 `import/assets`（列快照的插件级资产清单，按 `path` 排序带 sha256，上限 512 条超限置 `truncated`）与 `import/asset`（base64 单文件，与 `skill/file` 同形，单文件 2 MiB 从元数据先量后读）；能力位 `snapshot_assets` 独立声明。错误码复用技能文件面（`SkillFileError` → 同一组稳定码）。
+3. **pack（`pack_format 1 → 2`）**：`AppServerExpertPack` 增 `assets`（按引用，成员 pack 恒空表——快照作用域，`38` D7）与 `avatar`（包级头像的快照相对路径，**仅当该文件确实列在 `assets` 里**，`38` D8）；`32` §2「排除呈现层元数据」的决定**部分演进**：进包的是可解析的路径，宿主 URL 仍排除。
+4. **provider（`app_server_snapshot_assets.rs`，新）**：地址空间 = 三个前缀（`avatars/`、`bin/`、`scripts/`，`kind` 由首段目录决定不看扩展名），词法拒绝先行 + `canonicalize` 复核 + symlink 不列不读——骨架照抄技能文件面；组合根把**同一个 provider 实例**同时喂给 wire 面与导出适配器（`with_assets`），「包能列的」与「字节面能读的」由构造保证一致（`38` I1）；导出适配器保持「不碰文件系统」的既有承诺。
+5. **策略**：`[expert_export]` 新增减项 `scripts`（缺省 `true`，`false` 时包的 `assets` 去掉 `kind:"script"` 条目、头像不受影响）。诚实边界写进代码注释与 `38` D5/D6：它修饰**包契约**而非字节面——`import/asset` 与 `import/get` 同权威，正如 `skill/files` 本就不受 `[expert_export]` 约束；真要「可执行字节不出宿主」，等 `02` §9 的执行安全模型。
+6. **SDK**：`ExportDeps` 增 `readImportAsset`；`materializePack` 把资产按快照相对路径落盘（写前再做一次词法校验），`ExportResult` 增 `writtenAssets`——物化目录成为**完整的插件根**；清单成功后读失败照旧抛（不静默产出清单里有而盘上没有的目录）。
+7. **指纹落点与门禁**：`check:fingerprint` 绿（`fp-14`，本仓 7 文件 10 处 + 站点 2 处）；`check:release-sync` 绿（`55 / 82` 两语言同值）；`DOCUMENTED_ROUTE_SPLIT` 55/25 → 55/27 + `DOCUMENTED_UNMAPPED` 增两方法；两仓文档同步（`05` §3.1/§4.4.1/附录、`07` §3.3、`32` 演进注、`35` 布局演进注、站点 SDK 指南两语言、`CHANGELOG`）。
+8. **仍未做（`38` §5.3）**：F1 install 侧依旧不物化插件级资产——宿主自己跑这个团时，团脚本仍只能靠「Glob 到快照缓存里那份」找到 `bin/init_task.py`（这属于 `02` §9 的执行安全模型，与导出分开拍）；F2 逐成员头像归属（`plugin.json.members[].avatar` 不进快照 payload，映射由团自带技能承载）；F3 `scripts` 键修饰包契约而非字节面，硬边界留给 `02` §9；**F4（用户定口径）悬空技能是可接受现状非缺陷**——成员 frontmatter 声明在源运行时（WorkBuddy）本就无兑现机制，本仓与源对齐但落空时更诚实（如实上报），源收紧时才跟随收紧。
+9. **真机验收（同日）**：新增夹具 `asset-pack`（包级 `avatar` 声明 + `avatars/`×2 + `bin/`×2 + `scripts/`×1 + 1 团 2 成员），`sdk-live-expert-export.ts` 扩 EX-012~015 后**RESULT PASS（15/15）**——清单/落盘字节/插件根寻址/persona 拒读/v2 确定性全过；`cargo test -p nomifun-app --lib` 402 通过（唯一失败是既有基线的 `router::state::tests::every_production_conversation_service…`，与本轮无关）；`cargo test -p nomifun-app-server` 191 全绿；`web` 563 通过。
 
 ## 本轮（2026-10-10 修复连接器 OAuth 的「可见性」与安装反查，尚未发版）
 

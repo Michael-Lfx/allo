@@ -317,6 +317,11 @@ my-agents/dev-lead/
 EX-010（既有夹具：包级技能必须落盘且逐字节相同）与 EX-011（新增夹具 `package-skills-team`：镜像官方团形状，
 成员零声明 ⇒ 技能只可能来自包级）。
 
+> **演进（2026-10-12，doc `38`）**：此后包形状变了——`fp-14` 新增 `import/assets` /
+> `import/asset`，`AppServerExpertPack` 加 `assets` / `avatar`，`pack_format 1 → 2`。
+> 上文的「`avatar_url` 刻意排除」决定**部分演进**：进包的是快照相对路径（对着包自己的
+> `assets` 可解析），宿主 URL 仍然排除。本节其余口径不变。
+
 ---
 
 ## 附录：原始技术底稿与历史归档 (Historical & Technical Reference Archive)

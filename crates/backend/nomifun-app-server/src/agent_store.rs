@@ -367,6 +367,21 @@ pub struct AgentStoreExpertExport {
     /// `[connector_proxy]`, not because the two states differ.
     #[serde(default)]
     pub deny: Option<Vec<String>>,
+    /// Whether the export carries the package's **executable** plugin-level
+    /// content (`bin/`, `scripts/`) in its `assets` list (doc `38` §3.2).
+    ///
+    /// Absent = **on**, the same fail-open reading as `enabled`: the user asked
+    /// for this class of content to be exportable, and this key is the operator's
+    /// subtraction, not a permission gate. `false` drops the `kind: "script"`
+    /// entries from the pack while leaving avatars untouched.
+    ///
+    /// Honest boundary: this shapes the **pack contract**, not the byte face —
+    /// `import/asset` reads the same snapshot with the same authority as
+    /// `import/get`, exactly as `skill/files` reads skill bytes regardless of
+    /// this table. A hard "no executable bytes may leave the host" boundary is
+    /// the execution security model that `02` §9 defers, not this key.
+    #[serde(default)]
+    pub scripts: Option<bool>,
 }
 
 /// The `[expert_export]` table, resolved into the form the export gate uses.
@@ -379,14 +394,19 @@ pub struct AgentStoreExpertExport {
 pub struct ExpertExportPolicy {
     enabled: bool,
     deny: std::collections::HashSet<String>,
+    /// Whether the pack's `assets` list includes `kind: "script"` entries
+    /// (doc `38` §3.2). Absent = on.
+    scripts: bool,
 }
 
 impl Default for ExpertExportPolicy {
-    /// The default-open policy: the face is available and nothing is subtracted.
+    /// The default-open policy: the face is available, nothing is subtracted,
+    /// and executable plugin content is declared in the pack (doc `38`).
     fn default() -> Self {
         Self {
             enabled: true,
             deny: std::collections::HashSet::new(),
+            scripts: true,
         }
     }
 }
@@ -398,7 +418,9 @@ impl ExpertExportPolicy {
         Self::default()
     }
 
-    /// Build from the declared table. A table with no `enabled` key is **on**.
+    /// Build from the declared table. A table with no `enabled` key is **on**,
+    /// and with no `scripts` key the pack declares executable plugin content
+    /// too (doc `38` §3.2).
     pub fn from_declared(declared: &AgentStoreExpertExport) -> Self {
         Self {
             enabled: declared.enabled.unwrap_or(true),
@@ -407,11 +429,17 @@ impl ExpertExportPolicy {
                 .as_ref()
                 .map(|entries| clean_entries(entries))
                 .unwrap_or_default(),
+            scripts: declared.scripts.unwrap_or(true),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Whether the pack's `assets` list may carry `bin/` / `scripts/` entries.
+    pub fn includes_scripts(&self) -> bool {
+        self.scripts
     }
 
     /// `Ok(())` when `id` may be exported, otherwise the operator-facing reason.

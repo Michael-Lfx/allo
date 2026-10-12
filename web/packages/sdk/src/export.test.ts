@@ -14,7 +14,7 @@ import { exportAgent, exportTeam, materializePack, type ExportDeps } from "./exp
 
 function makePack(kind: "agent" | "team"): ExpertPack {
   const member = (id: string, skillNames: string[]): ExpertPack => ({
-    pack_format: 1,
+    pack_format: 2,
     kind: "agent",
     id,
     version: "1.0.0",
@@ -23,6 +23,7 @@ function makePack(kind: "agent" | "team"): ExpertPack {
     model: {},
     skills: skillNames.map((name) => ({ name, id: name })),
     connectors: [],
+    assets: [],
     tool_policy: { tools: [], disallowed_tools: [] },
     provenance: { source: "test", snapshot_id: `snap-${id}`, content_digest: `digest-${id}` },
     runtime_binding: { runtime: "nomi", portable: false },
@@ -74,8 +75,20 @@ function fakeDeps(pack: ExpertPack, skills: Record<string, FakeSkill>): ExportDe
         return file.bytes;
       },
     },
+    readImportAsset: async (_snapshotId: string, assetPath: string) => {
+      const file = ASSETS.find((entry) => entry.path === assetPath);
+      if (!file) throw new Error(`asset_not_found: ${assetPath}`);
+      return file.bytes;
+    },
   };
 }
+
+/** The plugin-level assets the fake host serves (doc 38). */
+const ASSETS: { path: string; bytes: Uint8Array }[] = [
+  { path: "avatars/team.png", bytes: new TextEncoder().encode("PNG-bytes-team") },
+  { path: "bin/init_task.py", bytes: new TextEncoder().encode("print('start')\n") },
+  { path: "scripts/check.sh", bytes: new TextEncoder().encode("echo ok\n") },
+];
 
 const HELLO: FakeSkill = {
   files: [{ path: "SKILL.md", bytes: new TextEncoder().encode("# hello\nworld") }],
@@ -212,6 +225,90 @@ describe("materializePack (error semantics)", () => {
   });
 });
 
+describe("materializePack (plugin-level assets, doc 38)", () => {
+  it("writes the pack's assets at their snapshot-relative paths, making a plugin root", async () => {
+    const pack = makePack("team");
+    pack.assets = ASSETS.map((entry, index) => ({
+      path: entry.path,
+      kind: index === 0 ? ("avatar" as const) : ("script" as const),
+      size: entry.bytes.length,
+      digest: `d${index}`.padEnd(64, "0"),
+    }));
+    const deps = fakeDeps(pack, { hello: HELLO });
+    const dir = await tempDir();
+    try {
+      const result = await materializePack(deps, pack, dir);
+      expect(result.writtenAssets).toEqual(ASSETS.map((entry) => entry.path));
+      const files = await listFilesDeep(dir);
+      // The layout the team's own scripts assume: bin/ and avatars/ beside
+      // skills/, exactly two levels above `skills/<name>/scripts/`.
+      expect(files).toEqual([
+        "avatars/team.png",
+        "bin/init_task.py",
+        "expert-pack.json",
+        "members/lead-agent/persona.md",
+        "members/qa-agent/persona.md",
+        "scripts/check.sh",
+        "skills/hello/SKILL.md",
+      ]);
+      const bytes = await readFile(path.join(dir, "bin/init_task.py"));
+      const expected = ASSETS[1]!.bytes;
+      expect(bytes.every((byte, index) => byte === expected[index])).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when a listed asset cannot be read (host I/O failure)", async () => {
+    const pack = makePack("agent");
+    pack.assets = [
+      { path: "avatars/team.png", kind: "avatar", size: 3, digest: "d".repeat(64) },
+    ];
+    const deps = fakeDeps(pack, {});
+    deps.readImportAsset = async () => {
+      throw new Error("EIO from host");
+    };
+    const dir = await tempDir();
+    try {
+      await expect(materializePack(deps, pack, dir)).rejects.toThrow("EIO from host");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an unsafe inventory path before writing outside the target", async () => {
+    const pack = makePack("agent");
+    pack.assets = [{ path: "../escape.txt", kind: "script", size: 3, digest: "d".repeat(64) }];
+    const deps = fakeDeps(pack, {});
+    deps.readImportAsset = async () => new Uint8Array([1]);
+    const dir = await tempDir();
+    try {
+      await expect(materializePack(deps, pack, dir)).rejects.toThrow("unsafe asset path");
+      // Nothing was written outside the directory either.
+      expect(await listFilesDeep(dir)).toEqual(["expert-pack.json", "persona.md"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes no asset when the pack carries none (host without the asset seam)", async () => {
+    const pack = makePack("agent"); // assets: []
+    const deps = fakeDeps(pack, { hello: HELLO });
+    const dir = await tempDir();
+    try {
+      const result = await materializePack(deps, pack, dir);
+      expect(result.writtenAssets).toEqual([]);
+      expect(await listFilesDeep(dir)).toEqual([
+        "expert-pack.json",
+        "persona.md",
+        "skills/hello/SKILL.md",
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("exportAgent / exportTeam (thin entries)", () => {
   it("does not create the directory when the wire export fails", async () => {
     const dir = path.join(await tempDir(), "must-not-exist");
@@ -222,6 +319,7 @@ describe("exportAgent / exportTeam (thin entries)", () => {
         files: async () => { throw new Error("unreachable"); },
         readFile: async () => { throw new Error("unreachable"); },
       },
+      readImportAsset: async () => { throw new Error("unreachable"); },
     };
     // Fetch happens strictly before the first mkdir (doc `34` §6): no
     // half-written directory may survive a failed export.
@@ -239,6 +337,7 @@ describe("exportAgent / exportTeam (thin entries)", () => {
       const a = await exportTeam(deps, "frontend-backend-experts", first);
       const b = await exportTeam(deps, "frontend-backend-experts", second);
       expect(a.writtenSkills).toEqual(b.writtenSkills);
+      expect(a.writtenAssets).toEqual(b.writtenAssets);
       expect(await listFilesDeep(first)).toEqual(await listFilesDeep(second));
       for (const rel of await listFilesDeep(first)) {
         const left = await readFile(path.join(first, rel));

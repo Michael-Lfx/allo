@@ -563,6 +563,23 @@ pub struct AppServerImportDetail {
     pub components: Vec<AppServerImportComponent>,
 }
 
+/// One snapshot's plugin-level asset inventory (`import/assets`, doc `38`).
+///
+/// Exactly the address space `import/asset` accepts and an expert pack's
+/// `assets` names — the three faces share one provider and one whitelist, so a
+/// consumer can never see a path it cannot fetch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppServerImportAssetList {
+    pub snapshot_id: String,
+    /// Sorted by `path`. Only `avatars/`, `bin/` and `scripts/` are listed —
+    /// never persona text, skill bodies or the manifest.
+    pub assets: Vec<AppServerExpertAssetRef>,
+    /// The inventory hit its ceiling and is incomplete. Reported rather than
+    /// silently truncated (same honesty rule as `skill/files`).
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Agent / Team catalog (docs/agent-store/05 §4.1 / §4.2)
 // ---------------------------------------------------------------------------
@@ -703,7 +720,15 @@ pub struct AppServerTeamDetail {
 /// would make every unrelated wire change force every external runtime to
 /// re-adapt; omitting it would let a field change break them silently. Bump it
 /// only when the pack's shape changes (doc `32` §4.4).
-pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 1;
+///
+/// History: `1` was the doc-`32` shape (definition only). **`2` adds the
+/// plugin-level asset list** (`assets` + the declared `avatar` path, doc `38`):
+/// an export now also names the `avatars/`, `bin/` and `scripts/` files that
+/// sit beside the skills — still by reference, the bytes stay on `import/asset`.
+/// A v1 consumer reading a v2 pack keeps working (unknown fields are skipped),
+/// it just sees no assets; stating that distinction is what this version exists
+/// for.
+pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 2;
 
 /// Which catalog kind a pack describes.
 ///
@@ -754,6 +779,26 @@ pub struct AppServerExpertPack {
     pub skills: Vec<AppServerExpertSkillRef>,
     #[serde(default)]
     pub connectors: Vec<AppServerExpertConnectorRef>,
+    /// The package's plugin-level assets (`avatars/`, `bin/`, `scripts/`), by
+    /// reference, sorted by `path` (doc `38`).
+    ///
+    /// **Snapshot-scoped, so a member pack always carries an empty list**: the
+    /// whole roster ships inside one plugin, and copying the list per member
+    /// would be N× duplication with "each member has its own assets" as a false
+    /// semantic. Read them from the top-level pack. Empty also means "this host
+    /// wired no asset provider" — `capabilities.snapshot_assets` distinguishes
+    /// that from "this package ships none".
+    #[serde(default)]
+    pub assets: Vec<AppServerExpertAssetRef>,
+    /// The package's declared avatar as a **snapshot-relative path** (the
+    /// `plugin.json` `avatar` value, e.g. `avatars/team.png`) — the field the
+    /// host's own catalog turns into `avatar_url`. Present on the top-level
+    /// pack only, and only when that exact file is listed in [`Self::assets`]:
+    /// the pack never names a file a consumer cannot fetch (doc `38` D8). A
+    /// host-local URL would be a dead link off-host (doc `32` §2), which is why
+    /// this stays a path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     pub tool_policy: AppServerExpertToolPolicy,
     /// Present exactly when `kind == Team`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -816,6 +861,41 @@ pub struct AppServerExpertModelRef {
 pub struct AppServerExpertSkillRef {
     pub name: String,
     pub id: String,
+}
+
+/// One plugin-level asset the pack carries, **by reference** (doc `38`).
+///
+/// The files beside the skills — `avatars/`, `bin/`, `scripts/` — are part of
+/// what a package ships, and the team's own instructions routinely assume the
+/// plugin root holds them (`skills/md-to-html/scripts/render.py` resolves
+/// `PLUGIN_ROOT/bin/init_task.py` two levels above its skill). The bytes are
+/// deliberately **not** inlined (same rule as [`AppServerExpertSkillRef`], and
+/// the avatars alone blow the pack budget): a consumer fetches them with
+/// `import/asset`, whose address space is this list by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppServerExpertAssetRef {
+    /// Snapshot-relative path, POSIX-separated, e.g. `bin/init_task.py`.
+    pub path: String,
+    /// Display asset (`avatars/`) or executable/plugin-script content
+    /// (`bin/` + `scripts/`). The one field a consumer can use to decline
+    /// executable content without parsing paths.
+    pub kind: AppServerExpertAssetKind,
+    pub size: u64,
+    /// Single-file sha256, lowercase hex — same rule as `skill/files`.
+    pub digest: String,
+}
+
+/// Which of the plugin-level asset directories a reference came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerExpertAssetKind {
+    /// An image under the package's `avatars/` directory.
+    Avatar,
+    /// A file under `bin/` or `scripts/`. Honest label, not a permission: the
+    /// host never executes plugin-level scripts (`02` §5/§9) and the snapshot
+    /// copies them 0644, so the bytes arrive without an executable bit — what
+    /// the consumer does with them is the consumer's decision (doc `38` D9).
+    Script,
 }
 
 /// One connector a **team's own snapshot** installed and left enabled.

@@ -1,14 +1,18 @@
 /**
  * Export an expert (single agent) or an expert **team** together with its
- * skills, written out as a directory (doc `35`).
+ * skills and its package-level assets, written out as a directory (docs `35`
+ * and `38`).
  *
  * The wire face (`agent/export` / `team/export`, docs/agent-store/32) carries
- * skills **by reference** — `{name, id}`, never bytes — so "export the team's
- * skills" means: walk the pack, fetch every referenced skill through
- * `skill/files` + `skill/file`, and write the whole thing to a directory the
- * *caller* owns. Doc `32` §6.5 originally shipped this as an 11-line recipe in
- * prose; doc `35` promotes it into these three functions (and records why the
- * earlier decision against an SDK helper was reversed).
+ * skills **by reference** — `{name, id}`, never bytes — and, since
+ * `pack_format 2`, the plugin-level **assets** by reference too (`{path, kind,
+ * size, digest}`, doc 38). "Export the team" therefore means: walk the pack,
+ * fetch every referenced skill through `skill/files` + `skill/file`, fetch
+ * every asset through `import/assets` + `import/asset`, and write the whole
+ * thing to a directory the *caller* owns. Doc `32` §6.5 originally shipped
+ * this as an 11-line recipe in prose; doc `35` promoted it into these
+ * functions (and records why the earlier decision against an SDK helper was
+ * reversed); doc `38` extends the layout with the package's own files.
  *
  * Everything here runs in the caller's process. The host never writes a byte:
  * there is no server-side directory-writing endpoint by design (doc `32` §2
@@ -22,11 +26,11 @@ import { dirname, join } from "node:path";
 import type { ExpertPack } from "@flowy-agent-store/protocol";
 
 /**
- * The three wire faces this module needs, narrowed from {@link Harness} on
- * purpose: unit tests hand a fake, and the dependency surface stays explicit
- * instead of quietly reaching `store` / `conversations`. A real harness
- * satisfies this structurally (`Harness` extends `AppServerClient`, which owns
- * `agents` / `teams` / `skills`).
+ * The wire faces this module needs, narrowed from {@link Harness} on purpose:
+ * unit tests hand a fake, and the dependency surface stays explicit instead of
+ * quietly reaching `store` / `conversations`. A real harness satisfies this
+ * structurally (`Harness` extends `AppServerClient`, which owns `agents` /
+ * `teams` / `skills` and the two flat asset methods).
  */
 export interface ExportDeps {
   agents: { export(agentId: string): Promise<ExpertPack> };
@@ -35,6 +39,15 @@ export interface ExportDeps {
     files(skillId: string): Promise<{ files: { path: string }[] }>;
     readFile(skillId: string, path: string): Promise<Uint8Array>;
   };
+  /**
+   * The plugin-level snapshot asset byte face (`import/asset`, doc 38). The
+   * pack names the `avatars/`, `bin/` and `scripts/` files by reference —
+   * that list is the single source of what to fetch — and this fetches one
+   * file's bytes. (The listing method `import/assets` exists on the client;
+   * materialization deliberately trusts only the pack, so the exported
+   * directory can never contain a file the pack does not name.)
+   */
+  readImportAsset(snapshotId: string, path: string): Promise<Uint8Array>;
 }
 
 export interface ExportResult {
@@ -43,6 +56,14 @@ export interface ExportResult {
   dir: string;
   /** Skill names actually written (deduplicated). */
   writtenSkills: string[];
+  /**
+   * Snapshot-relative asset paths actually written, in the pack's order. The
+   * materialized directory is therefore a complete **plugin root**: a team
+   * whose scripts resolve `PLUGIN_ROOT/bin/init_task.py` two levels above
+   * their skill finds it, and the `avatars/` references in its own skill
+   * documents resolve too (doc 38 §3.5).
+   */
+  writtenAssets: string[];
   /**
    * Skills the pack **declares** but this host cannot resolve (`skill/files`
    * rejected them). Reported honestly, never skipped in silence: the pack
@@ -53,24 +74,45 @@ export interface ExportResult {
 }
 
 /**
- * Write an in-hand pack to `dir` as a real directory (doc `35` §5 layout).
- * "Materialize" here means exactly that: the in-memory pack object plus the
- * skill bytes it references become files on disk; the pack data itself is
- * unchanged.
+ * Reject a caller-supplied relative path lexically, before touching the disk.
+ *
+ * The server already rejects traversal on both the skill and the asset faces
+ * (docs/agent-store/24 §4.4, 38 §2.3); this second gate keeps a hostile
+ * *inventory* from turning `join(dir, path)` into a write outside the target
+ * directory. Same rules as the server's lexical pass: no `..`, no absolute
+ * paths, no backslashes, no drive/UNC prefixes.
+ */
+function rejectUnsafeRelative(path: string): void {
+  if (path.length === 0 || path.includes("\\") || path.startsWith("/") || path.includes(":")) {
+    throw new Error(`unsafe asset path from the host: ${path}`);
+  }
+  if (path.split("/").some((segment) => segment === "..")) {
+    throw new Error(`unsafe asset path from the host: ${path}`);
+  }
+}
+
+/**
+ * Write an in-hand pack to `dir` as a real directory (docs `35` §5 and `38`
+ * §3.5). "Materialize" here means exactly that: the in-memory pack object plus
+ * the skill and asset bytes it references become files on disk; the pack data
+ * itself is unchanged.
  *
  * ```text
  * <dir>/expert-pack.json     # the wire pack, byte-for-byte (JSON.stringify(_, 2))
  * <dir>/persona.md           # kind === "agent" only: pack.persona.instructions
  * <dir>/members/<id>/persona.md  # kind === "team" only, one per member
  * <dir>/skills/<name>/…      # every referenced skill's files, deduplicated by id
+ * <dir>/avatars/…            # pack.assets, kind === "avatar", at their snapshot paths
+ * <dir>/bin/… · scripts/…    # pack.assets, kind === "script" (doc 38 D5)
  * ```
  *
  * Error semantics (doc `35` §6): the pack is fetched **before** anything is
  * written, so a failed wire export leaves no directory behind; a `skill/files`
  * rejection lands in {@link ExportResult.danglingSkills} and the loop
- * continues; a `skill/file` rejection after a successful listing **throws** —
- * that is a host I/O failure, and swallowing it would produce a directory that
- * lists files it does not contain. No rollback on mid-write failure.
+ * continues; a `skill/file` or `import/asset` rejection after a successful
+ * listing **throws** — that is a host I/O failure, and swallowing it would
+ * produce a directory that lists files it does not contain. No rollback on
+ * mid-write failure.
  */
 export async function materializePack(
   deps: ExportDeps,
@@ -116,7 +158,21 @@ export async function materializePack(
     }
     writtenSkills.push(ref.name);
   }
-  return { pack, dir, writtenSkills, danglingSkills };
+
+  // Plugin-level assets (doc 38): the pack's list is snapshot-scoped and
+  // already sorted, so the write order — and therefore the `writtenAssets`
+  // order — is deterministic. Written at their snapshot-relative paths, which
+  // is what makes the directory a plugin root rather than a bag of files.
+  const writtenAssets: string[] = [];
+  for (const asset of pack.assets) {
+    rejectUnsafeRelative(asset.path);
+    const target = join(dir, asset.path);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, await deps.readImportAsset(pack.provenance.snapshot_id, asset.path));
+    writtenAssets.push(asset.path);
+  }
+
+  return { pack, dir, writtenSkills, writtenAssets, danglingSkills };
 }
 
 /**

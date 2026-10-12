@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-13`，55 WS 核心方法 / 80 双端路由端点）  
+> 状态：现行规范（统一协议 v1，指纹 `fp-14`，55 WS 核心方法 / 82 双端路由端点）  
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -16,7 +16,7 @@ App Server Protocol 确立为系统的**唯一公共对外接口面**：
 1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
 2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
 3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
-4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-13`）守卫协议两端，消解冗余复杂的迁移开销。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-14`）守卫协议两端，消解冗余复杂的迁移开销。
 
 ---
 
@@ -38,7 +38,7 @@ flowchart TD
     end
 
     subgraph ProtocolGate["协议网关与分发核心 (Protocol Gate)"]
-        Handshake["握手与指纹校验器 (initialize / fp-13)"]
+        Handshake["握手与指纹校验器 (initialize / fp-14)"]
         AuthContext["租户安全上下文 (LocalPrincipal)"]
         Dispatcher["唯一分发器 (dispatch_connection_request)"]
     end
@@ -72,17 +72,17 @@ flowchart TD
 
 ## 3. 核心机制详细方案
 
-### 3.1 握手协商与指纹机制 (`initialize` / `fp-13`)
+### 3.1 握手协商与指纹机制 (`initialize` / `fp-14`)
 
 1. **两段式生命周期握手**：
    - 客户端连接建立后必须首先发起 `initialize` 请求，携带客户端标识与目标协议指纹。
    - 服务端返回自身服务指纹、授权主体上下文（`auth_context`）及细粒度能力矩阵（`capabilities`）。
    - 客户端确认后发送 `initialized` 通知，服务端状态机切换至 `Ready`；未就绪前调用业务方法直接返回 `unauthenticated`。
 2. **契约指纹严格校验（Fingerprint Invariant）**：
-   - 摒弃易混淆的日期版本戳，采用单调自增计数器 `fp-<n>`（当前标准为 `fp-13`）。
+   - 摒弃易混淆的日期版本戳，采用单调自增计数器 `fp-<n>`（当前标准为 `fp-14`）。
    - 服务端与客户端在握手时必须绝对严格相等；任何参数模型、DTO 字段或错误码变动必须递增指纹，版本不匹配返回 `protocol_version_unsupported`，坚决拒绝未知的静默降级。
 3. **独立能力位矩阵（Capabilities Matrix）**：
-   - 细分独立能力标志位：`agents`、`teams`、`skills`、`skill_files`、`connectors`、`connector_calls`、`models`、`approvals`、`artifacts`。
+   - 细分独立能力标志位：`agents`、`teams`、`skills`、`skill_files`、`snapshot_assets`、`connectors`、`connector_calls`、`models`、`approvals`、`artifacts`。
    - 例如：`skill_files`（读取技能目录附带文件）与 `skills`（目录发现）完全解耦，`connector_calls`（受控工具代理）与 `connectors` 独立声明，便于宿主按安全策略精准赋权。
 
 ### 3.2 双模传输与消息信封规范
@@ -183,7 +183,15 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-13`** —— 2026-09-29 把**市场策略**放上协议面，并让后台扫掠在受控范围内
+> 指纹：**`fp-14`**（2026-10-12）给**专家包补上插件级资产**（doc `38`）：新增两个
+> **WebSocket-only** 方法 `import/assets`（列一个不可变快照的 `avatars/` `bin/` `scripts/`
+> 清单，按 `path` 排序、带 sha256）与 `import/asset`（base64 单文件字节，与 `skill/file`
+> 同形），并给 `AppServerExpertPack` 加 `assets` / `avatar`（`pack_format 1 → 2`）——导出
+> 目录由此成为团自带脚本假设的**插件根**。三面共用一个 provider 与一份白名单，persona
+> 正文与技能正文不在地址空间内；能力位 `snapshot_assets` 独立于 `expert_export`，运营者可用
+> `[expert_export] scripts = false` 把可执行类从包里减掉。两个新方法都无 HTTP 绑定，
+> 计数 `55 / 80` → **`55 / 82`**。
+> 上一值 **`fp-13`**（2026-09-29）把**市场策略**放上协议面，并让后台扫掠在受控范围内
 > 升级条目。新增两个**有 HTTP 路由**的方法：`market/settings`（`GET /api/app-server/market-settings`）
 > 读宿主级策略，`market/settings-set`（`POST`，同路径）写它。策略的真源是宿主
 > `config.toml`：写面用 `toml_edit` 只改指名的键（注释与其它设置原样存活）并回读文件作答，
@@ -508,12 +516,14 @@ agent/export { agent_id } → AppServerExpertPack   (kind = "agent")
 persona 正文的面**——上面的 `agent/get` 刻意没有承载它的字段，也不得增加（方案 `32` §2）。
 
 ```text
-pack_format                       // = 1，**独立于 fp-n**：产物契约的版本
+pack_format                       // fp-8 起 = 1，fp-14 起 = 2；**独立于 fp-n**：产物契约的版本
 kind / id / version / name / display_name / description
 persona { instructions, memory?, background? }   // instructions = Agent Markdown 正文，逐字
 model   { declared?, resolved?{provider_id?, model}, effort?, max_turns? }
 skills  [ { name, id } ]          // **按引用**：正文走 skill/files
 connectors []                     // agent 恒空（该格式没有 Agent 级连接器声明，02 §5.1）
+assets  [ { path, kind, size, digest } ]   // fp-14：插件级 avatars/ bin/ scripts/，按引用（38 §4.4.1）
+avatar?                           // fp-14：包级头像的快照相对路径，仅当它在 assets 里（38 D8）
 tool_policy { tools[], disallowed_tools[] }      // 声明，不是权限边界
 provenance { source, snapshot_id, content_digest, preset_id?, preset_revision? }
 runtime_binding { runtime, portable }            // 恒 { "nomi", false }
@@ -881,6 +891,35 @@ POST /api/app-server/imports          # import/run  {@link AppServerImportReques
 GET  /api/app-server/imports          # import/list（最近 50 条）
 GET  /api/app-server/imports/{snapshot_id}   # import/get（组件与三态兼容报告）
 ```
+
+#### 4.4.1 插件级快照资产（`import/assets` · `import/asset`，`fp-14` 加入，WebSocket-only）
+
+导入期整树拷贝的快照里，与 `skills/` 平级的 `avatars/`、`bin/`、`scripts/` 是包的交付物——
+很多团队的自带脚本按「插件根」假设它们（`38` §1.1 的 `render.py` / `embed_avatars.py` 实例）。
+这两个方法把这一类内容交出去，**只此一类**：
+
+```text
+import/assets { snapshot_id }                 → { snapshot_id, assets[], truncated }
+import/asset  { snapshot_id, path }           → { snapshot_id, path, content_type,
+                                                  encoding: "base64", content }
+```
+
+- `assets[]` 每条为 `{path, kind, size, digest}`：`path` 是快照相对 POSIX 路径，`kind` ∈
+  `avatar`（`avatars/`）| `script`（`bin/` + `scripts/`，与导入器 KIND_SCRIPT 的并目录语义一致），
+  `digest` 是单文件 sha256（与 `skill/files` 同规则），列表按 `path` 排序；
+- **地址空间对齐**（`38` I1）：`import/assets` 列出的 ≡ `import/asset` 能读的 ≡
+  `AppServerExpertPack.assets` 命名的——三面共用一个 provider、一份白名单
+  （`avatars/`、`bin/`、`scripts/` 三个前缀，`kind` 由首段目录决定，不看扩展名）；
+- persona 正文（`agents/*.md`）、技能正文、`.codebuddy-plugin/plugin.json` 一律不在地址空间内：
+  persona 的唯一出口是 `agent/export`（`32` §2）；**边界与 `skill/files` 同性质**——不是机密边界，
+  是「端点不得退化成任意文件读」的稳定性边界；
+- 路径安全：词法拒绝（`..`、绝对路径、反斜杠、`:`）先行，`canonicalize + starts_with` 复核，
+  symlink 不列出也不读取；单文件上限 `MAX_SNAPSHOT_ASSET_BYTES = 2 MiB`（从元数据先量后读），
+  清单上限 512 条，超出置 `truncated`，绝不谎称完整；
+- 错误码沿用技能文件面：`not_found` / `invalid_request` / `response_too_large` / `internal_error`；
+- 能力位 `snapshot_assets` 独立声明，与 `imports`、`expert_export` 各自解耦；`expert/export` 的
+  `[expert_export]` 闸**不**作用于此面（`38` D6）——闸落在定义导出与包的 `assets` 清单上；
+- 两个方法都无 HTTP 绑定：WebUI 的头像显示走既有公开图片路由，本面为导出消费方而设。
 
 请求体：
 

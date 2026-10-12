@@ -25,6 +25,13 @@
  *          团**包级**技能与成员声明**两个来源**都落盘（去重、逐字节），悬空声明进 `danglingSkills`
  *   EX-011 官方团的真实形状：技能只在**包级**声明、成员一个都不写（镜像 `stock-partner-team` 1.0.7）
  *          ⇒ 顶层 `pack.skills` 非空、两个技能整个目录（含 `references/`）逐字节落盘
+ *   EX-012 doc `38` 的插件级资产：夹具 `asset-pack` 的 `pack.assets` 恰为
+ *          `avatars/team.png` + `bin/init_task` + `bin/init_task.py` + `scripts/check.sh`
+ *          （按 path 排序、带 sha256），`pack.avatar` = 声明的 `avatars/team.png`
+ *   EX-013 资产字节与落盘：`import/asset` 返回与夹具逐字节相同；`exportTeam` 后
+ *          `<dir>/bin/init_task.py` 存在且逐字节相同 —— 物化目录是完整插件根
+ *   EX-014 反向边界：`agents/*.md`（persona 正文）不在 `assets` 里，`import/asset` 读它被拒
+ *   EX-015 确定性：同一团两次导出的 expert-pack.json 逐字节相同（v2 形状，含 assets 排序）
  */
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -76,7 +83,8 @@ let workdir: string | null = null;
 try {
   check(
     "EX-001.capability",
-    harness.initializeInfo?.capabilities.expert_export === true,
+    harness.initializeInfo?.capabilities.expert_export === true &&
+      harness.initializeInfo?.capabilities.snapshot_assets === true,
     harness.initializeInfo?.capabilities,
   );
 
@@ -99,7 +107,7 @@ try {
   );
   check(
     "EX-002.export-and-fidelity",
-    pack.pack_format === 1 &&
+    pack.pack_format === 2 &&
       pack.kind === "agent" &&
       // The catalog face must have no field that could carry the body…
       !detailKeys.includes("instructions") &&
@@ -409,6 +417,102 @@ try {
     );
   } else {
     check("EX-011.package-level-team-skills", false, "package-skills-team produced no team");
+  }
+
+  // ------------------------------------------------- EX-012~015：插件级资产（doc `38`）
+  // 夹具 `asset-pack` 镜像真实团的资产形状：包级 `avatar` 声明 + `avatars/`、`bin/`、
+  // `scripts/` 与 `skills/` 平级。判据是「地址空间对齐」：包能列出的字节面就能读，
+  // 包不列的（persona 正文）字节面也读不到。
+  await importAndInstall(harness, "asset-pack");
+  const assetPacks = await harness.agents.list();
+  const assetAgent = assetPacks.find((agent) => agent.id.includes("asset-pack-lead"));
+  if (assetAgent) {
+    const assetPack = await harness.agents.export(assetAgent.id);
+    const expectedPaths = [
+      "avatars/asset-pack-worker.png",
+      "avatars/team.png",
+      "bin/init_task",
+      "bin/init_task.py",
+      "scripts/check.sh",
+    ];
+    const actualPaths = assetPack.assets.map((asset) => asset.path);
+    console.log(
+      `ASSETS format=${assetPack.pack_format} avatar=${assetPack.avatar ?? "-"} assets=${JSON.stringify(actualPaths)}`,
+    );
+    check(
+      "EX-012.asset-inventory",
+      assetPack.pack_format === 2 &&
+        JSON.stringify(actualPaths) === JSON.stringify(expectedPaths) &&
+        assetPack.assets.every(
+          (asset) =>
+            asset.digest.length === 64 &&
+            (asset.path.startsWith("avatars/")
+              ? asset.kind === "avatar"
+              : asset.kind === "script"),
+        ) &&
+        // 声明的包级头像必须真的列在 assets 里（`38` D8：不指向取不到的文件）
+        assetPack.avatar === "avatars/team.png" &&
+        assetPack.assets.some((asset) => asset.path === assetPack.avatar),
+      { actualPaths, avatar: assetPack.avatar ?? null },
+    );
+
+    // 字节面：清单里的一条与夹具逐字节相同。
+    const initWire = await harness.readImportAsset(assetPack.provenance.snapshot_id, "bin/init_task.py");
+    const initDisk = new Uint8Array(
+      await readFile(path.join(FIXTURES, "asset-pack/bin/init_task.py")),
+    );
+    // 反向：persona 正文不在地址空间内。
+    let personaRefused = false;
+    try {
+      await harness.readImportAsset(assetPack.provenance.snapshot_id, "agents/asset-pack-lead.md");
+    } catch {
+      personaRefused = true;
+    }
+    check(
+      "EX-014.asset-byte-face-boundary",
+      initWire.length === initDisk.length &&
+        initWire.every((byte, index) => byte === initDisk[index]) &&
+        personaRefused,
+      { wireBytes: initWire.length, diskBytes: initDisk.length, personaRefused },
+    );
+
+    // 物化：资产按快照相对路径落位，目录成为完整插件根 —— 团自带脚本假设的
+    // `PLUGIN_ROOT/bin/init_task.py`（技能目录上方两级）与 `../../../avatars` 全部成立。
+    const assetDir = path.join(workdir ?? ".", "ex013", assetPack.id);
+    const assetExport = await exportAgent(harness, assetAgent.id, assetDir);
+    const exportedInit = new Uint8Array(
+      await readFile(path.join(assetDir, "bin/init_task.py")),
+    );
+    const exportedAvatar = new Uint8Array(await readFile(path.join(assetDir, "avatars/team.png")));
+    const avatarOnDisk = new Uint8Array(await readFile(path.join(FIXTURES, "asset-pack/avatars/team.png")));
+    const packJson = await readFile(path.join(assetDir, "expert-pack.json"), "utf8");
+    check(
+      "EX-013.asset-materialize-plugin-root",
+      JSON.stringify(assetExport.writtenAssets) === JSON.stringify(expectedPaths) &&
+        exportedInit.length === initDisk.length &&
+        exportedInit.every((byte, index) => byte === initDisk[index]) &&
+        exportedAvatar.length === avatarOnDisk.length &&
+        exportedAvatar.every((byte, index) => byte === avatarOnDisk[index]),
+      {
+        written: assetExport.writtenAssets,
+        initBytes: exportedInit.length,
+        avatarBytes: exportedAvatar.length,
+      },
+    );
+
+    // 确定性：两次导出的 pack JSON 逐字节相同（v2 形状，含 assets 排序）。
+    const againPack = await harness.agents.export(assetAgent.id);
+    check(
+      "EX-015.deterministic-v2",
+      JSON.stringify(assetPack) === JSON.stringify(againPack) &&
+        packJson === JSON.stringify(assetPack, null, 2),
+      { bytes: packJson.length },
+    );
+  } else {
+    check("EX-012.asset-inventory", false, "asset-pack produced no agent Definition");
+    check("EX-013.asset-materialize-plugin-root", false, "skipped: no asset-pack");
+    check("EX-014.asset-byte-face-boundary", false, "skipped: no asset-pack");
+    check("EX-015.deterministic-v2", false, "skipped: no asset-pack");
   }
 } catch (error) {
   console.error("ERROR:", String(error).slice(0, 1200));

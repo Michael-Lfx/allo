@@ -24,7 +24,9 @@ pub use catalog::{
     MAX_CONNECTOR_TOOLS_BYTES,
     MAX_EXPERT_PACK_BYTES,
     MAX_SKILL_FILE_BYTES,
-    SkillCatalogProvider, SkillFileBytes, SkillFileError, SkillFileProvider, StoreProvider,
+    MAX_SNAPSHOT_ASSET_BYTES, MAX_SNAPSHOT_ASSET_ENTRIES,
+    SkillCatalogProvider, SkillFileBytes, SkillFileError, SkillFileProvider, SnapshotAssetProvider,
+    StoreProvider,
     TeamCatalogProvider,
 };
 pub use workspace_resolver::{
@@ -82,7 +84,7 @@ use nomifun_api_types::{
     AppServerConnectorProbeResult, AppServerConnectorRegistration, AppServerConnectorStatusView,
     AppServerConnectorSummary,
     AppServerExpertPack,
-    AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
+    AppServerImportAssetList, AppServerImportDetail, AppServerImportRequest, AppServerImportResult,
     AppServerImportSummary, AppServerInstallRequest, AppServerInstallResult,
     AppServerInstallStatus, AppServerMarketplaceAddRequest, AppServerMarketplaceDetail,
     AppServerMarketplaceRefreshResult, AppServerMarketplaceRemoveResult,
@@ -209,7 +211,14 @@ use tokio::sync::mpsc;
 /// `auto_update` is on — official sources only, `connector` excluded unless the
 /// operator opts in, and never for an entry the user disabled by hand. Two
 /// methods, both mapped, so the documented split moves to `55 / 80`.
-pub const PROTOCOL_VERSION: &str = "fp-13";
+/// **`fp-14` gives the expert pack its plugin-level assets** (doc 38): two new
+/// **WebSocket-only** methods — `import/assets` lists the `avatars/`, `bin/` and
+/// `scripts/` files of an immutable snapshot (sorted, sha256-digested), and
+/// `import/asset` serves one of them base64 — plus an `assets` / `avatar` pair
+/// on `AppServerExpertPack` (`pack_format 2`), so `exportTeam` can materialize a
+/// directory the package's own scripts recognize as the plugin root. Both new
+/// methods are unmapped, so the documented split moves to `55 / 82`.
+pub const PROTOCOL_VERSION: &str = "fp-14";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +339,12 @@ pub struct CapabilityAvailability {
     /// per request by the provider (same split as `connector_calls`, which is
     /// wired even on a host whose `[connector_proxy]` is off).
     pub expert_export: bool,
+    /// `import/assets` / `import/asset` readiness — the plugin-level **snapshot
+    /// asset** seam (doc `38`). Wired independently of the export seam: a host
+    /// can serve asset bytes without `agent/export`, and an export host without
+    /// this provider emits packs with an empty `assets` list. One bit covers the
+    /// byte face and the pack's list because they are the same provider.
+    pub snapshot_assets: bool,
 }
 
 impl CapabilityAvailability {
@@ -351,6 +366,7 @@ impl CapabilityAvailability {
             store: state.store.is_some(),
             models: state.models.is_some(),
             expert_export: state.expert_packs.is_some(),
+            snapshot_assets: state.snapshot_assets.is_some(),
         }
     }
 }
@@ -566,6 +582,10 @@ pub struct Capabilities {
     /// [`CapabilityAvailability::expert_export`]. Reports the **seam**, not the
     /// host's `[expert_export]` policy (that decision is made per request).
     pub expert_export: bool,
+    /// `import/assets` / `import/asset` readiness — see
+    /// [`CapabilityAvailability::snapshot_assets`]. The pack's `assets` list and
+    /// the byte face share this bit because they share the provider.
+    pub snapshot_assets: bool,
 }
 
 impl Capabilities {
@@ -594,6 +614,7 @@ impl Capabilities {
             store: availability.store,
             models: availability.models,
             expert_export: availability.expert_export,
+            snapshot_assets: availability.snapshot_assets,
         }
     }
 }
@@ -1195,6 +1216,12 @@ pub struct AppServerRouterState {
     /// catalog stays available either way. Host management surface: no HTTP
     /// binding and no counterpart in the published SDK package.
     pub skill_writes: Option<Arc<dyn SkillWriteProvider>>,
+    /// Plugin-level **snapshot asset** read face (`import/assets`,
+    /// `import/asset`, doc `38`). `None` keeps both methods answering
+    /// `unsupported_operation`, the `snapshot_assets` capability off — and, via
+    /// the same provider instance being absent from the export adapter, expert
+    /// packs carrying an empty `assets` list. One seam, three faces.
+    pub snapshot_assets: Option<Arc<dyn SnapshotAssetProvider>>,
     /// Agent Store Connector catalog provider. `None` keeps the `connectors`
     /// capability off and returns `unsupported_operation` for `connector/*`.
     pub connectors: Option<Arc<dyn ConnectorCatalogProvider>>,
@@ -1273,6 +1300,7 @@ impl Default for AppServerRouterState {
             skills: None,
             skill_files: None,
             skill_writes: None,
+            snapshot_assets: None,
             connectors: None,
             connector_calls: None,
             connector_auth: None,
@@ -1831,6 +1859,48 @@ async fn read_skill_file_impl(
 ) -> Result<SkillFileBytes, AppServerError> {
     skill_file_provider(state)?
         .read(skill_id, path)
+        .await
+        .map_err(skill_file_error)
+}
+
+/// `import/assets` / `import/asset` seam (doc `38`). Same shape as the skill
+/// file face above — including the deliberate reuse of [`SkillFileError`], whose
+/// variants map one-to-one onto the same stable wire codes.
+fn snapshot_asset_provider(state: &AppServerRouterState) -> Result<Arc<dyn SnapshotAssetProvider>, AppServerError> {
+    state.snapshot_assets.clone().ok_or_else(|| {
+        AppServerError::new(
+            "unsupported_operation",
+            "snapshot assets are not enabled on this App Server",
+            StatusCode::SERVICE_UNAVAILABLE,
+            false,
+        )
+    })
+}
+
+/// `import/assets`: the plugin-level asset inventory of one immutable snapshot.
+async fn list_snapshot_assets_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+) -> Result<AppServerImportAssetList, AppServerError> {
+    snapshot_asset_provider(state)?
+        .assets(snapshot_id)
+        .await
+        .map_err(skill_file_error)
+}
+
+/// `import/asset`: one plugin-level asset's bytes.
+///
+/// Like `skill/file`, the provider owns path safety and the size cap; the
+/// protocol layer does not second-guess the resolved path. Unlike `skill/file`,
+/// there is no HTTP route at all — the WebUI serves display images through the
+/// public asset route, and this face exists for the export consumer.
+async fn read_snapshot_asset_impl(
+    state: &AppServerRouterState,
+    snapshot_id: &str,
+    path: &str,
+) -> Result<SkillFileBytes, AppServerError> {
+    snapshot_asset_provider(state)?
+        .read(snapshot_id, path)
         .await
         .map_err(skill_file_error)
 }
@@ -3274,7 +3344,11 @@ async fn store_asset_route(
 
 /// Validate a snapshot id is a bare UUIDv7-like opaque id (36 chars, hex+dash)
 /// so it cannot be used as a path traversal vector.
-fn snapshot_dir_name(snapshot_id: &str) -> Option<String> {
+///
+/// `pub` so the production snapshot-asset provider (`nomifun-app`) and the
+/// public asset route share one definition of "a valid snapshot id" — the same
+/// id has to pass both faces.
+pub fn snapshot_dir_name(snapshot_id: &str) -> Option<String> {
     if snapshot_id.len() == 36
         && snapshot_id
             .chars()
@@ -8024,6 +8098,29 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode import: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        // ---------------- Plugin-level snapshot assets (doc 38) ----------------
+        "import/assets" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSnapshotQuery>(params)?;
+            let listing = list_snapshot_assets_impl(state, &params.snapshot_id).await?;
+            Ok(ws_response(request_id, serde_json::to_value(listing).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode snapshot assets: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
+        "import/asset" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let params = parse_ws_params::<WsSnapshotAssetQuery>(params)?;
+            let asset = read_snapshot_asset_impl(state, &params.snapshot_id, &params.path).await?;
+            // Same envelope as `skill/file`: JSON has no byte string, so the WS
+            // binding base64s the body and carries `content_type` beside it.
+            Ok(ws_response(request_id, serde_json::json!({
+                "snapshot_id": params.snapshot_id,
+                "path": params.path,
+                "content_type": asset.content_type,
+                "encoding": "base64",
+                "content": BASE64_STANDARD.encode(&asset.bytes),
+            })))
+        }
         // ---------------- Agent Store Installer (05 §4.5; same impls as the HTTP routes) ----------------
         "install/run" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
@@ -8378,6 +8475,16 @@ struct WsConnectorCredentialClear {
 #[serde(deny_unknown_fields)]
 struct WsSnapshotQuery {
     snapshot_id: String,
+}
+
+/// `import/asset` params (`38` §3.1). `path` is snapshot-relative; the provider
+/// owns the whitelist and the traversal checks, and `deny_unknown_fields` keeps
+/// the request from naming anything else.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsSnapshotAssetQuery {
+    snapshot_id: String,
+    path: String,
 }
 
 /// `config/get` takes no parameters — `deny_unknown_fields` on an empty struct
@@ -12679,6 +12786,13 @@ model = "mimo-v2.5-free"
                 id: "release-notes".into(),
             }],
             connectors: vec![],
+            assets: vec![nomifun_api_types::AppServerExpertAssetRef {
+                path: "bin/init_task.py".into(),
+                kind: nomifun_api_types::AppServerExpertAssetKind::Script,
+                size: 42,
+                digest: "a".repeat(64),
+            }],
+            avatar: None,
             tool_policy: nomifun_api_types::AppServerExpertToolPolicy {
                 tools: vec!["read_file".into()],
                 disallowed_tools: vec![],
@@ -13033,6 +13147,157 @@ model = "mimo-v2.5-free"
             };
             assert_eq!(code_of(list_skill_files_impl(&state, "demo").await), expected);
         }
+    }
+
+    // ---- Snapshot assets: `import/assets` · `import/asset` (doc 38) -------
+    //
+    // Same pinning pattern as the skill file face above: an honest capability
+    // bit, a closed seam when unwired, and stable wire codes. The asset face
+    // shares the skill face's error type on purpose — one mapping, one set of
+    // codes.
+
+    struct FakeSnapshotAssets {
+        fail: std::sync::Mutex<Option<SkillFileError>>,
+    }
+
+    impl FakeSnapshotAssets {
+        fn ok() -> Self {
+            Self { fail: std::sync::Mutex::new(None) }
+        }
+
+        fn failing(error: SkillFileError) -> Self {
+            Self { fail: std::sync::Mutex::new(Some(error)) }
+        }
+
+        fn take_failure(&self) -> Option<SkillFileError> {
+            self.fail.lock().expect("fake asset lock").take()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SnapshotAssetProvider for FakeSnapshotAssets {
+        async fn assets(
+            &self,
+            snapshot_id: &str,
+        ) -> Result<AppServerImportAssetList, SkillFileError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(AppServerImportAssetList {
+                snapshot_id: snapshot_id.to_owned(),
+                assets: vec![nomifun_api_types::AppServerExpertAssetRef {
+                    path: "bin/init_task.py".into(),
+                    kind: nomifun_api_types::AppServerExpertAssetKind::Script,
+                    size: 16,
+                    digest: "abc".into(),
+                }],
+                truncated: false,
+            })
+        }
+
+        async fn read(
+            &self,
+            _snapshot_id: &str,
+            path: &str,
+        ) -> Result<SkillFileBytes, SkillFileError> {
+            if let Some(error) = self.take_failure() {
+                return Err(error);
+            }
+            Ok(SkillFileBytes {
+                bytes: path.as_bytes().to_vec(),
+                content_type: "text/x-python; charset=utf-8".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_asset_face_requires_its_own_capability() {
+        // The import face alone must not advertise the asset face, and vice
+        // versa: each seam is wired independently and each bit reports its own.
+        let imports_only = AppServerRouterState {
+            imports: Some(Arc::new(crate::catalog::FakeImportProvider::default())),
+            ..Default::default()
+        };
+        let availability = CapabilityAvailability::from_state(&imports_only);
+        assert!(availability.imports);
+        assert!(
+            !availability.snapshot_assets,
+            "imports alone must not advertise the asset face"
+        );
+
+        let wired = AppServerRouterState {
+            snapshot_assets: Some(Arc::new(FakeSnapshotAssets::ok())),
+            ..Default::default()
+        };
+        assert!(CapabilityAvailability::from_state(&wired).snapshot_assets);
+        assert!(Capabilities::from_availability(CapabilityAvailability::from_state(&wired)).snapshot_assets);
+    }
+
+    #[tokio::test]
+    async fn snapshot_asset_face_is_closed_without_a_provider() {
+        let bare = AppServerRouterState::default();
+        assert!(snapshot_asset_provider(&bare).is_err());
+        assert_eq!(
+            code_of(list_snapshot_assets_impl(&bare, "demo").await),
+            "unsupported_operation"
+        );
+        assert_eq!(
+            code_of(read_snapshot_asset_impl(&bare, "demo", "bin/x.py").await),
+            "unsupported_operation"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_asset_impls_round_trip_through_the_provider() {
+        let state = AppServerRouterState {
+            snapshot_assets: Some(Arc::new(FakeSnapshotAssets::ok())),
+            ..Default::default()
+        };
+        let listing = list_snapshot_assets_impl(&state, "demo").await.unwrap();
+        assert_eq!(listing.snapshot_id, "demo");
+        assert_eq!(listing.assets[0].path, "bin/init_task.py");
+        assert_eq!(
+            listing.assets[0].kind,
+            nomifun_api_types::AppServerExpertAssetKind::Script
+        );
+
+        let file = read_snapshot_asset_impl(&state, "demo", "bin/init_task.py").await.unwrap();
+        assert_eq!(file.bytes, b"bin/init_task.py");
+    }
+
+    #[tokio::test]
+    async fn snapshot_asset_errors_keep_the_stable_codes() {
+        let cases = [
+            (SkillFileError::NotFound("gone".into()), "not_found"),
+            (SkillFileError::InvalidRequest("bad path".into()), "invalid_request"),
+            (
+                SkillFileError::TooLarge { size: 10, limit: 5 },
+                "response_too_large",
+            ),
+        ];
+        for (error, expected) in cases {
+            let state = AppServerRouterState {
+                snapshot_assets: Some(Arc::new(FakeSnapshotAssets::failing(error))),
+                ..Default::default()
+            };
+            assert_eq!(
+                code_of(list_snapshot_assets_impl(&state, "demo").await),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn sample_expert_pack_serializes_pack_format_2_with_assets() {
+        // Doc `38` flips `pack_format` to 2 and puts the asset list on the wire;
+        // the shape guard here keeps a future bump a conscious act.
+        let json = serde_json::to_value(sample_expert_pack()).unwrap();
+        assert_eq!(json["pack_format"], 2);
+        assert_eq!(json["assets"][0]["path"], "bin/init_task.py");
+        assert_eq!(json["assets"][0]["kind"], "script");
+        // `avatar` is absent when unset (`skip_serializing_if`), so `null` can
+        // never imply "no avatar" versus "no field".
+        assert!(json.get("avatar").is_none());
     }
 
     // ---- Connector call proxy: `connector/call` (doc 24 §5) ---------------
