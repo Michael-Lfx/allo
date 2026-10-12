@@ -306,3 +306,4 @@ sequenceDiagram
 - **F1（本轮不做）**：install 侧依旧不把插件级 `bin/` `scripts/` `avatars/` 物化到托管技能根 —— 宿主自己跑这个团时，`render.py` 的 `PLUGIN_ROOT/bin/init_task.py` 与 `embed_avatars.py` 的默认头像目录仍只在**不可变快照缓存**里成立（lead agent 指令里的「Glob 拿绝对路径」就是在这条歪路上找文件）。要不要把插件级资产一并物化，属于 `02` §9 执行安全模型的范畴，与导出分开拍。
 - **F2**：逐成员头像归属（`plugin.json.members[].avatar` 进快照 payload）—— 当前映射由团自带技能承载，市场 381 个插件里只有 3 个团需要，等真实需求。
 - **F3**：`[expert_export] scripts` 目前修饰包契约而非字节面（D6/D5）；若未来要把「可执行字节不出宿主」做成硬边界，应与 `02` §9 的执行安全模型一起设计，而不是给这个键偷偷加语义。
+- **F4（已定口径，2026-10-12 用户确认）**：**悬空技能是可接受的现状，不是待修缺陷**。成员 frontmatter 的 `skills:` 声明在源运行时（WorkBuddy/CodeBuddy）本就没有兑现机制——装机只物化包级声明（`plugin.json.skills`），对手写声明不校验、不物化；本仓与源对齐，但在落空场合比源诚实：`agent/run` 失败关闭（`PRESET_SKILLS_UNAVAILABLE`）+ 导出如实上报进 `danglingSkills`（doc `32` §6.5 EX-008、`35` §6）。真实成因是成员声明引用了包里不存在/未列入装机清单/别家插件的技能——官方团包级技能不悬空（EX-011：written = declared）。只有当源运行时自己开始兑现成员声明时，本仓才跟随收紧。

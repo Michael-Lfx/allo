@@ -307,7 +307,7 @@ flowchart TD
 5. **策略**：`[expert_export]` 新增减项 `scripts`（缺省 `true`，`false` 时包的 `assets` 去掉 `kind:"script"` 条目、头像不受影响）。诚实边界写进代码注释与 `38` D5/D6：它修饰**包契约**而非字节面——`import/asset` 与 `import/get` 同权威，正如 `skill/files` 本就不受 `[expert_export]` 约束；真要「可执行字节不出宿主」，等 `02` §9 的执行安全模型。
 6. **SDK**：`ExportDeps` 增 `readImportAsset`；`materializePack` 把资产按快照相对路径落盘（写前再做一次词法校验），`ExportResult` 增 `writtenAssets`——物化目录成为**完整的插件根**；清单成功后读失败照旧抛（不静默产出清单里有而盘上没有的目录）。
 7. **指纹落点与门禁**：`check:fingerprint` 绿（`fp-14`，本仓 7 文件 10 处 + 站点 2 处）；`check:release-sync` 绿（`55 / 82` 两语言同值）；`DOCUMENTED_ROUTE_SPLIT` 55/25 → 55/27 + `DOCUMENTED_UNMAPPED` 增两方法；两仓文档同步（`05` §3.1/§4.4.1/附录、`07` §3.3、`32` 演进注、`35` 布局演进注、站点 SDK 指南两语言、`CHANGELOG`）。
-8. **仍未做（`38` §5.3）**：F1 install 侧依旧不物化插件级资产——宿主自己跑这个团时，团脚本仍只能靠「Glob 到快照缓存里那份」找到 `bin/init_task.py`（这属于 `02` §9 的执行安全模型，与导出分开拍）；F2 逐成员头像归属（`plugin.json.members[].avatar` 不进快照 payload，映射由团自带技能承载）；F3 `scripts` 键修饰包契约而非字节面，硬边界留给 `02` §9。
+8. **仍未做（`38` §5.3）**：F1 install 侧依旧不物化插件级资产——宿主自己跑这个团时，团脚本仍只能靠「Glob 到快照缓存里那份」找到 `bin/init_task.py`（这属于 `02` §9 的执行安全模型，与导出分开拍）；F2 逐成员头像归属（`plugin.json.members[].avatar` 不进快照 payload，映射由团自带技能承载）；F3 `scripts` 键修饰包契约而非字节面，硬边界留给 `02` §9；**F4（用户定口径）悬空技能是可接受现状非缺陷**——成员 frontmatter 声明在源运行时（WorkBuddy）本就无兑现机制，本仓与源对齐但落空时更诚实（如实上报），源收紧时才跟随收紧。
 9. **真机验收（同日）**：新增夹具 `asset-pack`（包级 `avatar` 声明 + `avatars/`×2 + `bin/`×2 + `scripts/`×1 + 1 团 2 成员），`sdk-live-expert-export.ts` 扩 EX-012~015 后**RESULT PASS（15/15）**——清单/落盘字节/插件根寻址/persona 拒读/v2 确定性全过；`cargo test -p nomifun-app --lib` 402 通过（唯一失败是既有基线的 `router::state::tests::every_production_conversation_service…`，与本轮无关）；`cargo test -p nomifun-app-server` 191 全绿；`web` 563 通过。
 
 ## 本轮（2026-10-10 修复连接器 OAuth 的「可见性」与安装反查，尚未发版）
