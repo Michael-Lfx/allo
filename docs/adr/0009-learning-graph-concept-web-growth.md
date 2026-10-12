@@ -1,6 +1,7 @@
 # ADR-0009: 学习图重构为概念网驱动的跨课程生长模型
 
-Status: Accepted
+Status: Accepted（部分废止：决策 6「多终点锚」与 Amendment 1 第 3、5 条由
+[ADR-0010](0010-endpoint-anchors-and-compass-retirement.md) 废止）
 
 Date: 2026-09-28
 
