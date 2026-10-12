@@ -552,8 +552,9 @@ pub struct DatasetReceipt {
     pub work_root: String,
     /// Old receipts deserialize this as `false`. Once the one-time owner
     /// compatibility backfill succeeds, the receipt is atomically upgraded to
-    /// `true`; thereafter neither owner nor data-side binding may be recreated
-    /// from absence.
+    /// `true`; thereafter a missing data-side binding is rejected. Boot may
+    /// restore a missing owner only from a matching binding and on-disk
+    /// generation, provided an external work root has no data-root identity.
     #[serde(default)]
     pub work_root_binding_required: bool,
     pub installed_at: i64,
@@ -1101,11 +1102,11 @@ fn ensure_v3_work_root_owner_for_reset(
 
 /// Install the data-side proof that the owner marker has been backfilled.
 ///
-/// Once this proof exists, a missing/recreated work-root owner is never
-/// silently reinstalled. Absence is accepted exactly once for pre-binding v3
-/// datasets and fresh
-/// bootstrap; owner publication happens first so every crash point is
-/// retryable without weakening the fail-closed rule.
+/// This gate requires an existing owner once the binding exists. Boot can
+/// restore a missing owner beforehand via `restore_missing_work_root_owner`,
+/// using the matching binding and on-disk generation. Missing bindings are
+/// accepted only for pre-binding v3 datasets and fresh bootstrap; owner
+/// publication happens first so every crash point remains retryable.
 fn ensure_v3_work_root_binding_with_requirement(
     data_dir: &Path,
     work_dir: &Path,
@@ -4408,7 +4409,9 @@ pub fn restore_missing_work_root_owner(
     ) {
         return Ok(());
     }
-    if work_root_has_data_root_identity(&canonical_work)? {
+    if canonical_work != canonical_data
+        && work_root_has_data_root_identity(&canonical_work)?
+    {
         return Err(AppError::Conflict(format!(
             "work directory {} has no owner marker but carries foreign dataset identity; \
              refusing to reclaim it",
@@ -8487,6 +8490,25 @@ mod tests {
         // A healthy install is a no-op on the next boot.
         restore_missing_work_root_owner(data.path(), work.path()).unwrap();
         assert!(read_work_root_owner(&canonical_work).unwrap().is_some());
+    }
+
+    #[test]
+    fn missing_owner_in_the_data_root_is_restored_from_its_binding() {
+        let data = tempfile::tempdir().unwrap();
+        let generation = Uuid::now_v7().to_string();
+        write_atomic(
+            &data.path().join(STORAGE_GENERATION_FILE),
+            generation.as_bytes(),
+        )
+        .unwrap();
+        write_v3_dataset_receipt_for_work_dir(data.path(), data.path(), &generation)
+            .unwrap();
+        std::fs::write(data.path().join(DB_FILE), b"own dataset").unwrap();
+        std::fs::remove_file(data.path().join(WORK_ROOT_OWNER_FILE)).unwrap();
+
+        restore_missing_work_root_owner(data.path(), data.path()).unwrap();
+
+        require_v3_work_root_owner(data.path(), data.path(), &generation).unwrap();
     }
 
     #[test]
