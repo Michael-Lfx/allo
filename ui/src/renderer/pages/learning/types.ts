@@ -625,7 +625,7 @@ export interface BlockView {
   slug: string;
   spine: string;
   /** 入门 | 进阶 | 高级 */
-  stage: '入门' | '进阶' | '高级';
+  stage: string;
   note: string;
   layer: number;
   no_prereq: boolean;
@@ -635,9 +635,9 @@ export interface StructureEdgeView {
   source: string;
   target: string;
   /** assumes | composes | contrasts（assumes：source = 需求方、target = 前置） */
-  edge_type: 'assumes' | 'composes' | 'contrasts';
+  edge_type: string;
   /** know | use | teach */
-  tier: 'know' | 'use' | 'teach';
+  tier: string;
   note: string;
 }
 
