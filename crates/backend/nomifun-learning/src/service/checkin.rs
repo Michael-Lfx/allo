@@ -300,7 +300,7 @@ impl LearningService {
         {
             let rows = sqlx::query(
                 "SELECT course_id, title, created_at FROM learning_courses \
-                 WHERE created_at >= ? AND created_at < ?",
+                 WHERE created_at >= ? AND created_at < ? AND deleted_at IS NULL",
             )
             .bind(range_start)
             .bind(range_end)

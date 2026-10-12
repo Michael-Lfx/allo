@@ -163,7 +163,8 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
-             FROM learning_courses c ORDER BY c.updated_at DESC, c.course_id",
+             FROM learning_courses c WHERE c.deleted_at IS NULL \
+             ORDER BY c.updated_at DESC, c.course_id",
         )
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -197,7 +198,8 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
-             FROM learning_courses c WHERE c.course_id = ?",
+             FROM learning_courses c \
+             WHERE c.course_id = ? AND c.deleted_at IS NULL",
         )
         .bind(user_value)
         .bind(user_value)
@@ -476,38 +478,62 @@ impl LearningService {
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-            let content_sql = [
-                "DELETE FROM learning_activities WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
-                    SELECT a.activity_id FROM learning_activities a \
-                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_lessons WHERE module_id IN (\
-                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
-                "DELETE FROM learning_modules WHERE course_id = ?",
-            ];
-            for sql in content_sql {
-                sqlx::query(sql)
-                    .bind(course_id.as_str())
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(internal)?;
-            }
+        }
+        // 课程内容（课时/模块/概念网边）无论勾选与否都物理删除——复习保留
+        // 的只是题目数据，不靠课时行续命。孤儿课时曾把新课的入口层向上顶
+        // （全局已教账把幽灵供给当真），这条语义从根上掐掉污染源。
+        let content_sql = [
+            "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+                SELECT l.lesson_id FROM learning_lessons l \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_activities WHERE lesson_id IN (\
+                SELECT l.lesson_id FROM learning_lessons l \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                SELECT a.activity_id FROM learning_activities a \
+                JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_lessons WHERE module_id IN (\
+                SELECT module_id FROM learning_modules WHERE course_id = ?)",
+            "DELETE FROM learning_modules WHERE course_id = ?",
+        ];
+        for sql in content_sql {
+            sqlx::query(sql)
+                .bind(course_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        }
+        if delete_reviews {
+            // 概念登记表跟勾选走：全删时清掉不再被任何课时引用的概念——
+            // 概念是跨课程共享资产，只收紧无主条目，不误删他课在用的。
+            sqlx::query(
+                "DELETE FROM learning_concept_registry WHERE concept_id NOT IN (\
+                    SELECT DISTINCT concept_id FROM learning_lesson_concepts)",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         }
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
-        sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
-            .bind(course_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
+        // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
+        // 遗留数据凭 course_id 归账，后续清理时有据可查。
+        sqlx::query(
+            "UPDATE learning_courses SET deleted_at = ?, updated_at = ? WHERE course_id = ?",
+        )
+        .bind(now_ms())
+        .bind(now_ms())
+        .bind(course_id.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
         Ok(())
     }
@@ -520,8 +546,10 @@ impl LearningService {
         title: &str,
     ) -> Result<Option<i64>, AppError> {
         let version: Option<i64> =
-            sqlx::query_scalar("SELECT version FROM learning_courses WHERE title = ?")
-                .bind(title)
+            sqlx::query_scalar(
+                "SELECT version FROM learning_courses WHERE title = ? AND deleted_at IS NULL",
+            )
+            .bind(title)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(internal)?;
@@ -534,8 +562,10 @@ impl LearningService {
     /// tutorial seed to replace a stale preset course version.
     pub(crate) async fn delete_courses_by_title(&self, title: &str) -> Result<(), AppError> {
         let course_ids: Vec<String> =
-            sqlx::query_scalar("SELECT course_id FROM learning_courses WHERE title = ?")
-                .bind(title)
+            sqlx::query_scalar(
+                "SELECT course_id FROM learning_courses WHERE title = ? AND deleted_at IS NULL",
+            )
+            .bind(title)
                 .fetch_all(&self.pool)
                 .await
                 .map_err(internal)?;
