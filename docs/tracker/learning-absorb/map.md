@@ -1,6 +1,8 @@
 # Map: 学习模块吸收 learnhub——先生成知识结构并可视化
 
 <!-- wayfinder:map -->
+<!-- 状态：已到达目的地（2026-10-12）——全部票关闭，实施规格齐备（本地图 + 各票 Resolution
+      + ADR-0010 + CONTEXT.md 词条），可直接拆实施票开工。 -->
 
 ## Destination
 
@@ -36,6 +38,11 @@
 
 ## Decisions so far
 
+- [真机冒烟入口设计](tickets/s1-smoke-harness-design.md)：`nomicore learning-smoke` 单
+  bin 四子命令（structure/grow/json/loop）；缺省从零临时 SQLite（`--db` 可指开发库）；
+  凭据复用 `resolve_provider_config` 现链；新增 `ArchivingCompleter` 观测存档
+  （`<data_dir>/observation/learning-smoke/`）；机械判据含首批 assumes 全空地板与端到端
+  EXIT=0；与管线同期实施。
 - [图投影只读 API](tickets/t1-graph-projection-api.md)（design facts 定案）：路由
   `GET /courses/{id}/graph/structure`（软删 404 守卫）；DTO 随学习模块惯例住
   `models.rs` + TS 镜像，`LearningStructureView` 200 恒答、None = 未生成；纯函数
@@ -79,12 +86,11 @@
 
 ## Not yet specified
 
-- 建课向导的生成进度与结构可视化衔接形态——可视化宿主已定（结构图 Tab），剩进度事件
-  与生成态展示的细节，实施时定。
-- 概念网图形化投影（learning_lesson_concepts → 节点-边）——概念表 Tab 已覆盖跨课程
-  概念面，结构块图上线后有需要再议。
-- 传统课程（`course_kind='traditional'`）是否同享结构生成管线。
-- blocks 40–80 规模对前端渲染性能与 WS 进度事件的影响。
+<!-- 剩余两条为实施期细节（不阻塞开工），实施会话按票面 Resolution 处理即可 -->
+
+- 建课向导的生成进度与结构可视化衔接细节——宿主已定（结构图 Tab），生成态展示在实施时
+  按 WS `structure_*` 事件定。
+- blocks 40–80 规模对前端渲染性能的影响——实施时 profiling，t1 已定 v1 无缓存可回退。
 
 ## Out of scope
 
@@ -94,3 +100,8 @@
 - 概念身份体系重构为 ULID：allo 的 `learning_concept_registry`（canonical + aliases +
   definition）+ 铸名门已与 learnhub 概念模型语义等价。
 - 教练多 agent 化（learnhub 自身亦后置为 v2 路线）。
+- 概念网图形化投影（learning_lesson_concepts → 节点-边）：概念表 Tab 已覆盖跨课程概念面，
+  结构块图上线后若真有需要，作为新 effort 另起（p1 裁决留后续）。
+- 传统课程（`course_kind='traditional'`）接入结构生成管线：蓝图管线自成一体，另起新 effort
+  再议。
+- 学习 DTO 迁 nomifun-api-types（t1 注记的既有偏离）：独立重构。
