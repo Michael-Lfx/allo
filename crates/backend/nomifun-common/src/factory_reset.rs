@@ -4373,6 +4373,51 @@ pub fn ensure_current_v3_work_root_owner(
     Ok(())
 }
 
+/// Restore a missing work-root owner marker when the data-side binding proves
+/// this dataset still owns the resolved work root.
+///
+/// Covers a deleted work directory (recreated empty by the boot layer) as well
+/// as deleted contents while the directory survived. The marker is only
+/// installed when the binding matches the current data/work roots and the
+/// on-disk generation, and a root that carries foreign dataset identity is
+/// refused instead of reclaimed. Mismatched bindings are left to the existing
+/// strict dataset checks so their canonical errors still surface.
+pub fn restore_missing_work_root_owner(
+    data_dir: &Path,
+    work_dir: &Path,
+) -> Result<(), AppError> {
+    let canonical_data = canonical_data_dir(data_dir)?;
+    let canonical_work = canonical_existing_work_dir(work_dir)?;
+    if read_work_root_owner(&canonical_work)?.is_some() {
+        // Healthy install: the strict checks own validation.
+        return Ok(());
+    }
+    let Some(binding) = read_work_root_binding(&canonical_data)? else {
+        // No binding yet: the normal bootstrap path installs the owner.
+        return Ok(());
+    };
+    if !bounded_regular_file_matches(
+        &canonical_data.join(STORAGE_GENERATION_FILE),
+        binding.generation.as_bytes(),
+        128,
+    ) || !binding_matches(
+        &binding,
+        &canonical_data,
+        &canonical_work,
+        &binding.generation,
+    ) {
+        return Ok(());
+    }
+    if work_root_has_data_root_identity(&canonical_work)? {
+        return Err(AppError::Conflict(format!(
+            "work directory {} has no owner marker but carries foreign dataset identity; \
+             refusing to reclaim it",
+            canonical_work.display()
+        )));
+    }
+    ensure_v3_work_root_owner(&canonical_data, &canonical_work, &binding.generation)
+}
+
 /// Rebind an already-finalized v3 dataset to a new managed work root without
 /// rotating its generation or touching any managed data roots.
 ///
@@ -8415,5 +8460,95 @@ mod tests {
                 .to_string()
                 .contains("explicit v3 dataset reset has been requested")
         );
+    }
+
+    #[test]
+    fn recreated_empty_work_root_reinstalls_the_owner_marker() {
+        let data = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let generation = Uuid::now_v7().to_string();
+        write_atomic(
+            &data.path().join(STORAGE_GENERATION_FILE),
+            generation.as_bytes(),
+        )
+        .unwrap();
+        write_v3_dataset_receipt_for_work_dir(data.path(), work.path(), &generation)
+            .unwrap();
+        let canonical_work = canonical_existing_work_dir(work.path()).unwrap();
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_some());
+
+        // Simulate the boot layer: the directory was deleted, then recreated.
+        std::fs::remove_dir_all(work.path()).unwrap();
+        std::fs::create_dir_all(work.path()).unwrap();
+
+        restore_missing_work_root_owner(data.path(), work.path()).unwrap();
+
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_some());
+        // A healthy install is a no-op on the next boot.
+        restore_missing_work_root_owner(data.path(), work.path()).unwrap();
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_some());
+    }
+
+    #[test]
+    fn recreated_work_root_with_foreign_identity_is_rejected() {
+        let data = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let generation = Uuid::now_v7().to_string();
+        write_atomic(
+            &data.path().join(STORAGE_GENERATION_FILE),
+            generation.as_bytes(),
+        )
+        .unwrap();
+        write_v3_dataset_receipt_for_work_dir(data.path(), work.path(), &generation)
+            .unwrap();
+
+        std::fs::remove_dir_all(work.path()).unwrap();
+        std::fs::create_dir_all(work.path()).unwrap();
+        std::fs::write(work.path().join(DB_FILE), b"foreign").unwrap();
+
+        let error =
+            restore_missing_work_root_owner(data.path(), work.path()).unwrap_err();
+
+        assert!(error.to_string().contains("foreign dataset identity"));
+        let canonical_work = canonical_existing_work_dir(work.path()).unwrap();
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_none());
+    }
+
+    #[test]
+    fn recreated_work_root_with_a_generation_mismatch_is_left_to_the_strict_checks() {
+        let data = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let generation = Uuid::now_v7().to_string();
+        write_atomic(
+            &data.path().join(STORAGE_GENERATION_FILE),
+            generation.as_bytes(),
+        )
+        .unwrap();
+        write_v3_dataset_receipt_for_work_dir(data.path(), work.path(), &generation)
+            .unwrap();
+
+        std::fs::write(
+            data.path().join(STORAGE_GENERATION_FILE),
+            Uuid::now_v7().to_string().as_bytes(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(work.path()).unwrap();
+        std::fs::create_dir_all(work.path()).unwrap();
+
+        restore_missing_work_root_owner(data.path(), work.path()).unwrap();
+
+        let canonical_work = canonical_existing_work_dir(work.path()).unwrap();
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_none());
+    }
+
+    #[test]
+    fn restore_without_a_binding_is_a_noop() {
+        let data = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+
+        restore_missing_work_root_owner(data.path(), work.path()).unwrap();
+
+        let canonical_work = canonical_existing_work_dir(work.path()).unwrap();
+        assert!(read_work_root_owner(&canonical_work).unwrap().is_none());
     }
 }
