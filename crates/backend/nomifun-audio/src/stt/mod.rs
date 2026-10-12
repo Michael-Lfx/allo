@@ -44,6 +44,7 @@ pub async fn transcribe_test_pcm(pcm: &[f32], _sample_rate: u32) -> Option<Strin
 
     #[cfg(feature = "local-stt")]
     {
+        let sample_rate = _sample_rate;
         if let Ok(Some(sherpa)) = try_load_sherpa(None) {
             use crate::frame::AudioChannel;
             use crate::recorder::SttCallback;

@@ -7212,6 +7212,7 @@ version = "1.6.1"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "cpal",
  "dashmap",
  "nomifun-api-types",

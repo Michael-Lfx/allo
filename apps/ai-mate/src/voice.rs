@@ -34,6 +34,7 @@ pub struct VoiceCompanionRuntime {
     router: Arc<QwenVoiceRouter>,
     capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
     spsc_producer: SpscProducer,
+    _mic_source: Option<Arc<nomifun_audio::MicSource>>,
 }
 
 impl VoiceCompanionRuntime {
@@ -42,7 +43,20 @@ impl VoiceCompanionRuntime {
         model_manager: Arc<ModelManager>,
         oobe_manager: Arc<OobeManager>,
     ) -> (Self, tokio::sync::mpsc::Receiver<Vec<u8>>) {
-        let (capture_pipeline, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (capture_pipeline, producer, mic_source) = match nomifun_audio::MicSource::new(16_000) {
+            Ok(mic) => {
+                info!("Hardware microphone successfully initialized for AI Mate");
+                let pipeline = mic.pipeline();
+                let mic_arc = Arc::new(mic);
+                let (_, prod) = VoiceCapturePipeline::new(PipelineConfig::default());
+                (pipeline, prod, Some(mic_arc))
+            }
+            Err(err) => {
+                warn!(error = %err, "No hardware microphone available; using standalone capture pipeline");
+                let (pipeline, prod) = VoiceCapturePipeline::new(PipelineConfig::default());
+                (Arc::new(Mutex::new(pipeline)), prod, None)
+            }
+        };
 
         let (playback_tx, playback_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
         let sink = Arc::new(ChannelAudioSink::new(playback_tx));
@@ -58,8 +72,9 @@ impl VoiceCompanionRuntime {
                 driver,
                 playback,
                 router,
-                capture_pipeline: Arc::new(Mutex::new(capture_pipeline)),
+                capture_pipeline,
                 spsc_producer: producer,
+                _mic_source: mic_source,
             },
             playback_rx,
         )

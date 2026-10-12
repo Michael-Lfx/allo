@@ -83,6 +83,21 @@ const SSE_PROGRESS_THROTTLE_MS = 200;
 
 const VOICE_ENABLED_STORAGE_KEY = 'nomifun:voice:enabled';
 
+export interface VoiceDeviceStatus {
+  mic_available: boolean;
+  device_name?: string;
+  sample_rate?: number;
+  channels?: number;
+  error?: string;
+}
+
+export interface VoiceAsrTestResult {
+  success: boolean;
+  text: string;
+  duration_ms: number;
+  error?: string;
+}
+
 function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec <= 0) return '0 B/s';
   const k = 1024;
@@ -104,6 +119,13 @@ const VoiceSettings: React.FC = () => {
   });
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Diagnostics & testing state
+  const [micStatus, setMicStatus] = useState<VoiceDeviceStatus | null>(null);
+  const [micChecking, setMicChecking] = useState(false);
+  const [asrRunning, setAsrRunning] = useState(false);
+  const [asrRecording, setAsrRecording] = useState(false);
+  const [asrResult, setAsrResult] = useState<VoiceAsrTestResult | null>(null);
 
   // Motion reduction and ready micro-motion states per ui-motion.zh.md §2 & §3
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
@@ -369,6 +391,105 @@ const VoiceSettings: React.FC = () => {
     }
   }, []);
 
+  const fetchDeviceStatus = useCallback(async () => {
+    setMicChecking(true);
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/diagnostics/device`, {
+        headers: buildBackendAuthHeaders('GET'),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as VoiceDeviceStatus;
+        setMicStatus(data);
+      }
+    } catch {
+      setMicStatus({ mic_available: false, error: 'Connection failed' });
+    } finally {
+      setMicChecking(false);
+    }
+  }, []);
+
+  const handleStartAsrTest = useCallback(async () => {
+    setAsrRunning(true);
+    setAsrResult(null);
+
+    let audioBase64: string | undefined = undefined;
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      try {
+        setAsrRecording(true);
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        const chunks: Blob[] = [];
+
+        const audioBlob = await new Promise<Blob>((resolve) => {
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+          };
+          mediaRecorder.onstop = () => {
+            resolve(new Blob(chunks, { type: mediaRecorder.mimeType || 'audio/webm' }));
+            stream.getTracks().forEach((track) => track.stop());
+          };
+          mediaRecorder.start();
+          setTimeout(() => {
+            mediaRecorder.stop();
+          }, 3000);
+        });
+
+        setAsrRecording(false);
+        const reader = new FileReader();
+        audioBase64 = await new Promise<string>((resolve) => {
+          reader.onloadend = () => {
+            resolve((reader.result as string) || '');
+          };
+          reader.readAsDataURL(audioBlob);
+        });
+      } catch {
+        setAsrRecording(false);
+      }
+    }
+
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/diagnostics/asr-test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildBackendAuthHeaders('POST'),
+        },
+        body: JSON.stringify({
+          audio_base64: audioBase64,
+          sample_rate: 16000,
+        }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as VoiceAsrTestResult;
+        setAsrResult(data);
+      } else {
+        const errJson = (await response.json().catch(() => ({}))) as { error?: string };
+        setAsrResult({
+          success: false,
+          text: '',
+          duration_ms: 0,
+          error: errJson.error || 'Request failed',
+        });
+      }
+    } catch (e) {
+      setAsrResult({
+        success: false,
+        text: '',
+        duration_ms: 0,
+        error: e instanceof Error ? e.message : 'Network request failed',
+      });
+    } finally {
+      setAsrRunning(false);
+      setAsrRecording(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (modelStatus === 'Ready') {
+      void fetchDeviceStatus();
+    }
+  }, [modelStatus, fetchDeviceStatus]);
+
   // Hairline track scaleX computation per ui-motion.zh.md §3
   let progressRatio = 0;
   if (modelStatus === 'Downloading' && downloadDetail) {
@@ -570,6 +691,83 @@ const VoiceSettings: React.FC = () => {
             </div>
           </SettingsList>
         </SettingsSection>
+
+        {modelStatus === 'Ready' && (
+          <SettingsSection
+            title={t('voice.diagnostics.sectionTitle')}
+            description={t('voice.diagnostics.sectionDesc')}
+          >
+            <SettingsList>
+              <div className='min-h-68px flex items-center'>
+                <div className='w-full'>
+                  <SettingsRow
+                    label={t('voice.diagnostics.micDevice')}
+                    description={
+                      micChecking
+                        ? t('voice.diagnostics.micDeviceChecking')
+                        : micStatus?.mic_available
+                          ? t('voice.diagnostics.micDetected', {
+                              name: micStatus.device_name || 'Default Input',
+                              rate: micStatus.sample_rate || 16000,
+                              channels: micStatus.channels || 1,
+                            })
+                          : micStatus?.error || t('voice.diagnostics.micNotFound')
+                    }
+                    controlLayout='actions'
+                    control={
+                      <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                        <Button
+                          size='small'
+                          loading={micChecking}
+                          onClick={fetchDeviceStatus}
+                        >
+                          {t('voice.diagnostics.micDeviceProbe')}
+                        </Button>
+                      </div>
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className='min-h-68px flex items-center'>
+                <div className='w-full'>
+                  <SettingsRow
+                    label={t('voice.diagnostics.asrTest')}
+                    description={
+                      asrRunning
+                        ? (asrRecording
+                            ? t('voice.diagnostics.asrTestRecording')
+                            : t('voice.diagnostics.asrTestTranscribing'))
+                        : asrResult
+                          ? (asrResult.success
+                              ? t('voice.diagnostics.asrTestSuccess', {
+                                  text: asrResult.text,
+                                  duration: asrResult.duration_ms,
+                                })
+                              : t('voice.diagnostics.asrTestFailed', {
+                                  reason: asrResult.error || t('voice.errors.unknownError'),
+                                }))
+                          : t('voice.diagnostics.asrTestIdleDesc')
+                    }
+                    controlLayout='actions'
+                    control={
+                      <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                        <Button
+                          type='primary'
+                          size='small'
+                          loading={asrRunning}
+                          onClick={handleStartAsrTest}
+                        >
+                          {t('voice.diagnostics.asrTestBtn')}
+                        </Button>
+                      </div>
+                    }
+                  />
+                </div>
+              </div>
+            </SettingsList>
+          </SettingsSection>
+        )}
       </div>
     </SettingsPageWrapper>
   );

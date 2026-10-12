@@ -112,7 +112,47 @@ fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
     }
-    std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).map(PathBuf::from)
+    if let Some(p) = std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).map(PathBuf::from) {
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(PathBuf::from) {
+        let asr_sub = ai_mate.join("asr");
+        if asr_sub.is_dir() {
+            return Some(asr_sub);
+        }
+        if ai_mate.is_dir() && ai_mate.join("tokens.txt").is_file() {
+            return Some(ai_mate);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let candidates = [
+                PathBuf::from(&local_app_data).join("Flowy").join("AI-Mate").join("models").join("asr"),
+                PathBuf::from(&local_app_data).join("Flowy").join("models").join("asr"),
+            ];
+            for c in candidates {
+                if c.is_dir() && c.join("tokens.txt").is_file() {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let candidates = [
+            PathBuf::from("/var/lib/ai-mate/models/asr"),
+            PathBuf::from("/etc/ai-mate/models/asr"),
+        ];
+        for c in candidates {
+            if c.is_dir() && c.join("tokens.txt").is_file() {
+                return Some(c);
+            }
+        }
+    }
+    None
 }
 
 /// Expected layout (SenseVoice):

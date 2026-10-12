@@ -193,3 +193,51 @@ pub struct VoiceModelDeleteResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
+
+/// Response DTO for `GET /api/voice/diagnostics/device`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceDeviceStatusResponse {
+    /// Whether a default system microphone is detected and accessible
+    pub mic_available: bool,
+    /// Device name if available
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    /// Default hardware sample rate in Hz
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    /// Channel count (e.g. 1 mono, 2 stereo)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    /// Error message if probe failed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn default_asr_sample_rate() -> u32 {
+    16_000
+}
+
+/// Request DTO for `POST /api/voice/diagnostics/asr-test`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceAsrTestRequest {
+    /// Optional base64-encoded audio (WAV container or raw 16-bit PCM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_base64: Option<String>,
+    /// Sample rate in Hz (default 16000)
+    #[serde(default = "default_asr_sample_rate")]
+    pub sample_rate: u32,
+}
+
+/// Response DTO for `POST /api/voice/diagnostics/asr-test`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VoiceAsrTestResponse {
+    /// Whether recognition completed successfully
+    pub success: bool,
+    /// Transcribed text from SenseVoice model
+    pub text: String,
+    /// Duration of audio in milliseconds
+    pub duration_ms: u64,
+    /// Error message if ASR failed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}

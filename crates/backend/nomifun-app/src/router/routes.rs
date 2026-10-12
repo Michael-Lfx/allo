@@ -812,7 +812,8 @@ pub fn create_router_with_all_state(
         .unwrap_or_else(|_| services.data_dir.join("models"));
     let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir));
     let voice_models_authenticated = protect_instance_owner(
-        nomifun_voice_models::voice_model_routes(voice_models_manager),
+        nomifun_voice_models::voice_model_routes(voice_models_manager)
+            .merge(nomifun_audio::voice_diagnostics_routes()),
         &auth_mw_state,
         &instance_owner_state,
     );

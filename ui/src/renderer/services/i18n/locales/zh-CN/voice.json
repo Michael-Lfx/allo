@@ -79,5 +79,21 @@
     "progressBar": "模型下载进度",
     "statusAnnouncement": "当前语音伴侣状态：{{status}}",
     "inputDigit": "第 {{index}} 位配对码"
+  },
+  "diagnostics": {
+    "sectionTitle": "声学诊断与测试",
+    "sectionDesc": "检测本地麦克风硬件状态并测试 SenseVoice 离线语音转写",
+    "micDevice": "麦克风设备",
+    "micDeviceProbe": "检测设备",
+    "micDeviceChecking": "检测中...",
+    "micDetected": "检测到系统麦克风：{{name}} ({{rate}}Hz, {{channels}}声道)",
+    "micNotFound": "未检测到系统默认输入设备，请检查麦克风硬件连接",
+    "asrTest": "语音转写试音",
+    "asrTestBtn": "开始试音",
+    "asrTestRecording": "正在录音 (3s)...",
+    "asrTestTranscribing": "正在转写...",
+    "asrTestIdleDesc": "点击开始试音，录制 3 秒语音测试离线 ASR 识别效果",
+    "asrTestSuccess": "识别结果：{{text}} (耗时 {{duration}}ms)",
+    "asrTestFailed": "试音失败：{{reason}}"
   }
 }

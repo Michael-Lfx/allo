@@ -79,5 +79,21 @@
     "progressBar": "Model download progress",
     "statusAnnouncement": "Current voice companion status: {{status}}",
     "inputDigit": "Pairing code digit {{index}}"
+  },
+  "diagnostics": {
+    "sectionTitle": "Acoustic Diagnostics & Testing",
+    "sectionDesc": "Inspect local microphone hardware and test offline SenseVoice transcription",
+    "micDevice": "Microphone Device",
+    "micDeviceProbe": "Inspect Device",
+    "micDeviceChecking": "Checking...",
+    "micDetected": "Microphone detected: {{name}} ({{rate}}Hz, {{channels}} channels)",
+    "micNotFound": "No default audio input device found. Please check microphone connection",
+    "asrTest": "Speech-to-Text Test",
+    "asrTestBtn": "Test Voice",
+    "asrTestRecording": "Recording (3s)...",
+    "asrTestTranscribing": "Transcribing...",
+    "asrTestIdleDesc": "Click to record 3 seconds and test local ASR transcription",
+    "asrTestSuccess": "Transcript: {{text}} ({{duration}}ms)",
+    "asrTestFailed": "Test failed: {{reason}}"
   }
 }

@@ -21,6 +21,7 @@ voice-skeleton = []
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 cpal = { workspace = true }
 dashmap = { workspace = true }
 nomifun-api-types = { workspace = true }

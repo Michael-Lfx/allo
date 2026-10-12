@@ -173,6 +173,11 @@ impl MicSource {
         self.pipeline.lock().await.overflow_count()
     }
 
+    /// Exposes the underlying capture pipeline.
+    pub fn pipeline(&self) -> Arc<tokio::sync::Mutex<VoiceCapturePipeline>> {
+        Arc::clone(&self.pipeline)
+    }
+
     /// Test constructor: replay pre-recorded PCM chunks.
     pub fn from_replay_chunks(sample_rate: u32, chunks: Vec<Vec<f32>>) -> Self {
         let mut flat = Vec::new();
@@ -188,6 +193,69 @@ impl MicSource {
             join: Mutex::new(None),
         }
     }
+}
+
+/// Probes the system default microphone input device.
+pub fn probe_default_device() -> nomifun_api_types::voice::VoiceDeviceStatusResponse {
+    let host = cpal::default_host();
+    let device = match host.default_input_device() {
+        Some(d) => d,
+        None => {
+            return nomifun_api_types::voice::VoiceDeviceStatusResponse {
+                mic_available: false,
+                device_name: None,
+                sample_rate: None,
+                channels: None,
+                error: Some("No default audio input device found".to_string()),
+            };
+        }
+    };
+
+    let name = device.name().unwrap_or_else(|_| "<unknown>".into());
+    match device.default_input_config() {
+        Ok(config) => nomifun_api_types::voice::VoiceDeviceStatusResponse {
+            mic_available: true,
+            device_name: Some(name),
+            sample_rate: Some(config.sample_rate().0),
+            channels: Some(config.channels()),
+            error: None,
+        },
+        Err(err) => nomifun_api_types::voice::VoiceDeviceStatusResponse {
+            mic_available: false,
+            device_name: Some(name),
+            sample_rate: None,
+            channels: None,
+            error: Some(format!("Failed to query input config: {err}")),
+        },
+    }
+}
+
+/// Records a short mono 16kHz PCM snippet from the default microphone.
+pub async fn record_mic_snippet(duration: std::time::Duration) -> Result<Vec<f32>, String> {
+    let mic = MicSource::new(16_000)?;
+    let target_samples = (16_000.0 * duration.as_secs_f32()).round() as usize;
+    let mut collected = Vec::with_capacity(target_samples);
+    let start = std::time::Instant::now();
+    let timeout = duration + std::time::Duration::from_millis(2000);
+
+    while collected.len() < target_samples && start.elapsed() < timeout {
+        match mic.read_capture().await {
+            CaptureReadResult::Chunk(samples) => {
+                collected.extend_from_slice(&samples);
+            }
+            CaptureReadResult::TemporarilyEmpty => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            CaptureReadResult::StreamClosed => break,
+            CaptureReadResult::DeviceError(err) => return Err(err),
+        }
+    }
+
+    if collected.is_empty() {
+        return Err("No audio captured from microphone".to_string());
+    }
+
+    Ok(collected)
 }
 
 impl Drop for MicSource {

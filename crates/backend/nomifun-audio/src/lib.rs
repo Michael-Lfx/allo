@@ -18,6 +18,7 @@
 
 pub mod capture;
 pub mod devices;
+pub mod diagnostics;
 pub mod diarization;
 pub mod earcon;
 pub mod encode;
@@ -42,6 +43,7 @@ pub mod voiceprint;
 
 pub use capture::{AudioCaptureSource, CaptureReadResult};
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
+pub use diagnostics::voice_diagnostics_routes;
 pub use diarization::{
     Diarizer, EnergyClusterDiarizer, EnergyClusterDiarizerConfig, SpeakerAssigner, SpeakerIdentity,
     SpeakerSpan, create_diarizer, dominant_speaker_key,
@@ -56,7 +58,7 @@ pub use hotplug::{HotplugState, HotplugStats, UsbHotplugWatchdog, UsbHotplugWatc
 pub use keepawake::KeepAwakeGuard;
 pub use kws::{KwsEngine, KwsEngineConfig, KwsResult};
 pub use loopback::LoopbackSource;
-pub use mic::MicSource;
+pub use mic::{MicSource, probe_default_device, record_mic_snippet};
 pub use mixer::DualTrackMixer;
 pub use process_watch::{ProcessWatcher, detect_meeting_process};
 pub use recorder::{

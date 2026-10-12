@@ -141,10 +141,12 @@ async fn pairing_guard_middleware(
 
     // Whitelisted routes available before pairing:
     // 1. OOBE verification & status APIs: /api/oobe/*
-    // 2. Model read-only status and progress stream for the OOBE UI:
+    // 2. Diagnostics & testing APIs: /api/voice/diagnostics/*
+    // 3. Model read-only status and progress stream for the OOBE UI:
     //    GET /api/voice/models/status
     //    GET /api/voice/models/progress
     let is_whitelisted = path.starts_with("/api/oobe")
+        || path.starts_with("/api/voice/diagnostics")
         || (method == axum::http::Method::GET
             && (path == "/api/voice/models/status" || path == "/api/voice/models/progress"));
 
@@ -179,6 +181,7 @@ pub fn build_router_with_oobe(
         .route("/healthz", get(healthz_handler))
         .route("/", get(index_handler))
         .merge(nomifun_voice_models::voice_model_routes(manager))
+        .merge(nomifun_audio::voice_diagnostics_routes())
         .merge(oobe_routes(oobe.clone()))
         .layer(middleware::from_fn_with_state(
             state,
