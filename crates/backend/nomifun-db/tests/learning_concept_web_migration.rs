@@ -359,7 +359,8 @@ async fn migration_067_creates_concept_web_tables() {
 #[tokio::test]
 async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() {
     let pool = setup_legacy_world().await;
-    for migration in [M066, M067, M068, M069, M070, M071] {
+    // 066–070 先导到 067 世界（终点表存在），存量数据就位后再跑 071。
+    for migration in [M066, M067, M068, M069, M070] {
         sqlx::query(migration).execute(&pool).await.unwrap();
     }
 
@@ -395,7 +396,7 @@ async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() 
         "INSERT INTO learning_lesson_progress \
          (enrollment_id, lesson_id, status, started_at, updated_at) \
          VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 'not_started', 1000, 1000)",
+                 'in_progress', 1000, 1000)",
     )
     .execute(&pool)
     .await
