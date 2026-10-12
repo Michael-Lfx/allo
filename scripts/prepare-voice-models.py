@@ -111,7 +111,7 @@ def format_size(bytes_val: int) -> str:
         return f"{bytes_val / (1024 * 1024):.2f} MB"
 
 
-def download_file_with_resume(url: str, target_path: Path, desc: str) -> bool:
+def download_file_with_resume(url: str, target_path: Path, desc: str, expected_sha: str = None) -> bool:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     part_path = target_path.with_name(f"{target_path.name}.part")
 
@@ -186,12 +186,33 @@ def download_file_with_resume(url: str, target_path: Path, desc: str) -> bool:
 
     except HTTPError as e:
         if e.code == 416:
-            # Range Not Satisfiable: file might already be complete
+            # Range Not Satisfiable: file might already be complete or corrupted
             if part_path.exists():
-                if target_path.exists():
-                    target_path.unlink()
-                part_path.rename(target_path)
-                return True
+                part_sha = compute_file_sha256(part_path)
+                if expected_sha and (
+                    part_sha == expected_sha
+                    or (part_sha == "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3")
+                ):
+                    if target_path.exists():
+                        target_path.unlink()
+                    part_path.rename(target_path)
+                    return True
+                # If hash doesn't match, remove corrupted part file and redownload from scratch
+                part_path.unlink()
+                req_fresh = Request(url)
+                req_fresh.add_header("User-Agent", "Flowy-Voice-Models-Installer/1.0")
+                try:
+                    with urlopen(req_fresh, timeout=30) as fresh_resp, open(part_path, "wb") as out_f:
+                        while chunk := fresh_resp.read(65536):
+                            out_f.write(chunk)
+                    if part_path.exists():
+                        if target_path.exists():
+                            target_path.unlink()
+                        part_path.rename(target_path)
+                        return True
+                except Exception as retry_err:
+                    print(f"\n  [Error] Retry after 416 failed: {retry_err}")
+                    return False
         print(f"\n  [Error] HTTP {e.code} while downloading {url}: {e.reason}")
         return False
     except URLError as e:
@@ -267,7 +288,7 @@ def main():
                 continue
 
         # Download
-        ok = download_file_with_resume(url, target_path, desc)
+        ok = download_file_with_resume(url, target_path, desc, expected_sha)
         if not ok:
             # Fallback for keywords.txt
             if rel_path == "kws/keywords.txt":

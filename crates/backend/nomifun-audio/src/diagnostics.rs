@@ -104,6 +104,10 @@ fn decode_audio_base64(b64: &str) -> Result<Vec<f32>, String> {
         .decode(clean_b64.trim())
         .map_err(|e| format!("invalid base64: {e}"))?;
 
+    if bytes.len() >= 4 && &bytes[0..4] == &[0x1A, 0x45, 0xDF, 0xA3] {
+        return Err("WebM audio format not supported directly; please provide 16kHz WAV or PCM".into());
+    }
+
     if bytes.len() >= 44 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
         // Parse RIFF WAV PCM
         parse_wav_pcm(&bytes)
@@ -122,8 +126,13 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
     if wav.len() < 44 {
         return Err("WAV data too short".into());
     }
-    // Find "data" chunk
+
     let mut cursor = 12;
+    let mut audio_format = 1u16; // 1 = PCM, 3 = IEEE Float
+    let mut channels = 1u16;
+    let mut bits_per_sample = 16u16;
+    let mut found_fmt = false;
+
     while cursor + 8 <= wav.len() {
         let chunk_id = &wav[cursor..cursor + 4];
         let chunk_size = u32::from_le_bytes([
@@ -134,17 +143,153 @@ fn parse_wav_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
         ]) as usize;
         cursor += 8;
 
-        if chunk_id == b"data" {
+        if chunk_id == b"fmt " {
+            if cursor + 16 <= wav.len() {
+                audio_format = u16::from_le_bytes([wav[cursor], wav[cursor + 1]]);
+                channels = u16::from_le_bytes([wav[cursor + 2], wav[cursor + 3]]);
+                // [cursor+4..cursor+8] is sample_rate
+                // [cursor+8..cursor+12] is byte_rate
+                // [cursor+12..cursor+14] is block_align
+                bits_per_sample = u16::from_le_bytes([wav[cursor + 14], wav[cursor + 15]]);
+                found_fmt = true;
+            }
+        } else if chunk_id == b"data" {
             let data_end = (cursor + chunk_size).min(wav.len());
             let data_bytes = &wav[cursor..data_end];
-            let mut samples = Vec::with_capacity(data_bytes.len() / 2);
-            for chunk in data_bytes.chunks_exact(2) {
-                let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                samples.push(sample as f32 / i16::MAX as f32);
-            }
-            return Ok(samples);
+
+            return match (audio_format, bits_per_sample, channels) {
+                // 16-bit PCM mono
+                (1, 16, 1) => {
+                    let mut samples = Vec::with_capacity(data_bytes.len() / 2);
+                    for chunk in data_bytes.chunks_exact(2) {
+                        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                        samples.push(sample as f32 / i16::MAX as f32);
+                    }
+                    Ok(samples)
+                }
+                // 16-bit PCM stereo (downmix to mono)
+                (1, 16, 2) => {
+                    let mut samples = Vec::with_capacity(data_bytes.len() / 4);
+                    for chunk in data_bytes.chunks_exact(4) {
+                        let left = i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / i16::MAX as f32;
+                        let right = i16::from_le_bytes([chunk[2], chunk[3]]) as f32 / i16::MAX as f32;
+                        samples.push((left + right) * 0.5);
+                    }
+                    Ok(samples)
+                }
+                // 32-bit Float mono
+                (3, 32, 1) => {
+                    let mut samples = Vec::with_capacity(data_bytes.len() / 4);
+                    for chunk in data_bytes.chunks_exact(4) {
+                        let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        samples.push(sample.clamp(-1.0, 1.0));
+                    }
+                    Ok(samples)
+                }
+                // 32-bit Float stereo (downmix to mono)
+                (3, 32, 2) => {
+                    let mut samples = Vec::with_capacity(data_bytes.len() / 8);
+                    for chunk in data_bytes.chunks_exact(8) {
+                        let left = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        let right = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                        samples.push(((left + right) * 0.5).clamp(-1.0, 1.0));
+                    }
+                    Ok(samples)
+                }
+                _ => {
+                    if !found_fmt {
+                        // Fallback assuming 16-bit PCM mono
+                        let mut samples = Vec::with_capacity(data_bytes.len() / 2);
+                        for chunk in data_bytes.chunks_exact(2) {
+                            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                            samples.push(sample as f32 / i16::MAX as f32);
+                        }
+                        Ok(samples)
+                    } else {
+                        Err(format!(
+                            "Unsupported WAV format: format={audio_format}, bits={bits_per_sample}, channels={channels}"
+                        ))
+                    }
+                }
+            };
         }
-        cursor += chunk_size;
+
+        // RIFF chunks are padded to even number of bytes
+        let padded_size = chunk_size + (chunk_size % 2);
+        cursor = cursor.saturating_add(padded_size);
     }
     Err("WAV missing 'data' chunk".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_wav_pcm_mono() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        // fmt chunk (16 bytes)
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // Mono
+        wav.extend_from_slice(&16000u32.to_le_bytes()); // 16kHz
+        wav.extend_from_slice(&32000u32.to_le_bytes()); // Byte rate
+        wav.extend_from_slice(&2u16.to_le_bytes()); // Block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // 16-bit
+        // data chunk
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&0i16.to_le_bytes());
+        wav.extend_from_slice(&16384i16.to_le_bytes());
+
+        let samples = parse_wav_pcm(&wav).expect("should parse valid mono wav");
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 0.0).abs() < 1e-4);
+        assert!((samples[1] - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_parse_wav_pcm_stereo_downmix() {
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&36u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        // fmt chunk
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2u16.to_le_bytes()); // Stereo
+        wav.extend_from_slice(&16000u32.to_le_bytes());
+        wav.extend_from_slice(&64000u32.to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        // data chunk: 2 frames = 8 bytes
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&8u32.to_le_bytes());
+        // frame 1: left=0, right=16384 -> avg ~ 0.25
+        wav.extend_from_slice(&0i16.to_le_bytes());
+        wav.extend_from_slice(&16384i16.to_le_bytes());
+        // frame 2: left=32767, right=32767 -> avg ~ 1.0
+        wav.extend_from_slice(&32767i16.to_le_bytes());
+        wav.extend_from_slice(&32767i16.to_le_bytes());
+
+        let samples = parse_wav_pcm(&wav).expect("should parse valid stereo wav");
+        assert_eq!(samples.len(), 2);
+        assert!((samples[0] - 0.25).abs() < 1e-2);
+        assert!((samples[1] - 1.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_webm_detection_rejection() {
+        use base64::Engine;
+        let webm_header = vec![0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&webm_header);
+        let res = decode_audio_base64(&b64);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("WebM audio format not supported"));
+    }
 }

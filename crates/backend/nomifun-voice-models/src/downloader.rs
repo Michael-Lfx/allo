@@ -294,8 +294,24 @@ impl ModelDownloader {
         }
 
         let resp = req.send().await?;
-        let status = resp.status();
+        let resp = if resp.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            if target_path.exists() {
+                if let Ok(meta) = tokio::fs::metadata(target_path).await {
+                    if meta.len() > 0 {
+                        return Ok(meta.len());
+                    }
+                }
+            }
+            if part_path.exists() {
+                let _ = tokio::fs::remove_file(&part_path).await;
+            }
+            // Re-request full content from scratch without Range header
+            self.client.get(&url).send().await?
+        } else {
+            resp
+        };
 
+        let status = resp.status();
         let (mut file, start_offset, expected_total) = match status {
             StatusCode::PARTIAL_CONTENT => {
                 let total = resp
@@ -326,21 +342,6 @@ impl ModelDownloader {
                     .open(&part_path)
                     .await?;
                 (file, 0, total)
-            }
-            StatusCode::RANGE_NOT_SATISFIABLE => {
-                // Already downloaded or out of range
-                if target_path.exists() {
-                    let len = tokio::fs::metadata(target_path).await?.len();
-                    return Ok(len);
-                }
-                // Try from scratch
-                let file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&part_path)
-                    .await?;
-                (file, 0, None)
             }
             other => return Err(DownloaderError::UnexpectedStatus(other)),
         };

@@ -141,12 +141,12 @@ async fn pairing_guard_middleware(
 
     // Whitelisted routes available before pairing:
     // 1. OOBE verification & status APIs: /api/oobe/*
-    // 2. Diagnostics & testing APIs: /api/voice/diagnostics/*
+    // 2. Read-only device diagnostics: GET /api/voice/diagnostics/device
     // 3. Model read-only status and progress stream for the OOBE UI:
     //    GET /api/voice/models/status
     //    GET /api/voice/models/progress
     let is_whitelisted = path.starts_with("/api/oobe")
-        || path.starts_with("/api/voice/diagnostics")
+        || (method == axum::http::Method::GET && path == "/api/voice/diagnostics/device")
         || (method == axum::http::Method::GET
             && (path == "/api/voice/models/status" || path == "/api/voice/models/progress"));
 
