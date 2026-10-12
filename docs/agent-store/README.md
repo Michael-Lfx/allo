@@ -1,7 +1,7 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
 > 状态：导航总览（全目录 42 份核心方案已全面完成标准化重构）  
-> 当前版本：`0.1.0-beta.9` | 协议契约指纹：`fp-14` | 核心方法计数：55 WebSocket 专属方法 / 82 双端映射端点  
+> 当前版本：`0.1.0-beta.10` | 协议契约指纹：`fp-14` | 核心方法计数：55 WebSocket 专属方法 / 82 双端映射端点  
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
 ---
@@ -295,6 +295,18 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-12 发布 `0.1.0-beta.10`）
+
+`0.1.0-beta.10` 三出口发布完成（npm 四包 / GitHub Release / 站点），内容 = #325 的专家包插件级资产（`fp-13 → fp-14`、`pack_format 2`）+ `38` F4 悬空技能口径 + Unreleased 里攒着的连接器授权可见性修复：
+
+1. **版本锁步**：npm 四包 `0.1.0-beta.10`（canonical packument 四包 `dist-tags.beta` 与 `versions` 均已转正复核）；`check:release-sync` 绿（四 manifest + 8 pin + 站点 `release.json` 同值，`55 / 82` 两语言同值）。
+2. **同一份 exe 服务两个出口**（不变量 4）：`agent-store:build`（release + static-webui）产出 `EFA58837…AEB96`，npm runtime vendor 与 Release zip 内部 exe 同哈希；zip 容器 sha256 `8d27efdc…` 与 GitHub 服务端 digest 一致（下载回验在本机网络下不可行，按 runbook §3 S6 认可的服务端 digest 路径替代；直链 HEAD 200 / 80574596 B）。
+3. **GitHub Release**：`v0.1.0-beta.10` prerelease（`draft=false`），zip + RELEASE_NOTES.md + SHA256SUMS.txt 三资产齐；`release:status` 绿。脚本 `release:publish` 两次挂在 gh 的 TLS 抖动（草稿已建、资产已传后死在 view 步），剩余动作（补 notes 资产、`-f draft=false`）用 `gh api` 按 release id 手工完成——记录为「脚本网络韧性」的已知缺口。
+4. **站点上线**：提交 `72798521` 推送后经 `CreatePagesDeployment` 手动触发（`dpf5e0ewamu3`），轮询至 **Success / usedInProd=true**；部署后自检三项全过——双语文档页预渲染正文含 `fp-14` / `55 / 82` / `readImportAsset` / 插件级资产，三市场 ModelScope 归档摘要一致（`publish:market --verify-only` 全绿），下载直链 200。
+5. **台账转正**：本仓 `CHANGELOG.md` Unreleased → `0.1.0-beta.10`；站点 `changelog` §2 新增 2.1（JSON 块 / 表行 / 正文，旧条目顺延重编号）与 `upgrade` §2 / §3 / §6.9 / §8（`6.9 从 beta.9 升到 beta.10`、差异清单插序）。`docs-sync` 0 drift。
+6. **门禁口径**：`release:check` 第 1 环（`ui/` typecheck）既有红，按 runbook §7.8 逐环执行——`check:fingerprint` / `check:release-sync` / `cd web && typecheck && test`（563 通过）/ `cargo test -p nomifun-app-server`（191 通过）全绿；`release:check:site` 的 docs-sync 半边绿。
+7. **dist-tag**：`beta` → `0.1.0-beta.10`，`latest` 不动（预发布不移动 latest）。
 
 ## 本轮（2026-10-12 实施 `38`：导出补齐插件级资产，尚未发版）
 
