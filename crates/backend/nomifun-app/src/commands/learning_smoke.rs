@@ -47,6 +47,20 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             model,
             calls,
         } => run_json(cli, db, provider, model, calls).await,
+        LearningSmokeCommand::Grow {
+            goal,
+            batches,
+            db,
+            provider,
+            model,
+        } => run_grow(cli, goal, batches, db, provider, model, false).await,
+        LearningSmokeCommand::Loop {
+            goal,
+            rounds,
+            db,
+            provider,
+            model,
+        } => run_grow(cli, goal, rounds, db, provider, model, true).await,
     }
 }
 
@@ -347,4 +361,349 @@ async fn run_json(
         return Ok(ExitCode::from(2));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke grow` / `loop`：生长冒烟（loop = 结构生成先行）。
+/// s1 判据（失败非零退出）：
+/// - 首批 assumes 全空（空登记表机械地板）；
+/// - 每批「就绪即发布」——批内节点的每条 assumes 都被**既往供给**（更早
+///   批次或其他课程的 teaches）以不低于所假定档位覆盖（同批不算）；
+/// - 铸名不撞：登记表 canonical ∪ 别名全局唯一；
+/// - loop 追加：structure_json 落列（结构产物在列）。
+/// 批间用确定性学习者替身：程序化把全部未完成节点标为 completed（完成事件
+/// 自动触发生长，与真实学习者路径同线）。
+#[allow(clippy::too_many_arguments)]
+async fn run_grow(
+    cli: &Cli,
+    goal: String,
+    batches: usize,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+    with_structure: bool,
+) -> Result<ExitCode> {
+    if goal.trim().is_empty() {
+        eprintln!("--goal must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    if batches == 0 {
+        eprintln!("--batches/--rounds must be ≥ 1");
+        return Ok(ExitCode::from(2));
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let model_override = provider
+        .as_deref()
+        .zip(model.as_deref())
+        .map(|(provider, model)| {
+            (
+                nomifun_common::ProviderId::parse(provider).expect("provider id"),
+                model.to_owned(),
+            )
+        });
+
+    // 最小课程行（HTTP 建课的事务子集——冒烟对象是生长管线本身）。
+    let course_id = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          created_at, updated_at) \
+         VALUES (?, ?, '', 'general', 1, 'learning_graph', ?, 1, 1)",
+    )
+    .bind(course_id.as_str())
+    .bind(goal.trim())
+    .bind(goal.trim())
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(course_id.as_str())
+    .execute(&wiring.pool)
+    .await?;
+
+    if with_structure {
+        println!("[structure] generating knowledge structure (gd.* contract, ≤3 rounds)…");
+        let input = nomifun_learning::StructureInput::new(&goal, None, None);
+        if let Err(error) = wiring
+            .service
+            .run_structure_generation(
+                &course_id,
+                &wiring.owner,
+                model_override
+                    .as_ref()
+                    .map(|(provider, model)| (provider, model.as_str())),
+                &input,
+            )
+            .await
+        {
+            eprintln!("structure generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    }
+
+    for round in 1..=batches {
+        if round > 1 {
+            // 确定性学习者替身：程序化完成全部剩余节点（完成事件自动触发
+            // 生长——与真实学习者同线）。
+            let stand_in = complete_all_nodes(&wiring, &course_id).await?;
+            println!("[stand-in] completed {stand_in} nodes to drive the next round");
+        } else {
+            wiring
+                .service
+                .kick_growth(
+                    &wiring.owner,
+                    &course_id,
+                    true,
+                    model_override
+                        .as_ref()
+                        .map(|(provider, model)| (provider, model.as_str())),
+                )
+                .await?;
+        }
+        if !wait_applied_batches(&wiring.pool, &course_id, round as i64).await? {
+            eprintln!("round {round}: growth batch did not land (applied) in time");
+            return Ok(ExitCode::from(2));
+        }
+        println!("[grow] round {round} batch applied — auditing criteria…");
+        let violations = audit_batch(&wiring.pool, &course_id, round as i64).await?;
+        for violation in &violations {
+            eprintln!("CRITERION VIOLATION [round {round}] {violation}");
+        }
+        if !violations.is_empty() {
+            return Ok(ExitCode::from(2));
+        }
+        let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
+        println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green");
+    }
+
+    if with_structure {
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&wiring.pool)
+        .await?;
+        if snapshot.as_deref().unwrap_or_default().trim().is_empty() {
+            eprintln!("CRITERION VIOLATION [loop] structure_json is missing after structure generation");
+            return Ok(ExitCode::from(2));
+        }
+    }
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    println!(
+        "OK  course={}  batches={batches}  nodes={total}  ({} mode)",
+        course_id.as_str(),
+        if with_structure { "loop" } else { "grow" }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 确定性学习者替身：把全部未满足节点程序化标为 completed（触发自动生长）。
+async fn complete_all_nodes(
+    wiring: &SmokeWiring,
+    course_id: &nomifun_common::LearningCourseId,
+) -> Result<usize> {
+    let lesson_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT l.lesson_id FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_all(&wiring.pool)
+    .await?;
+    let mut completed = 0usize;
+    for lesson_id in lesson_ids {
+        let lesson: nomifun_common::LearningLessonId =
+            nomifun_common::LearningLessonId::parse(&lesson_id)?;
+        // 已完成/已跳过的重复赋值无害（幂等）——直接全部置完成。
+        let flipped = wiring
+            .service
+            .update_lesson_progress(
+                &lesson,
+                &wiring.owner,
+                nomifun_learning::LessonStatus::Completed,
+            )
+            .await;
+        match flipped {
+            Ok(()) => completed += 1,
+            Err(error) => eprintln!("stand-in: lesson {lesson_id} completion failed: {error}"),
+        }
+    }
+    Ok(completed)
+}
+
+/// 等待第 `target` 个批次落定（applied），最多 15 分钟。
+async fn wait_applied_batches(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    target: i64,
+) -> Result<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+    loop {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(pool)
+        .await?;
+        if count >= target {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+async fn batch_summary(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<(usize, i64)> {
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+    Ok((node_ids.len(), seq))
+}
+
+/// 批次机械判据审计（s1）：首批 assumes 全空 + 就绪即发布（既往供给覆盖）
+/// + 铸名全局唯一。
+async fn audit_batch(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &nomifun_common::LearningCourseId,
+    seq: i64,
+) -> Result<Vec<String>> {
+    let mut violations = Vec::new();
+    let node_ids_json: String = sqlx::query_scalar(
+        "SELECT node_ids_json FROM learning_growth_batches \
+         WHERE course_id = ? AND seq = ? AND status = 'applied'",
+    )
+    .bind(course_id.as_str())
+    .bind(seq)
+    .fetch_one(pool)
+    .await?;
+    let node_ids: Vec<String> = serde_json::from_str(&node_ids_json).unwrap_or_default();
+
+    // 批内节点的 assumes。
+    let mut batch_assumes: Vec<(String, String, String)> = Vec::new(); // (lesson, concept, tier)
+    for lesson_id in &node_ids {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT concept_id, tier FROM learning_lesson_concepts \
+             WHERE role = 'assumes' AND lesson_id = ?",
+        )
+        .bind(lesson_id)
+        .fetch_all(pool)
+        .await?;
+        for (concept_id, tier) in rows {
+            batch_assumes.push((lesson_id.clone(), concept_id, tier));
+        }
+    }
+    if seq == 1 && !batch_assumes.is_empty() {
+        violations.push(format!(
+            "首批 assumes 必须全空（空登记表机械地板），发现 {} 条 assume 引用",
+            batch_assumes.len()
+        ));
+    }
+
+    // 就绪即发布：本批节点的每条 assumes 必须被「既往供给」（本课程更早批次
+    // 或其他课程的 teaches）以不低于所假定档位覆盖；同批（含更晚批）不算。
+    if !batch_assumes.is_empty() {
+        // lesson → 本课程批次 seq（仅本课程视图）。
+        let mut lesson_seq: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+        let batch_rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, node_ids_json FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(pool)
+        .await?;
+        for (batch_seq, ids_json) in batch_rows {
+            for lesson_id in serde_json::from_str::<Vec<String>>(&ids_json).unwrap_or_default() {
+                lesson_seq.insert(lesson_id, batch_seq);
+            }
+        }
+        // 全局供给行：(lesson, concept, tier, course)。
+        let teaches_rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT lc.lesson_id, lc.concept_id, lc.tier, m.course_id \
+             FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             WHERE lc.role = 'teaches'",
+        )
+        .fetch_all(pool)
+        .await?;
+        let rank = |tier: &str| match tier {
+            "teach" => 2,
+            "apply" => 1,
+            _ => 0,
+        };
+        for (lesson_id, concept_id, tier) in &batch_assumes {
+            let covered = teaches_rows.iter().any(
+                |(teacher_lesson, teacher_concept, teacher_tier, teacher_course)| {
+                    if teacher_concept != concept_id || rank(teacher_tier) < rank(tier) {
+                        return false;
+                    }
+                    // 其他课程供给恒有效；本课程供给必须来自更早批次。
+                    if teacher_course != course_id.as_str() {
+                        return true;
+                    }
+                    lesson_seq
+                        .get(teacher_lesson)
+                        .map(|teacher_seq| *teacher_seq < seq)
+                        .unwrap_or(false)
+                },
+            );
+            if !covered {
+                violations.push(format!(
+                    "就绪即发布被破坏：批次 #{seq} 节点 {lesson_id} 假定概念 {concept_id}@{tier}，既往供给未覆盖"
+                ));
+            }
+        }
+    }
+
+    // 铸名不撞：登记表 canonical ∪ 别名全局唯一（大小写折叠）。
+    let registry_rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT canonical, aliases_json FROM learning_concept_registry")
+            .fetch_all(pool)
+            .await?;
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (canonical, aliases_json) in &registry_rows {
+        let mut names = vec![canonical.trim().to_lowercase()];
+        for alias in serde_json::from_str::<Vec<String>>(aliases_json).unwrap_or_default() {
+            let alias = alias.trim().to_lowercase();
+            if !alias.is_empty() {
+                names.push(alias);
+            }
+        }
+        for name in names {
+            if let Some(owner) = seen.get(&name) {
+                if owner != canonical {
+                    violations.push(format!(
+                        "铸名撞名：「{name}」同时属于「{owner}」与「{canonical}」"
+                    ));
+                }
+            } else {
+                seen.insert(name, canonical.clone());
+            }
+        }
+    }
+    Ok(violations)
 }
