@@ -312,6 +312,45 @@ async fn graph_concepts(
     )))
 }
 
+/// 结构重生成请求（可选模型偏好；缺省用实现方的默认 provider）。
+#[derive(Debug, Default, serde::Deserialize)]
+struct RegenerateStructureRequest {
+    #[serde(default)]
+    provider_id: Option<ProviderId>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// 重跑知识结构生成（g2：重生成 = 换参考地图不换课，快照原子覆盖）；
+/// 进度走 WS structure_* 事件。已在生成中报冲突。
+async fn regenerate_graph_structure(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    request: Option<Json<RegenerateStructureRequest>>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    if request
+        .as_ref()
+        .and_then(|Json(request)| request.provider_id.as_ref())
+        .is_some() != request
+        .as_ref()
+        .and_then(|Json(request)| request.model.as_deref())
+        .is_some()
+    {
+        return Err(AppError::BadRequest(
+            "provider_id and model must be provided together".into(),
+        ));
+    }
+    let model_override = request
+        .and_then(|Json(request)| request.provider_id.zip(request.model));
+    let kicked = state
+        .service
+        .regenerate_structure(&user.id, &course_id, model_override.as_ref().map(|(provider, model)| (provider, model.as_str())))
+        .await?;
+    Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+}
+
 async fn get_course(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,

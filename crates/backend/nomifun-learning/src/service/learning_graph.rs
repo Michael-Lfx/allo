@@ -19,12 +19,13 @@ const GROWTH_MAX_DRAFTS: usize = 4;
 
 impl LearningService {
 
-    // ── Course creation（建课 = 学习目标 + 首生长）────────────────────────
+    // ── Course creation（建课 = 学习目标 → 知识结构生成 → 首生长）────────
 
     /// 学习图课程创建入口（`GenerateCourseRequest.course_kind = learning_graph`）：
-    /// 描述即学习目标。课程落库后**首生长在后台启动**——接口立即返回课程
-    /// 详情，生长进度走 WS 与 generation_registry（状态/取消端点共用）。
-    /// 知识结构生成（structure_json 快照）随后续管线接入。
+    /// 描述即学习目标，程度/基础声明可选（g2 输入最小化）。课程落库后
+    /// **知识结构生成在后台启动**（双产物契约门 → structure_json 快照原子
+    /// 落列，WS structure_* 事件驱动），随后**首生长**接续——接口立即返回
+    /// 课程详情，进度走 WS 与 generation_registry（状态/取消端点共用）。
     pub(crate) async fn generate_learning_graph_course(
         &self,
         user_id: &UserId,
@@ -86,8 +87,9 @@ impl LearningService {
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
 
-        // 首生长在后台：创建接口不等模型。后台任务要求 'static：模型偏好先
-        // 持有化再入任务。
+        // 结构生成 → 首生长都在后台串行（首生的门口参照来自结构产物的地形；
+        // 结构失败不阻断生长——铁律：结构对生长不供内容）。后台任务要求
+        // 'static：模型偏好先持有化再入任务。
         let service = self.clone();
         let owner = user_id.clone();
         let course = course_id.clone();
@@ -102,6 +104,12 @@ impl LearningService {
             let spawn_override = spawn_override
                 .as_ref()
                 .map(|(provider, model)| (provider, model.as_str()));
+            if let Err(error) = service
+                .run_structure_generation(&course, &owner, spawn_override, &structure_input)
+                .await
+            {
+                tracing::warn!(course = course.as_str(), %error, "structure generation failed");
+            }
             if let Err(error) = service.kick_growth(&owner, &course, true, spawn_override).await {
                 tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
             }
@@ -1762,6 +1770,17 @@ impl LearningService {
         let title: String = course.try_get("title").map_err(internal)?;
         let goal: String = course.try_get("learning_goal").map_err(internal)?;
         let scope: String = course.try_get("learning_scope").map_err(internal)?;
+        let snapshot: Option<String> = course.try_get("structure_json").map_err(internal)?;
+        let terrain = snapshot
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(internal)?
+            .and_then(|envelope| envelope.get("terrain").cloned());
+        let terrain_doors = terrain
+            .as_ref()
+            .map(render_terrain_doors)
+            .unwrap_or_default();
 
         let ready_count = self.ready_count_for_owner(course_id, &engine.user_id).await?;
         let coverage_gauge = self.render_coverage_gauge(course_id, &engine.user_id).await?;
@@ -1791,7 +1810,6 @@ impl LearningService {
             behavior_digest,
             ready_count,
             registry_excerpt,
-            entry_survey: String::new(),
         })
     }
 
