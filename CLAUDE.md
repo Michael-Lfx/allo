@@ -1,6 +1,6 @@
 # Claude Code Repository Instructions
 
-Read and follow [`AGENTS.md`](AGENTS.md) before making any change in this
+Read and follow [`AGENTS.md`](AGENTS.md) (中文版: [`AGENTS.zh-CN.md`](AGENTS.zh-CN.md)) before making any change in this
 repository. Its Git attribution rule is mandatory: Claude and every other AI
 model may assist with work but must never appear as the Git author, committer,
 co-author, or credited contributor.

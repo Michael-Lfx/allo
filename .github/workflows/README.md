@@ -104,7 +104,7 @@ would only make every pull request red without fixing anything. Add each one to
   `typecheck:auth` + `test:auth` (email OTP login path).
 - `check:button-layout-contract`
 - `check:dead-css`
-- `check:agent-vocabulary`
+- `check:agent-vocabulary` (Retired — no longer part of active gates)
 
 ### Known behaviours to expect
 
