@@ -111,6 +111,7 @@ async fn attempt_once(
         model_override,
         STRUCTURE_SYSTEM,
         &structure_prompt.text,
+        crate::generation::STRUCTURE_MAX_TOKENS,
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -134,6 +135,7 @@ async fn attempt_once(
         model_override,
         STRUCTURE_SYSTEM,
         &terrain_prompt.text,
+        crate::generation::STRUCTURE_MAX_TOKENS,
     )
     .await
     .map_err(|error| error.to_string())?;

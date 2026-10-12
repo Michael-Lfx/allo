@@ -22,6 +22,7 @@
 //! contract) lives in [`structure_contract`] and stays reference-only: it
 //! feeds no gate, holds no content, and never touches the concept web.
 
+pub mod growth_contract;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_view;
@@ -147,15 +148,17 @@ pub fn format_gate_report(errors: &[GateError]) -> String {
 pub type ConceptCoverage = HashMap<String, ConceptTier>;
 
 /// 结构门（确定性，零模型调用）。任何一条违反 = 整批拒收（不部分落库），
-/// 报告回灌给教练重裁。检查项：
-/// - 批量上限（≤ [`MAX_BATCH_NODES`]）与标题合法性/唯一性；
-/// - 铸名合法：canonical 非空、与登记表（含别名）及批内其他铸名不撞；
+/// 条款化报告（ng.* 编号，g4）回灌给教练重选。**形状条款**（键白名单/词表/
+/// 量级/批内唯一）住 [`growth_contract::validate_proposal`]；本函数只做需要
+/// DB 事实的**语义条款**：
+/// - 铸名不撞登记表（含别名，大小写折叠）；
 /// - 概念引用可解析：teaches/assumes 的名字必须是登记表现有概念（含别名）
 ///   或本批铸名；
 /// - **就绪即发布**：每条 assumes 必须被全局已教账（既往批次已落库的
 ///   teaches）以不低于所假定档位覆盖——同批兄弟的 teaches 与本批铸名不构成
 ///   供给：同批节点没有学习先后、必须同时就绪，谁也不依赖谁。不满足的节点
-///   不存在「入库后锁定」，直接打回。
+///   不存在「入库后锁定」，直接打回；
+/// - 课程内节点标题唯一。
 pub fn validate_batch(
     batch: &ProposedBatch,
     coverage: &ConceptCoverage,
@@ -163,112 +166,51 @@ pub fn validate_batch(
     existing_titles: &HashSet<String>,
 ) -> Vec<GateError> {
     let mut errors = Vec::new();
-    if batch.nodes.len() > MAX_BATCH_NODES {
-        errors.push(GateError {
-            kind: "batch_too_large",
-            message: format!(
-                "一批最多 {} 个新节点，本批 {} 个——拆批重交",
-                MAX_BATCH_NODES,
-                batch.nodes.len()
-            ),
-        });
-    }
 
-    // 批内铸名预备账：canonical → 该概念在本批可引用的名字集合。
+    // 批内铸名预备账：canonical → 该概念在本批可引用的名字集合（批内唯一性
+    // 已由形状契约保证）。
     let mut mint_names: HashSet<String> = HashSet::new();
-    let mut canonicals: Vec<String> = Vec::new();
     for mint in &batch.mints {
         let canonical = mint.canonical.trim();
-        if canonical.is_empty() {
-            errors.push(GateError {
-                kind: "mint_invalid",
-                message: "铸名的 canonical 不能为空".into(),
-            });
-            continue;
-        }
         if registry_names.contains(&canonical.to_lowercase()) {
             errors.push(GateError {
-                kind: "mint_collision",
+                kind: "ng.mints.collision",
                 message: format!("铸名「{canonical}」与概念登记表现有名字冲突"),
             });
         }
-        for canonical_before in &canonicals {
-            if canonical_before == &canonical.to_lowercase() {
-                errors.push(GateError {
-                    kind: "mint_collision",
-                    message: format!("批内铸名重复：「{canonical}」"),
-                });
-            }
-        }
-        canonicals.push(canonical.to_lowercase());
         mint_names.insert(canonical.to_lowercase());
         for alias in &mint.aliases {
             let alias = alias.trim();
             if alias.is_empty() {
                 continue;
             }
-            if registry_names.contains(&alias.to_lowercase()) || mint_names.contains(&alias.to_lowercase())
-            {
+            if registry_names.contains(&alias.to_lowercase()) {
                 errors.push(GateError {
-                    kind: "mint_collision",
-                    message: format!("铸名「{alias}」（{canonical} 的别名）与现有名字冲突"),
+                    kind: "ng.mints.collision",
+                    message: format!("铸名「{alias}」（{canonical} 的别名）与登记表现有名字冲突"),
                 });
             }
             mint_names.insert(alias.to_lowercase());
         }
     }
 
-    let mut seen_titles: HashSet<String> = HashSet::new();
     for node in &batch.nodes {
         let title = node.title.trim();
-        if title.is_empty() {
-            errors.push(GateError {
-                kind: "node_invalid",
-                message: "节点标题不能为空".into(),
-            });
-            continue;
-        }
-        if title.chars().count() > 80 {
-            errors.push(GateError {
-                kind: "node_invalid",
-                message: format!("节点标题过长（>80 字）：{title}"),
-            });
-        }
         let key = title.to_lowercase();
-        if !seen_titles.insert(key.clone()) {
-            errors.push(GateError {
-                kind: "title_duplicate",
-                message: format!("批内节点标题重复：{title}"),
-            });
-        }
         if existing_titles.contains(&key) {
             errors.push(GateError {
-                kind: "title_duplicate",
+                kind: "ng.title.duplicate",
                 message: format!("节点标题与课程已有节点重复：{title}"),
-            });
-        }
-        let minutes = node.minutes.unwrap_or(10);
-        if !(1..=60).contains(&minutes) {
-            errors.push(GateError {
-                kind: "node_minutes",
-                message: format!("节点 {title} 的分钟预算必须在 1–60 之间：{minutes}"),
             });
         }
 
         for concept in node.teaches.iter().chain(node.assumes.iter()) {
             let name = concept.name.trim();
-            if name.is_empty() {
-                errors.push(GateError {
-                    kind: "concept_unresolved",
-                    message: format!("节点 {title} 的概念引用为空"),
-                });
-                continue;
-            }
             let key = name.to_lowercase();
             let resolvable = registry_names.contains(&key) || mint_names.contains(&key);
             if !resolvable {
                 errors.push(GateError {
-                    kind: "concept_unresolved",
+                    kind: "ng.refs.resolvable",
                     message: format!(
                         "节点 {title} 引用的概念「{name}」既不在概念登记表，也未随本批铸名——先铸名或改用登记表中的名字"
                     ),
@@ -281,7 +223,7 @@ pub fn validate_batch(
             let covered = coverage.get(&key).is_some_and(|taught| *taught >= assumption.tier);
             if !covered {
                 errors.push(GateError {
-                    kind: "assumes_uncovered",
+                    kind: "ng.assumes.uncovered",
                     message: format!(
                         "节点 {title} 假定「{name}」到「{assumed}」档位，但既往批次没有节点把它教到该档位——{hint}",
                         name = assumption.name.trim(),
@@ -468,200 +410,80 @@ impl CoachContext {
     }
 }
 
-/// Tolerant raw batch parse (a single string where an array is expected
-/// degrades to empty, never fails the whole reply).
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawBatch {
-    #[serde(default)]
-    nodes: Vec<RawNode>,
-    #[serde(default)]
-    mints: Vec<RawMint>,
-    #[serde(default)]
-    note: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawNode {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    purpose: String,
-    #[serde(default, deserialize_with = "de_optional_minutes")]
-    minutes: Option<u16>,
-    #[serde(default, deserialize_with = "de_optional_minutes")]
-    difficulty: Option<u16>,
-    #[serde(default, deserialize_with = "de_optional_concepts")]
-    teaches: Vec<ConceptRefInput>,
-    #[serde(default, deserialize_with = "de_optional_concepts")]
-    assumes: Vec<ConceptRefInput>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawMint {
-    #[serde(default)]
-    canonical: String,
-    #[serde(default, deserialize_with = "de_string_list")]
-    aliases: Vec<String>,
-    #[serde(default)]
-    definition: String,
-}
-
-/// Tolerate `"minutes": "15"` / absence / garbage.
-fn de_optional_minutes<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum NumOrStr {
-        Num(u16),
-        Str(String),
-    }
-    Ok(match Option::<NumOrStr>::deserialize(deserializer)? {
-        Some(NumOrStr::Num(n)) => Some(n),
-        Some(NumOrStr::Str(s)) => s.trim().parse::<u16>().ok(),
-        None => None,
-    })
-}
-
-/// Tolerate a single `{"name","tier"}` object where an array is expected.
-fn de_optional_concepts<'de, D>(deserializer: D) -> Result<Vec<ConceptRefInput>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        One(RawConceptRef),
-        Many(Vec<RawConceptRef>),
-    }
-    #[derive(Deserialize)]
-    struct RawConceptRef {
-        #[serde(default)]
-        name: String,
-        tier: RawTier,
-    }
-    // Tier arrives in any of the known shapes; an unknown value degrades to
-    // `know` (the lowest bar) rather than failing the batch — the gates
-    // re-check coverage either way.
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum RawTier {
-        Code(String),
-    }
-    fn normalize_tier(raw: &str) -> Option<ConceptTier> {
-        match raw.trim().to_lowercase().as_str() {
-            "know" | "知道" => Some(ConceptTier::Know),
-            "apply" | "会用" => Some(ConceptTier::Apply),
-            "teach" | "能教" => Some(ConceptTier::Teach),
-            _ => None,
-        }
-    }
-    let parsed = match Option::<OneOrMany>::deserialize(deserializer)? {
-        Some(OneOrMany::One(one)) => vec![one],
-        Some(OneOrMany::Many(many)) => many,
-        None => Vec::new(),
-    };
-    Ok(parsed
-        .into_iter()
-        .filter(|reference| !reference.name.trim().is_empty())
-        .map(|reference| {
-            let tier_text = match &reference.tier {
-                RawTier::Code(code) => code.as_str(),
-            };
-            ConceptRefInput {
-                name: reference.name.trim().to_owned(),
-                tier: normalize_tier(tier_text).unwrap_or(ConceptTier::Know),
-            }
-        })
-        .collect())
-}
-
-fn de_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany {
-        One(String),
-        Many(Vec<String>),
-    }
-    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
-        Some(OneOrMany::One(one)) => vec![one],
-        Some(OneOrMany::Many(many)) => many,
-        None => Vec::new(),
-    })
-}
-
-fn de_option_list<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Parse the coach reply; tolerant of the usual model habits. An
-/// unparseable reply is an error (the caller retries once with a repair
-/// prompt, then gives up).
+/// Parse a coach reply into a proposed batch, strictly (g4: 容错 deserializer
+/// 已退役): the reply must be a single JSON object satisfying
+/// [`growth_contract::validate_proposal`]; any clause violation surfaces as an
+/// error carrying the clause report (`ng.*`), which the growth loop injects
+/// back as retry feedback. Values are TRIMMED into the canonical struct only
+/// after the shape contract passes.
 pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
-    let parsed = crate::generation::parse_json_object::<RawBatch>(raw).map_err(|error| {
+    let value = crate::generation::parse_json_object::<serde_json::Value>(raw).map_err(|error| {
         tracing::warn!(
             error = %error,
             raw_len = raw.len(),
             raw_head = %raw.chars().take(800).collect::<String>(),
             "unparseable coach reply"
         );
-        AppError::Internal(format!("unparseable coach reply: {error}"))
+        AppError::UnprocessableEntity(format!("- [ng.parse] 教练回包不是单个 JSON 对象：{error}"))
     })?;
-    let batch = ProposedBatch {
-        nodes: parsed
-            .nodes
+    let violations: Vec<structure_contract::ContractViolation> =
+        growth_contract::validate_proposal(&value)
             .into_iter()
-            .filter(|node| !node.title.trim().is_empty())
-            .map(|node| ProposedNode {
-                title: node.title.trim().to_owned(),
-                purpose: node.purpose.trim().to_owned(),
-                minutes: node.minutes,
-                difficulty: node.difficulty.map(|d| d.clamp(1, 5) as u8),
-                teaches: node.teaches,
-                assumes: node.assumes,
-            })
-            .collect(),
-        mints: parsed
-            .mints
-            .into_iter()
-            .filter(|mint| !mint.canonical.trim().is_empty())
-            .map(|mint| ConceptMint {
-                canonical: mint.canonical.trim().to_owned(),
-                aliases: mint
-                    .aliases
-                    .into_iter()
-                    .map(|alias| alias.trim().to_owned())
-                    .filter(|alias| !alias.is_empty())
-                    .collect(),
-                definition: mint.definition.trim().to_owned(),
-            })
-            .collect(),
-        note: parsed.note.trim().to_owned(),
-    };
+            .filter(|violation| !violation.warning)
+            .collect();
+    if !violations.is_empty() {
+        return Err(AppError::UnprocessableEntity(format!(
+            "教练批次违反生长契约:\n{}",
+            structure_contract::format_violations(&violations)
+        )));
+    }
+    let mut batch: ProposedBatch = serde_json::from_value(value).map_err(|error| {
+        // 形状契约已过仍反序列化失败 = 形状契约与结构漂移（缺陷），照实报。
+        AppError::Internal(format!("coach reply type drift after shape contract: {error}"))
+    })?;
+    // 归一：trim（契约只保证非空，不含首尾空白语义）。
+    for node in &mut batch.nodes {
+        node.title = node.title.trim().to_owned();
+        node.purpose = node.purpose.trim().to_owned();
+        for reference in node.teaches.iter_mut().chain(node.assumes.iter_mut()) {
+            reference.name = reference.name.trim().to_owned();
+        }
+    }
+    for mint in &mut batch.mints {
+        mint.canonical = mint.canonical.trim().to_owned();
+        mint.aliases = mint
+            .aliases
+            .iter()
+            .map(|alias| alias.trim().to_owned())
+            .filter(|alias| !alias.is_empty())
+            .collect();
+        mint.definition = mint.definition.trim().to_owned();
+    }
+    batch.note = batch.note.trim().to_owned();
     Ok(batch)
 }
 
-/// One coach call → a proposed batch. Thinking ON (via [`crate::generation::complete_coach`]):
-/// the coach must survey entry domains and descend the prerequisite ladder —
-/// deliberation work, not lookup.
+/// One coach call → a proposed batch. JSON seam + thinking ON (via
+/// [`crate::generation::complete_json_coach`]): the coach must survey entry
+/// domains and descend the prerequisite ladder — deliberation work, not
+/// lookup. `feedback` 非空 = 上一轮的逐条款报告（ng.*），注入装配引导重选。
 pub(crate) async fn coach_draft(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     context: &CoachContext,
+    feedback: &str,
 ) -> Result<ProposedBatch, AppError> {
-    let raw = crate::generation::complete_coach(
+    let mut user = context.render();
+    if !feedback.trim().is_empty() {
+        user.push_str(&format!(
+            "\n\n【上一轮打回与逐条修正】\n{feedback}\n\n【修订纪律】\n- 逐条修正被点名的条款；未被点名的部分不要重写。\n- 重新输出完整批次 JSON。"
+        ));
+    }
+    let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
         COACH_SYSTEM,
-        &context.render(),
+        &user,
         crate::generation::COACH_MAX_TOKENS,
     )
     .await?;
@@ -688,7 +510,7 @@ pub(crate) async fn coach_redraft(
         "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 minutes 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render()
     );
-    let raw = crate::generation::complete_coach(
+    let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
         COACH_SYSTEM,
@@ -742,19 +564,13 @@ pub(crate) async fn concept_review(
     batch: &ProposedBatch,
     context: &CoachContext,
 ) -> Vec<ReviewProblem> {
-    #[derive(Deserialize)]
-    struct RawVerdict {
-        #[serde(default)]
-        verdict: String,
-        #[serde(default)]
-        problems: Vec<ReviewProblem>,
-    }
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
     let user = format!(
         "{}\n\n【待审批次】\n{batch_json}",
         context.render()
     );
-    let raw = match crate::generation::complete_coach(
+    // JSON 接缝 + thinking ON（g4：全部生成面统一）。
+    let raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
         CONCEPT_REVIEW_SYSTEM,
@@ -766,15 +582,32 @@ pub(crate) async fn concept_review(
         Ok(raw) => raw,
         Err(_) => return Vec::new(),
     };
-    crate::generation::parse_json_object::<RawVerdict>(&raw)
-        .map(|verdict| {
-            if verdict.verdict == "pass" {
-                Vec::new()
-            } else {
-                verdict.problems.into_iter().take(8).collect()
-            }
-        })
-        .unwrap_or_default()
+    // 输出契约（ng.review.*）：verdict 词表 + problems 形状。评审自身不可用
+    // （调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的批次）。
+    let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    if growth_contract::validate_review(&value)
+        .into_iter()
+        .any(|violation| !violation.warning)
+    {
+        tracing::warn!(
+            raw_head = %raw.chars().take(400).collect::<String>(),
+            "concept review reply violated its contract — degrading to PASS"
+        );
+        return Vec::new();
+    }
+    #[derive(Deserialize)]
+    struct Verdict {
+        #[serde(default)]
+        verdict: String,
+        #[serde(default)]
+        problems: Vec<ReviewProblem>,
+    }
+    match serde_json::from_value::<Verdict>(value) {
+        Ok(verdict) if verdict.verdict == "reject" => verdict.problems.into_iter().take(8).collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1256,7 +1089,7 @@ mod tests {
         };
         let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new());
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].kind, "assumes_uncovered");
+        assert_eq!(errors[0].kind, "ng.assumes.uncovered");
     }
 
     #[test]
@@ -1276,22 +1109,13 @@ mod tests {
         registry.insert("勾股定理".to_owned());
         let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new());
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].kind, "assumes_uncovered");
+        assert_eq!(errors[0].kind, "ng.assumes.uncovered");
     }
 
     #[test]
-    fn validate_batch_enforces_batch_size_and_title_rules() {
-        let nodes: Vec<ProposedNode> = (0..8)
-            .map(|index| node(&format!("节点{index}"), vec![], vec![]))
-            .collect();
-        let errors = validate_batch(
-            &batch_of(nodes),
-            &ConceptCoverage::new(),
-            &HashSet::new(),
-            &HashSet::new(),
-        );
-        assert!(errors.iter().any(|error| error.kind == "batch_too_large"));
-
+    fn validate_batch_enforces_course_internal_title_uniqueness() {
+        // 批量上限属形状契约（growth_contract）；这里只测需要 DB 事实的
+        // 课程内标题唯一。
         let mut existing = HashSet::new();
         existing.insert("已有节点".to_owned());
         let errors = validate_batch(
@@ -1300,7 +1124,18 @@ mod tests {
             &HashSet::new(),
             &existing,
         );
-        assert!(errors.iter().any(|error| error.kind == "title_duplicate"));
+        assert!(errors.iter().any(|error| error.kind == "ng.title.duplicate"));
+
+        // 形状契约（细单测在本模块 growth_contract）：同一批 8 个节点。
+        let nodes: Vec<serde_json::Value> = (0..8)
+            .map(|index| serde_json::json!({ "title": format!("节点{index}"), "purpose": "p" }))
+            .collect();
+        let value = serde_json::json!({ "nodes": nodes, "mints": [] });
+        assert!(
+            growth_contract::validate_proposal(&value)
+                .iter()
+                .any(|violation| violation.code == "ng.batch.size")
+        );
     }
 
     #[test]
@@ -1313,8 +1148,8 @@ mod tests {
             note: String::new(),
         };
         let errors = validate_batch(&batch, &ConceptCoverage::new(), &registry, &HashSet::new());
-        assert!(errors.iter().any(|error| error.kind == "mint_collision"));
-        assert!(errors.iter().any(|error| error.kind == "concept_unresolved"));
+        assert!(errors.iter().any(|error| error.kind == "ng.mints.collision"));
+        assert!(errors.iter().any(|error| error.kind == "ng.refs.resolvable"));
     }
 
     #[test]
@@ -1350,7 +1185,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_coach_reply_tolerates_string_minutes_and_chinese_tiers() {
+    /// g4：容错 deserializer 已退役——字符串 minutes 与中文档位不再是
+    /// 「容忍解析」，而是带条款报告的违约（报告进重试装配）。
+    #[test]
+    fn parse_coach_reply_rejects_legacy_tolerant_shapes_with_clause_report() {
         let raw = r#"{
             "nodes": [
                 { "title": "用配方法解方程", "purpose": "p", "minutes": "15",
@@ -1360,11 +1198,34 @@ mod tests {
             "mints": [],
             "note": "n"
         }"#;
+        let error = parse_coach_reply(raw).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("ng.nodes.minutes"), "{message}");
+        assert!(message.contains("ng.refs.tier"), "{message}");
+    }
+
+    /// 严格路径的正向：契约合规的回包按结构装填并做 trim 归一。
+    #[test]
+    fn parse_coach_reply_accepts_contract_compliant_reply() {
+        let raw = r#"{
+            "nodes": [
+                { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
+                  "minutes": 15, "difficulty": 3,
+                  "teaches": [{"name": " 配方法 ", "tier": "apply"}],
+                  "assumes": [{"name": "一元二次方程", "tier": "know"}] }
+            ],
+            "mints": [ { "canonical": " 配方法 ", "aliases": [" 配方 "], "definition": "" } ],
+            "note": " n "
+        }"#;
         let batch = parse_coach_reply(raw).unwrap();
         assert_eq!(batch.nodes.len(), 1);
+        assert_eq!(batch.nodes[0].title, "用配方法解方程");
         assert_eq!(batch.nodes[0].minutes, Some(15));
         assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
         assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
+        assert_eq!(batch.mints[0].canonical, "配方法");
+        assert_eq!(batch.mints[0].aliases, vec!["配方"]);
+        assert_eq!(batch.note, "n");
     }
 
     #[test]
