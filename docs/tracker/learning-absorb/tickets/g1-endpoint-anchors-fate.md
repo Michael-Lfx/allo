@@ -2,8 +2,8 @@
 id: g1
 title: "终点锚体系：删除、降级还是改造？"
 type: grilling
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -29,3 +29,24 @@ learnhub 终态里**不存在终点概念**：用户只给目标声明，结构�
 
 约束：工作区有未提交改动（growth governance 迭代），裁决落地前先落库；learnhub 曾用真机
 代价否决过「保留结构化排期语义」的中间态，选择 (b)/(c) 时需说明为什么不重蹈覆辙。
+
+## Resolution
+
+**速览**：四问全部裁决，均采推荐项——
+
+1. **终点锚体系：完全删除**。终点表、提议端点、向导第 2 步（向导退化为单步：目标 →
+   生成知识结构）、完成裁决、停摆臂第二臂、终点保护条款、终点 WS 事件与 UI、i18n 键全部
+   移除。方向感改由结构读侧投影承担（路线图按主干子图 + 传递闭包自动补前导、结构可视化、
+   覆盖徽章纯展示）。
+2. **存量数据：破坏性 DROP**。新迁移删终点表与终点课时行；课程行与 `learning_goal` 保留；
+   迁移注意存量失败批次别误判（09-29 教训）。
+3. **停摆臂：无自动终态**。只留空图臂；自动触发只看就绪水位（<3）+ 手动补充；收尾交给
+   现有归档；覆盖读数降为纯展示徽章，永不作判定。
+4. **罗盘：跟随终点退役**。`compass_md` 字段、`regen_compass`、`compass_updated` 事件、
+   罗盘卡 UI 一并删除，与终点同一支破坏性迁移；「人读概览」语义交给结构读侧投影（p1/g2），
+   教练参考改由结构全量块摊开取代（g3 细化）。
+
+被否决的替代与完整理由见 ADR：[docs/adr/0010-endpoint-anchors-and-compass-retirement.md]
+(../../../../adr/0010-endpoint-anchors-and-compass-retirement.md)（ADR-0009 决策 6 与
+Amendment 1 第 3、5 条随之废止）。
+
