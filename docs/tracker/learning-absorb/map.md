@@ -1,0 +1,61 @@
+# Map: 学习模块吸收 learnhub——先生成知识结构并可视化
+
+<!-- wayfinder:map -->
+
+## Destination
+
+一份锁定全部决策的实施规格：allo 学习模块（`nomifun-learning` + `ui/renderer/pages/learning`）
+把建课流程从「目标 → AI 提议终点 → 用户多终点选择 → 生长」改造为「目标 → 一次生成知识结构
+（结构 + 前置地形）→ 可视化投影 → 生长」，终点锚体系命运、结构契约与存储、可视化方案、
+结构化输出基建全部裁决完毕，可直接拆实施票开工。
+
+## Notes
+
+- **来源项目**：`C:\Users\test\Desktop\my\learnhub`（Tauri + 本地文件）。allo 的概念网生长模型
+  （ADR-0009，commit fdd337072）本身就是 learnhub 的同源移植；本次吸收的是它**更新的成果**：
+  普查废止、起点归概念侧、结构仅参考、生长求解器（ADR 0010→0012→0013→0015 裁决链）、
+  JSON wire-only 契约（ADR-0014）、dagre+自绘 SVG 可视化。
+- **铁律（learnhub 真机代价换来的，移植时不得重新引入）**：结构对生长不供内容、不做判定、
+  不与概念建立任何连接；投影永不落盘；顺序权威 = 教练 + 账本；普查 / 交付账 / selectable
+  过滤 / NoFrontier 终态均已退役。xyflow 已被 learnhub 验证弃用（边渲染缺陷），可视化用
+  dagre 算坐标 + 自绘 SVG。
+- **环境差异**：allo 是 axum + SQLite 多用户（web/桌面双宿主），learnhub 是单机文件为真相。
+  SQLite 替代文件时：结构源仍整篇单字段快照存储，投影运行时重算。
+- **工作区状态**：分支 `feat/learn0928`（HEAD bab7a4a8e）有 15 个文件未提交改动（growth
+  governance 迭代：入口域盘点、行为摘要、R 软闸、深度水位）。动建课流程前先落库这批改动。
+- **主要事实来源**：已结案 research 票「learnhub 知识结构生成链路深挖」与「allo 学习模块现状
+  盘点」的 assets 报告。
+- **工作方式**：本 effort 的裁决票多为 HITL grilling（涉及产品形态取舍），留给能代表用户的
+  会话逐票解决；一次会话只解决一张票。
+
+## Decisions so far
+
+- [learnhub 知识结构生成链路深挖](tickets/r1-learnhub-decomposition-research.md)：输入只有
+  四项目标声明（无终点选择）；每轮 2 次 LLM 调用生成 structure + 前置地形，门口对账 +
+  整批重试 ≤3 带反馈；契约 v2.4（8 标量 + spines 6–12 + blocks 40–80 + 三型边）；
+  JSON Schema 单源 + wire-only 落盘；提示词为 md 文件资产 + 金样 + 围栏测试。
+- [allo 学习模块现状盘点](tickets/r2-allo-learning-status-research.md)：学习图向导第 2 步
+  就是多终点选择（`propose-endpoints` + `learning_course_endpoints` + 终点裁决/停摆臂）；
+  可视化完全缺失（无图渲染、无边数据接口，罗盘只是 `<pre>` markdown）；概念网数据模型
+  （registry + teaches/assumes×tier）足以支撑图投影；工作区有未提交改动。
+
+## Not yet specified
+
+- 建课向导新交互流（目标输入 → 生成进度 → 结构可视化的衔接形态）——等「终点锚体系命运」
+  与「结构生成契约」落定，再随可视化原型一起定。
+- 罗盘（`compass_md`）的去留与形态：保留为教练参考、被结构投影取代、还是并入结构生成
+  产物——等「结构与生长的边界」裁决。
+- 存量学习图课程的迁移设计（新迁移 SQL、存量终点锚数据处理、失败批次别误判）——等
+  「终点锚体系命运」裁决。
+- LLM 调用观测存档（learnhub `ArchivingExecutor` 的对应物）在多用户服务端的形态。
+- 传统课程（`course_kind='traditional'`）是否同享结构生成管线。
+- blocks 40–80 规模对前端渲染性能与 WS 进度事件的影响。
+
+## Out of scope
+
+- learnhub 独立模块的整体移植：FSRS 复习调度（`review.rs`）、mastery 聚合、contentgen 课件、
+  questions 出题、ledger 行为账本、MCP server、web_research——与「结构生成 + 可视化」无直接
+  耦合，allo 已有对应或不需要。
+- 概念身份体系重构为 ULID：allo 的 `learning_concept_registry`（canonical + aliases +
+  definition）+ 铸名门已与 learnhub 概念模型语义等价。
+- 教练多 agent 化（learnhub 自身亦后置为 v2 路线）。
