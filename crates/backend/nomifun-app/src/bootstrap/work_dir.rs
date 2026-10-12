@@ -131,7 +131,8 @@ pub(crate) fn ensure_work_dir(work_dir: &Path, data_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(work_dir).map_err(|error| {
         anyhow::anyhow!(
             "work dir {} is missing and could not be recreated: {error}. Recreate the folder, \
-             or fix or remove {} to fall back to the data dir, then restart.",
+             or remove the path override (--work-dir or {}) to fall back to the data dir, \
+             then restart.",
             work_dir.display(),
             data_dir
                 .join(nomifun_common::dir_config::DIR_CONFIG_FILE)

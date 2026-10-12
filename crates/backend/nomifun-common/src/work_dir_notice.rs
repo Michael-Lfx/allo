@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 /// File under the data dir holding the most recent recreation notice.
 pub const WORK_DIR_RECREATED_FILE: &str = "work-dir-recreated.json";
 
+/// The notice is a two-field JSON document; anything larger is not ours.
+const MAX_NOTICE_BYTES: u64 = 4 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkDirRecreatedNotice {
     pub work_dir: String,
@@ -22,7 +25,8 @@ fn notice_path(data_dir: &Path) -> PathBuf {
 }
 
 /// Best-effort record of a recreated work root. Boot must not fail because the
-/// notice could not be written; callers log the failure instead.
+/// notice could not be written; callers log the failure instead. Atomic replace
+/// keeps a crash from leaving a torn document behind.
 pub fn record(data_dir: &Path, work_dir: &Path) -> std::io::Result<()> {
     let notice = WorkDirRecreatedNotice {
         work_dir: work_dir.to_string_lossy().into_owned(),
@@ -30,13 +34,27 @@ pub fn record(data_dir: &Path, work_dir: &Path) -> std::io::Result<()> {
     };
     let json = serde_json::to_vec_pretty(&notice)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    std::fs::write(notice_path(data_dir), json)
+    crate::dir_config::write_atomic_replace(&notice_path(data_dir), &json)
 }
 
-/// Read the notice, tolerating a missing or malformed file.
+/// Read the notice, tolerating a missing or malformed file. Uses the shared
+/// bounded, no-reparse reader so a replaced or symlinked marker cannot feed
+/// arbitrary bytes into the API.
 pub fn read(data_dir: &Path) -> Option<WorkDirRecreatedNotice> {
-    let bytes = std::fs::read(notice_path(data_dir)).ok()?;
+    let bytes =
+        crate::dir_config::read_bounded_regular_file(&notice_path(data_dir), MAX_NOTICE_BYTES)
+            .ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// Remove the notice, e.g. after a successful work-dir relocation makes it
+/// stale. A missing file is fine.
+pub fn clear(data_dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(notice_path(data_dir)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -66,6 +84,26 @@ mod tests {
         let data_dir = temp_data_dir("tolerant");
         assert!(read(&data_dir).is_none());
         std::fs::write(notice_path(&data_dir), b"not json").unwrap();
+        assert!(read(&data_dir).is_none());
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn read_rejects_oversized_files() {
+        let data_dir = temp_data_dir("oversized");
+        let oversized = vec![b' '; (MAX_NOTICE_BYTES + 1) as usize];
+        std::fs::write(notice_path(&data_dir), oversized).unwrap();
+        assert!(read(&data_dir).is_none());
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
+    fn clear_removes_the_notice_and_tolerates_missing_files() {
+        let data_dir = temp_data_dir("clear");
+        clear(&data_dir).unwrap();
+        record(&data_dir, &data_dir.join("ws")).unwrap();
+        assert!(read(&data_dir).is_some());
+        clear(&data_dir).unwrap();
         assert!(read(&data_dir).is_none());
         let _ = std::fs::remove_dir_all(&data_dir);
     }
