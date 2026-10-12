@@ -27,9 +27,19 @@
   盘点」的 assets 报告。
 - **工作方式**：本 effort 的裁决票多为 HITL grilling（涉及产品形态取舍），留给能代表用户的
   会话逐票解决；一次会话只解决一张票。
+- **常设偏好（用户 2026-10-12 指示）**：每条生成管线必须附带 learnhub `smoke-run` 式的
+  无头真机冒烟入口——与应用同接线、观测面存档 LLM 调用、机械判据自检（不过非零退出）。
+  设计归票「真机冒烟入口设计」。
 
 ## Decisions so far
 
+- [结构与生长的边界](tickets/g3-structure-vs-growth-boundary.md)：教练上下文重排为 9 块
+  （结构参考材料全量块摊开取代范围参考、地形门口首批重点、覆盖读数改纯展示）；深度水位门
+  退役、反虚标职能移概念评审门（difficulty 字段保留）；首级判据 learnhub 式重写；就绪即
+  发布门与 R 软闸保留。
+- [真机冒烟入口设计](tickets/s1-smoke-harness-design.md)（常设偏好，待设计）：参考
+  learnhub 三冒烟 bin（smoke-run/smoke-json/smoke-loop），每条生成管线配无头冒烟入口 +
+  观测存档 + 机械判据自检；设计待解。
 - [结构生成契约与存储落点](tickets/g2-structure-contract-and-storage.md)：structure 契约
   全量引入 + 向导输入最小化（目标/程度声明/基础声明，后两项可选，goal_type/domain_type 由
   LLM 自判）；前置地形独立产物 + 门口对账，入口域盘点退役；双调用 + 整批重试 ≤3 带反馈；
@@ -52,7 +62,6 @@
 ## Not yet specified
 
 - 建课向导的生成进度与结构可视化衔接形态——等可视化原型（p1）落定。
-- LLM 调用观测存档（learnhub `ArchivingExecutor` 的对应物）在多用户服务端的形态。
 - 传统课程（`course_kind='traditional'`）是否同享结构生成管线。
 - blocks 40–80 规模对前端渲染性能与 WS 进度事件的影响。
 
