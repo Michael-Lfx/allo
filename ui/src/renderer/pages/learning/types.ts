@@ -68,19 +68,6 @@ export interface LearningGraphGenerationStatus {
   elapsed_secs: number | null;
 }
 
-/** 终点锚提议请求（建课向导第二步的 AI 提议） */
-export interface ProposeEndpointsRequest {
-  description: string;
-  provider_id?: string;
-  model?: string;
-}
-
-/** AI 提议的一条终点锚 */
-export interface ProposedEndpointView {
-  title: string;
-  goal_note: string;
-}
-
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
  * feedback 是单节重写的可选学习建议（ADR-0007），为空即同分布重生成。 */
 export interface GenerateLessonRequest {
@@ -464,6 +451,7 @@ export interface GraphBlockedView {
  * LearningStructureView（GET graph/structure）。 */
 export interface LearningGraphView {
   goal: string;
+  scope: string;
   /** 下一步推荐学习的节点（就绪集 ≤10；被 R 软闸挡住的进 blocked） */
   recommended: string[];
   /** R 软闸建议（≤3 条，按供给节点回忆率升序） */

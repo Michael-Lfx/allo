@@ -8,10 +8,8 @@ import {
   Alert,
   Button,
   Empty,
-  Input,
   Modal,
   Spin,
-  Switch,
   Table,
   Tabs,
   Tag,
@@ -76,7 +74,6 @@ const LearningGraphWorkspace: React.FC<{
   const { wide: wideContent } = useWideContentLayout();
   const graph = detail.graph;
   const [activeTab, setActiveTab] = useState('study');
-  const [mutating, setMutating] = useState(false);
 
   const lessons = useMemo(
     () => detail.modules.flatMap((module) => module.lessons),
@@ -122,47 +119,41 @@ const LearningGraphWorkspace: React.FC<{
     [lessonsById, selectedLessonId, primaryReadyId]
   );
 
-  // ── 终点锚：增删改（任何变更后端自动重画罗盘）───────────────────────────
-  const [endpointEditor, setEndpointEditor] = useState<{
-    mode: 'create' | 'edit';
-    endpoint?: GraphEndpointView;
-    title: string;
-    goalNote: string;
-    completed?: boolean;
-  } | null>(null);
+  // ── 知识结构状态（读侧投影 + 生成中/失败态）─────────────────────────────
+  const [structure, setStructure] = useState<LearningStructureView | null>(null);
+  const [structureError, setStructureError] = useState<string | null>(null);
+  const [structureRunning, setStructureRunning] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
-  const submitEndpoint = useCallback(async () => {
-    if (!endpointEditor || !graph) return;
-    const title = endpointEditor.title.trim();
-    if (!title) {
-      return;
-    }
-    setMutating(true);
-    try {
-      if (endpointEditor.mode === 'create') {
-        await learningApi.addGraphEndpoint(detail.course.id, {
-          title,
-          goal_note: endpointEditor.goalNote.trim(),
-        });
-      } else if (endpointEditor.endpoint) {
-        await learningApi.updateGraphEndpoint(
-          detail.course.id,
-          endpointEditor.endpoint.endpoint_id,
-          {
-            title,
-            goal_note: endpointEditor.goalNote.trim(),
-            completed: endpointEditor.completed ?? endpointEditor.endpoint.completed,
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      learningApi
+        .graphStructure(detail.course.id)
+        .then((view) => {
+          if (cancelled) return;
+          setStructure(view);
+          setStructureError(null);
+          if (view.structure) setStructureRunning(false);
+        })
+        .catch((loadError) => {
+          if (!cancelled) {
+            setStructureError(loadError instanceof Error ? loadError.message : String(loadError));
           }
-        );
-      }
-      setEndpointEditor(null);
-      onRefresh();
-    } catch (actionError) {
-      Modal.error({ title: t('learning.learningGraphEndpointSaveFailed'), content: errorMessage(t, actionError) });
-    } finally {
-      setMutating(false);
-    }
-  }, [detail.course.id, endpointEditor, graph, onRefresh, t]);
+        });
+    };
+    load();
+    // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id !== detail.course.id) return;
+      if (event.event === 'structure_started') setStructureRunning(true);
+      if (event.event === 'structure_completed' || event.event === 'structure_failed') load();
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [detail.course.id]);
 
   const removeEndpoint = useCallback(
     (endpoint: GraphEndpointView) => {
@@ -331,44 +322,48 @@ const LearningGraphWorkspace: React.FC<{
         </div>
       </div>
 
-      {/* 终点锚 + 罗盘 + 补充节点（生长控制条） */}
+      {/* 知识结构状态 + 补充节点（生长控制条） */}
       <div className='flex flex-col gap-8px rounded-10px border-1 border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-12px'>
         <div className='flex flex-wrap items-center gap-8px'>
           <Text bold className='text-13px'>
-            {t('learning.learningGraphEndpointsTitle')}
+            {t('learning.learningGraphStructureTitle')}
           </Text>
-          {graph.endpoints.map((endpoint) => (
-            <Tag
-              key={endpoint.endpoint_id}
-              size='small'
-              color={endpoint.completed ? 'green' : 'arcoblue'}
-              className='!mx-0 cursor-pointer'
-              onClick={() =>
-                setEndpointEditor({
-                  mode: 'edit',
-                  endpoint,
-                  title: endpoint.title,
-                  goalNote: endpoint.goal_note,
-                  completed: endpoint.completed,
-                })
-              }
-              closable
-              onClose={(event) => {
-                event.stopPropagation();
-                removeEndpoint(endpoint);
-              }}
-            >
-              {endpoint.completed ? '✓ ' : ''}
-              {endpoint.title}
+          {structureError ? (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.learningGraphStructureLoadFailed')}
+            </Text>
+          ) : structure === null ? (
+            <Spin size={12} />
+          ) : structureRunning ? (
+            <Tag size='small' color='processing' className='!mx-0'>
+              {t('learning.learningGraphStructureGenerating')}
             </Tag>
-          ))}
+          ) : structure.structure ? (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.learningGraphStructureSummary', {
+                spines: structure.structure.spines.length,
+                blocks: structure.structure.blocks.length,
+                doors: structure.terrain?.doors.length ?? 0,
+              })}
+              {structure.generated_at
+                ? ` · ${new Date(structure.generated_at).toLocaleString()}`
+                : ''}
+            </Text>
+          ) : (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.learningGraphStructureMissing')}
+            </Text>
+          )}
           <Button
             size='mini'
             type='text'
-            disabled={mutating}
-            onClick={() => setEndpointEditor({ mode: 'create', title: '', goalNote: '' })}
+            loading={regenerating}
+            disabled={regenerating || structureRunning || busyId !== null}
+            onClick={() => void regenerateStructure()}
           >
-            + {t('learning.learningGraphEndpointAdd')}
+            {structure?.structure
+              ? t('learning.learningGraphStructureRegenerate')
+              : t('learning.learningGraphStructureGenerate')}
           </Button>
           <span className='flex-1' />
           {graph.growth_running && (
@@ -391,6 +386,12 @@ const LearningGraphWorkspace: React.FC<{
                 })}
           </Button>
         </div>
+        {/* 尚未生成时的说明（生成按钮在上一行；生成中不显示） */}
+        {!structureRunning && structure !== null && !structure.structure && !structureError && (
+          <Text type='secondary' className='text-12px'>
+            {t('learning.learningGraphStructureHint')}
+          </Text>
+        )}
         {/* R 软闸建议条：结构就绪但供给节点已遗忘（ADR-0009 Amendment 1） */}
         {graph.blocked.map((blocked) => (
           <Alert
@@ -404,13 +405,6 @@ const LearningGraphWorkspace: React.FC<{
             })}
           />
         ))}
-        {/* 罗盘：默认收起，点击展开（终点变更时后端自动重画） */}
-        <CompassCard
-          courseId={detail.course.id}
-          compass={graph.compass}
-          updatedAt={graph.compass_updated_at}
-          onRedrawn={onRefresh}
-        />
       </div>
 
       <Tabs activeTab={activeTab} onChange={setActiveTab} type='line' className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px'>
@@ -543,143 +537,7 @@ const LearningGraphWorkspace: React.FC<{
           <ConceptTable courseId={detail.course.id} />
         </Tabs.TabPane>
       </Tabs>
-
-      {/* 终点锚编辑弹窗 */}
-      <Modal
-        title={
-          endpointEditor?.mode === 'create'
-            ? t('learning.learningGraphEndpointAdd')
-            : t('learning.learningGraphEndpointEdit')
-        }
-        visible={endpointEditor !== null}
-        confirmLoading={mutating}
-        onOk={() => void submitEndpoint()}
-        onCancel={() => setEndpointEditor(null)}
-        style={{ width: 460 }}
-      >
-        <div className='flex flex-col gap-12px'>
-          <div>
-            <div className='mb-6px font-500'>{t('learning.learningGraphEndpointTitleLabel')}</div>
-            <Input
-              value={endpointEditor?.title ?? ''}
-              placeholder={t('learning.learningGraphEndpointTitlePlaceholder')}
-              maxLength={40}
-              onChange={(value) =>
-                setEndpointEditor((current) =>
-                  current ? { ...current, title: value } : current
-                )
-              }
-            />
-          </div>
-          <div>
-            <div className='mb-6px font-500'>{t('learning.learningGraphEndpointNoteLabel')}</div>
-            <Input.TextArea
-              value={endpointEditor?.goalNote ?? ''}
-              placeholder={t('learning.learningGraphEndpointNotePlaceholder')}
-              autoSize={{ minRows: 2, maxRows: 4 }}
-              onChange={(value) =>
-                setEndpointEditor((current) =>
-                  current ? { ...current, goalNote: value } : current
-                )
-              }
-            />
-          </div>
-          {endpointEditor?.mode === 'edit' && (
-            <div className='flex items-center justify-between gap-8px'>
-              <Text bold className='text-13px'>
-                {t('learning.learningGraphEndpointCompletedToggle')}
-              </Text>
-              <Switch
-                size='small'
-                checked={endpointEditor.completed ?? false}
-                onChange={(value) =>
-                  setEndpointEditor((current) =>
-                    current ? { ...current, completed: value } : current
-                  )
-                }
-              />
-            </div>
-          )}
-          <Paragraph className='!mb-0 text-t-secondary'>
-            {t('learning.learningGraphEndpointHint')}
-          </Paragraph>
-        </div>
-      </Modal>
       </div>
-    </div>
-  );
-};
-
-/** 罗盘卡：默认收起一行，点击展开全文；展开态可手动重画。 */
-const CompassCard: React.FC<{
-  courseId: string;
-  compass: string | null;
-  updatedAt: number | null;
-  onRedrawn: () => void;
-}> = ({ courseId, compass, updatedAt, onRedrawn }) => {
-  const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-  const [redrawing, setRedrawing] = useState(false);
-  const empty = !compass || compass.trim() === '';
-
-  const redraw = async () => {
-    setRedrawing(true);
-    try {
-      await learningApi.redrawGraphCompass(courseId);
-      onRedrawn();
-    } finally {
-      setRedrawing(false);
-    }
-  };
-  return (
-    <div className='rounded-8px bg-[var(--color-fill-1)] p-8px'>
-      <button
-        type='button'
-        className='flex w-full cursor-pointer items-center justify-between gap-8px border-none bg-transparent p-0 font-inherit'
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <Text bold className='text-12px'>
-          {t('learning.learningGraphCompassTitle')}
-          {updatedAt ? (
-            <Text type='secondary' className='ml-8px font-400 text-11px'>
-              {t('learning.learningGraphCompassUpdatedAt', {
-                time: new Date(updatedAt).toLocaleString(),
-              })}
-            </Text>
-          ) : null}
-        </Text>
-        <span className='flex items-center gap-8px'>
-          {expanded && (
-            <Button
-              size='mini'
-              type='text'
-              loading={redrawing}
-              onClick={(event) => {
-                event.stopPropagation();
-                void redraw();
-              }}
-            >
-              {t('learning.learningGraphCompassRedraw')}
-            </Button>
-          )}
-          <Text type='secondary' className='text-12px'>
-            {expanded ? '▾' : '▸'}
-          </Text>
-        </span>
-      </button>
-      {expanded && (
-        <div className='mt-8px'>
-          {empty ? (
-            <Text type='secondary' className='text-12px'>
-              {t('learning.learningGraphCompassEmpty')}
-            </Text>
-          ) : (
-            <pre className='m-0 max-h-320px overflow-y-auto whitespace-pre-wrap break-words font-inherit text-12px leading-20px text-[var(--color-text-2)]'>
-              {compass}
-            </pre>
-          )}
-        </div>
-      )}
     </div>
   );
 };
