@@ -142,6 +142,8 @@ export function CreateCourseDialog({
           onCancel={onCancel}
         />
       ) : (
+        // 终点锚数量不封顶后内容可能远超视口：内容区限高滚动，Arco 底部
+        // 按钮（上一步/下一步）始终可见可点。
         <div className='max-h-[calc(100vh-190px)] overflow-y-auto'>
           <Tabs activeTab={creationTab} onChange={(key) => onTabChange(key as 'base' | 'description' | 'graph')}>
             <Tabs.TabPane key='base' title={t('learning.generateFromBase')} destroyOnHide={false}>
@@ -295,18 +297,16 @@ export function CreateCourseDialog({
                       />
                     </div>
                   ))}
-                  {draftEndpoints.length < 3 && (
-                    <Button
-                      long
-                      type='text'
-                      icon={<IconPlus />}
-                      onClick={() =>
-                        onDraftEndpointsChange([...draftEndpoints, { title: '', goal_note: '' }])
-                      }
-                    >
-                      {t('learning.learningGraphEndpointAdd')}
-                    </Button>
-                  )}
+                  <Button
+                    long
+                    type='text'
+                    icon={<IconPlus />}
+                    onClick={() =>
+                      onDraftEndpointsChange([...draftEndpoints, { title: '', goal_note: '' }])
+                    }
+                  >
+                    {t('learning.learningGraphEndpointAdd')}
+                  </Button>
                 </div>
               )}
             </Tabs.TabPane>

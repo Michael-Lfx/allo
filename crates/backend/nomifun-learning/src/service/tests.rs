@@ -3340,15 +3340,16 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     let (service, _knowledge, owner) = job_test_service().await;
     let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
-    // 批内自足：极限 随批铸名并由首节点教到「知道」，第二节点假定同档
-    // ——结构门放行；评审 completer 返回同 JSON，problems 缺省为空即通过。
+    // 同批互不依赖：第二节点只假定既往批次已教的「向量基础」（种子节点 A
+    // 已教到能教档，已教账覆盖）——结构门放行；评审 completer 返回同 JSON，
+    // problems 缺省为空即通过。
     let batch_json = r#"{
         "nodes": [
             {"title": "用定义计算极限", "purpose": "首批基节点", "minutes": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
             {"title": "用极限法则求切线", "purpose": "衔接节点", "minutes": 20,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
-             "assumes": [{"name": "极限", "tier": "know"}]}
+             "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},

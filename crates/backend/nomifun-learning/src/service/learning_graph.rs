@@ -12,6 +12,11 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
+/// 生长修复循环的总稿数上限（首稿 + 至多 N-1 次打回重裁）。结构门/概念评审
+/// 打回时把报告喂回教练重裁再试，而非直接失败；该上限只是成本/超时护栏，
+/// 并非"两次即弃"的语义。
+const GROWTH_MAX_DRAFTS: usize = 4;
+
 impl LearningService {
 
     // ── Endpoint proposal（建课向导第二步）───────────────────────────────
@@ -141,13 +146,15 @@ impl LearningService {
             let spawn_override = spawn_override
                 .as_ref()
                 .map(|(provider, model)| (provider, model.as_str()));
-            if let Err(error) = service
-                .run_structure_generation(&course, &owner, spawn_override, &structure_input)
-                .await
-            {
-                tracing::warn!(course = course.as_str(), %error, "structure generation failed");
+            // 并行：罗盘开思考后要画约一分钟，串行会把首生长再拖一分钟；
+            // 首批上下文本就不加载罗盘，生长不依赖它。
+            let compass = service.regen_compass(&course, &owner, spawn_override);
+            let growth = service.kick_growth(&owner, &course, true, spawn_override);
+            let (compass_result, growth_result) = tokio::join!(compass, growth);
+            if let Err(error) = compass_result {
+                tracing::warn!(course = course.as_str(), %error, "initial compass regen failed");
             }
-            if let Err(error) = service.kick_growth(&owner, &course, true, spawn_override).await {
+            if let Err(error) = growth_result {
                 tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
             }
         });
@@ -1446,47 +1453,26 @@ impl LearningService {
                 &candidates_text,
             )
             .await;
-            // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
-            // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
-            // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
-            if !review.findings.is_empty() {
-                self.record_review_findings(course_id, &review.findings).await;
-            }
-            // ── 复用裁决先行（j04 + 2026-10-19 真机发现）：模型在 reject 里
-            // 也会附 reuse（近义铸名的正确出路）。裁决先于 problems 处置：能
-            // 被裁决覆盖的问题（mint 重叠类，issue 里带「提名名」）从报告中
-            // 剔除——落库侧 j04 机械通道会把该 mint 转为宿主活跃别名，无需折
-            // 返模型。此处不改写 candidate：红裁路径的 previous/点修守卫基线
-            // 必须保持模型自己的输出。
-            //
-            // 裁决核验的事实边界是**登记表全量**（t3）：候选集只是评审的可见
-            // 面之一，正确宿主常常在近邻子集之外（真机 run-1792395614887）。
-            // 候选集归属降级为日志注记；反伪造边界不变——concept_id 必须真实
-            // 存在且未退役（即 register_alias_tx 可接受的宿主）。
-            let mut rulings: HashMap<String, String> = HashMap::new();
-            for ruling in &review.reuse {
-                let key = ruling.name.trim().to_lowercase();
-                let Some(plan) = outcome
-                    .nominations
-                    .iter()
-                    .find(|plan| plan.name.to_lowercase() == key)
-                else {
+            if !problems.is_empty() {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    draft = draft_no,
+                    problem_count = problems.len(),
+                    report = %crate::learning_graph::format_review_problems(&problems),
+                    "growth batch rejected by concept review"
+                );
+                if draft_no >= GROWTH_MAX_DRAFTS {
                     tracing::warn!(
                         course = course_id.as_str(),
-                        name = %ruling.name,
-                        "review reuse ruling dropped — name not in this batch"
+                        drafts = draft_no,
+                        batch_json = %serde_json::to_string(&batch).unwrap_or_default(),
+                        "growth failed: concept review rejected every draft"
                     );
-                    continue;
-                };
-                let concept_id = ruling.concept_id.trim();
-                if !outcome.registry_concept_ids.contains(concept_id) {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        name = %ruling.name,
-                        concept_id,
-                        "review reuse ruling dropped — concept_id is not an active registry concept"
-                    );
-                    continue;
+                    return Err(AppError::UnprocessableEntity(format!(
+                        "生长批次 {} 稿均未通过概念评审：\n{}",
+                        draft_no,
+                        crate::learning_graph::format_review_problems(&problems)
+                    )));
                 }
                 if !plan
                     .candidates
@@ -1922,6 +1908,7 @@ impl LearningService {
             behavior_digest,
             ready_count,
             registry_excerpt,
+            entry_survey: String::new(),
         })
     }
 

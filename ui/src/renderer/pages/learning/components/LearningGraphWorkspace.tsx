@@ -694,16 +694,25 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
 
   useEffect(() => {
     let cancelled = false;
-    learningApi
-      .graphHistory(courseId)
-      .then((view) => {
-        if (!cancelled) setBatches(view.batches);
-      })
-      .catch((loadError) => {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
-      });
+    const load = () => {
+      learningApi
+        .graphHistory(courseId)
+        .then((view) => {
+          if (!cancelled) setBatches(view.batches);
+        })
+        .catch((loadError) => {
+          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        });
+    };
+    load();
+    // 生长全程都会改批次时间线（生长开始落 pending 行、终结落定状态）——
+    // 组件自订阅事件流：课程详情刷新不经过本组件，靠它自己重拉。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === courseId) load();
+    });
     return () => {
       cancelled = true;
+      off();
     };
   }, [courseId]);
 
@@ -789,16 +798,24 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
 
   useEffect(() => {
     let cancelled = false;
-    learningApi
-      .graphConcepts(courseId)
-      .then((view) => {
-        if (!cancelled) setRows(view);
-      })
-      .catch((loadError) => {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
-      });
+    const load = () => {
+      learningApi
+        .graphConcepts(courseId)
+        .then((view) => {
+          if (!cancelled) setRows(view);
+        })
+        .catch((loadError) => {
+          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        });
+    };
+    load();
+    // 生长落库会铸新概念入登记表——概念表自订阅事件流，落库后重拉。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === courseId) load();
+    });
     return () => {
       cancelled = true;
+      off();
     };
   }, [courseId]);
 

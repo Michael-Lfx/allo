@@ -367,6 +367,307 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
         ConceptTier::Teach => "能教",
     }
 }
+
+/// 一条入口域盘点：域名 + 该域最底层一格的动作句 + 它服务的终点方向。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryDomain {
+    pub name: String,
+    pub bottom_rung: String,
+    #[serde(default)]
+    pub serves: String,
+}
+
+const ENTRY_SURVEY_SYSTEM: &str = r#"你是学习起点盘点员：为一条学习目标铺坡道之前，先盘点学习者此刻最该并行学的底层域，以及每个域的最底层一格。
+只回复一个 JSON 对象，形状如下：
+{
+  "domains": [
+    { "name": "底层域名", "bottom_rung": "该域最底层一格的动作句：学习者今天就能开始、且还需要教学才会的学科内容", "serves": "一句话说明它为哪类方向供给语言或操作" }
+  ]
+}
+规则：
+- 学习者是成年人：「零基础」指目标学科零基础，不是生活能力零基础——成人日常已会的能力不需要教；要教的 = 把日常能力升级为学科语言的那一格。
+- 逐域往下问：对每个候选格连续追问「比这更基础、还能再降吗」，降到「再降就没有教学价值」为止——那是该域最底层的学科概念，写进 bottom_rung。
+- bottom_rung 是单一动作句，日常经验只作引入切口，不作节点内容；成人已会的纯生活动作没有教学价值，不合格。
+- 数量 4-8 个：彼此独立的底层域，合起来铺满从基线到目标的入口层。
+- 用学习目标的语言书写。只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawEntrySurvey {
+    #[serde(default, deserialize_with = "de_option_list")]
+    domains: Vec<RawEntryDomain>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawEntryDomain {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    bottom_rung: String,
+    #[serde(default)]
+    serves: String,
+}
+
+/// Parse the survey reply; a malformed survey degrades to None — the caller
+/// falls back to the coach's inline survey (the pre-survey behaviour).
+fn parse_entry_survey(raw: &str) -> Option<Vec<EntryDomain>> {
+    let parsed = crate::generation::parse_json_object::<RawEntrySurvey>(raw).ok()?;
+    let domains: Vec<EntryDomain> = parsed
+        .domains
+        .into_iter()
+        .filter(|domain| !domain.name.trim().is_empty() && !domain.bottom_rung.trim().is_empty())
+        .map(|domain| EntryDomain {
+            name: domain.name.trim().to_owned(),
+            bottom_rung: domain.bottom_rung.trim().to_owned(),
+            serves: domain.serves.trim().to_owned(),
+        })
+        .collect();
+    (!domains.is_empty()).then_some(domains)
+}
+
+/// First-batch entry-domain survey: ONE thinking call that answers「零基础走到
+/// 目标，此刻最该并行学哪几个底层域、每个域的最底层一格是什么动作」BEFORE the
+/// coach sees the endpoint anchors or the gates. The split is deliberate —
+/// granular university-level endpoints anchor the entry level up to「教材第
+/// 一章」(the 2026-09-29 eight-endpoint course kept minting 中学层 entries);
+/// a survey that never sees them cannot be anchored by them, and the coach
+/// then drafts against a fixed menu. Failure degrades to None (the coach
+/// surveys inline, as before).
+pub(crate) async fn survey_entry_domains(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    goal: &str,
+    baseline: &str,
+) -> Option<Vec<EntryDomain>> {
+    let user = format!("学习目标：{goal}\n学习者基线：{baseline}");
+    let raw = crate::generation::complete_coach(
+        completer,
+        model_override,
+        ENTRY_SURVEY_SYSTEM,
+        &user,
+        crate::generation::ENDPOINT_PROPOSAL_MAX_TOKENS,
+    )
+    .await
+    .ok()?;
+    parse_entry_survey(&raw)
+}
+
+/// Render the surveyed domains into the coach's 首级判据 menu block.
+pub(crate) fn render_entry_survey(domains: &[EntryDomain]) -> String {
+    domains
+        .iter()
+        .map(|domain| {
+            if domain.serves.is_empty() {
+                format!("- {} → {}", domain.name, domain.bottom_rung)
+            } else {
+                format!("- {} → {}（服务：{}）", domain.name, domain.bottom_rung, domain.serves)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
+
+/// Scope call: ONE light call that resolves what the goal description
+/// actually covers. The output is REFERENCE material for the coach prompt
+/// and the endpoint proposal; failure degrades to a scope-free start, never
+/// to a hard error.
+const SCOPE_SYSTEM: &str = r#"你负责在学习目标开始生长之前，先厘清这个目标到底覆盖什么。
+只回复一个 JSON 对象，形状如下：
+{
+  "goal": "完成整个学习后应达到的最终状态——可检验的能力描述",
+  "baseline": "学习者被假定的起点状态",
+  "scope": "一句话界定该目标覆盖什么、从哪里开始",
+  "blocks": ["大块概念一", "大块概念二"]
+}
+规则：
+- "goal"：明确的学习目标。从学习目标描述中提炼学习者完成后能做到什么、理解到什么程度——写成可检验的能力陈述，而不是重复用户的原话。
+- "baseline"：用户起点。当学习者基线不明且没有明确要求起点时，一律视作用户对目标相关领域彻底的一无所知；只有用户明确说出自己已具备的知识或技能时，才照实记录。
+- "scope"：一句话划清目标的边界——起点、要达到的水平、主题广度，须与 goal 和 baseline 保持一致。
+- "blocks"：该目标真正覆盖的大块概念，按从基础到高级排序，合起来必须铺满从 baseline 到 goal 的整条路径。数量不固定：复杂的目标多列，简单的目标少列。
+- 用学习目标的语言书写。
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
+
+/// Resolved scope reference fed into the coach / endpoint proposal.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ScopeAnalysis {
+    pub goal: String,
+    pub baseline: String,
+    pub scope: String,
+    pub blocks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawScope {
+    #[serde(default)]
+    goal: String,
+    #[serde(default)]
+    baseline: String,
+    #[serde(default)]
+    scope: String,
+    #[serde(default, deserialize_with = "de_string_list")]
+    blocks: Vec<String>,
+}
+
+fn parse_scope_reply(raw: &str) -> Option<ScopeAnalysis> {
+    let parsed = crate::generation::parse_json_object::<RawScope>(raw).ok()?;
+    Some(ScopeAnalysis {
+        goal: parsed.goal.trim().to_owned(),
+        baseline: parsed.baseline.trim().to_owned(),
+        scope: parsed.scope.trim().to_owned(),
+        blocks: parsed.blocks,
+    })
+}
+
+/// One scope call, best-effort: any failure degrades to `None`.
+pub(crate) async fn analyze_scope(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    topic: &str,
+) -> Option<ScopeAnalysis> {
+    let user = format!("Learning goal: {topic}");
+    let raw = crate::generation::complete(
+        completer,
+        model_override,
+        SCOPE_SYSTEM,
+        &user,
+        crate::generation::LEARNING_GRAPH_SCOPE_MAX_TOKENS,
+    )
+    .await
+    .ok()?;
+    parse_scope_reply(&raw)
+}
+
+// ── Endpoint proposal (course creation) ────────────────────────────────────
+
+/// Coach 提议的一条终点：标题 + 一句程度声明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProposedEndpoint {
+    pub title: String,
+    #[serde(default)]
+    pub goal_note: String,
+}
+
+const ENDPOINT_PROPOSAL_SYSTEM: &str = r#"你负责为一个新的学习目标提议若干条「终点锚」。终点是学习的方向标记：学习者抵达终点时应当具备什么能力。
+只回复一个 JSON 对象，形状如下：
+{
+  "endpoints": [
+    { "title": "终点名（名词短语，如：独立完成一元二次方程的求解）", "goal_note": "一句程度声明：抵达时能做到什么、到什么程度" }
+  ]
+}
+规则：
+- 每条终点必须指向一个可检验的能力状态，而不是「学完某本书」这类过程描述。
+- 目标单一清晰时提议 1 条即可；目标含多个相互独立的努力方向时才拆成多条，数量不封顶——但每条都必须是真实独立的努力方向，不为凑数硬拆。
+- 终点标题用学习目标的语言书写，20 字以内。
+- 只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
+
+/// Propose initial endpoints for a new course (best-effort: failure returns
+/// an empty list — the user types endpoints by hand in the wizard).
+pub(crate) async fn propose_endpoints(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    topic: &str,
+    scope: Option<&ScopeAnalysis>,
+) -> Vec<ProposedEndpoint> {
+    let mut user = format!("学习目标：{topic}");
+    if let Some(scope) = scope {
+        if !scope.goal.is_empty() {
+            user.push_str(&format!("\n\n目标解析：{}", scope.goal));
+        }
+        if !scope.blocks.is_empty() {
+            user.push_str(&format!("（覆盖：{}）", scope.blocks.join("、")));
+        }
+    }
+    let Ok(raw) = crate::generation::complete_coach(
+        completer,
+        model_override,
+        ENDPOINT_PROPOSAL_SYSTEM,
+        &user,
+        crate::generation::ENDPOINT_PROPOSAL_MAX_TOKENS,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    #[derive(Deserialize)]
+    struct RawEndpoints {
+        #[serde(default, deserialize_with = "de_option_list")]
+        endpoints: Vec<RawEndpoint>,
+    }
+    #[derive(Deserialize)]
+    struct RawEndpoint {
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        goal_note: String,
+    }
+    crate::generation::parse_json_object::<RawEndpoints>(&raw)
+        .ok()
+        .map(|parsed| {
+            parsed
+                .endpoints
+                .into_iter()
+                .filter_map(|endpoint| {
+                    let title = endpoint.title.trim().to_owned();
+                    if title.is_empty() {
+                        None
+                    } else {
+                        Some(ProposedEndpoint { title, goal_note: endpoint.goal_note.trim().to_owned() })
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ── Compass ────────────────────────────────────────────────────────────────
+
+const COMPASS_SYSTEM: &str = r#"你是学习图的统筹规划者，负责重画「罗盘」：把学习者当前水平到每条终点程度声明之间的差距，分解为学习者要具备的「他能做的事」——每一项是那个程度状态的一个构成部分。
+输入是课程的学习目标、全部终点锚（含程度声明），必要时附已教概念概览（现状参照：已覆盖的面标 ☑ 并从简，剩余路线铺未覆盖的差距）。
+输出 Markdown（不写代码围栏、不用任何 # 标题）：每个终点一节——节头一行 `- **终点名**：`（照抄终点锚标题），节下若干条目，每条一行，格式：
+`- **阶段名**：一句话（推进程度声明的哪个维度）（深度：知道|会用|能教）（切入：建议入手表征）（台阶：面内从易到难的递进链，箭头相连）`
+规则：
+- 程度驱动：每条都要说得出它推进程度声明的哪个维度（深度/广度/综合运用）；只复述教科书目录、说不出「为了什么」的条目不合格；这段距离上的主要能力面都要铺到，铺不到目标的量级即不合格。
+- 完整覆盖：先从领域知识结构出发枚举，再从「学习者在实际中要做的事」出发枚举，两边对照——只出现在一边的整块能力就是疑似遗漏，补进清单；宁多勿少，能力面太多时把同质细面并成粗条目，覆盖不缩、条目更粗。
+- 条目并列，不表达先后：条内的台阶是难度递进不是学习顺序；「底座/基础」一类措辞不构成先学后学的依据。
+- 深度档按该终点需要标；同一能力面可以出现在多个终点下（同时服务多个方向是常态），各标各的深度。
+- 切入表征按本学科的实际传统取材（图示、符号式、实物操作、言语描述、图表清单……不受这份名单限制）。
+- 不写时间估算、不写进度百分比、不写「将完成/保证」；用「方向/大致/候选」等措辞。
+- 全部条目合计不超过约 6000 字——路线是方向草图，不是全图集。"#;
+
+/// Draw (or redraw) the compass for a course. Failure surfaces as an error —
+/// the compass is regenerated in the background and retried on the next
+/// endpoint change or growth.
+pub(crate) async fn draw_compass(
+    completer: &dyn LearningCompleter,
+    model_override: Option<(&nomifun_common::ProviderId, &str)>,
+    goal: &str,
+    endpoints: &[(String, String)],
+    taught_summary: Option<&str>,
+) -> Result<String, AppError> {
+    let mut user = format!("学习目标：{goal}\n\n终点锚：");
+    if endpoints.is_empty() {
+        user.push_str("（暂无）");
+    }
+    for (title, note) in endpoints {
+        user.push_str(&format!("\n- {title}：{note}"));
+    }
+    if let Some(taught) = taught_summary {
+        if !taught.is_empty() {
+            user.push_str(&format!("\n\n已教概念：{taught}"));
+        }
+    }
+    // 罗盘是规划产物（双视角枚举 + 表征轨），思考开启——与教练/评审同通道。
+    crate::generation::complete_coach(
+        completer,
+        model_override,
+        COMPASS_SYSTEM,
+        &user,
+        crate::generation::COMPASS_MAX_TOKENS,
+    )
+    .await
+}
+
 // ── Coach draft ────────────────────────────────────────────────────────────
 
 /// 教练单次调用的系统提示词。结束条件只有一个数：把就绪补到
@@ -477,6 +778,8 @@ pub struct CoachContext {
     pub ready_count: usize,
     /// 块 9：登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
+    /// 首批入口域盘点（独立盘点调用的产出；空 = 盘点失败，教练自行盘点）。
+    pub entry_survey: String,
 }
 
 impl CoachContext {
@@ -674,10 +977,10 @@ pub(crate) async fn coach_redraft(
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用、minutes 与终点裁决原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render()
     );
-    let raw = crate::generation::complete_json_coach(
+    let raw = crate::generation::complete_coach(
         completer,
         model_override,
         &coach_system(),
@@ -817,7 +1120,7 @@ pub(crate) async fn concept_review(
         "{}\n\n【待审批次】\n{batch_json}",
         context.render()
     );
-    let raw = match crate::generation::complete(
+    let raw = match crate::generation::complete_coach(
         completer,
         model_override,
         CONCEPT_REVIEW_SYSTEM,
@@ -839,6 +1142,58 @@ pub(crate) async fn concept_review(
             }
         })
         .unwrap_or_default()
+}
+
+/// 形式化内容的特征词（标题侧；purpose 允许「为后续证明打基础」式方向性
+/// 提及，不作判据）。出现即要求难度 ≥3——形式化/证明类内容按标尺至少是
+/// 多概念综合（4）起步，标 1-2 属虚标（深度水位的逃逸口，确定性封堵）。
+const FORMAL_TITLE_MARKERS: [&str; 5] = ["证明", "严格", "形式化", "公理", "ε-δ"];
+
+/// 节点申报难度（缺省按入门档 2 收紧早批漏报）。
+fn declared_difficulty(node: &ProposedNode) -> u8 {
+    node.difficulty.unwrap_or(2)
+}
+
+/// 深度水位门（确定性）：本批最高难度 ≤ 已落库批次数 + 2，且 ≤ 5。台阶
+/// 只解决「能不能长」（依赖覆盖），深度水位解决「能长多快」——形式化/
+/// 证明类内容（难度 4-5）要等台阶铺满低档之后才合法，不是第二批就该
+/// 出场的东西（2026-09-29 实测：第二批直接长出 ε-δ/∀∃/黎曼和）。
+pub fn validate_batch_depth(
+    batch: &ProposedBatch,
+    applied_batches: usize,
+) -> Vec<GateError> {
+    let mut errors = Vec::new();
+    // 虚标护栏先跑：标题带形式化特征词的节点按 4 计入水位（并要求如实申报）。
+    let mut effective_max: u8 = 0;
+    for node in &batch.nodes {
+        let mut declared = declared_difficulty(node);
+        let formal = FORMAL_TITLE_MARKERS
+            .iter()
+            .any(|marker| node.title.contains(marker));
+        if formal && declared < 3 {
+            errors.push(GateError {
+                kind: "difficulty_dishonest",
+                message: format!(
+                    "节点「{}」的标题带形式化/证明特征（{marker_list}），申报难度 {declared} 属虚标——按标尺如实申报（形式化/证明类 ≥4）；若确属入门内容，把节点内容改为直观版本而不是压档位",
+                    node.title.trim(),
+                    marker_list = FORMAL_TITLE_MARKERS.join("/"),
+                ),
+            });
+            declared = declared.max(4);
+        }
+        effective_max = effective_max.max(declared);
+    }
+    let allowance = (applied_batches as u8).saturating_add(2).min(5);
+    if effective_max > allowance {
+        errors.push(GateError {
+            kind: "difficulty_leap",
+            message: format!(
+                "本批最高难度 {effective_max} 超过深度水位 {allowance}（本课程已落库 {applied} 批，每批最多涨 2 档）——台阶只解决「能不能长」，深度要分批爬：先把当前层跑满应用与变式，形式化/证明类内容（难度 4-5）留给后面的批次",
+                applied = applied_batches,
+            ),
+        });
+    }
+    errors
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1252,7 +1607,7 @@ mod tests {
     }
 
     fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
-        ProposedNode { title: title.to_owned(), purpose: String::new(), minutes: Some(20), teaches, assumes }
+        ProposedNode { title: title.to_owned(), purpose: String::new(), minutes: Some(20), difficulty: None, teaches, assumes }
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
@@ -1452,7 +1807,11 @@ mod tests {
             new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
-                node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![reference("因式分解", ConceptTier::Know)]),
+                node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![]),
+            ],
+            mints: vec![
+                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
+                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
             ],
             mints: vec![
                 ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new(), source: None },
@@ -1837,5 +2196,81 @@ mod tests {
         let rendered = later_batch.render();
         assert!(!rendered.contains("首批纪律"), "later batches: no first-batch discipline");
         assert!(rendered.contains("软参照"), "later batches: doors read as soft reference: {rendered}");
+    }
+
+    /// 首批 + 盘点菜单：首级判据第 1 条切换为「照菜单落节点」并内联菜单；
+    /// 非首批不渲染首级判据，也不渲染菜单。
+    #[test]
+    fn coach_context_renders_entry_survey_menu_on_first_batch() {
+        let surveyed = CoachContext {
+            roster: String::new(),
+            entry_survey: "- 数感 → 用自然数表示一组物体的个数".into(),
+            ..Default::default()
+        };
+        let rendered = surveyed.render();
+        assert!(rendered.contains("入口域盘点已由独立盘点完成"), "{rendered}");
+        assert!(rendered.contains("用自然数表示一组物体的个数"), "{rendered}");
+        assert!(!rendered.contains("先回答再动笔"), "menu replaces the inline survey branch");
+
+        let unsurveyed = CoachContext { roster: String::new(), ..Default::default() };
+        let rendered = unsurveyed.render();
+        assert!(rendered.contains("先回答再动笔"), "{rendered}");
+
+        let later_batch = CoachContext {
+            roster: "在学 | 节点A".into(),
+            entry_survey: "- 数感 → 用自然数表示一组物体的个数".into(),
+            ..Default::default()
+        };
+        assert!(!later_batch.render().contains("首级判据"));
+    }
+
+    /// 盘点回包解析：合法形状收下；域名或 bottom_rung 为空的条目丢弃；
+    /// 全空/不可解析返回 None（教练退回自行盘点）。
+    #[test]
+    fn parse_entry_survey_tolerates_partial_rows() {
+        let raw = r#"{"domains": [
+            {"name": "数感", "bottom_rung": "用自然数表示一组物体的个数", "serves": "算术语言"},
+            {"name": "", "bottom_rung": "无名条目"},
+            {"name": "有名字", "bottom_rung": ""}
+        ]}"#;
+        let domains = parse_entry_survey(raw).unwrap();
+        assert_eq!(domains.len(), 1);
+        assert_eq!(domains[0].name, "数感");
+
+        assert!(parse_entry_survey(r#"{"domains": []}"#).is_none());
+        assert!(parse_entry_survey("not json").is_none());
+    }
+
+    /// 深度水位门：难度随已落库批次数爬升（每批 +2，封顶 5）；标题带形式化
+    /// 特征词而申报低档 = 虚标，按 4 计入并要求如实申报。
+    #[test]
+    fn validate_batch_depth_caps_by_applied_batches() {
+        let mut formal = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
+        formal.difficulty = Some(4);
+        let mut plain = node("在数轴上表示一个数", vec![], vec![]);
+        plain.difficulty = Some(2);
+        let undeclared = node("求函数在具体输入下的函数值", vec![], vec![]);
+
+        // 第一批（0 批落库，水位 2）：入门批合法，形式化批打回。
+        let errors = validate_batch_depth(&batch_of(vec![plain.clone()]), 0);
+        assert!(errors.is_empty(), "{errors:?}");
+        let errors = validate_batch_depth(&batch_of(vec![formal.clone()]), 0);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, "difficulty_leap");
+
+        // 漏报按入门档收紧：第一批合法（2 ≤ 2），但内容带形式化特征词 →
+        // 虚标打回，且按 4 计入水位 → 同时超水位。
+        let mut undeclared = node("用 ε-δ 语言写出函数极限的定义", vec![], vec![]);
+        undeclared.difficulty = None;
+        let errors = validate_batch_depth(&batch_of(vec![undeclared]), 0);
+        assert!(
+            errors.iter().any(|e| e.kind == "difficulty_dishonest"),
+            "{errors:?}"
+        );
+        assert!(errors.iter().any(|e| e.kind == "difficulty_leap"), "{errors:?}");
+
+        // 两批落库（水位 4）：形式化批放行。
+        let errors = validate_batch_depth(&batch_of(vec![formal]), 2);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 }

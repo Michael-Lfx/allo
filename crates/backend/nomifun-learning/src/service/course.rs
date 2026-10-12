@@ -670,27 +670,45 @@ impl LearningService {
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-            let content_sql = [
-                "DELETE FROM learning_activities WHERE lesson_id IN (\
-                    SELECT l.lesson_id FROM learning_lessons l \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
-                    SELECT a.activity_id FROM learning_activities a \
-                    JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
-                    JOIN learning_modules m ON m.module_id = l.module_id \
-                    WHERE m.course_id = ?)",
-                "DELETE FROM learning_lessons WHERE module_id IN (\
-                    SELECT module_id FROM learning_modules WHERE course_id = ?)",
-                "DELETE FROM learning_modules WHERE course_id = ?",
-            ];
-            for sql in content_sql {
-                sqlx::query(sql)
-                    .bind(course_id.as_str())
-                    .execute(&mut *transaction)
-                    .await
-                    .map_err(internal)?;
-            }
+        }
+        // 课程内容（课时/模块/概念网边）无论勾选与否都物理删除——复习保留
+        // 的只是题目数据，不靠课时行续命。孤儿课时曾把新课的入口层向上顶
+        // （全局已教账把幽灵供给当真），这条语义从根上掐掉污染源。
+        let content_sql = [
+            "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
+                SELECT l.lesson_id FROM learning_lessons l \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_activities WHERE lesson_id IN (\
+                SELECT l.lesson_id FROM learning_lessons l \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_question_tags WHERE source = 'course' AND question_id IN (\
+                SELECT a.activity_id FROM learning_activities a \
+                JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
+                JOIN learning_modules m ON m.module_id = l.module_id \
+                WHERE m.course_id = ?)",
+            "DELETE FROM learning_lessons WHERE module_id IN (\
+                SELECT module_id FROM learning_modules WHERE course_id = ?)",
+            "DELETE FROM learning_modules WHERE course_id = ?",
+        ];
+        for sql in content_sql {
+            sqlx::query(sql)
+                .bind(course_id.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(internal)?;
+        }
+        if delete_reviews {
+            // 概念登记表跟勾选走：全删时清掉不再被任何课时引用的概念——
+            // 概念是跨课程共享资产，只收紧无主条目，不误删他课在用的。
+            sqlx::query(
+                "DELETE FROM learning_concept_registry WHERE concept_id NOT IN (\
+                    SELECT DISTINCT concept_id FROM learning_lesson_concepts)",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         }
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
