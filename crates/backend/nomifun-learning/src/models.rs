@@ -1257,6 +1257,144 @@ pub struct GraphBlockedView {
     pub due_count: i64,
 }
 
+/// 学习结构读侧投影（`GET /courses/{id}/graph/structure`，wayfinder 票 t1）：
+/// 200 恒答、`structure: null` = 未生成（Missing 合法空状态，生成中态由 WS
+/// structure_* 事件表达）。投影运行时重算、永不落盘；**严格课程内**——只读
+/// 本课 structure_json，不 join 概念登记表。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningStructureView {
+    pub course_id: LearningCourseId,
+    pub structure: Option<StructureView>,
+    pub terrain: Option<TerrainView>,
+    /// 快照生成时刻（ms）；None = 未生成。
+    pub generated_at: Option<i64>,
+}
+
+/// 结构产物的读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /
+/// 枢纽出入度；层号 = 依赖深度，不是排期）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureView {
+    pub scalars: StructureScalarsView,
+    pub domain: StructureDomainView,
+    pub spines: Vec<SpineView>,
+    pub blocks: Vec<BlockView>,
+    pub edges: Vec<EdgeView>,
+    pub gaps: Vec<GapView>,
+    pub quality: Vec<QualityView>,
+    /// 主干分组（块表序保持）。
+    pub groups: Vec<SpineGroupView>,
+    /// 块名集（升序）。
+    pub block_names: Vec<String>,
+    /// 主干×阶段矩阵格。
+    pub matrix: Vec<MatrixRowView>,
+    /// 枢纽 Top10（assumes + composes 出入度和降序）。
+    pub hubs: Vec<HubView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureScalarsView {
+    pub goal: String,
+    pub goal_type: String,
+    pub proficiency_statement: String,
+    pub domain_type: String,
+    pub form_reference: String,
+    pub source_tier: String,
+    pub generated_by: String,
+    pub disclaimer: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureDomainView {
+    pub core_definition: String,
+    pub includes: Vec<String>,
+    pub excludes: Vec<String>,
+    pub prerequisite_doors: Vec<String>,
+    pub audience: String,
+    pub scenarios: Vec<String>,
+    pub granularity: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpineView {
+    pub name: String,
+    pub definition: String,
+    pub key_points: Vec<String>,
+    pub instance: String,
+    pub thin_spine: Option<bool>,
+    pub reason: String,
+}
+
+/// 块视图行：`layer` = assumes 前置链深度（L0 起算，层号不是排期）；
+/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）。
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockView {
+    pub name: String,
+    pub slug: String,
+    pub spine: String,
+    pub stage: String,
+    pub note: String,
+    pub layer: usize,
+    pub no_prereq: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EdgeView {
+    pub source: String,
+    pub target: String,
+    pub edge_type: String,
+    pub tier: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GapView {
+    pub item: String,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QualityView {
+    pub check: String,
+    pub status: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpineGroupView {
+    pub spine: String,
+    pub block_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MatrixRowView {
+    pub spine: String,
+    pub entryway: Vec<String>,
+    pub intermediate: Vec<String>,
+    pub advanced: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HubView {
+    pub name: String,
+    pub in_degree: usize,
+    pub out_degree: usize,
+}
+
+/// 前置地形的读侧视图：门口列表 + 标量回执。
+#[derive(Debug, Clone, Serialize)]
+pub struct TerrainView {
+    pub learner_basis_assumed: String,
+    pub disclaimer: String,
+    pub doors: Vec<TerrainDoorView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TerrainDoorView {
+    pub id: String,
+    pub criterion: String,
+    pub kind: String,
+}
+
 /// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位
 /// 读数。没有先修边、没有锁定态——发布即就绪（ADR-0009）；节点本体就是
 /// 模块课时，图视图只承载生长语义。
