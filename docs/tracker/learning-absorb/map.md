@@ -36,6 +36,11 @@
 
 ## Decisions so far
 
+- [图投影只读 API](tickets/t1-graph-projection-api.md)（design facts 定案）：路由
+  `GET /courses/{id}/graph/structure`（软删 404 守卫）；DTO 随学习模块惯例住
+  `models.rs` + TS 镜像，`LearningStructureView` 200 恒答、None = 未生成；纯函数
+  `build_structure_view` 住新模块 `structure_view.rs`（零 LLM 零时钟）；WS 事件
+  `structure_started/completed/failed`；v1 无缓存；严格课程内、不 join 登记表。
 - [知识结构可视化：图选型与落地形态](tickets/p1-visualization-prototype.md)（原型取消，
   直接裁决）：首版三图——思维导图 / 关系图谱（dagre LR，边方向反转 assumes=门）/ 学习
   路线（主干子图 + 传递闭包补前导），矩阵顺带、地铁图砍；数据源 = structure_json 投影
