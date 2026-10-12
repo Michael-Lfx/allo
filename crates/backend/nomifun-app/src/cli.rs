@@ -303,6 +303,13 @@ pub enum Command {
     /// app launched from confirms whether each backend is detectable
     /// before involving server logs.
     Doctor,
+    /// 无头真机冒烟：学习结构生成管线（wayfinder 票 s1）。缺省从零临时
+    /// SQLite 合龙；`--db` 指开发库（provider 凭据在库里）。观测存档落
+    /// `<data-dir>/observation/learning-smoke/`。
+    LearningSmoke {
+        #[command(subcommand)]
+        command: LearningSmokeCommand,
+    },
     /// List the capabilities exposed on the Remote surface (name + description),
     /// as JSON. Offline — reads the capability registry directly, no running
     /// instance required.
@@ -349,6 +356,49 @@ pub enum Command {
         /// Destination data directory (must be absent or empty).
         #[arg(long = "destination-data-dir")]
         destination_data_dir: PathBuf,
+    },
+}
+
+/// `learning-smoke` 的子命令（s1 四档中的前两档；grow/loop 随教练批迁移落地）。
+#[derive(Debug, Clone, Subcommand)]
+pub enum LearningSmokeCommand {
+    /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
+    /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
+    Structure {
+        /// 学习目标（建课三项输入之一，必填）。
+        #[arg(long)]
+        goal: String,
+        /// 程度声明（可选；缺省由生成依据目标扩写）。
+        #[arg(long)]
+        proficiency: Option<String>,
+        /// 学习者基础声明（可选；缺省纯零基础）。
+        #[arg(long)]
+        basis: Option<String>,
+        /// SQLite 库路径（缺省从零临时库；指开发库时可解出已配置的 provider）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// json_object 能力读数：合法 JSON 率 / 空内容 / 怪癖分类；读数面非
+    /// 门禁，唯一硬判据 = 全灭 0/n。
+    Json {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+        /// 探测次数。
+        #[arg(long, default_value_t = 3)]
+        calls: usize,
     },
 }
 

@@ -249,6 +249,8 @@ bedrock = ["nomifun-system/bedrock"]
 silero-vad = ["nomifun-robot/silero-vad"]
 
 [dependencies]
+tempfile = "3"
+
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
 nomifun-db.workspace = true

@@ -23,6 +23,8 @@
 //! feeds no gate, holds no content, and never touches the concept web.
 
 pub mod structure_contract;
+pub mod structure_gen;
+pub mod structure_prompts;
 
 use std::collections::{HashMap, HashSet};
 
@@ -300,104 +302,6 @@ pub fn tier_zh(tier: ConceptTier) -> &'static str {
         ConceptTier::Teach => "能教",
     }
 }
-
-/// 一条入口域盘点：域名 + 该域最底层一格的动作句 + 它服务的目标方向。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EntryDomain {
-    pub name: String,
-    pub bottom_rung: String,
-    #[serde(default)]
-    pub serves: String,
-}
-
-const ENTRY_SURVEY_SYSTEM: &str = r#"你是学习起点盘点员：为一条学习目标铺坡道之前，先盘点学习者此刻最该并行学的底层域，以及每个域的最底层一格。
-只回复一个 JSON 对象，形状如下：
-{
-  "domains": [
-    { "name": "底层域名", "bottom_rung": "该域最底层一格的动作句：学习者今天就能开始、且还需要教学才会的学科内容", "serves": "一句话说明它为哪类方向供给语言或操作" }
-  ]
-}
-规则：
-- 学习者是成年人：「零基础」指目标学科零基础，不是生活能力零基础——成人日常已会的能力不需要教；要教的 = 把日常能力升级为学科语言的那一格。
-- 逐域往下问：对每个候选格连续追问「比这更基础、还能再降吗」，降到「再降就没有教学价值」为止——那是该域最底层的学科概念，写进 bottom_rung。
-- bottom_rung 是单一动作句，日常经验只作引入切口，不作节点内容；成人已会的纯生活动作没有教学价值，不合格。
-- 数量 4-8 个：彼此独立的底层域，合起来铺满从基线到目标的入口层。
-- 用学习目标的语言书写。只输出 JSON，不要 Markdown 代码块，不要任何解释。"#;
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawEntrySurvey {
-    #[serde(default, deserialize_with = "de_option_list")]
-    domains: Vec<RawEntryDomain>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct RawEntryDomain {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    bottom_rung: String,
-    #[serde(default)]
-    serves: String,
-}
-
-/// Parse the survey reply; a malformed survey degrades to None — the caller
-/// falls back to the coach's inline survey (the pre-survey behaviour).
-fn parse_entry_survey(raw: &str) -> Option<Vec<EntryDomain>> {
-    let parsed = crate::generation::parse_json_object::<RawEntrySurvey>(raw).ok()?;
-    let domains: Vec<EntryDomain> = parsed
-        .domains
-        .into_iter()
-        .filter(|domain| !domain.name.trim().is_empty() && !domain.bottom_rung.trim().is_empty())
-        .map(|domain| EntryDomain {
-            name: domain.name.trim().to_owned(),
-            bottom_rung: domain.bottom_rung.trim().to_owned(),
-            serves: domain.serves.trim().to_owned(),
-        })
-        .collect();
-    (!domains.is_empty()).then_some(domains)
-}
-
-/// First-batch entry-domain survey: ONE thinking call that answers「零基础走到
-/// 目标，此刻最该并行学哪几个底层域、每个域的最底层一格是什么动作」BEFORE the
-/// coach sees the gates. The split is deliberate — granular university-level
-/// goals anchor the entry level up to「教材第一章」(the 2026-09-29 eight-endpoint
-/// course kept minting 中学层 entries); a survey that never sees the goal
-/// statement cannot be anchored by it, and the coach then drafts against a
-/// fixed menu. Failure degrades to None (the coach surveys inline, as before).
-pub(crate) async fn survey_entry_domains(
-    completer: &dyn LearningCompleter,
-    model_override: Option<(&nomifun_common::ProviderId, &str)>,
-    goal: &str,
-    baseline: &str,
-) -> Option<Vec<EntryDomain>> {
-    let user = format!("学习目标：{goal}\n学习者基线：{baseline}");
-    let raw = crate::generation::complete_coach(
-        completer,
-        model_override,
-        ENTRY_SURVEY_SYSTEM,
-        &user,
-        crate::generation::ENTRY_SURVEY_MAX_TOKENS,
-    )
-    .await
-    .ok()?;
-    parse_entry_survey(&raw)
-}
-
-/// Render the surveyed domains into the coach's 首级判据 menu block.
-pub(crate) fn render_entry_survey(domains: &[EntryDomain]) -> String {
-    domains
-        .iter()
-        .map(|domain| {
-            if domain.serves.is_empty() {
-                format!("- {} → {}", domain.name, domain.bottom_rung)
-            } else {
-                format!("- {} → {}（服务：{}）", domain.name, domain.bottom_rung, domain.serves)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 // ── Scope analysis（沿用：目标/基线/范围/大块概念）────────────────────────
 
 /// Scope call: ONE light call that resolves what the goal description
@@ -551,8 +455,10 @@ pub struct CoachContext {
     pub ready_count: usize,
     /// 登记表相关切片：与课程已涉概念邻近的名字（防止撞名铸名）。
     pub registry_excerpt: String,
-    /// 首批入口域盘点（独立盘点调用的产出；空 = 盘点失败，教练自行盘点）。
-    pub entry_survey: String,
+    /// 前置地形门口（结构产物 terrain 的 G 判据，`- [G1]（硬前置）判据` 行
+    /// 列表；空 = 课程无结构快照，教练自行盘点）。g2 裁决：地形门口是入口
+    /// 域盘点的结构化替代，首批重点呈现。
+    pub terrain_doors: String,
 }
 
 impl CoachContext {
@@ -565,9 +471,10 @@ impl CoachContext {
         }
         // 首级判据（learnhub 同款机制的裁剪版）：前沿为空（花名册为空）时本批
         // 铺的是坡道的第一级，裁决契约与常规批次不同——放在上下文最前（学习
-        // 目标之后、一切机制读数之前），先于细节占领注意力。
+        // 目标之后、一切机制读数之前），先于细节占领注意力。有地形门口时首批
+        // 照门口落节点（g2：门口是入口域盘点的结构化替代）。
         if self.roster.is_empty() {
-            if self.entry_survey.is_empty() {
+            if self.terrain_doors.is_empty() {
                 text.push_str(
                     "\n【首级判据——本批是坡道的第一级台阶】\n\
                      1. 先回答再动笔：零基础走到下面的目标，此刻最该并行学哪几个底层域？把域清单写进 note，每个域挑最底层的一格摆一个入口节点，直到铺满缺口。列域时逐个再往下问一层：「这个域的入口域是什么」——底层方向常常比目标还多。\n",
@@ -575,8 +482,8 @@ impl CoachContext {
             } else {
                 text.push_str(&format!(
                     "\n【首级判据——本批是坡道的第一级台阶】\n\
-                     1. 入口域盘点已由独立盘点完成（见下）。本批节点逐域落在盘点的 bottom_rung 上——每个入口节点 = 菜单里一格，措辞可微调、可拆分，但不得换成更高层的对象，也不得漏掉任何一格；铺满缺口为止。\n{}\n",
-                    self.entry_survey
+                     1. 前置地形门口已由结构产物给出（见下）。本批节点逐门落在门口判据的底层台阶上——每个入口节点 = 门口之下最底层的、还需要教学才会的那一格，措辞可微调、可拆分，但不得换成更高层的对象，也不得漏掉任何一格；铺满缺口为止。标「可自检」的门口已具备的格子不重教。\n{}\n",
+                    self.terrain_doors
                 ));
             }
             text.push_str(
@@ -1666,47 +1573,30 @@ mod tests {
         assert!(rendered.contains("把就绪节点补到 7 个") == false, "the number contract lives in the system prompt");
     }
 
-    /// 首批 + 盘点菜单：首级判据第 1 条切换为「照菜单落节点」并内联菜单；
-    /// 非首批不渲染首级判据，也不渲染菜单。
+    /// 首批 + 地形门口菜单：首级判据第 1 条切换为「照门口落节点」并内联门口；
+    /// 非首批不渲染首级判据；无结构快照（门口为空）时教练自行盘点。
     #[test]
-    fn coach_context_renders_entry_survey_menu_on_first_batch() {
-        let surveyed = CoachContext {
+    fn coach_context_renders_terrain_doors_menu_on_first_batch() {
+        let with_doors = CoachContext {
             roster: String::new(),
-            entry_survey: "- 数感 → 用自然数表示一组物体的个数".into(),
+            terrain_doors: "- [G1]（硬前置）能用配方法解形如 x²=p 的方程".into(),
             ..Default::default()
         };
-        let rendered = surveyed.render();
-        assert!(rendered.contains("入口域盘点已由独立盘点完成"), "{rendered}");
-        assert!(rendered.contains("用自然数表示一组物体的个数"), "{rendered}");
-        assert!(!rendered.contains("先回答再动笔"), "menu replaces the inline survey branch");
+        let rendered = with_doors.render();
+        assert!(rendered.contains("前置地形门口已由结构产物给出"), "{rendered}");
+        assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
+        assert!(!rendered.contains("先回答再动笔"), "doors replace the inline survey branch");
 
-        let unsurveyed = CoachContext { roster: String::new(), ..Default::default() };
-        let rendered = unsurveyed.render();
+        let doorless = CoachContext { roster: String::new(), ..Default::default() };
+        let rendered = doorless.render();
         assert!(rendered.contains("先回答再动笔"), "{rendered}");
 
         let later_batch = CoachContext {
             roster: "在学 | 节点A".into(),
-            entry_survey: "- 数感 → 用自然数表示一组物体的个数".into(),
+            terrain_doors: "- [G1]（硬前置）能用配方法解方程".into(),
             ..Default::default()
         };
         assert!(!later_batch.render().contains("首级判据"));
-    }
-
-    /// 盘点回包解析：合法形状收下；域名或 bottom_rung 为空的条目丢弃；
-    /// 全空/不可解析返回 None（教练退回自行盘点）。
-    #[test]
-    fn parse_entry_survey_tolerates_partial_rows() {
-        let raw = r#"{"domains": [
-            {"name": "数感", "bottom_rung": "用自然数表示一组物体的个数", "serves": "算术语言"},
-            {"name": "", "bottom_rung": "无名条目"},
-            {"name": "有名字", "bottom_rung": ""}
-        ]}"#;
-        let domains = parse_entry_survey(raw).unwrap();
-        assert_eq!(domains.len(), 1);
-        assert_eq!(domains[0].name, "数感");
-
-        assert!(parse_entry_survey(r#"{"domains": []}"#).is_none());
-        assert!(parse_entry_survey("not json").is_none());
     }
 
     /// 深度水位门：难度随已落库批次数爬升（每批 +2，封顶 5）；标题带形式化
