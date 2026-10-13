@@ -122,7 +122,7 @@ impl KwsEngine {
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
 
-        const DEFAULT_KEYWORDS_BPE: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
+        const DEFAULT_KEYWORDS_BPE: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HE Y  ▁F L OW :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HI  ▁F L OW :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
         if keywords.is_file() {
             if let Ok(content) = std::fs::read_to_string(&keywords) {
                 if !content.contains('\u{2581}') {

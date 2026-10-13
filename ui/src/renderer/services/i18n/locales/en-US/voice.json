@@ -98,5 +98,28 @@
     "asrTestIdleDesc": "Click to record 3 seconds and test local ASR transcription",
     "asrTestSuccess": "Transcript: {{text}} ({{duration}}ms)",
     "asrTestFailed": "Test failed: {{reason}}"
+  },
+  "dashboard": {
+    "sectionTitle": "Wake & Acoustic Live Activity",
+    "sectionDesc": "Real-time monitoring of companion daemon, acoustic activity, and KWS wake status",
+    "statusRunning": "Companion Daemon Running",
+    "statusListening": "Standby Listening",
+    "statusListeningDesc": "Acoustic engine ready, listening for wake keywords",
+    "statusSpeech": "Voice Detected (Spotting)",
+    "statusSpeechDesc": "Microphone speech input detected, analyzing acoustic features and tokens",
+    "statusWakeHit": "🎉 Wake Hit!",
+    "statusWakeHitDesc": "Successfully matched wake word Hey Flowy, switched to active interaction",
+    "volumeLevel": "Microphone Input Level",
+    "activeKeywordsTitle": "Active Wake Keywords & Tolerances",
+    "activeKeywordsList": "Hey Flowy (Standard) · Hey Flow (Tail-dropped tolerance) · Hi Flowy · Hello Flowy",
+    "tipTitle": "Pronunciation & Tuning Tip",
+    "tipContent": "SenseVoice shows 'Flowy' was transcribed as 'fu' due to weak trailing vowel. The system now supports 'Hey Flow' tolerance—saying 'Hey Flow' directly triggers wake without having to stress the trailing -y.",
+    "logTitle": "Live Acoustic & Detection Stream",
+    "clearLog": "Clear Logs",
+    "logStarted": "Background companion daemon running (PID: {{pid}})",
+    "logEngineReady": "Sherpa-ONNX Zipformer KWS engine loaded",
+    "logMicActive": "Microphone live audio stream captured",
+    "logVoiceDetected": "Voice activity detected (VAD triggered)",
+    "logWakeHit": "🎉 Wake Hit: HEY FLOWY (score: 1.0)"
   }
 }

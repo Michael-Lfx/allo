@@ -296,7 +296,7 @@ impl ModelManager {
         }
 
         // Ensure keywords.txt is present and properly tokenized for Zipformer KWS
-        const DEFAULT_KWS_KEYWORDS: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
+        const DEFAULT_KWS_KEYWORDS: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HE Y  ▁F L OW :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HI  ▁F L OW :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
         let keywords_path = self.models_dir.join("kws/keywords.txt");
         if !keywords_path.exists() {
             let mut fetched_keywords = false;

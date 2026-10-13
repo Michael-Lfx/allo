@@ -7,7 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Message, Switch } from '@arco-design/web-react';
-import { CheckOne, CloseOne } from '@icon-park/react';
+import { CheckOne, CloseOne, Info } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
@@ -98,6 +98,13 @@ export interface VoiceAsrTestResult {
   error?: string;
 }
 
+export interface DashboardLogEntry {
+  id: string;
+  time: string;
+  text: string;
+  type: 'info' | 'voice' | 'wake';
+}
+
 function formatSpeed(bytesPerSec: number): string {
   if (bytesPerSec <= 0) return '0 B/s';
   const k = 1024;
@@ -168,6 +175,15 @@ const VoiceSettings: React.FC = () => {
   const asrTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeStreamRef = useRef<MediaStream | null>(null);
 
+  // Live Dashboard & Acoustic Monitor state
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [kwsLiveStatus, setKwsLiveStatus] = useState<'listening' | 'speech' | 'wake_hit'>('listening');
+  const [dashboardLogs, setDashboardLogs] = useState<DashboardLogEntry[]>([]);
+  const speechSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const monitorAudioContextRef = useRef<AudioContext | null>(null);
+  const monitorStreamRef = useRef<MediaStream | null>(null);
+  const monitorAnimFrameRef = useRef<number | null>(null);
+
   // Motion reduction and ready micro-motion states per ui-motion.zh.md §2 & §3
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
   const [readyIconScaled, setReadyIconScaled] = useState(false);
@@ -214,12 +230,160 @@ const VoiceSettings: React.FC = () => {
       if (asrTimerRef.current) {
         clearTimeout(asrTimerRef.current);
       }
+      if (speechSilenceTimerRef.current) {
+        clearTimeout(speechSilenceTimerRef.current);
+      }
+      if (monitorAnimFrameRef.current) {
+        cancelAnimationFrame(monitorAnimFrameRef.current);
+      }
+      if (monitorAudioContextRef.current) {
+        monitorAudioContextRef.current.close().catch(() => {});
+      }
+      if (monitorStreamRef.current) {
+        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
       if (activeStreamRef.current) {
         activeStreamRef.current.getTracks().forEach((track) => track.stop());
         activeStreamRef.current = null;
       }
     };
   }, []);
+
+  // Live audio level & speech activity monitor for KWS dashboard
+  useEffect(() => {
+    if (!voiceEnabled || modelStatus !== 'Ready') {
+      if (monitorAnimFrameRef.current) {
+        cancelAnimationFrame(monitorAnimFrameRef.current);
+        monitorAnimFrameRef.current = null;
+      }
+      if (monitorAudioContextRef.current) {
+        monitorAudioContextRef.current.close().catch(() => {});
+        monitorAudioContextRef.current = null;
+      }
+      if (monitorStreamRef.current) {
+        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
+        monitorStreamRef.current = null;
+      }
+      setAudioLevel(0);
+      setKwsLiveStatus('listening');
+      return;
+    }
+
+    let isSubscribed = true;
+    const nowTimeStr = () => new Date().toTimeString().slice(0, 8);
+
+    setDashboardLogs((prev) => [
+      {
+        id: `${Date.now()}-init`,
+        time: nowTimeStr(),
+        text: t('voice.dashboard.logStarted', { pid: 'daemon' }),
+        type: 'info',
+      },
+      {
+        id: `${Date.now()}-kws`,
+        time: nowTimeStr(),
+        text: t('voice.dashboard.logEngineReady'),
+        type: 'info',
+      },
+      ...prev.slice(0, 8),
+    ]);
+
+    async function startAudioMonitor() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (!isSubscribed) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        monitorStreamRef.current = stream;
+
+        const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        const ctx = new AudioCtx();
+        monitorAudioContextRef.current = ctx;
+
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        setDashboardLogs((prev) => [
+          {
+            id: `${Date.now()}-mic`,
+            time: nowTimeStr(),
+            text: t('voice.dashboard.logMicActive'),
+            type: 'info',
+          },
+          ...prev.slice(0, 10),
+        ]);
+
+        const updateMeter = () => {
+          if (!isSubscribed) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          const normalized = Math.min(100, Math.round((avg / 128) * 100));
+          setAudioLevel(normalized);
+
+          // Voice Activity Threshold (~18% amplitude)
+          if (normalized > 18) {
+            setKwsLiveStatus((prev) => {
+              if (prev !== 'speech' && prev !== 'wake_hit') {
+                setDashboardLogs((logPrev) => [
+                  {
+                    id: `${Date.now()}-vad`,
+                    time: nowTimeStr(),
+                    text: `${t('voice.dashboard.logVoiceDetected')} (${normalized}%)`,
+                    type: 'voice',
+                  },
+                  ...logPrev.slice(0, 15),
+                ]);
+              }
+              return 'speech';
+            });
+
+            if (speechSilenceTimerRef.current) {
+              clearTimeout(speechSilenceTimerRef.current);
+            }
+            speechSilenceTimerRef.current = setTimeout(() => {
+              setKwsLiveStatus('listening');
+            }, 1200);
+          }
+
+          monitorAnimFrameRef.current = requestAnimationFrame(updateMeter);
+        };
+
+        monitorAnimFrameRef.current = requestAnimationFrame(updateMeter);
+      } catch (err) {
+        console.warn('Microphone audio level monitor unavailable:', err);
+      }
+    }
+
+    void startAudioMonitor();
+
+    return () => {
+      isSubscribed = false;
+      if (monitorAnimFrameRef.current) {
+        cancelAnimationFrame(monitorAnimFrameRef.current);
+        monitorAnimFrameRef.current = null;
+      }
+      if (monitorAudioContextRef.current) {
+        monitorAudioContextRef.current.close().catch(() => {});
+        monitorAudioContextRef.current = null;
+      }
+      if (monitorStreamRef.current) {
+        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
+        monitorStreamRef.current = null;
+      }
+      if (speechSilenceTimerRef.current) {
+        clearTimeout(speechSilenceTimerRef.current);
+      }
+    };
+  }, [voiceEnabled, modelStatus, t]);
 
   // Apply SSE state update with 200ms throttle for continuous downloading progress events
   const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire, immediate = false) => {
@@ -910,6 +1074,126 @@ const VoiceSettings: React.FC = () => {
                 </div>
               </div>
             </SettingsList>
+          </SettingsSection>
+        )}
+
+        {modelStatus === 'Ready' && voiceEnabled && (
+          <SettingsSection
+            title={t('voice.dashboard.sectionTitle')}
+            description={t('voice.dashboard.sectionDesc')}
+          >
+            <div className='flex flex-col gap-4 rounded-8px border border-solid border-border-base bg-fill-1 p-5 transition-colors'>
+              {/* Top Status & Live Badge Header */}
+              <div className='flex flex-wrap items-center justify-between gap-4 border-b border-b-solid border-border-base pb-4'>
+                <div className='flex items-center gap-3'>
+                  {/* Status Indicator Beacon */}
+                  <div className='relative flex items-center justify-center'>
+                    <div
+                      className={`h-3 w-3 rounded-full ${
+                        kwsLiveStatus === 'wake_hit'
+                          ? 'bg-success-6 animate-ping'
+                          : kwsLiveStatus === 'speech'
+                            ? 'bg-warning-6 animate-pulse'
+                            : 'bg-primary-6'
+                      }`}
+                    />
+                    <div
+                      className={`absolute h-2 w-2 rounded-full ${
+                        kwsLiveStatus === 'wake_hit'
+                          ? 'bg-success-6'
+                          : kwsLiveStatus === 'speech'
+                            ? 'bg-warning-6'
+                            : 'bg-primary-6'
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <div className='text-14px font-medium text-t-primary'>
+                      {kwsLiveStatus === 'wake_hit'
+                        ? t('voice.dashboard.statusWakeHit')
+                        : kwsLiveStatus === 'speech'
+                          ? t('voice.dashboard.statusSpeech')
+                          : t('voice.dashboard.statusListening')}
+                    </div>
+                    <div className='text-12px text-t-secondary'>
+                      {kwsLiveStatus === 'wake_hit'
+                        ? t('voice.dashboard.statusWakeHitDesc')
+                        : kwsLiveStatus === 'speech'
+                          ? t('voice.dashboard.statusSpeechDesc')
+                          : t('voice.dashboard.statusListeningDesc')}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Audio Level Meter */}
+                <div className='w-240px flex flex-col gap-1'>
+                  <div className='flex items-center justify-between text-11px text-t-tertiary'>
+                    <span>{t('voice.dashboard.volumeLevel')}</span>
+                    <span className='font-variant-numeric tabular-nums'>{audioLevel}%</span>
+                  </div>
+                  <div className='h-6px w-full overflow-hidden rounded-full bg-fill-3'>
+                    <div
+                      className={`h-full rounded-full transition-all duration-100 ${
+                        audioLevel > 50 ? 'bg-warning-6' : 'bg-primary-6'
+                      }`}
+                      style={{ width: `${Math.min(100, audioLevel)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Active Keywords & Pronunciation Tip Card */}
+              <div className='rounded-6px border border-solid border-primary-2 bg-primary-1/30 p-3.5 text-12px'>
+                <div className='flex items-center gap-2 font-medium text-primary-7'>
+                  <Info theme='filled' size='14' />
+                  <span>{t('voice.dashboard.tipTitle')}</span>
+                </div>
+                <div className='mt-1 text-t-secondary leading-relaxed'>
+                  {t('voice.dashboard.tipContent')}
+                </div>
+                <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-primary-2/40 text-11px text-t-tertiary'>
+                  <span className='font-medium text-t-secondary'>{t('voice.dashboard.activeKeywordsTitle')}:</span>
+                  <span>{t('voice.dashboard.activeKeywordsList')}</span>
+                </div>
+              </div>
+
+              {/* Real-time Activity Log Terminal */}
+              <div className='flex flex-col gap-2'>
+                <div className='flex items-center justify-between text-12px text-t-secondary'>
+                  <span className='font-medium text-t-primary'>{t('voice.dashboard.logTitle')}</span>
+                  <button
+                    type='button'
+                    className='text-11px text-t-tertiary hover:text-primary-6 transition-colors bg-transparent border-none cursor-pointer p-0'
+                    onClick={() => setDashboardLogs([])}
+                  >
+                    {t('voice.dashboard.clearLog')}
+                  </button>
+                </div>
+                <div className='max-h-160px min-h-80px flex flex-col gap-1.5 overflow-y-auto rounded-6px bg-fill-2 p-3 font-mono text-11px text-t-secondary'>
+                  {dashboardLogs.length === 0 ? (
+                    <div className='text-t-tertiary text-center py-2'>-</div>
+                  ) : (
+                    dashboardLogs.map((log) => (
+                      <div key={log.id} className='flex items-start gap-2 leading-tight'>
+                        <span className='text-t-tertiary shrink-0 select-none'>[{log.time}]</span>
+                        <span
+                          className={
+                            log.type === 'wake'
+                              ? 'text-success-6 font-semibold'
+                              : log.type === 'voice'
+                                ? 'text-warning-6'
+                                : 'text-t-secondary'
+                          }
+                        >
+                          {log.text}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
           </SettingsSection>
         )}
       </div>

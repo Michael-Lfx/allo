@@ -98,5 +98,28 @@
     "asrTestIdleDesc": "点击开始试音，录制 3 秒语音测试离线 ASR 识别效果",
     "asrTestSuccess": "识别结果：{{text}} (耗时 {{duration}}ms)",
     "asrTestFailed": "试音失败：{{reason}}"
+  },
+  "dashboard": {
+    "sectionTitle": "声学与 KWS 活动看板",
+    "sectionDesc": "实时监控后台伴侣进程、麦克风声学活动与 KWS 唤醒识别状态",
+    "statusRunning": "伴侣守护进程运行中",
+    "statusListening": "监听待机中",
+    "statusListeningDesc": "声学引擎已就绪，正在监听环境唤醒词",
+    "statusSpeech": "识别中 (检测到人声)",
+    "statusSpeechDesc": "检测到麦克风语音输入，正在计算声学特征与词元匹配",
+    "statusWakeHit": "🎉 唤醒成功！",
+    "statusWakeHitDesc": "成功命中唤醒词 Hey Flowy，已转入语音交互状态",
+    "volumeLevel": "麦克风输入电平",
+    "activeKeywordsTitle": "生效唤醒词与容错策略",
+    "activeKeywordsList": "Hey Flowy (标准) · Hey Flow (免尾音容错) · Hi Flowy · Hello Flowy",
+    "tipTitle": "发音与识别建议",
+    "tipContent": "试音显示第二个词容易弱化为单音“芙”。系统现已支持免发尾音容错，您可以尝试说“Hey Flow”，无需刻意重读尾部 -y 即可高灵敏命中。",
+    "logTitle": "实时声学与识别流水",
+    "clearLog": "清空记录",
+    "logStarted": "后台伴侣进程正常运行 (PID: {{pid}})",
+    "logEngineReady": "Sherpa-ONNX Zipformer KWS 引擎已加载",
+    "logMicActive": "麦克风实时音频流已捕获",
+    "logVoiceDetected": "检测到人声活动 (VAD 触发)",
+    "logWakeHit": "🎉 唤醒成功: HEY FLOWY (匹配度 1.0)"
   }
 }
