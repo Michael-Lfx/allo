@@ -121,6 +121,13 @@ fn slice_run(run: &str) -> Vec<String> {
 }
 
 /// CJK 统一表意文字（含扩展 A）。判据只在切片规则上用，不做语言判定。
+///
+/// 与检索侧 `nomifun-knowledge/src/service.rs::is_cjk`（`query_terms` 的二元
+/// 切片）是**有意保留的两份**（评审记录）：同一个三行判据的两个私有实现，
+/// 范围逐字相同（0x3400–0x4DBF / 0x4E00–0x9FFF / 0xF900–0xFAFF），检索接缝
+/// 的两端因此对"哪里没有词边界"看法一致。不提取共享函数——knowledge 侧不
+/// 为它扩公共面（它只是查询词探测的私有细节），跨层依赖的代价大于三行重复；
+/// **改任一侧必须同步另一侧**（knowledge 侧的同名注释已互指到这里）。
 fn is_cjk(ch: char) -> bool {
     matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
 }
