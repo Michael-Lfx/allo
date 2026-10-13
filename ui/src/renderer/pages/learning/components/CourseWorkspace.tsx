@@ -129,9 +129,19 @@ export function CourseWorkspace({
           </Button>
           <div className='mt-8px flex flex-wrap items-start justify-between gap-16px'>
             <div className='min-w-0 flex-1'>
-              <Title heading={3} className='!m-0'>
-                {course.title}
-              </Title>
+              {/* 课程标题默认即学习目标（t1）：目标被折叠/截断时，标题悬浮
+                  显示完整目标文本，截断口径可见 */}
+              {course.learning_goal && course.learning_goal !== course.title ? (
+                <Tooltip content={course.learning_goal}>
+                  <Title heading={3} className='!m-0 cursor-help'>
+                    {course.title}
+                  </Title>
+                </Tooltip>
+              ) : (
+                <Title heading={3} className='!m-0'>
+                  {course.title}
+                </Title>
+              )}
               <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
             </div>
             {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
@@ -155,6 +165,50 @@ export function CourseWorkspace({
             <Button size='small' onClick={() => navigate(`/knowledge/${course.source_kb_id}`)}>
               {t('learning.source')}
             </Button>
+          )}
+          {/* 采样披露（t2）：已采/总数 + 连贯补入 + 低分未采（悬浮看示例）；
+              目标与库无交集时如实呈现退回默认顺序，不冒充按目标采样 */}
+          {course.sampling && (
+            <Tooltip
+              content={
+                <div className='flex flex-col gap-4px'>
+                  <span>{t('learning.samplingTitle')}</span>
+                  <span>
+                    {course.sampling.goal_fallback
+                      ? t('learning.samplingTooltipFallback')
+                      : course.sampling.low_score_files > 0
+                        ? t('learning.samplingTooltip')
+                        : t('learning.samplingTooltipEmpty')}
+                  </span>
+                  {!course.sampling.goal_fallback && course.sampling.low_score_examples.length > 0 && (
+                    <span className='text-12px'>
+                      {course.sampling.low_score_examples.join('、')}
+                      {course.sampling.low_score_files > course.sampling.low_score_examples.length
+                        ? ' …'
+                        : ''}
+                    </span>
+                  )}
+                </div>
+              }
+            >
+              <Text type='secondary' className='cursor-help text-12px'>
+                {course.sampling.goal_fallback
+                  ? t('learning.samplingLineFallback', {
+                      sampled: course.sampling.sampled_files,
+                      total: course.sampling.total_files,
+                    })
+                  : t('learning.samplingLine', {
+                      sampled: course.sampling.sampled_files,
+                      total: course.sampling.total_files,
+                    })}
+                {course.sampling.coherence_files > 0
+                  ? ` · ${t('learning.samplingCoherence', { count: course.sampling.coherence_files })}`
+                  : ''}
+                {course.sampling.low_score_files > 0
+                  ? ` · ${t('learning.samplingLowScore', { count: course.sampling.low_score_files })}`
+                  : ''}
+              </Text>
+            </Tooltip>
           )}
         </div>
 

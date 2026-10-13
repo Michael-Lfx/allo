@@ -427,6 +427,7 @@ const LearningPage: React.FC = () => {
             creationDescription={creation.creationDescription}
             graphProficiency={creation.graphProficiency}
             graphBasis={creation.graphBasis}
+            creationGoal={creation.creationGoal}
             teachingStyle={creation.teachingStyle}
             onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
@@ -440,6 +441,7 @@ const LearningPage: React.FC = () => {
             onGraphProficiencyChange={creation.setGraphProficiency}
             onGraphBasisChange={creation.setGraphBasis}
             onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
+            onGoalChange={creation.setCreationGoal}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}

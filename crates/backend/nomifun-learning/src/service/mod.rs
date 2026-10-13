@@ -32,9 +32,10 @@ pub(super) use crate::generation::{
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
     CalendarLessonRef, CalendarStats, CheckinStatus, CourseDetail, CourseKind, CoursePack,
-    CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem,
-    DiagnosticPlan, DueReview, GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, GeneratedLessonActivity, SectionKind, SectionView, LessonStatus,
+    CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
+    SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
     MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
@@ -44,6 +45,18 @@ pub(super) use crate::scheduler::{
     SchedulerSettings, days_elapsed_between, first_review_due_at, predicted_retrievability,
     recall_bucket, review_day_number, review_day_start_utc, schedule_review,
 };
+
+/// 大纲建课的落库快照：蓝图与采样维持旧形状（`blueprint_json` /
+/// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
+/// （`learning_goal` / `samples_meta_json`，t1/t2）。无目标路径的
+/// `learning_goal` 为空串、`samples_meta_json` 为 `None`（列上 NULL）。
+pub(crate) struct OutlineSnapshot {
+    pub blueprint_json: String,
+    pub samples_json: String,
+    pub learning_goal: String,
+    pub samples_meta_json: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct LearningService {
     pool: SqlitePool,

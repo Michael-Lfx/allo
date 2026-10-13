@@ -37,6 +37,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 基础声明（缺省按纯零基础画地形）。
   const [graphProficiency, setGraphProficiency] = useState('');
   const [graphBasis, setGraphBasis] = useState('');
+  // 用户目标（知识库流，t1）：整体文本即目标——简单时即课程名，复杂时是目标
+  // 描述；课程标题默认即该文本，采样与大范围都以此为主索引。UI 必填。
+  const [creationGoal, setCreationGoal] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
@@ -130,8 +133,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     t,
   ]);
 
-  // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
-  // 已填写课程简报。校验失败时提示并停留在表单。
+  // 提交当前 tab 的生成请求：base tab 要求已选知识库且填写了学习目标；
+  // description tab 要求已填写课程简报。校验失败时提示并停留在表单。
   const submitGeneration = useCallback(async () => {
     if (!modelChoice) {
       Message.warning(t('learning.form.modelPending'));
@@ -146,8 +149,16 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         Message.warning(t('learning.selectKnowledgeBase'));
         return;
       }
+      // 目标必填（UI 侧）：后端对旧客户端宽容（缺省回退库名），新表单不
+      // 允许空目标——目标即课程名与采样主索引，空目标等于放弃这两者。
+      const goal = creationGoal.trim();
+      if (!goal) {
+        Message.warning(t('learning.goalRequired'));
+        return;
+      }
       await generateCourse({
         knowledge_base_id: selectedKnowledgeBaseId,
+        goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,
         ...modelFields,
@@ -162,6 +173,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     await generateCourse({ description, teaching_style: teachingStyle, ...modelFields });
   }, [
     creationDescription,
+    creationGoal,
     creationTab,
     generationDomain,
     generateCourse,
@@ -242,6 +254,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setCreationTab,
     creationDescription,
     setCreationDescription,
+    creationGoal,
+    setCreationGoal,
     knowledgeBases,
     knowledgeLoading,
     selectedKnowledgeBaseId,

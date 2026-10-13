@@ -12,6 +12,21 @@
 
 use super::*;
 
+/// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
+/// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
+/// 120 字。确定性纯函数。
+fn outline_brief_topic(brief: &OutlineBrief) -> String {
+    if let Some(goal) = brief.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        return goal.chars().take(120).collect();
+    }
+    match (&brief.description, &brief.knowledge_base) {
+        (Some(description), _) => description.trim().chars().take(120).collect(),
+        (_, Some(kb)) => kb.name.clone(),
+        // 简报永远带一个来源（validate 保证）；防御性留空而非 panic。
+        _ => String::new(),
+    }
+}
+
 impl LearningService {
     /// Generate a course synchronously. Exactly one source must be set
     /// (knowledge base or free-text description) — enforced by
@@ -40,12 +55,9 @@ impl LearningService {
         let _slot = self.acquire_generation_slot(user_id, kind_key)?;
         // 登记生成注册（status/cancel 端点的唯一数据源，学习图流同样登
         // 记）：RAII 守卫在请求结束——含客户端断连中止——时注销。主题取
-        // 描述前 120 字或知识库名，供悬浮指示条展示。
-        let topic: String = match (&brief.description, &brief.knowledge_base) {
-            (Some(description), _) => description.trim().chars().take(120).collect(),
-            (_, Some(kb)) => kb.name.clone(),
-            _ => unreachable!("validated request always carries one source"),
-        };
+        // 知识库流的用户目标（目标即课程的意图）、描述前 120 字或库名，
+        // 供悬浮指示条展示。
+        let topic = outline_brief_topic(&brief);
         let _run = self.begin_generation(&topic);
         let session = generate_id();
         let model_override = request
@@ -81,8 +93,27 @@ impl LearningService {
         let samples_json = serde_json::to_string(&brief.samples).map_err(|error| {
             AppError::Internal(format!("failed to serialize sampled sources: {error}"))
         })?;
+        // 目标与采样披露走独立列/伴随结构（t1/t2）：samples_json 保持
+        // `Vec<(String, String)>` 旧形状，既有消费方零改动。
+        let samples_meta_json = brief
+            .sampling
+            .as_ref()
+            .map(|sampling| {
+                serde_json::to_string(sampling).map_err(|error| {
+                    AppError::Internal(format!("failed to serialize sampling disclosure: {error}"))
+                })
+            })
+            .transpose()?;
         let detail = self
-            .import_course_outline(pack, blueprint_json, samples_json)
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json,
+                    samples_json,
+                    learning_goal: brief.goal.clone().unwrap_or_default(),
+                    samples_meta_json,
+                },
+            )
             .await;
         match &detail {
             Ok(detail) => {
@@ -118,7 +149,11 @@ impl LearningService {
             (Some(kb_id), _) => {
                 let knowledge = self.injected_knowledge_service()?;
                 let base = knowledge.get_base_info(kb_id.as_str()).await?;
-                let samples = sample_base_files(&knowledge, kb_id.as_str()).await?;
+                let goal = request.goal_text();
+                // 目标感知采样（t2）：目标非空时按相关度选入 + 连贯预算补相邻，
+                // 并带回披露快照；缺省（旧客户端）与无目标时逐字回退旧行为。
+                let outcome =
+                    sample_base_files(&knowledge, kb_id.as_str(), goal.as_deref()).await?;
                 Ok(OutlineBrief {
                     description: None,
                     knowledge_base: Some(KnowledgeBaseBrief {
@@ -126,8 +161,13 @@ impl LearningService {
                         name: base.name,
                         description: base.description,
                     }),
-                    samples,
+                    samples: outcome.samples,
                     domain: request.domain.clone(),
+                    // 目标（t1）：归一落位；旧客户端不传即 None，主题/标题
+                    // 回退库名与模型命名（行为与旧路径一致）。
+                    goal,
+                    // 目标感知采样的披露（t2）：无目标路径为 None。
+                    sampling: outcome.disclosure,
                 })
             }
             (None, Some(description)) => Ok(OutlineBrief {
@@ -135,6 +175,9 @@ impl LearningService {
                 knowledge_base: None,
                 samples: Vec::new(),
                 domain: request.domain.clone(),
+                // 描述流的目标由 description 自身承担（学习图同语义）。
+                goal: None,
+                sampling: None,
             }),
             (None, None) => Err(AppError::BadRequest(
                 "provide either a knowledge base or a course description".into(),
@@ -187,6 +230,7 @@ impl LearningService {
                 &kb.name,
                 &kb.description,
                 brief.domain.as_deref(),
+                brief.goal.as_deref(),
                 &brief.samples,
             ),
             _ => {

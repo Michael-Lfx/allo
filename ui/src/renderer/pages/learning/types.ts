@@ -42,6 +42,9 @@ export interface GenerateCourseRequest {
   course_kind?: CourseKind;
   knowledge_base_id?: string;
   description?: string;
+  /** 用户目标（知识库流）：整体文本即目标——简单时即课程名，复杂时是目标
+   * 描述；课程标题默认即该文本。旧调用不传，缺省回退库名。 */
+  goal?: string;
   domain?: string;
   provider_id?: string;
   model?: string;
@@ -74,6 +77,19 @@ export interface UpdateSectionBodyRequest {
   body_md: string;
 }
 
+/** 目标感知采样的披露（t2）：已采/未采计数与低分未采样示例；无目标路径
+ * （字母序回退）与旧课程为 null。完整文件树只在后端留档。
+ * `goal_fallback` = 目标与库无交集，采样退回默认顺序（披露不得冒充按目标采样）。 */
+export interface CourseSamplingView {
+  goal: string | null;
+  total_files: number;
+  sampled_files: number;
+  coherence_files: number;
+  goal_fallback: boolean;
+  low_score_files: number;
+  low_score_examples: string[];
+}
+
 export interface CourseSummary {
   id: string;
   title: string;
@@ -87,6 +103,10 @@ export interface CourseSummary {
   updated_at: number;
   tags: string[];
   course_kind: CourseKind;
+  /** 用户目标（t1）：知识库流的整体目标文本；旧课程/描述流为空即 null。 */
+  learning_goal: string | null;
+  /** 目标感知采样的披露（t2）：无目标路径/旧课程为 null。 */
+  sampling: CourseSamplingView | null;
 }
 
 export interface Activity {

@@ -58,6 +58,10 @@
   "courseDescription": "Course description",
   "courseDescriptionPlaceholder": "Describe the course you want, e.g. Master Rust ownership and lifetimes",
   "describeRequired": "Describe the course you want to create first",
+  "courseGoal": "Learning goal",
+  "courseGoalPlaceholder": "e.g. Learn Python data analysis from scratch; a multi-line goal description (audience, expected outcome) works too",
+  "courseGoalHint": "The whole text is the goal: a short phrase is the course name, a longer text is the target description — the course title is exactly this text, and sampling and outline scope key off it.",
+  "goalRequired": "Enter the learning goal first",
   "knowledgeBase": "Knowledge base",
   "selectKnowledgeBase": "Select a knowledge base",
   "noUsableKnowledgeBases": "No available knowledge base contains Markdown documents",
@@ -464,5 +468,13 @@
   "teachingStyle": "Teaching style",
   "styleStandard": "Standard",
   "styleSocratic": "Socratic",
-  "styleFeynman": "Feynman"
+  "styleFeynman": "Feynman",
+  "samplingTitle": "Goal-aware sampling",
+  "samplingLine": "Sampled {{sampled}}/{{total}} files by goal",
+  "samplingLineFallback": "No goal match found; sampled {{sampled}}/{{total}} files in the default order",
+  "samplingCoherence": "{{count}} added for coherence",
+  "samplingLowScore": "{{count}} low-score files skipped",
+  "samplingTooltip": "Files are selected by goal relevance, with a coherence budget adding structurally adjacent files (a course-style library keeps its chapter trunk intact); these low-score files were not sampled:",
+  "samplingTooltipEmpty": "Files are selected by goal relevance, with a coherence budget adding structurally adjacent files; no low-score file was skipped this time.",
+  "samplingTooltipFallback": "No file in the library matched the goal terms (the wording and the library content may disagree), so the default order was sampled; consider rewording the goal or adding matching notes to the knowledge base."
 }

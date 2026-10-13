@@ -179,6 +179,11 @@ impl OutlineDraft {
             revision: 0,
             findings: Vec::new(),
         };
+        // 目标即课程名（t1 裁决）：目标存在时预置课程标题，模型无需（也不
+        // 引入 LLM 派名）自拟——标题的最终口径仍由装配处统一兜底。
+        if let Some(title) = draft.brief.goal_title() {
+            draft.meta.title = title;
+        }
         // A fresh draft is ALREADY audited: the size mismatch carries from
         // birth, so a premature `co_finish` on a never-patched draft is
         // rejected instead of publishing a blank course.
@@ -1020,6 +1025,8 @@ mod tests {
             }),
             samples: Vec::new(),
             domain: Some("math".into()),
+            goal: None,
+            sampling: None,
         }
     }
 
@@ -1029,6 +1036,8 @@ mod tests {
             knowledge_base: None,
             samples: Vec::new(),
             domain: Some("math".into()),
+            goal: None,
+            sampling: None,
         }
     }
 

@@ -84,6 +84,10 @@ pub struct LessonGenerationContext {
     pub adjacent_context: String,
     /// 学习图节点专属上下文；传统课时恒为 `None`。
     pub graph: Option<GraphLessonContext>,
+    /// 用户目标（t1，传统课程）：课程行 learning_goal 的全文——目标即课程
+    /// 的意图，写作时始终对照；旧课程（无目标）恒为 `None`。学习图节点的
+    /// 目标在 `graph.goal` 里，本字段不重复承载。
+    pub goal: Option<String>,
     /// 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点预渲染
     /// 下游节点标题清单。空 = 无。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
@@ -813,6 +817,7 @@ mod tests {
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            goal: None,
             forbidden_concepts: String::new(),
         }
     }

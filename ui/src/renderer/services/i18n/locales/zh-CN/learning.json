@@ -58,6 +58,10 @@
   "courseDescription": "课程描述",
   "courseDescriptionPlaceholder": "描述你想创建的课程，例如：系统学习 Rust 的所有权与生命周期",
   "describeRequired": "请先描述要创建的课程",
+  "courseGoal": "学习目标",
+  "courseGoalPlaceholder": "例如：零基础学 Python 数据分析；也可以写多行的目标描述（受众、期望产出）",
+  "courseGoalHint": "整体文本即目标：简单时就是课程名称，复杂时是目标描述——课程标题默认即这段文字，采样与大纲范围也以它为主索引。",
+  "goalRequired": "请先填写学习目标",
   "knowledgeBase": "知识库",
   "selectKnowledgeBase": "请选择知识库",
   "noUsableKnowledgeBases": "没有包含 Markdown 文档的可用知识库",
@@ -464,5 +468,13 @@
   "teachingStyle": "讲解风格",
   "styleStandard": "标准",
   "styleSocratic": "苏格拉底",
-  "styleFeynman": "费曼"
+  "styleFeynman": "费曼",
+  "samplingTitle": "按目标采样",
+  "samplingLine": "已按目标采样 {{sampled}}/{{total}} 个文件",
+  "samplingLineFallback": "未命中目标词条，已按默认顺序采样 {{sampled}}/{{total}} 个文件",
+  "samplingCoherence": "连贯补入 {{count}} 个",
+  "samplingLowScore": "{{count}} 个低分文件未采",
+  "samplingTooltip": "按目标相关度选入文件，并用连贯预算补入结构相邻文件（课程式库的章节主干不被断开）；以下低分文件未入样：",
+  "samplingTooltipEmpty": "按目标相关度选入文件，并用连贯预算补入结构相邻文件；本次没有低分文件未入样。",
+  "samplingTooltipFallback": "库内没有文件命中目标词条（目标措辞与库内容可能不一致），已按默认顺序采样；建议换个目标措辞，或先给知识库补上相关内容。"
 }

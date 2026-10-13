@@ -7,22 +7,21 @@ impl LearningService {
     }
 
     /// Import an on-demand course skeleton: modules, lessons (title + purpose +
-    /// source + concepts, no body yet), concepts, plus the persisted blueprint
-    /// and source samples that deferred lesson generation will use.
+    /// source + concepts, no body yet), concepts, plus the persisted outline
+    /// snapshot (blueprint + samples + goal + sampling disclosure) that
+    /// deferred lesson generation will use.
     pub(crate) async fn import_course_outline(
         &self,
         pack: CoursePack,
-        blueprint_json: String,
-        samples_json: String,
+        snapshot: OutlineSnapshot,
     ) -> Result<CourseDetail, AppError> {
-        self.import_course_with_context(pack, Some((blueprint_json, samples_json)))
-            .await
+        self.import_course_with_context(pack, Some(snapshot)).await
     }
 
     async fn import_course_with_context(
         &self,
         pack: CoursePack,
-        outline: Option<(String, String)>,
+        outline: Option<OutlineSnapshot>,
     ) -> Result<CourseDetail, AppError> {
         validate_pack(&pack)?;
         if let Some(kb_id) = &pack.source_kb_id {
@@ -40,18 +39,26 @@ impl LearningService {
         }
 
         let is_outline = outline.is_some();
-        let (blueprint_json, samples_json) = outline
+        let (blueprint_json, samples_json, learning_goal, samples_meta_json) = outline
             .as_ref()
-            .map(|(blueprint, samples)| (Some(blueprint.as_str()), Some(samples.as_str())))
-            .unwrap_or((None, None));
+            .map(|snapshot| {
+                (
+                    Some(snapshot.blueprint_json.as_str()),
+                    Some(snapshot.samples_json.as_str()),
+                    Some(snapshot.learning_goal.as_str()),
+                    Some(snapshot.samples_meta_json.as_deref()),
+                )
+            })
+            .unwrap_or((None, None, None, None));
         let content_generated: i64 = if is_outline { 0 } else { 1 };
         let now = now_ms();
         let course_id = LearningCourseId::new();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, teaching_style, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, \
+              samples_meta_json, learning_goal, teaching_style, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
@@ -61,6 +68,8 @@ impl LearningService {
         .bind(pack.version)
         .bind(blueprint_json)
         .bind(samples_json)
+        .bind(samples_meta_json.flatten())
+        .bind(learning_goal.unwrap_or_default())
         .bind(pack.teaching_style.as_str())
         .bind(now)
         .bind(now)
@@ -153,6 +162,7 @@ impl LearningService {
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
         let rows = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+                    c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -188,6 +198,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+                    c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -713,6 +724,17 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         .map_err(internal)?
         .map(parse_id)
         .transpose()?;
+    // 目标列 NOT NULL DEFAULT ''：空串即"无目标"（旧课程/描述流）。
+    let learning_goal = row
+        .try_get::<Option<String>, _>("learning_goal")
+        .map_err(internal)?
+        .map(|goal| goal.trim().to_owned())
+        .filter(|goal| !goal.is_empty());
+    let samples_meta_json: Option<String> =
+        row.try_get("samples_meta_json").map_err(internal)?;
+    let sampling = samples_meta_json
+        .as_deref()
+        .and_then(parse_sampling_view);
     Ok(CourseSummary {
         id: parse_id(row.try_get("course_id").map_err(internal)?)?,
         title: row.try_get("title").map_err(internal)?,
@@ -727,5 +749,31 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
         updated_at: row.try_get("updated_at").map_err(internal)?,
         tags: Vec::new(),
+        learning_goal,
+        sampling,
+    })
+}
+
+/// 采样披露的对外视图上限：低分未采样的示例路径（UI 披露够用，响应不背
+/// 全量清单）。
+const LOW_SCORE_EXAMPLES_MAX: usize = 20;
+
+/// 解析库里的采样披露快照（t2）为对外视图；无法解析的历史值视为无披露
+/// （诊断字段不该让课程列表整体失败）。
+fn parse_sampling_view(raw: &str) -> Option<CourseSamplingView> {
+    let disclosure: crate::generation::SampleDisclosure = serde_json::from_str(raw).ok()?;
+    Some(CourseSamplingView {
+        goal: disclosure.goal,
+        total_files: disclosure.total_files,
+        sampled_files: disclosure.sampled_files,
+        coherence_files: disclosure.coherence_files,
+        goal_fallback: disclosure.goal_fallback,
+        low_score_files: disclosure.low_score_files.len(),
+        low_score_examples: disclosure
+            .low_score_files
+            .iter()
+            .take(LOW_SCORE_EXAMPLES_MAX)
+            .cloned()
+            .collect(),
     })
 }

@@ -163,6 +163,7 @@ mod tests {
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            goal: None,
             forbidden_concepts: String::new(),
         }
     }

@@ -54,6 +54,7 @@ pub(crate) fn build_blueprint_prompt(
     name: &str,
     description: &str,
     domain: Option<&str>,
+    goal: Option<&str>,
     samples: &[(String, String)],
 ) -> String {
     let mut prompt = format!(
@@ -63,6 +64,13 @@ pub(crate) fn build_blueprint_prompt(
         name.trim(),
         description.trim()
     );
+    if let Some(goal) = goal.map(str::trim).filter(|goal| !goal.is_empty()) {
+        // 目标即课程名（t1）：整体文本即目标，标题口径由装配处统一收敛到
+        // 目标文本；设计大纲时始终以目标为方向锚点。
+        prompt.push_str(&format!(
+            "Learner goal (this text IS the course title; design to it):\n{goal}\n"
+        ));
+    }
     if let Some(domain) = domain.map(str::trim).filter(|domain| !domain.is_empty()) {
         prompt.push_str(&format!("Requested domain label: {domain}\n"));
     }
