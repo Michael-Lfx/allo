@@ -282,10 +282,12 @@ mod tests {
 
     #[test]
     fn try_load_none_when_unset() {
-        // Ensure we don't accidentally pick up a real env in CI: only test
-        // the explicit-None path when env is unset, else skip assert on Ok(None).
-        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() {
+        // Ensure we don't accidentally pick up a real env or installed model in test:
+        // if no env and no installed model, assert Ok(None); if models exist locally, assert Ok(_).
+        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() && resolve_asr_model_dir().is_none() {
             assert!(matches!(try_load_sherpa(None), Ok(None)));
+        } else {
+            assert!(try_load_sherpa(None).is_ok());
         }
     }
 

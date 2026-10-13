@@ -25,6 +25,19 @@ use nomifun_voice_terminal::router::QwenVoiceRouter;
 
 use crate::oobe::OobeManager;
 
+/// Real-time voice companion event emitted over SSE for desktop dashboard observability.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "payload")]
+pub enum VoiceCompanionEvent {
+    WakeHit { keyword: String },
+    Listening,
+    SpeechRecognized { text: String },
+    IntentDecided { intent: String, reply: Option<String> },
+    TtsSpeaking { text: String },
+    FollowUpWindow { timeout_secs: u32 },
+    Idle,
+}
+
 /// Production voice companion pipeline assembly and runtime controller.
 pub struct VoiceCompanionRuntime {
     model_manager: Arc<ModelManager>,
@@ -34,6 +47,7 @@ pub struct VoiceCompanionRuntime {
     router: Arc<QwenVoiceRouter>,
     capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
     spsc_producer: SpscProducer,
+    event_tx: tokio::sync::broadcast::Sender<VoiceCompanionEvent>,
     /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
     #[allow(dead_code)]
     mic_source: Option<Arc<nomifun_audio::MicSource>>,
@@ -66,6 +80,7 @@ impl VoiceCompanionRuntime {
 
         let driver = Arc::new(Mutex::new(VoiceSessionDriver::new()));
         let router = Arc::new(QwenVoiceRouter::new());
+        let (event_tx, _) = tokio::sync::broadcast::channel::<VoiceCompanionEvent>(128);
 
         (
             Self {
@@ -76,10 +91,15 @@ impl VoiceCompanionRuntime {
                 router,
                 capture_pipeline,
                 spsc_producer: producer,
+                event_tx,
                 mic_source,
             },
             playback_rx,
         )
+    }
+
+    pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<VoiceCompanionEvent> {
+        self.event_tx.clone()
     }
 
     pub fn driver(&self) -> Arc<Mutex<VoiceSessionDriver>> {
@@ -126,7 +146,124 @@ impl VoiceCompanionRuntime {
         let mut driver = self.driver.lock().await;
         if let Ok(next) = driver.handle_event(AcousticEvent::WakeHit) {
             info!(state = ?next, "Wake hit accepted, transitioning to listening");
+            let _ = self.event_tx.send(VoiceCompanionEvent::WakeHit {
+                keyword: "Hey Flowy".to_string(),
+            });
+            let _ = self.event_tx.send(VoiceCompanionEvent::Listening);
             let _ = self.playback.play_earcon(EarconKind::Wake).await;
+        }
+    }
+
+    /// Internal helper to run ASR transcription, Qwen intent routing, TTS synthesis and FSM dispatch.
+    async fn process_utterance(
+        utterance_pcm: &[f32],
+        driver: &Arc<Mutex<VoiceSessionDriver>>,
+        router: &Arc<QwenVoiceRouter>,
+        playback: &Arc<PlaybackPipeline>,
+        event_tx: &tokio::sync::broadcast::Sender<VoiceCompanionEvent>,
+    ) {
+        let text_opt = nomifun_audio::stt::transcribe_test_pcm(utterance_pcm, 16000).await;
+        let decision = if let Some(ref text) = text_opt {
+            info!(text = %text, "ASR transcription produced text");
+            let _ = event_tx.send(VoiceCompanionEvent::SpeechRecognized { text: text.clone() });
+            let clean_input = nomifun_audio::strip_wake_phrase(text);
+            let route_input = if clean_input.is_empty() {
+                "你好"
+            } else {
+                &clean_input
+            };
+            match router.route(route_input).await {
+                Ok(dec) => Some(dec),
+                Err(err) => {
+                    warn!(error = %err, "Routing error");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let mut d = driver.lock().await;
+        if let Some(dec) = decision {
+            let _ = event_tx.send(VoiceCompanionEvent::IntentDecided {
+                intent: format!("{:?}", dec.intent_type),
+                reply: dec.reply_tts.clone(),
+            });
+            match dec.intent_type {
+                IntentType::Ignore => {
+                    let _ = d.handle_event(AcousticEvent::IntentIgnore);
+                    drop(d);
+                    let _ = playback.play_earcon(EarconKind::Sleep).await;
+                    let _ = event_tx.send(VoiceCompanionEvent::Idle);
+                }
+                IntentType::Chat => {
+                    let _ = d.handle_event(AcousticEvent::IntentChat);
+                    drop(d);
+                    let reply_text = dec.reply_tts.as_deref().unwrap_or("你好！有什么我可以帮你的吗？");
+                    info!(reply = %reply_text, "Speaking Chat reply via Edge-TTS");
+                    let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
+                        text: reply_text.to_string(),
+                    });
+                    let tts = nomifun_voice_terminal::tts::EdgeTtsProvider::new();
+                    if let Err(err) = playback.speak_text(&tts, reply_text, "").await {
+                        warn!(error = %err, "TTS speak_text failed, playing Done earcon fallback");
+                        let _ = playback.play_earcon(EarconKind::Done).await;
+                    }
+                    let mut d2 = driver.lock().await;
+                    let _ = d2.handle_event(AcousticEvent::PlaybackDone);
+                    let _ = event_tx.send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 4 });
+                }
+                IntentType::TaskControl => {
+                    let _ = d.handle_event(AcousticEvent::IntentTaskControl);
+                    drop(d);
+                    if let Some(ref ack) = dec.spoken_ack {
+                        let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
+                            text: ack.to_string(),
+                        });
+                        let tts = nomifun_voice_terminal::tts::EdgeTtsProvider::new();
+                        let _ = playback.speak_text(&tts, ack, "").await;
+                    } else {
+                        let _ = playback.play_earcon(EarconKind::Done).await;
+                    }
+                    let mut d2 = driver.lock().await;
+                    let _ = d2.handle_event(AcousticEvent::PlaybackDone);
+                    let _ = event_tx.send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 4 });
+                }
+                IntentType::AgentTask => {
+                    if dec.requires_confirmation == Some(true) {
+                        let _ = d.handle_event(AcousticEvent::ConfirmationRequired);
+                        drop(d);
+                        let prompt = dec.reply_tts.as_deref().unwrap_or("确认要执行该危险操作吗？");
+                        let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
+                            text: prompt.to_string(),
+                        });
+                        let tts = nomifun_voice_terminal::tts::EdgeTtsProvider::new();
+                        let _ = playback.speak_text(&tts, prompt, "").await;
+                        let mut d2 = driver.lock().await;
+                        let _ = d2.handle_event(AcousticEvent::PromptDone);
+                    } else {
+                        let _ = d.handle_event(AcousticEvent::IntentAgentTask);
+                        drop(d);
+                        if let Some(ref ack) = dec.spoken_ack {
+                            let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
+                                text: ack.to_string(),
+                            });
+                            let tts = nomifun_voice_terminal::tts::EdgeTtsProvider::new();
+                            let _ = playback.speak_text(&tts, ack, "").await;
+                        } else {
+                            let _ = playback.play_earcon(EarconKind::Done).await;
+                        }
+                        let mut d2 = driver.lock().await;
+                        let _ = d2.handle_event(AcousticEvent::TaskAccepted);
+                        let _ = event_tx.send(VoiceCompanionEvent::Idle);
+                    }
+                }
+            }
+        } else {
+            let _ = d.handle_event(AcousticEvent::IntentIgnore);
+            drop(d);
+            let _ = playback.play_earcon(EarconKind::Sleep).await;
+            let _ = event_tx.send(VoiceCompanionEvent::Idle);
         }
     }
 
@@ -138,6 +275,7 @@ impl VoiceCompanionRuntime {
         let router = Arc::clone(&self.router);
         let oobe = Arc::clone(&self.oobe_manager);
         let models = Arc::clone(&self.model_manager);
+        let event_tx = self.event_tx.clone();
 
         tokio::spawn(async move {
             let mut kws = KwsEngine::load_default().unwrap_or_else(|_| {
@@ -222,6 +360,8 @@ impl VoiceCompanionRuntime {
                                 if let Ok(next) = d.handle_event(AcousticEvent::WakeHit) {
                                     info!(state = ?next, "Wake accepted, transitioning to Listening");
                                     drop(d);
+                                    let _ = event_tx.send(VoiceCompanionEvent::WakeHit { keyword });
+                                    let _ = event_tx.send(VoiceCompanionEvent::Listening);
                                     let _ = playback.play_earcon(EarconKind::Wake).await;
                                     vad.reset();
                                     utterance_pcm.clear();
@@ -244,6 +384,7 @@ impl VoiceCompanionRuntime {
                             warn!("Listening timed out (6s silence)");
                             let mut d = driver.lock().await;
                             let _ = d.handle_event(AcousticEvent::ListenTimeout);
+                            let _ = event_tx.send(VoiceCompanionEvent::Idle);
                             utterance_pcm.clear();
                             kws.reset();
                             vad.reset();
@@ -263,70 +404,15 @@ impl VoiceCompanionRuntime {
                             let mut d = driver.lock().await;
                             if let Ok(AcousticState::Deciding) = d.handle_event(AcousticEvent::SpeechEnd) {
                                 drop(d);
-
-                                // Perform ASR transcription and intent routing
-                                let text_opt = nomifun_audio::stt::transcribe_test_pcm(&utterance_pcm, 16000).await;
+                                Self::process_utterance(
+                                    &utterance_pcm,
+                                    &driver,
+                                    &router,
+                                    &playback,
+                                    &event_tx,
+                                )
+                                .await;
                                 utterance_pcm.clear();
-
-                                let decision = if let Some(ref text) = text_opt {
-                                    info!(text = %text, "ASR transcription produced text");
-                                    let clean_input = nomifun_audio::strip_wake_phrase(text);
-                                    let route_input = if clean_input.is_empty() {
-                                        // User uttered only wake word ("Hey Flowy" / "Hey follow") without follow-up command
-                                        "你好"
-                                    } else {
-                                        &clean_input
-                                    };
-                                    match router.route(route_input).await {
-                                        Ok(dec) => Some(dec),
-                                        Err(err) => {
-                                            warn!(error = %err, "Routing error");
-                                            None
-                                        }
-                                    }
-                                } else {
-                                    None
-                                };
-
-                                let mut d = driver.lock().await;
-                                if let Some(dec) = decision {
-                                    match dec.intent_type {
-                                        IntentType::Ignore => {
-                                            let _ = d.handle_event(AcousticEvent::IntentIgnore);
-                                        }
-                                        IntentType::Chat => {
-                                            let _ = d.handle_event(AcousticEvent::IntentChat);
-                                            drop(d);
-                                            let _ = playback.play_earcon(EarconKind::Done).await;
-                                            let mut d2 = driver.lock().await;
-                                            let _ = d2.handle_event(AcousticEvent::PlaybackDone);
-                                        }
-                                        IntentType::TaskControl => {
-                                            let _ = d.handle_event(AcousticEvent::IntentTaskControl);
-                                            drop(d);
-                                            let _ = playback.play_earcon(EarconKind::Done).await;
-                                            let mut d2 = driver.lock().await;
-                                            let _ = d2.handle_event(AcousticEvent::PlaybackDone);
-                                        }
-                                        IntentType::AgentTask => {
-                                            if dec.requires_confirmation == Some(true) {
-                                                let _ = d.handle_event(AcousticEvent::ConfirmationRequired);
-                                                drop(d);
-                                                let _ = playback.play_earcon(EarconKind::Alert).await;
-                                                let mut d2 = driver.lock().await;
-                                                let _ = d2.handle_event(AcousticEvent::PromptDone);
-                                            } else {
-                                                let _ = d.handle_event(AcousticEvent::IntentAgentTask);
-                                                drop(d);
-                                                let _ = playback.play_earcon(EarconKind::Done).await;
-                                                let mut d2 = driver.lock().await;
-                                                let _ = d2.handle_event(AcousticEvent::TaskAccepted);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    let _ = d.handle_event(AcousticEvent::IntentIgnore);
-                                }
                                 kws.reset();
                                 vad.reset();
                             }
@@ -334,15 +420,49 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::FollowUpListening => {
-                        // 4-second follow-up window
-                        if let Some(start) = listen_start {
+                        // 4-second follow-up window (seamless continuous dialogue without wake phrase)
+                        if listen_start.is_none() {
+                            listen_start = Some(std::time::Instant::now());
+                            vad.reset();
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            let _ = event_tx.send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 4 });
+                        }
+
+                        let is_active = vad.process_frame(&chunk);
+                        if is_active {
+                            speech_started = true;
+                            utterance_pcm.extend_from_slice(&chunk);
+                        } else if speech_started {
+                            // User followed up with another utterance during the 4s window!
+                            info!(samples = utterance_pcm.len(), "Follow-up speech ended, transitioning to Deciding");
+                            speech_started = false;
+                            listen_start = None;
+
+                            let mut d = driver.lock().await;
+                            if let Ok(AcousticState::Deciding) = d.handle_event(AcousticEvent::FollowUpSpeech) {
+                                drop(d);
+                                Self::process_utterance(
+                                    &utterance_pcm,
+                                    &driver,
+                                    &router,
+                                    &playback,
+                                    &event_tx,
+                                )
+                                .await;
+                                utterance_pcm.clear();
+                                kws.reset();
+                                vad.reset();
+                            }
+                        } else if let Some(start) = listen_start {
                             if start.elapsed() > std::time::Duration::from_secs(4) {
+                                info!("FollowUpListening timed out (4s silence), returning to Idle");
                                 let mut d = driver.lock().await;
                                 let _ = d.handle_event(AcousticEvent::FollowUpTimeout);
                                 listen_start = None;
+                                vad.reset();
+                                let _ = event_tx.send(VoiceCompanionEvent::Idle);
                             }
-                        } else {
-                            listen_start = Some(std::time::Instant::now());
                         }
                     }
 

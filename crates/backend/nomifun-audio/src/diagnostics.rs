@@ -192,7 +192,7 @@ fn decode_audio_base64(b64: &str) -> Result<(Vec<f32>, Option<u32>), String> {
     }
 }
 
-fn parse_wav_pcm(wav: &[u8]) -> Result<(Vec<f32>, Option<u32>), String> {
+pub(crate) fn parse_wav_pcm(wav: &[u8]) -> Result<(Vec<f32>, Option<u32>), String> {
     if wav.len() < 44 {
         return Err("WAV data too short".into());
     }

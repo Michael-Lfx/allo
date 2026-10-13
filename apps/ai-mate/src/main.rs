@@ -7,7 +7,7 @@ use ai_mate::config::Config;
 use ai_mate::net_preboot::{detect_ethernet_status, import_usb_setup};
 use ai_mate::oobe::OobeManager;
 use ai_mate::provision::check_and_auto_download;
-use ai_mate::server::{build_router_with_oobe, DEFAULT_SERVER_ADDR};
+use ai_mate::server::{build_router_full, DEFAULT_SERVER_ADDR};
 use ai_mate::voice::VoiceCompanionRuntime;
 use ai_mate::watchdog::{
     get_recommended_heartbeat_interval, notify_ready, start_watchdog_heartbeat,
@@ -130,9 +130,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone());
     let voice_runtime = Arc::new(voice_runtime);
 
-    // Drain/route playback output frames from audio sink
+    // Open physical speaker device for system-wide vocal feedback (Earcon + Edge-TTS)
+    let speaker = match nomifun_audio::open_default_speaker() {
+        Ok(s) => Some(Arc::new(s)),
+        Err(err) => {
+            tracing::warn!(error = %err, "Failed to open physical speaker device; running with degraded silent sink");
+            None
+        }
+    };
+
+    // Route playback output frames to physical speaker sink, supporting instant barge-in flush
     let _playback_worker = tokio::spawn(async move {
-        while let Some(_frame) = playback_rx.recv().await {}
+        while let Some(frame) = playback_rx.recv().await {
+            if let Some(ref spk) = speaker {
+                if frame.is_empty() {
+                    let _ = spk.flush().await;
+                } else {
+                    let _ = spk.write_frame(frame).await;
+                }
+            }
+        }
     });
 
     // Start voice watchdog and background FSM worker
@@ -150,7 +167,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Notify systemd / supervisor of service readiness
     notify_ready();
 
-    let app = build_router_with_oobe(&config, model_manager, (*oobe_manager).clone());
+    let app = build_router_full(
+        &config,
+        model_manager,
+        (*oobe_manager).clone(),
+        Some(voice_runtime.event_sender()),
+    );
     let server_task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             error!(error = %e, "HTTP server fatal error");

@@ -39,17 +39,20 @@ pub trait TtsProvider: Send + Sync {
 pub struct EdgeTtsProvider {
     endpoint: String,
     default_voice: String,
+    output_format: String,
 }
 
 impl EdgeTtsProvider {
     pub const DEFAULT_ENDPOINT: &'static str =
         "wss://speech.platform.bing.com/consumer/speech/synthesize/readeraloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D86E91D646";
     pub const DEFAULT_VOICE: &'static str = "zh-CN-XiaoxiaoNeural";
+    pub const DEFAULT_FORMAT: &'static str = "raw-16khz-16bit-mono-pcm";
 
     pub fn new() -> Self {
         Self {
             endpoint: Self::DEFAULT_ENDPOINT.to_string(),
             default_voice: Self::DEFAULT_VOICE.to_string(),
+            output_format: Self::DEFAULT_FORMAT.to_string(),
         }
     }
 
@@ -60,6 +63,11 @@ impl EdgeTtsProvider {
 
     pub fn with_voice(mut self, voice: impl Into<String>) -> Self {
         self.default_voice = voice.into();
+        self
+    }
+
+    pub fn with_output_format(mut self, format: impl Into<String>) -> Self {
+        self.output_format = format.into();
         self
     }
 }
@@ -83,7 +91,10 @@ impl TtsProvider for EdgeTtsProvider {
 
         let (mut write, mut read) = ws_stream.split();
 
-        let speech_config = "X-Timestamp: None\r\nContent-Type: application/json; charset=utf-8\r\nPath: speech.config\r\n\r\n{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"},\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}";
+        let speech_config = format!(
+            "X-Timestamp: None\r\nContent-Type: application/json; charset=utf-8\r\nPath: speech.config\r\n\r\n{{\"context\":{{\"synthesis\":{{\"audio\":{{\"metadataoptions\":{{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}},\"outputFormat\":\"{}\"}}}}}}",
+            self.output_format
+        );
         write
             .send(tokio_tungstenite::tungstenite::Message::Text(speech_config.into()))
             .await

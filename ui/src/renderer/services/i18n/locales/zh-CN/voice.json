@@ -109,6 +109,12 @@
     "statusSpeechDesc": "检测到麦克风语音输入，正在计算声学特征与词元匹配",
     "statusWakeHit": "🎉 唤醒成功！",
     "statusWakeHitDesc": "成功命中唤醒词 Hey Flowy，已转入语音交互状态",
+    "statusDeciding": "思考决策中",
+    "statusDecidingDesc": "正在通过大模型进行意图理解与快轨路由",
+    "statusSpeaking": "语音播报中",
+    "statusSpeakingDesc": "正在通过扬声器播放流式语音回答",
+    "statusFollowUp": "4秒追问温热窗",
+    "statusFollowUpDesc": "4 秒内直接说话即可追问，无需重复唤醒词",
     "volumeLevel": "麦克风输入电平",
     "activeKeywordsTitle": "生效唤醒词与容错策略",
     "activeKeywordsList": "Hey Flowy (标准) · Hey Flow (免尾音容错) · Hi Flowy · Hello Flowy",
@@ -124,6 +130,12 @@
     "logSpeechResult": "🗣️ 读音识别：\"{{text}}\"",
     "logWakeHitCascade": "🎉 唤醒成功：\"{{text}}\" (级联命中唤醒词)",
     "logWakeMiss": "🗣️ 读音识别：\"{{text}}\" (未匹配唤醒词)",
-    "logWakeHit": "🎉 唤醒成功: HEY FLOWY (匹配度 1.0)"
+    "logWakeHit": "🎉 唤醒成功: HEY FLOWY (匹配度 1.0)",
+    "logWakeHitCompanion": "🎉 唤醒成功 ({{keyword}}) -> 伴侣进入 [倾听态]",
+    "logUserSaid": "🗣️ 用户说: \"{{text}}\"",
+    "logIntentDecided": "🧠 Qwen 思考完成: [{{intent}}] -> 正在合成语音回答...",
+    "logTtsSpeaking": "🔊 扬声器播报: \"{{text}}\"",
+    "logFollowUpWindow": "⏳ {{seconds}}秒免唤醒追问温热窗已开启，可直接提问...",
+    "logIdle": "🌙 交互结束，伴侣返回待机监听状态"
   }
 }

@@ -88,6 +88,7 @@ impl Default for IpRateLimiter {
 pub struct ServerState {
     pub oobe: OobeManager,
     pub rate_limiter: IpRateLimiter,
+    pub voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
 }
 
 fn get_client_ip(req: &Request) -> String {
@@ -145,10 +146,14 @@ async fn pairing_guard_middleware(
     // 3. Model read-only status and progress stream for the OOBE UI:
     //    GET /api/voice/models/status
     //    GET /api/voice/models/progress
+    // 4. Voice companion live events stream for dashboard observability:
+    //    GET /api/voice/events
     let is_whitelisted = path.starts_with("/api/oobe")
         || (method == axum::http::Method::GET && path == "/api/voice/diagnostics/device")
         || (method == axum::http::Method::GET
-            && (path == "/api/voice/models/status" || path == "/api/voice/models/progress"));
+            && (path == "/api/voice/models/status"
+                || path == "/api/voice/models/progress"
+                || path == "/api/voice/events"));
 
     if is_whitelisted {
         return next.run(req).await;
@@ -162,6 +167,26 @@ async fn pairing_guard_middleware(
     next.run(req).await
 }
 
+use axum::response::sse::{Event, KeepAlive, Sse};
+
+/// `GET /api/voice/events`: Real-time SSE stream of companion state machine & acoustic events.
+pub async fn voice_events_handler(
+    State(state): State<ServerState>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let rx_opt = state.voice_event_tx.as_ref().map(|tx| tx.subscribe());
+    let stream = futures_util::stream::unfold(rx_opt, |mut rx_opt| async move {
+        if let Some(ref mut rx) = rx_opt {
+            while let Ok(event) = rx.recv().await {
+                let data = serde_json::to_string(&event).unwrap_or_default();
+                return Some((Ok(Event::default().data(data)), rx_opt));
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        Some((Ok(Event::default().comment("heartbeat")), rx_opt))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// Construct the Axum HTTP router with default OOBE manager.
 pub fn build_router(config: &Config, manager: Arc<ModelManager>) -> Router {
     build_router_with_oobe(config, manager, OobeManager::new())
@@ -169,17 +194,33 @@ pub fn build_router(config: &Config, manager: Arc<ModelManager>) -> Router {
 
 /// Construct the Axum HTTP router with a specific OOBE manager instance.
 pub fn build_router_with_oobe(
+    config: &Config,
+    manager: Arc<ModelManager>,
+    oobe: OobeManager,
+) -> Router {
+    build_router_full(config, manager, oobe, None)
+}
+
+/// Construct the Axum HTTP router with all services and companion event streaming.
+pub fn build_router_full(
     _config: &Config,
     manager: Arc<ModelManager>,
     oobe: OobeManager,
+    voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
 ) -> Router {
     let state = ServerState {
         oobe: oobe.clone(),
         rate_limiter: IpRateLimiter::default(),
+        voice_event_tx,
     };
+    let events_router = Router::new()
+        .route("/api/voice/events", get(voice_events_handler))
+        .with_state(state.clone());
+
     Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/", get(index_handler))
+        .merge(events_router)
         .merge(nomifun_voice_models::voice_model_routes(manager))
         .merge(nomifun_audio::voice_diagnostics_routes())
         .merge(oobe_routes(oobe.clone()))

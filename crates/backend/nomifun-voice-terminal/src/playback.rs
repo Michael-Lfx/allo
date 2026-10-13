@@ -184,4 +184,62 @@ impl PlaybackPipeline {
 
         Ok(())
     }
+
+    /// Speaks synthesized text through the audio sink using the provided TTS provider.
+    /// Interruption-safe: flushes the sink and aborts immediately if generation_id increments.
+    pub async fn speak_text(
+        &self,
+        tts: &dyn crate::tts::TtsProvider,
+        text: &str,
+        voice: &str,
+    ) -> Result<(), AudioSinkError> {
+        let expected_gen = self.generation_id();
+        let mut stream = tts
+            .synthesize_stream(text, voice)
+            .await
+            .map_err(|e| AudioSinkError::Write(e.to_string()))?;
+
+        while let Some(chunk) = stream.recv().await {
+            if self.generation_id() != expected_gen {
+                self.sink.flush().await?;
+                return Ok(());
+            }
+            if !chunk.is_empty() {
+                self.sink.write_frame(chunk).await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tts::NullTts;
+
+    #[tokio::test]
+    async fn test_speak_text_success() {
+        let sink = Arc::new(TestAudioSink::new());
+        let pipeline = PlaybackPipeline::new(sink.clone());
+        let tts = NullTts::new();
+
+        pipeline
+            .speak_text(&tts, "你好，我是 Flowy 伴侣", "zh-CN-XiaoxiaoNeural")
+            .await
+            .unwrap();
+
+        assert_eq!(sink.frame_count(), 1);
+        let frames = sink.frames();
+        assert_eq!(frames[0], "你好，我是 Flowy 伴侣".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_speak_text_interrupted() {
+        let sink = Arc::new(TestAudioSink::new());
+        let pipeline = PlaybackPipeline::new(sink.clone());
+
+        pipeline.interrupt().await.unwrap();
+        assert_eq!(pipeline.generation_id(), 1);
+    }
 }

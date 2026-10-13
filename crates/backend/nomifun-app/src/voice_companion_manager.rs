@@ -192,7 +192,7 @@ impl VoiceCompanionProcessManager {
 
         let mut builder = ChildProcessBuilder::new(&bin_path);
         builder.arg("--bypass-pairing");
-        builder.arg("--host").arg("127.0.0.1:0");
+        builder.arg("--host").arg("127.0.0.1:18080");
         builder.stdout(std::process::Stdio::null());
         builder.stderr(std::process::Stdio::inherit());
 
@@ -258,6 +258,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
     axum::Router::new()
         .route("/api/voice/companion/status", get(companion_status_handler))
         .route("/api/voice/companion/toggle", post(companion_toggle_handler))
+        .route("/api/voice/companion/events", get(companion_events_handler))
         .with_state(manager)
 }
 
@@ -282,6 +283,58 @@ async fn companion_toggle_handler(
             running: false,
             error: Some(err),
         }),
+    }
+}
+
+async fn companion_events_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use futures_util::StreamExt;
+
+    let status = manager.status().await;
+    if !status.running {
+        return (
+            StatusCode::OK,
+            [
+                ("content-type", "text/event-stream"),
+                ("cache-control", "no-cache"),
+            ],
+            "data: {\"type\":\"Idle\"}\n\n",
+        )
+            .into_response();
+    }
+
+    let client = reqwest::Client::new();
+    match client.get("http://127.0.0.1:18080/api/voice/events").send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let mut builder = axum::response::Response::builder().status(status);
+            if let Some(ct) = resp.headers().get("content-type") {
+                builder = builder.header("content-type", ct);
+            } else {
+                builder = builder.header("content-type", "text/event-stream");
+            }
+            builder = builder.header("cache-control", "no-cache");
+            builder = builder.header("connection", "keep-alive");
+
+            let body_stream = resp
+                .bytes_stream()
+                .map(|item| item.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+            builder
+                .body(axum::body::Body::from_stream(body_stream))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(_) => (
+            StatusCode::OK,
+            [
+                ("content-type", "text/event-stream"),
+                ("cache-control", "no-cache"),
+            ],
+            "data: {\"type\":\"Idle\"}\n\n",
+        )
+            .into_response(),
     }
 }
 

@@ -231,6 +231,7 @@ version = "1.6.1"
 dependencies = [
  "axum",
  "chrono",
+ "futures-util",
  "http 1.5.0",
  "http-body-util",
  "nomifun-api-types",

@@ -109,6 +109,12 @@
     "statusSpeechDesc": "Microphone speech input detected, analyzing acoustic features and tokens",
     "statusWakeHit": "🎉 Wake Hit!",
     "statusWakeHitDesc": "Successfully matched wake word Hey Flowy, switched to active interaction",
+    "statusDeciding": "Deciding Intent",
+    "statusDecidingDesc": "Evaluating user intent and routing response via LLM",
+    "statusSpeaking": "Speaking",
+    "statusSpeakingDesc": "Streaming vocal response through physical speaker",
+    "statusFollowUp": "Follow-up Window (4s)",
+    "statusFollowUpDesc": "Ask follow-up questions directly without repeating wake word",
     "volumeLevel": "Microphone Input Level",
     "activeKeywordsTitle": "Active Wake Keywords & Tolerances",
     "activeKeywordsList": "Hey Flowy (Standard) · Hey Flow (Tail-dropped tolerance) · Hi Flowy · Hello Flowy",
@@ -124,6 +130,12 @@
     "logSpeechResult": "🗣️ Speech recognized: \"{{text}}\"",
     "logWakeHitCascade": "🎉 Wake successful: \"{{text}}\" (Cascade matched wake phrase)",
     "logWakeMiss": "🗣️ Speech recognized: \"{{text}}\" (Wake phrase not matched)",
-    "logWakeHit": "🎉 Wake Hit: HEY FLOWY (score: 1.0)"
+    "logWakeHit": "🎉 Wake Hit: HEY FLOWY (score: 1.0)",
+    "logWakeHitCompanion": "🎉 Wake Hit ({{keyword}}) -> Switched to [Listening]",
+    "logUserSaid": "🗣️ User said: \"{{text}}\"",
+    "logIntentDecided": "🧠 Qwen intent: [{{intent}}] -> Synthesizing voice response...",
+    "logTtsSpeaking": "🔊 Speaker output: \"{{text}}\"",
+    "logFollowUpWindow": "⏳ {{seconds}}s follow-up window open, speak directly...",
+    "logIdle": "🌙 Interaction finished, returning to standby"
   }
 }

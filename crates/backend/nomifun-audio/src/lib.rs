@@ -36,12 +36,14 @@ pub mod recorder;
 pub mod routes;
 pub mod runtime;
 pub mod session;
+pub mod speaker;
 pub mod stt;
 pub mod vad;
 pub mod voice_pipeline;
 pub mod voiceprint;
 
 pub use capture::{AudioCaptureSource, CaptureReadResult};
+pub use speaker::{open_default_speaker, parse_audio_frame_to_pcm, SpeakerAudioSink};
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
 pub use diagnostics::{voice_diagnostics_routes, voice_diagnostics_routes_with_dir, VoiceDiagnosticsState};
 pub use diarization::{
