@@ -279,11 +279,14 @@ pub(crate) use self::completer::{
     SECTION_OUTLINE_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
 pub(crate) use self::lesson::{
-    build_adjacent_context, build_outline_tree, generate_lesson,
-    rewrite_section_body, validate_lesson_document,
+    build_adjacent_context, build_outline_tree, enforce_grounding_budget, generate_lesson,
+    render_grounding_fragments, rewrite_section_body, validate_lesson_document,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 pub(crate) use self::sample::sample_base_files;
+// 目标词条化（t2 的确定性切片，t3 课时检索查询复用）跨模块消费：纯函数
+// 模块保持私有，两个入口公开到 crate 内。
+pub(crate) use self::terms::{TERM_MAX_COUNT, term_slices};
 // 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
 // `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
 pub use self::sample::SampleDisclosure;
