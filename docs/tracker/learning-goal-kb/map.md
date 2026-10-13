@@ -96,6 +96,15 @@
   缺库按库跳过、ADR-0011（来源库单列/列表双读；**编号避让**：0009/0010 已被
   feat/learn0928 的学习图 ADR 占用，取该线之后的下一个空号）——逐项落点见 t1–t4
   各票的「评审修复」小节。
+- **已合入学习模块线（2026-10-13）**：`feat/learn-goal-kb`（71cd50382）merge 进
+  `feat/learn0928` = **7957b0d67**（46 处冲突手工解，语义口径 = learn0928 优先、goal-kb
+  正交新增保留；概念体系已退役的面上剔除全部 concepts 管道）。合并后验证：learning 236 +
+  db 458 + 各集成套件全绿；ai-agent 1115 / knowledge 299 / nomi-agent 934 通过（3 个失败
+  均为存量：git_workspace_probe 并发偶发、create_snapshot 基线红、a_round_that_keeps_
+  truncating 在纯 origin/main 上同样红）；typecheck 恰好 60 个存量错误、学习页零错误、
+  i18n 门过。**迁移号自此被占到 075——二轮吸收实施（g1–g4/t1）新迁移从 076 起**；
+  二轮实施直接在合并后的 `feat/learn0928` 上做（原「随后 rebase」计划作废）。
+  两条未推送的线并成了一条，推送/PR 时机待定。
 
 ## 操作约定
 
