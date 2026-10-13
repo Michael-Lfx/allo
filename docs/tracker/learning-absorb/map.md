@@ -3,6 +3,7 @@
 <!-- wayfinder:map -->
 <!-- 状态：已到达目的地（2026-10-12）——全部票关闭，实施规格齐备（本地图 + 各票 Resolution
       + ADR-0010 + CONTEXT.md 词条），可直接拆实施票开工。 -->
+<!-- 二轮吸收（learnhub 实施期间新增 22 提交）见 ../learning-absorb-2/map.md -->
 
 ## Destination
 
