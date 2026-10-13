@@ -155,9 +155,11 @@ t3 的读库面已天然多库（`kb_ids: &[KnowledgeBaseId]`），本票是数�
 - **i18n 分隔符**（硬伤 A6）：三处 `join('、')` 在 en-US 下出现中文顿号。新增
   `learning.listSeparator`（zh-CN `、` / en-US `, `）用于库名与低分路径清单，
   `CourseGenerationPill`/`CourseGenerationProgress`/`CourseWorkspace` 三处改用它。
-- **双读兼容缺 ADR**（硬伤 A7）：新增 [ADR-0009](../../../adr/0009-course-source-kb-single-vs-list.md)
+- **双读兼容缺 ADR**（硬伤 A7）：新增 [ADR-0011](../../../adr/0011-course-source-kb-single-vs-list.md)
   ——列表为主、单列为兼容位（首个 = 主来源）、读侧过滤已删库、不退役列的理由与代价；
-  课时侧的 `source_paths_json`/三列（迁移 075）同属一份决策。
+  课时侧的 `source_paths_json`/三列（迁移 075）同属一份决策。**编号避让说明**：初稿编
+  0009，与 feat/learn0928 线的学习图 ADR-0009/0010 撞号，提交前已改为 0011（该线之后的
+  下一空号）。
 - **课时多引用**（硬伤 A3）：见 t3 票的评审修复小节（蓝图/草稿/审计/grounding/迁移 075/
   前端计数）。
 - **判断项**：B9 `is_cjk` 两份**有意保留**（两侧注释互指 + 写明同步纪律，knowledge 侧不为此
