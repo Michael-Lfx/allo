@@ -183,8 +183,34 @@ impl VoiceCompanionRuntime {
                 match current_state {
                     AcousticState::Idle => {
                         // Standby: feed audio chunk to Keyword Spotter
-                        if let Some(wake_res) = kws.process_pcm_chunk(&chunk) {
-                            info!(keyword = %wake_res.keyword, score = wake_res.score, "Wake hit detected");
+                        let mut hit = kws.process_pcm_chunk(&chunk).map(|r| r.keyword);
+
+                        // Stage-2: Cascade VAD + SenseVoice check if streaming KWS was borderline
+                        if hit.is_none() {
+                            let is_active = vad.process_frame(&chunk);
+                            if is_active {
+                                utterance_pcm.extend_from_slice(&chunk);
+                                if utterance_pcm.len() > 16_000 * 4 {
+                                    utterance_pcm.drain(0..16_000);
+                                }
+                            } else if !utterance_pcm.is_empty() {
+                                if utterance_pcm.len() >= 6_400 {
+                                    let snippet = std::mem::take(&mut utterance_pcm);
+                                    if let Some(text) = nomifun_audio::stt::transcribe_test_pcm(&snippet, 16_000).await {
+                                        if nomifun_audio::is_wake_phrase_match(&text) {
+                                            info!(text = %text, "Cascade wake hit accepted via SenseVoice");
+                                            hit = Some(text);
+                                        }
+                                    }
+                                } else {
+                                    utterance_pcm.clear();
+                                }
+                                vad.reset();
+                            }
+                        }
+
+                        if let Some(keyword) = hit {
+                            info!(keyword = %keyword, "Wake hit detected");
                             if !oobe.is_paired().await {
                                 warn!("Wake received but device is not yet paired via OOBE");
                                 let _ = playback.play_earcon(EarconKind::Alert).await;

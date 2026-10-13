@@ -240,6 +240,12 @@ pub struct VoiceAsrTestResponse {
     pub text: String,
     /// Duration of audio in milliseconds
     pub duration_ms: u64,
+    /// Whether transcribed text matched a known wake phrase
+    #[serde(default)]
+    pub wake_matched: bool,
+    /// Clean command text with wake phrase prefix stripped
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean_text: Option<String>,
     /// Error message if ASR failed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

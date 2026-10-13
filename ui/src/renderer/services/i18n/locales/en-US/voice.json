@@ -113,13 +113,17 @@
     "activeKeywordsTitle": "Active Wake Keywords & Tolerances",
     "activeKeywordsList": "Hey Flowy (Standard) · Hey Flow (Tail-dropped tolerance) · Hi Flowy · Hello Flowy",
     "tipTitle": "Pronunciation & Tuning Tip",
-    "tipContent": "SenseVoice shows 'Flowy' was transcribed as 'fu' due to weak trailing vowel. The system now supports 'Hey Flow' tolerance—saying 'Hey Flow' directly triggers wake without having to stress the trailing -y.",
+    "tipContent": "SenseVoice transcription often records 'Flowy' as 'fu' or 'flow'. Multi-tier cascade tolerance is active: saying 'Hey Flow', 'Hey Follow', or phonetic 'Hey 芙' will now successfully trigger wake-up across the dashboard and companion daemon.",
     "logTitle": "Live Acoustic & Detection Stream",
     "clearLog": "Clear Logs",
     "logStarted": "Background companion daemon running (PID: {{pid}})",
     "logEngineReady": "Sherpa-ONNX Zipformer KWS engine loaded",
     "logMicActive": "Microphone live audio stream captured",
     "logVoiceDetected": "Voice activity detected (VAD triggered)",
+    "logSpeechTranscribing": "Transcribing speech audio...",
+    "logSpeechResult": "🗣️ Speech recognized: \"{{text}}\"",
+    "logWakeHitCascade": "🎉 Wake successful: \"{{text}}\" (Cascade matched wake phrase)",
+    "logWakeMiss": "🗣️ Speech recognized: \"{{text}}\" (Wake phrase not matched)",
     "logWakeHit": "🎉 Wake Hit: HEY FLOWY (score: 1.0)"
   }
 }

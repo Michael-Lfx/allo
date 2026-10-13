@@ -334,7 +334,18 @@ fn normalize_speech_text(s: &str) -> String {
     let lower = s.to_lowercase();
     lower
         .chars()
-        .map(|c| if c.is_alphanumeric() || c > '\u{7f}' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric()
+                && !matches!(
+                    c,
+                    '，' | '。' | '！' | '？' | '；' | '：' | '“' | '”' | '‘' | '’' | '（' | '）' | '【' | '】' | '、' | '—' | '…'
+                )
+            {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -370,6 +381,40 @@ pub fn is_wake_phrase_match(transcript: &str) -> bool {
         "你好flowy",
         "小 flowy",
         "小flowy",
+        "hey 芙",
+        "hey芙",
+        "嘿 芙",
+        "嘿芙",
+        "hey 弗",
+        "hey弗",
+        "hey 福",
+        "hey福",
+        "hey 浮",
+        "hey浮",
+        "嘿 浮",
+        "嘿浮",
+        "hey 伏",
+        "hey伏",
+        "hey 符",
+        "hey符",
+        "hey 服",
+        "hey服",
+        "hey 佛",
+        "hey佛",
+        "hey 飞",
+        "hey飞",
+        "嗨 flowy",
+        "嗨flowy",
+        "嗨 flow",
+        "嗨flow",
+        "嗨 芙",
+        "嗨芙",
+        "黑 芙",
+        "黑芙",
+        "hey 楼",
+        "hey楼",
+        "hey 洛",
+        "hey洛",
     ];
 
     for pattern in WAKE_PATTERNS {
@@ -389,6 +434,14 @@ pub fn strip_wake_phrase(transcript: &str) -> String {
         "hi flowy", "hi follow", "hello flowy",
         "黑 flowy", "嘿 flowy", "嘿flowy", "你好 flowy", "你好flowy",
         "小 flowy", "小flowy", "flowy",
+        "hey 芙", "hey芙", "嘿 芙", "嘿芙",
+        "hey 弗", "hey弗", "hey 福", "hey福",
+        "hey 浮", "hey浮", "嘿 浮", "嘿浮",
+        "hey 伏", "hey伏", "hey 符", "hey符",
+        "hey 服", "hey服", "hey 佛", "hey佛",
+        "hey 飞", "hey飞", "嗨 flowy", "嗨flowy",
+        "嗨 flow", "嗨flow", "嗨 芙", "嗨芙",
+        "黑 芙", "黑芙", "hey 楼", "hey楼", "hey 洛", "hey洛",
     ];
 
     for prefix in PREFIXES {
@@ -433,6 +486,8 @@ mod tests {
         assert!(is_wake_phrase_match("Hey flow! How are you?"));
         assert!(is_wake_phrase_match("嘿 Flowy，帮我查下天气"));
         assert!(is_wake_phrase_match("你好Flowy"));
+        assert!(is_wake_phrase_match("Hey,芙."));
+        assert!(is_wake_phrase_match("嘿，芙。帮我查下天气"));
 
         assert!(!is_wake_phrase_match("今天天气怎么样"));
         assert!(!is_wake_phrase_match("Hello world"));
@@ -443,6 +498,7 @@ mod tests {
         assert_eq!(strip_wake_phrase("Hey, follow. 帮我整理桌面"), "帮我整理桌面");
         assert_eq!(strip_wake_phrase("Hey Flowy, what time is it?"), "what time is it?");
         assert_eq!(strip_wake_phrase("嘿flowy，写一段代码"), "写一段代码");
+        assert_eq!(strip_wake_phrase("Hey,芙. 帮我关掉音乐"), "帮我关掉音乐");
     }
 
     #[test]

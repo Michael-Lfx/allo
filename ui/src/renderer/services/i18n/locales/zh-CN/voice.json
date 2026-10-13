@@ -113,13 +113,17 @@
     "activeKeywordsTitle": "生效唤醒词与容错策略",
     "activeKeywordsList": "Hey Flowy (标准) · Hey Flow (免尾音容错) · Hi Flowy · Hello Flowy",
     "tipTitle": "发音与识别建议",
-    "tipContent": "试音显示第二个词容易弱化为单音“芙”。系统现已支持免发尾音容错，您可以尝试说“Hey Flow”，无需刻意重读尾部 -y 即可高灵敏命中。",
+    "tipContent": "试音显示第二个词容易弱化为单音“芙”。系统已全面加入级联容错：无论是“Hey Flow”、“Hey Follow”还是被识别为“Hey, 芙”，看板与语音伴侣均会自动判定为唤醒成功！",
     "logTitle": "实时声学与识别流水",
     "clearLog": "清空记录",
     "logStarted": "后台伴侣进程正常运行 (PID: {{pid}})",
     "logEngineReady": "Sherpa-ONNX Zipformer KWS 引擎已加载",
     "logMicActive": "麦克风实时音频流已捕获",
     "logVoiceDetected": "检测到人声活动 (VAD 触发)",
+    "logSpeechTranscribing": "正在转写说话内容...",
+    "logSpeechResult": "🗣️ 读音识别：\"{{text}}\"",
+    "logWakeHitCascade": "🎉 唤醒成功：\"{{text}}\" (级联命中唤醒词)",
+    "logWakeMiss": "🗣️ 读音识别：\"{{text}}\" (未匹配唤醒词)",
     "logWakeHit": "🎉 唤醒成功: HEY FLOWY (匹配度 1.0)"
   }
 }

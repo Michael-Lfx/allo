@@ -51,6 +51,8 @@ async fn asr_test_handler(
                         success: false,
                         text: String::new(),
                         duration_ms: start.elapsed().as_millis() as u64,
+                        wake_matched: false,
+                        clean_text: None,
                         error: Some(format!("Failed to decode audio base64: {err}")),
                     });
                 }
@@ -65,6 +67,8 @@ async fn asr_test_handler(
                         success: false,
                         text: String::new(),
                         duration_ms: start.elapsed().as_millis() as u64,
+                        wake_matched: false,
+                        clean_text: None,
                         error: Some(format!("Microphone capture failed: {err}")),
                     });
                 }
@@ -85,6 +89,8 @@ async fn asr_test_handler(
             success: false,
             text: String::new(),
             duration_ms: start.elapsed().as_millis() as u64,
+            wake_matched: false,
+            clean_text: None,
             error: Some("Audio buffer was empty".to_string()),
         });
     }
@@ -98,6 +104,8 @@ async fn asr_test_handler(
             success: false,
             text: String::new(),
             duration_ms: start.elapsed().as_millis() as u64,
+            wake_matched: false,
+            clean_text: None,
             error: Some(format!(
                 "麦克风录音音量过低或静音 (RMS={rms:.4})。检测到声音输入微弱，若使用的是远程虚拟音频设备，请检查远程软件的声音重定向或麦克风开关。"
             )),
@@ -108,8 +116,15 @@ async fn asr_test_handler(
     match transcribe_test_pcm_detailed(&pcm, sample_rate, state.models_dir.as_deref()).await {
         Ok(text) => {
             let duration_ms = start.elapsed().as_millis() as u64;
+            let wake_matched = crate::kws::is_wake_phrase_match(&text);
+            let clean_text = if wake_matched {
+                Some(crate::kws::strip_wake_phrase(&text))
+            } else {
+                None
+            };
             tracing::info!(
                 text = %text,
+                wake_matched,
                 duration_ms,
                 rms = %format!("{:.4}", rms),
                 samples = pcm.len(),
@@ -119,6 +134,8 @@ async fn asr_test_handler(
                 success: true,
                 text,
                 duration_ms,
+                wake_matched,
+                clean_text,
                 error: None,
             })
         }
@@ -134,6 +151,8 @@ async fn asr_test_handler(
                 success: false,
                 text: String::new(),
                 duration_ms,
+                wake_matched: false,
+                clean_text: None,
                 error: Some(err),
             })
         }
