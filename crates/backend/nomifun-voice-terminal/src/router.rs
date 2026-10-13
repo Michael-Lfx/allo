@@ -1,4 +1,4 @@
-//! Qwen 3.5 Flash single-pass atomic voice decision routing client.
+//! Qwen 3.8 Flash single-pass atomic voice decision routing client.
 //!
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md §3.5.
 
@@ -90,11 +90,39 @@ pub struct QwenVoiceRouter {
 
 impl QwenVoiceRouter {
     pub fn new() -> Self {
+        Self::with_default_model("qwen3.8-flash")
+    }
+
+    pub fn with_default_model(default_model: impl Into<String>) -> Self {
+        let endpoint = std::env::var("DASHSCOPE_COMPLETIONS_URL")
+            .or_else(|_| {
+                std::env::var("OPENAI_BASE_URL")
+                    .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+            })
+            .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+            .ok()
+            .or_else(|| {
+                if std::env::var("DASHSCOPE_API_KEY").is_ok() {
+                    Some("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".to_string())
+                } else {
+                    None
+                }
+            });
+
+        let api_key = std::env::var("DASHSCOPE_API_KEY")
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .or_else(|_| std::env::var("AI_MATE_LLM_KEY"))
+            .ok();
+
+        let model = std::env::var("AI_MATE_LLM_MODEL")
+            .or_else(|_| std::env::var("DASHSCOPE_MODEL"))
+            .unwrap_or_else(|_| default_model.into());
+
         Self {
             history: Vec::new(),
-            endpoint: None,
-            api_key: None,
-            model: "qwen-turbo".to_string(),
+            endpoint,
+            api_key,
+            model,
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
@@ -102,6 +130,14 @@ impl QwenVoiceRouter {
             #[cfg(any(test, feature = "voice-skeleton"))]
             fallback: Some(HeuristicFallbackVoiceRouter::new()),
         }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
     }
 
     pub fn with_endpoint(mut self, endpoint: impl Into<String>, api_key: impl Into<String>) -> Self {
@@ -253,3 +289,21 @@ impl VoiceRouter for QwenVoiceRouter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_qwen_voice_router_default_model_is_qwen3_8_flash() {
+        let router = QwenVoiceRouter::new();
+        assert_eq!(router.model(), "qwen3.8-flash");
+    }
+
+    #[test]
+    fn test_qwen_voice_router_custom_model_override() {
+        let router = QwenVoiceRouter::new().with_model("custom-model");
+        assert_eq!(router.model(), "custom-model");
+    }
+}
+
