@@ -92,12 +92,14 @@ pub(crate) fn render_grounding_fragments(excerpts: &[LessonExcerpt]) -> String {
 }
 
 /// 三处提示词共用的 grounding 段引导语：主引用/补充片段的语义 + 忠于片段
-/// 的硬约束（各站点的具体约束词随句给出）。
+/// 的硬约束（各站点的具体约束词随句给出）。主引用可以有**多条**（t4 评审
+/// 补齐的课时多引用）：每一条都是被引用的源文件全文，合起来才是课时的
+/// 事实边界。
 fn grounding_intro(site: &str) -> String {
     format!(
-        "Cited grounding fragments (the {site} must stay grounded in them — 主引用 is the \
-         lesson's cited source file (read in full), 补充片段 are related knowledge-base \
-         excerpts; never invent facts outside these fragments):\n"
+        "Cited grounding fragments (the {site} must stay grounded in them — 主引用 are the \
+         lesson's cited source file(s) (read in full; a lesson may cite several), 补充片段 are \
+         related knowledge-base excerpts; never invent facts outside these fragments):\n"
     )
 }
 
@@ -185,7 +187,9 @@ fn adjacent_lessons(
         .filter_map(|(label, neighbor_index)| {
             let &(module_index, lesson_index) = flat.get(neighbor_index?)?;
             let lesson = &blueprint.modules[module_index].lessons[lesson_index];
-            let excerpt = lesson.source.as_ref().and_then(|source| {
+            // 相邻参考取**主来源**（首个引用）的快照摘录：多引用课时里相邻
+            // 参考只是避重信号，一条足够（t4 评审补齐后的口径）。
+            let excerpt = lesson.cited_sources().first().and_then(|source| {
                 samples
                     .iter()
                     .find(|(path, _)| path == &source.path)

@@ -55,7 +55,7 @@ pub(crate) const WIRE: WireConfig = WireConfig {
 const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：把给定的课程简报（自由文本描述或知识库采样）设计成一门结构完整、可直接开课的课程——模块（module）、课时（lesson），并通过工具逐步构建。
 - 课程规模由你决策：根据简报/采样资料的范围与复杂度决定模块数与每模块课时数——小而聚焦的主题一两节课即可讲透，体系庞大的主题则需要更多模块与课时；每个课时都必须有实质内容，不要为凑数拆分，也不要为省事硬塞。
 - 课时：title 是学习目标句（学完能做什么），purpose 一句话说清这节课解决什么问题、用什么方式。
-- kb 流：每个课时的 source 必须是采样文件的真实路径（co_start 返回的清单或 co_read 见到的路径）；描述流省略 source。
+- kb 流：每个课时的 source 必须是采样文件的真实路径（co_start 返回的清单或 co_read 见到的路径）；一个课时可以落在多处来源上——source 给数组（最多 4 条，按引用顺序，首个为主来源）；描述流省略 source。
 - 模块从易到难排列，整体形成一条连续的学习路径；模块 title 简短，课时内容不越界到相邻模块的主题。
 
 【工具使用纪律】
@@ -582,7 +582,7 @@ fn co_query(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_read(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_read".into(),
-        description: "按路径读取一个采样文件的内容（kb 流专用）。设计大纲前用它阅读采样文档，让课时与概念真正落在资料上；source 引用必须是这里见到的真实路径。".into(),
+        description: "按路径读取一个采样文件的内容（kb 流专用）。设计大纲前用它阅读采样文档，让课时与概念真正落在资料上；source 引用必须是这里见到的真实路径（一个课时引用多条时按引用顺序给数组，首个为主来源）。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -647,7 +647,7 @@ fn co_scope(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_patch(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_patch".into(),
-        description: "批量应用大纲操作（set_meta / add|update|remove_module / add|update|remove_lesson），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面创建的 key。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"set_meta\", \"title\": \"期权入门\", \"description\": \"零基础七节课\"},\n  {\"op\": \"add_module\", \"key\": \"m1\", \"title\": \"合约基础\"},\n  {\"op\": \"add_lesson\", \"module\": \"m1\", \"key\": \"l1\", \"title\": \"认识期权合约\", \"purpose\": \"理解权利与义务的不对称\", \"source\": \"docs/basics.md\"}\n]}\n\n引用规则：module/模块 key 必须与草稿中已有 key（或本批前面创建的 key）完全一致，不一致的操作会被拒绝并附最近似的 key 提示。每批 <25 个操作，宁多批勿超长。".into(),
+        description: "批量应用大纲操作（set_meta / add|update|remove_module / add|update|remove_lesson），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面创建的 key。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"set_meta\", \"title\": \"期权入门\", \"description\": \"零基础七节课\"},\n  {\"op\": \"add_module\", \"key\": \"m1\", \"title\": \"合约基础\"},\n  {\"op\": \"add_lesson\", \"module\": \"m1\", \"key\": \"l1\", \"title\": \"认识期权合约\", \"purpose\": \"理解权利与义务的不对称\", \"source\": \"docs/basics.md\"}\n]}\n\n引用规则：module/模块 key 必须与草稿中已有 key（或本批前面创建的 key）完全一致，不一致的操作会被拒绝并附最近似的 key 提示。add_lesson/update_lesson 的 source 可以是一条采样路径，也可以是路径数组（最多 4 条，按引用顺序，首个为主来源）——每一条都必须是采样路径，任一条不合法整条操作被拒绝。每批 <25 个操作，宁多批勿超长。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -758,12 +758,19 @@ mod tests {
         } else {
             serde_json::Value::Null
         };
+        // 课时二引用两处来源（t4 评审补齐的多引用）：数组 source 必须贯通
+        // 草稿 → 蓝图（位序保留、首个 = 主来源）。
+        let lesson_two_source = if with_source {
+            serde_json::json!(["docs/basics.md", "docs/advanced.md"])
+        } else {
+            serde_json::Value::Null
+        };
         serde_json::json!({ "operations": [
             { "op": "set_meta", "title": "测试课程", "description": "两模块入门课" },
             { "op": "add_module", "key": "m1", "title": "模块一" },
             { "op": "add_module", "key": "m2", "title": "模块二" },
             { "op": "add_lesson", "module": "m1", "key": "l1", "title": "课时一", "purpose": "学会一", "source": source },
-            { "op": "add_lesson", "module": "m1", "key": "l2", "title": "课时二", "purpose": "学会二", "source": source },
+            { "op": "add_lesson", "module": "m1", "key": "l2", "title": "课时二", "purpose": "学会二", "source": lesson_two_source },
             { "op": "add_lesson", "module": "m2", "key": "l3", "title": "课时三", "purpose": "学会三", "source": source },
             { "op": "add_lesson", "module": "m2", "key": "l4", "title": "课时四", "purpose": "学会四", "source": source }
         ] })
@@ -777,7 +784,10 @@ mod tests {
                 name: "金融知识库".into(),
                 description: "期权与交易基础笔记".into(),
             }),
-            samples: vec![("docs/basics.md".into(), "期权的定义……".into())],
+            samples: vec![
+                ("docs/basics.md".into(), "期权的定义……".into()),
+                ("docs/advanced.md".into(), "期权策略进阶……".into()),
+            ],
             domain: Some("trading".into()),
             goal: None,
             knowledge_bases: Vec::new(),
@@ -972,6 +982,23 @@ mod tests {
         assert_eq!(blueprint.title, "测试课程");
         assert_eq!(blueprint.modules.len(), 2, "repaired outline publishes");
         assert_eq!(blueprint.domain, "trading", "the brief's domain label rides along");
+        // 多引用（t4 评审补齐）：数组 source 贯通到发布的蓝图，位序保留、
+        // 兼容位 = 首个。
+        let lesson_two = &blueprint.modules[0].lessons[1];
+        assert_eq!(
+            lesson_two
+                .cited_sources()
+                .iter()
+                .map(|source| source.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/basics.md", "docs/advanced.md"],
+            "co_patch 的数组 source 必须整份贯通"
+        );
+        assert_eq!(
+            lesson_two.source.as_ref().map(|source| source.path.as_str()),
+            Some("docs/basics.md"),
+            "兼容位 = 首个引用"
+        );
         // The premature co_finish was rejected with a size finding.
         let rounds = provider.seen_messages.lock().unwrap();
         let rejected = rounds.iter().flat_map(|round| round.iter()).any(|message| {

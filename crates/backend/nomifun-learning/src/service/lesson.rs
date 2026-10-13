@@ -70,20 +70,22 @@ fn lesson_goal_terms(disclosure: Option<&SampleDisclosure>, goal: Option<&str>) 
 }
 
 /// 补充片段按路径字典序交付（课程式库专项：primary 读源文件全文 + 按结构序
-/// 扩展，不因检索结果改写阅读线）。primary 在首位不动，其余按路径排序。
+/// 扩展，不因检索结果改写阅读线）。**全部** primary 在前不动（多引用课时
+/// 按引用位序排列），其余补充按路径排序。
 fn sort_supplements_by_path(fragments: &mut [LessonExcerpt]) {
-    let primary_len = usize::from(
-        fragments
-            .first()
-            .is_some_and(|fragment| fragment.role == ExcerptRole::Primary),
-    );
+    let primary_len = fragments
+        .iter()
+        .take_while(|fragment| fragment.role == ExcerptRole::Primary)
+        .count();
     fragments[primary_len..].sort_by(|left, right| left.path.cmp(&right.path));
 }
 
 /// 检索扩读（t3）：`search_bases` 取相关文件命中 → 逐条 `read_file` 读全文 →
-/// 补充片段（带库归属与命中章节，可溯源）。主 source 自己命中时跳过（它已是
-/// primary——锚定纪律：检索不替换主引用，也不重复占用预算）。单文件读不到只
-/// 跳过该条；检索本身失败向上传播（调用方降级为「无补充」，不阻断生成）。
+/// 补充片段（带库归属与命中章节，可溯源）。`cited` 是课时的**全部**主引用
+/// `(kb_id, 库内相对路径)`——其中任一命中时跳过（它们已是 primary——锚定
+/// 纪律：检索不替换主引用，也不重复占用预算；多引用课时逐条排除）。单文件
+/// 读不到只跳过该条；检索本身失败向上传播（调用方降级为「无补充」，不阻断
+/// 生成）。
 ///
 /// 多知识库（t4）：检索与扩读天然多库——`search_bases` 收全量来源库，命中
 /// 自带 `kb_id`/`kb_name`（补充片段按命中库归属，不必再猜）。
@@ -91,7 +93,7 @@ async fn read_lesson_supplements(
     knowledge: &KnowledgeService,
     kb_ids: &[KnowledgeBaseId],
     query: &str,
-    primary: Option<(&str, &str)>,
+    cited: &[(&str, &str)],
 ) -> Result<(Vec<LessonExcerpt>, usize), AppError> {
     if kb_ids.is_empty() {
         return Ok((Vec::new(), 0));
@@ -101,9 +103,10 @@ async fn read_lesson_supplements(
     let mut supplements = Vec::with_capacity(hit_count);
     for hit in hits {
         // 主 source 自身命中：跳过（锚定纪律，按 (库, 库内路径) 判等）。
-        if primary.is_some_and(|(kb_id, rel)| {
-            hit.kb_id.as_str() == kb_id && hit.rel_path == rel
-        }) {
+        if cited
+            .iter()
+            .any(|(kb_id, rel)| hit.kb_id.as_str() == *kb_id && hit.rel_path == *rel)
+        {
             continue;
         }
         match knowledge.read_file(hit.kb_id.as_str(), &hit.rel_path).await {
@@ -224,30 +227,41 @@ impl LearningService {
         // 检索查询词（t3）：课时标题 + purpose 词条 + 目标词条集；同一套词条
         // 也用于超预算片段的相关度选摘（预算守卫）。
         let retrieval_terms = lesson_retrieval_terms(lesson_title, purpose, goal_terms);
-        // primary 的来源库（t4）：命名空间归属优先（路径是事实），缺省用蓝图
-        // source 标注的 kb_id，再缺省回退课程主来源（旧课程/单库的裸路径）；
-        // 已删库（不在现存列表里）解析成无归属——不落到幸存库。`cited` 保留
+        // primary 的来源库（t4；评审修复）：命名空间归属优先（路径是事实），
+        // 缺省用蓝图 source 标注的 kb_id——两者都要落到**存活**来源库上。
+        // 解析不到（已删库/未知前缀）＝无实时来源：走快照兜底，绝不回退到
+        // 幸存库去读一个属于别的库的路径（读错库比读不到更坏）。单库/旧课程
+        // 的裸路径由 `base_for_sample_path` 的唯一来源库回退承担。`cited` 保留
         // 蓝图里的原始路径——快照兜底按它取摘录（快照键与蓝图引用同源）。
-        let primary_source = lesson.source.as_ref().map(|source| {
-            let kb_id = base_for_sample_path(&source.path, &sources.bases, &sources.ids)
-                .or_else(|| source.kb_id.clone())
-                .filter(|id| sources.ids.iter().any(|candidate| candidate == id))
-                .or_else(|| sources.primary());
-            let rel = kb_id
-                .as_ref()
-                .map(|id| rel_path_for_base(&source.path, namespace_for_base(&sources.bases, id)))
-                .unwrap_or_else(|| rel_path_for_base(&source.path, None));
-            (kb_id, rel.to_owned(), source.path.clone())
-        });
-        let primary_kb_name = match (knowledge.as_ref(), primary_source.as_ref()) {
-            (Some(knowledge), Some((Some(kb_id), _, _))) => knowledge
-                .get_base_info(kb_id.as_str())
-                .await
-                .ok()
-                .map(|base| base.name),
-            _ => None,
-        };
-        if let Some((kb_id, rel, cited)) = primary_source.as_ref() {
+        // 多引用（t4 评审补齐）：**每一条**被引用文件各成一个 primary 片段，
+        // 位序 = 引用顺序（首条仍是主来源）；预算守卫统一封顶 40KB。
+        let primary_sources: Vec<(Option<KnowledgeBaseId>, String, String)> = lesson
+            .cited_sources()
+            .into_iter()
+            .map(|source| {
+                let kb_id = base_for_sample_path(&source.path, &sources.bases, &sources.ids)
+                    .or_else(|| source.kb_id.clone())
+                    .filter(|id| sources.ids.iter().any(|candidate| candidate == id));
+                let rel = kb_id
+                    .as_ref()
+                    .map(|id| rel_path_for_base(&source.path, namespace_for_base(&sources.bases, id)))
+                    .unwrap_or_else(|| rel_path_for_base(&source.path, None));
+                (kb_id, rel.to_owned(), source.path.clone())
+            })
+            .collect();
+        // 逐条读库：实时读到 = primary 片段带库归属；读不到 = 快照兜底片段。
+        // `primary_live` 只有在**全部**引用都读到实时文件时才成立（读数帧
+        // 如实披露），任一读失败都算降级（库不可达/文件被删）。
+        let mut primary_live = !primary_sources.is_empty();
+        for (kb_id, rel, cited) in &primary_sources {
+            let kb_name = match (knowledge.as_ref(), kb_id.as_ref()) {
+                (Some(knowledge), Some(kb_id)) => knowledge
+                    .get_base_info(kb_id.as_str())
+                    .await
+                    .ok()
+                    .map(|base| base.name),
+                _ => None,
+            };
             let live = match (knowledge.as_ref(), kb_id.as_ref()) {
                 (Some(knowledge), Some(kb_id)) => tokio::time::timeout(
                     LESSON_RETRIEVAL_BUDGET,
@@ -260,18 +274,18 @@ impl LearningService {
             };
             match live {
                 Some(file) if !file.content.trim().is_empty() => {
-                    grounding.primary_live = true;
                     grounding.fragments.push(LessonExcerpt {
                         path: rel.clone(),
                         text: file.content,
                         kb_id: kb_id.as_ref().map(KnowledgeBaseId::as_str).map(str::to_owned),
-                        kb_name: primary_kb_name.clone(),
+                        kb_name,
                         heading: None,
                         role: ExcerptRole::Primary,
                     });
                 }
                 _ => {
                     // 库不可达/文件被删：快照兜底（现状能力保留），披露降级。
+                    primary_live = false;
                     if knowledge.is_some() {
                         grounding.degraded = true;
                         tracing::warn!(
@@ -293,18 +307,23 @@ impl LearningService {
                 }
             }
         }
+        grounding.primary_live = primary_live;
         if let Some(knowledge) = &knowledge {
             if !retrieval_terms.is_empty() && !sources.ids.is_empty() {
-                let primary = primary_source.as_ref().and_then(|(kb_id, rel, _)| {
-                    kb_id.as_ref().map(|kb_id| (kb_id.as_str(), rel.as_str()))
-                });
+                // 全部主引用都从补充检索里排除（锚定纪律：不重复占用预算）。
+                let cited: Vec<(&str, &str)> = primary_sources
+                    .iter()
+                    .filter_map(|(kb_id, rel, _)| {
+                        kb_id.as_ref().map(|kb_id| (kb_id.as_str(), rel.as_str()))
+                    })
+                    .collect();
                 let retrieved = tokio::time::timeout(
                     LESSON_RETRIEVAL_BUDGET,
                     read_lesson_supplements(
                         knowledge,
                         &sources.ids,
                         &retrieval_terms.join(" "),
-                        primary,
+                        &cited,
                     ),
                 )
                 .await;
@@ -1200,8 +1219,9 @@ impl LearningService {
             return Ok((String::new(), String::new()));
         };
         let excerpt = lesson
-            .source
-            .as_ref()
+            .cited_sources()
+            // 传统（非引擎）路径只有一个 excerpt 槽：取主来源（首个引用）。
+            .first()
             .and_then(|source| {
                 samples
                     .iter()
@@ -1572,8 +1592,15 @@ impl LearningService {
                 blueprint
                     .modules
                     .get(module_position as usize)
-                    .and_then(|module| module.lessons.get(lesson_position as usize))
-                    .and_then(|lesson| lesson.source.as_ref())
+                    .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;
+                let lesson = module
+                    .lessons
+                    .get(lesson_position as usize)
+                    .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
+                let excerpt = lesson
+                    .cited_sources()
+                    // 这里的 excerpt 只有一个槽：取主来源（首个引用）。
+                    .first()
                     .and_then(|source| {
                         samples
                             .iter()
