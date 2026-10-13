@@ -1,5 +1,5 @@
-//! Voice & ASR diagnostics endpoints for developer observation & testing.
-
+use std::path::PathBuf;
+use axum::extract::State;
 use axum::Json;
 use axum::Router;
 use axum::routing::{get, post};
@@ -10,11 +10,24 @@ use nomifun_api_types::voice::{
 use crate::mic::{probe_default_device, record_mic_snippet};
 use crate::stt::transcribe_test_pcm_detailed;
 
+/// State carried by voice diagnostics routes.
+#[derive(Debug, Clone, Default)]
+pub struct VoiceDiagnosticsState {
+    pub models_dir: Option<PathBuf>,
+}
+
 /// Axum routes for voice device and ASR test diagnostics.
 pub fn voice_diagnostics_routes() -> Router {
+    voice_diagnostics_routes_with_dir(None)
+}
+
+/// Axum routes for voice device and ASR test diagnostics with explicit models directory.
+pub fn voice_diagnostics_routes_with_dir(models_dir: Option<PathBuf>) -> Router {
+    let state = VoiceDiagnosticsState { models_dir };
     Router::new()
         .route("/api/voice/diagnostics/device", get(device_status_handler))
         .route("/api/voice/diagnostics/asr-test", post(asr_test_handler))
+        .with_state(state)
 }
 
 async fn device_status_handler() -> Json<VoiceDeviceStatusResponse> {
@@ -22,6 +35,7 @@ async fn device_status_handler() -> Json<VoiceDeviceStatusResponse> {
 }
 
 async fn asr_test_handler(
+    State(state): State<VoiceDiagnosticsState>,
     payload: Option<Json<VoiceAsrTestRequest>>,
 ) -> Json<VoiceAsrTestResponse> {
     let req = payload.map(|Json(r)| r).unwrap_or_default();
@@ -91,7 +105,7 @@ async fn asr_test_handler(
     }
 
     // 3. Perform ASR transcription via SenseVoice model with 16kHz resampling
-    match transcribe_test_pcm_detailed(&pcm, sample_rate).await {
+    match transcribe_test_pcm_detailed(&pcm, sample_rate, state.models_dir.as_deref()).await {
         Ok(text) => {
             Json(VoiceAsrTestResponse {
                 success: true,
@@ -337,7 +351,11 @@ mod tests {
             audio_base64: Some(b64),
             sample_rate: 16000,
         };
-        let Json(resp) = asr_test_handler(Some(Json(req))).await;
+        let Json(resp) = asr_test_handler(
+            State(VoiceDiagnosticsState::default()),
+            Some(Json(req)),
+        )
+        .await;
         assert!(!resp.success);
         assert!(resp.error.as_deref().unwrap_or("").contains("静音") || resp.error.as_deref().unwrap_or("").contains("RMS"));
     }

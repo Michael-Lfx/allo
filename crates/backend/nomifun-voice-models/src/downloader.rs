@@ -295,12 +295,14 @@ impl ModelDownloader {
 
         let resp = req.send().await?;
         let resp = if resp.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            let min_size = crate::layout::min_expected_size(rel_path, true);
             if target_path.exists() {
                 if let Ok(meta) = tokio::fs::metadata(target_path).await {
-                    if meta.len() > 0 {
+                    if meta.len() >= min_size {
                         return Ok(meta.len());
                     }
                 }
+                let _ = tokio::fs::remove_file(target_path).await;
             }
             if part_path.exists() {
                 let _ = tokio::fs::remove_file(&part_path).await;
@@ -365,6 +367,9 @@ impl ModelDownloader {
             }
         }
 
+        if target_path.exists() {
+            let _ = tokio::fs::remove_file(target_path).await;
+        }
         tokio::fs::rename(&part_path, target_path).await?;
         Ok(downloaded_bytes)
     }

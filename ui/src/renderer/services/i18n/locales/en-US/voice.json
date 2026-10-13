@@ -37,6 +37,8 @@
   },
   "actions": {
     "downloadAndEnable": "Download & Enable",
+    "reinstall": "Re-download & Enable",
+    "repair": "Verify & Repair",
     "download": "Download",
     "retry": "Retry",
     "releaseSpace": "Release Space",

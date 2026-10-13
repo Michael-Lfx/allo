@@ -105,25 +105,29 @@ impl ModelManager {
     /// Triggers model installation asynchronously with idempotency protection.
     pub async fn install(
         &self,
-        _req: Option<VoiceModelInstallRequest>,
+        req: Option<VoiceModelInstallRequest>,
     ) -> Result<VoiceModelInstallResponse, ModelManagerError> {
         let current_state = self.state.read().await.clone();
+        let force = req.as_ref().and_then(|r| r.force).unwrap_or(false);
 
-        // 1. Idempotency check: if already ready, reject smoothly
-        if current_state.is_ready() {
-            return Ok(VoiceModelInstallResponse {
-                accepted: false,
-                state: current_state,
-                message: Some("Models already installed and ready".into()),
-            });
-        }
-
-        // 2. Idempotency check: if already busy (in progress), reject duplicate request
+        // 1. Idempotency check: if already busy (in progress), reject duplicate request
         if current_state.is_busy() {
             return Ok(VoiceModelInstallResponse {
                 accepted: false,
                 state: current_state,
                 message: Some("Installation already in progress".into()),
+            });
+        }
+
+        // 2. Check actual disk layout state in addition to in-memory state
+        let (disk_state, _, _) = inspect_model_files(&self.models_dir);
+
+        // If not force requested, and both memory state and physical on-disk files are Ready:
+        if !force && current_state.is_ready() && disk_state.is_ready() {
+            return Ok(VoiceModelInstallResponse {
+                accepted: false,
+                state: current_state,
+                message: Some("Models already installed and ready".into()),
             });
         }
 
@@ -133,7 +137,7 @@ impl ModelManager {
         // 4. Spawn background install task
         let this = self.clone();
         let handle = tokio::spawn(async move {
-            this.run_install_pipeline().await;
+            this.run_install_pipeline(force).await;
         });
 
         let mut task_guard = self.install_task.lock().await;
@@ -147,8 +151,18 @@ impl ModelManager {
     }
 
     /// Internal asynchronous install pipeline execution.
-    async fn run_install_pipeline(&self) {
-        info!("Starting voice model installation pipeline");
+    async fn run_install_pipeline(&self, force: bool) {
+        info!("Starting voice model installation pipeline (force={force})");
+
+        if force {
+            info!("Force re-install: purging existing model files and .part artifacts in {:?}", self.models_dir);
+            for &rel in EXPECTED_FILES {
+                let p = self.models_dir.join(rel);
+                let _ = tokio::fs::remove_file(&p).await;
+                let part = PathBuf::from(format!("{}.part", p.display()));
+                let _ = tokio::fs::remove_file(&part).await;
+            }
+        }
 
         // Step 1: Probe mirror sources
         let mirror = match self.downloader.probe_best_source().await {

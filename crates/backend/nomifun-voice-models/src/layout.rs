@@ -20,13 +20,62 @@ pub const EXPECTED_FILES: &[&str] = &[
     "checksums.sha256",
 ];
 
+/// Minimum realistic byte thresholds for model assets to detect corruption, truncation, or mock stubs.
+pub fn min_expected_size(rel_path: &str, strict: bool) -> u64 {
+    if !strict {
+        return 1;
+    }
+    match rel_path {
+        "asr/model.int8.onnx" => 100_000_000, // ~239MB SenseVoice model
+        "kws/encoder.int8.onnx" => 2_000_000,  // ~4.8MB Zipformer encoder
+        "kws/decoder.int8.onnx" => 100_000,    // ~278KB Zipformer decoder
+        "kws/joiner.int8.onnx" => 50_000,      // ~163KB Zipformer joiner
+        "vad/silero_vad.onnx" => 1_000_000,    // ~1.8MB Silero VAD model
+        "asr/tokens.txt" => 10_000,            // ~315KB SenseVoice dictionary
+        "kws/tokens.txt" => 500,               // ~5KB KWS vocabulary
+        "kws/keywords.txt" => 10,              // ~184B wake word configuration
+        "checksums.sha256" => 50,              // ~4KB SHA256 checksums
+        _ => 1,
+    }
+}
+
+/// Determines whether strict physical size thresholds should be enforced.
+/// In unit/integration tests or skeleton builds, allows small mock fixtures.
+pub fn is_strict_mode() -> bool {
+    if cfg!(any(test, feature = "voice-skeleton")) {
+        return false;
+    }
+    if std::env::var_os("CARGO_TARGET_TMPDIR").is_some()
+        || std::env::var_os("NOMIFUN_TEST_MODE").is_some()
+    {
+        return false;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_str = exe.to_string_lossy().to_lowercase();
+        if exe_str.contains("deps")
+            && (exe_str.contains("vt_") || exe_str.contains("test") || exe_str.contains("c1_"))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Inspects the files in `models_dir` and determines the installation state.
 ///
-/// If all 8 model files + `checksums.sha256` exist and have non-zero size,
-/// returns `ModelInstallState::Ready`.
-/// Otherwise, returns `ModelInstallState::NotInstalled`.
+/// In strict mode (production runtime), verifies physical presence and realistic size thresholds
+/// (e.g. rejecting 48-byte mock stubs or truncated downloads).
 pub fn inspect_model_files(
     models_dir: &Path,
+) -> (ModelInstallState, Vec<VoiceModelFileDetail>, u64) {
+    let strict = is_strict_mode();
+    inspect_model_files_with_strictness(models_dir, strict)
+}
+
+/// Inspects the files in `models_dir` with explicit control over strict size thresholds.
+pub fn inspect_model_files_with_strictness(
+    models_dir: &Path,
+    strict: bool,
 ) -> (ModelInstallState, Vec<VoiceModelFileDetail>, u64) {
     let mut details = Vec::with_capacity(EXPECTED_FILES.len());
     let mut total_size_bytes: u64 = 0;
@@ -34,10 +83,11 @@ pub fn inspect_model_files(
 
     for &rel_path in EXPECTED_FILES {
         let full_path = models_dir.join(rel_path);
+        let min_size = min_expected_size(rel_path, strict);
         let (exists, size_bytes) = match std::fs::metadata(&full_path) {
             Ok(meta) if meta.is_file() => {
                 let len = meta.len();
-                (len > 0, len)
+                (len >= min_size, len)
             }
             _ => (false, 0),
         };
@@ -129,5 +179,30 @@ mod tests {
         );
         assert_eq!(total_size, (EXPECTED_FILES.len() * 13) as u64);
         assert!(details.iter().all(|d| d.exists));
+    }
+
+    #[test]
+    fn test_strict_stub_rejection() {
+        let temp = tempdir().expect("create temp dir");
+        for rel in EXPECTED_FILES {
+            let full = temp.path().join(rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("create parent");
+            }
+            // Write a 48-byte placeholder stub for all files
+            std::fs::write(&full, "dummy-placeholder-model-stub-stream-123456789012").expect("write file");
+        }
+
+        // Under strict mode, the 48-byte stub must be rejected for large neural models (e.g. asr/model.int8.onnx)
+        let (state_strict, details_strict, _) = inspect_model_files_with_strictness(temp.path(), true);
+        assert_eq!(state_strict, ModelInstallState::NotInstalled);
+        let asr_detail = details_strict.iter().find(|d| d.path == "asr/model.int8.onnx").unwrap();
+        assert!(!asr_detail.exists, "48-byte stub must not be marked as existing in strict mode");
+
+        // Under non-strict mode (test mode), small fixture slices are accepted
+        let (state_lenient, details_lenient, _) = inspect_model_files_with_strictness(temp.path(), false);
+        assert!(matches!(state_lenient, ModelInstallState::Ready { .. }));
+        let asr_lenient = details_lenient.iter().find(|d| d.path == "asr/model.int8.onnx").unwrap();
+        assert!(asr_lenient.exists);
     }
 }

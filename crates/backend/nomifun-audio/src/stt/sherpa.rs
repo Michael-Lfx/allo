@@ -88,9 +88,23 @@ impl SttCallback for SherpaSttCallback {
     }
 }
 
+static REGISTERED_MODEL_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Registers the active model directory configured by the runtime application.
+pub fn register_active_model_dir(dir: PathBuf) {
+    if let Ok(mut lock) = REGISTERED_MODEL_DIR.write() {
+        *lock = Some(dir);
+    }
+}
+
+/// Retrieves the active model directory if registered.
+pub fn active_model_dir() -> Option<PathBuf> {
+    REGISTERED_MODEL_DIR.read().ok().and_then(|l| l.clone())
+}
+
 /// Resolve model dir and load sherpa, or `Ok(None)` when unset / missing.
 ///
-/// Order: `model_dir` argument → env `NOMI_SHERPA_ASR_MODEL_DIR`.
+/// Order: `model_dir` argument → registered active dir → env `NOMI_SHERPA_ASR_MODEL_DIR`.
 /// Returns `Err` only when a directory was provided but is invalid / unloadable.
 pub fn try_load_sherpa(model_dir: Option<&Path>) -> Result<Option<SherpaSttCallback>, SherpaSttError> {
     let Some(dir) = resolve_model_dir(model_dir) else {
@@ -110,10 +124,29 @@ pub fn try_load_sherpa(model_dir: Option<&Path>) -> Result<Option<SherpaSttCallb
 
 fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
-        return Some(p.to_path_buf());
+        let asr_sub = p.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(p) {
+            return Some(p.to_path_buf());
+        }
+    }
+    if let Some(reg) = active_model_dir() {
+        let asr_sub = reg.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(&reg) {
+            return Some(reg);
+        }
     }
     if let Some(p) = std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).map(PathBuf::from) {
-        if p.is_dir() {
+        let asr_sub = p.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(&p) {
             return Some(p);
         }
     }

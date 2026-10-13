@@ -139,6 +139,9 @@ pub struct VoiceModelInstallRequest {
     /// Optional custom models directory override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_dir: Option<PathBuf>,
+    /// Force re-download and re-verification even if files or state appear ready
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
 }
 
 /// Response DTO for `POST /api/voice/models/install`.

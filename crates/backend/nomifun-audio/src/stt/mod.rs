@@ -25,10 +25,14 @@ pub use null::{FakeSttCallback, NullSttCallback};
 pub use switchable::{SwitchableSttCallback, build_switchable_stt};
 
 #[cfg(feature = "local-stt")]
-pub use sherpa::{SherpaSttError, SherpaSttCallback, try_load_sherpa};
+pub use sherpa::{
+    active_model_dir, register_active_model_dir, try_load_sherpa, SherpaSttCallback, SherpaSttError,
+};
 
 #[cfg(not(feature = "local-stt"))]
-pub use sherpa_stub::{SherpaSttError, SherpaSttCallback, try_load_sherpa};
+pub use sherpa_stub::{
+    active_model_dir, register_active_model_dir, try_load_sherpa, SherpaSttCallback, SherpaSttError,
+};
 
 /// Env var for the local ASR model directory (SenseVoice layout).
 pub const SHERPA_ASR_MODEL_DIR_ENV: &str = "NOMI_SHERPA_ASR_MODEL_DIR";
@@ -38,11 +42,15 @@ pub const SHERPA_ASR_MODEL_DIR_ENV: &str = "NOMI_SHERPA_ASR_MODEL_DIR";
 /// Transcribes PCM samples using the local Sherpa-onnx engine if available,
 /// resampling input to 16kHz mono automatically.
 pub async fn transcribe_test_pcm(pcm: &[f32], sample_rate: u32) -> Option<String> {
-    transcribe_test_pcm_detailed(pcm, sample_rate).await.ok()
+    transcribe_test_pcm_detailed(pcm, sample_rate, None).await.ok()
 }
 
 /// Detailed ASR test transcription returning descriptive error messages for diagnostics.
-pub async fn transcribe_test_pcm_detailed(pcm: &[f32], sample_rate: u32) -> Result<String, String> {
+pub async fn transcribe_test_pcm_detailed(
+    pcm: &[f32],
+    sample_rate: u32,
+    model_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
     if pcm.is_empty() {
         return Err("录音数据为空，未接收到有效音频采样".to_string());
     }
@@ -56,7 +64,7 @@ pub async fn transcribe_test_pcm_detailed(pcm: &[f32], sample_rate: u32) -> Resu
 
     #[cfg(feature = "local-stt")]
     {
-        match try_load_sherpa(None) {
+        match try_load_sherpa(model_dir) {
             Ok(Some(sherpa)) => {
                 use crate::frame::AudioChannel;
                 use crate::recorder::SttCallback;
@@ -74,7 +82,7 @@ pub async fn transcribe_test_pcm_detailed(pcm: &[f32], sample_rate: u32) -> Resu
 
     #[cfg(not(feature = "local-stt"))]
     {
-        let _ = (pcm_16k, target_sr);
+        let _ = (pcm_16k, target_sr, model_dir);
         Err("本地离线语音识别 (local-stt) 未在当前桌面程序中启用。".to_string())
     }
 }

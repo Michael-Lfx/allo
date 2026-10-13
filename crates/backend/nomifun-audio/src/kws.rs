@@ -96,6 +96,14 @@ impl KwsEngine {
             }
         }
 
+        if let Some(registered) = crate::stt::active_model_dir() {
+            if registered.join("kws/encoder.int8.onnx").is_file()
+                || registered.join("encoder.int8.onnx").is_file()
+            {
+                return true;
+            }
+        }
+
         if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(std::path::PathBuf::from) {
             if ai_mate.join("kws/encoder.int8.onnx").is_file()
                 || ai_mate.join("encoder.int8.onnx").is_file()

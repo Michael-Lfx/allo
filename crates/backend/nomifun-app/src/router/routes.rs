@@ -810,10 +810,11 @@ pub fn create_router_with_all_state(
     let voice_models_dir = std::env::var("AI_MATE_MODEL_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| services.data_dir.join("models"));
-    let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir));
+    nomifun_audio::register_active_model_dir(voice_models_dir.clone());
+    let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir.clone()));
     let voice_models_authenticated = protect_instance_owner(
         nomifun_voice_models::voice_model_routes(voice_models_manager)
-            .merge(nomifun_audio::voice_diagnostics_routes()),
+            .merge(nomifun_audio::voice_diagnostics_routes_with_dir(Some(voice_models_dir))),
         &auth_mw_state,
         &instance_owner_state,
     );

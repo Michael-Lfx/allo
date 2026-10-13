@@ -43,7 +43,7 @@ pub mod voiceprint;
 
 pub use capture::{AudioCaptureSource, CaptureReadResult};
 pub use devices::{AudioDeviceInfo, AudioDeviceManager, DeviceKind};
-pub use diagnostics::voice_diagnostics_routes;
+pub use diagnostics::{voice_diagnostics_routes, voice_diagnostics_routes_with_dir, VoiceDiagnosticsState};
 pub use diarization::{
     Diarizer, EnergyClusterDiarizer, EnergyClusterDiarizerConfig, SpeakerAssigner, SpeakerIdentity,
     SpeakerSpan, create_diarizer, dominant_speaker_key,
@@ -77,9 +77,9 @@ pub use session::{
     upsert_into_window,
 };
 pub use stt::{
-    CloudSttCallback, FakeSttCallback, MeetingCloudStt, NullSttCallback, SHERPA_ASR_MODEL_DIR_ENV,
-    SherpaSttCallback, SherpaSttError, SwitchableSttCallback, build_switchable_stt,
-    transcribe_test_pcm, try_load_sherpa,
+    active_model_dir, register_active_model_dir, CloudSttCallback, FakeSttCallback, MeetingCloudStt,
+    NullSttCallback, SHERPA_ASR_MODEL_DIR_ENV, SherpaSttCallback, SherpaSttError,
+    SwitchableSttCallback, build_switchable_stt, transcribe_test_pcm, try_load_sherpa,
 };
 pub use vad::{EnergyVad, VadBackend, VadConfig, create_vad};
 pub use voice_pipeline::{

@@ -345,7 +345,7 @@ const VoiceSettings: React.FC = () => {
   }, [fetchStatus]);
 
   // Trigger POST /api/voice/models/install
-  const handleInstall = useCallback(async () => {
+  const handleInstall = useCallback(async (force = false) => {
     setIsStarting(true);
     try {
       connectProgressStream();
@@ -355,7 +355,7 @@ const VoiceSettings: React.FC = () => {
           'Content-Type': 'application/json',
           ...buildBackendAuthHeaders('POST'),
         },
-        body: JSON.stringify({ prefer_mirror: 'auto' }),
+        body: JSON.stringify({ prefer_mirror: 'auto', force: Boolean(force) }),
       });
       if (response.ok || response.status === 202) {
         setModelStatus('ProbingSource');
@@ -684,7 +684,7 @@ const VoiceSettings: React.FC = () => {
                           type='primary'
                           loading={isStarting}
                           disabled={loading}
-                          onClick={handleInstall}
+                          onClick={() => handleInstall(false)}
                           className='tabular-nums'
                         >
                           {t('voice.actions.downloadAndEnable')}
@@ -721,6 +721,14 @@ const VoiceSettings: React.FC = () => {
                         <div className='flex items-center gap-12px'>
                           <Switch checked={voiceEnabled} onChange={handleToggleVoiceEnabled} />
                           <Button
+                            type='text'
+                            size='small'
+                            className='text-t-secondary'
+                            onClick={() => handleInstall(true)}
+                          >
+                            {t('voice.actions.repair')}
+                          </Button>
+                          <Button
                             type={isConfirmingRelease ? 'secondary' : 'text'}
                             status={isConfirmingRelease ? 'danger' : 'default'}
                             size='small'
@@ -738,7 +746,7 @@ const VoiceSettings: React.FC = () => {
                         <Button
                           type='primary'
                           loading={isStarting}
-                          onClick={handleInstall}
+                          onClick={() => handleInstall(true)}
                           className='tabular-nums'
                         >
                           {t('voice.actions.retry')}
