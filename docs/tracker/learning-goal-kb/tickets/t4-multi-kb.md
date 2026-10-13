@@ -131,3 +131,46 @@ t3 的读库面已天然多库（`kb_ids: &[KnowledgeBaseId]`），本票是数�
   process-runtime/browser-platform 边界、windows-console-hide 全部通过
   （`check:dead-css` 失败点为存量基线漂移，非本票文件）。
 
+### 评审修复（两轴 code-review 收口）
+
+本批（`impl/goal-kb-fix`）按两轴 code-review 的发现逐项收口：
+
+- **契约登记缺失**（硬伤 A1）：迁移 073 的 `learning_courses.source_kb_ids` 没登记进
+  `id_schema_contract.rs`。补：迁移 **074** 建具名索引
+  `idx_learning_courses_source_kb_ids_json`（先例 019 的 `cs_agents.knowledge_base_ids`），
+  契约按 `json_text_ref!` 的 `json_each` 选择式登记，口径
+  `KeepHistory + AllowMissingHistoricalParent`（已删库 id 允许留在历史行、读侧过滤；
+  单列 `source_kb_id` 的 SetNull 条目不动）；钉子
+  `learning_course_source_kb_ids_is_registered_as_a_json_list_link`（索引存在 → 契约过；
+  删索引 → 契约失败；悬空 id 不阻断数据契约、修复流程不删课程行）。
+- **降级不一致**（硬伤 A8）：`resolve_outline_brief` 的 `get_base_info(...)?` 让单个库缺失
+  直接失败整门课，与采样侧「多库按库跳过、全空才 400」矛盾。对齐：多库路径按库跳过
+  （缺库经采样披露逐库条目计数 0 如实承担），**课程行只写存活库**（导入侧"不写悬空 id"
+  守卫保留）；单库保持原错误（零回归）。钉子
+  `multi_kb_generation_skips_a_missing_base_instead_of_failing`。
+- **前端上限静默截断**（硬伤 A4）：`selectedKnowledgeBaseIds.slice(0, 5)` 会悄悄丢掉第 6 个
+  选择（后端 400 永远到不了）。改为可见报错 + 阻止提交（`kbSelectionTooMany` 双语；
+  选择端拒绝超限的这次选择、保留上一次合法选择），后端 400 仍是权威；`maxTagCount`
+  只做展示。
+- **i18n 分隔符**（硬伤 A6）：三处 `join('、')` 在 en-US 下出现中文顿号。新增
+  `learning.listSeparator`（zh-CN `、` / en-US `, `）用于库名与低分路径清单，
+  `CourseGenerationPill`/`CourseGenerationProgress`/`CourseWorkspace` 三处改用它。
+- **双读兼容缺 ADR**（硬伤 A7）：新增 [ADR-0009](../../../adr/0009-course-source-kb-single-vs-list.md)
+  ——列表为主、单列为兼容位（首个 = 主来源）、读侧过滤已删库、不退役列的理由与代价；
+  课时侧的 `source_paths_json`/三列（迁移 075）同属一份决策。
+- **课时多引用**（硬伤 A3）：见 t3 票的评审修复小节（蓝图/草稿/审计/grounding/迁移 075/
+  前端计数）。
+- **判断项**：B9 `is_cjk` 两份**有意保留**（两侧注释互指 + 写明同步纪律，knowledge 侧不为此
+  扩公共面）；B10 上限 5 三处（后端为权威、nomi-agent 的 `MAX_COURSE_BASES` 与前端常量
+  注释互指，工具描述文案改为从常量派生）；B11 `goal_aware_selection` 已内联、
+  `(String,String,PathBuf)` 三元组由 `OwnedSampleBaseInput` 具名承载（借用态
+  `SampleBaseInput` 供阻塞任务外的调用面）；B13 采样行抽成共享组件 `CourseSamplingLine`、
+  库 id→名解析抽成 `knowledgeBaseNames`（两处调用点共用），前端结构钉子
+  `multiSourceDisclosure.test.ts`（7 项断言）。
+- 门（本批实跑）：`cargo test -p nomifun-learning` 219 passed（基线 208）；`-p nomifun-db`
+  全绿（458 lib + 全部集成套件，含 073/074/075 契约）；`-p nomifun-ai-agent` 1115 passed；
+  `-p nomifun-knowledge` 299/1 存量红；`cargo check --workspace` 干净；
+  `bun run typecheck` 存量 60 错未新增、`gen:i18n`/`check:i18n`/`check:theme`/
+  `check:icons`/`check:css-scope`/error/support-surface 过、学习页单测
+  15 + 新 6 全过。
+

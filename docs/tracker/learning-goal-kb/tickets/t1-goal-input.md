@@ -84,3 +84,8 @@ legacy 分支 + `models::goal_tests::goal_absent_keeps_the_legacy_kb_flow_valid`
 passed、i18n 生成器 `--check` 过、`ui typecheck` 仅存量 60 错（videoCanvas 等）且学习/i18n
 文件干净。
 
+### 评审修复（两轴 code-review 收口）
+
+- **`outline_brief_topic` 以目标为注册表主题**（评审判断项 B12）：**评审确认接受**——目标
+  中心化的方向一致（缺省才回退库名/描述前 120 字，旧客户端行为不变），不改代码。
+

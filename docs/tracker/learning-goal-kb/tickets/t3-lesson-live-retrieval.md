@@ -156,3 +156,34 @@ JSON 形状向后兼容）。UI：`bun run gen:i18n` + `check:i18n` 过；`check
 4. **词条化 v1 = 确定性切片**已按拍板执行（复用 `terms.rs`，不引 LLM）。
 5. **`learning-smoke` 缺省行为**：本分支无该无头入口，读数走 grounding WS 帧 + 进程内日志
    （票面「或 WS 事件即可」）。
+
+### 评审修复（两轴 code-review 收口）
+
+- **课时 source 多引用补齐**（评审硬伤 A3；t3 划给 t4、t4 只做了 `kb_id` 归属，本批补齐）：
+  蓝图 `BlueprintLesson.sources: Vec<SourceSpan>`（`#[serde(default)]`，兼容位 `source` 恒
+  等于首个，`cited_sources()`/`normalize_sources()` 收口）、大纲草稿的
+  `add_lesson`/`update_lesson` source 接受**字符串或数组**（位序保留、去重、上限 4 条、
+  任一条不是采样路径整条 op 拒绝）、审计 `unknown_source` **逐条**复核、蓝图校验逐条核采样、
+  grounding 把**每个被引用文件**各读成一个 primary 片段（位序 = 引用顺序，各带原文与库归属，
+  预算守卫合计 ≤40KB——主片段 24KB 上限 + 总量 40KB 不变），补充检索排除**全部**主引用。
+  落库：迁移 **075** 增 `learning_lessons.source_paths_json`（首个 = 主来源 = 既有三列，
+  老行回填单元素数组），课时视图给 `sources[]`（逐条按命名空间解析库归属，`source` 兼容位
+  = 首个）；前端最小化：原文面板展示主 source + 「共 N 处来源」（i18n 双语）。
+- **已删库的引用绝不读成幸存库的文档**（评审硬伤 A5）：`assemble_lesson_grounding` 原先把
+  命名空间解析不到的路径 `.or_else(primary)` 回退到幸存的主来源去读（读**属于幸存库**的
+  路径），语义错误且"靠运气"（幸存库恰好有同路径文件时错读成功）。改为原则化：命名空间
+  前缀只有解析到**存活**来源库时才去前缀实时读；解析不到 = 无实时来源，走快照兜底，
+  绝不把路径归到幸存库。
+- **钉子**（失败先行的测试）：`lesson_grounding_carries_every_cited_source_as_a_primary_fragment`
+  （两处引用各成 primary、逐条带库归属、合计 ≤40KB；
+  `add_lesson_accepts_a_source_array_and_keeps_the_citation_order` /
+  `add_lesson_rejects_an_array_with_any_unsampled_reference` /
+  `add_lesson_caps_the_source_list` / `update_lesson_replaces_the_whole_source_list` /
+  `audit_flags_every_unsampled_reference` / 迁移 075 契约
+  `learning_lesson_source_paths_migration`）；
+  `lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_base`
+  （夹具让错读**读得到**：幸存库同路径有一份别的文档——修复前该用例读到"错读标记"
+  并失败，已实跑复现）。
+- 门：`cargo test -p nomifun-learning` 219 passed（基线 208，+11）；`-p nomifun-db` 全绿
+  （含 074/075 两个迁移契约）；`-p nomifun-ai-agent` 1115 passed（多引用数组 source 贯通
+  到发布蓝图）；`bun run typecheck` 存量 60 错未新增、`gen:i18n`/`check:i18n` 过。

@@ -91,3 +91,19 @@ part_of: ../map.md
 - 门：`cargo test -p nomifun-learning` 184 passed；`-p nomifun-ai-agent` 1115 passed；
   `-p nomifun-db` 全绿；`cargo check --workspace` 干净。
 
+### 评审修复（两轴 code-review 收口）
+
+- **连贯预算第二层此前从未实现**（评审硬伤 A2）：`coherence_fill` 只看同 `parent_dir` 候选，
+  「目录即章节」的课程式库（`课程/01-章节/lesson.md …`）每目录只有一文件 → 填充恒为 0、章节
+  主干断链。修复：新增第二层「同父**序号相邻**兄弟目录」，补入前一目录的末文件与后一目录的
+  首文件（BFS 沿阅读线跨章续链）；相邻判据 = 目录名**数字前缀**按数值排（`2-章` 在 `10-章`
+  之前），**字典序相邻不做触发条件**——它会把无关目录（`misc`/`notes`）也连进来，把连贯
+  预算花在噪声上（t2「相关文件优先、连贯只占余量」的不倒退纪律）；30% 预算上限不变，
+  `coherence_fill` 内部规范化输入顺序（与调用方传入顺序无关，确定性）。
+- 测试：目录式布局专项 `goal_sampling_keeps_a_directory_per_chapter_trunk_intact`（九章一目录
+  一文件 + 一章内附录 → 十章主干不断链、附录由第一层补入、披露 `coherence_files = 9`）；
+  序号顺序 `coherence_fill_walks_numbered_sibling_directories_in_numeric_order`（1→2→3→4，
+  不跳到 10）；边界 `coherence_fill_only_walks_sibling_directories_under_the_same_parent`
+  （异父目录/根散文件不构成相邻、预算 0 不补）。平铺 `01-…09-` 既有用例（
+  `goal_sampling_keeps_the_course_trunk_intact`）保留且逐字通过。
+
