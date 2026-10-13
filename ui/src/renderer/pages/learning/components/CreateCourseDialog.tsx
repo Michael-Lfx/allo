@@ -1,8 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { Button, Input, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
+import { Button, Input, Message, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import type { TeachingStyle } from '../types';
 import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
+import { knowledgeBaseNames } from '../utils';
 import LearningModelSelector, {
   type LearningModelChoice,
 } from './LearningModelSelector';
@@ -93,9 +94,11 @@ export function CreateCourseDialog({
   };
   const okText = graphWizard ? t('learning.learningGraphCreateSubmit') : t('learning.createSubmit');
 
-  // 多知识库（t4）：生成视图的来源披露（请求里的库 id → 库名）。
-  const generatingSources: string[] = (generation?.request.knowledge_base_ids ?? []).map(
-    (id) => knowledgeBases.find((base) => base.knowledge_base_id === id)?.name ?? id
+  // 多知识库（t4）：生成视图的来源披露（请求里的库 id → 库名，口径与悬浮
+  // 指示条共用 `knowledgeBaseNames`）。
+  const generatingSources: string[] = knowledgeBaseNames(
+    generation?.request.knowledge_base_ids ?? [],
+    knowledgeBases
   );
   return (
     <Modal
