@@ -3558,6 +3558,7 @@ export type I18nKey =
   | 'learning.lessonGenAudit'
   | 'learning.lessonGenRound'
   | 'learning.lessonGenRunning'
+  | 'learning.lessonGenSourceDegraded'
   | 'learning.lessons'
   | 'learning.loadBasesFailed'
   | 'learning.loadFailed'
