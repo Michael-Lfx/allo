@@ -134,8 +134,15 @@ part_of: ../map.md
 `cargo test -p nomifun-ai-agent` 1115 passed 等 15 个 target 全绿；`cargo test -p nomifun-knowledge`
 **299 passed / 1 pre-existing failure**（`create_snapshot_source_fetches_and_chains_autogen`：
 断言旧 `> **source_url**` 头部而实现已改为 YAML frontmatter——在基线提交 `bacb5fd98` 上同样红，
-与 t3 无关，未动）；`bun run gen:i18n` + `check:i18n` 过；`ui` typecheck 与基线一致
-（存量 60 错，均在 videoCanvas/videoGeneration 等，学习/i18n/ipcBridge 文件干净）。
+与 t3 无关，未动）；`cargo check --workspace` exit 0（仅 `nomifun-app` 存量 warning）；
+`cargo test -p nomifun-db --test learning_course_sampling_meta_migration` 2 passed（披露
+JSON 形状向后兼容）。UI：`bun run gen:i18n` + `check:i18n` 过；`check:theme` / `check:icons` /
+`check:codemirror-runtime` / `check:css-scope` 过；`ui typecheck` 与基线逐项一致（存量 60 错
+在 videoCanvas/videoGeneration 等，学习/i18n/ipcBridge 文件干净）。`check:dead-css` 的失败项
+全在未触碰文件（codeBlock / WallpaperSection / CloudLoginPage / eval / AppearanceSection 的
+基线漂移，本 diff 零新增）；`check:button-layout` / `check:error-surface` /
+`check:support-surface` 需起前端 dev server（headless Edge `ERR_CONNECTION_REFUSED`，环境门）
+——三者与本次 diff 无关。
 
 ### 与票面的偏差
 
