@@ -32,6 +32,11 @@ use super::{
 const MAX_MODULES: usize = 12;
 const MAX_LESSONS_PER_MODULE: usize = 12;
 
+/// 一课时的来源文件上限（t4 评审补齐的多引用）：课时 grounding 的总预算
+/// 40KB 分摊给主引用片段，超过 4 处只会让后面的引用在预算里拿不到位置——
+/// 上限既守住预算，也让模型的引用意图保持可读（与提示词里的口径一致）。
+const MAX_LESSON_SOURCES: usize = 4;
+
 // ── Draft entities ─────────────────────────────────────────────────────────
 
 /// One course module: keyed, titled, and owning an ordered lesson list.
@@ -46,7 +51,7 @@ pub struct OutlineModule {
     pub lessons: Vec<String>,
 }
 
-/// One lesson: title/purpose plus, on the kb flow, the sampled file it
+/// One lesson: title/purpose plus, on the kb flow, the sampled file(s) it
 /// grounds in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineLesson {
@@ -54,10 +59,12 @@ pub struct OutlineLesson {
     pub title: String,
     #[serde(default)]
     pub purpose: String,
-    /// kb flow only: exact sampled file path. `None` on the description
-    /// flow (no samples exist) and dropped on import.
+    /// kb flow only: the exact sampled file paths this lesson grounds in
+    /// (引用位序，首个 = 主来源). Empty on the description flow (no samples
+    /// exist) and dropped on import. 老草稿视图里的兼容位 `source`（首个）
+    /// 由视图层派生，草稿本体只存这一份清单。
     #[serde(default)]
-    pub source: Option<String>,
+    pub sources: Vec<String>,
 }
 
 /// Course-level title/description, set once via `set_meta`.
@@ -108,34 +115,66 @@ pub enum OutlineOp {
         title: String,
         #[serde(default)]
         purpose: Option<String>,
-        /// kb flow: exact sampled file path (must be one of the sample paths).
-        #[serde(default)]
-        source: Option<String>,
+        /// kb flow: exact sampled file path(s) — one path or an array of
+        /// paths (引用位序，首个 = 主来源), each must be a sample path.
+        #[serde(default, deserialize_with = "de_string_list")]
+        source: Vec<String>,
     },
     /// Update an existing lesson. The source follows double-option
-    /// semantics: omitted = untouched, `null` = cleared, a path = set.
+    /// semantics: omitted = untouched, `null` = cleared, a path (or an
+    /// array of paths) = set.
     UpdateLesson {
         key: String,
         #[serde(default)]
         title: Option<String>,
         #[serde(default)]
         purpose: Option<String>,
-        #[serde(default, deserialize_with = "de_double_option")]
-        source: Option<Option<String>>,
+        #[serde(default, deserialize_with = "de_double_option_source")]
+        source: Option<Option<Vec<String>>>,
     },
     /// Remove a lesson from its module.
     RemoveLesson { key: String },
 }
 
-/// Distinguish an explicit `"source": null` (clear the source) from an
-/// omitted field (leave it untouched): a missing field still deserializes
-/// to the default `None`, while `null` wraps into `Some(None)` — the shape
-/// `op_update_lesson` expects.
-fn de_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+/// Tolerate a bare string where a path list is expected (`source` 一条或数组，
+/// t4 评审补齐)：a bare string wraps into a one-element list.
+fn de_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    serde::Deserialize::deserialize(deserializer).map(Some)
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        Some(OneOrMany::One(one)) => vec![one],
+        Some(OneOrMany::Many(many)) => many,
+        None => Vec::new(),
+    })
+}
+
+/// Distinguish an explicit `"source": null` (clear the sources) from an
+/// omitted field (leave it untouched) — the shape `op_update_lesson`
+/// expects. Tolerates both the single-path and the array forms (`sources`
+/// 多引用，t4 评审补齐)：a bare string wraps into a one-element list.
+fn de_double_option_source<'de, D>(deserializer: D) -> Result<Option<Option<Vec<String>>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(Some(
+        Option::<OneOrMany>::deserialize(deserializer)?.map(|value| match value {
+            OneOrMany::One(one) => vec![one],
+            OneOrMany::Many(many) => many,
+        }),
+    ))
 }
 
 // ── The draft ──────────────────────────────────────────────────────────────
@@ -230,7 +269,7 @@ impl OutlineDraft {
                     key,
                     title,
                     purpose.as_deref(),
-                    source.as_deref(),
+                    source,
                 ),
             OutlineOp::UpdateLesson { key, title, purpose, source } => self
                 .op_update_lesson(key, title.as_deref(), purpose.as_deref(), source),
@@ -335,7 +374,7 @@ impl OutlineDraft {
         key: &str,
         title: &str,
         purpose: Option<&str>,
-        source: Option<&str>,
+        source: &[String],
     ) -> Result<OpOutcome, String> {
         let module_key = module.trim();
         let module_position = self
@@ -353,7 +392,7 @@ impl OutlineDraft {
                 "add_lesson: module '{module_key}' has too many lessons (cap {MAX_LESSONS_PER_MODULE})"
             ));
         }
-        let source = self.resolve_source(source, "add_lesson")?;
+        let sources = self.resolve_sources(source, "add_lesson")?;
         let purpose = purpose.unwrap_or_default().trim().to_owned();
         if purpose.is_empty() {
             return Err("add_lesson: purpose is required (what the learner can do afterwards)".into());
@@ -363,7 +402,7 @@ impl OutlineDraft {
             key: key.clone(),
             title: title.to_owned(),
             purpose,
-            source,
+            sources,
         });
         self.revision += 1;
         Ok(OpOutcome {
@@ -377,13 +416,15 @@ impl OutlineDraft {
         key: &str,
         title: Option<&str>,
         purpose: Option<&str>,
-        source: &Option<Option<String>>,
+        source: &Option<Option<Vec<String>>>,
     ) -> Result<OpOutcome, String> {
         let key = key.trim();
         // Resolve the source reference against the whole draft first — the
         // mutable lesson borrow must not overlap the lookup.
-        let resolved_source = match source {
-            Some(value) => Some(self.resolve_source(value.as_deref(), "update_lesson")?),
+        let resolved_sources = match source {
+            Some(value) => Some(value.as_deref().map_or(Ok(Vec::new()), |paths| {
+                self.resolve_sources(paths, "update_lesson")
+            })?),
             None => None,
         };
         let lesson = self
@@ -397,8 +438,8 @@ impl OutlineDraft {
         if let Some(purpose) = purpose {
             lesson.purpose = purpose.trim().to_owned();
         }
-        if let Some(resolved) = resolved_source {
-            lesson.source = resolved;
+        if let Some(resolved) = resolved_sources {
+            lesson.sources = resolved;
         }
         self.revision += 1;
         Ok(OpOutcome {
@@ -427,31 +468,43 @@ impl OutlineDraft {
 
     // ── Reference resolution (reject with a closest-candidate hint) ─────
 
-    fn resolve_source(&self, source: Option<&str>, op: &str) -> Result<Option<String>, String> {
-        let Some(path) = source else {
-            return Ok(None);
-        };
-        let path = path.trim();
-        if path.is_empty() {
-            return Ok(None);
+    /// 课时来源引用的解析（t4 评审补齐：一条课时可引用多处来源）：逐条校验
+    /// 是真实采样路径（引用位序保留、去重），空串忽略——描述流没有任何采样
+    /// 文档，引用一律拒绝。审计 `unknown_source` 用同一把尺复查每一条。
+    fn resolve_sources(&self, sources: &[String], op: &str) -> Result<Vec<String>, String> {
+        let mut resolved: Vec<String> = Vec::new();
+        for source in sources {
+            let path = source.trim();
+            if path.is_empty() {
+                continue;
+            }
+            if self.samples.is_empty() {
+                return Err(format!(
+                    "{op}: this generation has no sampled documents, so lessons cannot cite a source"
+                ));
+            }
+            if !self.samples.iter().any(|(candidate, _)| candidate == path) {
+                let closest = self
+                    .samples
+                    .iter()
+                    .map(|(candidate, _)| candidate.as_str())
+                    .min_by_key(|candidate| common_substring_len(path, candidate))
+                    .unwrap_or("");
+                return Err(format!(
+                    "{op}: '{path}' is not a sampled file; exact paths are like '{closest}'"
+                ));
+            }
+            if resolved.iter().any(|candidate| candidate == path) {
+                continue;
+            }
+            if resolved.len() >= MAX_LESSON_SOURCES {
+                return Err(format!(
+                    "{op}: a lesson cites too many sources (cap {MAX_LESSON_SOURCES})"
+                ));
+            }
+            resolved.push(path.to_owned());
         }
-        if self.samples.is_empty() {
-            return Err(format!(
-                "{op}: this generation has no sampled documents, so lessons cannot cite a source"
-            ));
-        }
-        if self.samples.iter().any(|(candidate, _)| candidate == path) {
-            return Ok(Some(path.to_owned()));
-        }
-        let closest = self
-            .samples
-            .iter()
-            .map(|(candidate, _)| candidate.as_str())
-            .min_by_key(|candidate| common_substring_len(path, candidate))
-            .unwrap_or("");
-        Err(format!(
-            "{op}: '{path}' is not a sampled file; exact paths are like '{closest}'"
-        ))
+        Ok(resolved)
     }
 
     /// kb flow: read one sampled file by exact path (the `co_read` tool).
@@ -594,17 +647,27 @@ impl OutlineDraft {
                         .lessons
                         .iter()
                         .filter_map(|key| self.lessons.iter().find(|lesson| &lesson.key == key))
-                        .map(|lesson| BlueprintLesson {
-                            title: lesson.title.clone(),
-                            purpose: lesson.purpose.clone(),
-                            source: lesson.source.as_ref().map(|path| SourceSpan {
-                                path: path.clone(),
-                                start: None,
-                                end: None,
+                        .map(|lesson| {
+                            let mut blueprint_lesson = BlueprintLesson {
+                                title: lesson.title.clone(),
+                                purpose: lesson.purpose.clone(),
                                 // 库归属由生成管线按采样命名空间标注（t4）：
                                 // 草稿只持有路径，草稿层不认识库。
-                                kb_id: None,
-                            }),
+                                source: None,
+                                sources: lesson
+                                    .sources
+                                    .iter()
+                                    .map(|path| SourceSpan {
+                                        path: path.clone(),
+                                        start: None,
+                                        end: None,
+                                        kb_id: None,
+                                    })
+                                    .collect(),
+                            };
+                            // 兼容位 = 首个引用（列表与兼容位不漂移）。
+                            blueprint_lesson.normalize_sources();
+                            blueprint_lesson
                         })
                         .collect(),
                 })
@@ -679,7 +742,9 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
                 vec![lesson.key.clone()],
             ));
         }
-        if let Some(source) = &lesson.source {
+        // 引用复核（t4 评审补齐）：每条 source 都必须是采样路径——多引用
+        // 课时里任何一条悬空都是 danger，不能只看首个。
+        for source in &lesson.sources {
             if !draft.samples.iter().any(|(path, _)| path == source) {
                 findings.push(finding(
                     "unknown_source",
@@ -996,11 +1061,12 @@ impl OutlineDraft {
                 .filter(|lesson| matches(&lesson.title) || matches(&lesson.key))
                 .take(cap)
                 .map(|lesson| {
-                    let source = lesson
-                        .source
-                        .as_deref()
-                        .map(|path| format!("; source: {path}"))
-                        .unwrap_or_default();
+                    // 多引用（t4 评审补齐）：逐条列出，位序即引用顺序。
+                    let source = if lesson.sources.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; source: {}", lesson.sources.join(", "))
+                    };
                     format!(
                         "{}「{}」— {}{source}",
                         lesson.key,
@@ -1048,6 +1114,18 @@ mod tests {
 
     fn samples() -> Vec<(String, String)> {
         vec![("notes/vectors.md".into(), "# 向量\n具有大小和方向的量".into())]
+    }
+
+    /// 两个采样文件的草稿（多引用用例）：`samples()` 的第一份 + 矩阵笔记。
+    fn multi_source_draft() -> OutlineDraft {
+        OutlineDraft::new(
+            kb_brief(),
+            vec![
+                ("notes/vectors.md".into(), "# 向量\n具有大小和方向的量".into()),
+                ("notes/matrices.md".into(), "# 矩阵\n线性变换的坐标表示".into()),
+            ],
+            None,
+        )
     }
 
     fn op(json: &str) -> OutlineOp {
@@ -1227,6 +1305,147 @@ mod tests {
         );
     }
 
+    /// 一个课时引用多处来源（t4 评审补齐）：source 接受数组，位序保留（首个
+    /// = 主来源），逐条解析成采样路径；蓝图里列表与兼容位同时就位。
+    #[test]
+    fn add_lesson_accepts_a_source_array_and_keeps_the_citation_order() {
+        let mut draft = multi_source_draft();
+        let report = draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+            op(
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","source":["notes/matrices.md","notes/vectors.md"]}"#,
+            ),
+        ]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        let lesson = draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap();
+        assert_eq!(
+            lesson.sources,
+            vec!["notes/matrices.md".to_owned(), "notes/vectors.md".to_owned()],
+            "引用位序 = 模型给出的顺序（首个 = 主来源）"
+        );
+
+        // 蓝图：列表带全部引用，兼容位 = 首个（`cited_sources` 一把尺）。
+        let blueprint = draft.to_blueprint();
+        let lesson = &blueprint.modules[0].lessons[0];
+        assert_eq!(
+            lesson
+                .cited_sources()
+                .iter()
+                .map(|source| source.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["notes/matrices.md", "notes/vectors.md"]
+        );
+        assert_eq!(
+            lesson.source.as_ref().map(|source| source.path.as_str()),
+            Some("notes/matrices.md"),
+            "兼容位 = 首个引用"
+        );
+    }
+
+    /// 数组里任何一条不是采样文件都拒绝整条 op（不半写）：多引用不能有一条
+    /// 混过去。
+    #[test]
+    fn add_lesson_rejects_an_array_with_any_unsampled_reference() {
+        let mut draft = multi_source_draft();
+        draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+        ]);
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":["notes/vectors.md","notes/ghost.md"]}"#,
+        )]);
+        assert!(
+            report.rejected[0].reason.contains("'notes/ghost.md' is not a sampled file"),
+            "{}",
+            report.rejected[0].reason
+        );
+        assert!(
+            draft.lessons.iter().all(|lesson| lesson.key != "l1"),
+            "整条 op 拒绝：课时不落地"
+        );
+    }
+
+    /// 多引用上限（预算 40KB 的分摊）：超过 4 条的引用被拒绝——既不静默丢弃
+    /// 也不让引用清单无限膨胀。
+    #[test]
+    fn add_lesson_caps_the_source_list() {
+        let five: Vec<(String, String)> = (0..5)
+            .map(|index| (format!("notes/f{index}.md"), "# 文件".to_owned()))
+            .collect();
+        let mut draft = OutlineDraft::new(kb_brief(), five, None);
+        draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"T"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
+        ]);
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":["notes/f0.md","notes/f1.md","notes/f2.md","notes/f3.md","notes/f4.md"]}"#,
+        )]);
+        assert!(
+            report.rejected[0].reason.contains("too many sources"),
+            "{}",
+            report.rejected[0].reason
+        );
+    }
+
+    /// update_lesson 的 source 双语义（t4 评审补齐后仍是双语义）：数组替换
+    /// 整份清单、`null` 清空、缺省不动。
+    #[test]
+    fn update_lesson_replaces_the_whole_source_list() {
+        let mut draft = multi_source_draft();
+        draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+            op(
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","source":"notes/vectors.md"}"#,
+            ),
+        ]);
+        // 数组替换成两份引用。
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"update_lesson","key":"l1","source":["notes/vectors.md","notes/matrices.md"]}"#,
+        )]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        let lesson = draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap();
+        assert_eq!(lesson.sources.len(), 2);
+        // 缺省（不带 source 字段）不动。
+        draft.apply_ops(vec![op(r#"{"op":"update_lesson","key":"l1","purpose":"新目标"}"#)]);
+        assert_eq!(
+            draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap().sources.len(),
+            2,
+            "缺省 source 不动"
+        );
+        // `null` 清空整份清单。
+        draft.apply_ops(vec![op(r#"{"op":"update_lesson","key":"l1","source":null}"#)]);
+        assert!(
+            draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap().sources.is_empty(),
+            "source=null 清空全部引用"
+        );
+    }
+
+    /// 审计逐条复核（t4 评审补齐）：多引用课时里**每一条**悬空都是 danger，
+    /// 报告里点名到具体路径。
+    #[test]
+    fn audit_flags_every_unsampled_reference() {
+        let mut draft = build_complete_draft(kb_brief());
+        assert!(
+            !danger_kinds(&draft).contains(&"unknown_source"),
+            "夹具本身干净"
+        );
+        let lesson = draft
+            .lessons
+            .iter_mut()
+            .find(|lesson| lesson.key == "l1")
+            .unwrap();
+        lesson.sources.push("notes/ghost.md".to_owned());
+        draft.refresh_audit();
+        assert!(
+            danger_kinds(&draft).contains(&"unknown_source"),
+            "第二条悬空引用必须被点名: {:?}",
+            draft.findings
+        );
+        assert!(draft.audit_report().contains("notes/ghost.md"));
+    }
+
     #[test]
     fn remove_module_cascades_to_lessons() {
         let mut draft = build_complete_draft(kb_brief());
@@ -1245,7 +1464,7 @@ mod tests {
         assert!(report.rejected.is_empty(), "{:?}", report.rejected);
         let lesson = draft.lessons.iter().find(|l| l.key == "l1").unwrap();
         assert_eq!(lesson.purpose, "能手动计算点积");
-        assert!(lesson.source.is_none());
+        assert!(lesson.sources.is_empty(), "source=null 清空全部引用");
     }
 
     #[test]

@@ -80,6 +80,12 @@ pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
 /// 等分（每库保底 [`crate::generation::MULTI_KB_PER_BASE_MIN_FILES`]），5 库
 /// 时每库 8 文件仍有完整的结构预算；再多的库只会把每库采样压到无意义的
 /// 零头。超限 400（在请求面拒绝，不进生成）。
+///
+/// 三处同值的两个镜像（跨层无法共享一个常量，改动时三处同步）：
+/// agent 引擎 `crates/agent/nomi-agent/src/learning_tools.rs::MAX_COURSE_BASES`
+/// （工具层先拒）与前端 `ui/src/renderer/pages/learning/hooks/
+/// useCourseCreation.ts::MAX_COURSE_KNOWLEDGE_BASES`（超限可见报错、不静默
+/// 截断）；这里是权威面。
 pub const COURSE_MAX_KNOWLEDGE_BASES: usize = 5;
 
 /// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、
@@ -327,14 +333,32 @@ pub struct LessonPack {
     pub purpose: String,
     #[serde(default = "default_estimated_minutes")]
     pub estimated_minutes: i64,
+    /// 主来源（兼容位）：落库时写进既有的 `source_path/start/end` 三列，
+    /// 恒等于 [`LessonPack::sources`] 的首个。
     #[serde(default)]
     pub source: Option<SourceSpan>,
+    /// 课时的全部引用来源（t4 评审补齐）：位序即引用顺序，首个 = 主来源。
+    /// 空 = 只有兼容位 `source`（老形状导入），落库时归一。
+    #[serde(default)]
+    pub sources: Vec<SourceSpan>,
     #[serde(default)]
     pub activities: Vec<ActivityPack>,
     /// 分节正文（ADR-0002）。缺省为空 = 旧导入课程无分节，读取端回退整篇
     /// summary 渲染（双读）。
     #[serde(default)]
     pub sections: Vec<SectionPack>,
+}
+
+impl LessonPack {
+    /// 课时的全部引用来源（归一）：`sources` 为准，为空时用兼容位升成
+    /// 单元素列表——落库只读这一份清单。
+    pub fn cited_sources(&self) -> Vec<&SourceSpan> {
+        if self.sources.is_empty() {
+            self.source.iter().collect()
+        } else {
+            self.sources.iter().collect()
+        }
+    }
 }
 
 /// 课时内部节段类型（ADR-0002 首期 5 种；交互节暂缓，见 ADR 妥协清单）。
@@ -1659,7 +1683,12 @@ pub struct LessonView {
     pub position: i64,
     pub estimated_minutes: i64,
     pub generated: bool,
+    /// 主来源（兼容位）：恒等于 [`LessonView::sources`] 的首个；无引用为
+    /// `None`（描述流/老课时无来源）。
     pub source: Option<SourceSpan>,
+    /// 课时的全部引用来源（t4 评审补齐）：位序即引用顺序，首个 = 主来源；
+    /// 每条都带解析出的库归属（`kb_id`）。空 = 无引用（描述流）。
+    pub sources: Vec<SourceSpan>,
     pub status: LessonStatus,
     pub activities: Vec<ActivityView>,
     /// 分节正文（ADR-0002）。空 = 旧课时的单篇 summary（双读回退）。
