@@ -32,9 +32,19 @@ pub const LEARNING_GENERATE_COURSE_TOOL_NAME: &str = "learning_generate_course";
 /// generate tool so the agent can report progress without a per-call approval.
 pub const LEARNING_COURSE_STATUS_TOOL_NAME: &str = "learning_course_status";
 
-/// 一次建课最多接几个知识库（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES` 同一
-/// 口径（采样预算按库分摊）；工具层先拒，模型拿到可行动的报错。
+/// 一次建课最多接几个知识库（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES`
+///（`crates/backend/nomifun-learning/src/models.rs`）同一口径（采样预算按库
+/// 分摊）、与前端 `MAX_COURSE_KNOWLEDGE_BASES`（`ui/src/renderer/pages/
+/// learning/hooks/useCourseCreation.ts`）同值——三处跨层（agent 引擎 / 后端 /
+/// SPA）无法共享一个常量，改动时三处同步：工具层先拒（模型拿到可行动的
+/// 报错），后端 400 是权威，前端不静默截断。
 const MAX_COURSE_BASES: usize = 5;
+
+/// 工具描述里出现的上限文案：从常量派生（`up to 5` 之类的硬编码会与
+/// `MAX_COURSE_BASES` 漂移）。
+fn max_bases_hint() -> String {
+    format!("up to {MAX_COURSE_BASES}")
+}
 
 /// A model-issued course-generation request, resolved by the tool to one of
 /// the session's bound bases (or a free-text brief) before forwarding to the
@@ -175,17 +185,14 @@ impl LearningGenerateCourseTool {
     }
 }
 
-#[async_trait]
-impl Tool for LearningGenerateCourseTool {
-    fn name(&self) -> &str {
-        LEARNING_GENERATE_COURSE_TOOL_NAME
-    }
-
-    fn description(&self) -> &str {
+/// 工具描述（进程内构建一次）：上限文案从 [`MAX_COURSE_BASES`] 派生，
+/// 描述与拒收口径永远是同一个数。
+static SELF_DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
         "Start a background job that generates a learning course (modules, lessons, quizzes, \
          spaced-repetition concepts). The grounding source is EITHER a free-text course brief \
          (pass `description`) OR one or more mounted knowledge bases (pass `base`: a single name, \
-         or an array of names — up to 5 — when the course should draw on several libraries at \
+         or an array of names — {} — when the course should draw on several libraries at \
          once): with `description` no knowledge base is needed — write a dense brief (topic, \
          scope, learner level, what to cover) and the course is designed from it; with base(s) the \
          course is grounded in their markdown documents. ALWAYS pass `goal` when generating from \
@@ -203,7 +210,21 @@ impl Tool for LearningGenerateCourseTool {
          long-form document and exercises are generated only when the learner opens that lesson on \
          the Learning page. The job runs in the background, so this tool returns immediately with \
          a job_id — report progress by calling learning_course_status with it; the user can \
-         also follow or cancel the job on the Learning page."
+         also follow or cancel the job on the Learning page.",
+        max_bases_hint()
+    )
+});
+
+#[async_trait]
+impl Tool for LearningGenerateCourseTool {
+    fn name(&self) -> &str {
+        LEARNING_GENERATE_COURSE_TOOL_NAME
+    }
+
+    fn description(&self) -> &str {
+        // 上限文案从 `MAX_COURSE_BASES` 派生（`up to {n}`）——描述与拒收口径
+        // 同一个数，不会一处改了另一处还写着 5。
+        SELF_DESCRIPTION.as_str()
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -213,8 +234,9 @@ impl Tool for LearningGenerateCourseTool {
         } else {
             format!(
                 "Which knowledge base(s) to build the course from: one name or a JSON array of names \
-                 (max 5) when the course should draw on several libraries at once. Must be among: {}. \
+                 (max {}) when the course should draw on several libraries at once. Must be among: {}. \
                  Unused when description is passed.",
+                MAX_COURSE_BASES,
                 names.join(", ")
             )
         };
