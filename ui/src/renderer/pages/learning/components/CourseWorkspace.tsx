@@ -33,6 +33,7 @@ import {
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonBlock } from './LessonStudy';
+import { CourseSamplingLine } from './CourseSamplingLine';
 import { statusLabel } from '../utils';
 
 const { Title, Text, Paragraph } = Typography;
@@ -167,11 +168,15 @@ export function CourseWorkspace({
             </Button>
           )}
           {/* 多知识库（t4）：来源披露——课程由哪几个库生成（首个 = 主来源，
-              「知识来源」按钮指向它）；单库/旧课程不展示（采样披露无逐库条目） */}
+              「知识来源」按钮指向它）；单库/旧课程不展示（采样披露无逐库条目）。
+              分隔符随语言（zh-CN 顿号 / en-US 逗号），不写死中文标点。 */}
           {(course.sampling?.bases.length ?? 0) > 0 && (
             <Text type='secondary' className='text-12px'>
               {t('learning.courseSources', {
-                names: course.sampling?.bases.map((base) => base.name).join('、') ?? '',
+                names:
+                  course.sampling?.bases
+                    .map((base) => base.name)
+                    .join(t('learning.listSeparator')) ?? '',
               })}
             </Text>
           )}
@@ -191,7 +196,7 @@ export function CourseWorkspace({
                   </span>
                   {!course.sampling.goal_fallback && course.sampling.low_score_examples.length > 0 && (
                     <span className='text-12px'>
-                      {course.sampling.low_score_examples.join('、')}
+                      {course.sampling.low_score_examples.join(t('learning.listSeparator'))}
                       {course.sampling.low_score_files > course.sampling.low_score_examples.length
                         ? ' …'
                         : ''}
@@ -200,23 +205,7 @@ export function CourseWorkspace({
                 </div>
               }
             >
-              <Text type='secondary' className='cursor-help text-12px'>
-                {course.sampling.goal_fallback
-                  ? t('learning.samplingLineFallback', {
-                      sampled: course.sampling.sampled_files,
-                      total: course.sampling.total_files,
-                    })
-                  : t('learning.samplingLine', {
-                      sampled: course.sampling.sampled_files,
-                      total: course.sampling.total_files,
-                    })}
-                {course.sampling.coherence_files > 0
-                  ? ` · ${t('learning.samplingCoherence', { count: course.sampling.coherence_files })}`
-                  : ''}
-                {course.sampling.low_score_files > 0
-                  ? ` · ${t('learning.samplingLowScore', { count: course.sampling.low_score_files })}`
-                  : ''}
-              </Text>
+              <CourseSamplingLine sampling={course.sampling} className='cursor-help' />
             </Tooltip>
           )}
         </div>

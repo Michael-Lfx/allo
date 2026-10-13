@@ -163,10 +163,18 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         Message.warning(t('learning.goalRequired'));
         return;
       }
+      // 多知识库（t4）：列表整体提交（首个 = 主来源）；上限与服务端同口径
+      // （MAX_COURSE_KNOWLEDGE_BASES）——超限是**可见的错误**并阻止提交，
+      // 绝不静默截断（第 6 个选择被悄悄丢掉比报错更坏）；服务端 400 仍是
+      // 权威，这里只是让它在出发前就看得见。
+      if (selectedKnowledgeBaseIds.length > MAX_COURSE_KNOWLEDGE_BASES) {
+        Message.warning(
+          t('learning.kbSelectionTooMany', { count: MAX_COURSE_KNOWLEDGE_BASES })
+        );
+        return;
+      }
       await generateCourse({
-        // 多知识库（t4）：列表提交（首个 = 主来源）；上限与服务端同口径
-        // （MAX_COURSE_KNOWLEDGE_BASES = 5）。
-        knowledge_base_ids: selectedKnowledgeBaseIds.slice(0, MAX_COURSE_KNOWLEDGE_BASES),
+        knowledge_base_ids: selectedKnowledgeBaseIds,
         goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,

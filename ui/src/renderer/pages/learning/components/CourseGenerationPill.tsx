@@ -52,7 +52,9 @@ export function CourseGenerationPill({
             )}
             {sources.length > 0 && (
               <Text type='secondary' className='block truncate text-12px'>
-                {t('learning.courseSources', { names: sources.join('、') })}
+                {t('learning.courseSources', {
+                  names: sources.join(t('learning.listSeparator')),
+                })}
               </Text>
             )}
           </div>

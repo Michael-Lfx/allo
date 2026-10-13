@@ -8,6 +8,7 @@ import type {
 } from '@/common/adapter/ipcBridge';
 import type { CourseDetail } from '../types';
 import { deriveStep, summarizeTools } from '../model';
+import { CourseSamplingLine } from './CourseSamplingLine';
 
 const { Text, Title } = Typography;
 
@@ -87,10 +88,11 @@ export function CourseGenerationProgress({
         ))}
       </Steps>
 
-      {/* 多知识库（t4）：来源披露——课程从哪几个库生成（首个 = 主来源） */}
+      {/* 多知识库（t4）：来源披露——课程从哪几个库生成（首个 = 主来源）。
+          分隔符随语言（zh-CN 顿号 / en-US 逗号），不写死中文标点。 */}
       {sources.length > 0 && (
         <Text type='secondary' className='text-12px'>
-          {t('learning.courseSources', { names: sources.join('、') })}
+          {t('learning.courseSources', { names: sources.join(t('learning.listSeparator')) })}
         </Text>
       )}
 
@@ -203,26 +205,10 @@ export function CourseGenerationProgress({
                 {t('learning.genLessonsCount', { count: result.course.total_lessons })}
               </Text>
               {/* 采样披露（t2）：建课完成视图如实报出按目标采样了多少文件，
-                  目标与库无交集时明说退回默认顺序 */}
+                  目标与库无交集时明说退回默认顺序（工作区同一行、同一口径） */}
               {result.course.sampling && (
                 <div>
-                  <Text type='secondary' className='text-12px'>
-                    {result.course.sampling.goal_fallback
-                      ? t('learning.samplingLineFallback', {
-                          sampled: result.course.sampling.sampled_files,
-                          total: result.course.sampling.total_files,
-                        })
-                      : t('learning.samplingLine', {
-                          sampled: result.course.sampling.sampled_files,
-                          total: result.course.sampling.total_files,
-                        })}
-                    {result.course.sampling.coherence_files > 0
-                      ? ` · ${t('learning.samplingCoherence', { count: result.course.sampling.coherence_files })}`
-                      : ''}
-                    {result.course.sampling.low_score_files > 0
-                      ? ` · ${t('learning.samplingLowScore', { count: result.course.sampling.low_score_files })}`
-                      : ''}
-                  </Text>
+                  <CourseSamplingLine sampling={result.course.sampling} />
                 </div>
               )}
             </div>

@@ -24,6 +24,15 @@ export function formatReviewTime(value: number | null): string {
   return value === null ? '—' : new Date(value).toLocaleString();
 }
 
+/** 库 id → 库名（t4 来源披露共用；解析不到回退 id 本身——如实显示缺失，
+ * 不隐藏也不猜名）。生成视图与悬浮指示条两处共用，口径一份。 */
+export function knowledgeBaseNames(
+  ids: string[],
+  bases: { knowledge_base_id: string; name: string }[]
+): string[] {
+  return ids.map((id) => bases.find((base) => base.knowledge_base_id === id)?.name ?? id);
+}
+
 export function questionStateMeta(
   entry: QuestionEntry,
   t: (key: string) => string
