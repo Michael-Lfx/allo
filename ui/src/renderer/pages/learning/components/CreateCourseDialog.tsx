@@ -26,6 +26,7 @@ export function CreateCourseDialog({
   creationDescription,
   graphProficiency,
   graphBasis,
+  creationGoal,
   teachingStyle,
   onTeachingStyleChange,
   generation,
@@ -39,6 +40,7 @@ export function CreateCourseDialog({
   onGraphProficiencyChange,
   onGraphBasisChange,
   onConfirmGraphCreation,
+  onGoalChange,
   onRetry,
   onCancel,
   onStartLearning,
@@ -56,6 +58,8 @@ export function CreateCourseDialog({
   graphProficiency: string;
   /** 学习图课程的基础声明（可选）：缺省按纯零基础画地形 */
   graphBasis: string;
+  /** 用户目标（知识库流，t1）：整体文本即目标，课程名默认即该文本。 */
+  creationGoal: string;
   teachingStyle: TeachingStyle;
   onTeachingStyleChange: (style: TeachingStyle) => void;
   generation: CourseGenerationState | null;
@@ -69,6 +73,7 @@ export function CreateCourseDialog({
   onGraphProficiencyChange: (value: string) => void;
   onGraphBasisChange: (value: string) => void;
   onConfirmGraphCreation: () => void;
+  onGoalChange: (value: string) => void;
   onRetry: () => void;
   onCancel: () => void;
   onStartLearning: (courseId: string) => void;
@@ -121,6 +126,20 @@ export function CreateCourseDialog({
             <Tabs.TabPane key='base' title={t('learning.generateFromBase')} destroyOnHide={false}>
               <Paragraph className='mt-0 text-t-secondary'>{t('learning.generateHint')}</Paragraph>
               <div className='flex flex-col gap-16px'>
+                {/* 学习目标（t1）：整体文本即目标——简单时即课程名，复杂时是
+                    目标描述；课程标题默认即该文本，采样与大纲范围都以此为主索引 */}
+                <div>
+                  <div className='mb-6px font-500'>{t('learning.courseGoal')}</div>
+                  <Input.TextArea
+                    value={creationGoal}
+                    placeholder={t('learning.courseGoalPlaceholder')}
+                    onChange={onGoalChange}
+                    autoSize={{ minRows: 3, maxRows: 6 }}
+                  />
+                  <Text type='secondary' className='text-12px'>
+                    {t('learning.courseGoalHint')}
+                  </Text>
+                </div>
                 <div>
                   <div className='mb-6px font-500'>{t('learning.knowledgeBase')}</div>
                   <Select

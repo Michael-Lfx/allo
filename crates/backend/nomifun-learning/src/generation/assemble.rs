@@ -44,8 +44,15 @@ pub(crate) fn assemble_outline_pack(
                 blueprint.domain.clone()
             }
         });
+    // 课程名默认即目标文本（t1 裁决：不引入 LLM 派名）；无目标时沿用模型
+    // 自定的蓝图标题（旧路径零变化）。
+    let title = request
+        .goal_text()
+        .map(|goal| crate::models::goal_course_title(&goal))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| blueprint.title.clone());
     CoursePack {
-        title: blueprint.title.clone(),
+        title,
         description: blueprint.description.clone(),
         domain,
         // Absent for the description flow: no knowledge base backs the course.

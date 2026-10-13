@@ -58,6 +58,9 @@ impl LearningCourseSink for LiveLearningCourseSink {
             course_kind: CourseKind::Traditional,
             knowledge_base_id: req.kb_id,
             description: req.description,
+            // 目标（t1）：知识库流整体文本即目标；描述流下工具层已过滤为
+            // None（简报即目标）。
+            goal: req.goal,
             domain: req.domain,
             provider_id,
             model: req.model,

@@ -41,11 +41,16 @@ impl LearningService {
             .ok_or_else(|| {
                 AppError::Conflict("course outline generation is not configured".into())
             })?;
-        let scope_topic = match (&brief.description, &brief.knowledge_base) {
-            (Some(description), _) => {
+        // scope 分析的题目：目标优先（目标即课程的意图与范围锚点，t1），
+        // 缺省回退知识库名+描述或课程简报（旧路径零变化）。
+        let scope_topic = match (&brief.goal, &brief.description, &brief.knowledge_base) {
+            (Some(goal), _, _) if !goal.trim().is_empty() => {
+                goal.trim().chars().take(SCOPE_TOPIC_MAX_CHARS).collect::<String>()
+            }
+            (_, Some(description), _) => {
                 description.trim().chars().take(SCOPE_TOPIC_MAX_CHARS).collect::<String>()
             }
-            (_, Some(kb)) => {
+            (_, _, Some(kb)) => {
                 let mut topic = kb.name.trim().to_owned();
                 if !kb.description.trim().is_empty() {
                     topic.push_str("：");

@@ -192,6 +192,29 @@ export function CourseGenerationProgress({
                 {t('learning.genModulesCount', { count: result.modules.length })} ·{' '}
                 {t('learning.genLessonsCount', { count: result.course.total_lessons })}
               </Text>
+              {/* 采样披露（t2）：建课完成视图如实报出按目标采样了多少文件，
+                  目标与库无交集时明说退回默认顺序 */}
+              {result.course.sampling && (
+                <div>
+                  <Text type='secondary' className='text-12px'>
+                    {result.course.sampling.goal_fallback
+                      ? t('learning.samplingLineFallback', {
+                          sampled: result.course.sampling.sampled_files,
+                          total: result.course.sampling.total_files,
+                        })
+                      : t('learning.samplingLine', {
+                          sampled: result.course.sampling.sampled_files,
+                          total: result.course.sampling.total_files,
+                        })}
+                    {result.course.sampling.coherence_files > 0
+                      ? ` · ${t('learning.samplingCoherence', { count: result.course.sampling.coherence_files })}`
+                      : ''}
+                    {result.course.sampling.low_score_files > 0
+                      ? ` · ${t('learning.samplingLowScore', { count: result.course.sampling.low_score_files })}`
+                      : ''}
+                  </Text>
+                </div>
+              )}
             </div>
             <Button type='primary' onClick={() => onStartLearning(result.course.id)}>
               {t('learning.genStartLearning')}

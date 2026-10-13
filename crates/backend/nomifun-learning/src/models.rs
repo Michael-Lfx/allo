@@ -56,6 +56,46 @@ pub struct GenerateCourseRequest {
     /// 讲解风格（standard/socratic/feynman）；缺省 standard。
     #[serde(default)]
     pub teaching_style: Option<TeachingStyle>,
+    /// 用户目标（传统课程的知识库流，2026-10-13 裁决）：整体文本即目标——
+    /// 简单时即课程名称（课程名本身是高度抽象的目标），复杂时是目标描述/
+    /// 长说明，不做形态判断。旧直连客户端与 agent 旧调用不传，缺省时主题
+    /// 回退库名（不报错）。
+    #[serde(default)]
+    pub goal: Option<String>,
+}
+
+/// 用户目标的防御性限长（字符数）：整体文本即目标、要完整落库，因此只挡
+/// 滥用式的超长输入，不承担展示截断——课程标题的截断口径见
+/// [`goal_course_title`]。
+pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
+
+/// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、
+/// 去首尾空白，超过 [`COURSE_GOAL_TITLE_MAX_CHARS`] 字符时截断加省略号。
+/// 目标短时标题即目标全文（裁决：课程名默认即该文本，不引入 LLM 派名）。
+pub const COURSE_GOAL_TITLE_MAX_CHARS: usize = 60;
+
+/// 课程标题推导：目标文本 → 单行标题（折叠空白 + 限长）。空目标返回空串
+/// （调用方必须自行处理缺省回退），纯函数、确定性、可重放。
+pub fn goal_course_title(goal: &str) -> String {
+    let mut title = String::new();
+    let mut pending_space = false;
+    for ch in goal.trim().chars() {
+        if ch.is_whitespace() {
+            pending_space = !title.is_empty();
+            continue;
+        }
+        if pending_space {
+            title.push(' ');
+            pending_space = false;
+        }
+        title.push(ch);
+    }
+    if title.chars().count() > COURSE_GOAL_TITLE_MAX_CHARS {
+        let mut truncated: String = title.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
+        truncated.push('…');
+        return truncated;
+    }
+    title
 }
 
 /// 课程生成状态（后台指示条/取消入口的数据源，学习图生长与大纲流共用）。
@@ -69,6 +109,16 @@ pub struct LearningGraphGenerationStatus {
 }
 
 impl GenerateCourseRequest {
+    /// 归一后的用户目标（知识库流）：trim 后为空即 `None`（缺省回退库名），
+    /// 超长按 [`COURSE_GOAL_MAX_CHARS`] 截断。整体文本即目标，不做形态判断。
+    pub fn goal_text(&self) -> Option<String> {
+        let goal = self.goal.as_deref()?.trim();
+        if goal.is_empty() {
+            return None;
+        }
+        Some(goal.chars().take(COURSE_GOAL_MAX_CHARS).collect())
+    }
+
     /// Shared request validation for the synchronous generate endpoint and
     /// the agent tool sink: model fields come as a pair and exactly one of
     /// the two generation sources is chosen.
@@ -1240,6 +1290,25 @@ pub struct CourseSummary {
     pub completed_lessons: i64,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
+    /// 用户目标（t1）：传统课程的知识库流目标文本；旧课程/描述流为空即
+    /// `None`（列上是空串，语义为空）。
+    pub learning_goal: Option<String>,
+    /// 目标感知采样的披露（t2）：无目标路径/旧课程为 `None`。
+    pub sampling: Option<CourseSamplingView>,
+}
+
+/// 采样披露的对外视图（t2）：计数 + 低分未采样的少量示例。完整文件树只
+/// 在库里（诊断用），列表/详情响应不背全量路径。`goal_fallback` = 目标与库
+/// 无交集，采样退回默认顺序（披露不得冒充"按目标采样"）。
+#[derive(Debug, Clone, Serialize)]
+pub struct CourseSamplingView {
+    pub goal: Option<String>,
+    pub total_files: usize,
+    pub sampled_files: usize,
+    pub coherence_files: usize,
+    pub goal_fallback: bool,
+    pub low_score_files: usize,
+    pub low_score_examples: Vec<String>,
 }
 
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
@@ -1988,6 +2057,71 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub difficulty: Option<u8>,
+}
+
+#[cfg(test)]
+mod goal_tests {
+    //! 目标输入（t1）的归一化契约：整体文本即目标，缺省宽容、超长防御性
+    //! 截断；课程标题的截断是展示口径（单行 + 省略号），与落库全文分开。
+
+    use super::*;
+
+    fn request(goal: Option<&str>) -> GenerateCourseRequest {
+        GenerateCourseRequest {
+            knowledge_base_id: Some(
+                KnowledgeBaseId::parse("0190f5fe-7c00-7a00-8abc-000000000001").unwrap(),
+            ),
+            description: None,
+            domain: None,
+            provider_id: None,
+            model: None,
+            mode: CourseGenerationMode::OnDemand,
+            course_kind: CourseKind::Traditional,
+            teaching_style: None,
+            goal: goal.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn goal_text_trims_and_treats_blank_as_absent() {
+        assert_eq!(request(None).goal_text(), None);
+        assert_eq!(request(Some("   ")).goal_text(), None);
+        assert_eq!(
+            request(Some("  零基础学 Python 数据分析 ")).goal_text(),
+            Some("零基础学 Python 数据分析".to_owned())
+        );
+    }
+
+    #[test]
+    fn goal_text_keeps_multiline_text_and_bounds_length() {
+        let long_goal = "零基础学 Python 数据分析。".repeat(400);
+        let normalized = request(Some(&long_goal)).goal_text().unwrap();
+        assert_eq!(normalized.chars().count(), COURSE_GOAL_MAX_CHARS);
+
+        // 多行长目标：换行原样保留（落库全文），不做单行折叠。
+        let multiline = "目标：学会 Python 数据分析\n受众：零基础\n产出：能独立完成一份分析报告";
+        assert_eq!(request(Some(multiline)).goal_text().unwrap(), multiline);
+    }
+
+    #[test]
+    fn goal_absent_keeps_the_legacy_kb_flow_valid() {
+        // 旧客户端路径（无 goal）必须仍然合法：主题回退库名，不报错。
+        assert!(request(None).validate().is_ok());
+    }
+
+    #[test]
+    fn goal_course_title_collapses_to_one_line_and_truncates() {
+        assert_eq!(goal_course_title("零基础学 Python 数据分析"), "零基础学 Python 数据分析");
+        assert_eq!(
+            goal_course_title("  目标：学会数据分析\n\n  受众：零基础  "),
+            "目标：学会数据分析 受众：零基础"
+        );
+        let long = "零基础学 Python 数据分析".repeat(10);
+        let title = goal_course_title(&long);
+        let expected: String = long.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
+        assert_eq!(title, format!("{expected}…"));
+        assert_eq!(goal_course_title("   "), "");
+    }
 }
 
 #[cfg(test)]

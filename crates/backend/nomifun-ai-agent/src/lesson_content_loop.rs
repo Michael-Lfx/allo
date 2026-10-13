@@ -546,6 +546,11 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
             }
         }
         None => {
+            // 目标（t1）：传统课时的目标字段——有目标时先立方向锚点，让每
+            // 一节都服务于同一门课的意图；旧课程无目标，不出现此段。
+            if let Some(goal) = context.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+                text.push_str(&format!("课程目标（学习者要达成的整体目标）：{goal}\n"));
+            }
             text.push_str(&format!(
                 "模块：{}\n课时（{}/{}）：{}\n课时目标：{}\n",
                 context.module_title.trim(),
@@ -998,6 +1003,7 @@ mod tests {
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            goal: None,
             forbidden_concepts: String::new(),
         }
     }
@@ -1072,6 +1078,17 @@ mod tests {
 
         let plain = lesson_user_text(&lesson_context());
         assert!(!plain.contains("禁止使用的概念"), "{plain}");
+    }
+
+    /// 目标注入（t1）：传统课时带目标时，用户轮先立"课程目标"锚点；旧课程
+    /// （无目标）不出现该段——与旧路径逐字一致。
+    #[test]
+    fn lesson_user_text_embeds_the_course_goal_when_present() {
+        let mut context = lesson_context();
+        assert!(!lesson_user_text(&context).contains("课程目标"));
+        context.goal = Some("零基础学 Python 数据分析".into());
+        let text = lesson_user_text(&context);
+        assert!(text.contains("课程目标（学习者要达成的整体目标）：零基础学 Python 数据分析"), "{text}");
     }
 
     fn engine(service: Arc<LearningService>) -> LiveLessonContentAgentEngine {
