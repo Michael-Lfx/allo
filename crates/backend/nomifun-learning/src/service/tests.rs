@@ -3342,3 +3342,488 @@ async fn lesson_context_carries_the_course_goal() {
         .unwrap();
     assert!(engine.contexts.lock().unwrap()[1].goal.is_none());
 }
+
+// ── t3 课时写作接回知识库（实时检索 + 全文读取，快照降级为兜底） ─────────────
+
+/// t3 课时读库验收台：真实 `KnowledgeService`（managed 库落在 tempdir 上，
+/// 库根要活到用例结束——`TempDir` 一并返回）+ 课时生成服务（引擎/事件由用例
+/// 注入）。
+async fn grounding_test_service() -> (
+    LearningService,
+    Arc<KnowledgeService>,
+    tempfile::TempDir,
+    UserId,
+) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
+    let owner = UserId::parse(&owner_id).unwrap();
+    let knowledge = Arc::new(KnowledgeService::new(
+        Arc::new(nomifun_db::SqliteKnowledgeRepository::new(database.pool().clone())),
+        data_dir.path(),
+        nomifun_knowledge::KnowledgeEventEmitter::new(
+            Arc::new(NoopBroadcaster),
+            Arc::from(owner_id),
+        ),
+    ));
+    let service = LearningService::new(database.pool().clone());
+    service.set_generation_dependencies(knowledge.clone(), Arc::new(UnusedCompleter));
+    (service, knowledge, data_dir, owner)
+}
+
+/// 截获课时生成事件（t3 读数帧：命中数/扩读数/降级态）。
+#[derive(Default)]
+struct CapturingBroadcaster {
+    events: Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl nomifun_realtime::UserEventSink for CapturingBroadcaster {
+    fn send_to_user(&self, _user_id: &str, event: WebSocketMessage<serde_json::Value>) {
+        self.events.lock().unwrap().push((event.name, event.data));
+    }
+}
+
+/// 往 managed 库根写一个 markdown 文件（建目录、写内容）。
+fn write_kb_file(root: &str, rel: &str, content: &str) {
+    let path = std::path::PathBuf::from(root).join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, content).unwrap();
+}
+
+/// 按字节数截前缀（对齐字符边界）——模拟旧采样：建课时冻结的 8KB 文件头。
+fn prefix_bytes(text: &str, budget: usize) -> String {
+    let mut end = budget.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// 建一份「一模块一课时、source 指向库内文件」的 outline 课程：samples 是
+/// 快照里冻结的摘录（模拟建课时的采样结果）。`goal` 为空 = 旧课程形状。
+async fn import_kb_lesson_course(
+    service: &LearningService,
+    source_kb_id: &str,
+    source_path: &str,
+    samples: Vec<(String, String)>,
+    goal: &str,
+) -> CourseDetail {
+    let concept = ConceptPack {
+        key: "c1".into(),
+        title: "期权定义".into(),
+        description: String::new(),
+        prerequisites: Vec::new(),
+    };
+    let source = Some(SourceSpan {
+        path: source_path.into(),
+        start: None,
+        end: None,
+    });
+    let pack = CoursePack {
+        title: "期权入门".into(),
+        description: "d".into(),
+        domain: "finance".into(),
+        source_kb_id: Some(source_kb_id.parse().unwrap()),
+        version: 1,
+        concepts: vec![concept.clone()],
+        modules: vec![ModulePack {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![LessonPack {
+                title: "期权入门".into(),
+                summary: String::new(),
+                purpose: "理解期权的定义与权利义务".into(),
+                estimated_minutes: 10,
+                source: source.clone(),
+                concepts: vec!["c1".into()],
+                activities: Vec::new(),
+                sections: Vec::new(),
+            }],
+        }],
+        teaching_style: crate::models::TeachingStyle::Standard,
+    };
+    let blueprint = crate::generation::Blueprint {
+        title: "期权入门".into(),
+        description: "d".into(),
+        domain: "finance".into(),
+        version: 1,
+        concepts: vec![concept],
+        modules: vec![crate::generation::BlueprintModule {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![crate::generation::BlueprintLesson {
+                title: "期权入门".into(),
+                purpose: "理解期权的定义与权利义务".into(),
+                concepts: vec!["c1".into()],
+                source,
+            }],
+        }],
+    };
+    service
+        .import_course_outline(
+            pack,
+            OutlineSnapshot {
+                blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                samples_json: serde_json::to_string(&samples).unwrap(),
+                learning_goal: goal.to_owned(),
+                // 旧课程形状：无采样披露（目标词条集也无从持久化）。
+                samples_meta_json: None,
+            },
+        )
+        .await
+        .unwrap()
+}
+
+/// t3 验收钉子①（大文件中段的事实）：建课快照只有 8KB 前缀（中段事实不在
+/// 其中——"今天不可能"的现状），课时写作实时读全文后事实进入 grounding。
+#[tokio::test]
+async fn lesson_grounding_reads_the_full_source_past_the_snapshot_prefix() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    let filler = "这是一段与关键事实无关的填充内容，用于把关键段落推到大文件中段。\n\n";
+    let mut big = String::from("# 期权入门\n\n开头噪声标记：本节只讲名词解释。\n\n");
+    for _ in 0..400 {
+        big.push_str(filler);
+    }
+    big.push_str("## 权利义务不对称\n\n关键事实标记：买方持有权利、卖方承担义务。\n\n");
+    for _ in 0..400 {
+        big.push_str(filler);
+    }
+    assert!(big.len() > 8 * 1024, "fixture must exceed the old 8KB prefix");
+    write_kb_file(&base.base.root_path, "docs/期权入门.md", &big);
+    // 快照 = 建课时冻结的 8KB 前缀：中段事实确实不在其中（夹具自检）。
+    let snapshot_prefix = prefix_bytes(&big, 8 * 1024);
+    assert!(
+        !snapshot_prefix.contains("关键事实标记"),
+        "the fact must sit past 8KB"
+    );
+
+    let detail = import_kb_lesson_course(
+        &service,
+        &kb_id,
+        "docs/期权入门.md",
+        vec![("docs/期权入门.md".to_owned(), snapshot_prefix)],
+        "",
+    )
+    .await;
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+
+    let contexts = engine.contexts.lock().unwrap();
+    let grounding = contexts[0].grounding();
+    assert_eq!(grounding.len(), 1, "单一来源文件：只有 primary");
+    let primary = grounding[0];
+    assert_eq!(primary.role, ExcerptRole::Primary);
+    assert_eq!(primary.path, "docs/期权入门.md");
+    assert_eq!(primary.kb_id.as_deref(), Some(kb_id.as_str()));
+    assert!(
+        primary.text.contains("关键事实标记：买方持有权利、卖方承担义务"),
+        "8KB 之后的中段事实必须进入 grounding（全文读取 + 超预算按相关度选摘）"
+    );
+    assert!(
+        primary.text.contains("截断"),
+        "文件超过 primary 预算：截断在上下文里明示"
+    );
+    assert!(
+        primary.text.len() <= 24 * 1024,
+        "primary 守住 24KB 预算：{}",
+        primary.text.len()
+    );
+}
+
+/// t3 验收钉子②（陈旧快照解除）：建课后修改库文件 → 新生成的课时取到新内容
+/// （快照旧、库新，实时优先）；已生成课时不因后续库改动而变（幂等重入）。
+#[tokio::test]
+async fn lesson_grounding_prefers_the_live_file_over_the_stale_snapshot() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    write_kb_file(
+        &base.base.root_path,
+        "docs/期权入门.md",
+        "# 期权入门\n\n旧版事实标记：期权只有欧式一种。\n",
+    );
+    let detail = import_kb_lesson_course(
+        &service,
+        &kb_id,
+        "docs/期权入门.md",
+        vec![(
+            "docs/期权入门.md".to_owned(),
+            "旧版事实标记：期权只有欧式一种。".to_owned(),
+        )],
+        "",
+    )
+    .await;
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    // 建课后修改知识库文件：课程行的快照仍是旧内容。
+    write_kb_file(
+        &base.base.root_path,
+        "docs/期权入门.md",
+        "# 期权入门\n\n新版事实标记：场内既有欧式也有美式期权。\n",
+    );
+
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+    {
+        let contexts = engine.contexts.lock().unwrap();
+        let grounding = contexts[0].grounding();
+        assert!(grounding[0].text.contains("新版事实标记"), "实时读取优先于快照");
+        assert!(
+            !grounding[0].text.contains("旧版事实标记"),
+            "旧快照内容不再进 grounding"
+        );
+    }
+    // 已生成课时不变：第二次调用是幂等重入（不再驱动引擎、内容不刷新）。
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.contexts.lock().unwrap().len(),
+        1,
+        "内容已生成的课时不因库改动而重新生成"
+    );
+}
+
+/// t3 验收钉子③（锚定专项）：检索命中散落多个文件时，课时引用的主 source
+/// 不被替换；扩读片段带库+文件（+命中章节）归属，可溯源。
+#[tokio::test]
+async fn lesson_grounding_keeps_the_cited_source_and_traces_supplements() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    write_kb_file(
+        &base.base.root_path,
+        "docs/期权入门.md",
+        "# 期权入门\n\n主线事实标记：期权的价值随标的价格变化。\n",
+    );
+    // 两个强相关旁支文件：检索命中散落多文件，主 source 必须留在 primary。
+    write_kb_file(
+        &base.base.root_path,
+        "notes/期权基础.md",
+        "# 期权基础\n\n补充事实标记甲：权利金是期权的价格。\n",
+    );
+    write_kb_file(
+        &base.base.root_path,
+        "notes/期权策略.md",
+        "# 期权策略\n\n补充事实标记乙：牛市价差由买低卖高构成。\n",
+    );
+    let detail = import_kb_lesson_course(
+        &service,
+        &kb_id,
+        "docs/期权入门.md",
+        vec![(
+            "docs/期权入门.md".to_owned(),
+            "旧快照标记：建课时冻结的摘录。".to_owned(),
+        )],
+        "",
+    )
+    .await;
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+
+    let contexts = engine.contexts.lock().unwrap();
+    let grounding = contexts[0].grounding();
+    let primary = grounding
+        .iter()
+        .find(|excerpt| excerpt.role == ExcerptRole::Primary)
+        .expect("primary 恒在");
+    assert_eq!(primary.path, "docs/期权入门.md", "主 source 不被检索结果替换");
+    assert!(
+        primary.text.contains("主线事实标记"),
+        "primary 是主 source 的全文"
+    );
+    let supplements: Vec<_> = grounding
+        .iter()
+        .filter(|excerpt| excerpt.role == ExcerptRole::Supplement)
+        .collect();
+    let supplement_paths: Vec<&str> = supplements
+        .iter()
+        .map(|excerpt| excerpt.path.as_str())
+        .collect();
+    assert!(
+        supplement_paths.contains(&"notes/期权基础.md"),
+        "命中扩读进补充片段：{supplement_paths:?}"
+    );
+    assert!(
+        supplement_paths.contains(&"notes/期权策略.md"),
+        "命中散落多文件都作补充：{supplement_paths:?}"
+    );
+    for supplement in &supplements {
+        // 可溯源：库 + 文件（+ 命中章节）。
+        assert_eq!(supplement.kb_id.as_deref(), Some(kb_id.as_str()));
+        let provenance = supplement.provenance_label();
+        assert!(provenance.contains("金融笔记"), "{provenance}");
+        assert!(provenance.contains(&supplement.path), "{provenance}");
+        assert!(
+            provenance.contains("章节"),
+            "命中章节随片段给出：{provenance}"
+        );
+        assert!(
+            supplement.text.contains("补充事实标记"),
+            "补充片段带全文：{}",
+            supplement.path
+        );
+    }
+    // 主 source 自己命中时不做补充（不重复占用预算）。
+    assert!(
+        !supplement_paths.contains(&"docs/期权入门.md"),
+        "primary 不重复出现为补充片段"
+    );
+}
+
+/// t3 验收钉子④（快照兜底 + 披露降级）：源库不可达（库根被删）→ 课时仍可
+/// 生成，primary 回到快照摘录，读数帧如实披露降级。
+#[tokio::test]
+async fn lesson_grounding_falls_back_to_the_snapshot_when_the_base_is_gone() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    write_kb_file(
+        &base.base.root_path,
+        "docs/期权入门.md",
+        "# 期权入门\n\n库内事实标记：这条消息随库一起消失。\n",
+    );
+    let detail = import_kb_lesson_course(
+        &service,
+        &kb_id,
+        "docs/期权入门.md",
+        vec![(
+            "docs/期权入门.md".to_owned(),
+            "快照摘录标记：建课时冻结的摘录。".to_owned(),
+        )],
+        "",
+    )
+    .await;
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    // 源库不可达：整个库根目录消失（本地盘被拔、目录被删一类）。
+    std::fs::remove_dir_all(&base.base.root_path).unwrap();
+
+    let events = Arc::new(CapturingBroadcaster::default());
+    service.set_event_sink(LearningEventEmitter::new(
+        events.clone(),
+        Arc::from(user_id.as_str()),
+    ));
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+
+    let contexts = engine.contexts.lock().unwrap();
+    let grounding = contexts[0].grounding();
+    assert_eq!(grounding.len(), 1, "库不可达：只有快照兜底片段");
+    assert_eq!(grounding[0].role, ExcerptRole::Primary);
+    assert!(
+        grounding[0].text.contains("快照摘录标记"),
+        "快照摘录成为 primary（现状能力保留）"
+    );
+    // 读数帧（票面「读数」项）：命中数/扩读数 + 降级披露。
+    let events = events.events.lock().unwrap();
+    let frame = events
+        .iter()
+        .find(|(name, payload)| {
+            name == "learning.lesson-generation" && payload["phase"] == "grounding"
+        })
+        .expect("grounding 读数帧必须发出");
+    assert_eq!(frame.1["primary_live"], serde_json::json!(false));
+    assert_eq!(frame.1["degraded"], serde_json::json!(true));
+    assert_eq!(frame.1["supplements"], serde_json::json!(0));
+}
+
+/// t3 验收钉子⑤（老课程零回归）：无目标、无采样披露、旧快照形状的老课程
+/// 照常生成——查询词来自课时标题/purpose（目标词条集缺省为空），primary 取
+/// 实时全文，相关旁支文件仍作补充；旧 samples_json 形状原样可读。
+#[tokio::test]
+async fn legacy_course_without_goal_still_generates_from_title_purpose_retrieval() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    write_kb_file(
+        &base.base.root_path,
+        "docs/期权入门.md",
+        "# 期权入门\n\n源文件全文标记：期权是标准化合约。\n",
+    );
+    write_kb_file(
+        &base.base.root_path,
+        "notes/期权杂记.md",
+        "# 期权杂记\n\n旁支事实标记：期权可以组合成价差。\n",
+    );
+    let detail = import_kb_lesson_course(
+        &service,
+        &kb_id,
+        "docs/期权入门.md",
+        vec![(
+            "docs/期权入门.md".to_owned(),
+            "旧快照标记：建课时冻结的摘录。".to_owned(),
+        )],
+        "",
+    )
+    .await;
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+
+    let contexts = engine.contexts.lock().unwrap();
+    let context = &contexts[0];
+    assert!(context.goal.is_none(), "旧课程没有目标");
+    let grounding = context.grounding();
+    assert_eq!(grounding[0].role, ExcerptRole::Primary);
+    assert!(
+        grounding[0].text.contains("源文件全文标记"),
+        "实时全文仍是 primary"
+    );
+    assert!(
+        grounding
+            .iter()
+            .any(|excerpt| excerpt.path == "notes/期权杂记.md"),
+        "无目标也按标题/purpose 检索扩读"
+    );
+}
