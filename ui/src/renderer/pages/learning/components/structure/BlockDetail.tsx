@@ -1,4 +1,5 @@
 import { Empty, Tag, Typography } from '@arco-design/web-react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockView, StructureView } from '../../types';
 import { buildGroupPalette } from './palette';
@@ -8,6 +9,8 @@ const { Text } = Typography;
 /**
  * 结构块详情（投影非权威标注收敛到详情层）：五键结构位 + 所在主干/阶段 +
  * 依赖层 + 关联关系（三型边，双向列出）+ 固定文案。点图上的块节点弹出。
+ * 块 stage 是契约闭词表中文字面（入门/进阶/高级）——展示走 i18n 映射，
+ * 不直出（en-US 红线）。
  */
 export function BlockDetail({
   block,
@@ -19,10 +22,23 @@ export function BlockDetail({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const colorFor = buildGroupPalette(structure.spines.map((spine) => spine.name));
+  const colorFor = useMemo(
+    () => buildGroupPalette(structure.spines.map((spine) => spine.name)),
+    [structure.spines]
+  );
   const relations = structure.edges.filter(
     (edge) => edge.source === block.name || edge.target === block.name
   );
+  const stageLabel = (stage: BlockView['stage']) => {
+    switch (stage) {
+      case '入门':
+        return t('learningGraphStructStage_entry');
+      case '进阶':
+        return t('learningGraphStructStage_intermediate');
+      default:
+        return t('learningGraphStructStage_advanced');
+    }
+  };
   const relationLabel = (type: string) => {
     switch (type) {
       case 'assumes':
@@ -49,7 +65,7 @@ export function BlockDetail({
           {block.spine}
         </Tag>
         <Tag size='small' className='!mx-0'>
-          {block.stage}
+          {stageLabel(block.stage)}
         </Tag>
         <Text type='secondary' className='text-11px'>
           {t('learningGraphStructLayer', { layer: block.layer })}

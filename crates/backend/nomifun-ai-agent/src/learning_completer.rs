@@ -192,6 +192,7 @@ impl LearningCompleter for LiveLearningCompleter {
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let (provider_id, model) = self.resolve_model(model_override).await?;
         let cfg = self.config_for(&provider_id, &model).await?;
@@ -201,6 +202,7 @@ impl LearningCompleter for LiveLearningCompleter {
             vec![user_message(user)],
             max_tokens,
             true,
+            temperature,
         )
         .await
     }
@@ -216,6 +218,7 @@ impl LearningCompleter for LiveLearningCompleter {
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let (provider_id, model) = self.resolve_model(model_override).await?;
         let cfg = self.config_for(&provider_id, &model).await?;
@@ -227,6 +230,7 @@ impl LearningCompleter for LiveLearningCompleter {
                 vec![user_message(user)],
                 max_tokens,
                 false,
+                temperature,
             )
             .await
             {

@@ -359,7 +359,7 @@ pub enum Command {
     },
 }
 
-/// `learning-smoke` 的子命令（s1 四档中的前两档；grow/loop 随教练批迁移落地）。
+/// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop）。
 #[derive(Debug, Clone, Subcommand)]
 pub enum LearningSmokeCommand {
     /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +

@@ -383,8 +383,8 @@ impl LearningService {
         Ok(learning_nodes == 0)
     }
 
-    /// 一轮生长：上下文组装 → 教练单次起草 → 结构门 →（打回重裁 ×1）→
-    /// AI 概念评审 →（打回重裁 ×1）→ 事务落库（铸名/节点/概念网/批次）。
+    /// 一轮生长：上下文组装 → 教练起草/重裁 → 结构门 →（打回重裁，≤3 轮）→
+    /// AI 概念评审 →（打回同上）→ 事务落库（铸名/节点/概念网/批次）。
     /// 全程经 generation_registry 暴露状态、可取消；结束发 WS 终态帧。
     async fn run_growth(
         &self,
@@ -407,7 +407,7 @@ impl LearningService {
             "growth_started",
             serde_json::json!({
                 "phase": "started",
-                "text": "教练正在阅读罗盘与花名册，起草本批节点…",
+                "text": "教练正在阅读结构参考与花名册，起草本批节点…",
             }),
         );
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
