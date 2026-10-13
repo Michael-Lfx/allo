@@ -25,13 +25,30 @@
             "ICT",
             "Trading course",
             Some("trading"),
+            None,
             &[("lessons/liquidity.md".into(), "# Liquidity\nText".into())],
         );
         assert!(prompt.contains("--- FILE: lessons/liquidity.md ---"));
         assert!(prompt.contains("Requested domain label: trading"));
         assert!(prompt.contains("Course size is yours to decide"));
+        assert!(!prompt.contains("Learner goal"), "no goal → no goal block");
         assert!(BLUEPRINT_SYSTEM.contains("untrusted source material"));
         assert!(BLUEPRINT_SYSTEM.contains("Never invent paths"));
+    }
+
+    /// t1：知识库流带目标时，蓝图提示词把目标文本作为方向锚点与标题口径
+    /// 交给模型（整体文本即目标）。
+    #[test]
+    fn blueprint_prompt_carries_the_learner_goal() {
+        let prompt = build_blueprint_prompt(
+            "ICT",
+            "Trading course",
+            None,
+            Some("零基础学 Python 数据分析"),
+            &[("a.md".into(), "# A".into())],
+        );
+        assert!(prompt.contains("Learner goal"), "{prompt}");
+        assert!(prompt.contains("零基础学 Python 数据分析"), "{prompt}");
     }
 
     #[test]
@@ -408,6 +425,7 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
+            goal: None,
         };
         assert_eq!(request.knowledge_base_id, Some(id));
     }
@@ -853,4 +871,35 @@ fn section_rewrite_prompt_carries_learner_feedback() {
         ComplexityTier::Mid, Some("   "),
     );
     assert!(!blank.contains("学习者修改意见"));
+}
+
+/// t1：目标即课程名——知识库流带目标时，装配出的课程包标题是目标文本
+/// （折叠单行 + 限长），而不是模型的自由命名；无目标时保持模型标题。
+#[test]
+fn assemble_outline_pack_uses_goal_as_course_title() {
+    let blueprint = |title: &str| Blueprint {
+        title: title.into(),
+        description: "d".into(),
+        domain: "general".into(),
+        version: 1,
+        concepts: Vec::new(),
+        modules: Vec::new(),
+    };
+    let request = |goal: Option<&str>| GenerateCourseRequest {
+        course_kind: crate::models::CourseKind::Traditional,
+        teaching_style: None,
+        knowledge_base_id: Some(KnowledgeBaseId::new()),
+        description: None,
+        domain: None,
+        provider_id: None,
+        model: None,
+        mode: crate::models::CourseGenerationMode::OnDemand,
+        goal: goal.map(ToOwned::to_owned),
+    };
+
+    let pack = assemble_outline_pack(&blueprint("模型自定名"), &request(Some("零基础学 Python 数据分析")));
+    assert_eq!(pack.title, "零基础学 Python 数据分析");
+
+    let legacy = assemble_outline_pack(&blueprint("模型自定名"), &request(None));
+    assert_eq!(legacy.title, "模型自定名");
 }

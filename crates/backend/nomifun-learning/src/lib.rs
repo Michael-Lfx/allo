@@ -27,7 +27,7 @@ pub use lesson_draft::{
     LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 
-pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput};
+pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure};
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::structure_contract::{

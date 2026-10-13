@@ -403,9 +403,18 @@ fn audit_report(
 
 /// The generation loop's user turn: the brief's grounding. The kb flow names
 /// the sampled corpus and points at `co_read`; the description flow hands
-/// over the brief text alone.
+/// over the brief text alone. The learner goal (t1) rides on top of both —
+/// on the kb flow it leads the brief and states the fixed course title
+/// (课程名默认即目标文本，不引入 LLM 派名). The sampling disclosure (t2)
+/// reports the sampled/total counts honestly.
 fn brief_user_text(brief: &OutlineBrief) -> String {
     let mut text = String::new();
+    if let Some(goal) = brief.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        text.push_str(&format!(
+            "学习者目标（课程标题即此文本，不要另起标题；整体文本即目标，简单时就是课程名，\
+             复杂时是目标描述——按它设计课程的范围与深浅）：\n{goal}\n"
+        ));
+    }
     match (&brief.description, &brief.knowledge_base) {
         (Some(description), _) => {
             text.push_str("课程简报：\n");
@@ -418,6 +427,11 @@ fn brief_user_text(brief: &OutlineBrief) -> String {
                 kb.name.trim(),
                 kb.description.trim()
             ));
+            if let Some(sampling) = &brief.sampling {
+                // 如实披露：采样按目标相关度选入，未采入的（低分）文件不在
+                // co_read 清单里，不要引用其路径。
+                text.push_str(&format!("{}\n", sampling.brief_line()));
+            }
             text.push_str(
                 "该库的 markdown 文档已采样：co_start 会返回路径清单，用 co_read 按路径阅读。\n",
             );
@@ -748,6 +762,8 @@ mod tests {
             }),
             samples: vec![("docs/basics.md".into(), "期权的定义……".into())],
             domain: Some("trading".into()),
+            goal: None,
+            sampling: None,
         }
     }
 
@@ -757,7 +773,44 @@ mod tests {
             knowledge_base: None,
             samples: Vec::new(),
             domain: None,
+            goal: None,
+            sampling: None,
         }
+    }
+
+    /// t1/t2：目标进简报（标题口径），采样披露如实报数；无目标/无披露时
+    /// 简报与旧路径逐字一致。
+    #[test]
+    fn brief_user_text_carries_goal_and_sampling_disclosure() {
+        let mut brief = kb_brief();
+        let legacy = brief_user_text(&brief);
+        assert!(!legacy.contains("学习者目标"), "{legacy}");
+        assert!(!legacy.contains("已按目标采样"), "{legacy}");
+
+        brief.goal = Some("  零基础学 Python 数据分析  ".into());
+        brief.sampling = Some(nomifun_learning::SampleDisclosure {
+            goal: brief.goal.clone(),
+            total_files: 12,
+            sampled_files: 7,
+            coherence_files: 2,
+            goal_fallback: false,
+            tree: vec!["a.md".into()],
+            low_score_files: vec!["x.md".into(), "y.md".into()],
+        });
+        let text = brief_user_text(&brief);
+        assert!(text.contains("零基础学 Python 数据分析"), "{text}");
+        assert!(text.contains("课程标题即此文本"), "{text}");
+        assert!(text.contains("已按目标采样 7/12 个文件"), "{text}");
+        assert!(text.contains("连贯补入 2 个"), "{text}");
+        assert!(text.contains("2 个低分文件未采样"), "{text}");
+
+        // 目标与库无交集时如实退回：简报不得冒充"按目标采样"。
+        if let Some(sampling) = brief.sampling.as_mut() {
+            sampling.goal_fallback = true;
+        }
+        let fallback = brief_user_text(&brief);
+        assert!(fallback.contains("已按默认顺序采样 7/12 个文件"), "{fallback}");
+        assert!(!fallback.contains("已按目标采样"), "{fallback}");
     }
 
     fn engine(service: Arc<LearningService>) -> LiveCourseOutlineAgentEngine {

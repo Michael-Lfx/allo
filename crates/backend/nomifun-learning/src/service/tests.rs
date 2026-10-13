@@ -78,6 +78,7 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
+            goal: None,
         }
     }
 
@@ -272,8 +273,12 @@ teaching_style: crate::models::TeachingStyle::Standard,
         let detail = service
             .import_course_outline(
                 pack,
-                serde_json::to_string(&blueprint).unwrap(),
-                serde_json::to_string(&samples).unwrap(),
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: serde_json::to_string(&samples).unwrap(),
+                    learning_goal: String::new(),
+                    samples_meta_json: None,
+                },
             )
             .await
             .unwrap();
@@ -3059,4 +3064,281 @@ async fn growth_auto_triggers_on_lesson_completion() {
     .unwrap();
     assert_eq!(status, "applied");
     assert_eq!(note, "完成触发的补货批");
+/// 课程大纲引擎的测试替身（t1）：只记录收到的简报，返回固定的最小蓝图。
+struct RecordingOutlineEngine {
+    briefs: Mutex<Vec<crate::course_outline::OutlineBrief>>,
+}
+
+#[async_trait::async_trait]
+impl crate::course_outline::CourseOutlineAgentEngine for RecordingOutlineEngine {
+    async fn generate(
+        &self,
+        brief: &crate::course_outline::OutlineBrief,
+        _model_override: Option<(&str, &str)>,
+    ) -> Result<crate::generation::Blueprint, nomifun_common::AppError> {
+        self.briefs.lock().unwrap().push(brief.clone());
+        Ok(crate::generation::Blueprint {
+            title: "模型自定名".into(),
+            description: "d".into(),
+            domain: "general".into(),
+            version: 1,
+            concepts: vec![ConceptPack {
+                key: "a".into(),
+                title: "A".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
+            modules: vec![crate::generation::BlueprintModule {
+                title: "M".into(),
+                description: String::new(),
+                lessons: vec![crate::generation::BlueprintLesson {
+                    title: "L".into(),
+                    purpose: "P".into(),
+                    concepts: vec!["a".into()],
+                    source: None,
+                }],
+            }],
+        })
+    }
+}
+
+/// 知识库流的目标输入（t1）+ 目标感知采样（t2）：带目标时──归一目标进简报
+/// （进快照与下游上下文）、课程标题即目标文本、learning_goal 列落库、采样
+/// 按目标相关度选入并留下披露快照；不带目标时（旧客户端）行为与现状完全
+/// 一致：主题回退库名、标题是模型蓝图标题、目标列为空、无采样披露。
+#[tokio::test]
+async fn kb_goal_flows_into_brief_title_and_course_row() {
+    let (service, knowledge_service, owner_id) = job_test_service().await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    let base = knowledge_service
+        .quick_create_base(Some("Math"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id: nomifun_common::KnowledgeBaseId = base.base.knowledge_base_id.parse().unwrap();
+    let root = knowledge_service
+        .content_root_for_base(kb_id.as_str())
+        .await
+        .unwrap();
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    std::fs::create_dir_all(root.join("misc")).unwrap();
+    // 与目标无关的文件放在另一个目录：既不入选相关集合、也不在连贯预算的
+    // 同目录兄弟范围内——低分未采清单因此有素材。
+    std::fs::write(root.join("misc/a.md"), "# A\n正文").unwrap();
+    // 目标相关文件与同目录兄弟各一份：相关度选入 + 连贯补入两条规则都上榜。
+    std::fs::write(
+        root.join("notes/python-数据分析.md"),
+        "# Python 数据分析\n用 pandas 做分组聚合。",
+    )
+    .unwrap();
+    std::fs::write(root.join("notes/附录.md"), "# 附录\n常见问题与术语表。").unwrap();
+
+    let request = |goal: Option<&str>| GenerateCourseRequest {
+        course_kind: crate::models::CourseKind::Traditional,
+        teaching_style: None,
+        knowledge_base_id: Some(kb_id.clone()),
+        description: None,
+        domain: None,
+        provider_id: None,
+        model: None,
+        mode: crate::models::CourseGenerationMode::OnDemand,
+        goal: goal.map(ToOwned::to_owned),
+    };
+
+    let with_goal = service
+        .generate_course(&owner_id, request(Some("  零基础学 Python 数据分析 ")))
+        .await
+        .unwrap();
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    assert_eq!(brief.goal.as_deref(), Some("零基础学 Python 数据分析"));
+    assert_eq!(with_goal.course.title, "零基础学 Python 数据分析");
+    assert_eq!(
+        with_goal.course.learning_goal.as_deref(),
+        Some("零基础学 Python 数据分析")
+    );
+    let sampled: Vec<&str> = brief.samples.iter().map(|(path, _)| path.as_str()).collect();
+    assert_eq!(
+        sampled,
+        vec!["notes/python-数据分析.md", "notes/附录.md"],
+        "相关文件入样 + 同目录兄弟靠连贯预算补入（清单仍按字节序，与旧采样同尺）"
+    );
+    let sampling = brief.sampling.clone().expect("goal run discloses sampling");
+    assert!(!sampling.goal_fallback);
+    assert_eq!(sampling.total_files, 3);
+    assert_eq!(sampling.sampled_files, 2);
+    assert_eq!(sampling.coherence_files, 1, "附录.md 因同目录兄弟补入");
+    assert_eq!(sampling.low_score_files, vec!["misc/a.md".to_owned()]);
+    // 详情 DTO 同步暴露披露与目标（TS 镜像同形状）。
+    let view = with_goal.course.sampling.clone().expect("course summary carries the disclosure");
+    assert_eq!(view.sampled_files, 2);
+    assert_eq!(view.total_files, 3);
+    assert_eq!(view.coherence_files, 1);
+    assert_eq!(view.low_score_examples, vec!["misc/a.md".to_owned()]);
+    assert!(!view.goal_fallback);
+
+    let legacy = service
+        .generate_course(&owner_id, request(None))
+        .await
+        .unwrap();
+    assert_eq!(legacy.course.title, "模型自定名");
+    assert!(legacy.course.learning_goal.is_none());
+    assert!(legacy.course.sampling.is_none(), "旧路径不产生采样披露");
+    let legacy_brief = engine.briefs.lock().unwrap()[1].clone();
+    assert_eq!(
+        legacy_brief.samples.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
+        vec!["misc/a.md", "notes/python-数据分析.md", "notes/附录.md"],
+        "无目标回退字母序全采（旧行为）"
+    );
+}
+
+/// 目标与库无交集（t2）：生成照常成功（退回默认采样），披露如实标注
+/// fallback——目标措辞与库内容不一致时不能连课都建不出来。
+#[tokio::test]
+async fn kb_goal_without_any_match_falls_back_and_still_generates() {
+    let (service, knowledge_service, owner_id) = job_test_service().await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    let base = knowledge_service
+        .quick_create_base(Some("Trading"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id: nomifun_common::KnowledgeBaseId = base.base.knowledge_base_id.parse().unwrap();
+    let root = knowledge_service
+        .content_root_for_base(kb_id.as_str())
+        .await
+        .unwrap();
+    std::fs::write(root.join("期权入门.md"), "# 期权入门\n认购与认沽的基本概念。").unwrap();
+
+    let detail = service
+        .generate_course(
+            &owner_id,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::Traditional,
+                teaching_style: None,
+                knowledge_base_id: Some(kb_id.clone()),
+                description: None,
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: Some("零基础学 Python 数据分析".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.course.total_lessons, 1, "生成照常完成");
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    assert_eq!(
+        brief.samples.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
+        vec!["期权入门.md"],
+        "退回默认字母序采样"
+    );
+    let sampling = brief.sampling.expect("fallback still discloses");
+    assert!(sampling.goal_fallback);
+    assert!(sampling.brief_line().contains("已按默认顺序采样 1/1 个文件"));
+}
+
+/// 目标进课时生成上下文（t1）：传统课时的目标从课程行 learning_goal 读出，
+/// 预渲染进 LessonGenerationContext（既有空位）；旧课程（无目标）恒为 None。
+#[tokio::test]
+async fn lesson_context_carries_the_course_goal() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let concept = |key: &str| ConceptPack {
+        key: key.into(),
+        title: key.to_uppercase(),
+        description: String::new(),
+        prerequisites: Vec::new(),
+    };
+    let lesson = |title: &str, concept: &str| LessonPack {
+        title: title.into(),
+        summary: String::new(),
+        purpose: "目标一".into(),
+        estimated_minutes: 10,
+        source: None,
+        concepts: vec![concept.into()],
+        activities: Vec::new(),
+        sections: Vec::new(),
+    };
+    let pack = |title: &str| CoursePack {
+        title: title.into(),
+        description: "d".into(),
+        domain: "math".into(),
+        source_kb_id: None,
+        version: 1,
+        concepts: vec![concept("a")],
+        modules: vec![ModulePack {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![lesson("第一课", "a")],
+        }],
+        teaching_style: crate::models::TeachingStyle::Standard,
+    };
+    let blueprint = crate::generation::Blueprint {
+        title: "目标课程".into(),
+        description: "d".into(),
+        domain: "math".into(),
+        version: 1,
+        concepts: vec![concept("a")],
+        modules: vec![crate::generation::BlueprintModule {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![crate::generation::BlueprintLesson {
+                title: "第一课".into(),
+                purpose: "目标一".into(),
+                concepts: vec!["a".into()],
+                source: None,
+            }],
+        }],
+    };
+    let import = |service: &LearningService, learning_goal: &str| {
+        let pack = pack("目标课程");
+        let blueprint = blueprint.clone();
+        let goal = learning_goal.to_owned();
+        let service = service.clone();
+        async move {
+            service
+                .import_course_outline(
+                    pack,
+                    OutlineSnapshot {
+                        blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                        samples_json: "[]".to_owned(),
+                        learning_goal: goal,
+                        samples_meta_json: None,
+                    },
+                )
+                .await
+                .unwrap()
+        }
+    };
+
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+
+    let with_goal = import(&service, "零基础学 Python 数据分析").await;
+    let lesson_id = with_goal.modules[0].lessons[0].id.clone();
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.contexts.lock().unwrap()[0].goal.as_deref(),
+        Some("零基础学 Python 数据分析")
+    );
+
+    let legacy = import(&service, "").await;
+    let lesson_id = legacy.modules[0].lessons[0].id.clone();
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+    assert!(engine.contexts.lock().unwrap()[1].goal.is_none());
 }

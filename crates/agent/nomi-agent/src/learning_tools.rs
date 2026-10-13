@@ -45,6 +45,13 @@ pub struct CourseGenerationRequest {
     pub kb_id: Option<KnowledgeBaseId>,
     /// description flow: the free-text course brief (the whole grounding).
     pub description: Option<String>,
+    /// kb flow: the learner goal (traditional course, 2026-10-13). The whole
+    /// text IS the goal — "零基础学 Python 数据分析" when simple, a longer
+    /// target description otherwise; the backend uses it for goal-aware
+    /// sampling, the outline scope and the course title. Absent = the legacy
+    /// path (topic falls back to the base name). Ignored on the description
+    /// flow, where the brief already plays this role.
+    pub goal: Option<String>,
     pub domain: Option<String>,
     pub provider_id: Option<String>,
     pub model: Option<String>,
@@ -175,7 +182,11 @@ impl Tool for LearningGenerateCourseTool {
          (pass `description`) OR a mounted knowledge base (pass `base`): with `description` no \
          knowledge base is needed — write a dense brief (topic, scope, learner level, what to \
          cover) and the course is designed from it; with a base the course is grounded in its \
-         markdown documents, so FIRST make sure the base contains well-structured .md notes: \
+         markdown documents. ALWAYS pass `goal` when generating from a base: the learner's goal \
+         text (the whole text IS the goal — a short phrase like \"零基础学 Python 数据分析\" or a \
+         longer target description). Sampling, outline scope and the course title all key off \
+         it, and the title is exactly this text, so do not invent a separate course name. \
+         With a base, FIRST make sure the base contains well-structured .md notes: \
          one topic per file, and each file's atomic unit should cover 描述 (description), \
          例子 (worked examples) and 验证 (self-check questions) at minimum — other sections such as \
          迁移 (transfer), 其他 (other), 关键词 (keywords), 推广 (promotion) are optional and chosen \
@@ -205,6 +216,10 @@ impl Tool for LearningGenerateCourseTool {
                 "description": {
                     "type": "string",
                     "description": "Free-text course brief to generate from INSTEAD of a knowledge base: topic, scope, learner level and what to cover. Pass this OR base, not both; no knowledge base is needed with it."
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "The learner's goal for a knowledge-base course (pass it whenever `base` is used). The whole text IS the goal: a short phrase like \"零基础学 Python 数据分析\" or a multi-line target description. It drives goal-aware sampling and the outline scope, and becomes the course title verbatim — do not invent a separate title. Ignored when `description` is passed (the brief is already the goal)."
                 },
                 "domain": {
                     "type": "string",
@@ -274,6 +289,18 @@ impl Tool for LearningGenerateCourseTool {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map(ToOwned::to_owned);
+        // 目标（t1）：知识库流的目标文本；描述流下简报已是目标，忽略该参数
+        // （语义不变）。
+        let goal = if kb_id.is_some() {
+            input
+                .get("goal")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
         let mode = input
             .get("mode")
             .and_then(Value::as_str)
@@ -303,6 +330,7 @@ impl Tool for LearningGenerateCourseTool {
         let req = CourseGenerationRequest {
             kb_id,
             description,
+            goal,
             domain,
             provider_id,
             model,
@@ -584,6 +612,41 @@ mod tests {
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
         assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb2")));
         assert_eq!(req.domain.as_deref(), Some("ops-runbook"));
+    }
+
+    /// t1：知识库分支的目标参数原样转发（整体文本即目标，含多行长文本）；
+    /// 描述流忽略 goal——简报已是目标，语义与旧路径一致。
+    #[tokio::test]
+    async fn kb_flow_forwards_the_goal_and_description_flow_ignores_it() {
+        let (tool, sink) = tool(vec![("kb1", "Finance")]);
+        let res = tool
+            .execute(json!({"base": "Finance", "goal": "  零基础学 Python 数据分析\n受众：转行者  "}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            req.goal.as_deref(),
+            Some("零基础学 Python 数据分析\n受众：转行者"),
+            "the goal text is trimmed but kept whole (multi-line)"
+        );
+
+        // 空白目标 = 未传（回退库名路径）。
+        let res = tool.execute(json!({"base": "Finance", "goal": "   "})).await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert!(req.goal.is_none());
+
+        let res = tool
+            .execute(json!({"description": "期权入门", "goal": "不该被使用"}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert!(req.kb_id.is_none());
+        assert!(
+            req.goal.is_none(),
+            "the description flow carries no separate goal: {:?}",
+            req.goal
+        );
     }
 
     #[tokio::test]

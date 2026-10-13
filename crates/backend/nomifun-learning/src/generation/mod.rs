@@ -20,6 +20,7 @@ mod completer;
 mod lesson;
 mod parser;
 mod sample;
+mod terms;
 #[cfg(test)]
 mod tests;
 
@@ -283,3 +284,6 @@ pub(crate) use self::lesson::{
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 pub(crate) use self::sample::sample_base_files;
+// 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
+// `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
+pub use self::sample::SampleDisclosure;

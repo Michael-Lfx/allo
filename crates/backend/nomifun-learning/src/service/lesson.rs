@@ -159,13 +159,20 @@ impl LearningService {
         }
 
         let snapshot = sqlx::query(
-            "SELECT title, blueprint_json, samples_json FROM learning_courses WHERE course_id = ?",
+            "SELECT title, blueprint_json, samples_json, learning_goal FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(internal)?;
         let course_title: String = snapshot.try_get("title").map_err(internal)?;
+        // 目标（t1，传统课时）：课程行 learning_goal 的全文进生成上下文；
+        // 旧课程列上为空串、语义为空（None），提示词不出现目标段。
+        let course_goal: Option<String> = snapshot
+            .try_get::<Option<String>, _>("learning_goal")
+            .map_err(internal)?
+            .map(|goal| goal.trim().to_owned())
+            .filter(|goal| !goal.is_empty());
         let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
         let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
         let blueprint_json = blueprint_json.ok_or_else(|| {
@@ -233,6 +240,7 @@ impl LearningService {
             ),
             // 传统课时永远不走图分支。
             graph: None,
+            goal: course_goal,
             // 大纲已无概念契约（ADR-0009）：传统课时没有防超纲黑名单。
             forbidden_concepts: String::new(),
         };
@@ -414,7 +422,9 @@ impl LearningService {
                 prerequisite_path,
                 upcoming_nodes,
             }),
-            // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
+            // 学习图节点的目标在 graph.goal；本字段只承载传统课程目标。
+            goal: None,
+            // 防超纲黑名单：可及后代节点标题清单（graph_node_topology 推导）。
             forbidden_concepts,
         };
 
