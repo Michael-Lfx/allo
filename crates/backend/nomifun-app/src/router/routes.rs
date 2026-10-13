@@ -816,6 +816,9 @@ pub fn create_router_with_all_state(
         voice_models_manager.clone(),
         &services.data_dir,
     ));
+    crate::voice_companion_manager::VoiceCompanionProcessManager::register_global(
+        voice_companion_manager.clone(),
+    );
     let companion_mgr_clone = voice_companion_manager.clone();
     tokio::spawn(async move {
         companion_mgr_clone.auto_start_if_enabled().await;

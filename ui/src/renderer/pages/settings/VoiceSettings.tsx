@@ -828,7 +828,14 @@ const VoiceSettings: React.FC = () => {
 
     void connectCompanionEvents();
 
+    const handleBeforeUnload = () => {
+      isSubscribed = false;
+      controller.abort();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
       isSubscribed = false;
       controller.abort();
     };

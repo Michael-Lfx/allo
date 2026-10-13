@@ -49,7 +49,18 @@ pub struct VoiceCompanionProcessManager {
     config_path: PathBuf,
 }
 
+static GLOBAL_COMPANION_MANAGER: std::sync::OnceLock<Arc<VoiceCompanionProcessManager>> =
+    std::sync::OnceLock::new();
+
 impl VoiceCompanionProcessManager {
+    pub fn register_global(manager: Arc<Self>) {
+        let _ = GLOBAL_COMPANION_MANAGER.set(manager);
+    }
+
+    pub fn global() -> Option<Arc<Self>> {
+        GLOBAL_COMPANION_MANAGER.get().cloned()
+    }
+
     pub fn new(models_manager: Arc<nomifun_voice_models::ModelManager>, data_dir: &Path) -> Self {
         let config_path = data_dir.join("config").join("voice_companion.json");
         Self {
