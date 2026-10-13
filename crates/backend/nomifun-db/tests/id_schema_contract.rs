@@ -1424,3 +1424,77 @@ async fn idmm_logical_targets_store_named_bare_uuidv7_ids() {
     assert_eq!(stored, conversation_id.as_str());
     validate_uuidv7(&stored).expect("IDMM target must remain a canonical bare UUIDv7");
 }
+
+/// 多知识库（t4 评审修复）：`learning_courses.source_kb_ids` 的 JSON 列表引用
+/// 必须登记进契约（cs_agents.knowledge_base_ids 先例）——登记条目要求列上有
+/// 具名索引（迁移 074），删除索引 = 契约失守；已删库的 id 允许留在历史行里
+/// （KeepHistory：读侧过滤），既不是启动报错、也不被修复流程删课。
+#[tokio::test]
+async fn learning_course_source_kb_ids_is_registered_as_a_json_list_link() {
+    let database = init_database_memory().await.expect("database");
+    let pool = database.pool();
+
+    // 登记条目引用的索引必须真实存在且落在课程表上。
+    let index_table: Option<String> = sqlx::query_scalar(
+        "SELECT tbl_name FROM sqlite_schema \
+         WHERE type = 'index' AND name = 'idx_learning_courses_source_kb_ids_json'",
+    )
+    .fetch_optional(pool)
+    .await
+    .expect("index lookup");
+    assert_eq!(
+        index_table.as_deref(),
+        Some("learning_courses"),
+        "source_kb_ids 的登记索引必须由迁移建在课程表上"
+    );
+    validate_id_schema_contract(pool)
+        .await
+        .expect("the registered JSON list link must satisfy the contract");
+
+    // 索引缺失即契约失守：登记是活的门禁，不是一句注释。
+    sqlx::query("DROP INDEX idx_learning_courses_source_kb_ids_json")
+        .execute(pool)
+        .await
+        .expect("drop index");
+    let error = validate_id_schema_contract(pool)
+        .await
+        .expect_err("a missing list index must fail the contract");
+    assert!(
+        error
+            .to_string()
+            .contains("idx_learning_courses_source_kb_ids_json"),
+        "{error}"
+    );
+
+    // 已删库的历史归属：有效的悬空 id 被审计但不阻断（读侧过滤），修复流程
+    // 也不删课程行（列表引用是 KeepHistory，没有 RequireParent 的删除语义）。
+    let course_id = nomifun_common::generate_id();
+    let dangling_kb_id = nomifun_common::generate_id();
+    let list = serde_json::json!([dangling_kb_id]).to_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, source_kb_ids, version, created_at, updated_at) \
+         VALUES (?, '历史课程', '', 'general', ?, 1, 1, 1)",
+    )
+    .bind(&course_id)
+    .bind(&list)
+    .execute(pool)
+    .await
+    .expect("course row");
+    nomifun_db::validate_id_data_contract(pool)
+        .await
+        .expect("a deleted base id must never strand the dataset");
+    nomifun_db::repair_logical_reference_orphans(pool)
+        .await
+        .expect("repair pass");
+    let surviving: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .expect("course count");
+    assert_eq!(
+        surviving, 1,
+        "列表引用不参与 RequireParent 修复：课程行必须原样保留"
+    );
+}

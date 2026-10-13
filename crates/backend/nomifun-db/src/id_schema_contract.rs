@@ -1078,6 +1078,16 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM cs_agents, json_each(cs_agents.knowledge_base_ids) item" =>
         "knowledge_bases", "knowledge_base_id", "idx_cs_agents_knowledge_base_ids_json", KeepHistory, AllowMissingHistoricalParent
     ),
+    // Course source-library list (migration 073): the same story as the
+    // customer-service mount list — the first element is the primary source
+    // (mirrored by the legacy single column `source_kb_id`, which keeps its
+    // own SetNull entry above), and a deleted base stops contributing: the
+    // read side filters deleted ids out of the list, so history keeps them.
+    json_text_ref!(
+        "learning_courses", "source_kb_ids", "$[]",
+        "SELECT item.value AS value FROM learning_courses, json_each(learning_courses.source_kb_ids) item" =>
+        "knowledge_bases", "knowledge_base_id", "idx_learning_courses_source_kb_ids_json", KeepHistory, AllowMissingHistoricalParent
+    ),
 ];
 
 #[derive(Debug, Clone, Eq, PartialEq)]
