@@ -369,8 +369,6 @@ impl Tool for LearningGenerateCourseTool {
                 .map(str::trim)
                 .filter(|g| !g.is_empty())
                 .map(ToOwned::to_owned)
-        } else {
-            None
         };
         let mode = input
             .get("mode")

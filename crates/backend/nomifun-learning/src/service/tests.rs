@@ -3830,6 +3830,7 @@ async fn kb_goal_flows_into_brief_title_and_course_row() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: goal.map(ToOwned::to_owned),
+        knowledge_base_ids: Vec::new(),
     };
 
     let with_goal = service
@@ -3911,6 +3912,7 @@ async fn kb_goal_without_any_match_falls_back_and_still_generates() {
                 model: None,
                 mode: crate::models::CourseGenerationMode::OnDemand,
                 goal: Some("零基础学 Python 数据分析".into()),
+                knowledge_base_ids: Vec::new(),
             },
         )
         .await
@@ -3996,6 +3998,7 @@ async fn lesson_context_carries_the_course_goal() {
                         samples_json: "[]".to_owned(),
                         learning_goal: goal,
                         samples_meta_json: None,
+                        source_kb_ids: Vec::new(),
                     },
                 )
                 .await
@@ -4918,12 +4921,19 @@ impl crate::course_outline::CourseOutlineAgentEngine for CitingOutlineEngine {
             description: "d".into(),
             domain: "general".into(),
             version: 1,
+            concepts: vec![ConceptPack {
+                key: "a".into(),
+                title: "A".into(),
+                description: String::new(),
+                prerequisites: Vec::new(),
+            }],
             modules: vec![crate::generation::BlueprintModule {
                 title: "M".into(),
                 description: String::new(),
                 lessons: vec![crate::generation::BlueprintLesson {
                     title: "L".into(),
                     purpose: "P".into(),
+                    concepts: vec!["a".into()],
                     source: self.cite.clone().map(|path| SourceSpan {
                         path,
                         start: None,
@@ -5264,6 +5274,12 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         "# 课程\n副库标记：期权是标准化合约。\n",
     );
 
+    let concept = ConceptPack {
+        key: "c1".into(),
+        title: "期权".into(),
+        description: String::new(),
+        prerequisites: Vec::new(),
+    };
     let cited = "课程笔记/docs/intro.md";
     let source = Some(SourceSpan {
         path: cited.to_owned(),
@@ -5277,6 +5293,7 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         domain: "finance".into(),
         source_kb_id: Some(primary_id.parse().unwrap()),
         version: 1,
+        concepts: vec![concept.clone()],
         modules: vec![ModulePack {
             title: "模块一".into(),
             description: String::new(),
@@ -5298,6 +5315,7 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         description: "d".into(),
         domain: "finance".into(),
         version: 1,
+        concepts: vec![concept],
         modules: vec![crate::generation::BlueprintModule {
             title: "模块一".into(),
             description: String::new(),

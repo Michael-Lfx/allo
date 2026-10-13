@@ -1134,12 +1134,19 @@ fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
         description: "d".into(),
         domain: "general".into(),
         version: 1,
+        concepts: vec![ConceptPack {
+            key: "a".into(),
+            title: "A".into(),
+            description: String::new(),
+            prerequisites: Vec::new(),
+        }],
         modules: vec![BlueprintModule {
             title: "M".into(),
             description: String::new(),
             lessons: vec![BlueprintLesson {
                 title: "L".into(),
                 purpose: "p".into(),
+                concepts: vec!["a".into()],
                 source: Some(SourceSpan {
                     path: path.into(),
                     start: None,

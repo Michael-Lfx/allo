@@ -72,9 +72,9 @@ impl LearningService {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, \
+             (course_id, title, description, domain, source_kb_id, source_kb_ids, version, blueprint_json, samples_json, \
               samples_meta_json, learning_goal, teaching_style, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
@@ -208,7 +208,7 @@ impl LearningService {
         // 目录列出现存课程（归档课也在列——带徽标可恢复）；安排面收窄由
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         let rows = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
@@ -260,7 +260,7 @@ impl LearningService {
     ) -> Result<CourseDetail, AppError> {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
@@ -463,7 +463,7 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, \
                     c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
                     COALESCE(p.status, 'not_started') AS status \
              FROM learning_lessons l \
