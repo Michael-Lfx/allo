@@ -324,8 +324,8 @@ pub(crate) use self::completer::{
     SECTION_OUTLINE_MAX_TOKENS, SINGLE_ACTIVITY_MAX_TOKENS,
 };
 pub(crate) use self::lesson::{
-    build_adjacent_context, build_outline_tree, generate_lesson,
-    rewrite_section_body, validate_lesson_document,
+    build_adjacent_context, build_outline_tree, enforce_grounding_budget, generate_lesson,
+    render_grounding_fragments, rewrite_section_body, validate_lesson_document,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 // 多知识库采样（t4）：单库逐字旧路径，多库按库分摊 + 路径命名空间。

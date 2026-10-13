@@ -607,18 +607,16 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 excerpt.text
             ));
         }
-        None if graph.is_some() => {
-            text.push_str(
-                "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
-            );
-        }
-        None => {
-            let brief = context.course_description.trim();
-            if brief.is_empty() {
-                text.push_str("\n课程简报为空：以课时标题与课时目标为准展开。\n");
-            } else {
-                text.push_str(&format!("\n课程简报（文档与活动必须忠于它）：\n{brief}\n"));
-            }
+    } else if graph.is_some() {
+        text.push_str(
+            "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
+        );
+    } else {
+        let brief = context.course_description.trim();
+        if brief.is_empty() {
+            text.push_str("\n课程简报为空：以课时标题与课时目标为准展开。\n");
+        } else {
+            text.push_str(&format!("\n课程简报（文档与活动必须忠于它）：\n{brief}\n"));
         }
     }
     text

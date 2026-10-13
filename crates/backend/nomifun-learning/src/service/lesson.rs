@@ -123,6 +123,7 @@ async fn read_lesson_supplements(
         }
     }
     Ok((supplements, hit_count))
+>>>>>>> cb0135df2 (feat(learning): 课时写作接回知识库——多片段 grounding、主源全文与检索补充)
 }
 
 impl LearningService {
@@ -330,6 +331,7 @@ impl LearningService {
                     // 检索失败不阻断生成：补充片段是可选的加分项。
                     Ok(Ok((supplements, hits))) => {
                         grounding.hits = hits;
+                        grounding.supplements = supplements.len();
                         grounding.fragments.extend(supplements);
                     }
                     Ok(Err(error)) => {
