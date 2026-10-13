@@ -150,9 +150,12 @@ export interface Lesson {
   position: number;
   generated: boolean;
   estimated_minutes: number;
-  /** 来源文件（t4）：`kb_id` = 来源库（多库课程按命名空间解析；单库/旧课程为
-   * null，读侧回退课程主来源 `course.source_kb_id`）；`path` 是库内相对路径 */
+  /** 主来源（兼容位，= `sources` 首个）：`kb_id` = 来源库（多库课程按命名
+   * 空间解析；单库/旧课程为 null，读侧回退课程主来源 `course.source_kb_id`）；
+   * `path` 是库内相对路径 */
   source: { path: string; start: number | null; end: number | null; kb_id: string | null } | null;
+  /** 全部引用来源（t4 多引用）：位序即引用顺序，首个 = 主来源；空 = 无引用 */
+  sources: { path: string; start: number | null; end: number | null; kb_id: string | null }[];
   status: LessonStatus;
   activities: Activity[];
   /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */

@@ -18,7 +18,7 @@ import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
-import { errorMessage, loadStoredReviewFilters } from './utils';
+import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -453,9 +453,9 @@ const LearningPage: React.FC = () => {
           <CourseGenerationPill
             status={creation.generation.status}
             topic={creation.generation.request.description ?? ''}
-            sources={(creation.generation.request.knowledge_base_ids ?? []).map(
-              (id) =>
-                creation.knowledgeBases.find((base) => base.knowledge_base_id === id)?.name ?? id
+            sources={knowledgeBaseNames(
+              creation.generation.request.knowledge_base_ids ?? [],
+              creation.knowledgeBases
             )}
             onView={() => void creation.openGenerator()}
             onCancel={() => void creation.cancelGeneration()}
