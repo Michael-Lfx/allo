@@ -54,6 +54,7 @@
   "genLessonsCount": "{{count}} 个课时",
   "lessonGenRunning": "生成中",
   "lessonGenRound": "第 {{round}} 轮",
+  "lessonGenSourceDegraded": "来源库不可达，本次生成使用课程快照兜底",
   "lessonGenAudit": "审计 {{danger}} 严重 · {{warning}} 警告",
   "courseDescription": "课程描述",
   "courseDescriptionPlaceholder": "描述你想创建的课程，例如：系统学习 Rust 的所有权与生命周期",

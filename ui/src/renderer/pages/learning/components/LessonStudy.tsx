@@ -683,10 +683,18 @@ export function LessonBlock({
   // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
   // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
   const [progressText, setProgressText] = useState<string | null>(null);
+  // t3 降级披露：grounding 帧报「源库不可达 → 快照兜底」时，生成期间显示一行
+  // 提示——课时照常生成，但用户该知道这次没读库（新一次生成重置）。
+  const [groundingDegraded, setGroundingDegraded] = useState(false);
   useEffect(() => {
     return ipcBridge.learning.lessonGeneration.on((event) => {
       if (event.lesson_id && event.lesson_id !== lesson.id) return;
-      if (event.phase === 'round') {
+      if (event.phase === 'grounding') {
+        setGroundingDegraded(event.degraded === true);
+      } else if (event.phase === 'started') {
+        // 新一次生成从零开始：上一轮的降级状态不残留。
+        setGroundingDegraded(false);
+      } else if (event.phase === 'round') {
         setProgressText(
           `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`
         );
@@ -758,6 +766,9 @@ export function LessonBlock({
             {t('learning.generateLessonContent')}
           </Button>
           {progressText && <Text type='secondary'>{progressText}</Text>}
+          {progressText && groundingDegraded && (
+            <Text type='warning'>{t('learning.lessonGenSourceDegraded')}</Text>
+          )}
         </div>
       </div>
     );
