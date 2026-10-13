@@ -4394,6 +4394,7 @@ async fn import_kb_lesson_course_with_sources(
         domain: "finance".into(),
         source_kb_id: Some(source_kb_id.parse().unwrap()),
         version: 1,
+        concepts: vec![concept.clone()],
         modules: vec![ModulePack {
             title: "模块一".into(),
             description: String::new(),
@@ -4415,6 +4416,7 @@ async fn import_kb_lesson_course_with_sources(
         description: "d".into(),
         domain: "finance".into(),
         version: 1,
+        concepts: vec![concept],
         modules: vec![crate::generation::BlueprintModule {
             title: "模块一".into(),
             description: String::new(),
