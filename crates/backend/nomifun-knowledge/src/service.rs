@@ -6016,9 +6016,11 @@ fn cjk_bigrams(token: &str) -> Vec<String> {
     bigrams
 }
 
-/// CJK unified ideographs (incl. extension A) — the same range the learning
-/// crate's term slicer uses, so both sides of the retrieval seam agree on what
-/// counts as "no word boundaries".
+/// CJK unified ideographs (incl. extension A) — the same range
+/// `nomifun-learning/src/generation/terms.rs::is_cjk` uses, so both sides of
+/// the retrieval seam agree on what counts as "no word boundaries". The pair is
+/// deliberately kept duplicated (每个 crate 的三行私有判据；改一侧必须同步
+/// 另一侧——learning 侧的同名注释互指到这里).
 fn is_cjk(ch: char) -> bool {
     matches!(ch as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF)
 }
