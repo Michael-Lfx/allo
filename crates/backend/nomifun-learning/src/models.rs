@@ -80,6 +80,12 @@ pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
 /// 等分（每库保底 [`crate::generation::MULTI_KB_PER_BASE_MIN_FILES`]），5 库
 /// 时每库 8 文件仍有完整的结构预算；再多的库只会把每库采样压到无意义的
 /// 零头。超限 400（在请求面拒绝，不进生成）。
+///
+/// 三处同值的两个镜像（跨层无法共享一个常量，改动时三处同步）：
+/// agent 引擎 `crates/agent/nomi-agent/src/learning_tools.rs::MAX_COURSE_BASES`
+/// （工具层先拒）与前端 `ui/src/renderer/pages/learning/hooks/
+/// useCourseCreation.ts::MAX_COURSE_KNOWLEDGE_BASES`（超限可见报错、不静默
+/// 截断）；这里是权威面。
 pub const COURSE_MAX_KNOWLEDGE_BASES: usize = 5;
 
 /// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、

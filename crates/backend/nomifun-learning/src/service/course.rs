@@ -463,7 +463,7 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, \
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
                     c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
                     COALESCE(p.status, 'not_started') AS status \
              FROM learning_lessons l \
