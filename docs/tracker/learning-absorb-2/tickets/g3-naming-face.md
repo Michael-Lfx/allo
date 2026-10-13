@@ -2,8 +2,8 @@
 id: g3
 title: "铸名门与命名面：别名闭环、deprecated 口径、近邻判定"
 type: grilling
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -36,3 +36,37 @@ part_of: map.md
 需要裁决：三面各自的取舍。推荐：①全采（闭环价值最高、成本低——复用路径已存在，只加登记
 动作与一行上下文 + 一条提示词）；②采纳（小修，口径一致）；③选 (c) 记录待实证（alo 没
 有 learnhub 的六批长样本证据量，先拿真机数据说话；若用户要一步到位则 (a)）。
+
+## Resolution
+
+**速览**：两问全采推荐——**复用通道全式**（近邻装配 + 评审扩权裁决），**deprecated 落库
+同口径过滤**。加上 g2 已定的池可见 + 选名裁量条款，别名闭环三件套完整落地。
+
+1. **复用通道（别名闭环 ①）：全式——近邻装配 + 评审扩权**：
+   - **候选集装配**（defnear 机械面）：每条提名装配近邻候选 = 名字精确占用 + 名字近形
+     （互包含类）+ 定义近邻（定义归一化 + 字符 trigram Jaccard）+ 词面 top-k=3 补位
+     （零分亦入）——learnhub defnear.rs / nearname.rs 同构移植；
+   - **裁决**：既有概念评审门扩一条输出——对每条提名裁决「复用|新铸」；裁复用必须指向
+     候选集内 ID（机械核验禁编造——learnhub verdict.rs 同律）；**无新 LLM 调用**（撑在
+     评审调用上）；
+   - **落池**：裁决复用 → 不铸新行，提名名（canonical + 未入池的别名）落为该概念活跃
+     别名（字符串数组；不追 learnhub 结构化 AliasRecord——kind/attestation/priority 在
+     allo 无消费方）；
+   - **降级**：评审降级 PASS（fails-open）时退化为现状（不更差）；**名字面唯一性不放松**
+     ——名字撞既有名仍拒铸（learnhub v2.6 同律；拒铸消息补指引「该名字已属概念 X，直接
+     引用即可」）；
+   - **apply 侧**：复用改挂落库，并发幂等重查路径同样适用落池规则（复用即把未入池新名
+     落为别名）。
+2. **deprecated 口径：落库同口径过滤**——apply 的复用重查与引用解析两处查询补
+   `deprecated = 0`，与门侧一致；退役概念的名字不阻塞铸名（新铸活跃行接手），新批不会
+   静默挂到退役行；引用退役名在门侧报未解析错误（现状已如此，保持一致）。
+3. **池可见 + 选名裁量（g2 移交）**：教练上下文【概念登记表】块增【概念别名池】行
+   （`canonical=别名1/别名2`，只列多名概念、超限截断）；COACH_SYSTEM 增选名裁量条款
+   （引用已教概念选最贴合本点角度的名字；新角度值得命名可提名，复用通道保留为别名）；
+   R3 的 content 侧落点随 g2。
+
+**派生影响**（供实施切票）：defnear 模块（归一化 + trigram + 候选集装配）；评审门契约
+扩展（输出 schema + ng.review.* 核验：复用 ID 必须来自候选集）；validate_batch /
+apply_batch 复用分支 + 别名落池；CoachContext 池行 + COACH_SYSTEM 条款；apply 两处
+deprecated 过滤。
+
