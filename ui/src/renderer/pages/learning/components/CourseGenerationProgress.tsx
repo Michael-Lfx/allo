@@ -21,6 +21,7 @@ export function CourseGenerationProgress({
   status,
   result,
   error,
+  sources = [],
   onStartLearning,
   onRetry,
   onCancel,
@@ -28,6 +29,8 @@ export function CourseGenerationProgress({
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
   error: string | null;
+  /** 多知识库（t4）：来源库名（「来源：库A、库B」；空 = 不展示） */
+  sources?: string[];
   onStartLearning: (courseId: string) => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -83,6 +86,13 @@ export function CourseGenerationProgress({
           <Steps.Step key={label} title={label} />
         ))}
       </Steps>
+
+      {/* 多知识库（t4）：来源披露——课程从哪几个库生成（首个 = 主来源） */}
+      {sources.length > 0 && (
+        <Text type='secondary' className='text-12px'>
+          {t('learning.courseSources', { names: sources.join('、') })}
+        </Text>
+      )}
 
       {/* 实时活动流：round/audit 事件各占一行；无事件时退化为纯 spinner */}
       <div
