@@ -107,18 +107,33 @@ async fn asr_test_handler(
     // 3. Perform ASR transcription via SenseVoice model with 16kHz resampling
     match transcribe_test_pcm_detailed(&pcm, sample_rate, state.models_dir.as_deref()).await {
         Ok(text) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            tracing::info!(
+                text = %text,
+                duration_ms,
+                rms = %format!("{:.4}", rms),
+                samples = pcm.len(),
+                "Voice ASR trial test completed successfully"
+            );
             Json(VoiceAsrTestResponse {
                 success: true,
                 text,
-                duration_ms: start.elapsed().as_millis() as u64,
+                duration_ms,
                 error: None,
             })
         }
         Err(err) => {
+            let duration_ms = start.elapsed().as_millis() as u64;
+            tracing::warn!(
+                error = %err,
+                duration_ms,
+                rms = %format!("{:.4}", rms),
+                "Voice ASR trial test failed"
+            );
             Json(VoiceAsrTestResponse {
                 success: false,
                 text: String::new(),
-                duration_ms: start.elapsed().as_millis() as u64,
+                duration_ms,
                 error: Some(err),
             })
         }
