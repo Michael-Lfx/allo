@@ -21,11 +21,11 @@ pub(super) use crate::events::LearningEventEmitter;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
 pub(super) use crate::lesson_draft::{
-    GraphLessonContext, LessonContentAgentEngine, LessonDraft, LessonDraftView, LessonExcerpt,
-    LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
+    ExcerptRole, GraphLessonContext, LessonContentAgentEngine, LessonDraft, LessonDraftView,
+    LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 pub(super) use crate::generation::{
-    Blueprint, LessonOutput, assemble_outline_pack, build_blueprint_prompt,
+    Blueprint, LessonOutput, SampleDisclosure, assemble_outline_pack, build_blueprint_prompt,
     build_description_blueprint_prompt, generate_blueprint, generate_lesson,
     generate_lesson_activity, sample_base_files, validate_blueprint,
 };

@@ -19,6 +19,95 @@ fn structure_degree_statement(snapshot: Option<String>) -> String {
         .unwrap_or_default()
 }
 
+/// 课时检索的整步预算（t3，票面 20s）：检索 + 扩读在这个预算内完成，超时
+/// 按「检索不可用」降级——只丢补充片段，不阻断课时生成。
+const LESSON_RETRIEVAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 检索命中的候选上限：命中按分降序，预算（合计 40KB）通常只装得下前几个
+/// 全文片段；多读的命中不白读——它们已经进不了预算。
+const LESSON_RETRIEVAL_HITS: usize = 5;
+
+/// 课时 grounding 的装配结果（t3）：片段清单 + 读数（命中数/扩读数/是否
+/// 降级），后者进进程内日志与 WS 事件——「课时写作真的接上库了吗」有据可查。
+struct LessonGrounding {
+    /// primary 在前（大纲引用的 source），其后是按相关度排序的补充片段。
+    fragments: Vec<LessonExcerpt>,
+    /// `search_bases` 返回的命中数（0 = 未检索或无命中）。
+    hits: usize,
+    /// 读入的补充片段数。
+    supplements: usize,
+    /// primary 是否来自实时读库（false = 快照兜底）。
+    primary_live: bool,
+    /// 是否发生降级（检索失败/超时/主 source 读不到，快照兜底）。
+    degraded: bool,
+}
+
+/// 课时检索查询词（t3）：课时标题 + purpose 经 t2 的确定性切片器成词条，
+/// 再追加目标词条集（建课时切好、随采样披露持久化——建课后稳定复用）。
+/// 词条以空格连接交给 `search_bases`（检索侧按空白再切）；标题/purpose 在前，
+/// 长目标挤不进词条上限时不会把课时自身的词条挤掉。
+fn lesson_retrieval_terms(lesson_title: &str, purpose: &str, goal_terms: &[String]) -> Vec<String> {
+    let mut terms = crate::generation::term_slices(&format!("{lesson_title} {purpose}"));
+    for term in goal_terms {
+        if terms.len() >= crate::generation::TERM_MAX_COUNT {
+            break;
+        }
+        if !terms.iter().any(|existing| existing == term) {
+            terms.push(term.clone());
+        }
+    }
+    terms
+}
+
+/// 目标词条集（t3）：优先取采样披露里持久化的词条集（建课时的确定性切片，
+/// 建课后稳定复用）；旧课程（披露里没有该字段）对目标文本重新切片——同一
+/// 纯函数、结果一致；无目标则为空。
+fn lesson_goal_terms(disclosure: Option<&SampleDisclosure>, goal: Option<&str>) -> Vec<String> {
+    match disclosure {
+        Some(disclosure) if !disclosure.goal_terms.is_empty() => disclosure.goal_terms.clone(),
+        _ => goal.map(crate::generation::term_slices).unwrap_or_default(),
+    }
+}
+
+/// 检索扩读（t3）：`search_bases` 取相关文件命中 → 逐条 `read_file` 读全文 →
+/// 补充片段（带库归属与命中章节，可溯源）。主 source 自己命中时跳过（它已是
+/// primary——锚定纪律：检索不替换主引用，也不重复占用预算）。单文件读不到只
+/// 跳过该条；检索本身失败向上传播（调用方降级为「无补充」，不阻断生成）。
+async fn read_lesson_supplements(
+    knowledge: &KnowledgeService,
+    kb_id: &str,
+    kb_name: Option<&str>,
+    query: &str,
+    primary_path: Option<&str>,
+) -> Result<(Vec<LessonExcerpt>, usize), AppError> {
+    let base_id = KnowledgeBaseId::parse(kb_id)
+        .map_err(|error| AppError::Internal(format!("invalid knowledge base id {kb_id}: {error}")))?;
+    let hits = knowledge
+        .search_bases(&[base_id], query, LESSON_RETRIEVAL_HITS)
+        .await?;
+    let hit_count = hits.len();
+    let mut supplements = Vec::with_capacity(hit_count);
+    for hit in hits {
+        if Some(hit.rel_path.as_str()) == primary_path {
+            continue;
+        }
+        match knowledge.read_file(kb_id, &hit.rel_path).await {
+            Ok(file) if !file.content.trim().is_empty() => supplements.push(LessonExcerpt {
+                path: hit.rel_path,
+                text: file.content,
+                kb_id: Some(kb_id.to_owned()),
+                kb_name: kb_name.map(str::to_owned),
+                heading: Some(hit.heading).filter(|heading| !heading.trim().is_empty()),
+                role: ExcerptRole::Supplement,
+            }),
+            // 命中文件读不到：跳过该条，不降级整步（主引用仍在）。
+            Ok(_) | Err(_) => continue,
+        }
+    }
+    Ok((supplements, hit_count))
+>>>>>>> 475516457 (feat(learning): 课时写作接回知识库——多片段 grounding、主源全文与检索补充)
+}
+
 impl LearningService {
 
     /// Repair a lesson figure that failed to render: the broken source and
@@ -86,6 +175,146 @@ impl LearningService {
             }
             None => engine.generate(user_id, context, model_override).await,
         }
+    }
+
+    /// 课时 grounding 装配（t3「课时写作接回知识库」）：
+    /// - primary = 大纲引用的 source 文件**全文**（`read_file` 实时读库，替代
+    ///   快照里冻结的 8KB 前缀）；读不到（库不可达/文件被删/读出空）降级为
+    ///   快照摘录——**锚定纪律**：primary 永不被检索结果替换；
+    /// - 补充 = 检索扩读：课时标题 + purpose 词条 + 目标词条集 → `search_bases`
+    ///   → top-N 命中读全文，只作补充片段（同目录/相关文件扩读）；
+    /// - 检索失败/超时（20s 预算）→ 只丢补充片段，不阻断生成。
+    /// 片段按优先级（primary 在前）过预算守卫（[`enforce_grounding_budget`]）。
+    async fn assemble_lesson_grounding(
+        &self,
+        lesson: &crate::generation::BlueprintLesson,
+        samples: &[(String, String)],
+        lesson_title: &str,
+        purpose: &str,
+        goal_terms: &[String],
+        source_kb_id: Option<&str>,
+    ) -> LessonGrounding {
+        let mut grounding = LessonGrounding {
+            fragments: Vec::new(),
+            hits: 0,
+            supplements: 0,
+            primary_live: false,
+            degraded: false,
+        };
+        // 实时读库与检索都需要注入的知识服务与课程的来源库；二者缺一
+        // （描述流/测试构造）只有快照可用，且不算降级——现状行为。
+        let knowledge = self
+            .injected_knowledge_service()
+            .ok()
+            .zip(source_kb_id.map(str::to_owned));
+        // 检索查询词（t3）：课时标题 + purpose 词条 + 目标词条集；同一套词条
+        // 也用于超预算片段的相关度选摘（预算守卫）。
+        let retrieval_terms = lesson_retrieval_terms(lesson_title, purpose, goal_terms);
+        let kb_name = match &knowledge {
+            Some((knowledge, kb_id)) => knowledge
+                .get_base_info(kb_id)
+                .await
+                .ok()
+                .map(|base| base.name),
+            None => None,
+        };
+        if let Some(source) = lesson.source.as_ref() {
+            let live = match &knowledge {
+                Some((knowledge, kb_id)) => tokio::time::timeout(
+                    LESSON_RETRIEVAL_BUDGET,
+                    knowledge.read_file(kb_id, &source.path),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok),
+                None => None,
+            };
+            match live {
+                Some(file) if !file.content.trim().is_empty() => {
+                    grounding.primary_live = true;
+                    grounding.fragments.push(LessonExcerpt {
+                        path: source.path.clone(),
+                        text: file.content,
+                        kb_id: source_kb_id.map(str::to_owned),
+                        kb_name: kb_name.clone(),
+                        heading: None,
+                        role: ExcerptRole::Primary,
+                    });
+                }
+                _ => {
+                    // 库不可达/文件被删：快照兜底（现状能力保留），披露降级。
+                    if knowledge.is_some() {
+                        grounding.degraded = true;
+                        tracing::warn!(
+                            kb_id = source_kb_id.unwrap_or_default(),
+                            path = %source.path,
+                            "live lesson source read failed; falling back to the sampled snapshot"
+                        );
+                    }
+                    if let Some(text) = samples
+                        .iter()
+                        .find(|(path, _)| path == &source.path)
+                        .map(|(_, text)| text.clone())
+                    {
+                        grounding.fragments.push(LessonExcerpt::text_only(
+                            source.path.clone(),
+                            text,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some((knowledge, kb_id)) = &knowledge {
+            if !retrieval_terms.is_empty() {
+                let primary_path = lesson.source.as_ref().map(|source| source.path.as_str());
+                let retrieved = tokio::time::timeout(
+                    LESSON_RETRIEVAL_BUDGET,
+                    read_lesson_supplements(
+                        knowledge,
+                        kb_id,
+                        kb_name.as_deref(),
+                        &retrieval_terms.join(" "),
+                        primary_path,
+                    ),
+                )
+                .await;
+                match retrieved {
+                    // 检索失败不阻断生成：补充片段是可选的加分项。
+                    Ok(Ok((supplements, hits))) => {
+                        grounding.hits = hits;
+                        grounding.supplements = supplements.len();
+                        grounding.fragments.extend(supplements);
+                    }
+                    Ok(Err(error)) => {
+                        grounding.degraded = true;
+                        tracing::warn!(
+                            kb_id,
+                            error = %error,
+                            "lesson retrieval failed; continuing without supplementary fragments"
+                        );
+                    }
+                    Err(_) => {
+                        grounding.degraded = true;
+                        tracing::warn!(
+                            kb_id,
+                            budget_s = LESSON_RETRIEVAL_BUDGET.as_secs(),
+                            "lesson retrieval exceeded its budget; continuing without supplementary fragments"
+                        );
+                    }
+                }
+            }
+        }
+        grounding.fragments = crate::generation::enforce_grounding_budget(
+            grounding.fragments,
+            &retrieval_terms,
+        );
+        // 预算可能丢掉了补充片段：读数与片段清单保持一致。
+        grounding.supplements = grounding
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.role == ExcerptRole::Supplement)
+            .count();
+        grounding
     }
 
     /// Full lesson view for one lesson, including the sectioned body. The
@@ -159,7 +388,8 @@ impl LearningService {
         }
 
         let snapshot = sqlx::query(
-            "SELECT title, blueprint_json, samples_json, learning_goal FROM learning_courses WHERE course_id = ?",
+            "SELECT title, blueprint_json, samples_json, learning_goal, source_kb_id, \
+                    samples_meta_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_one(&self.pool)
@@ -173,6 +403,10 @@ impl LearningService {
             .map_err(internal)?
             .map(|goal| goal.trim().to_owned())
             .filter(|goal| !goal.is_empty());
+        // 来源库（t3）：课时写作实时读库的目标库；描述流课程为 None。
+        let source_kb_id: Option<String> = snapshot.try_get("source_kb_id").map_err(internal)?;
+        let samples_meta_json: Option<String> =
+            snapshot.try_get("samples_meta_json").map_err(internal)?;
         let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
         let samples_json: Option<String> = snapshot.try_get("samples_json").map_err(internal)?;
         let blueprint_json = blueprint_json.ok_or_else(|| {
@@ -183,6 +417,18 @@ impl LearningService {
         })?;
         let blueprint: Blueprint = serde_json::from_str(&blueprint_json).map_err(internal)?;
         let samples: Vec<(String, String)> = serde_json::from_str(&samples_json).map_err(internal)?;
+        // 采样披露（t2/t3）：目标词条集的持久化落点。披露读不出（旧快照/坏
+        // JSON）只丢词条集来源，不阻断生成——目标文本会重新切片兜底。
+        let disclosure: Option<SampleDisclosure> = match samples_meta_json.as_deref() {
+            Some(json) => match serde_json::from_str(json) {
+                Ok(disclosure) => Some(disclosure),
+                Err(error) => {
+                    tracing::warn!(%error, "stored sampling disclosure is invalid; ignoring it");
+                    None
+                }
+            },
+            None => None,
+        };
 
         let module_position: i64 = row.try_get("module_position").map_err(internal)?;
         let lesson_position: i64 = row.try_get("position").map_err(internal)?;
@@ -195,15 +441,39 @@ impl LearningService {
             .get(lesson_position as usize)
             .ok_or_else(|| AppError::Internal("outline lesson position out of range".into()))?;
 
-        let excerpt: Option<LessonExcerpt> = lesson.source.as_ref().and_then(|source| {
-            samples
-                .iter()
-                .find(|(path, _)| path == &source.path)
-                .map(|(path, text)| LessonExcerpt {
-                    path: path.clone(),
-                    text: text.clone(),
-                })
-        });
+        // grounding（t3）：primary = 主 source 全文（实时读库），补充 = 检索
+        // 扩读；快照摘录降级为兜底。锚定纪律：检索永不替换主 source。
+        let goal_terms = lesson_goal_terms(disclosure.as_ref(), course_goal.as_deref());
+        let grounding = self
+            .assemble_lesson_grounding(
+                lesson,
+                &samples,
+                &lesson.title,
+                &lesson.purpose,
+                &goal_terms,
+                source_kb_id.as_deref(),
+            )
+            .await;
+        // 读数（票面「读数」项）：命中数/扩读文件数/是否降级——课时写作是否
+        // 真的接上了库，事后可核对（WS 事件 + 进程内日志）。
+        self.emit_lesson_event(serde_json::json!({
+            "phase": "grounding",
+            "lesson_id": lesson_id.as_str(),
+            "primary_live": grounding.primary_live,
+            "hits": grounding.hits,
+            "supplements": grounding.supplements,
+            "degraded": grounding.degraded,
+        }));
+        tracing::info!(
+            lesson_id = lesson_id.as_str(),
+            primary_live = grounding.primary_live,
+            hits = grounding.hits,
+            supplements = grounding.supplements,
+            degraded = grounding.degraded,
+            "lesson grounding assembled"
+        );
+        let excerpts = grounding.fragments;
+        let excerpt: Option<LessonExcerpt> = excerpts.first().cloned();
         let total_lessons: usize = blueprint
             .modules
             .iter()
@@ -227,6 +497,7 @@ impl LearningService {
             next_lesson_title: next_lesson_title.map(str::to_owned),
             purpose: lesson.purpose.clone(),
             excerpt,
+            excerpts,
             outline_tree: crate::generation::build_outline_tree(
                 &blueprint,
                 module_position as usize,
@@ -308,7 +579,7 @@ impl LearningService {
                     lesson_position as usize,
                     total_lessons,
                     next_lesson_title,
-                    context.excerpt.as_ref().map(|e| e.text.as_str()).unwrap_or_default(),
+                    &crate::generation::render_grounding_fragments(&context.excerpts),
                     teaching_style,
                 )
                 .await
@@ -414,6 +685,8 @@ impl LearningService {
             next_lesson_title: None,
             purpose,
             excerpt: None,
+            // 学习图节点不读库：grounding 走到课程目标/范围/前置段落为止。
+            excerpts: Vec::new(),
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: Some(GraphLessonContext {

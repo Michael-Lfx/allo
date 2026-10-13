@@ -160,6 +160,7 @@ mod tests {
             next_lesson_title: None,
             purpose: "理解期权的定义".into(),
             excerpt: None,
+            excerpts: Vec::new(),
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
