@@ -3,6 +3,12 @@
 Flowy 1.0.0 is the first public release. This file records user-facing notes
 at a high level rather than a complete commit log.
 
+## v1.6.2 - 2026-10-13
+
+- The billing page explains credits from the real account: a check-in calendar with each day's credited amount, today's arrival status, the batches that actually expire (including team-seat credits) with their dates, and the sources behind the balance. Plans, packs, and the payment flow are unchanged.
+- Auto model starts on the Economy tier, and a saved model choice is honored while the model catalog is still loading instead of being silently dropped for a system default. Knowledge, Learning, and Eval entry points refuse to start without a resolved model.
+- Payments no longer hijack the page: leaving the payment step discards late order/checkout results, an unconfirmed balance is never rendered as 0, account switches drop the previous account's credit reads, and re-entering the billing page from the sidebar scrolls to the requested section again.
+
 ## 0.1.0-beta.10 - 2026-10-12
 
 - Exporting an expert or a team now carries the package's plugin-level assets (`avatars/`, `bin/`, `scripts/`) alongside the skills. Protocol fingerprint `fp-13` → `fp-14`: two new WebSocket-only methods (`import/assets` lists the snapshot's plugin-level assets with sha256 digests, `import/asset` serves one file base64) and an `assets` / `avatar` pair on the expert pack (`pack_format` 1 → 2), gated by the new `snapshot_assets` capability bit. The SDK's `exportTeam()` writes them at their snapshot-relative paths (`ExportResult.writtenAssets`), so the exported directory is a complete plugin root — a team whose own scripts resolve `PLUGIN_ROOT/bin/init_task.py` two levels above their skill finds it, instead of an export that points at files nobody can produce.
