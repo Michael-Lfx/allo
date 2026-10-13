@@ -453,9 +453,9 @@ const LearningPage: React.FC = () => {
           <CourseGenerationPill
             status={creation.generation.status}
             topic={creation.generation.request.description ?? ''}
-            sources={knowledgeBaseNames(
-              creation.generation.request.knowledge_base_ids ?? [],
-              creation.knowledgeBases
+            sources={(creation.generation.request.knowledge_base_ids ?? []).map(
+              (id) =>
+                creation.knowledgeBases.find((base) => base.knowledge_base_id === id)?.name ?? id
             )}
             onView={() => void creation.openGenerator()}
             onCancel={() => void creation.cancelGeneration()}

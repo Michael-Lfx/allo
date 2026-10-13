@@ -164,7 +164,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         return;
       }
       await generateCourse({
-        knowledge_base_id: selectedKnowledgeBaseId,
+        // 多知识库（t4）：列表提交（首个 = 主来源）；上限与服务端同口径
+        // （MAX_COURSE_KNOWLEDGE_BASES = 5）。
+        knowledge_base_ids: selectedKnowledgeBaseIds.slice(0, MAX_COURSE_KNOWLEDGE_BASES),
         goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,
