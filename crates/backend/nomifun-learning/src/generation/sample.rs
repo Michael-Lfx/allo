@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -406,6 +406,25 @@ pub(crate) struct SampleBaseInput<'a> {
     pub root: &'a Path,
 }
 
+/// [`SampleBaseInput`] 的持有态：阻塞采样任务需要 `'static` 输入，借用态过不
+/// 去——三者的语义（库 id / 库名 / 内容根）由具名字段承载，而不是
+/// `(String, String, PathBuf)` 三元组。
+pub(crate) struct OwnedSampleBaseInput {
+    pub kb_id: String,
+    pub name: String,
+    pub root: PathBuf,
+}
+
+impl<'a> From<&'a SampleBaseInput<'a>> for OwnedSampleBaseInput {
+    fn from(input: &'a SampleBaseInput<'a>) -> Self {
+        Self {
+            kb_id: input.kb_id.to_owned(),
+            name: input.name.to_owned(),
+            root: input.root.to_path_buf(),
+        }
+    }
+}
+
 /// 多库采样的异步入口（t4）：单库逐字走 t2 旧路径（不命名空间化、披露形状
 /// 不变）；多库按库分摊预算、路径带 `{库名}/rel` 命名空间、逐库归属进披露。
 pub(crate) async fn sample_bases_with_budget(
@@ -434,10 +453,7 @@ pub(crate) async fn sample_bases_with_budget(
         .await
         .unwrap_or_else(|_| SampleOutcome::legacy(Vec::new()));
     }
-    let inputs: Vec<(String, String, std::path::PathBuf)> = bases
-        .iter()
-        .map(|base| (base.kb_id.to_owned(), base.name.to_owned(), base.root.to_path_buf()))
-        .collect();
+    let inputs: Vec<OwnedSampleBaseInput> = bases.iter().map(OwnedSampleBaseInput::from).collect();
     let goal = goal.map(ToOwned::to_owned);
     tokio::task::spawn_blocking(move || {
         sample_multi_base_blocking(&inputs, goal.as_deref(), max_files, max_per_file, max_total)
@@ -452,7 +468,7 @@ pub(crate) async fn sample_bases_with_budget(
 /// 命名空间 → 合并清单回到全局字典序（不倒退纪律：结构按路径序读）。
 /// 无目标时逐库走字母序回退，但**仍产出披露**——命名空间需要披露承载库归属。
 fn sample_multi_base_blocking(
-    bases: &[(String, String, std::path::PathBuf)],
+    bases: &[OwnedSampleBaseInput],
     goal: Option<&str>,
     max_files: usize,
     max_per_file: usize,
@@ -463,16 +479,16 @@ fn sample_multi_base_blocking(
     let mut order: Vec<usize> = (0..bases.len()).collect();
     order.sort_by(|left, right| {
         bases[*left]
-            .1
+            .name
             .trim()
-            .cmp(bases[*right].1.trim())
-            .then_with(|| bases[*left].0.cmp(&bases[*right].0))
+            .cmp(bases[*right].name.trim())
+            .then_with(|| bases[*left].kb_id.cmp(&bases[*right].kb_id))
     });
     // 命名空间：库名清洗 + 同库序内消歧（重名库第二个起加 `~2`、`~3`…）。
     let mut namespaces: Vec<String> = vec![String::new(); bases.len()];
     let mut used = HashSet::new();
     for index in &order {
-        let (kb_id, name, _) = &bases[*index];
+        let OwnedSampleBaseInput { kb_id, name, .. } = &bases[*index];
         let base_ns = sanitize_namespace(name, kb_id);
         let mut candidate = base_ns.clone();
         let mut suffix = 2usize;
@@ -486,7 +502,7 @@ fn sample_multi_base_blocking(
     let terms = goal.map(term_slices).unwrap_or_default();
     let select = |root: &Path, quota_files: usize, quota_bytes: usize| -> BaseSelection {
         match goal {
-            Some(goal) => goal_aware_selection(root, goal, &terms, quota_files, max_per_file, quota_bytes),
+            Some(goal) => base_selection_with_terms(root, goal, &terms, quota_files, max_per_file, quota_bytes),
             None => legacy_selection(root, quota_files, max_per_file, quota_bytes),
         }
     };
@@ -507,7 +523,7 @@ fn sample_multi_base_blocking(
         let quota_bytes = (remaining_bytes / remaining_bases)
             .max(MULTI_KB_PER_BASE_MIN_BYTES)
             .min(remaining_bytes);
-        let selection = select(&bases[*index].2, quota_files, quota_bytes);
+        let selection = select(&bases[*index].root, quota_files, quota_bytes);
         remaining_files -= selection.samples.len();
         remaining_bytes -= selection.samples.iter().map(|(_, text)| text.len()).sum::<usize>();
         quotas.push((quota_files, quota_bytes));
@@ -530,7 +546,7 @@ fn sample_multi_base_blocking(
                 let (quota_files, quota_bytes) = quotas[index];
                 let extra_bytes = (extra_files * max_per_file).min(share_bytes);
                 selections[index] = select(
-                    &bases[order[index]].2,
+                    &bases[order[index]].root,
                     quota_files + extra_files,
                     quota_bytes + extra_bytes,
                 );
@@ -543,7 +559,7 @@ fn sample_multi_base_blocking(
     let mut low_score_files: Vec<String> = Vec::new();
     let mut coherence_files = 0usize;
     for (position, index) in order.iter().enumerate() {
-        let (kb_id, name, _) = &bases[*index];
+        let OwnedSampleBaseInput { kb_id, name, .. } = &bases[*index];
         let selection = &selections[position];
         let namespace = &namespaces[*index];
         for (path, excerpt) in &selection.samples {
@@ -591,19 +607,6 @@ fn sample_multi_base_blocking(
         bases: base_disclosures,
     };
     SampleOutcome { samples, disclosure: Some(disclosure) }
-}
-
-/// 目标路径的单库采样（多库分摊复用 [`base_selection`]）。
-fn goal_aware_selection(
-    root: &Path,
-    goal: &str,
-    terms: &[String],
-    max_files: usize,
-    max_per_file: usize,
-    max_total: usize,
-) -> BaseSelection {
-    let selection = base_selection_with_terms(root, goal, terms, max_files, max_per_file, max_total);
-    selection
 }
 
 /// 无目标路径的单库采样：字母序 take + 文件头前缀（旧行为逐字一致）。
@@ -702,10 +705,10 @@ pub(crate) fn rel_path_for_base<'a>(path: &'a str, namespace: Option<&str>) -> &
     }
 }
 
-/// 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
-/// [`SourceSpan::kb_id`]——快照/蓝图/课时三处的库归属由此统一。多库路径按
-/// 命名空间解析；单库裸路径回退唯一来源库；解析不出的保持 `None`（读侧再
-/// 退课程主来源，绝不猜）。
+/// 蓝图的来源标注（t4）：逐课时把**每一条** source 路径解析回来源库，写入
+/// [`SourceSpan::kb_id`]——快照/蓝图/课时三处的库归属由此统一（多引用课时
+/// 的每一条各自标注，t4 评审补齐）。多库路径按命名空间解析；单库裸路径回退
+/// 唯一来源库；解析不出的保持 `None`（读侧再判"无实时来源"，绝不猜）。
 pub(crate) fn annotate_blueprint_sources(
     blueprint: &mut super::Blueprint,
     disclosure: Option<&SampleDisclosure>,
@@ -715,8 +718,13 @@ pub(crate) fn annotate_blueprint_sources(
     let bases = disclosure.map(|d| d.bases.as_slice()).unwrap_or(empty.as_slice());
     for module in &mut blueprint.modules {
         for lesson in &mut module.lessons {
-            let Some(source) = lesson.source.as_mut() else { continue };
-            source.kb_id = base_for_sample_path(&source.path, bases, fallback_ids);
+            // 老形状（只有兼容位 `source`）先升成列表，标注后兼容位重算为
+            // 首个——两个字段的 kb_id 与位序始终一致。
+            lesson.normalize_sources();
+            for source in &mut lesson.sources {
+                source.kb_id = base_for_sample_path(&source.path, bases, fallback_ids);
+            }
+            lesson.normalize_sources();
         }
     }
 }
@@ -761,15 +769,26 @@ fn first_heading_text(content: &str) -> String {
     String::new()
 }
 
-/// 连贯补入（t2 的不倒退纪律）：从已选文件出发，反复补入同目录下字典序紧邻
-/// 的前后文件（库按 01-…09- 编排时，序号相邻 = 字典序相邻），直到预算用尽。
+/// 连贯补入（t2 的不倒退纪律 + t4 评审修复的第二层）：从已选文件出发，反复
+/// 补入结构相邻的文件，直到预算用尽。相邻分两层：
+/// 1. **同目录兄弟**：库按 `01-…09-` 编排成一目录一文件时，序号相邻 = 字典
+///    序相邻（原有规则）；
+/// 2. **同父相邻兄弟目录**：目录即章节的课程式库（`课程/01-章节/lesson.md
+///    …09-章节/…`）每目录只有一个文件，同目录规则必然落空——此时补入前后
+///    相邻兄弟目录的入口文件（前一章取末文件、后一章取首文件），章节主干
+///    因此跨目录连成一条不中断的链。目录相邻 = 数字前缀相邻优先、字典序
+///    兜底（确定性）。
 /// 补入文件即使相关度为 0 也保留（结构优先于相关度，读什么看相关度、按什么
 /// 顺序看看结构）。返回补入的路径，按发现顺序，确定性。
 fn coherence_fill(all: &[String], selected: &HashSet<String>, slots: usize) -> Vec<String> {
     let mut added: Vec<String> = Vec::new();
-    if slots == 0 {
+    if slots == 0 || all.is_empty() {
         return added;
     }
+    // 结构相邻以字典序为准（目录名与文件名同尺）：先规范化顺序，补入结果与
+    // 调用方传入的文件树顺序无关——同一库同一集合在任何路径上都同一份补入。
+    let mut ordered: Vec<&str> = all.iter().map(String::as_str).collect();
+    ordered.sort_unstable();
     let mut queued: HashSet<String> = selected.clone();
     let mut queue: VecDeque<String> = selected.iter().cloned().collect();
     queue.make_contiguous().sort_unstable();
@@ -777,29 +796,100 @@ fn coherence_fill(all: &[String], selected: &HashSet<String>, slots: usize) -> V
         if added.len() >= slots {
             break;
         }
-        let directory = parent_dir(&path);
-        let siblings: Vec<&String> = all
-            .iter()
-            .filter(|candidate| parent_dir(candidate) == directory)
-            .collect();
-        let Some(position) = siblings.iter().position(|candidate| **candidate == path) else {
-            continue;
-        };
-        let neighbours = [
-            position.checked_sub(1).map(|index| siblings[index]),
-            siblings.get(position + 1).copied(),
-        ];
-        for neighbour in neighbours.into_iter().flatten() {
+        for neighbour in structural_neighbours(&ordered, &path) {
             if added.len() >= slots {
                 break;
             }
-            if queued.insert(neighbour.clone()) {
-                added.push(neighbour.clone());
-                queue.push_back(neighbour.clone());
+            if queued.insert(neighbour.to_owned()) {
+                added.push(neighbour.to_owned());
+                queue.push_back(neighbour.to_owned());
             }
         }
     }
     added
+}
+
+/// 一个文件的结构相邻者（顺序即补入优先级）：
+/// 1. 同目录内字典序紧邻的前后文件；
+/// 2. 同父**序号相邻**兄弟目录的入口文件——前一目录的末文件、后一目录的
+///    首文件（只在目录深于根、且本目录带数字前缀时存在；根目录下的散文件
+///    没有"兄弟目录"这层结构）。
+fn structural_neighbours<'a>(ordered: &[&'a str], path: &str) -> Vec<&'a str> {
+    let directory = parent_dir(path);
+    let mut neighbours: Vec<&'a str> = Vec::new();
+    // 第 1 层：同目录兄弟。
+    let siblings: Vec<&str> = ordered
+        .iter()
+        .copied()
+        .filter(|candidate| parent_dir(candidate) == directory)
+        .collect();
+    if let Some(position) = siblings.iter().position(|candidate| *candidate == path) {
+        if let Some(previous) = position.checked_sub(1).and_then(|index| siblings.get(index)) {
+            neighbours.push(previous);
+        }
+        if let Some(next) = siblings.get(position + 1) {
+            neighbours.push(next);
+        }
+    }
+    // 第 2 层：同父序号相邻兄弟目录的入口文件（阅读线跨章续链）。相邻以
+    // 目录名的**数字前缀**为准：只有两侧都带序号的目录才算相邻章节（`01-`
+    // 与 `02-` 与 `10-` 按数值排）。字典序相邻不做触发条件——它会把无关目录
+    //（`misc` 与 `notes`）也连进来，把连贯预算花在噪声上，违背 t2「相关文件
+    // 优先、连贯只占余量」的不倒退纪律。
+    if !directory.is_empty() {
+        if directory_number(directory).is_none() {
+            return neighbours;
+        }
+        let parent = parent_dir(directory);
+        let mut directories: Vec<&str> = Vec::new();
+        for file in ordered {
+            let candidate = parent_dir(file);
+            // 本目录也进列表：它要在有序目录序列里定位，取前后相邻两个。
+            if parent_dir(candidate) == parent && directory_number(candidate).is_some() {
+                directories.push(candidate);
+            }
+        }
+        // 先排序再去重：同一目录的路径在字典序里未必连续（`a/b0.md` 会插进
+        // `a/b/…` 中间），去重必须发生在有序序列上。
+        directories.sort_unstable_by(|left, right| {
+            directory_sort_key(left).cmp(&directory_sort_key(right))
+        });
+        directories.dedup();
+        if let Some(position) = directories.iter().position(|candidate| *candidate == directory) {
+            if let Some(previous) = position.checked_sub(1).and_then(|index| directories.get(index)) {
+                if let Some(entry) = ordered
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|file| parent_dir(file) == *previous)
+                {
+                    neighbours.push(entry);
+                }
+            }
+            if let Some(next) = directories.get(position + 1) {
+                if let Some(entry) = ordered.iter().copied().find(|file| parent_dir(file) == *next) {
+                    neighbours.push(entry);
+                }
+            }
+        }
+    }
+    neighbours
+}
+
+/// 目录名（末段）的数字前缀：`01-章节` → `Some(1)`；无数字前缀（`misc`）
+/// 或非数字（`xx-`）→ `None`——只有带序号的目录参与"相邻章节"判定。
+fn directory_number(dir: &str) -> Option<i64> {
+    let name = dir.rsplit('/').next().unwrap_or(dir);
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse::<i64>().ok()
+}
+
+/// 目录排序键：按数字前缀的数值比（`2-章` 在 `10-章` 之前——课程章节的序号
+/// 顺序，不是字符串顺序），同值按目录名字典序。只用于带序号的目录集合，
+/// 无序号目录不在此排序里。确定性纯函数。
+fn directory_sort_key(dir: &str) -> (i64, &str) {
+    let name = dir.rsplit('/').next().unwrap_or(dir);
+    (directory_number(dir).unwrap_or(i64::MAX), name)
 }
 
 /// 路径的目录部分（`a/b/c.md` → `a/b`；顶层文件 → 空串）。同目录判据。
@@ -1017,7 +1107,7 @@ pub(crate) async fn sample_bases(
     // A local folder's public `root_path` is its read-only source location.
     // Course generation samples the app-managed Markdown projection so it
     // sees converted documents while the source remains available.
-    let mut resolved: Vec<(String, String, std::path::PathBuf)> = Vec::with_capacity(knowledge_base_ids.len());
+    let mut resolved: Vec<OwnedSampleBaseInput> = Vec::with_capacity(knowledge_base_ids.len());
     for kb_id in knowledge_base_ids {
         if knowledge_base_ids.len() == 1 {
             let content_root = knowledge.content_root_for_base(kb_id).await?;
@@ -1026,7 +1116,11 @@ pub(crate) async fn sample_bases(
                     "selected knowledge base content directory does not exist".into(),
                 ));
             }
-            resolved.push((kb_id.clone(), String::new(), content_root));
+            resolved.push(OwnedSampleBaseInput {
+                kb_id: kb_id.clone(),
+                name: String::new(),
+                root: content_root,
+            });
             continue;
         }
         // 逐库核验存在（写票面要求）：库不存在/内容根缺失按库跳过，披露里
@@ -1034,18 +1128,26 @@ pub(crate) async fn sample_bases(
         let name = match knowledge.get_base_info(kb_id).await {
             Ok(base) => base.name,
             Err(_) => {
-                resolved.push((kb_id.clone(), kb_id.clone(), std::path::PathBuf::from("")));
+                resolved.push(OwnedSampleBaseInput {
+                    kb_id: kb_id.clone(),
+                    name: kb_id.clone(),
+                    root: std::path::PathBuf::new(),
+                });
                 continue;
             }
         };
         let content_root = knowledge
             .content_root_for_base(kb_id)
             .await
-            .unwrap_or_else(|_| std::path::PathBuf::from(""));
-        resolved.push((kb_id.clone(), name, content_root));
+            .unwrap_or_else(|_| std::path::PathBuf::new());
+        resolved.push(OwnedSampleBaseInput {
+            kb_id: kb_id.clone(),
+            name,
+            root: content_root,
+        });
     }
     let outcome = if knowledge_base_ids.len() == 1 {
-        let root = &resolved[0].2;
+        let root = &resolved[0].root;
         match goal {
             // 目标词条化为空（纯标点等）时按无目标处理：预算与行为都回到旧路径。
             Some(goal) if goal_aware => {
@@ -1058,10 +1160,10 @@ pub(crate) async fn sample_bases(
     } else {
         let inputs: Vec<SampleBaseInput<'_>> = resolved
             .iter()
-            .map(|(kb_id, name, root)| SampleBaseInput {
-                kb_id: kb_id.as_str(),
-                name: name.as_str(),
-                root: root.as_path(),
+            .map(|base| SampleBaseInput {
+                kb_id: base.kb_id.as_str(),
+                name: base.name.as_str(),
+                root: base.root.as_path(),
             })
             .collect();
         sample_bases_with_budget(&inputs, goal, max_files, max_per_file, max_total).await
@@ -1251,6 +1353,103 @@ mod tests {
         let disclosure = outcome.disclosure.unwrap();
         assert_eq!(disclosure.coherence_files, 8, "仅 1 章直接相关，其余靠连贯预算");
         assert!(disclosure.low_score_files.is_empty(), "补入的低分章节不算未采样");
+    }
+
+    /// 目录即章节的课程式库专项（t4 评审修复）：一章一目录（`课程/01-章节/
+    /// lesson.md`）时同目录兄弟规则必然落空——第二层「同父相邻兄弟目录」
+    /// 把章节主干连成一条不中断的链；清单元顺序仍是字典序。
+    #[tokio::test]
+    async fn goal_sampling_keeps_a_directory_per_chapter_trunk_intact() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let chapters = [
+            "01-开篇与学习方法",
+            "02-数据结构基础",
+            "03-流程控制",
+            "04-函数与模块",
+            "05-聚类分析入门",
+            "06-回归与预测",
+            "07-模型评估",
+            "08-工程落地",
+            "09-综合实战",
+        ];
+        for chapter in chapters {
+            let body = if chapter.starts_with("05") {
+                "# 聚类分析入门\nK-means 的直觉：把样本按距离聚成簇。"
+            } else {
+                // 其余章节不含任何目标词条——只有跨目录的结构相邻把它们连起来。
+                "# 章节正文\n本节覆盖本主题的基础内容与例题。"
+            };
+            write_file(root, &format!("课程/{chapter}/lesson.md"), body).await;
+        }
+        // 每章还带一份附录（不含目标词条）：章内多文件的阅读顺序由第一层
+        //（同目录兄弟）续上。
+        write_file(root, "课程/02-数据结构基础/附录.md", "# 附录\n常见问题与术语表。").await;
+
+        let outcome = sample_goal_aware_with_budget(
+            root,
+            "掌握聚类分析",
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+        let paths: Vec<&str> = outcome.samples.iter().map(|(path, _)| path.as_str()).collect();
+        for chapter in chapters {
+            let expected = format!("课程/{chapter}/lesson.md");
+            assert!(
+                paths.contains(&expected.as_str()),
+                "目录式章节主干不断链，缺少 {expected}: {paths:?}"
+            );
+        }
+        assert!(
+            paths.contains(&"课程/02-数据结构基础/附录.md"),
+            "章内附录由同目录兄弟规则补入: {paths:?}"
+        );
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "清单元顺序仍是字典序");
+        let disclosure = outcome.disclosure.unwrap();
+        assert_eq!(
+            disclosure.coherence_files, 9,
+            "1 章相关 + 章内附录 + 8 章跨目录续链"
+        );
+        assert!(disclosure.low_score_files.is_empty(), "补入的低分章节不算未采样");
+    }
+
+    /// 「目录名数字前缀相邻」的确定性口径：`2-章` 排在 `10-章` 之前（章节
+    /// 序号顺序，不是字符串顺序）——补入沿序号前进，不跳到 10 章。
+    #[test]
+    fn coherence_fill_walks_numbered_sibling_directories_in_numeric_order() {
+        let all: Vec<String> = (1..=12)
+            .map(|index| format!("课程/{index}-章/lesson.md"))
+            .collect();
+        let selected: HashSet<String> = HashSet::from(["课程/1-章/lesson.md".to_owned()]);
+        let filled = coherence_fill(&all, &selected, 3);
+        assert_eq!(
+            filled,
+            vec![
+                "课程/2-章/lesson.md".to_owned(),
+                "课程/3-章/lesson.md".to_owned(),
+                "课程/4-章/lesson.md".to_owned(),
+            ]
+        );
+    }
+
+    /// 第二层的边界：只在**同父**的兄弟目录之间续链（`a/01` 与 `b/01` 不是
+    /// 相邻章节），根目录散文件不产生伪相邻，预算为 0 时一条不补。
+    #[test]
+    fn coherence_fill_only_walks_sibling_directories_under_the_same_parent() {
+        let all: Vec<String> = vec![
+            "a/01-章/lesson.md".to_owned(),
+            "b/01-章/lesson.md".to_owned(),
+            "top.md".to_owned(),
+        ];
+        let selected: HashSet<String> = HashSet::from(["a/01-章/lesson.md".to_owned()]);
+        // a/01 的兄弟目录只在 a 下（没有）——b/01 与它是异父目录，top.md 是
+        // 根散文件：都没有结构相邻，一条也不补。
+        assert!(coherence_fill(&all, &selected, 5).is_empty());
+        assert!(coherence_fill(&all, &selected, 0).is_empty(), "预算为 0 不补");
     }
 
     /// 无目标路径（t1 的兼容路径）：与旧行为逐字一致——字母序 take + 文件头
