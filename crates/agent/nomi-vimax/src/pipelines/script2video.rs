@@ -23,7 +23,8 @@ use crate::session::{
 use crate::shot_packet::{
     self, apply_packet_to_shot, archive_live_take, bind_prompt_with_override, continuity_unbound,
     load_packet, merge_live_audio_refs, merge_live_image_refs, refresh_run_state_from_disk,
-    resolve_audio_slot_paths, resolve_slot_paths, save_packet, slots_from_audio_pairs,
+    resolve_audio_slot_paths, resolve_packet_duration, resolve_slot_paths, save_packet,
+    slots_from_audio_pairs,
     slots_from_image_pairs, usable_audio_slots, usable_image_slots, RenderMode, ShotPacket,
     ShotReviewDecision, ShotRunState,
 };
@@ -1125,8 +1126,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 }
             }
 
-            let session_root = resolve_session_root(&self.working_dir);
-            if let Ok(packet) = refresh_shot_packet(
+            let packet = match refresh_shot_packet(
                 &self.working_dir,
                 shot,
                 characters,
@@ -1141,61 +1141,88 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
             )
             .await
             {
-                let video_exists = media_local::is_usable_video_file(
-                    &self
-                        .working_dir
-                        .join("shots")
-                        .join(shot.idx.to_string())
-                        .join("video.mp4"),
-                );
-                if let Some(bridge) = &self.backends.review {
-                    if bridge.mode() == RenderMode::ShotReview && !video_exists {
-                        let pending = PendingShotReview {
-                            scene_root: packet.scene_root.clone(),
-                            shot_idx: shot.idx,
-                            scene_idx: shot_packet::scene_idx_from_dir(&self.working_dir),
-                            duration_secs,
-                            image_ref_count: usable_image_slots(&packet).len(),
-                            audio_ref_count: usable_audio_slots(&packet).len(),
-                        };
-                        if let Ok(Some(mut p)) = load_packet(&self.working_dir, shot.idx).await {
-                            p.run_state = ShotRunState::AwaitingReview;
-                            let _ = save_packet(&self.working_dir, &p).await;
-                        }
-                        bridge.set_pending(Some(pending.clone()));
-                        emit_meta(
-                            progress,
-                            "shot_awaiting_review",
-                            &format!(
-                                "镜头 {} / {} 待过审",
-                                i + 1,
-                                shots.len()
-                            ),
-                            serde_json::json!({
-                                "shot_idx": shot.idx,
-                                "scene_root": pending.scene_root,
-                                "scene_idx": pending.scene_idx,
-                                "duration_secs": duration_secs,
-                                "image_ref_count": pending.image_ref_count,
-                                "audio_ref_count": pending.audio_ref_count,
-                            }),
-                        );
-                        let cancel = self
-                            .backends
-                            .cancel
-                            .clone()
-                            .unwrap_or_else(CancellationToken::new);
-                        match bridge.wait(&cancel).await? {
-                            ShotReviewDecision::Approve => {}
-                            ShotReviewDecision::SwitchToContinuous => {
+                Ok(packet) => Some(packet),
+                Err(e) => {
+                    tracing::warn!(
+                        shot = shot.idx,
+                        error = %e,
+                        "shot packet refresh failed; review gate still applies"
+                    );
+                    None
+                }
+            };
+            let video_exists = media_local::is_usable_video_file(
+                &self
+                    .working_dir
+                    .join("shots")
+                    .join(shot.idx.to_string())
+                    .join("video.mp4"),
+            );
+            if let Some(bridge) = &self.backends.review {
+                if bridge.mode() == RenderMode::ShotReview && !video_exists {
+                    let scene_root = packet.as_ref().map(|p| p.scene_root.clone()).unwrap_or_else(
+                        || {
+                            shot_packet::scene_root_rel(
+                                &resolve_session_root(&self.working_dir),
+                                &self.working_dir,
+                            )
+                        },
+                    );
+                    let pending_duration = packet
+                        .as_ref()
+                        .and_then(|p| p.duration_secs)
+                        .filter(|secs| *secs > 0)
+                        .unwrap_or(duration_secs);
+                    let pending = PendingShotReview {
+                        scene_root,
+                        shot_idx: shot.idx,
+                        scene_idx: shot_packet::scene_idx_from_dir(&self.working_dir),
+                        duration_secs: pending_duration,
+                        image_ref_count: packet
+                            .as_ref()
+                            .map(|p| usable_image_slots(p).len())
+                            .unwrap_or(0),
+                        audio_ref_count: packet
+                            .as_ref()
+                            .map(|p| usable_audio_slots(p).len())
+                            .unwrap_or(0),
+                    };
+                    if let Ok(Some(mut p)) = load_packet(&self.working_dir, shot.idx).await {
+                        p.run_state = ShotRunState::AwaitingReview;
+                        let _ = save_packet(&self.working_dir, &p).await;
+                    }
+                    bridge.set_pending(Some(pending.clone()));
+                    emit_meta(
+                        progress,
+                        "shot_awaiting_review",
+                        &format!("镜头 {} / {} 待过审", i + 1, shots.len()),
+                        serde_json::json!({
+                            "shot_idx": shot.idx,
+                            "scene_root": pending.scene_root,
+                            "scene_idx": pending.scene_idx,
+                            "duration_secs": pending.duration_secs,
+                            "image_ref_count": pending.image_ref_count,
+                            "audio_ref_count": pending.audio_ref_count,
+                        }),
+                    );
+                    let cancel = self
+                        .backends
+                        .cancel
+                        .clone()
+                        .unwrap_or_else(CancellationToken::new);
+                    match bridge.wait(&cancel).await? {
+                        ShotReviewDecision::Approve => {}
+                        ShotReviewDecision::SwitchToContinuous => {
+                            // Submitters already set Continuous. Do not clobber a
+                            // later header switch back to shot review.
+                            if bridge.mode() == RenderMode::ShotReview {
                                 bridge.set_mode(RenderMode::Continuous);
                             }
-                            ShotReviewDecision::Stop => return Err(VimaxError::Cancelled),
                         }
-                        bridge.set_pending(None);
+                        ShotReviewDecision::Stop => return Err(VimaxError::Cancelled),
                     }
+                    bridge.set_pending(None);
                 }
-                let _ = session_root;
             }
 
             let shot_started = std::time::Instant::now();
@@ -1776,6 +1803,7 @@ pub(crate) async fn refresh_shot_packet(
         packet.location_id = seeded.location_id;
         packet.cam_idx = seeded.cam_idx;
     }
+    let duration_secs = resolve_packet_duration(&packet, duration_secs);
     packet.duration_secs = Some(duration_secs);
     packet.seam = format!("{seam:?}").to_ascii_lowercase();
 

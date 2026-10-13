@@ -5,7 +5,7 @@ import { Left, LoadingFour, Right, VideoOne } from '@icon-park/react';
 import { approveShot, cancelSession, getArtifact, listShotPackets } from '../api';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import type { ShotPacket, ShotRunState } from '../types';
-import ShotPacketInspector from './ShotPacketInspector';
+import ShotPacketInspector, { type ShotPacketInspectorHandle } from './ShotPacketInspector';
 import { seekMediaElementToFirstFrame } from '../mediaFirstFrame';
 import { useArtifactMediaUrl } from '../useArtifactMediaUrl';
 import {
@@ -32,7 +32,7 @@ import {
   type StoryboardVideoSlotStatus,
 } from '../storyboardVideoStatus';
 import type { ArtifactNode } from '../types';
-import { patchRunStatus, useRunStatusFull } from '../useRunStatusFeed';
+import { patchShotReviewReleased, useRunStatusFull } from '../useRunStatusFeed';
 import styles from '../index.module.css';
 
 function packetKey(sceneRoot: string | undefined, shotIdx: number | undefined): string {
@@ -64,6 +64,8 @@ function shotBadgeClass(state: ShotRunState | 'ready' | undefined): string {
   }
 }
 
+export type ShotReviewFlush = () => Promise<void>;
+
 interface StoryboardBoardProps {
   sessionId: string;
   artifacts: ArtifactNode[];
@@ -73,6 +75,10 @@ interface StoryboardBoardProps {
   onFocusScene?: (sceneId: string) => void;
   /** Published clip count for the panel header. */
   onShotCount?: (count: number) => void;
+  /** 1-based filmstrip number of the gated shot, or null when idle. */
+  onPendingReviewNumber?: (number: number | null) => void;
+  onReviewDirtyChange?: (dirty: boolean) => void;
+  onRegisterReviewFlush?: (flush: ShotReviewFlush | null) => void;
   imageModel?: string | null;
   videoModel?: string | null;
 }
@@ -213,6 +219,9 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   focusSceneId,
   onFocusScene,
   onShotCount,
+  onPendingReviewNumber,
+  onReviewDirtyChange,
+  onRegisterReviewFlush,
   imageModel,
   videoModel,
 }) => {
@@ -233,6 +242,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const [packets, setPackets] = useState<ShotPacket[]>([]);
   const [inspectorDirty, setInspectorDirty] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const inspectorRef = useRef<ShotPacketInspectorHandle>(null);
 
   const generatingTarget = useMemo(
     () => activeVideoGenerationTarget(runStatus),
@@ -299,6 +309,19 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     onShotCount?.(scenes.length);
   }, [onShotCount, scenes.length]);
 
+  useEffect(() => {
+    onReviewDirtyChange?.(inspectorDirty);
+  }, [inspectorDirty, onReviewDirtyChange]);
+
+  const flushInspector = useCallback(async () => {
+    await inspectorRef.current?.flushPendingSave();
+  }, []);
+
+  useEffect(() => {
+    onRegisterReviewFlush?.(flushInspector);
+    return () => onRegisterReviewFlush?.(null);
+  }, [flushInspector, onRegisterReviewFlush]);
+
   // Snap once when the agent focuses a new shot. Re-applying on every
   // `scenes` rebuild (artifact poll) stole the card the user just clicked.
   const syncedFocusSceneIdRef = useRef<string | null>(null);
@@ -314,6 +337,17 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     ? packetKey(pendingReview.scene_root, pendingReview.shot_idx)
     : '';
   const pendingSyncedRef = useRef('');
+  const pendingFilmstripNumber = useMemo(() => {
+    if (!pendingReview) return null;
+    const match = scenes.find(
+      (scene) => packetKey(scene.sceneRoot, scene.shotIndex) === pendingKey
+    );
+    if (match) return match.index + 1;
+    return pendingReview.shot_idx + 1;
+  }, [pendingKey, pendingReview, scenes]);
+  useEffect(() => {
+    onPendingReviewNumber?.(pendingFilmstripNumber);
+  }, [onPendingReviewNumber, pendingFilmstripNumber]);
   useEffect(() => {
     if (!pendingKey || scenes.length === 0) return;
     if (pendingSyncedRef.current === pendingKey) return;
@@ -492,16 +526,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
   const mainIsVideo = Boolean(activeScene.videoPath);
   const sceneNumber = activeScene.index + 1;
   const activePacket = packetForScene(packets, activeScene);
-  const pendingScene = pendingReview
-    ? scenes.find(
-        (scene) =>
-          packetKey(scene.sceneRoot, scene.shotIndex) ===
-          packetKey(pendingReview.scene_root, pendingReview.shot_idx)
-      )
-    : undefined;
-  const pendingNumber = pendingScene ? pendingScene.index + 1 : pendingReview?.shot_idx != null
-    ? pendingReview.shot_idx + 1
-    : 0;
+  const pendingNumber = pendingFilmstripNumber ?? 0;
   const reviewLocked =
     awaitingReview &&
     Boolean(pendingReview) &&
@@ -511,18 +536,17 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     videoStatusFor(activeScene) === 'generating' || activePacket?.run_state === 'generating';
 
   const handleApprove = async (switchToContinuous = false) => {
-    if (!pendingReview || inspectorDirty) return;
+    if (!pendingReview) return;
     setReviewBusy(true);
     try {
+      await inspectorRef.current?.flushPendingSave();
       await approveShot(
         sessionId,
         pendingReview.scene_root,
         pendingReview.shot_idx,
         switchToContinuous
       );
-      if (switchToContinuous) {
-        patchRunStatus({ render_mode: 'continuous' });
-      }
+      patchShotReviewReleased(switchToContinuous);
     } catch (err) {
       message.error(err instanceof Error ? err.message : String(err));
     } finally {
@@ -547,6 +571,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
     <div className={styles.storyboardLayout}>
       <div className={`${styles.storyStage} ${pendingReview ? styles.storyStageReview : ''}`}>
         <ShotPacketInspector
+          ref={inspectorRef}
           sessionId={sessionId}
           scene={activeScene}
           artifacts={artifacts}
@@ -599,7 +624,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               })}
               {inspectorDirty
                 ? ` · ${t('videoGeneration.studio.storyboard.saveBeforeApprove', {
-                    defaultValue: '请先保存脚本',
+                    defaultValue: '确认时会先保存修改',
                   })}`
                 : ''}
             </div>
@@ -607,7 +632,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               <button
                 type='button'
                 className={styles.shotReviewPrimary}
-                disabled={inspectorDirty || reviewBusy}
+                disabled={reviewBusy}
                 data-testid='shot-review-approve'
                 onClick={() => void handleApprove(false)}
               >
@@ -683,7 +708,11 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
               packetKey(scene.sceneRoot, scene.shotIndex) ===
                 packetKey(pendingReview.scene_root, pendingReview.shot_idx);
             const thumbPath = scene.imagePath ?? scene.videoPath;
-            const badge = storyboardFilmstripBadge({ runState, videoStatus: status });
+            const badge = storyboardFilmstripBadge({
+              runState,
+              videoStatus: status,
+              sessionAwaitingReview: awaitingReview,
+            });
             const badgeLabel =
               badge === 'awaiting_review'
                 ? t('videoGeneration.studio.storyboard.badgeReview', { defaultValue: '待过审' })

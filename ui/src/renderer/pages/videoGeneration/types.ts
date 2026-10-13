@@ -132,6 +132,16 @@ export interface PendingShotReview {
   audio_ref_count: number;
 }
 
+/** 1-based filmstrip number when known; otherwise 1-based idx within the scene. */
+export function displayReviewShotNumber(
+  pending?: PendingShotReview | null,
+  filmstripNumber?: number | null
+): number {
+  if (typeof filmstripNumber === 'number' && filmstripNumber > 0) return filmstripNumber;
+  if (pending != null && Number.isFinite(pending.shot_idx)) return pending.shot_idx + 1;
+  return 0;
+}
+
 export interface FilmInfo {
   version: number;
   current: boolean;

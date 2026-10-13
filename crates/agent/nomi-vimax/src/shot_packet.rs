@@ -595,6 +595,18 @@ pub fn apply_patch(packet: &mut ShotPacket, patch: &ShotPacketPatch) -> PacketPa
     }
 }
 
+/// Keep a director-set duration across packet refresh; otherwise take the planner value.
+pub fn resolve_packet_duration(packet: &ShotPacket, planned: u32) -> u32 {
+    if packet.user_edited {
+        packet
+            .duration_secs
+            .filter(|secs| *secs > 0)
+            .unwrap_or(planned)
+    } else {
+        planned
+    }
+}
+
 pub fn next_ref_slot(slots: &[ShotRefSlot]) -> u32 {
     slots.iter().map(|slot| slot.slot).max().unwrap_or(0) + 1
 }
@@ -1505,6 +1517,19 @@ mod tests {
         assert_eq!(packet.beats.len(), 2);
         assert_eq!(packet.beats[1].cam_idx, 1);
         assert_eq!(packet.location_id, "INT. CAFE");
+    }
+
+    #[test]
+    fn resolve_duration_keeps_user_edit() {
+        let mut packet = packet_from_shot("idea2video/scene_0", &sample_shot());
+        packet.user_edited = true;
+        packet.duration_secs = Some(12);
+        assert_eq!(resolve_packet_duration(&packet, 8), 12);
+        packet.user_edited = false;
+        assert_eq!(resolve_packet_duration(&packet, 8), 8);
+        packet.user_edited = true;
+        packet.duration_secs = Some(0);
+        assert_eq!(resolve_packet_duration(&packet, 8), 8);
     }
 
     #[test]

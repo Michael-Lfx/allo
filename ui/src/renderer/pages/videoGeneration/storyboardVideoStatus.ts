@@ -180,9 +180,16 @@ export function resolveStoryboardVideoStatus(options: {
 export function storyboardFilmstripBadge(options: {
   runState?: ShotRunState | null;
   videoStatus: StoryboardVideoSlotStatus;
+  /** When false, a leftover packet `awaiting_review` is not a live gate. */
+  sessionAwaitingReview?: boolean;
 }): StoryboardFilmstripBadge | null {
   const runState = options.runState ?? undefined;
-  if (runState === 'awaiting_review') return 'awaiting_review';
+  if (runState === 'awaiting_review') {
+    if (options.sessionAwaitingReview === false) {
+      return options.videoStatus === 'ready' ? 'ready' : null;
+    }
+    return 'awaiting_review';
+  }
   if (runState === 'generating' || options.videoStatus === 'generating') return 'generating';
   if (runState === 'script_stale') return 'script_stale';
   if (runState === 'continuity_stale') return 'continuity_stale';

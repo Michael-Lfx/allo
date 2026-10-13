@@ -12,6 +12,7 @@ interface StudioSessionComposerProps {
   assetsBlocked?: boolean;
   busyKind?: 'planning' | 'rendering' | null;
   reviewShotNumber?: number | null;
+  reviewDirty?: boolean;
 }
 
 const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
@@ -23,6 +24,7 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
   assetsBlocked,
   busyKind,
   reviewShotNumber,
+  reviewDirty,
 }) => {
   const { t } = useTranslation();
   const busy = action === 'stop';
@@ -61,10 +63,14 @@ const StudioSessionComposer: React.FC<StudioSessionComposerProps> = ({
         defaultValue: '请先在左侧上传角色图和参考视频',
       })
     : reviewing
-      ? t('videoGeneration.agentSession.hint.reviewWaiting', {
-          number: reviewShotNumber ?? '—',
-          defaultValue: '第 {{number}} 镜等待确认，也可在左侧过审条操作',
-        })
+      ? reviewDirty
+        ? t('videoGeneration.studio.storyboard.saveBeforeApprove', {
+            defaultValue: '确认时会先保存修改',
+          })
+        : t('videoGeneration.agentSession.hint.reviewWaiting', {
+            number: reviewShotNumber ?? '—',
+            defaultValue: '第 {{number}} 镜等待确认，点「确认生成本镜」即可继续',
+          })
       : busy
         ? stopHint
         : null;
