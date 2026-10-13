@@ -97,13 +97,18 @@ export default defineConfig(({ mode }) => {
   // Gated on `mode === 'webdev'` so plain `ui:dev` and the Tauri desktop dev
   // server (mode 'development', which talks to the embedded backend via an
   // absolute `window.__backendPort` URL) are completely unaffected.
-  const webdev = mode === 'webdev' || mode === 'development';
+  const webdev = mode === 'webdev';
   const apiPort = process.env.NOMIFUN_WEB_PORT ?? '8787';
   const apiTarget = `http://127.0.0.1:${apiPort}`;
   const wsTarget = `ws://127.0.0.1:${apiPort}`;
   // Same loopback host on both sides — keep the original Host header so the
   // backend's host-only session cookie maps cleanly back onto 127.0.0.1:5173.
-  const httpProxy = { target: apiTarget, changeOrigin: false };
+  const handleProxyError = (proxy: any) => {
+    proxy.on('error', (_err: any) => {
+      // Gracefully swallow proxy errors when backend is not listening or restarting
+    });
+  };
+  const httpProxy = { target: apiTarget, changeOrigin: false, configure: handleProxyError };
   const proxy = webdev
     ? {
         '/api': httpProxy,
@@ -111,7 +116,7 @@ export default defineConfig(({ mode }) => {
         '/logout': httpProxy,
         '/qr-login': httpProxy,
         '/health': httpProxy,
-        '/ws': { target: wsTarget, ws: true, changeOrigin: false },
+        '/ws': { target: wsTarget, ws: true, changeOrigin: false, configure: handleProxyError },
       }
     : undefined;
 
