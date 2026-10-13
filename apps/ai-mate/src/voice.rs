@@ -154,6 +154,31 @@ impl VoiceCompanionRuntime {
         }
     }
 
+    /// Handle far-field wake event with specific matched keyword.
+    pub async fn handle_wake_keyword(&self, keyword: &str) {
+        if !self.oobe_manager.is_paired().await {
+            warn!("Wake received but device is not yet paired via OOBE");
+            let _ = self.playback.play_earcon(EarconKind::Alert).await;
+            return;
+        }
+
+        if !self.model_manager.get_status().await.state.is_ready() {
+            warn!("Wake received but voice models are not yet installed or verified");
+            let _ = self.playback.play_earcon(EarconKind::Alert).await;
+            return;
+        }
+
+        let mut driver = self.driver.lock().await;
+        if let Ok(next) = driver.handle_event(AcousticEvent::WakeHit) {
+            info!(state = ?next, keyword, "Wake hit accepted, transitioning to listening");
+            let _ = self.event_tx.send(VoiceCompanionEvent::WakeHit {
+                keyword: keyword.to_string(),
+            });
+            let _ = self.event_tx.send(VoiceCompanionEvent::Listening);
+            let _ = self.playback.play_earcon(EarconKind::Wake).await;
+        }
+    }
+
     /// Internal helper to run ASR transcription, Qwen intent routing, TTS synthesis and FSM dispatch.
     async fn process_utterance(
         utterance_pcm: &[f32],

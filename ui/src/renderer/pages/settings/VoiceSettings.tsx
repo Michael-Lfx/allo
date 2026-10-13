@@ -259,8 +259,11 @@ const VoiceSettings: React.FC = () => {
   const [kwsLiveStatus, setKwsLiveStatus] = useState<KwsLiveStatus>('listening');
   const [dashboardLogs, setDashboardLogs] = useState<DashboardLogEntry[]>([]);
   const companionAbortControllerRef = useRef<AbortController | null>(null);
+  const speechSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const monitorAudioContextRef = useRef<AudioContext | null>(null);
   const monitorStreamRef = useRef<MediaStream | null>(null);
+  const monitorProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const monitorDummyGainRef = useRef<GainNode | null>(null);
   const monitorAnimFrameRef = useRef<number | null>(null);
 
   // Motion reduction and ready micro-motion states per ui-motion.zh.md §2 & §3
@@ -309,11 +312,23 @@ const VoiceSettings: React.FC = () => {
       if (asrTimerRef.current) {
         clearTimeout(asrTimerRef.current);
       }
+      if (speechSilenceTimerRef.current) {
+        clearTimeout(speechSilenceTimerRef.current);
+      }
       if (companionAbortControllerRef.current) {
         companionAbortControllerRef.current.abort();
       }
       if (monitorAnimFrameRef.current) {
         cancelAnimationFrame(monitorAnimFrameRef.current);
+      }
+      if (monitorProcessorRef.current) {
+        monitorProcessorRef.current.disconnect();
+        monitorProcessorRef.current.onaudioprocess = null;
+        monitorProcessorRef.current = null;
+      }
+      if (monitorDummyGainRef.current) {
+        monitorDummyGainRef.current.disconnect();
+        monitorDummyGainRef.current = null;
       }
       if (monitorAudioContextRef.current) {
         monitorAudioContextRef.current.close().catch(() => {});
@@ -328,12 +343,21 @@ const VoiceSettings: React.FC = () => {
     };
   }, []);
 
-  // Live audio level monitor for KWS dashboard
+  // Live audio level & speech activity monitor for KWS dashboard
   useEffect(() => {
     if (!voiceEnabled || modelStatus !== 'Ready') {
       if (monitorAnimFrameRef.current) {
         cancelAnimationFrame(monitorAnimFrameRef.current);
         monitorAnimFrameRef.current = null;
+      }
+      if (monitorProcessorRef.current) {
+        monitorProcessorRef.current.disconnect();
+        monitorProcessorRef.current.onaudioprocess = null;
+        monitorProcessorRef.current = null;
+      }
+      if (monitorDummyGainRef.current) {
+        monitorDummyGainRef.current.disconnect();
+        monitorDummyGainRef.current = null;
       }
       if (monitorAudioContextRef.current) {
         monitorAudioContextRef.current.close().catch(() => {});
@@ -343,7 +367,12 @@ const VoiceSettings: React.FC = () => {
         monitorStreamRef.current.getTracks().forEach((track) => track.stop());
         monitorStreamRef.current = null;
       }
+      if (speechSilenceTimerRef.current) {
+        clearTimeout(speechSilenceTimerRef.current);
+        speechSilenceTimerRef.current = null;
+      }
       setAudioLevel(0);
+      setKwsLiveStatus('listening');
       return;
     }
 
@@ -386,6 +415,18 @@ const VoiceSettings: React.FC = () => {
         analyser.fftSize = 256;
         source.connect(analyser);
 
+        const actualSampleRate = ctx.sampleRate || 16000;
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        monitorProcessorRef.current = processor;
+
+        const dummyGain = ctx.createGain();
+        dummyGain.gain.value = 0;
+        monitorDummyGainRef.current = dummyGain;
+
+        source.connect(processor);
+        processor.connect(dummyGain);
+        dummyGain.connect(ctx.destination);
+
         const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
         setDashboardLogs((prev) => [
@@ -397,6 +438,167 @@ const VoiceSettings: React.FC = () => {
           },
           ...prev.slice(0, 10),
         ]);
+
+        let speechChunks: Float32Array[] = [];
+        const preRollChunks: Float32Array[] = [];
+        let isSpeaking = false;
+        let isTranscribing = false;
+        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const dispatchTranscription = () => {
+          isSpeaking = false;
+          if (isTranscribing) {
+            speechChunks = [];
+            return;
+          }
+          const chunksToTranscribe = speechChunks;
+          speechChunks = [];
+          const totalSamples = chunksToTranscribe.reduce((acc, c) => acc + c.length, 0);
+          if (totalSamples < actualSampleRate * 0.35) {
+            setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
+            return;
+          }
+
+          isTranscribing = true;
+          const merged = new Float32Array(totalSamples);
+          let offset = 0;
+          for (const c of chunksToTranscribe) {
+            merged.set(c, offset);
+            offset += c.length;
+          }
+
+          const wavBuffer = encodeWavPcm(merged, actualSampleRate);
+          const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const audioBase64 = (reader.result as string) || '';
+            if (!audioBase64 || !isSubscribed) {
+              isTranscribing = false;
+              return;
+            }
+
+            try {
+              const response = await fetch(`${getBaseUrl()}/api/voice/diagnostics/asr-test`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...buildBackendAuthHeaders('POST'),
+                },
+                body: JSON.stringify({
+                  audio_base64: audioBase64,
+                  sample_rate: actualSampleRate,
+                }),
+              });
+
+              if (!isSubscribed) return;
+
+              if (response.ok) {
+                const data = (await response.json()) as VoiceAsrTestResult;
+                const text = data.text ? data.text.trim() : '';
+                if (text) {
+                  const matched = Boolean(data.wake_matched) || isWakePhraseMatch(text);
+                  if (matched) {
+                    setKwsLiveStatus('wake_hit');
+                    setDashboardLogs((logPrev) => [
+                      {
+                        id: `${Date.now()}-wake`,
+                        time: nowTimeStr(),
+                        text: t('voice.dashboard.logWakeHitCascade', { text }),
+                        type: 'wake',
+                      },
+                      ...logPrev.slice(0, 30),
+                    ]);
+
+                    // Trigger wake in background companion daemon
+                    void fetch(`${getBaseUrl()}/api/voice/companion/wake`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...buildBackendAuthHeaders('POST'),
+                      },
+                      body: JSON.stringify({ keyword: text }),
+                    }).catch(() => {});
+                  } else {
+                    setKwsLiveStatus('listening');
+                    setDashboardLogs((logPrev) => [
+                      {
+                        id: `${Date.now()}-asr`,
+                        time: nowTimeStr(),
+                        text: t('voice.dashboard.logWakeMiss', { text }),
+                        type: 'voice',
+                      },
+                      ...logPrev.slice(0, 30),
+                    ]);
+                  }
+                } else {
+                  setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
+                }
+              } else {
+                setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
+              }
+            } catch {
+              setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
+            } finally {
+              isTranscribing = false;
+            }
+          };
+          reader.readAsDataURL(blob);
+        };
+
+        processor.onaudioprocess = (e) => {
+          if (!isSubscribed) return;
+          const input = e.inputBuffer.getChannelData(0);
+          const chunkCopy = new Float32Array(input);
+
+          let sumSq = 0;
+          for (let i = 0; i < input.length; i++) {
+            sumSq += input[i] * input[i];
+          }
+          const rms = Math.sqrt(sumSq / input.length);
+          const isFrameSpeech = rms > 0.015;
+
+          if (isFrameSpeech) {
+            if (!isSpeaking) {
+              isSpeaking = true;
+              speechChunks = [...preRollChunks, chunkCopy];
+              setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'speech'));
+              setDashboardLogs((logPrev) => [
+                {
+                  id: `${Date.now()}-vad`,
+                  time: nowTimeStr(),
+                  text: t('voice.dashboard.logVoiceDetected'),
+                  type: 'voice',
+                },
+                ...logPrev.slice(0, 30),
+              ]);
+            } else {
+              speechChunks.push(chunkCopy);
+            }
+            if (silenceTimer) {
+              clearTimeout(silenceTimer);
+              silenceTimer = null;
+            }
+            const currentTotalSamples = speechChunks.reduce((acc, c) => acc + c.length, 0);
+            if (currentTotalSamples >= actualSampleRate * 4) {
+              dispatchTranscription();
+            }
+          } else {
+            if (!isSpeaking) {
+              preRollChunks.push(chunkCopy);
+              if (preRollChunks.length > 2) {
+                preRollChunks.shift();
+              }
+            } else {
+              speechChunks.push(chunkCopy);
+              if (!silenceTimer) {
+                silenceTimer = setTimeout(() => {
+                  silenceTimer = null;
+                  dispatchTranscription();
+                }, 650);
+              }
+            }
+          }
+        };
 
         const updateMeter = () => {
           if (!isSubscribed) return;
@@ -426,6 +628,15 @@ const VoiceSettings: React.FC = () => {
         cancelAnimationFrame(monitorAnimFrameRef.current);
         monitorAnimFrameRef.current = null;
       }
+      if (monitorProcessorRef.current) {
+        monitorProcessorRef.current.disconnect();
+        monitorProcessorRef.current.onaudioprocess = null;
+        monitorProcessorRef.current = null;
+      }
+      if (monitorDummyGainRef.current) {
+        monitorDummyGainRef.current.disconnect();
+        monitorDummyGainRef.current = null;
+      }
       if (monitorAudioContextRef.current) {
         monitorAudioContextRef.current.close().catch(() => {});
         monitorAudioContextRef.current = null;
@@ -433,6 +644,10 @@ const VoiceSettings: React.FC = () => {
       if (monitorStreamRef.current) {
         monitorStreamRef.current.getTracks().forEach((track) => track.stop());
         monitorStreamRef.current = null;
+      }
+      if (speechSilenceTimerRef.current) {
+        clearTimeout(speechSilenceTimerRef.current);
+        speechSilenceTimerRef.current = null;
       }
     };
   }, [voiceEnabled, modelStatus, t]);

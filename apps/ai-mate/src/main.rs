@@ -172,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_manager,
         (*oobe_manager).clone(),
         Some(voice_runtime.event_sender()),
+        Some(voice_runtime.clone()),
     );
     let server_task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {

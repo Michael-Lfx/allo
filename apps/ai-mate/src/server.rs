@@ -89,6 +89,7 @@ pub struct ServerState {
     pub oobe: OobeManager,
     pub rate_limiter: IpRateLimiter,
     pub voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
+    pub voice_runtime: Option<Arc<crate::voice::VoiceCompanionRuntime>>,
 }
 
 fn get_client_ip(req: &Request) -> String {
@@ -146,14 +147,16 @@ async fn pairing_guard_middleware(
     // 3. Model read-only status and progress stream for the OOBE UI:
     //    GET /api/voice/models/status
     //    GET /api/voice/models/progress
-    // 4. Voice companion live events stream for dashboard observability:
+    // 4. Voice companion live events stream & wake trigger for dashboard observability:
     //    GET /api/voice/events
+    //    POST /api/voice/wake
     let is_whitelisted = path.starts_with("/api/oobe")
         || (method == axum::http::Method::GET && path == "/api/voice/diagnostics/device")
         || (method == axum::http::Method::GET
             && (path == "/api/voice/models/status"
                 || path == "/api/voice/models/progress"
-                || path == "/api/voice/events"));
+                || path == "/api/voice/events"))
+        || (method == axum::http::Method::POST && path == "/api/voice/wake");
 
     if is_whitelisted {
         return next.run(req).await;
@@ -187,6 +190,29 @@ pub async fn voice_events_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+#[derive(serde::Deserialize)]
+pub struct VoiceWakeRequest {
+    pub keyword: Option<String>,
+}
+
+/// `POST /api/voice/wake`: External wake trigger (e.g. from desktop cascade recognizer).
+pub async fn voice_wake_handler(
+    State(state): State<ServerState>,
+    axum::Json(payload): axum::Json<VoiceWakeRequest>,
+) -> impl IntoResponse {
+    let kw = payload.keyword.unwrap_or_else(|| "Hey Flowy".to_string());
+    if let Some(ref rt) = state.voice_runtime {
+        rt.handle_wake_keyword(&kw).await;
+        (StatusCode::OK, Json(json!({"success": true, "keyword": kw}))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"success": false, "error": "Voice runtime not available"})),
+        )
+            .into_response()
+    }
+}
+
 /// Construct the Axum HTTP router with default OOBE manager.
 pub fn build_router(config: &Config, manager: Arc<ModelManager>) -> Router {
     build_router_with_oobe(config, manager, OobeManager::new())
@@ -198,7 +224,7 @@ pub fn build_router_with_oobe(
     manager: Arc<ModelManager>,
     oobe: OobeManager,
 ) -> Router {
-    build_router_full(config, manager, oobe, None)
+    build_router_full(config, manager, oobe, None, None)
 }
 
 /// Construct the Axum HTTP router with all services and companion event streaming.
@@ -207,14 +233,17 @@ pub fn build_router_full(
     manager: Arc<ModelManager>,
     oobe: OobeManager,
     voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
+    voice_runtime: Option<Arc<crate::voice::VoiceCompanionRuntime>>,
 ) -> Router {
     let state = ServerState {
         oobe: oobe.clone(),
         rate_limiter: IpRateLimiter::default(),
         voice_event_tx,
+        voice_runtime,
     };
     let events_router = Router::new()
         .route("/api/voice/events", get(voice_events_handler))
+        .route("/api/voice/wake", axum::routing::post(voice_wake_handler))
         .with_state(state.clone());
 
     Router::new()

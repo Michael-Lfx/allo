@@ -259,6 +259,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
         .route("/api/voice/companion/status", get(companion_status_handler))
         .route("/api/voice/companion/toggle", post(companion_toggle_handler))
         .route("/api/voice/companion/events", get(companion_events_handler))
+        .route("/api/voice/companion/wake", post(companion_wake_handler))
         .with_state(manager)
 }
 
@@ -333,6 +334,48 @@ async fn companion_events_handler(
                 ("cache-control", "no-cache"),
             ],
             "data: {\"type\":\"Idle\"}\n\n",
+        )
+            .into_response(),
+    }
+}
+
+async fn companion_wake_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    let status = manager.status().await;
+    if !status.running {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": "Voice companion is not running"
+            })),
+        )
+            .into_response();
+    }
+
+    let client = reqwest::Client::new();
+    match client
+        .post("http://127.0.0.1:18080/api/voice/wake")
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            let json = resp.json::<serde_json::Value>().await.unwrap_or_default();
+            (status, axum::Json(json)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to proxy wake to companion: {e}")
+            })),
         )
             .into_response(),
     }
