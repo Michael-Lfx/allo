@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockView, StructureView, StructureEdgeView } from '../../types';
 import { BlockDetail } from './BlockDetail';
-import { EDGE_COLORS, HUB_COLOR, buildGroupPalette } from './palette';
+import { EDGE_COLORS, HUB_COLOR, buildGroupPalette, edgeEndpoints } from './palette';
 
 const W = 150;
 const H = 30;
@@ -201,10 +201,9 @@ function NetCanvas({
       graph.setNode(`◇${name}`, { width: W, height: H });
     }
     for (const edge of visibleEdges) {
-      // **方向反转**：assumes 的门语义——从需求方指向前置；这里反向布边，
-      // 让前置排在左（先学侧）。
-      if (edge.edge_type === 'assumes') graph.setEdge(edge.target, edge.source);
-      else graph.setEdge(edge.source, edge.target);
+      // **方向反转**：assumes 的门语义——让前置排在左（先学侧）。
+      const [from, to] = edgeEndpoints(edge);
+      graph.setEdge(from, to);
     }
     dagre.layout(graph);
     const points = new Map<string, { x: number; y: number }>();
@@ -249,16 +248,12 @@ function NetCanvas({
             ))}
           </defs>
           {visibleEdges.map((edge) => {
-            const sourcePoint = pos.get(edge.source) ?? pos.get(`◇${edge.source}`);
-            const targetPoint = pos.get(edge.target) ?? pos.get(`◇${edge.target}`);
-            if (!sourcePoint || !targetPoint) return null;
-            // **边方向反转：assumes = 门**——箭头从「前置」（先有的一方）指向
-            // 「需求方」（要学的一方），读作「先过这道前置门才轮到本块」；
-            // composes 组装方向保持（组装体 → 组件）；contrasts 无方向（虚线）。
-            const [from, to] =
-              edge.edge_type === 'assumes'
-                ? [targetPoint, sourcePoint]
-                : [sourcePoint, targetPoint];
+            // **边方向反转：assumes = 门**（`edgeEndpoints` 单源）——箭头从
+            // 「前置」指向「需求方」；composes 方向保持；contrasts 虚线无箭头。
+            const [fromName, toName] = edgeEndpoints(edge);
+            const from = pos.get(fromName) ?? pos.get(`◇${fromName}`);
+            const to = pos.get(toName) ?? pos.get(`◇${toName}`);
+            if (!from || !to) return null;
             const color = EDGE_COLORS[edge.edge_type] ?? '#94a3b8';
             return (
               <line

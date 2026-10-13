@@ -2,6 +2,9 @@ use super::*;
 
 /// 结构快照里的程度声明回执（内容生成的项目级 grounding；learning_scope 列
 /// 随结构改造退役——快照标量是新的单源）。无快照或标量为空返回空串。
+///
+/// 边界说明（2026-10-13 评审裁定）：回执标量属**用户输入面**的记录，不是
+/// 结构语义面——读取它不构成「结构供内容」违例（CONTEXT.md Structure 豁免注记）。
 fn structure_degree_statement(snapshot: Option<String>) -> String {
     snapshot
         .as_deref()

@@ -295,7 +295,7 @@ impl LearningService {
         }
 
         // 学习图课程：大纲被「下一步推荐节点」取代——next_lesson_id 不参与，
-        // 换成图视图（终点锚 + 罗盘 + 就绪集）。传统课程路径零变化。
+        // 换成图视图（就绪集推荐 + 水位读数）。传统课程路径零变化。
         let graph = if course.course_kind == CourseKind::LearningGraph {
             Some(
                 self.assemble_learning_graph_view(course_id, user_id)

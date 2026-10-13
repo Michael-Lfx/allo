@@ -36,7 +36,8 @@ export type QuestionState = 'unlearned' | 'new' | 'due' | 'scheduled' | 'archive
 export type CourseKind = 'traditional' | 'learning_graph';
 
 /** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
- * 学习图课程只走描述流（描述即学习目标），endpoints 为用户确认过的终点锚。 */
+ * 学习图课程只走描述流（描述即学习目标），程度/基础声明可选（缺省由结构
+ * 生成扩写 / 按纯零基础画地形）。 */
 export interface GenerateCourseRequest {
   course_kind?: CourseKind;
   knowledge_base_id?: string;
@@ -439,7 +440,7 @@ export interface BlockView {
   slug: string;
   spine: string;
   /** 入门 | 进阶 | 高级 */
-  stage: string;
+  stage: '入门' | '进阶' | '高级';
   note: string;
   layer: number;
   no_prereq: boolean;
@@ -449,9 +450,9 @@ export interface StructureEdgeView {
   source: string;
   target: string;
   /** assumes | composes | contrasts（assumes：source = 需求方、target = 前置） */
-  edge_type: string;
+  edge_type: 'assumes' | 'composes' | 'contrasts';
   /** know | use | teach */
-  tier: string;
+  tier: 'know' | 'use' | 'teach';
   note: string;
 }
 
@@ -496,7 +497,7 @@ export interface TerrainDoorView {
   id: string;
   criterion: string;
   /** hard | self_check */
-  kind: string;
+  kind: 'hard' | 'self_check';
 }
 
 /** 学习记录视图：批次时间线（倒序）——生长史即课程史 */

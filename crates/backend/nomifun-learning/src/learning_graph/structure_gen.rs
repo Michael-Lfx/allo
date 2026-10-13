@@ -112,6 +112,7 @@ async fn attempt_once(
         STRUCTURE_SYSTEM,
         &structure_prompt.text,
         crate::generation::STRUCTURE_MAX_TOKENS,
+        Some(structure_prompts::GOAL_DECOMPOSITION.temperature),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -136,6 +137,7 @@ async fn attempt_once(
         STRUCTURE_SYSTEM,
         &terrain_prompt.text,
         crate::generation::STRUCTURE_MAX_TOKENS,
+        Some(structure_prompts::PREREQUISITE_TERRAIN.temperature),
     )
     .await
     .map_err(|error| error.to_string())?;
@@ -283,6 +285,7 @@ mod tests {
             _: &str,
             _: &str,
             _: u32,
+            _: Option<f32>,
         ) -> Result<String, nomifun_common::AppError> {
             let mut replies = self.0.lock().unwrap();
             if replies.is_empty() {

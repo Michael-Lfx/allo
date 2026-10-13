@@ -158,10 +158,16 @@ const LearningGraphWorkspace: React.FC<{
     };
     load();
     // 结构生成的开始/终结帧驱动「生成中」状态机，终结即重取投影。
+    // 失败必须显式清 running——否则首次生成失败会永久停在「生成中…」
+    // （快照仍为 null，load 里无法自行消解）。
     const off = ipcBridge.learning.courseGeneration.on((event) => {
       if (event.course_id !== detail.course.id) return;
       if (event.event === 'structure_started') setStructureRunning(true);
-      if (event.event === 'structure_completed' || event.event === 'structure_failed') load();
+      if (event.event === 'structure_completed') load();
+      if (event.event === 'structure_failed') {
+        setStructureRunning(false);
+        load();
+      }
     });
     return () => {
       cancelled = true;

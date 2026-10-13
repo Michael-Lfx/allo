@@ -50,14 +50,16 @@ pub trait LearningCompleter: Send + Sync {
     /// text-mode fallback: the default implementation fails loudly, and so
     /// does every implementor whose provider lacks the mode. Structure and
     /// terrain generation (the artifact contracts) build on this seam.
+    /// `temperature` 来自提示词资产注册表（`PromptSpec`；None = provider 默认）。
     async fn complete_json(
         &self,
         model_override: Option<(&str, &str)>,
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
-        let _ = (model_override, system, user, max_tokens);
+        let _ = (model_override, system, user, max_tokens, temperature);
         Err(AppError::Conflict(
             "learning structured output unavailable: this completer does not support json mode"
                 .into(),
@@ -74,8 +76,9 @@ pub trait LearningCompleter: Send + Sync {
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
-        self.complete_json(model_override, system, user, max_tokens)
+        self.complete_json(model_override, system, user, max_tokens, temperature)
             .await
     }
 }
