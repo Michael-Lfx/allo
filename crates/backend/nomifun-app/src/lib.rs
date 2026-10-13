@@ -48,6 +48,7 @@ pub mod cli;
 pub mod commands;
 pub mod desktop;
 pub mod meeting_tray;
+pub mod voice_companion_manager;
 // Public because a non-desktop host (`nomifun-web`) has to publish its own
 // LAN-reachable address to the robot endpoint advertiser.
 pub mod lan_endpoint;

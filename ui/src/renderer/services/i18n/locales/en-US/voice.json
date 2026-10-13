@@ -24,7 +24,8 @@
     "downloadingFile": "Downloading {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "Verifying integrity ({{current}}/{{total}})",
     "ready": "Ready",
-    "readyDesc": "Voice engine ready. Say \"Hey Flowy\" to wake up",
+    "readyDesc": "Voice companion is standing by in the background, say \"Hey Flowy\" to wake up",
+    "standbyDesc": "Voice engine ready. Turn on switch to start listening in background",
     "removing": "Releasing disk space",
     "failed": "Installation or verification encountered an issue"
   },

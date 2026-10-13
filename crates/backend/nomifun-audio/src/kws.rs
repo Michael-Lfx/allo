@@ -48,6 +48,12 @@ pub struct KwsResult {
     pub timestamp_ms: u64,
 }
 
+#[cfg(feature = "local-stt")]
+struct NeuralKwsSession {
+    spotter: sherpa_onnx::KeywordSpotter,
+    stream: sherpa_onnx::OnlineStream,
+}
+
 /// Real-time streaming keyword spotter engine.
 pub struct KwsEngine {
     config: KwsEngineConfig,
@@ -55,6 +61,8 @@ pub struct KwsEngine {
     consecutive_hits: usize,
     triggered: bool,
     last_trigger_ms: u64,
+    #[cfg(feature = "local-stt")]
+    neural_session: Option<NeuralKwsSession>,
 }
 
 impl KwsEngine {
@@ -69,13 +77,60 @@ impl KwsEngine {
             return Err("KWS sample_rate must be > 0".into());
         }
 
+        #[cfg(feature = "local-stt")]
+        let neural_session = {
+            let engine_temp = Self {
+                config: config.clone(),
+                processed_samples: 0,
+                consecutive_hits: 0,
+                triggered: false,
+                last_trigger_ms: 0,
+                neural_session: None,
+            };
+            let dir = engine_temp.resolve_neural_kws_dir();
+            Self::try_init_neural(&config, dir.as_deref())
+        };
+
         Ok(Self {
             config,
             processed_samples: 0,
             consecutive_hits: 0,
             triggered: false,
             last_trigger_ms: 0,
+            #[cfg(feature = "local-stt")]
+            neural_session,
         })
+    }
+
+    #[cfg(feature = "local-stt")]
+    fn try_init_neural(config: &KwsEngineConfig, model_dir: Option<&std::path::Path>) -> Option<NeuralKwsSession> {
+        let dir = model_dir?;
+        let encoder = dir.join("encoder.int8.onnx");
+        let decoder = dir.join("decoder.int8.onnx");
+        let joiner = dir.join("joiner.int8.onnx");
+        let tokens = dir.join("tokens.txt");
+        let keywords = dir.join("keywords.txt");
+
+        if !encoder.is_file() || !decoder.is_file() || !joiner.is_file() || !tokens.is_file() {
+            return None;
+        }
+
+        let mut spotter_config = sherpa_onnx::KeywordSpotterConfig::default();
+        spotter_config.feat_config.sample_rate = config.sample_rate as i32;
+        spotter_config.model_config.transducer.encoder = Some(encoder.to_string_lossy().to_string());
+        spotter_config.model_config.transducer.decoder = Some(decoder.to_string_lossy().to_string());
+        spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
+        spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
+        if keywords.is_file() {
+            spotter_config.keywords_file = Some(keywords.to_string_lossy().to_string());
+        }
+        spotter_config.keywords_score = 1.0;
+        spotter_config.keywords_threshold = 0.20;
+
+        let spotter = sherpa_onnx::KeywordSpotter::create(&spotter_config)?;
+        let stream = spotter.create_stream();
+        tracing::info!(dir = %dir.display(), "Sherpa-ONNX KeywordSpotter successfully loaded and initialized");
+        Some(NeuralKwsSession { spotter, stream })
     }
 
     /// Resets internal detection state and timers.
@@ -84,51 +139,45 @@ impl KwsEngine {
         self.consecutive_hits = 0;
         self.triggered = false;
         self.last_trigger_ms = 0;
+        #[cfg(feature = "local-stt")]
+        if let Some(ref mut session) = self.neural_session {
+            session.spotter.reset(&session.stream);
+        }
+    }
+
+    /// Resolves the directory containing neural KWS weights on disk.
+    pub fn resolve_neural_kws_dir(&self) -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(ref dir) = self.config.model_dir {
+            candidates.push(dir.clone());
+        }
+        if let Some(registered) = crate::stt::active_model_dir() {
+            candidates.push(registered);
+        }
+        if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(std::path::PathBuf::from) {
+            candidates.push(ai_mate);
+        }
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            candidates.push(local_app_data.join("Flowy").join("models"));
+            candidates.push(local_app_data.join("Flowy").join("Nomi").join("models"));
+            candidates.push(local_app_data.join("Flowy").join("Nomi-dev").join("models"));
+            candidates.push(local_app_data.join("Flowy").join("AI-Mate").join("models"));
+        }
+
+        for c in candidates {
+            if c.join("kws").join("encoder.int8.onnx").is_file() {
+                return Some(c.join("kws"));
+            }
+            if c.join("encoder.int8.onnx").is_file() {
+                return Some(c);
+            }
+        }
+        None
     }
 
     /// Checks if a neural KWS model suite is configured and present on disk.
     pub fn is_neural_backend(&self) -> bool {
-        if let Some(ref dir) = self.config.model_dir {
-            if dir.join("kws/encoder.int8.onnx").is_file()
-                || dir.join("encoder.int8.onnx").is_file()
-            {
-                return true;
-            }
-        }
-
-        if let Some(registered) = crate::stt::active_model_dir() {
-            if registered.join("kws/encoder.int8.onnx").is_file()
-                || registered.join("encoder.int8.onnx").is_file()
-            {
-                return true;
-            }
-        }
-
-        if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(std::path::PathBuf::from) {
-            if ai_mate.join("kws/encoder.int8.onnx").is_file()
-                || ai_mate.join("encoder.int8.onnx").is_file()
-            {
-                return true;
-            }
-        }
-
-        if let Some(local_app_data) = dirs::data_local_dir() {
-            let candidates = [
-                local_app_data.join("Flowy").join("Nomi").join("models"),
-                local_app_data.join("Flowy").join("Nomi-dev").join("models"),
-                local_app_data.join("Flowy").join("models"),
-                local_app_data.join("Flowy").join("AI-Mate").join("models"),
-            ];
-            for c in &candidates {
-                if c.join("kws/encoder.int8.onnx").is_file()
-                    || c.join("encoder.int8.onnx").is_file()
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.resolve_neural_kws_dir().is_some()
     }
 
     /// Checks if the acoustic detector is active and calibrated.
@@ -142,7 +191,38 @@ impl KwsEngine {
             return None;
         }
 
-        // If running in test or skeleton mode, use calibrated acoustic envelope detection
+        // 1. If real neural session is loaded and active, feed to Sherpa-ONNX Zipformer
+        #[cfg(feature = "local-stt")]
+        if let Some(ref mut session) = self.neural_session {
+            let chunk_len = chunk.len();
+            let timestamp_ms = (self.processed_samples * 1000) / self.config.sample_rate as u64;
+            self.processed_samples += chunk_len as u64;
+
+            if self.triggered && timestamp_ms.saturating_sub(self.last_trigger_ms) < 500 {
+                return None;
+            }
+
+            session.stream.accept_waveform(self.config.sample_rate as i32, chunk);
+            while session.spotter.is_ready(&session.stream) {
+                session.spotter.decode(&session.stream);
+            }
+            if let Some(result) = session.spotter.get_result(&session.stream) {
+                if !result.keyword.trim().is_empty() {
+                    tracing::info!(keyword = %result.keyword, "Neural KeywordSpotter hit detected!");
+                    self.triggered = true;
+                    self.last_trigger_ms = timestamp_ms;
+                    session.spotter.reset(&session.stream);
+                    return Some(KwsResult {
+                        keyword: result.keyword,
+                        score: 1.0,
+                        timestamp_ms,
+                    });
+                }
+            }
+            return None;
+        }
+
+        // 2. In test or skeleton mode, or when neural backend is missing, fallback to acoustic envelope
         #[cfg(any(test, feature = "voice-skeleton"))]
         {
             return self.process_heuristic(chunk);

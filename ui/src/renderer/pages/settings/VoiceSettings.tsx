@@ -6,7 +6,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Switch } from '@arco-design/web-react';
+import { Button, Message, Switch } from '@arco-design/web-react';
 import { CheckOne, CloseOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
@@ -155,6 +155,7 @@ const VoiceSettings: React.FC = () => {
     if (typeof window === 'undefined' || !window.localStorage) return false;
     return window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY) === 'true';
   });
+  const [isTogglingCompanion, setIsTogglingCompanion] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -335,14 +336,29 @@ const VoiceSettings: React.FC = () => {
     }
   }, [applyStateUpdate, connectProgressStream]);
 
+  const fetchCompanionStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/companion/status`, {
+        headers: buildBackendAuthHeaders('GET'),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { running?: boolean; autostart?: boolean };
+        setVoiceEnabled(Boolean(data.running));
+      }
+    } catch {
+      // Best-effort
+    }
+  }, []);
+
   useEffect(() => {
     void fetchStatus();
+    void fetchCompanionStatus();
     return () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
     };
-  }, [fetchStatus]);
+  }, [fetchStatus, fetchCompanionStatus]);
 
   // Trigger POST /api/voice/models/install
   const handleInstall = useCallback(async (force = false) => {
@@ -431,12 +447,37 @@ const VoiceSettings: React.FC = () => {
     }
   }, [isConfirmingRelease, handleDelete]);
 
-  const handleToggleVoiceEnabled = useCallback((checked: boolean) => {
-    setVoiceEnabled(checked);
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(checked));
+  const handleToggleVoiceEnabled = useCallback(async (checked: boolean) => {
+    setIsTogglingCompanion(true);
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/companion/toggle`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildBackendAuthHeaders('POST'),
+        },
+        body: JSON.stringify({ enabled: checked }),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { success: boolean; running: boolean; error?: string };
+        if (data.success) {
+          setVoiceEnabled(data.running);
+          if (typeof window !== 'undefined' && window.localStorage) {
+            window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(data.running));
+          }
+        } else if (data.error) {
+          Message.error(data.error);
+        }
+      } else {
+        const errJson = (await response.json().catch(() => ({}))) as { error?: string };
+        Message.error(errJson.error || t('voice.errors.unknownError'));
+      }
+    } catch (e) {
+      Message.error(e instanceof Error ? e.message : t('voice.errors.unknownError'));
+    } finally {
+      setIsTogglingCompanion(false);
     }
-  }, []);
+  }, [t]);
 
   const fetchDeviceStatus = useCallback(async () => {
     setMicChecking(true);
@@ -615,7 +656,9 @@ const VoiceSettings: React.FC = () => {
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
     rowLabel = t('voice.status.ready');
-    rowDescription = t('voice.phases.readyDesc');
+    rowDescription = voiceEnabled
+      ? t('voice.phases.readyDesc')
+      : t('voice.phases.standbyDesc');
   } else if (modelStatus === 'Failed') {
     rowLabel = t('voice.status.failed');
     rowDescription = (
@@ -719,7 +762,11 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
-                          <Switch checked={voiceEnabled} onChange={handleToggleVoiceEnabled} />
+                          <Switch
+                            checked={voiceEnabled}
+                            loading={isTogglingCompanion}
+                            onChange={handleToggleVoiceEnabled}
+                          />
                           <Button
                             type='text'
                             size='small'

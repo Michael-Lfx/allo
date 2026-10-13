@@ -7062,6 +7062,7 @@ dependencies = [
  "nomi-browser-engine",
  "nomi-computer",
  "nomi-config",
+ "nomi-process-runtime",
  "nomi-tools",
  "nomi-types",
  "nomifun-agent-execution",

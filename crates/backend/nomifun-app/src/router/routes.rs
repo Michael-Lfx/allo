@@ -812,9 +812,21 @@ pub fn create_router_with_all_state(
         .unwrap_or_else(|_| services.data_dir.join("models"));
     nomifun_audio::register_active_model_dir(voice_models_dir.clone());
     let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir.clone()));
+    let voice_companion_manager = Arc::new(crate::voice_companion_manager::VoiceCompanionProcessManager::new(
+        voice_models_manager.clone(),
+        &services.data_dir,
+    ));
+    let companion_mgr_clone = voice_companion_manager.clone();
+    tokio::spawn(async move {
+        companion_mgr_clone.auto_start_if_enabled().await;
+    });
+
+    let voice_all_routes = nomifun_voice_models::voice_model_routes(voice_models_manager)
+        .merge(nomifun_audio::voice_diagnostics_routes_with_dir(Some(voice_models_dir)))
+        .merge(crate::voice_companion_manager::voice_companion_routes(voice_companion_manager));
+
     let voice_models_authenticated = protect_instance_owner(
-        nomifun_voice_models::voice_model_routes(voice_models_manager)
-            .merge(nomifun_audio::voice_diagnostics_routes_with_dir(Some(voice_models_dir))),
+        voice_all_routes,
         &auth_mw_state,
         &instance_owner_state,
     );

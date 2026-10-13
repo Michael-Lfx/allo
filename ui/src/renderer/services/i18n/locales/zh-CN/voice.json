@@ -24,7 +24,8 @@
     "downloadingFile": "正在下载 {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "正在校验完整性 ({{current}}/{{total}})",
     "ready": "已就绪",
-    "readyDesc": "语音引擎准备就绪，请说 Hey Flowy 唤醒",
+    "readyDesc": "语音伴侣已在后台就绪，请说 Hey Flowy 唤醒",
+    "standbyDesc": "语音引擎已就绪，打开开关即可在后台呼叫唤醒",
     "removing": "正在释放磁盘空间",
     "failed": "下载或校验遇到问题"
   },

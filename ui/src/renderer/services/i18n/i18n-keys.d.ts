@@ -10920,6 +10920,7 @@ export type I18nKey =
   | 'voice.phases.ready'
   | 'voice.phases.readyDesc'
   | 'voice.phases.removing'
+  | 'voice.phases.standbyDesc'
   | 'voice.phases.verifyingSha256'
   | 'voice.progress.approxSize'
   | 'voice.progress.bytesRatio'
