@@ -321,6 +321,7 @@ async fn run_json(
                 "你是 JSON 探测器。",
                 PROBE,
                 256,
+                None, // 探测调用用 provider 默认温度（读数面不掺工程旋钮）
             )
             .await;
         match outcome {
@@ -447,10 +448,10 @@ async fn run_grow(
 
     for round in 1..=batches {
         if round > 1 {
-            // 确定性学习者替身：程序化完成全部剩余节点（完成事件自动触发
-            // 生长——与真实学习者同线）。
+            // 确定性学习者替身：首节点完成、其余跳过（两种满足路径都过，
+            // 进度事件自动触发下一轮生长——与真实学习者同线）。
             let stand_in = complete_all_nodes(&wiring, &course_id).await?;
-            println!("[stand-in] completed {stand_in} nodes to drive the next round");
+            println!("[stand-in] drove {stand_in} nodes (1 completed / rest skipped) to trigger the next round");
         } else {
             wiring
                 .service
@@ -519,25 +520,27 @@ async fn complete_all_nodes(
     .bind(course_id.as_str())
     .fetch_all(&wiring.pool)
     .await?;
-    let mut completed = 0usize;
-    for lesson_id in lesson_ids {
+    let mut driven = 0usize;
+    for (index, lesson_id) in lesson_ids.into_iter().enumerate() {
         let lesson: nomifun_common::LearningLessonId =
             nomifun_common::LearningLessonId::parse(&lesson_id)?;
-        // 已完成/已跳过的重复赋值无害（幂等）——直接全部置完成。
+        // 确定性学习者替身：首节点 completed、其余 skipped——两种满足路径
+        // 都程序化过一遍（完成/跳过都会触发生长的自动检查；重复赋值幂等）。
+        let status = if index == 0 {
+            nomifun_learning::LessonStatus::Completed
+        } else {
+            nomifun_learning::LessonStatus::Skipped
+        };
         let flipped = wiring
             .service
-            .update_lesson_progress(
-                &lesson,
-                &wiring.owner,
-                nomifun_learning::LessonStatus::Completed,
-            )
+            .update_lesson_progress(&lesson, &wiring.owner, status)
             .await;
         match flipped {
-            Ok(()) => completed += 1,
-            Err(error) => eprintln!("stand-in: lesson {lesson_id} completion failed: {error}"),
+            Ok(()) => driven += 1,
+            Err(error) => eprintln!("stand-in: lesson {lesson_id} progress update failed: {error}"),
         }
     }
-    Ok(completed)
+    Ok(driven)
 }
 
 /// 等待第 `target` 个批次落定（applied），最多 15 分钟。

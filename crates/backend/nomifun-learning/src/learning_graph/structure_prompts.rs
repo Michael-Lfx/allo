@@ -35,6 +35,9 @@ pub struct PromptSpec {
     pub placeholders: &'static [&'static str],
     /// 观测面任务名（归档目录名与 meta 携带；约定与 id 一致）。
     pub task: &'static str,
+    /// 采样温度（结构化契约产物抑制措辞发散的工程旋钮；g2 裁决：住注册表
+    /// 不进文本。经 json 接缝传给 provider 请求）。
+    pub temperature: f32,
     /// 围栏词表：模型面正文禁入的开发面词汇（测试闸，读者面纪律的机械化）。
     pub fence_words: &'static [&'static str],
 }
@@ -77,6 +80,7 @@ pub static GOAL_DECOMPOSITION: PromptSpec = PromptSpec {
     template: include_str!("../../prompts/structure/goal-decomposition.md"),
     placeholders: &["goal", "proficiency_statement", "retry_feedback"],
     task: "goal-decomposition",
+    temperature: 0.2,
     fence_words: FENCE_DEV_FACE,
 };
 
@@ -86,6 +90,7 @@ pub static PREREQUISITE_TERRAIN: PromptSpec = PromptSpec {
     template: include_str!("../../prompts/structure/prerequisite-terrain.md"),
     placeholders: &["goal", "learner_basis", "retry_feedback"],
     task: "prerequisite-terrain",
+    temperature: 0.2,
     fence_words: FENCE_DEV_FACE,
 };
 
@@ -278,6 +283,11 @@ mod tests {
                 );
             }
             assert_eq!(header_field(header, "id").unwrap(), spec.id, "header id interlock");
+            assert!(
+                (0.0..=1.0).contains(&spec.temperature),
+                "{} temperature out of range",
+                spec.id
+            );
             let tokens = extract_placeholder_tokens(body);
             for token in &tokens {
                 assert!(

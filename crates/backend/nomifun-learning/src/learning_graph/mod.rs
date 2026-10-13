@@ -11,12 +11,15 @@
 //! covered — no locked state in the UI: a published node is always ready
 //! NOW. Cross-course readiness falls out of the global concept registry.
 //!
-//! The coach is a SINGLE LLM call (the whole roster + coverage gauge +
-//! behavior digest is injected into the prompt; a growth batch is ≤7 nodes,
-//! far too small to justify the old multi-round draft loop). Deterministic
-//! gates hold the decision power; one repair retry gets the gate report,
-//! then an independent AI concept review runs (advisory-but-blocking once,
-//! degraded to pass when unavailable).
+//! The coach drafts a batch per call (json seam, thinking ON) over the 9-block
+//! context (goal + declarations, the full structure reference material, the
+//! terrain doors, ready count, roster, taught ledger, coverage gauge, behavior
+//! digest, registry excerpt). Deterministic gates hold the decision power:
+//! shape violations (ng.*), semantic gate rejections and concept-review
+//! rejections each inject their clause report back into the next attempt
+//! (≤3 rounds, the whole batch re-emitted); a structurally valid batch then
+//! gets one independent AI concept review (advisory-but-blocking, degraded to
+//! pass when unavailable).
 //!
 //! The knowledge STRUCTURE artifact (spines/blocks/edges snapshot, gd.*
 //! contract) lives in [`structure_contract`] and stays reference-only: it
@@ -485,6 +488,7 @@ pub(crate) async fn coach_draft(
         COACH_SYSTEM,
         &user,
         crate::generation::COACH_MAX_TOKENS,
+        None,
     )
     .await?;
     parse_coach_reply(&raw)
@@ -516,6 +520,7 @@ pub(crate) async fn coach_redraft(
         COACH_SYSTEM,
         &user,
         crate::generation::COACH_MAX_TOKENS,
+        None,
     )
     .await?;
     parse_coach_reply(&raw)
@@ -576,6 +581,7 @@ pub(crate) async fn concept_review(
         CONCEPT_REVIEW_SYSTEM,
         &user,
         crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
+        None,
     )
     .await
     {

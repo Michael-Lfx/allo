@@ -1194,7 +1194,8 @@ impl LessonStatus {
 }
 
 /// 课程目录类型。`traditional` 为模块/课时大纲课程；`learning_graph`
-/// （beta）从多终点锚出发按批次生长，依赖由概念网表达（ADR-0009），
+/// （beta）从学习目标出发：先生成知识结构快照（参考地图），再按批次生长，
+/// 依赖由概念网表达（ADR-0009/0010），
 /// 课程大纲被「下一步推荐学习的节点」取代。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1476,7 +1477,7 @@ pub struct CourseDetail {
     pub modules: Vec<ModuleView>,
     pub next_lesson_id: Option<LearningLessonId>,
     pub due_review_count: i64,
-    /// 仅 `learning_graph` 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009）。
+    /// 仅 `learning_graph` 课程携带：就绪集推荐与水位读数（结构投影走独立接口）。
     pub graph: Option<LearningGraphView>,
 }
 

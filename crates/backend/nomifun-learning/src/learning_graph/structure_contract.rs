@@ -95,6 +95,14 @@ pub const SPINE_KEYS: &[&str] = &["name", "definition", "key_points", "instance"
 
 /// 难度档词表（顺序即矩阵列序）。
 pub const STAGES: &[&str] = &["入门", "进阶", "高级"];
+
+/// 阶段排序权重（词表单源：未知值排最后）——矩阵分格与参考材料呈现序共用。
+pub fn stage_rank(stage: &str) -> usize {
+    STAGES
+        .iter()
+        .position(|known| *known == stage)
+        .unwrap_or(STAGES.len())
+}
 /// 边型词表。
 pub const EDGE_TYPES: &[&str] = &["assumes", "composes", "contrasts"];
 /// 结构边档位词表（机面英文；注意与概念网 tier 的 know/apply/teach 是两套词）。

@@ -596,6 +596,7 @@ pub async fn one_shot_completion_json_text_or_reasoning(
     messages: Vec<Message>,
     max_tokens: u32,
     disable_thinking: bool,
+    temperature: Option<f32>,
 ) -> Result<String, AppError> {
     let provider: Arc<dyn LlmProvider> = create_provider(cfg);
 
@@ -607,7 +608,7 @@ pub async fn one_shot_completion_json_text_or_reasoning(
         max_tokens: Some(max_tokens),
         thinking: (disable_thinking).then_some(ThinkingConfig::Disabled),
         reasoning_effort: None,
-        temperature: None,
+        temperature,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
         json_object: true,

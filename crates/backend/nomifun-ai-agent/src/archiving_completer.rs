@@ -135,11 +135,12 @@ impl LearningCompleter for ArchivingCompleter {
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let started = Instant::now();
         let outcome = self
             .inner
-            .complete_json(model_override, system, user, max_tokens)
+            .complete_json(model_override, system, user, max_tokens, temperature)
             .await;
         self.archive("complete_json", started, outcome.as_deref(), system, user);
         outcome
@@ -151,11 +152,12 @@ impl LearningCompleter for ArchivingCompleter {
         system: &str,
         user: &str,
         max_tokens: u32,
+        temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let started = Instant::now();
         let outcome = self
             .inner
-            .complete_json_with_thinking(model_override, system, user, max_tokens)
+            .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
             .await;
         self.archive(
             "complete_json_with_thinking",
@@ -191,6 +193,7 @@ mod tests {
             _: &str,
             user: &str,
             _: u32,
+            _: Option<f32>,
         ) -> Result<String, AppError> {
             if user == "fails" {
                 return Err(AppError::BadGateway("probe failure".into()));
@@ -205,10 +208,10 @@ mod tests {
         let completer =
             ArchivingCompleter::new(std::sync::Arc::new(Echo), obs.path()).unwrap();
         completer
-            .complete_json(None, "sys", "usr", 128)
+            .complete_json(None, "sys", "usr", 128, None)
             .await
             .unwrap();
-        completer.complete_json(None, "sys", "fails", 128).await;
+        completer.complete_json(None, "sys", "fails", 128, None).await;
 
         let log = std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).unwrap();
         let lines: Vec<&str> = log.lines().collect();

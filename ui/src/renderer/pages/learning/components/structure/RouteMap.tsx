@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { BlockView, StructureView } from '../../types';
 import { BlockDetail } from './BlockDetail';
-import { EDGE_COLORS, buildGroupPalette } from './palette';
+import { EDGE_COLORS, buildGroupPalette, edgeEndpoints } from './palette';
 
 const W = 150;
 const H = 30;
@@ -72,8 +72,11 @@ export function RouteMap({ structure }: { structure: StructureView }) {
     graph.setGraph({ rankdir: 'LR', nodesep: 12, ranksep: 60, marginx: 16, marginy: 16 });
     graph.setDefaultEdgeLabel(() => ({}));
     for (const node of nodes) graph.setNode(node.name, { width: W, height: H });
-    // 门方向反转布局：前置排左（先学侧），需求方排右。
-    for (const edge of edges) graph.setEdge(edge.target, edge.source);
+    // 门方向反转布局（edgeEndpoints 单源）：前置排左（先学侧），需求方排右。
+    for (const edge of edges) {
+      const [from, to] = edgeEndpoints(edge);
+      graph.setEdge(from, to);
+    }
     dagre.layout(graph);
     const placed = new Map<string, { x: number; y: number }>();
     for (const node of nodes) {
@@ -139,8 +142,9 @@ export function RouteMap({ structure }: { structure: StructureView }) {
               </marker>
             </defs>
             {edges.map((edge) => {
-              const from = points.get(edge.target);
-              const to = points.get(edge.source);
+              const [fromName, toName] = edgeEndpoints(edge);
+              const from = points.get(fromName);
+              const to = points.get(toName);
               if (!from || !to) return null;
               return (
                 <line

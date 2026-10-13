@@ -33,3 +33,15 @@ export const EDGE_COLORS: Record<string, string> = {
 
 /** 枢纽描边（琥珀）。 */
 export const HUB_COLOR = '#fbbf24';
+
+/** assumes = 门的方向映射（布局与渲染的单一来源）：assumes 的「先有的一方」
+ * 是 target——布局时前置排左、画箭头时前置 → 需求方，读作「先过这道前置门
+ * 才轮到本块」；composes/contrasts 保持契约方向 source → target。
+ * 返回 `[from, to]`（节点名）。 */
+export function edgeEndpoints(edge: {
+  source: string;
+  target: string;
+  edge_type: string;
+}): [string, string] {
+  return edge.edge_type === 'assumes' ? [edge.target, edge.source] : [edge.source, edge.target];
+}

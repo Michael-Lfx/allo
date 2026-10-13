@@ -656,6 +656,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             _system: &str,
             user: &str,
             _max_tokens: u32,
+            _temperature: Option<f32>,
         ) -> Result<String, AppError> {
             self.record(model_override, user)
         }

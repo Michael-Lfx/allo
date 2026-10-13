@@ -125,6 +125,7 @@ pub(crate) async fn complete_json_coach(
     system: &str,
     user: &str,
     max_tokens: u32,
+    temperature: Option<f32>,
 ) -> Result<String, AppError> {
     let call = async {
         completer
@@ -133,6 +134,7 @@ pub(crate) async fn complete_json_coach(
                 system,
                 user,
                 max_tokens,
+                temperature,
             )
             .await
     };

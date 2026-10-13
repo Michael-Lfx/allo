@@ -215,9 +215,9 @@ fn build_structure(structure: &Value) -> StructureView {
         .collect();
     for block in &blocks {
         if let Some(row) = matrix.iter_mut().find(|row| row.spine == block.spine) {
-            match block.stage.as_str() {
-                "入门" => row.entryway.push(block.name.clone()),
-                "进阶" => row.intermediate.push(block.name.clone()),
+            match super::structure_contract::stage_rank(&block.stage) {
+                0 => row.entryway.push(block.name.clone()),
+                1 => row.intermediate.push(block.name.clone()),
                 _ => row.advanced.push(block.name.clone()),
             }
         }
@@ -343,12 +343,7 @@ pub(crate) fn render_reference_lines(structure: &Value) -> String {
         .enumerate()
         .map(|(index, group)| (group.spine.as_str(), index))
         .collect();
-    let stage_rank = |stage: &str| match stage {
-        "入门" => 0usize,
-        "进阶" => 1,
-        "高级" => 2,
-        _ => 3,
-    };
+    let stage_rank = super::structure_contract::stage_rank;
     let mut rows: Vec<(usize, usize, usize, usize, String)> = view
         .blocks
         .iter()

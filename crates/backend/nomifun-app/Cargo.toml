@@ -255,7 +255,7 @@ silero-vad = ["nomifun-robot/silero-vad"]
 local-stt = ["nomifun-audio/local-stt"]
 
 [dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
@@ -401,6 +401,7 @@ nomifun-ai-agent = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
 git2.workspace = true
 http-body-util.workspace = true
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 tokio-tungstenite.workspace = true
 wiremock = "0.6"
