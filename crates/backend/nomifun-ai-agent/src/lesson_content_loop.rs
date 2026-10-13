@@ -494,11 +494,12 @@ fn audit_report(
 }
 
 /// The generation loop's user turn: the lesson coordinates, purpose,
-/// bridging target, and the grounding (the cited excerpt for the kb flow,
-/// the course brief for the description flow). Learning-graph nodes
+/// bridging target, and the grounding — the cited source file read in full
+/// (主引用) plus the retrieval supplements (补充片段) for the kb flow, the
+/// course brief for the description flow. Learning-graph nodes
 /// (`context.graph` = Some) swap the outline/brief sections for
-/// graph-scoped sections: goal, the degree statement, the concept-web prerequisite
-/// summary, and the downstream nodes (ADR-0009).
+/// graph-scoped sections: goal, the degree statement, the concept-web
+/// prerequisite summary, and the downstream nodes (ADR-0009).
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
@@ -574,25 +575,36 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
     if !context.adjacent_context.is_empty() {
         text.push_str(&format!("\n{}\n", context.adjacent_context));
     }
-    match &context.excerpt {
-        Some(excerpt) => {
+    let grounding = context.grounding();
+    if !grounding.is_empty() {
+        // 多片段 grounding（t3）：主引用 = 大纲引用的 source 文件全文，补充
+        // 片段 = 知识库相关文件扩读——逐片段给角色与出处（库/文件/章节），
+        // 补充片段可溯源；锚定纪律：主引用是写作主线。
+        text.push_str(
+            "\n引用片段（文档与活动必须忠于它们——主引用是本课时引用的源文件全文，\
+             补充片段是知识库中相关文件的扩读，引用其事实时注明该片段的库/文件/章节）：\n",
+        );
+        let total = grounding.len();
+        for (index, excerpt) in grounding.iter().enumerate() {
             text.push_str(&format!(
-                "\n引用摘录（文档与活动必须忠于它）——文件 {}：\n---\n{}\n---\n",
-                excerpt.path, excerpt.text
+                "\n--- {}（{}/{}）{} ---\n{}\n",
+                excerpt.role_label(),
+                index + 1,
+                total,
+                excerpt.provenance_label(),
+                excerpt.text
             ));
         }
-        None if graph.is_some() => {
-            text.push_str(
-                "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
-            );
-        }
-        None => {
-            let brief = context.course_description.trim();
-            if brief.is_empty() {
-                text.push_str("\n课程简报为空：以课时标题与课时目标为准展开。\n");
-            } else {
-                text.push_str(&format!("\n课程简报（文档与活动必须忠于它）：\n{brief}\n"));
-            }
+    } else if graph.is_some() {
+        text.push_str(
+            "\n学习图节点没有课程简报：内容忠于学习目标、程度声明与前置/后续节点段落。\n",
+        );
+    } else {
+        let brief = context.course_description.trim();
+        if brief.is_empty() {
+            text.push_str("\n课程简报为空：以课时标题与课时目标为准展开。\n");
+        } else {
+            text.push_str(&format!("\n课程简报（文档与活动必须忠于它）：\n{brief}\n"));
         }
     }
     text
@@ -996,10 +1008,8 @@ mod tests {
             total_lessons: 2,
             next_lesson_title: Some("课时二".into()),
             purpose: "理解期权的定义".into(),
-            excerpt: Some(LessonExcerpt {
-                path: "docs/basics.md".into(),
-                text: "期权的定义……".into(),
-            }),
+            excerpt: Some(LessonExcerpt::text_only("docs/basics.md", "期权的定义……")),
+            excerpts: Vec::new(),
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
@@ -1013,7 +1023,7 @@ mod tests {
     #[test]
     fn lesson_user_text_renders_graph_sections_instead_of_outline() {
         let mut context = lesson_context();
-        context.excerpt = None;
+        context.clear_grounding();
         context.graph = Some(GraphLessonContext {
             goal: "通盘认识期权交易".into(),
             degree_statement: "聚焦场内标准期权，不含结构性产品".into(),
@@ -1526,7 +1536,7 @@ mod tests {
     #[test]
     fn resume_opening_carries_draft_state_and_round_logs() {
         let mut context = lesson_context();
-        context.excerpt = None;
+        context.clear_grounding();
         let resume_text = compose_resume_user_text(
             &context,
             r#"{"revision":3}"#,

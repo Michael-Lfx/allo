@@ -2,6 +2,7 @@ use super::activities::generate_lesson_activities;
 use super::completer::complete;
 use super::parser::{parse_json_object, strip_markdown_fences};
 use super::*;
+use crate::lesson_draft::{ExcerptRole, LessonExcerpt};
 use crate::models::{PRACTICE_BODY_TARGET_CHARS, VISUAL_OPTIONS, visual_menu_text};
 use std::sync::LazyLock;
 
@@ -10,6 +11,95 @@ use std::sync::LazyLock;
 /// de-duplication and bridging, never the grounding — this hard cap keeps the
 /// added context bounded even when the sampled files are huge.
 pub(crate) const ADJACENT_EXCERPT_MAX_CHARS: usize = 1000;
+
+/// Grounding 片段预算（t3，票面建议值，按字节计）：主引用 = 大纲引用的 source
+/// 文件上限（全文读取也可能是个大文件）；补充片段 = 单个检索扩读片段上限；
+/// 合计 = 一次课时生成的 grounding 总量。超限按优先级（主引用在前、补充按
+/// 相关度）截断，截断处写入 `GROUNDING_TRUNCATION_MARKER`——模型看得见
+/// "后面还有内容但没给"，不是静默丢弃。
+pub(crate) const GROUNDING_PRIMARY_MAX_BYTES: usize = 24 * 1024;
+pub(crate) const GROUNDING_SUPPLEMENT_MAX_BYTES: usize = 8 * 1024;
+pub(crate) const GROUNDING_TOTAL_MAX_BYTES: usize = 40 * 1024;
+
+/// 截断标记（也计入片段预算，因此交付的片段永不超过预算）。
+const GROUNDING_TRUNCATION_MARKER: &str = "\n\n……（此片段已达预算上限，后续内容已截断）";
+
+/// 按角色与总量预算收敛片段清单（t3）：入参按优先级排序（primary 在前、
+/// 补充按检索相关度降序），逐片段截到 `min(角色上限, 剩余总量)`；剩余总量连
+/// 截断标记都放不下时丢弃该片段及其后所有片段（预算耗尽即停，不留空壳）。
+/// `terms` 是课时检索用的同一套词条——超预算时按词条相关度选摘（中段的相关
+/// 事实不因落在预算之外而丢），无命中回退文件头。
+pub(crate) fn enforce_grounding_budget(
+    excerpts: Vec<LessonExcerpt>,
+    terms: &[String],
+) -> Vec<LessonExcerpt> {
+    let mut used = 0usize;
+    let mut kept = Vec::with_capacity(excerpts.len());
+    for mut excerpt in excerpts {
+        let remaining = GROUNDING_TOTAL_MAX_BYTES.saturating_sub(used);
+        let role_cap = match excerpt.role {
+            ExcerptRole::Primary => GROUNDING_PRIMARY_MAX_BYTES,
+            ExcerptRole::Supplement => GROUNDING_SUPPLEMENT_MAX_BYTES,
+        };
+        let cap = role_cap.min(remaining);
+        if cap <= GROUNDING_TRUNCATION_MARKER.len() {
+            break;
+        }
+        excerpt.text = truncate_grounding_text(&excerpt.text, cap, terms);
+        used += excerpt.text.len();
+        kept.push(excerpt);
+    }
+    kept
+}
+
+/// 截到 `budget` 字节（对齐字符边界）：超预算按词条相关度选摘相关段落（与
+/// t2 采样同一把尺，[`super::sample::goal_excerpt`]），截断处追加标记。
+fn truncate_grounding_text(text: &str, budget: usize, terms: &[String]) -> String {
+    if text.len() <= budget {
+        return text.to_owned();
+    }
+    let body_budget = budget - GROUNDING_TRUNCATION_MARKER.len();
+    let mut picked = super::sample::goal_excerpt(text, terms, body_budget);
+    if picked.trim().is_empty() {
+        // 极端形状（单段落超预算等）下选摘落空：回退文件头——片段绝不为空。
+        let mut end = body_budget.min(text.len());
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        picked = text[..end].to_owned();
+    }
+    picked.push_str(GROUNDING_TRUNCATION_MARKER);
+    picked
+}
+
+/// 多片段 grounding 的提示词渲染（节规划/正文/题目三处共用）：逐片段给出
+/// 角色、序号与出处（库/文件/章节）——锚定纪律的可见形式：主引用是写作
+/// 主线，补充片段只补事实、可溯源。
+pub(crate) fn render_grounding_fragments(excerpts: &[LessonExcerpt]) -> String {
+    let total = excerpts.len();
+    let mut text = String::new();
+    for (index, excerpt) in excerpts.iter().enumerate() {
+        text.push_str(&format!(
+            "--- {}（{}/{}）{} ---\n{}\n",
+            excerpt.role_label(),
+            index + 1,
+            total,
+            excerpt.provenance_label(),
+            excerpt.text,
+        ));
+    }
+    text
+}
+
+/// 三处提示词共用的 grounding 段引导语：主引用/补充片段的语义 + 忠于片段
+/// 的硬约束（各站点的具体约束词随句给出）。
+fn grounding_intro(site: &str) -> String {
+    format!(
+        "Cited grounding fragments (the {site} must stay grounded in them — 主引用 is the \
+         lesson's cited source file (read in full), 补充片段 are related knowledge-base \
+         excerpts; never invent facts outside these fragments):\n"
+    )
+}
 
 /// Trim to at most `max` characters (appending an ellipsis when truncated).
 fn truncate_chars(text: &str, max: usize) -> String {
@@ -145,6 +235,9 @@ pub(crate) fn build_adjacent_context(
 /// call writes every question bound to its section. Per-section calls keep
 /// the model's attention on one learnable unit — readability, pacing and
 /// per-section quality are the point of splitting.
+///
+/// `grounding` 是预渲染的片段块（[`render_grounding_fragments`]：主引用 +
+/// 检索补充，见 t3）；空串 = 无 grounding（描述流/无来源）。
 pub(crate) async fn generate_lesson(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -155,7 +248,7 @@ pub(crate) async fn generate_lesson(
     lesson_index: usize,
     total_lessons: usize,
     next_lesson_title: Option<&str>,
-    excerpt: &str,
+    grounding: &str,
     teaching_style: TeachingStyle,
 ) -> Result<LessonOutput, String> {
     // ── Stage 1: the section outline (manifest + complexity tier) ──────
@@ -166,7 +259,7 @@ pub(crate) async fn generate_lesson(
         module_index,
         lesson_index,
         total_lessons,
-        excerpt,
+        grounding,
     );
     let outline =
         generate_section_outline(completer, model_override, &outline_prompt).await?;
@@ -183,7 +276,7 @@ pub(crate) async fn generate_lesson(
             model_override,
             blueprint,
             lesson,
-            excerpt,
+            grounding,
             teaching_style,
             planned,
             position,
@@ -209,7 +302,7 @@ pub(crate) async fn generate_lesson(
                     model_override,
                     blueprint,
                     lesson,
-                    excerpt,
+                    grounding,
                     teaching_style,
                     &degraded_planned,
                     position,
@@ -247,7 +340,7 @@ pub(crate) async fn generate_lesson(
         tier,
         &outline.sections,
         &sections,
-        excerpt,
+        grounding,
     );
     let activities =
         generate_lesson_activities(completer, model_override, &activities_prompt).await?;
@@ -325,7 +418,7 @@ async fn generate_section_body(
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     blueprint: &Blueprint,
     lesson: &BlueprintLesson,
-    excerpt: &str,
+    grounding: &str,
     teaching_style: TeachingStyle,
     planned: &SectionPack,
     position: usize,
@@ -339,7 +432,7 @@ async fn generate_section_body(
     let mut prompt = build_section_body_prompt(
         blueprint,
         lesson,
-        excerpt,
+        grounding,
         planned,
         position,
         manifest,
@@ -585,8 +678,8 @@ pub(super) fn build_section_rewrite_prompt(
 const SECTION_REPAIR_BUDGET: usize = 4;
 
 
-/// Stage 1 prompt: course context, lesson scope and the cited
-/// excerpt — the model plans typed sections and declares the complexity
+/// Stage 1 prompt: course context, lesson scope and the grounding
+/// fragments — the model plans typed sections and declares the complexity
 /// tier. JSON (not YAML) reuses the crate's hardened parse-and-repair path.
 pub(crate) fn build_section_outline_prompt(
     blueprint: &Blueprint,
@@ -595,7 +688,7 @@ pub(crate) fn build_section_outline_prompt(
     module_index: usize,
     lesson_index: usize,
     total_lessons: usize,
-    excerpt: &str,
+    grounding: &str,
 ) -> String {
     let mut prompt = format!(
         "Course: {}\nModule {}/{}: {}\nLesson {}/{}: {}\nLesson purpose: {}\n",
@@ -613,15 +706,8 @@ pub(crate) fn build_section_outline_prompt(
          do not plan sections that teach later lessons):\n{}\n",
         build_outline_tree(blueprint, module_index, lesson_index)
     ));
-    if !excerpt.trim().is_empty() {
-        prompt.push_str(&format!(
-            "Cited file excerpt (the sections must stay grounded in it):\n--- FILE: {} ---\n{excerpt}\n",
-            lesson
-                .source
-                .as_ref()
-                .map(|source| source.path.as_str())
-                .unwrap_or_default()
-        ));
+    if !grounding.trim().is_empty() {
+        prompt.push_str(&format!("{}{grounding}\n", grounding_intro("sections")));
     }
     prompt.push_str("Plan the section outline JSON now.");
     prompt
@@ -771,7 +857,7 @@ pub(crate) fn section_body_system(style: TeachingStyle) -> String {
 pub(crate) fn build_section_body_prompt(
     blueprint: &Blueprint,
     lesson: &BlueprintLesson,
-    excerpt: &str,
+    grounding: &str,
     planned: &SectionPack,
     position: usize,
     manifest: &[SectionPack],
@@ -828,10 +914,8 @@ pub(crate) fn build_section_body_prompt(
             ),
         }
     }
-    if !excerpt.trim().is_empty() {
-        prompt.push_str(&format!(
-            "Cited file excerpt (the body must stay grounded in it):\n--- FILE: ---\n{excerpt}\n"
-        ));
+    if !grounding.trim().is_empty() {
+        prompt.push_str(&format!("{}{grounding}\n", grounding_intro("body")));
     }
     prompt.push_str("\nWrite this section's body now.");
     prompt
@@ -846,7 +930,7 @@ pub(crate) fn build_activities_prompt(
     tier: ComplexityTier,
     manifest: &[SectionPack],
     sections: &[SectionPack],
-    excerpt: &str,
+    grounding: &str,
 ) -> String {
     let per_section = tier.questions_per_section();
     let mut prompt = format!(
@@ -874,15 +958,8 @@ pub(crate) fn build_activities_prompt(
             section.body_md.trim()
         ));
     }
-    if !excerpt.trim().is_empty() {
-        prompt.push_str(&format!(
-            "Cited file excerpt (questions must stay grounded in it):\n--- FILE: {} ---\n{excerpt}\n\n",
-            lesson
-                .source
-                .as_ref()
-                .map(|source| source.path.as_str())
-                .unwrap_or_default()
-        ));
+    if !grounding.trim().is_empty() {
+        prompt.push_str(&format!("{}{grounding}\n\n", grounding_intro("questions")));
     }
     prompt.push_str("Design the activity JSON now.");
     prompt

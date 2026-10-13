@@ -73,6 +73,12 @@ pub struct SampleDisclosure {
     /// 选择——生成不因目标措辞与库不一致而失败，但披露必须如实说明。
     #[serde(default)]
     pub goal_fallback: bool,
+    /// 目标的确定性词条集（t3 复用）：建课时切好随披露持久化，课时检索
+    /// 查询直接取用——建课后稳定复用同一套词条，不因实现改动漂移。
+    /// 旧披露（t2 早期快照）没有这个字段：读出为空，消费方回退到对目标
+    /// 文本重新切片（同一纯函数，结果一致）。
+    #[serde(default)]
+    pub goal_terms: Vec<String>,
     /// 完整文件树：全库候选文件的相对路径（字典序，目录结构保留）。
     #[serde(default)]
     pub tree: Vec<String>,
@@ -205,6 +211,7 @@ fn sample_goal_aware_blocking(
             sampled_files: samples.len(),
             coherence_files: 0,
             goal_fallback: true,
+            goal_terms: terms.clone(),
             low_score_files: candidates
                 .iter()
                 .filter(|path| !sampled.contains(path.as_str()))
@@ -257,6 +264,7 @@ fn sample_goal_aware_blocking(
         sampled_files: samples.len(),
         coherence_files,
         goal_fallback: false,
+        goal_terms: terms,
         tree: candidates,
         low_score_files,
     };
@@ -353,7 +361,10 @@ fn parent_dir(path: &str) -> &str {
 /// 选摘（确定性：命中段落 ± 上下文窗口，权重降序预取、原文顺序交付），无命中
 /// 段落则回退文件头。大文件里的相关事实因此不会因为落在中段而丢失，邻接命中
 /// 段的结论句也不会被切掉。
-fn goal_excerpt(content: &str, terms: &[String], budget: usize) -> String {
+///
+/// t2 目标感知采样与 t3 课时 grounding 的超预算截断共用一把尺：同一条目在
+/// 采样与写作两处得到同一份选摘。
+pub(crate) fn goal_excerpt(content: &str, terms: &[String], budget: usize) -> String {
     if content.len() <= budget {
         return content.to_owned();
     }
@@ -394,6 +405,11 @@ fn goal_excerpt(content: &str, terms: &[String], budget: usize) -> String {
         }
         picked.push(index);
         used += cost;
+    }
+    // 命中段落全都装不进预算（单段落超预算一类）：回退文件头——摘录绝不
+    // 产出空串（空片段在课时 grounding 里等于没有 grounding）。
+    if picked.is_empty() {
+        return head_excerpt(content, budget);
     }
     picked.sort_unstable();
     let mut excerpt = picked

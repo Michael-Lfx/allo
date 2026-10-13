@@ -1,10 +1,13 @@
     use super::activities::validate_lesson_activities;
     use super::completer::complete_with_timeout;
     use super::lesson::{
-        build_activities_prompt, build_section_rewrite_prompt, validate_lesson_document,
+        build_activities_prompt, build_section_rewrite_prompt, enforce_grounding_budget,
+        render_grounding_fragments, validate_lesson_document, GROUNDING_PRIMARY_MAX_BYTES,
+        GROUNDING_SUPPLEMENT_MAX_BYTES, GROUNDING_TOTAL_MAX_BYTES,
     };
     use super::parser::{strip_code_fences, strip_markdown_fences};
     use super::*;
+    use crate::lesson_draft::{ExcerptRole, LessonExcerpt};
     use crate::models::{SectionOutline, validate_section_outline, ComplexityTier, SectionKind, SectionPack};
     use nomifun_common::KnowledgeBaseId;
     use serde_json::json;
@@ -563,6 +566,150 @@
         }
     }
 
+    /// t3 多片段 grounding：主引用在前标角色与文件，检索补充在后带库归属与
+    /// 命中章节——片段块是三处提示词共用的那一段。
+    #[test]
+    fn grounding_fragments_render_roles_and_provenance() {
+        let excerpts = vec![
+            LessonExcerpt {
+                kb_id: None,
+                kb_name: None,
+                heading: None,
+                ..LessonExcerpt::text_only("docs/two.md", "第二课原文。")
+            },
+            LessonExcerpt {
+                path: "notes/聚类.md".into(),
+                text: "K-means 的簇数 k 需要预先指定。".into(),
+                kb_id: Some("kb-1".into()),
+                kb_name: Some("数学笔记".into()),
+                heading: Some("聚类分析要点".into()),
+                role: ExcerptRole::Supplement,
+            },
+        ];
+        let rendered = render_grounding_fragments(&excerpts);
+        assert!(rendered.contains("主引用（1/2）文件 docs/two.md"), "{rendered}");
+        assert!(rendered.contains("第二课原文。"), "{rendered}");
+        assert!(
+            rendered.contains("补充片段（2/2）文件 notes/聚类.md（知识库 数学笔记） 章节「聚类分析要点」"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("K-means 的簇数 k 需要预先指定。"), "{rendered}");
+    }
+
+    /// t3 预算守卫：primary 截到 24KB、补充单片段 8KB、合计 40KB，截断处写入
+    /// 标记（模型看得见"后面还有"，不是静默丢弃）；预算内的片段逐字不动。
+    /// 超预算的片段按词条相关度选摘——中段的相关事实不因落在预算外而丢。
+    #[test]
+    fn grounding_budget_truncates_and_marks_over_budget_fragments() {
+        let primary = LessonExcerpt::text_only("docs/big.md", &"主".repeat(30 * 1024 / 3));
+        let supplement = |name: &str, bytes: usize| LessonExcerpt {
+            path: format!("notes/{name}.md"),
+            text: "补".repeat(bytes / 3),
+            kb_id: Some("kb-1".into()),
+            kb_name: None,
+            heading: None,
+            role: ExcerptRole::Supplement,
+        };
+        let kept = enforce_grounding_budget(
+            vec![
+                primary,
+                supplement("a", 10 * 1024),
+                supplement("b", 10 * 1024),
+                supplement("c", 10 * 1024),
+            ],
+            &[],
+        );
+        assert!(!kept.is_empty());
+        assert_eq!(kept[0].role, ExcerptRole::Primary);
+        assert!(
+            kept[0].text.len() <= GROUNDING_PRIMARY_MAX_BYTES,
+            "primary fits its budget: {}",
+            kept[0].text.len()
+        );
+        assert!(kept[0].text.len() > GROUNDING_PRIMARY_MAX_BYTES - 200, "primary uses its budget");
+        assert!(kept[0].text.contains("截断"), "truncation is marked in the text");
+        let total: usize = kept.iter().map(|excerpt| excerpt.text.len()).sum();
+        assert!(total <= GROUNDING_TOTAL_MAX_BYTES, "total budget holds: {total}");
+        for excerpt in kept.iter().skip(1) {
+            assert!(
+                excerpt.text.len() <= GROUNDING_SUPPLEMENT_MAX_BYTES,
+                "each supplement fits its budget: {}",
+                excerpt.text.len()
+            );
+        }
+        // 预算用尽后的片段被丢弃（不是截成空壳）。
+        assert!(kept.len() < 4, "later fragments drop once the total budget is spent");
+        assert!(
+            kept.iter().all(|excerpt| !excerpt.text.trim().is_empty()),
+            "no empty stub fragments"
+        );
+
+        // 预算内的片段原样交付：不加标记、不改一个字。
+        let small = enforce_grounding_budget(
+            vec![
+                LessonExcerpt::text_only("a.md", "短文。"),
+                {
+                    let mut excerpt = supplement("b", 3 * 1024);
+                    excerpt.text = "补充短文。".into();
+                    excerpt
+                },
+            ],
+            &[],
+        );
+        assert_eq!(small.len(), 2);
+        assert_eq!(small[0].text, "短文。");
+        assert_eq!(small[1].text, "补充短文。");
+    }
+
+    /// t3 超预算截断按词条相关度选摘（与 t2 采样同一把尺）：大文件中段的
+    /// 相关事实不因落在预算之外而丢——头部噪声被让位，事实段落进来；无命中
+    /// 词条时回退文件头，摘录绝不为空。
+    #[test]
+    fn grounding_budget_keeps_mid_file_relevant_facts_when_truncating() {
+        let filler = "这是与任何词条都无关的填充段落，用来把相关事实推到大文件的中段。\n\n";
+        let mut big = String::from("# 期权入门\n\n开头噪声标记：本节只讲名词解释。\n\n");
+        for _ in 0..200 {
+            big.push_str(filler);
+        }
+        big.push_str("## 权利义务不对称\n\n关键事实标记：买方持有权利、卖方承担义务。\n\n");
+        for _ in 0..200 {
+            big.push_str(filler);
+        }
+        assert!(big.len() > GROUNDING_PRIMARY_MAX_BYTES, "fixture must exceed the primary budget");
+
+        let terms = vec![
+            "权利".to_string(),
+            "义务".to_string(),
+            "期权".to_string(),
+        ];
+        let kept = enforce_grounding_budget(
+            vec![LessonExcerpt::text_only("docs/大文件.md", &big)],
+            &terms,
+        );
+        assert_eq!(kept.len(), 1);
+        let text = &kept[0].text;
+        assert!(
+            text.contains("关键事实标记：买方持有权利、卖方承担义务"),
+            "中段相关事实必须留下：{}",
+            text.chars().take(200).collect::<String>()
+        );
+        assert!(text.len() <= GROUNDING_PRIMARY_MAX_BYTES, "stays inside the budget");
+        assert!(text.contains("截断"), "truncation is marked");
+
+        // 无命中词条：回退文件头，且绝不产出空片段。
+        let head_only = enforce_grounding_budget(
+            vec![LessonExcerpt::text_only("docs/大文件.md", &big)],
+            &["quaternion".to_string()],
+        );
+        assert_eq!(head_only.len(), 1);
+        assert!(
+            head_only[0].text.starts_with("# 期权入门"),
+            "无命中回退文件头：{}",
+            head_only[0].text.chars().take(80).collect::<String>()
+        );
+        assert!(head_only[0].text.contains("截断"));
+    }
+
     #[test]
     fn section_prompts_carry_task_manifest_and_grounding() {
         // The outline prompt embeds the outline tree, the concepts and asks
@@ -572,11 +719,14 @@
         let blueprint = lesson_test_blueprint();
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
+        let grounding = render_grounding_fragments(&[LessonExcerpt::text_only("real.md", "# Real")]);
         let outline_prompt = super::lesson::build_section_outline_prompt(
-            &blueprint, module, lesson, 0, 0, 1, "# Real",
+            &blueprint, module, lesson, 0, 0, 1, &grounding,
         );
         assert!(outline_prompt.contains("Plan the section outline JSON now."));
-        assert!(outline_prompt.contains("--- FILE: real.md ---"));
+        assert!(outline_prompt.contains("Cited grounding fragments"), "{outline_prompt}");
+        assert!(outline_prompt.contains("--- 主引用（1/1）文件 real.md ---"), "{outline_prompt}");
+        assert!(outline_prompt.contains("# Real"), "{outline_prompt}");
 
         let manifest = vec![SectionPack {
             section_key: "s1".into(),
@@ -590,7 +740,7 @@
         let body_prompt = super::lesson::build_section_body_prompt(
             &blueprint,
             lesson,
-            "# Real",
+            &grounding,
             planned,
             0,
             &manifest,
@@ -601,6 +751,7 @@
         assert!(body_prompt.contains("## 本节任务"));
         assert!(body_prompt.contains("节类型：概念"));
         assert!(body_prompt.contains("Write this section's body now."));
+        assert!(body_prompt.contains("主引用（1/1）文件 real.md"), "{body_prompt}");
 
         let finished = SectionPack {
             body_md: "向量的定义……".into(),
@@ -612,11 +763,12 @@
             ComplexityTier::Mid,
             &manifest,
             &[finished.clone()],
-            "# Real",
+            &grounding,
         );
         assert!(activities_prompt.contains("Complexity tier: mid"));
         assert!(activities_prompt.contains("--- SECTION s1 [概念] 概念：向量 ---"));
         assert!(activities_prompt.contains("Design the activity JSON now."));
+        assert!(activities_prompt.contains("主引用（1/1）文件 real.md"), "{activities_prompt}");
     }
 
     #[test]

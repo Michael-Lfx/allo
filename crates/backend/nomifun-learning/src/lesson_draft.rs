@@ -28,11 +28,80 @@ use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 /// it ever blocks).
 const MAX_ACTIVITIES: usize = 10;
 
+/// Grounding 片段的角色（t3 锚定纪律）：`Primary` = 大纲引用的主 source
+/// （全文；检索命中**永不替换它**），`Supplement` = 检索命中扩读的相关文件
+/// 片段。旧构造点（快照兜底/描述流）只有 primary。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExcerptRole {
+    #[default]
+    Primary,
+    Supplement,
+}
+
 /// Grounding excerpt for the kb flow: the sampled file the lesson cites.
+/// t3 扩为多片段：`path`/`text` 是兼容位（旧消费方只读这两个字段），
+/// `kb_id`/`kb_name` 是库归属，`heading` 是检索命中的章节标题，`role`
+/// 区分主引用与补充片段——补充片段靠这些字段可溯源（库+文件+章节）。
 #[derive(Debug, Clone)]
 pub struct LessonExcerpt {
+    /// 库内相对路径（primary = 大纲引用的 source 路径）。
     pub path: String,
+    /// 片段文本（primary = 主 source 全文，按片段预算截断）。
     pub text: String,
+    /// 来源库 id（实时读库时才有；快照兜底与描述流为 `None`）。
+    pub kb_id: Option<String>,
+    /// 来源库名（提示词里可读的归属；与 `kb_id` 同来同去）。
+    pub kb_name: Option<String>,
+    /// 检索命中的章节标题（`search_bases` 的 `heading`；primary 恒为 `None`）。
+    pub heading: Option<String>,
+    /// 主引用 / 检索补充。
+    pub role: ExcerptRole,
+}
+
+impl LessonExcerpt {
+    /// 旧形状构造（path + text、无库归属）：快照兜底与旧消费方用。
+    pub fn text_only(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            text: text.into(),
+            kb_id: None,
+            kb_name: None,
+            heading: None,
+            role: ExcerptRole::Primary,
+        }
+    }
+
+    /// 提示词里的角色标签。
+    pub fn role_label(&self) -> &'static str {
+        match self.role {
+            ExcerptRole::Primary => "主引用",
+            ExcerptRole::Supplement => "补充片段",
+        }
+    }
+
+    /// 片段出处标签（提示词与披露共用）：文件 + 库归属 + 命中章节。主引用
+    /// 在快照兜底时没有库归属，只有文件——它是大纲引用的源，身份已明确。
+    pub fn provenance_label(&self) -> String {
+        let mut label = format!("文件 {}", self.path);
+        let kb = self
+            .kb_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.kb_id.as_deref());
+        if let Some(kb) = kb {
+            label.push_str(&format!("（知识库 {kb}）"));
+        }
+        if let Some(heading) = self
+            .heading
+            .as_deref()
+            .map(str::trim)
+            .filter(|heading| !heading.is_empty())
+        {
+            label.push_str(&format!(" 章节「{heading}」"));
+        }
+        label
+    }
 }
 
 /// 学习图课程节点专属的生成上下文（beta）。传统课时恒为 `None`；为 Some
@@ -74,8 +143,12 @@ pub struct LessonGenerationContext {
     pub total_lessons: usize,
     pub next_lesson_title: Option<String>,
     pub purpose: String,
-    /// Kb-flow grounding; `None` on the description flow.
+    /// Kb-flow grounding；`None` on the description flow. 兼容位：主引用
+    /// （或快照兜底摘录）——新消费方请用 [`LessonGenerationContext::grounding`]。
     pub excerpt: Option<LessonExcerpt>,
+    /// 多片段 grounding（t3）：primary 在前（主 source 全文），其后是按相关度
+    /// 排序的检索补充片段。空 = 回退兼容位 `excerpt`（旧构造点只填它）。
+    pub excerpts: Vec<LessonExcerpt>,
     /// Pre-rendered full course outline with the current lesson marked — the
     /// anti-duplication / no-scope-creep reference shared by both pipelines.
     pub outline_tree: String,
@@ -91,6 +164,26 @@ pub struct LessonGenerationContext {
     /// 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点预渲染
     /// 下游节点标题清单。空 = 无。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
+}
+
+impl LessonGenerationContext {
+    /// Grounding 片段全集（t3）：`excerpts` 优先，空时回退兼容位 `excerpt`
+    /// ——旧构造点（只填 `excerpt`）与新构造点（两个都填，值一致）都得到
+    /// 正确结果，消费方只有一个读取入口。
+    pub fn grounding(&self) -> Vec<&LessonExcerpt> {
+        if self.excerpts.is_empty() {
+            self.excerpt.iter().collect()
+        } else {
+            self.excerpts.iter().collect()
+        }
+    }
+
+    /// 清空全部 grounding（兼容位与多片段一起清）。agent 循环的历史清理点
+    /// （检不到源、图节点等）统一走这里，避免两处状态漂移。
+    pub fn clear_grounding(&mut self) {
+        self.excerpt = None;
+        self.excerpts.clear();
+    }
 }
 
 /// One deterministic audit finding. `severity` uses the shared vocabulary
@@ -250,8 +343,16 @@ impl LessonDraft {
             module_title: self.context.module_title.clone(),
             lesson_title: self.context.lesson_title.clone(),
             purpose: self.context.purpose.clone(),
-            grounding: match &self.context.excerpt {
-                Some(excerpt) => format!("excerpt:{}", excerpt.path),
+            grounding: match self.context.grounding().first() {
+                // 披露多片段结构（t3）：主引用路径 + 补充片段计数。
+                Some(excerpt) => {
+                    let supplements = self.context.grounding().len().saturating_sub(1);
+                    if supplements > 0 {
+                        format!("excerpt:{} +{supplements} 补充", excerpt.path)
+                    } else {
+                        format!("excerpt:{}", excerpt.path)
+                    }
+                }
                 None => "course_brief".into(),
             },
             revision: self.revision,
@@ -810,10 +911,8 @@ mod tests {
             total_lessons: 2,
             next_lesson_title: Some("课时二".into()),
             purpose: "理解期权的定义".into(),
-            excerpt: Some(LessonExcerpt {
-                path: "docs/basics.md".into(),
-                text: "期权的定义……".into(),
-            }),
+            excerpt: Some(LessonExcerpt::text_only("docs/basics.md", "期权的定义……")),
+            excerpts: Vec::new(),
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,

@@ -23,7 +23,7 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    GraphLessonContext, LessonContentAgentEngine, LessonDraftView, LessonExcerpt,
+    ExcerptRole, GraphLessonContext, LessonContentAgentEngine, LessonDraftView, LessonExcerpt,
     LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 

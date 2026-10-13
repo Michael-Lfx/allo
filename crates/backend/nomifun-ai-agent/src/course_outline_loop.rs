@@ -794,6 +794,7 @@ mod tests {
             sampled_files: 7,
             coherence_files: 2,
             goal_fallback: false,
+            goal_terms: vec!["python".into(), "数据".into(), "据分".into(), "分析".into()],
             tree: vec!["a.md".into()],
             low_score_files: vec!["x.md".into(), "y.md".into()],
         });
