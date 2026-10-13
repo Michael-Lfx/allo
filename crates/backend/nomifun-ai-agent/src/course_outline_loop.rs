@@ -422,19 +422,36 @@ fn brief_user_text(brief: &OutlineBrief) -> String {
             text.push('\n');
         }
         (_, Some(kb)) => {
-            text.push_str(&format!(
-                "知识库名称：{}\n知识库描述：{}\n",
-                kb.name.trim(),
-                kb.description.trim()
-            ));
+            // 多知识库（t4）：逐个点名来源库（采样路径带 `{库名}/rel` 命名
+            // 空间，同名文件由前缀区分）；单库时就是原来的两行。
+            let bases = brief.source_knowledge_bases();
+            if bases.len() > 1 {
+                text.push_str("知识库（多库来源，采样路径以「库名/」为前缀，引用按前缀归属）：\n");
+                for base in &bases {
+                    text.push_str(&format!("- {}：{}\n", base.name.trim(), base.description.trim()));
+                }
+            } else {
+                text.push_str(&format!(
+                    "知识库名称：{}\n知识库描述：{}\n",
+                    kb.name.trim(),
+                    kb.description.trim()
+                ));
+            }
             if let Some(sampling) = &brief.sampling {
                 // 如实披露：采样按目标相关度选入，未采入的（低分）文件不在
                 // co_read 清单里，不要引用其路径。
                 text.push_str(&format!("{}\n", sampling.brief_line()));
             }
-            text.push_str(
-                "该库的 markdown 文档已采样：co_start 会返回路径清单，用 co_read 按路径阅读。\n",
-            );
+            if bases.len() > 1 {
+                text.push_str(
+                    "这些库的 markdown 文档已采样：co_start 会返回带库名前缀的路径清单，\
+                     用 co_read 按路径原样阅读与引用（同名文件靠前缀区分）。\n",
+                );
+            } else {
+                text.push_str(
+                    "该库的 markdown 文档已采样：co_start 会返回路径清单，用 co_read 按路径阅读。\n",
+                );
+            }
         }
         _ => {}
     }
@@ -763,6 +780,7 @@ mod tests {
             samples: vec![("docs/basics.md".into(), "期权的定义……".into())],
             domain: Some("trading".into()),
             goal: None,
+            knowledge_bases: Vec::new(),
             sampling: None,
         }
     }
@@ -774,6 +792,7 @@ mod tests {
             samples: Vec::new(),
             domain: None,
             goal: None,
+            knowledge_bases: Vec::new(),
             sampling: None,
         }
     }
@@ -797,6 +816,7 @@ mod tests {
             goal_terms: vec!["python".into(), "数据".into(), "据分".into(), "分析".into()],
             tree: vec!["a.md".into()],
             low_score_files: vec!["x.md".into(), "y.md".into()],
+            bases: Vec::new(),
         });
         let text = brief_user_text(&brief);
         assert!(text.contains("零基础学 Python 数据分析"), "{text}");

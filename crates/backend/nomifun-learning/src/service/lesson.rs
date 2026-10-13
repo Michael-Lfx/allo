@@ -84,30 +84,34 @@ fn sort_supplements_by_path(fragments: &mut [LessonExcerpt]) {
 /// 补充片段（带库归属与命中章节，可溯源）。主 source 自己命中时跳过（它已是
 /// primary——锚定纪律：检索不替换主引用，也不重复占用预算）。单文件读不到只
 /// 跳过该条；检索本身失败向上传播（调用方降级为「无补充」，不阻断生成）。
+///
+/// 多知识库（t4）：检索与扩读天然多库——`search_bases` 收全量来源库，命中
+/// 自带 `kb_id`/`kb_name`（补充片段按命中库归属，不必再猜）。
 async fn read_lesson_supplements(
     knowledge: &KnowledgeService,
-    kb_id: &str,
-    kb_name: Option<&str>,
+    kb_ids: &[KnowledgeBaseId],
     query: &str,
-    primary_path: Option<&str>,
+    primary: Option<(&str, &str)>,
 ) -> Result<(Vec<LessonExcerpt>, usize), AppError> {
-    let base_id = KnowledgeBaseId::parse(kb_id)
-        .map_err(|error| AppError::Internal(format!("invalid knowledge base id {kb_id}: {error}")))?;
-    let hits = knowledge
-        .search_bases(&[base_id], query, LESSON_RETRIEVAL_HITS)
-        .await?;
+    if kb_ids.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let hits = knowledge.search_bases(kb_ids, query, LESSON_RETRIEVAL_HITS).await?;
     let hit_count = hits.len();
     let mut supplements = Vec::with_capacity(hit_count);
     for hit in hits {
-        if Some(hit.rel_path.as_str()) == primary_path {
+        // 主 source 自身命中：跳过（锚定纪律，按 (库, 库内路径) 判等）。
+        if primary.is_some_and(|(kb_id, rel)| {
+            hit.kb_id.as_str() == kb_id && hit.rel_path == rel
+        }) {
             continue;
         }
-        match knowledge.read_file(kb_id, &hit.rel_path).await {
+        match knowledge.read_file(hit.kb_id.as_str(), &hit.rel_path).await {
             Ok(file) if !file.content.trim().is_empty() => supplements.push(LessonExcerpt {
                 path: hit.rel_path,
                 text: file.content,
-                kb_id: Some(kb_id.to_owned()),
-                kb_name: kb_name.map(str::to_owned),
+                kb_id: Some(hit.kb_id.as_str().to_owned()),
+                kb_name: Some(hit.kb_name),
                 heading: Some(hit.heading).filter(|heading| !heading.trim().is_empty()),
                 role: ExcerptRole::Supplement,
             }),
@@ -188,12 +192,14 @@ impl LearningService {
         }
     }
 
-    /// 课时 grounding 装配（t3「课时写作接回知识库」）：
+    /// 课时 grounding 装配（t3「课时写作接回知识库」；多库 t4）：
     /// - primary = 大纲引用的 source 文件**全文**（`read_file` 实时读库，替代
-    ///   快照里冻结的 8KB 前缀）；读不到（库不可达/文件被删/读出空）降级为
-    ///   快照摘录——**锚定纪律**：primary 永不被检索结果替换；
+    ///   快照里冻结的 8KB 前缀）；多库课程的 source 路径带 `{库名}/rel` 命名
+    ///   空间——按 [`SourceSpan::kb_id`]（蓝图已标注）解析到来源库并还原库内
+    ///   相对路径；读不到（库不可达/文件被删/读出空）降级为快照摘录——
+    ///   **锚定纪律**：primary 永不被检索结果替换；
     /// - 补充 = 检索扩读：课时标题 + purpose 词条 + 目标词条集 → `search_bases`
-    ///   → top-N 命中读全文，只作补充片段（同目录/相关文件扩读）；
+    ///   （全量来源库）→ top-N 命中读全文（命中自带库归属），只作补充片段；
     /// - 检索失败/超时（20s 预算）→ 只丢补充片段，不阻断生成。
     /// 片段按优先级（primary 在前）过预算守卫（[`enforce_grounding_budget`]）。
     async fn assemble_lesson_grounding(
@@ -203,7 +209,7 @@ impl LearningService {
         lesson_title: &str,
         purpose: &str,
         goal_terms: &[String],
-        source_kb_id: Option<&str>,
+        sources: &CourseKbSources,
     ) -> LessonGrounding {
         let mut grounding = LessonGrounding {
             fragments: Vec::new(),
@@ -214,40 +220,52 @@ impl LearningService {
         };
         // 实时读库与检索都需要注入的知识服务与课程的来源库；二者缺一
         // （描述流/测试构造）只有快照可用，且不算降级——现状行为。
-        let knowledge = self
-            .injected_knowledge_service()
-            .ok()
-            .zip(source_kb_id.map(str::to_owned));
+        let knowledge = self.injected_knowledge_service().ok();
         // 检索查询词（t3）：课时标题 + purpose 词条 + 目标词条集；同一套词条
         // 也用于超预算片段的相关度选摘（预算守卫）。
         let retrieval_terms = lesson_retrieval_terms(lesson_title, purpose, goal_terms);
-        let kb_name = match &knowledge {
-            Some((knowledge, kb_id)) => knowledge
-                .get_base_info(kb_id)
+        // primary 的来源库（t4）：命名空间归属优先（路径是事实），缺省用蓝图
+        // source 标注的 kb_id，再缺省回退课程主来源（旧课程/单库的裸路径）；
+        // 已删库（不在现存列表里）解析成无归属——不落到幸存库。`cited` 保留
+        // 蓝图里的原始路径——快照兜底按它取摘录（快照键与蓝图引用同源）。
+        let primary_source = lesson.source.as_ref().map(|source| {
+            let kb_id = base_for_sample_path(&source.path, &sources.bases, &sources.ids)
+                .or_else(|| source.kb_id.clone())
+                .filter(|id| sources.ids.iter().any(|candidate| candidate == id))
+                .or_else(|| sources.primary());
+            let rel = kb_id
+                .as_ref()
+                .map(|id| rel_path_for_base(&source.path, namespace_for_base(&sources.bases, id)))
+                .unwrap_or_else(|| rel_path_for_base(&source.path, None));
+            (kb_id, rel.to_owned(), source.path.clone())
+        });
+        let primary_kb_name = match (knowledge.as_ref(), primary_source.as_ref()) {
+            (Some(knowledge), Some((Some(kb_id), _, _))) => knowledge
+                .get_base_info(kb_id.as_str())
                 .await
                 .ok()
                 .map(|base| base.name),
-            None => None,
+            _ => None,
         };
-        if let Some(source) = lesson.source.as_ref() {
-            let live = match &knowledge {
-                Some((knowledge, kb_id)) => tokio::time::timeout(
+        if let Some((kb_id, rel, cited)) = primary_source.as_ref() {
+            let live = match (knowledge.as_ref(), kb_id.as_ref()) {
+                (Some(knowledge), Some(kb_id)) => tokio::time::timeout(
                     LESSON_RETRIEVAL_BUDGET,
-                    knowledge.read_file(kb_id, &source.path),
+                    knowledge.read_file(kb_id.as_str(), rel),
                 )
                 .await
                 .ok()
                 .and_then(Result::ok),
-                None => None,
+                _ => None,
             };
             match live {
                 Some(file) if !file.content.trim().is_empty() => {
                     grounding.primary_live = true;
                     grounding.fragments.push(LessonExcerpt {
-                        path: source.path.clone(),
+                        path: rel.clone(),
                         text: file.content,
-                        kb_id: source_kb_id.map(str::to_owned),
-                        kb_name: kb_name.clone(),
+                        kb_id: kb_id.as_ref().map(KnowledgeBaseId::as_str).map(str::to_owned),
+                        kb_name: primary_kb_name.clone(),
                         heading: None,
                         role: ExcerptRole::Primary,
                     });
@@ -257,35 +275,36 @@ impl LearningService {
                     if knowledge.is_some() {
                         grounding.degraded = true;
                         tracing::warn!(
-                            kb_id = source_kb_id.unwrap_or_default(),
-                            path = %source.path,
+                            kb_id = kb_id.as_ref().map(KnowledgeBaseId::as_str).unwrap_or_default(),
+                            path = %rel,
                             "live lesson source read failed; falling back to the sampled snapshot"
                         );
                     }
                     if let Some(text) = samples
                         .iter()
-                        .find(|(path, _)| path == &source.path)
+                        .find(|(path, _)| path == cited)
                         .map(|(_, text)| text.clone())
                     {
                         grounding.fragments.push(LessonExcerpt::text_only(
-                            source.path.clone(),
+                            rel.clone(),
                             text,
                         ));
                     }
                 }
             }
         }
-        if let Some((knowledge, kb_id)) = &knowledge {
-            if !retrieval_terms.is_empty() {
-                let primary_path = lesson.source.as_ref().map(|source| source.path.as_str());
+        if let Some(knowledge) = &knowledge {
+            if !retrieval_terms.is_empty() && !sources.ids.is_empty() {
+                let primary = primary_source.as_ref().and_then(|(kb_id, rel, _)| {
+                    kb_id.as_ref().map(|kb_id| (kb_id.as_str(), rel.as_str()))
+                });
                 let retrieved = tokio::time::timeout(
                     LESSON_RETRIEVAL_BUDGET,
                     read_lesson_supplements(
                         knowledge,
-                        kb_id,
-                        kb_name.as_deref(),
+                        &sources.ids,
                         &retrieval_terms.join(" "),
-                        primary_path,
+                        primary,
                     ),
                 )
                 .await;
@@ -298,7 +317,7 @@ impl LearningService {
                     Ok(Err(error)) => {
                         grounding.degraded = true;
                         tracing::warn!(
-                            kb_id,
+                            kb_ids = ?sources.ids,
                             error = %error,
                             "lesson retrieval failed; continuing without supplementary fragments"
                         );
@@ -306,7 +325,7 @@ impl LearningService {
                     Err(_) => {
                         grounding.degraded = true;
                         tracing::warn!(
-                            kb_id,
+                            kb_ids = ?sources.ids,
                             budget_s = LESSON_RETRIEVAL_BUDGET.as_secs(),
                             "lesson retrieval exceeded its budget; continuing without supplementary fragments"
                         );
@@ -402,7 +421,7 @@ impl LearningService {
         }
 
         let snapshot = sqlx::query(
-            "SELECT title, blueprint_json, samples_json, learning_goal, source_kb_id, \
+            "SELECT title, blueprint_json, samples_json, learning_goal, source_kb_id, source_kb_ids, \
                     samples_meta_json FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
@@ -417,8 +436,10 @@ impl LearningService {
             .map_err(internal)?
             .map(|goal| goal.trim().to_owned())
             .filter(|goal| !goal.is_empty());
-        // 来源库（t3）：课时写作实时读库的目标库；描述流课程为 None。
-        let source_kb_id: Option<String> = snapshot.try_get("source_kb_id").map_err(internal)?;
+        // 来源库（t3/t4）：课时写作实时读库的目标库（多库为全量过滤后列表，
+        // 已删库 id 不外泄）；描述流课程为空。逐库归属承载命名空间解析。
+        let existing = self.existing_knowledge_base_ids().await?;
+        let source_kbs = CourseKbSources::from_course_columns(&snapshot)?.filtered(&existing);
         let samples_meta_json: Option<String> =
             snapshot.try_get("samples_meta_json").map_err(internal)?;
         let blueprint_json: Option<String> = snapshot.try_get("blueprint_json").map_err(internal)?;
@@ -457,6 +478,8 @@ impl LearningService {
 
         // grounding（t3）：primary = 主 source 全文（实时读库），补充 = 检索
         // 扩读；快照摘录降级为兜底。锚定纪律：检索永不替换主 source。
+        // 多库（t4）：primary 按 source 的库归属读（命名空间去前缀），检索与
+        // 扩读覆盖全量来源库。
         let goal_terms = lesson_goal_terms(disclosure.as_ref(), course_goal.as_deref());
         let grounding = self
             .assemble_lesson_grounding(
@@ -465,7 +488,7 @@ impl LearningService {
                 &lesson.title,
                 &lesson.purpose,
                 &goal_terms,
-                source_kb_id.as_deref(),
+                &source_kbs,
             )
             .await;
         // 读数（票面「读数」项）：命中数/扩读文件数/是否降级——课时写作是否

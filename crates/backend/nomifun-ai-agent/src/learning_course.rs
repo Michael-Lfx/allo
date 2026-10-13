@@ -56,7 +56,10 @@ impl LearningCourseSink for LiveLearningCourseSink {
             // learning-graph flow is HTTP/创建向导 only (structure generation
             // is driven from the course wizard, not via the agent tool).
             course_kind: CourseKind::Traditional,
-            knowledge_base_id: req.kb_id,
+            // 多知识库（t4）：候选集已由工具层限会话挂载集并按名解析；首个 =
+            // 主来源（单列视图由后端从列表派生，不再重复下发单值）。
+            knowledge_base_id: None,
+            knowledge_base_ids: req.kb_ids,
             description: req.description,
             // 目标（t1）：知识库流整体文本即目标；描述流下工具层已过滤为
             // None（简报即目标）。
