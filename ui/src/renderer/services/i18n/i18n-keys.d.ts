@@ -9811,6 +9811,7 @@ export type I18nKey =
   | 'videoGeneration.agentSession.gate.actionBody'
   | 'videoGeneration.agentSession.gate.actionTitle'
   | 'videoGeneration.agentSession.gate.renderBody'
+  | 'videoGeneration.agentSession.gate.renderBodyShotReview'
   | 'videoGeneration.agentSession.gate.renderTitle'
   | 'videoGeneration.agentSession.hint.needAssets'
   | 'videoGeneration.agentSession.hint.reviewWaiting'

@@ -147,6 +147,15 @@ export function patchRunStatus(patch: Partial<SessionStatus>): void {
   notify();
 }
 
+/** Optimistic UI after the director confirms a gated shot (or switches to continuous). */
+export function patchShotReviewReleased(switchToContinuous = false): void {
+  patchRunStatus({
+    status: 'rendering',
+    pending_review: null,
+    ...(switchToContinuous ? { render_mode: 'continuous' } : {}),
+  });
+}
+
 function adopt(sessionId: string): void {
   if (state.sessionId === sessionId) return;
   state = { sessionId, full: null, flags: EMPTY_FLAGS };

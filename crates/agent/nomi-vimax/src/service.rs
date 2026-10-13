@@ -139,6 +139,7 @@ fn mark_cancelled_or_interrupted(st: &mut RenderStatus, index: &SessionIndex, id
         .ok()
         .is_some_and(|r| r.status == RunStatus::Interrupted)
         || st.status == RunStatus::Interrupted;
+    st.pending_review = None;
     if already_interrupted {
         st.status = RunStatus::Interrupted;
         if st.message.is_empty() {
@@ -240,6 +241,7 @@ impl VimaxService {
                 st.status = RunStatus::Interrupted;
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
+                st.pending_review = None;
                 st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
                 persist_run_status(&self.index, id, st);
                 ids.insert(id.clone());
@@ -557,6 +559,7 @@ impl VimaxService {
             let status = live_status(&self.index, &mut map, id);
             status.status = RunStatus::Cancelled;
             status.message = "cancelled".into();
+            status.pending_review = None;
             // Keep the last working pipeline stage so "continue from checkpoint"
             // can resume plan vs render correctly.
             status.emit_terminal("cancelled", "cancelled");
@@ -1507,8 +1510,20 @@ impl VimaxService {
                     .await;
                 let _ = tokio::fs::remove_file(&film).await;
             }
-            self.render(id, None, None, None, None, None, Some("continuous".into()))
-                .await?;
+            self.render(
+                id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                if record.render_mode.is_empty() {
+                    None
+                } else {
+                    Some(record.render_mode.clone())
+                },
+            )
+            .await?;
         }
         Ok(())
     }

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { parseSessionRenderMode, resolveSessionRenderMode } from './types';
+import {
+  displayReviewShotNumber,
+  parseSessionRenderMode,
+  resolveSessionRenderMode,
+} from './types';
 
 const source = (rel: string) =>
   readFileSync(new URL(rel, import.meta.url), 'utf8');
@@ -52,6 +56,7 @@ describe('video generation session video credits', () => {
     expect(infinite.includes('data-canvas-theme')).toBe(true);
     expect(inspector.includes('shot-api-prompt') || infinite.includes('shot-api-prompt')).toBe(true);
     expect(inspector.includes('ShotInfiniteCanvas')).toBe(true);
+    expect(inspector.includes('flushPendingSave')).toBe(true);
     expect(inspector.includes('PanZoomViewport')).toBe(false);
     expect(infinite.includes('InfiniteCanvas')).toBe(true);
     expect(infinite.includes('CanvasNodePromptPanel')).toBe(true);
@@ -108,7 +113,9 @@ describe('video generation session video credits', () => {
     expect(storyboardIdx).toBeGreaterThan(headerIdx);
     expect(feed.includes("renderMode: parseSessionRenderMode(next?.render_mode)")).toBe(true);
     const board = source('./components/StoryboardBoard.tsx');
-    expect(board.includes("patchRunStatus({ render_mode: 'continuous' })")).toBe(true);
+    expect(board.includes('patchShotReviewReleased(switchToContinuous)')).toBe(true);
+    expect(board.includes('flushPendingSave')).toBe(true);
+    expect(board.includes('onPendingReviewNumber')).toBe(true);
     expect(board.includes('session-render-mode')).toBe(false);
   });
 
@@ -134,5 +141,19 @@ describe('session render mode helpers', () => {
     expect(parseSessionRenderMode('')).toBeNull();
     expect(resolveSessionRenderMode(undefined)).toBe('continuous');
     expect(resolveSessionRenderMode('shot_review')).toBe('shot_review');
+  });
+
+  test('prefers the filmstrip ordinal over per-scene shot_idx', () => {
+    const pending = {
+      scene_root: 'idea2video/scene_1',
+      shot_idx: 0,
+      scene_idx: 1,
+      duration_secs: 8,
+      image_ref_count: 2,
+      audio_ref_count: 1,
+    };
+    expect(displayReviewShotNumber(pending, 8)).toBe(8);
+    expect(displayReviewShotNumber(pending, null)).toBe(1);
+    expect(displayReviewShotNumber(null, null)).toBe(0);
   });
 });

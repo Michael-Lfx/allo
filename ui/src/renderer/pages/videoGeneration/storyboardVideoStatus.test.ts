@@ -191,4 +191,14 @@ describe('storyboardFilmstripBadge', () => {
       storyboardFilmstripBadge({ runState: 'script_stale', videoStatus: 'ready' })
     ).toBe('script_stale');
   });
+
+  test('hides a leftover review chip once the live gate is gone', () => {
+    expect(
+      storyboardFilmstripBadge({
+        runState: 'awaiting_review',
+        videoStatus: 'pending',
+        sessionAwaitingReview: false,
+      })
+    ).toBeNull();
+  });
 });

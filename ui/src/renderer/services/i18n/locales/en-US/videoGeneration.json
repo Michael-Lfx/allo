@@ -883,7 +883,7 @@
         "clip": "Clip"
       },
       "reviewBar": "Shot {{number}} / {{total}} · awaiting review · ~{{duration}}s · {{images}} images · {{audio}} voices",
-      "saveBeforeApprove": "Save the script first",
+      "saveBeforeApprove": "Confirming will save your edits first",
       "approveShot": "Confirm generate",
       "switchContinuous": "Switch to continuous",
       "pausePipeline": "Pause pipeline",
@@ -929,11 +929,12 @@
     },
     "hint": {
       "needAssets": "Upload a character still and reference video on the left first",
-      "reviewWaiting": "Shot {{number}} is waiting for confirmation — or use the review bar on the left"
+      "reviewWaiting": "Shot {{number}} looks ready? Confirm this shot — or use the review bar on the left"
     },
     "gate": {
       "renderTitle": "Ready to render the storyboard?",
-      "renderBody": "Review shots and portraits on the left first. Confirming starts billed clip generation and muxing.",
+      "renderBody": "Review shots and portraits on the left first. Confirming starts continuous billed clip generation and muxing.",
+      "renderBodyShotReview": "Review shots and portraits on the left first. Confirming pauses before each billed clip so you can approve or edit.",
       "actionTitle": "Assets ready — generate the clip?",
       "actionBody": "The film will follow the reference video motion. Confirm to start."
     },

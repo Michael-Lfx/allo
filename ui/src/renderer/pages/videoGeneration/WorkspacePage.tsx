@@ -70,7 +70,7 @@ import AspectRatioPicker from './components/AspectRatioPicker';
 import ModelSelectors, { type VimaxModelSelection } from './components/ModelSelectors';
 import VideoQualityPickers from './components/VideoQualityPickers';
 import { normalizeWorkflow, isActionImitationWorkflow, statusLabel, workflowLabel } from './components/SessionCard';
-import StoryboardBoard from './components/StoryboardBoard';
+import StoryboardBoard, { type ShotReviewFlush } from './components/StoryboardBoard';
 import VisualStyleSelect from './components/VisualStyleSelect';
 import WorkspaceActionAssets from './components/WorkspaceActionAssets';
 import type { VideoCreateDraft } from './home/types';
@@ -99,6 +99,7 @@ import { shouldContinueAsRender } from './continueMode';
 import {
   getRunStatusSnapshot,
   patchRunStatus,
+  patchShotReviewReleased,
   useRunStatusFeedController,
   useRunStatusFlags,
   useRunStatusFull,
@@ -241,6 +242,16 @@ const WorkspacePage: React.FC = () => {
   const [storyboardShotCount, setStoryboardShotCount] = useState(0);
   const [renderMode, setRenderMode] = useState<VimaxRenderMode>('continuous');
   const [films, setFilms] = useState<FilmInfo[]>([]);
+  const [reviewDirty, setReviewDirty] = useState(false);
+  const [pendingReviewNumber, setPendingReviewNumber] = useState<number | null>(null);
+  const reviewFlushRef = useRef<ShotReviewFlush | null>(null);
+  const handleRegisterReviewFlush = useCallback((flush: ShotReviewFlush | null) => {
+    reviewFlushRef.current = flush;
+  }, []);
+  useEffect(() => {
+    setReviewDirty(false);
+    setPendingReviewNumber(null);
+  }, [sessionId]);
   const sessionWidth = computeStudioSessionWidth(studioShellWidth, sessionRatio);
 
   useLayoutEffect(() => {
@@ -947,7 +958,9 @@ const WorkspacePage: React.FC = () => {
     const pending = getRunStatusSnapshot()?.pending_review;
     if (!pending) return;
     try {
+      await reviewFlushRef.current?.();
       await approveShot(sessionId, pending.scene_root, pending.shot_idx, false);
+      patchShotReviewReleased(false);
       await refreshRun();
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
@@ -1750,6 +1763,9 @@ const WorkspacePage: React.FC = () => {
               focusSceneId={focusSceneId}
               onFocusScene={setFocusSceneId}
               onShotCount={setStoryboardShotCount}
+              onPendingReviewNumber={setPendingReviewNumber}
+              onReviewDirtyChange={setReviewDirty}
+              onRegisterReviewFlush={handleRegisterReviewFlush}
               imageModel={models.image_model}
               videoModel={models.video_model}
             />
@@ -1906,6 +1922,8 @@ const WorkspacePage: React.FC = () => {
             onCancel={() => void handleCancel()}
             onContinue={handleContinue}
             onApproveShot={() => void handleApproveShot()}
+            reviewDirty={reviewDirty}
+            pendingReviewNumber={pendingReviewNumber}
             onFocusScene={setFocusSceneId}
             onSelectArtifact={developerMode ? setSelectedPath : undefined}
             cameoEpoch={cameoRefreshToken}

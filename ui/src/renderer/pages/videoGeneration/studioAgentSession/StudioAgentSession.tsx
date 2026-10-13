@@ -14,7 +14,7 @@ import {
 import { useDocumentHidden, useRunStatusFull } from '../useRunStatusFeed';
 import { resolveSessionCreditsConsumed } from '../sessionCredits';
 import { listCameos } from '../api';
-import type { ArtifactNode, CameoPhoto } from '../types';
+import { displayReviewShotNumber, parseSessionRenderMode, type ArtifactNode, type CameoPhoto } from '../types';
 import StudioMediaLightbox from './StudioMediaLightbox';
 import StudioSessionComposer from './StudioSessionComposer';
 import StudioSessionMessageView from './StudioSessionMessage';
@@ -216,6 +216,8 @@ export interface StudioAgentSessionProps {
   onCancel: () => void;
   onContinue: () => void;
   onApproveShot?: () => void;
+  reviewDirty?: boolean;
+  pendingReviewNumber?: number | null;
   onFocusScene?: (sceneId: string) => void;
   onSelectArtifact?: (path: string) => void;
   cameoEpoch?: number;
@@ -250,6 +252,8 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
   onCancel,
   onContinue,
   onApproveShot,
+  reviewDirty = false,
+  pendingReviewNumber = null,
   onFocusScene,
   onSelectArtifact,
   cameoEpoch = 0,
@@ -414,13 +418,20 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         return { title: '', body: item.text };
       }
       if (item.kind === 'gate_render') {
+        const shotReview =
+          parseSessionRenderMode(runStatus?.render_mode) === 'shot_review';
         return {
           title: t('videoGeneration.agentSession.gate.renderTitle', {
             defaultValue: '分镜和定妆可以开渲了吗？',
           }),
-          body: t('videoGeneration.agentSession.gate.renderBody', {
-            defaultValue: '建议先在左侧检查分镜与定妆。确认后将逐镜出片并拼接，成本较高。',
-          }),
+          body: shotReview
+            ? t('videoGeneration.agentSession.gate.renderBodyShotReview', {
+                defaultValue:
+                  '建议先在左侧检查分镜与定妆。确认后将逐镜过审，每镜点「确认生成」后才出片扣费。',
+              })
+            : t('videoGeneration.agentSession.gate.renderBody', {
+                defaultValue: '建议先在左侧检查分镜与定妆。确认后将连续出片并拼接，成本较高。',
+              }),
         };
       }
       if (item.kind === 'gate_action') {
@@ -434,12 +445,12 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         };
       }
       if (item.stage === 'shot_awaiting_review') {
-        const number = (runStatus?.pending_review?.shot_idx ?? 0) + 1;
+        const number = displayReviewShotNumber(runStatus?.pending_review, pendingReviewNumber);
         return {
           title: t('videoGeneration.studio.storyboard.approveShot', { defaultValue: '确认生成' }),
           body: t('videoGeneration.agentSession.hint.reviewWaiting', {
             number,
-            defaultValue: '第 {{number}} 镜等待确认，也可在左侧过审条操作',
+            defaultValue: '第 {{number}} 镜等待确认，点「确认生成本镜」即可继续',
           }),
         };
       }
@@ -503,7 +514,15 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
       }
       return { title: label, body: '', meta: parts.join(' · ') };
     },
-    [failure, nowMs, relatedModel, runStatus?.pending_review?.shot_idx, t]
+    [
+      failure,
+      nowMs,
+      pendingReviewNumber,
+      relatedModel,
+      runStatus?.pending_review,
+      runStatus?.render_mode,
+      t,
+    ]
   );
 
   const handleSend = () => {
@@ -679,8 +698,11 @@ const StudioAgentSession: React.FC<StudioAgentSessionProps> = ({
         onStop={onCancel}
         stopping={cancelling}
         reviewShotNumber={
-          runStatus?.pending_review ? runStatus.pending_review.shot_idx + 1 : null
+          runStatus?.pending_review
+            ? displayReviewShotNumber(runStatus.pending_review, pendingReviewNumber)
+            : null
         }
+        reviewDirty={reviewDirty}
         busyKind={
           planning || runStatus?.status === 'planning'
             ? 'planning'

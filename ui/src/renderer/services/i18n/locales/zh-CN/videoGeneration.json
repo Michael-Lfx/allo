@@ -883,7 +883,7 @@
         "clip": "成片"
       },
       "reviewBar": "镜头 {{number}} / {{total}} · 待过审 · 约 {{duration}}s · 参考图 {{images}} · 音色 {{audio}}",
-      "saveBeforeApprove": "请先保存脚本",
+      "saveBeforeApprove": "确认时会先保存修改",
       "approveShot": "确认生成",
       "switchContinuous": "改为连续出片",
       "pausePipeline": "暂停流水线",
@@ -929,11 +929,12 @@
     },
     "hint": {
       "needAssets": "请先在左侧上传角色图和参考视频",
-      "reviewWaiting": "第 {{number}} 镜等待确认，也可在左侧过审条操作"
+      "reviewWaiting": "第 {{number}} 镜等待确认，点「确认生成本镜」或左侧「确认生成」即可继续"
     },
     "gate": {
       "renderTitle": "分镜和定妆可以开渲了吗？",
-      "renderBody": "建议先在左侧检查分镜与定妆。确认后将逐镜出片并拼接，成本较高。",
+      "renderBody": "建议先在左侧检查分镜与定妆。确认后将连续出片并拼接，成本较高。",
+      "renderBodyShotReview": "建议先在左侧检查分镜与定妆。确认后将逐镜过审，每镜点「确认生成」后才出片扣费。",
       "actionTitle": "素材就绪，开始生成？",
       "actionBody": "将按参考视频的动作生成成片。确认即开始。"
     },

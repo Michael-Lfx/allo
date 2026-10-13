@@ -1,4 +1,12 @@
-﻿import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+﻿import React, {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { Popconfirm } from '@arco-design/web-react';
 import {
@@ -67,6 +75,10 @@ function sameShotLayout(
   return JSON.stringify(current ?? null) === JSON.stringify(next);
 }
 
+export interface ShotPacketInspectorHandle {
+  flushPendingSave: () => Promise<void>;
+}
+
 export interface ShotPacketInspectorProps {
   sessionId: string;
   scene: StoryboardScene;
@@ -86,6 +98,7 @@ export interface ShotPacketInspectorProps {
   onUnsavedChange?: (dirty: boolean) => void;
   onPacket?: (packet: ShotPacketView | null) => void;
   onBusyAction?: () => void;
+  ref?: React.Ref<ShotPacketInspectorHandle>;
 }
 
 function packetSceneRoot(scene: StoryboardScene): string {
@@ -142,7 +155,7 @@ function fileKind(file: File): 'image' | 'audio' | null {
   return null;
 }
 
-const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
+function ShotPacketInspector({
   sessionId,
   scene,
   artifacts,
@@ -160,7 +173,8 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   onUnsavedChange,
   onPacket,
   onBusyAction,
-}) => {
+  ref,
+}: ShotPacketInspectorProps) {
   const { t } = useTranslation();
   const [message, messageHolder] = useArcoMessage();
   const sceneRoot = packetSceneRoot(scene);
@@ -288,9 +302,9 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
   }, [dirty, onUnsavedChange]);
 
   const persist = useCallback(
-    async (patch: ShotPacketPatch) => {
-      if (!sceneRoot || !editable) return;
-      if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
+    async (patch: ShotPacketPatch): Promise<boolean> => {
+      if (!sceneRoot || !editable) return false;
+      if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return false;
       setSaving(true);
       try {
         const next = await putShotPacket(sessionId, sceneRoot, shotIdx, patch);
@@ -299,13 +313,15 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
           keepLayout: true,
         });
         setSavedAt(Date.now());
+        return true;
       } catch (err) {
-        if (isPlanningPacketError(err)) return;
+        if (isPlanningPacketError(err)) return false;
         message.error(
           t('videoGeneration.studio.storyboard.packetSaveFailed', {
             defaultValue: '镜头包保存失败',
           }) + `: ${err instanceof Error ? err.message : String(err)}`
         );
+        return false;
       } finally {
         setSaving(false);
       }
@@ -343,6 +359,45 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
     },
     [editable, layoutPayload, persist, sceneRoot, shotIdx]
   );
+
+  const flushPendingSave = useCallback(async () => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (layoutTimer.current) {
+      window.clearTimeout(layoutTimer.current);
+      layoutTimer.current = null;
+    }
+    if (!editable || !sceneRoot) return;
+    const current = packetRef.current;
+    if (!packetMatchesScene(current, sceneRoot, shotIdx) || !current) return;
+    const nextLayout = layoutPayload();
+    if (!sameShotLayout(current.layout, nextLayout)) {
+      const saved = await persist({ layout: nextLayout, recompile: false });
+      if (!saved) {
+        throw new Error(
+          t('videoGeneration.studio.storyboard.packetSaveFailed', {
+            defaultValue: '镜头包保存失败',
+          })
+        );
+      }
+    }
+    const latest = packetRef.current ?? current;
+    const outbound = nodeMentionsToSeedancePrompt(promptText, latest);
+    if (outbound !== effectivePrompt(latest)) {
+      const saved = await persist({ prompt_override: outbound, recompile: false });
+      if (!saved) {
+        throw new Error(
+          t('videoGeneration.studio.storyboard.packetSaveFailed', {
+            defaultValue: '镜头包保存失败',
+          })
+        );
+      }
+    }
+  }, [editable, layoutPayload, persist, promptText, sceneRoot, shotIdx, t]);
+
+  useImperativeHandle(ref, () => ({ flushPendingSave }), [flushPendingSave]);
 
   const schedulePromptSave = useCallback(
     (text: string) => {
@@ -931,6 +986,6 @@ const ShotPacketInspector: React.FC<ShotPacketInspectorProps> = ({
       {packet?.error ? <p className={styles.packetError}>{packet.error}</p> : null}
     </div>
   );
-};
+}
 
 export default ShotPacketInspector;
