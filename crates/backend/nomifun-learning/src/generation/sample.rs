@@ -612,6 +612,7 @@ fn sample_multi_base_blocking(
 /// 无目标路径的单库采样：字母序 take + 文件头前缀（旧行为逐字一致）。
 fn legacy_selection(
     root: &Path,
+    goal: &str,
     max_files: usize,
     max_per_file: usize,
     max_total: usize,

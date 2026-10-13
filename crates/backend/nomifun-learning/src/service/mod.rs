@@ -34,9 +34,10 @@ pub(super) use crate::generation::{
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
     CalendarLessonRef, CalendarStats, CheckinStatus, CourseDetail, CourseKind, CoursePack,
-    CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem,
-    DiagnosticPlan, DueReview, GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, GeneratedLessonActivity, SectionKind, SectionView, LessonStatus,
+    CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
+    SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
     MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, QuizProgressView,
     TeachingStyle,

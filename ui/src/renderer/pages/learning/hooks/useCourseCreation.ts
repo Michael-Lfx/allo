@@ -140,8 +140,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     t,
   ]);
 
-  // 提交当前 tab 的生成请求：base tab 要求已选知识库；description tab 要求
-  // 已填写课程简报。校验失败时提示并停留在表单。
+  // 提交当前 tab 的生成请求：base tab 要求已选知识库且填写了学习目标；
+  // description tab 要求已填写课程简报。校验失败时提示并停留在表单。
   const submitGeneration = useCallback(async () => {
     if (!modelChoice) {
       Message.warning(t('learning.form.modelPending'));
@@ -163,18 +163,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         Message.warning(t('learning.goalRequired'));
         return;
       }
-      // 多知识库（t4）：列表整体提交（首个 = 主来源）；上限与服务端同口径
-      // （MAX_COURSE_KNOWLEDGE_BASES）——超限是**可见的错误**并阻止提交，
-      // 绝不静默截断（第 6 个选择被悄悄丢掉比报错更坏）；服务端 400 仍是
-      // 权威，这里只是让它在出发前就看得见。
-      if (selectedKnowledgeBaseIds.length > MAX_COURSE_KNOWLEDGE_BASES) {
-        Message.warning(
-          t('learning.kbSelectionTooMany', { count: MAX_COURSE_KNOWLEDGE_BASES })
-        );
-        return;
-      }
       await generateCourse({
-        knowledge_base_ids: selectedKnowledgeBaseIds,
+        knowledge_base_id: selectedKnowledgeBaseId,
         goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,

@@ -441,6 +441,7 @@ const LearningPage: React.FC = () => {
             onGraphProficiencyChange={creation.setGraphProficiency}
             onGraphBasisChange={creation.setGraphBasis}
             onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
+            onGoalChange={creation.setCreationGoal}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}

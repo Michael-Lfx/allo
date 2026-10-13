@@ -1099,6 +1099,7 @@ fn assemble_outline_pack_uses_goal_as_course_title() {
         description: "d".into(),
         domain: "general".into(),
         version: 1,
+        concepts: Vec::new(),
         modules: Vec::new(),
     };
     let request = |goal: Option<&str>| GenerateCourseRequest {

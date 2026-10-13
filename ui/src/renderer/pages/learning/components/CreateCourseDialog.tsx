@@ -40,6 +40,7 @@ export function CreateCourseDialog({
   onGraphProficiencyChange,
   onGraphBasisChange,
   onConfirmGraphCreation,
+  onGoalChange,
   onRetry,
   onCancel,
   onStartLearning,
@@ -73,6 +74,7 @@ export function CreateCourseDialog({
   onGraphProficiencyChange: (value: string) => void;
   onGraphBasisChange: (value: string) => void;
   onConfirmGraphCreation: () => void;
+  onGoalChange: (value: string) => void;
   onRetry: () => void;
   onCancel: () => void;
   onStartLearning: (courseId: string) => void;
