@@ -158,12 +158,29 @@ impl Default for ModelsConfig {
     }
 }
 
+/// Configuration section `[cloud]` governing Flowy Cloud and LLM provider options.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CloudConfig {
+    /// Optional Flowy Cloud completions endpoint URL (defaults to "https://server.flowyaipc.com/claw/v1/chat/completions").
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Optional Cloud user token (overrides autodetected session token).
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Decision routing model name (defaults to "qwen3.8-flash").
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
 /// Top-level AI Mate companion configuration schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AiMateConfig {
     /// Model asset management configuration section (`[models]`).
     #[serde(default)]
     pub models: ModelsConfig,
+    /// Cloud provider and decision routing section (`[cloud]`).
+    #[serde(default)]
+    pub cloud: CloudConfig,
 }
 
 /// Type alias for convenient usage.
@@ -217,6 +234,24 @@ impl AiMateConfig {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.models.models_dir = PathBuf::from(trimmed);
+            }
+        }
+        if let Some(val) = get_env("NOMIFUN_SERVER_TOKEN").or_else(|| get_env("FLOWY_SERVER_TOKEN")) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                self.cloud.token = Some(trimmed.to_string());
+            }
+        }
+        if let Some(val) = get_env("FLOWY_COMPLETIONS_URL") {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                self.cloud.endpoint = Some(trimmed.to_string());
+            }
+        }
+        if let Some(val) = get_env("AI_MATE_LLM_MODEL") {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                self.cloud.model = Some(trimmed.to_string());
             }
         }
     }

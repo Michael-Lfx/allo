@@ -77,52 +77,161 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
 }
 
 /// Single-pass quad-route client with sliding context window, dynamic task state injection,
-/// and live HTTP completions endpoint connection.
-pub struct QwenVoiceRouter {
+/// Single-pass quad-route client with sliding context window, dynamic task state injection,
+/// and live HTTP completions endpoint connection (supporting Flowy Cloud, DashScope, and OpenAI-compatible gateways).
+#[derive(Clone)]
+pub struct OpenAiCompatibleVoiceRouter {
     history: Vec<ChatMessage>,
     endpoint: Option<String>,
     api_key: Option<String>,
     model: String,
+    extra_headers: Vec<(String, String)>,
     http_client: reqwest::Client,
     #[cfg(any(test, feature = "voice-skeleton"))]
     fallback: Option<HeuristicFallbackVoiceRouter>,
 }
 
-impl QwenVoiceRouter {
+/// Backward-compatible type alias.
+pub type QwenVoiceRouter = OpenAiCompatibleVoiceRouter;
+
+impl OpenAiCompatibleVoiceRouter {
     pub fn new() -> Self {
-        Self::with_default_model("qwen3.8-flash")
+        Self::from_env()
     }
 
     pub fn with_default_model(default_model: impl Into<String>) -> Self {
-        let endpoint = std::env::var("DASHSCOPE_COMPLETIONS_URL")
-            .or_else(|_| {
-                std::env::var("OPENAI_BASE_URL")
-                    .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
-            })
-            .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
-            .ok()
-            .or_else(|| {
-                if std::env::var("DASHSCOPE_API_KEY").is_ok() {
-                    Some("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".to_string())
-                } else {
-                    None
-                }
-            });
+        let mut router = Self::from_env();
+        if std::env::var("AI_MATE_LLM_MODEL").is_err()
+            && std::env::var("DASHSCOPE_MODEL").is_err()
+            && std::env::var("FLOWY_LLM_MODEL").is_err()
+        {
+            router.model = default_model.into();
+        }
+        router
+    }
 
-        let api_key = std::env::var("DASHSCOPE_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .or_else(|_| std::env::var("AI_MATE_LLM_KEY"))
-            .ok();
-
-        let model = std::env::var("AI_MATE_LLM_MODEL")
-            .or_else(|_| std::env::var("DASHSCOPE_MODEL"))
-            .unwrap_or_else(|_| default_model.into());
+    /// Creates a router instance specifically configured for Flowy Cloud.
+    ///
+    /// Flowy Cloud endpoint: `{base_url}/v1/chat/completions` (or full URL).
+    /// Flowy Cloud uses the user's JWT with Bearer authorization and mirrors `token: <jwt>`.
+    pub fn from_flowy_cloud(
+        endpoint: impl Into<String>,
+        jwt_token: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        let ep = endpoint.into();
+        let completions_url = if ep.ends_with("/chat/completions") {
+            ep
+        } else {
+            format!("{}/chat/completions", ep.trim_end_matches('/'))
+        };
+        let token = jwt_token.into();
 
         Self {
             history: Vec::new(),
-            endpoint,
-            api_key,
+            endpoint: Some(completions_url),
+            api_key: Some(token.clone()),
+            model: model.into(),
+            extra_headers: vec![("token".to_string(), token)],
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            fallback: Some(HeuristicFallbackVoiceRouter::new()),
+        }
+    }
+
+    /// Creates a router instance for a custom OpenAI-compatible endpoint with optional key.
+    pub fn from_custom_endpoint(
+        endpoint: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        let key = api_key.into();
+        Self {
+            history: Vec::new(),
+            endpoint: Some(endpoint.into()),
+            api_key: if key.trim().is_empty() { None } else { Some(key) },
+            model: model.into(),
+            extra_headers: Vec::new(),
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            fallback: Some(HeuristicFallbackVoiceRouter::new()),
+        }
+    }
+
+    /// Inspects environment variables in order of priority:
+    /// 1. Flowy Cloud token: `NOMIFUN_SERVER_TOKEN` or `FLOWY_SERVER_TOKEN`
+    /// 2. DashScope API key: `DASHSCOPE_API_KEY`
+    /// 3. OpenAI API key: `OPENAI_API_KEY`
+    /// 4. Generic completions endpoint: `AI_MATE_LLM_ENDPOINT`
+    /// 5. Offline fallback
+    pub fn from_env() -> Self {
+        let model = std::env::var("AI_MATE_LLM_MODEL")
+            .or_else(|_| std::env::var("DASHSCOPE_MODEL"))
+            .or_else(|_| std::env::var("FLOWY_LLM_MODEL"))
+            .unwrap_or_else(|_| "qwen3.8-flash".to_string());
+
+        // 1. Priority 1: Flowy Cloud user token
+        if let Ok(token) = std::env::var("NOMIFUN_SERVER_TOKEN").or_else(|_| std::env::var("FLOWY_SERVER_TOKEN")) {
+            if !token.trim().is_empty() {
+                let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
+                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .unwrap_or_else(|_| "https://server.flowyaipc.com/claw/v1/chat/completions".to_string());
+                return Self::from_flowy_cloud(endpoint, token, model);
+            }
+        }
+
+        // 2. Priority 2: DashScope API key (direct Alibaba Cloud)
+        if let Ok(key) = std::env::var("DASHSCOPE_API_KEY") {
+            if !key.trim().is_empty() {
+                let endpoint = std::env::var("DASHSCOPE_COMPLETIONS_URL")
+                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".to_string());
+                return Self::from_custom_endpoint(endpoint, key, model);
+            }
+        }
+
+        // 3. Priority 3: Standard OpenAI API key / Base URL
+        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            if !key.trim().is_empty() {
+                let endpoint = std::env::var("OPENAI_BASE_URL")
+                    .map(|u| format!("{}/chat/completions", u.trim_end_matches('/')))
+                    .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                    .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string());
+                return Self::from_custom_endpoint(endpoint, key, model);
+            }
+        }
+
+        // 4. Priority 4: Generic AI_MATE_LLM_ENDPOINT (e.g. local Ollama / vLLM without key)
+        if let Ok(endpoint) = std::env::var("AI_MATE_LLM_ENDPOINT") {
+            if !endpoint.trim().is_empty() {
+                let key = std::env::var("AI_MATE_LLM_KEY").unwrap_or_default();
+                return Self::from_custom_endpoint(endpoint, key, model);
+            }
+        }
+
+        // 5. Priority 5: Auto-detect logged-in Flowy Cloud session in local data directory
+        #[cfg(not(test))]
+        if let Some(token) = try_detect_local_flowy_token() {
+            let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
+                .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
+                .unwrap_or_else(|_| "https://server.flowyaipc.com/claw/v1/chat/completions".to_string());
+            tracing::info!("Auto-detected Flowy Cloud user token from local session store");
+            return Self::from_flowy_cloud(endpoint, token, model);
+        }
+
+        // 6. Default empty / offline fallback
+        Self {
+            history: Vec::new(),
+            endpoint: None,
+            api_key: None,
             model,
+            extra_headers: Vec::new(),
             http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
@@ -140,14 +249,24 @@ impl QwenVoiceRouter {
         self.endpoint.as_deref()
     }
 
+    pub fn is_cloud_connected(&self) -> bool {
+        self.endpoint.is_some()
+    }
+
     pub fn with_endpoint(mut self, endpoint: impl Into<String>, api_key: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
-        self.api_key = Some(api_key.into());
+        let k = api_key.into();
+        self.api_key = if k.trim().is_empty() { None } else { Some(k) };
         self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
         self
     }
 
@@ -264,7 +383,12 @@ impl VoiceRouter for QwenVoiceRouter {
 
             let mut req = self.http_client.post(endpoint).json(&body);
             if let Some(key) = &self.api_key {
-                req = req.bearer_auth(key);
+                if !key.trim().is_empty() {
+                    req = req.bearer_auth(key);
+                }
+            }
+            for (h_name, h_val) in &self.extra_headers {
+                req = req.header(h_name, h_val);
             }
 
             let resp = req.send().await.map_err(|e| RouteError::Network(e.to_string()))?;
@@ -290,6 +414,82 @@ impl VoiceRouter for QwenVoiceRouter {
     }
 }
 
+/// Helper to probe the local filesystem for an active Flowy Cloud login session token.
+pub fn try_detect_local_flowy_token() -> Option<String> {
+    use base64::Engine;
+    let mut candidate_dirs = Vec::new();
+    if let Some(dir) = nomifun_common::storage_paths::resolve_data_dir_from_env() {
+        candidate_dirs.push(dir);
+    }
+    candidate_dirs.push(nomifun_common::storage_paths::default_data_dir(""));
+    candidate_dirs.push(nomifun_common::storage_paths::default_data_dir("-dev"));
+
+    for data_dir in candidate_dirs {
+        let token_path = data_dir.join("auth").join("tokens.json");
+        if token_path.exists() {
+            if let Ok(raw) = std::fs::read_to_string(&token_path) {
+                // 1. Plaintext JSON
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(tok) = val.get("server").and_then(|s| s.get("access_token")).and_then(|t| t.as_str()) {
+                        if !tok.trim().is_empty() {
+                            return Some(tok.trim().to_string());
+                        }
+                    }
+                    if let Some(tok) = val.get("access_token").and_then(|t| t.as_str()) {
+                        if !tok.trim().is_empty() {
+                            return Some(tok.trim().to_string());
+                        }
+                    }
+                }
+
+                // 2. Encrypted envelope with companion .key file
+                let key_path = token_path.with_extension("key");
+                let key_opt = if let Ok(env_key) = std::env::var("NOMIFUN_TOKEN_STORE_KEY_B64") {
+                    base64::engine::general_purpose::STANDARD.decode(env_key.trim()).ok()
+                } else if key_path.exists() {
+                    if let Ok(key_raw) = std::fs::read_to_string(&key_path) {
+                        base64::engine::general_purpose::STANDARD.decode(key_raw.trim()).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(key_bytes) = key_opt {
+                    if key_bytes.len() == 32 {
+                        if let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&raw) {
+                            if let (Some(nonce_b64), Some(cipher_b64)) = (
+                                envelope.get("nonce_b64").and_then(|v| v.as_str()),
+                                envelope.get("ciphertext_b64").and_then(|v| v.as_str()),
+                            ) {
+                                if let (Ok(nonce_bytes), Ok(cipher_bytes)) = (
+                                    base64::engine::general_purpose::STANDARD.decode(nonce_b64),
+                                    base64::engine::general_purpose::STANDARD.decode(cipher_b64),
+                                ) {
+                                    let mut combined = nonce_bytes;
+                                    combined.extend_from_slice(&cipher_bytes);
+                                    let combined_b64 = base64::engine::general_purpose::STANDARD.encode(combined);
+                                    if let Ok(plain) = nomifun_common::decrypt_string(&combined_b64, &key_bytes) {
+                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&plain) {
+                                            if let Some(tok) = val.get("server").and_then(|s| s.get("access_token")).and_then(|t| t.as_str()) {
+                                                if !tok.trim().is_empty() {
+                                                    return Some(tok.trim().to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +505,22 @@ mod tests {
         let router = QwenVoiceRouter::new().with_model("custom-model");
         assert_eq!(router.model(), "custom-model");
     }
+
+    #[test]
+    fn test_flowy_cloud_router_construction() {
+        let router = OpenAiCompatibleVoiceRouter::from_flowy_cloud(
+            "https://server.flowyaipc.com/claw/v1",
+            "fake-flowy-jwt-token",
+            "qwen3.8-flash",
+        );
+        assert_eq!(
+            router.endpoint(),
+            Some("https://server.flowyaipc.com/claw/v1/chat/completions")
+        );
+        assert_eq!(router.model(), "qwen3.8-flash");
+        assert!(router.is_cloud_connected());
+        assert_eq!(router.extra_headers, vec![("token".to_string(), "fake-flowy-jwt-token".to_string())]);
+    }
 }
+
 

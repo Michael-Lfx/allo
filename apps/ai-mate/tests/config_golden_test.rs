@@ -141,6 +141,7 @@ fn test_roundtrip_toml() {
             probe_timeout_ms: 2500,
             prefer_mirror: PreferMirror::ModelScope,
         },
+        cloud: Default::default(),
     };
 
     let serialized = toml::to_string_pretty(&original).expect("serialization must succeed");

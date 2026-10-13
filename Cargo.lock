@@ -8301,6 +8301,7 @@ name = "nomifun-voice-terminal"
 version = "1.6.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "jsonschema",
  "nomifun-api-types",
