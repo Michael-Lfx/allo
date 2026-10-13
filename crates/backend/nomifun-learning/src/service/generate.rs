@@ -90,7 +90,18 @@ impl LearningService {
         // `SourceSpan.kb_id`——快照/蓝图/课时三处的库归属同源，多库下课时
         // 读库（t3 实时读数）按它去前缀取正确库。
         let mut blueprint = blueprint;
-        let source_kb_ids = request.knowledge_base_ids_normalized();
+        // 来源库列表（t4 + 评审对齐）：归一顺序原样落库（首个 = 主来源），但
+        // 多库请求里**解析不到的库不进课程行**——它的缺席由采样披露的逐库
+        // 条目（计数 0）如实承担，导入侧的"不写悬空 id"守卫保持原样。
+        let source_kb_ids = if brief.knowledge_bases.is_empty() {
+            request.knowledge_base_ids_normalized()
+        } else {
+            brief
+                .knowledge_bases
+                .iter()
+                .filter_map(|base| KnowledgeBaseId::parse(&base.kb_id).ok())
+                .collect()
+        };
         annotate_blueprint_sources(
             &mut blueprint,
             brief.sampling.as_ref(),
@@ -167,14 +178,28 @@ impl LearningService {
         let kb_ids = request.knowledge_base_ids_normalized();
         if !kb_ids.is_empty() {
             let knowledge = self.injected_knowledge_service()?;
+            let single = kb_ids.len() == 1;
             let mut bases: Vec<KnowledgeBaseBrief> = Vec::with_capacity(kb_ids.len());
             for kb_id in &kb_ids {
-                let base = knowledge.get_base_info(kb_id.as_str()).await?;
-                bases.push(KnowledgeBaseBrief {
-                    kb_id: kb_id.as_str().to_owned(),
-                    name: base.name,
-                    description: base.description,
-                });
+                match knowledge.get_base_info(kb_id.as_str()).await {
+                    Ok(base) => bases.push(KnowledgeBaseBrief {
+                        kb_id: kb_id.as_str().to_owned(),
+                        name: base.name,
+                        description: base.description,
+                    }),
+                    // 缺库口径与采样侧同一把尺（t4 裁决，评审对齐）：多库按库
+                    // 跳过——缺失的库在采样披露里计数 0（`sample_bases` 仍拿
+                    // 全量 id 列表），不让一个坏库阻断整门课；单库保持原错误
+                    // （零回归）。全部库都缺失时采样侧以既有的 400 收场。
+                    Err(error) if !single => {
+                        tracing::warn!(
+                            kb_id = kb_id.as_str(),
+                            error = %error,
+                            "knowledge base metadata unavailable; skipping it for this course"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             let goal = request.goal_text();
             // 目标感知采样（t2）与多库分摊（t4）：目标非空时按相关度选入 +
