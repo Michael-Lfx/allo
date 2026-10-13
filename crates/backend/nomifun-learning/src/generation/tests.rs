@@ -453,6 +453,7 @@
                         end: None,
                         kb_id: None,
                     }),
+                    sources: Vec::new(),
                 }],
             }],
         }
@@ -471,6 +472,7 @@
                 end: None,
                 kb_id: None,
             }),
+            sources: Vec::new(),
         };
         Blueprint {
             title: "C".into(),
@@ -1037,7 +1039,6 @@ fn assemble_outline_pack_uses_goal_as_course_title() {
         description: "d".into(),
         domain: "general".into(),
         version: 1,
-        concepts: Vec::new(),
         modules: Vec::new(),
     };
     let request = |goal: Option<&str>| GenerateCourseRequest {
@@ -1050,6 +1051,8 @@ fn assemble_outline_pack_uses_goal_as_course_title() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: goal.map(ToOwned::to_owned),
+        proficiency_statement: None,
+        learner_basis: None,
         knowledge_base_ids: Vec::new(),
     };
 
@@ -1070,25 +1073,19 @@ fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
         description: "d".into(),
         domain: "general".into(),
         version: 1,
-        concepts: vec![ConceptPack {
-            key: "a".into(),
-            title: "A".into(),
-            description: String::new(),
-            prerequisites: Vec::new(),
-        }],
         modules: vec![BlueprintModule {
             title: "M".into(),
             description: String::new(),
             lessons: vec![BlueprintLesson {
                 title: "L".into(),
                 purpose: "p".into(),
-                concepts: vec!["a".into()],
                 source: Some(SourceSpan {
                     path: path.into(),
                     start: None,
                     end: None,
                     kb_id: None,
                 }),
+                sources: Vec::new(),
             }],
         }],
     };

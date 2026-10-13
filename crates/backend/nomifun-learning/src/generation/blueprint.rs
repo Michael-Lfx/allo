@@ -37,10 +37,16 @@ pub(crate) async fn generate_blueprint(
         )
         .await?;
         match parse_json_object::<Blueprint>(&raw) {
-            Ok(blueprint) => match validate_blueprint(&blueprint, samples) {
-                Ok(()) => return Ok(blueprint),
-                Err(error) => last_error = error,
-            },
+            Ok(mut blueprint) => {
+                // 课时来源归一（t4 评审补齐）：模型可能给 `source` 或
+                // `sources`（或两者）——统一成"列表为准、兼容位 = 首个"，
+                // 下游只需读一把尺。
+                normalize_blueprint_sources(&mut blueprint);
+                match validate_blueprint(&blueprint, samples) {
+                    Ok(()) => return Ok(blueprint),
+                    Err(error) => last_error = error,
+                }
+            }
             Err(error) => last_error = error,
         }
     }
@@ -110,6 +116,17 @@ pub(crate) fn build_description_blueprint_prompt(
 }
 
 
+/// 归一蓝图里每个课时的来源（t4 评审补齐）：`sources` 为准（为空时用兼容位
+/// `source` 升成单元素列表），兼容位重算为首个——同一份蓝图在任何消费方看到
+/// 的都是同一份引用清单。
+pub(crate) fn normalize_blueprint_sources(blueprint: &mut Blueprint) {
+    for module in &mut blueprint.modules {
+        for lesson in &mut module.lessons {
+            lesson.normalize_sources();
+        }
+    }
+}
+
 pub(crate) fn validate_blueprint(
     blueprint: &Blueprint,
     samples: &[(String, String)],
@@ -129,18 +146,22 @@ pub(crate) fn validate_blueprint(
             if lesson.title.trim().is_empty() {
                 return Err("lesson title is required".into());
             }
-            // kb flow: every lesson must cite an exact sampled file. The
+            // kb flow: every lesson must cite an exact sampled file — one or
+            // several (t4 评审补齐：`sources` 里每一条都校验）. The
             // description flow has no samples, so no source is required and
             // an invented path is simply dropped on import.
             if !samples.is_empty() {
-                let Some(source) = &lesson.source else {
+                let cited = lesson.cited_sources();
+                if cited.is_empty() {
                     return Err(format!("lesson \"{}\" has no source", lesson.title));
-                };
-                if !source_paths.contains(source.path.as_str()) {
-                    return Err(format!(
-                        "lesson \"{}\" cites an unsampled source path: {}",
-                        lesson.title, source.path
-                    ));
+                }
+                for source in cited {
+                    if !source_paths.contains(source.path.as_str()) {
+                        return Err(format!(
+                            "lesson \"{}\" cites an unsampled source path: {}",
+                            lesson.title, source.path
+                        ));
+                    }
                 }
             }
         }

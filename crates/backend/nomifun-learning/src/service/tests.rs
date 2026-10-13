@@ -133,6 +133,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
+                    sources: Vec::new(),
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::TrueFalse,
@@ -202,6 +203,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             purpose: purpose.into(),
             estimated_minutes: 10,
             source,
+            sources: Vec::new(),
             activities: Vec::new(),
             sections: Vec::new(),
         };
@@ -240,6 +242,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             title: title.into(),
             purpose: purpose.into(),
             source,
+            sources: Vec::new(),
         };
         let blueprint_module = |title: &str,
                                 lessons: Vec<crate::generation::BlueprintLesson>|
@@ -351,6 +354,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             estimated_minutes: 10,
             generated: true,
             source: None,
+            sources: Vec::new(),
             status,
             activities: Vec::new(),
             sections: Vec::new(),
@@ -512,6 +516,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
+                        sources: Vec::new(),
                         activities: vec![ActivityPack {
                         difficulty: None,
                             prompt: "A1".into(),
@@ -525,6 +530,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         purpose: String::new(),
                         estimated_minutes: 10,
                         source: None,
+                        sources: Vec::new(),
                         activities: vec![ActivityPack {
                         difficulty: None,
                             prompt: "A2".into(),
@@ -605,6 +611,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
+                    sources: Vec::new(),
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::Reflection,
@@ -926,6 +933,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
+                    sources: Vec::new(),
                     activities: vec![ActivityPack {
             difficulty: None,
                         kind: ActivityKind::FillInBlank,
@@ -1075,6 +1083,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     purpose: String::new(),
                     estimated_minutes: 10,
                     source: None,
+                    sources: Vec::new(),
                     activities: vec![
                         ActivityPack {
                             difficulty: None,
@@ -2021,6 +2030,7 @@ fn review_log_test_pack() -> CoursePack {
                 purpose: String::new(),
                 estimated_minutes: 10,
                 source: None,
+                sources: Vec::new(),
                 activities: vec![ActivityPack {
                     difficulty: None,
                     kind: ActivityKind::SingleChoice,
@@ -3068,6 +3078,8 @@ async fn growth_auto_triggers_on_lesson_completion() {
     .unwrap();
     assert_eq!(status, "applied");
     assert_eq!(note, "完成触发的补货批");
+}
+
 /// 课程大纲引擎的测试替身（t1）：只记录收到的简报，返回固定的最小蓝图。
 struct RecordingOutlineEngine {
     briefs: Mutex<Vec<crate::course_outline::OutlineBrief>>,
@@ -3086,20 +3098,14 @@ impl crate::course_outline::CourseOutlineAgentEngine for RecordingOutlineEngine 
             description: "d".into(),
             domain: "general".into(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![crate::generation::BlueprintModule {
                 title: "M".into(),
                 description: String::new(),
                 lessons: vec![crate::generation::BlueprintLesson {
                     title: "L".into(),
                     purpose: "P".into(),
-                    concepts: vec!["a".into()],
                     source: None,
+                    sources: Vec::new(),
                 }],
             }],
         })
@@ -3149,6 +3155,8 @@ async fn kb_goal_flows_into_brief_title_and_course_row() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: goal.map(ToOwned::to_owned),
+        proficiency_statement: None,
+        learner_basis: None,
         knowledge_base_ids: Vec::new(),
     };
 
@@ -3231,6 +3239,8 @@ async fn kb_goal_without_any_match_falls_back_and_still_generates() {
                 model: None,
                 mode: crate::models::CourseGenerationMode::OnDemand,
                 goal: Some("零基础学 Python 数据分析".into()),
+                proficiency_statement: None,
+                learner_basis: None,
                 knowledge_base_ids: Vec::new(),
             },
         )
@@ -3256,19 +3266,13 @@ async fn lesson_context_carries_the_course_goal() {
     let owner_id = nomifun_db::installation_owner_id(database.pool()).await.unwrap();
     let user_id = UserId::parse(owner_id).unwrap();
     let service = LearningService::new(database.pool().clone());
-    let concept = |key: &str| ConceptPack {
-        key: key.into(),
-        title: key.to_uppercase(),
-        description: String::new(),
-        prerequisites: Vec::new(),
-    };
-    let lesson = |title: &str, concept: &str| LessonPack {
+    let lesson = |title: &str| LessonPack {
         title: title.into(),
         summary: String::new(),
         purpose: "目标一".into(),
         estimated_minutes: 10,
         source: None,
-        concepts: vec![concept.into()],
+        sources: Vec::new(),
         activities: Vec::new(),
         sections: Vec::new(),
     };
@@ -3278,11 +3282,10 @@ async fn lesson_context_carries_the_course_goal() {
         domain: "math".into(),
         source_kb_id: None,
         version: 1,
-        concepts: vec![concept("a")],
         modules: vec![ModulePack {
             title: "模块一".into(),
             description: String::new(),
-            lessons: vec![lesson("第一课", "a")],
+            lessons: vec![lesson("第一课")],
         }],
         teaching_style: crate::models::TeachingStyle::Standard,
     };
@@ -3291,15 +3294,14 @@ async fn lesson_context_carries_the_course_goal() {
         description: "d".into(),
         domain: "math".into(),
         version: 1,
-        concepts: vec![concept("a")],
         modules: vec![crate::generation::BlueprintModule {
             title: "模块一".into(),
             description: String::new(),
             lessons: vec![crate::generation::BlueprintLesson {
                 title: "第一课".into(),
                 purpose: "目标一".into(),
-                concepts: vec!["a".into()],
                 source: None,
+                sources: Vec::new(),
             }],
         }],
     };
@@ -3417,25 +3419,33 @@ async fn import_kb_lesson_course(
     samples: Vec<(String, String)>,
     goal: &str,
 ) -> CourseDetail {
-    let concept = ConceptPack {
-        key: "c1".into(),
-        title: "期权定义".into(),
-        description: String::new(),
-        prerequisites: Vec::new(),
-    };
-    let source = Some(SourceSpan {
-        path: source_path.into(),
-        start: None,
-        end: None,
-        kb_id: None,
-    });
+    import_kb_lesson_course_with_sources(service, source_kb_id, &[source_path], samples, goal).await
+}
+
+/// 同上，但课时可引用多处来源（t4 评审补齐的多引用）：`source_paths` 位序即
+/// 引用顺序（首个 = 主来源），蓝图列表与兼容位都按它生成。
+async fn import_kb_lesson_course_with_sources(
+    service: &LearningService,
+    source_kb_id: &str,
+    source_paths: &[&str],
+    samples: Vec<(String, String)>,
+    goal: &str,
+) -> CourseDetail {
+    let sources: Vec<SourceSpan> = source_paths
+        .iter()
+        .map(|path| SourceSpan {
+            path: (*path).into(),
+            start: None,
+            end: None,
+            kb_id: None,
+        })
+        .collect();
     let pack = CoursePack {
         title: "期权入门".into(),
         description: "d".into(),
         domain: "finance".into(),
         source_kb_id: Some(source_kb_id.parse().unwrap()),
         version: 1,
-        concepts: vec![concept.clone()],
         modules: vec![ModulePack {
             title: "模块一".into(),
             description: String::new(),
@@ -3444,8 +3454,8 @@ async fn import_kb_lesson_course(
                 summary: String::new(),
                 purpose: "理解期权的定义与权利义务".into(),
                 estimated_minutes: 10,
-                source: source.clone(),
-                concepts: vec!["c1".into()],
+                source: sources.first().cloned(),
+                sources: sources.clone(),
                 activities: Vec::new(),
                 sections: Vec::new(),
             }],
@@ -3457,15 +3467,14 @@ async fn import_kb_lesson_course(
         description: "d".into(),
         domain: "finance".into(),
         version: 1,
-        concepts: vec![concept],
         modules: vec![crate::generation::BlueprintModule {
             title: "模块一".into(),
             description: String::new(),
             lessons: vec![crate::generation::BlueprintLesson {
                 title: "期权入门".into(),
                 purpose: "理解期权的定义与权利义务".into(),
-                concepts: vec!["c1".into()],
-                source,
+                source: sources.first().cloned(),
+                sources,
             }],
         }],
     };
@@ -3485,8 +3494,104 @@ async fn import_kb_lesson_course(
         .unwrap()
 }
 
-/// t3 验收钉子①（大文件中段的事实）：建课快照只有 8KB 前缀（中段事实不在
-/// 其中——"今天不可能"的现状），课时写作实时读全文后事实进入 grounding。
+/// t4 评审钉（课时多引用）：一份课时引用两处来源时——课时视图按引用位序列出
+/// 两条（`source` 兼容位 = 首个、逐条解析库归属、落库列表与三列同源），课时
+/// grounding 把**每个被引用文件**都作为 primary 片段（位序保留、各带原文与
+/// 库归属），总预算不超过 40KB。
+#[tokio::test]
+async fn lesson_grounding_carries_every_cited_source_as_a_primary_fragment() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let base = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id = base.base.knowledge_base_id.as_str().to_owned();
+    write_kb_file(
+        &base.base.root_path,
+        "docs/认购.md",
+        "# 认购\n第一处来源标记：买方持有权利。\n",
+    );
+    write_kb_file(
+        &base.base.root_path,
+        "docs/认沽.md",
+        "# 认沽\n第二处来源标记：卖方承担义务。\n",
+    );
+    // 第二条引用是大文件：预算守卫必须把两条 primary 合起来压到 40KB 以内。
+    let filler = "填充段落，用于把文件推过单条主引用的 24KB 上限。\n\n";
+    let mut big = String::from("# 认沽\n第二处来源标记：卖方承担义务。\n\n");
+    for _ in 0..1500 {
+        big.push_str(filler);
+    }
+    write_kb_file(&base.base.root_path, "docs/认沽.md", &big);
+
+    let detail = import_kb_lesson_course_with_sources(
+        &service,
+        &kb_id,
+        &["docs/认购.md", "docs/认沽.md"],
+        vec![
+            ("docs/认购.md".to_owned(), "快照一".to_owned()),
+            ("docs/认沽.md".to_owned(), "快照二".to_owned()),
+        ],
+        "",
+    )
+    .await;
+
+    // 视图：两条来源按引用位序，各自解析到唯一来源库；兼容位 = 首个。
+    let lesson = &detail.modules[0].lessons[0];
+    assert_eq!(
+        lesson
+            .sources
+            .iter()
+            .map(|source| source.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["docs/认购.md", "docs/认沽.md"],
+        "视图按引用位序给出全部来源"
+    );
+    assert!(
+        lesson.sources.iter().all(|source| source.kb_id.is_some()),
+        "单库课程的裸路径回退唯一来源库（逐条）"
+    );
+    assert_eq!(
+        lesson.source.as_ref().map(|source| source.path.as_str()),
+        Some("docs/认购.md"),
+        "兼容位 = 首个引用"
+    );
+
+    let lesson_id = lesson.id.clone();
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+    let contexts = engine.contexts.lock().unwrap();
+    let grounding = contexts[0].grounding();
+    let primaries: Vec<&LessonExcerpt> = grounding
+        .iter()
+        .filter(|fragment| fragment.role == ExcerptRole::Primary)
+        .copied()
+        .collect();
+    assert_eq!(primaries.len(), 2, "每个被引用文件各成一条 primary（位序保留）");
+    assert_eq!(primaries[0].path, "docs/认购.md");
+    assert_eq!(primaries[1].path, "docs/认沽.md");
+    assert!(primaries[0].text.contains("第一处来源标记"), "{}", primaries[0].text);
+    assert!(primaries[1].text.contains("第二处来源标记"), "{}", primaries[1].text);
+    assert!(
+        primaries.iter().all(|fragment| fragment.kb_id.as_deref() == Some(kb_id.as_str())),
+        "逐条实时读库各带库归属"
+    );
+    // 预算内联（与 `GROUNDING_TOTAL_MAX_BYTES` 同值，测试不依赖生产常量）。
+    let total: usize = grounding.iter().map(|fragment| fragment.text.len()).sum();
+    assert!(
+        total <= 40 * 1024,
+        "多引用合并后仍在 40KB 预算内: {total}"
+    );
+    assert!(contexts[0].grounding().first().is_some_and(|f| f.role == ExcerptRole::Primary));
+}
+
+
 #[tokio::test]
 async fn lesson_grounding_reads_the_full_source_past_the_snapshot_prefix() {
     let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
@@ -3863,25 +3968,19 @@ impl crate::course_outline::CourseOutlineAgentEngine for CitingOutlineEngine {
             description: "d".into(),
             domain: "general".into(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![crate::generation::BlueprintModule {
                 title: "M".into(),
                 description: String::new(),
                 lessons: vec![crate::generation::BlueprintLesson {
                     title: "L".into(),
                     purpose: "P".into(),
-                    concepts: vec!["a".into()],
                     source: self.cite.clone().map(|path| SourceSpan {
                         path,
                         start: None,
                         end: None,
                         kb_id: None,
                     }),
+                    sources: Vec::new(),
                 }],
             }],
         })
@@ -3929,6 +4028,8 @@ async fn multi_kb_generation_namespaces_paths_and_resolves_source_owner() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: Some("学会期权".into()),
+    proficiency_statement: None,
+    learner_basis: None,
     };
     let detail = service.generate_course(&owner_id, request).await.unwrap();
 
@@ -4004,6 +4105,8 @@ async fn multi_kb_course_survives_a_deleted_source_base() {
                 model: None,
                 mode: crate::models::CourseGenerationMode::OnDemand,
                 goal: Some("学会期权".into()),
+            proficiency_statement: None,
+            learner_basis: None,
             },
         )
         .await
@@ -4041,6 +4144,102 @@ async fn multi_kb_course_survives_a_deleted_source_base() {
     assert!(course_notes_ref.is_none(), "本用例只引用被删库的文件");
 }
 
+/// t4 验收钉子⑥（缺库口径对齐；评审修复）：多库请求里含一个不存在的库时
+/// 按库跳过——其余库照常建课（缺失库在披露里计数 0），不再一个坏库拖垮整门
+/// 课；单库请求对同样的缺失库保持原有失败（零回归）。
+#[tokio::test]
+async fn multi_kb_generation_skips_a_missing_base_instead_of_failing() {
+    let (service, knowledge, owner_id) = job_test_service().await;
+    let finance = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let finance_id = finance.base.knowledge_base_id.clone();
+    write_kb_file(&finance.base.root_path, "docs/intro.md", "# 金融\n认购与认沽。");
+    // 幽灵库：合法 v7 id，但没有任何知识库行（被删/不存在的库）。
+    let ghost = nomifun_common::generate_id();
+    let engine = Arc::new(CitingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+        cite: Some("金融笔记/docs/intro.md".to_owned()),
+    });
+    service.set_course_outline_engine(engine.clone());
+
+    let request = |ids: Vec<KnowledgeBaseId>| GenerateCourseRequest {
+        course_kind: crate::models::CourseKind::Traditional,
+        teaching_style: None,
+        knowledge_base_id: None,
+        knowledge_base_ids: ids,
+        description: None,
+        domain: None,
+        provider_id: None,
+        model: None,
+        mode: crate::models::CourseGenerationMode::OnDemand,
+        goal: Some("学会期权".into()),
+    proficiency_statement: None,
+    learner_basis: None,
+    };
+
+    let detail = service
+        .generate_course(
+            &owner_id,
+            request(vec![ghost.parse().unwrap(), finance_id.parse().unwrap()]),
+        )
+        .await
+        .unwrap();
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    let names: Vec<&str> = brief
+        .source_knowledge_bases()
+        .iter()
+        .map(|base| base.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["金融笔记"], "缺失的库被跳过，不冒充来源库");
+    // 披露如实：缺失库计数 0（选择顺序原样保留在课程行里）。
+    let sampling = detail.course.sampling.clone().expect("多库建课必有披露");
+    assert_eq!(sampling.bases.len(), 2, "逐库披露包含被跳过的库");
+    let ghost_id: KnowledgeBaseId = ghost.parse().unwrap();
+    let skipped = sampling
+        .bases
+        .iter()
+        .find(|base| base.kb_id == ghost_id)
+        .expect("被跳过的库有一条披露条目");
+    assert_eq!(skipped.total_files, 0);
+    assert_eq!(skipped.sampled_files, 0);
+    assert_eq!(
+        sampling
+            .bases
+            .iter()
+            .map(|base| base.kb_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![ghost.as_str(), finance_id.as_str()],
+        "披露逐库如实（含被跳过的库，按选择顺序）"
+    );
+    assert_eq!(
+        detail
+            .course
+            .source_kb_ids
+            .iter()
+            .map(KnowledgeBaseId::as_str)
+            .collect::<Vec<_>>(),
+        vec![finance_id.as_str()],
+        "课程行只写存活库（导入侧不写悬空 id）；缺席由披露承担"
+    );
+    assert_eq!(
+        detail.course.source_kb_id.as_ref().map(KnowledgeBaseId::as_str),
+        Some(finance_id.as_str()),
+        "主来源 = 首个存活库"
+    );
+
+    // 单库请求：同一个缺失库仍然直接失败（原口径零回归）。
+    let error = service
+        .generate_course(&owner_id, request(vec![ghost.parse().unwrap()]))
+        .await
+        .expect_err("single missing knowledge base must still fail");
+    assert!(
+        matches!(error, nomifun_common::AppError::NotFound(_)),
+        "单库缺库保持 NotFound: {error:?}"
+    );
+}
+
 /// t4 验收钉子③（乱序提交同一组库 → 去重槽位拒绝）：来源键按库 id 排序拼接，
 /// 提交顺序不影响槽位——不会重复建课。
 #[tokio::test]
@@ -4067,6 +4266,8 @@ async fn multi_kb_shuffled_resubmission_hits_the_same_generation_slot() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: Some("学会聚类".into()),
+    proficiency_statement: None,
+    learner_basis: None,
     };
 
     let _slot = service
@@ -4113,12 +4314,6 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         "# 课程\n副库标记：期权是标准化合约。\n",
     );
 
-    let concept = ConceptPack {
-        key: "c1".into(),
-        title: "期权".into(),
-        description: String::new(),
-        prerequisites: Vec::new(),
-    };
     let cited = "课程笔记/docs/intro.md";
     let source = Some(SourceSpan {
         path: cited.to_owned(),
@@ -4132,7 +4327,6 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         domain: "finance".into(),
         source_kb_id: Some(primary_id.parse().unwrap()),
         version: 1,
-        concepts: vec![concept.clone()],
         modules: vec![ModulePack {
             title: "模块一".into(),
             description: String::new(),
@@ -4142,7 +4336,7 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
                 purpose: "理解期权".into(),
                 estimated_minutes: 10,
                 source: source.clone(),
-                concepts: vec!["c1".into()],
+                sources: Vec::new(),
                 activities: Vec::new(),
                 sections: Vec::new(),
             }],
@@ -4154,15 +4348,14 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         description: "d".into(),
         domain: "finance".into(),
         version: 1,
-        concepts: vec![concept],
         modules: vec![crate::generation::BlueprintModule {
             title: "模块一".into(),
             description: String::new(),
             lessons: vec![crate::generation::BlueprintLesson {
                 title: "期权入门".into(),
                 purpose: "理解期权".into(),
-                concepts: vec!["c1".into()],
                 source,
+                sources: Vec::new(),
             }],
         }],
     };
@@ -4238,5 +4431,144 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
         !primary_excerpt.text.contains("主库标记"),
         "读到的是引用库的那一份，不是主来源的: {}",
         primary_excerpt.text
+    );
+}
+
+/// t4 验收钉子⑤（已删库的引用绝不读成幸存库的文档；评审修复）：两库课程的
+/// 引用库被删后，该课时的 primary 退回快照摘录、片段不携带任何库归属——
+/// 修复前 `.or_else(primary)` 会把「课程笔记/…」这条路径归到幸存的主来源上
+/// 去读；夹具让这次错读**读得到**（幸存库里恰好同路径有一份别的文档），
+/// 错读的后果因此不是"碰巧读不到"而是把课时 ground 到别的库的文档上。
+#[tokio::test]
+async fn lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_base() {
+    let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
+    let primary = knowledge
+        .quick_create_base(Some("金融笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let other = knowledge
+        .quick_create_base(Some("课程笔记"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let primary_id = primary.base.knowledge_base_id.clone();
+    let other_id = other.base.knowledge_base_id.clone();
+    // 幸存库里的同名路径（阅读顺序错读的教科书场景）：删库前它不属于本课程。
+    write_kb_file(
+        &primary.base.root_path,
+        "课程笔记/docs/intro.md",
+        "# 别的文档\n错读标记：这份文档属于主来源库，不是被引用库。\n",
+    );
+
+    let cited = "课程笔记/docs/intro.md";
+    let source = Some(SourceSpan {
+        path: cited.to_owned(),
+        start: None,
+        end: None,
+        kb_id: None,
+    });
+    let pack = CoursePack {
+        title: "期权入门".into(),
+        description: "d".into(),
+        domain: "finance".into(),
+        source_kb_id: Some(primary_id.parse().unwrap()),
+        version: 1,
+        modules: vec![ModulePack {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![LessonPack {
+                title: "期权入门".into(),
+                summary: String::new(),
+                purpose: "理解期权".into(),
+                estimated_minutes: 10,
+                source: source.clone(),
+                sources: Vec::new(),
+                activities: Vec::new(),
+                sections: Vec::new(),
+            }],
+        }],
+        teaching_style: crate::models::TeachingStyle::Standard,
+    };
+    let blueprint = crate::generation::Blueprint {
+        title: "期权入门".into(),
+        description: "d".into(),
+        domain: "finance".into(),
+        version: 1,
+        modules: vec![crate::generation::BlueprintModule {
+            title: "模块一".into(),
+            description: String::new(),
+            lessons: vec![crate::generation::BlueprintLesson {
+                title: "期权入门".into(),
+                purpose: "理解期权".into(),
+                source,
+                sources: Vec::new(),
+            }],
+        }],
+    };
+    let disclosure = serde_json::json!({
+        "goal": "学会期权",
+        "total_files": 1,
+        "sampled_files": 1,
+        "coherence_files": 0,
+        "goal_fallback": false,
+        "goal_terms": ["期权"],
+        "tree": [cited],
+        "low_score_files": [],
+        "bases": [
+            {"kb_id": primary_id, "name": "金融笔记", "namespace": "金融笔记",
+             "total_files": 0, "sampled_files": 0, "coherence_files": 0,
+             "low_score_files": 0, "goal_fallback": false},
+            {"kb_id": other_id, "name": "课程笔记", "namespace": "课程笔记",
+             "total_files": 1, "sampled_files": 1, "coherence_files": 0,
+             "low_score_files": 0, "goal_fallback": false}
+        ]
+    });
+    let detail = service
+        .import_course_outline(
+            pack,
+            OutlineSnapshot {
+                blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                samples_json: serde_json::to_string(&vec![(
+                    cited.to_owned(),
+                    "快照摘录标记：建课时冻结的摘录。".to_owned(),
+                )])
+                .unwrap(),
+                learning_goal: "学会期权".into(),
+                samples_meta_json: Some(disclosure.to_string()),
+                source_kb_ids: vec![primary_id.parse().unwrap(), other_id.parse().unwrap()],
+            },
+        )
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    // 引用库被删：只剩主来源库存活。
+    knowledge.delete_base(&other_id, true).await.unwrap();
+
+    let engine = Arc::new(RecordingLessonEngine {
+        contexts: Mutex::new(Vec::new()),
+    });
+    service.set_lesson_engine(engine.clone());
+    service
+        .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+        .await
+        .unwrap();
+
+    let contexts = engine.contexts.lock().unwrap();
+    let grounding = contexts[0].grounding();
+    let primary_excerpt = &grounding[0];
+    assert_eq!(primary_excerpt.role, ExcerptRole::Primary);
+    assert!(
+        primary_excerpt.text.contains("快照摘录标记"),
+        "已删库的引用走快照兜底: {}",
+        primary_excerpt.text
+    );
+    assert!(
+        !primary_excerpt.text.contains("错读标记"),
+        "绝不把被删库的路径读成幸存库的文档: {}",
+        primary_excerpt.text
+    );
+    assert!(
+        primary_excerpt.kb_id.is_none() && primary_excerpt.kb_name.is_none(),
+        "快照兜底的片段不携带库归属（更不归属到幸存库）: {:?}",
+        primary_excerpt
     );
 }

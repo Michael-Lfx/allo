@@ -111,22 +111,31 @@ impl LearningService {
 
             for (lesson_position, lesson) in module.lessons.iter().enumerate() {
                 let lesson_id = LearningLessonId::new();
-                let (source_path, source_start, source_end) = lesson
-                    .source
-                    .as_ref()
-                    .map(|source| {
-                        (
-                            Some(source.path.trim()),
-                            source.start,
-                            source.end,
-                        )
-                    })
+                // 引用清单（t4 评审补齐的多引用）：首个 = 主来源，三列
+                //（source_path/start/end）是它的兼容位，两者同源写入。
+                let cited = lesson.cited_sources();
+                let (source_path, source_start, source_end) = cited
+                    .first()
+                    .map(|source| (Some(source.path.trim()), source.start, source.end))
                     .unwrap_or((None, None, None));
+                let source_paths_json = serde_json::to_string(
+                    &cited
+                        .iter()
+                        .map(|source| {
+                            serde_json::json!({
+                                "path": source.path.trim(),
+                                "start": source.start,
+                                "end": source.end,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(internal)?;
                 sqlx::query(
                     "INSERT INTO learning_lessons \
                      (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
-                      content_generated, source_path, source_start, source_end) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      content_generated, source_path, source_start, source_end, source_paths_json) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(lesson_id.as_str())
                 .bind(module_id.as_str())
@@ -139,6 +148,7 @@ impl LearningService {
                 .bind(source_path)
                 .bind(source_start)
                 .bind(source_end)
+                .bind(source_paths_json)
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
@@ -287,7 +297,7 @@ impl LearningService {
                 parse_id(module_row.try_get("module_id").map_err(internal)?)?;
             let lesson_rows = sqlx::query(
                 "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, \
-                        l.content_generated, l.source_path, l.source_start, l.source_end, \
+                        l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
                         COALESCE(p.status, 'not_started') AS status \
                  FROM learning_lessons l \
                  LEFT JOIN learning_lesson_progress p \
@@ -309,14 +319,18 @@ impl LearningService {
                 let source_path: Option<String> =
                     lesson_row.try_get("source_path").map_err(internal)?;
                 // 课时 source 的 (kb_id, 库内相对路径) 解析（t4）：多库路径按
-                // 采样命名空间还原到来源库；单库/旧课程裸路径不解析。
-                let source = source_path.map(|path| {
-                    kb_sources.resolve_source(
-                        path,
-                        lesson_row.try_get("source_start").ok().flatten(),
-                        lesson_row.try_get("source_end").ok().flatten(),
-                    )
-                });
+                // 采样命名空间还原到来源库；单库/旧课程裸路径不解析。多引用
+                //（t4 评审补齐）逐条解析，位序保留。
+                let sources = kb_sources.resolve_sources(
+                    lesson_row
+                        .try_get::<Option<String>, _>("source_paths_json")
+                        .map_err(internal)?
+                        .as_deref(),
+                    source_path,
+                    lesson_row.try_get("source_start").ok().flatten(),
+                    lesson_row.try_get("source_end").ok().flatten(),
+                );
+                let source = sources.first().cloned();
                 let content_generated: i64 =
                     lesson_row.try_get("content_generated").map_err(internal)?;
                 lessons.push(LessonView {
@@ -330,6 +344,7 @@ impl LearningService {
                         .map_err(internal)?,
                     generated: content_generated != 0,
                     source,
+                    sources,
                     status,
                     activities: self.lesson_activities(&lesson_id).await?,
                     // 目录视图不加载节正文（体积大）；分节经课时详情接口
@@ -414,7 +429,7 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, \
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, l.source_paths_json, \
                     c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
                     COALESCE(p.status, 'not_started') AS status \
              FROM learning_lessons l \
@@ -437,13 +452,16 @@ impl LearningService {
         let existing = self.existing_knowledge_base_ids().await?;
         let kb_sources = CourseKbSources::from_course_columns(&row)?.filtered(&existing);
         let source_path: Option<String> = row.try_get("source_path").map_err(internal)?;
-        let source = source_path.map(|path| {
-            kb_sources.resolve_source(
-                path,
-                row.try_get("source_start").ok().flatten(),
-                row.try_get("source_end").ok().flatten(),
-            )
-        });
+        // 多引用（t4 评审补齐）：列表逐条解析，位序保留；列表为空回退三列。
+        let sources = kb_sources.resolve_sources(
+            row.try_get::<Option<String>, _>("source_paths_json")
+                .map_err(internal)?
+                .as_deref(),
+            source_path,
+            row.try_get("source_start").ok().flatten(),
+            row.try_get("source_end").ok().flatten(),
+        );
+        let source = sources.first().cloned();
         let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
         let activities = self.lesson_activities(&id).await?;
         let sections = self.lesson_sections(&id).await?;
@@ -456,6 +474,7 @@ impl LearningService {
             estimated_minutes: row.try_get("estimated_minutes").map_err(internal)?,
             generated: content_generated != 0,
             source,
+            sources,
             status,
             activities,
             sections,
@@ -743,7 +762,8 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
                     "each lesson needs a title and positive estimated_minutes".into(),
                 ));
             }
-            if let Some(source) = &lesson.source {
+            // 引用逐条校验（t4 评审补齐的多引用）：任一条 span 非法即拒收。
+            for source in lesson.cited_sources() {
                 if source.path.trim().is_empty()
                     || source.start.is_some_and(|value| value < 0)
                     || source.end.is_some_and(|value| value < 0)
@@ -910,6 +930,43 @@ impl CourseKbSources {
         };
         SourceSpan { path, start, end, kb_id: resolved }
     }
+
+    /// 课时视图的来源清单（t4 评审补齐的多引用）：`source_paths_json` 列表
+    /// 逐条解析（位序 = 引用顺序，首个 = 主来源）；列表为空（老行/未回填）
+    /// 回退三列的单条——`resolve_source` 同一把尺，双读不漂移。
+    fn resolve_sources(
+        &self,
+        paths_json: Option<&str>,
+        primary_path: Option<String>,
+        start: Option<i64>,
+        end: Option<i64>,
+    ) -> Vec<SourceSpan> {
+        let listed: Vec<StoredSourcePath> = paths_json
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+        if listed.is_empty() {
+            return primary_path
+                .map(|path| self.resolve_source(path, start, end))
+                .into_iter()
+                .collect();
+        }
+        listed
+            .into_iter()
+            .map(|entry| self.resolve_source(entry.path, entry.start, entry.end))
+            .collect()
+    }
+}
+
+/// `learning_lessons.source_paths_json` 的落库元素：与 `SourceSpan` 的路径
+/// 三字段同构（库归属不落库——读侧按采样命名空间实时解析，与单列路径同一
+/// 口径）。未知字段（将来新增）忽略。
+#[derive(Debug, Clone, serde::Deserialize)]
+struct StoredSourcePath {
+    path: String,
+    #[serde(default)]
+    start: Option<i64>,
+    #[serde(default)]
+    end: Option<i64>,
 }
 
 /// 采样披露的对外视图上限：低分未采样的示例路径（UI 披露够用，响应不背

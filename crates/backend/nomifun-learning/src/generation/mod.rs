@@ -56,6 +56,9 @@ Rules:
 - Use the dominant language of the source documents.
 - Cover the most important ideas in a coherent learnable order.
 - Every lesson must cite an exact FILE path supplied in the samples. Never invent paths.
+- When a lesson draws on several sampled files, list them all in "sources" (an array of
+  {"path": "..."} objects, at most 4) and keep "source" for the primary one; a lesson with a
+  single source may use either form.
 - When the sampled paths are prefixed with a source-library name (e.g. `金融笔记/docs/a.md`),
   the course draws on several libraries at once: cite those prefixed paths exactly as given —
   the same relative path may exist in more than one library, and the prefix picks the right one.
@@ -199,8 +202,38 @@ pub struct BlueprintLesson {
     pub title: String,
     #[serde(default)]
     pub purpose: String,
+    /// 主来源（兼容位）：恒等于 [`BlueprintLesson::sources`] 的首个（列表为
+    /// 空时只有它）。老蓝图快照与老消费方只读它——零回归。
     #[serde(default)]
     pub source: Option<SourceSpan>,
+    /// 课时引用的全部采样文件（t4 评审补齐：一课时可引用多处来源）。空 =
+    /// 只有兼容位 `source`（老数据/只给单个 source 的输出）；读取方一律经
+    /// [`BlueprintLesson::cited_sources`] 取用，不直接读两个字段。
+    #[serde(default)]
+    pub sources: Vec<SourceSpan>,
+}
+
+impl BlueprintLesson {
+    /// 课时引用的全部来源（引用位序）：`sources` 非空时以它为准，否则回退
+    /// 兼容位 `source`（老蓝图只有它）。读取方一律走这里。
+    pub fn cited_sources(&self) -> Vec<&SourceSpan> {
+        if self.sources.is_empty() {
+            self.source.iter().collect()
+        } else {
+            self.sources.iter().collect()
+        }
+    }
+
+    /// 归一来源：`sources` 为准（为空时用兼容位升成单元素列表），兼容位
+    /// 重算为首个——列表与兼容位永不漂移。解析/装配/标注三处收口都调它。
+    pub fn normalize_sources(&mut self) {
+        if self.sources.is_empty() {
+            if let Some(source) = self.source.clone() {
+                self.sources = vec![source];
+            }
+        }
+        self.source = self.sources.first().cloned();
+    }
 }
 
 /// One lesson's long-form output, produced by the pipeline (or the agent
