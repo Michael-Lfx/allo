@@ -24,7 +24,15 @@ impl LearningService {
         outline: Option<OutlineSnapshot>,
     ) -> Result<CourseDetail, AppError> {
         validate_pack(&pack)?;
-        if let Some(kb_id) = &pack.source_kb_id {
+        // 来源库列表（t4）：outline 快照带归一后的完整列表（首个 = 主来源），
+        // 非 outline 的导入（教程播种/旧调用）回退单列的单元素视图。逐库核验
+        // 存在——建课不接受指向不存在库的课程。
+        let source_kb_ids: Vec<KnowledgeBaseId> = outline
+            .as_ref()
+            .map(|snapshot| snapshot.source_kb_ids.clone())
+            .filter(|ids| !ids.is_empty())
+            .unwrap_or_else(|| pack.source_kb_id.iter().cloned().collect());
+        for kb_id in &source_kb_ids {
             let exists: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM knowledge_bases WHERE knowledge_base_id = ?")
                     .bind(kb_id.as_str())
@@ -37,6 +45,14 @@ impl LearningService {
                 )));
             }
         }
+        let primary_kb_id = source_kb_ids.first().cloned();
+        let source_kb_ids_json = serde_json::to_string(
+            &source_kb_ids
+                .iter()
+                .map(KnowledgeBaseId::as_str)
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| AppError::Internal(format!("failed to serialize source kb ids: {error}")))?;
 
         let is_outline = outline.is_some();
         let (blueprint_json, samples_json, learning_goal, samples_meta_json) = outline
@@ -56,15 +72,16 @@ impl LearningService {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "INSERT INTO learning_courses \
-             (course_id, title, description, domain, source_kb_id, version, blueprint_json, samples_json, \
+             (course_id, title, description, domain, source_kb_id, source_kb_ids, version, blueprint_json, samples_json, \
               samples_meta_json, learning_goal, teaching_style, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
         .bind(pack.description.trim())
         .bind(pack.domain.trim())
-        .bind(pack.source_kb_id.as_ref().map(KnowledgeBaseId::as_str))
+        .bind(primary_kb_id.as_ref().map(KnowledgeBaseId::as_str))
+        .bind(&source_kb_ids_json)
         .bind(pack.version)
         .bind(blueprint_json)
         .bind(samples_json)
@@ -159,9 +176,21 @@ impl LearningService {
         self.course_detail(&course_id, None).await
     }
 
+    /// 现存知识库 id 集合（t4 读侧过滤的唯一事实源）：来源库列表 / 课时
+    /// 归属按它剔除已删库 id——单列 `source_kb_id` 的 SetNull 引用语义在
+    /// 多库列表下由应用层读侧承担（不外泄悬空 id）。
+    pub(super) async fn existing_knowledge_base_ids(&self) -> Result<HashSet<String>, AppError> {
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT knowledge_base_id FROM knowledge_bases")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+        Ok(ids.into_iter().collect())
+    }
+
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
         let rows = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
@@ -181,9 +210,11 @@ impl LearningService {
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
+        let existing = self.existing_knowledge_base_ids().await?;
         let mut courses = Vec::with_capacity(rows.len());
         for row in &rows {
             let mut course = course_summary_from_row(row)?;
+            course.apply_existing_kb_ids(&existing);
             course.tags = self.course_tags(&course.id).await?;
             courses.push(course);
         }
@@ -197,7 +228,7 @@ impl LearningService {
     ) -> Result<CourseDetail, AppError> {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
-            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.version, c.updated_at, \
+            "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
                     c.learning_goal, c.samples_meta_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
@@ -219,8 +250,14 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning course {course_id}")))?;
+        let existing = self.existing_knowledge_base_ids().await?;
+        // 来源库读侧材料（t4）：过滤已删库 id 后的列表 + 采样披露的逐库归属
+        // ——课时 source 的 (kb_id, rel_path) 解析与「来源：库A、库B」共用。
+        let kb_sources = CourseKbSources::from_row(&row)?.filtered(&existing);
         let course = course_summary_from_row(&row)?;
         let course = CourseSummary {
+            source_kb_id: kb_sources.primary(),
+            source_kb_ids: kb_sources.ids.clone(),
             tags: self.course_tags(&course.id).await?,
             ..course
         };
@@ -271,10 +308,14 @@ impl LearningService {
                     .map_err(AppError::Internal)?;
                 let source_path: Option<String> =
                     lesson_row.try_get("source_path").map_err(internal)?;
-                let source = source_path.map(|path| SourceSpan {
-                    path,
-                    start: lesson_row.try_get("source_start").ok().flatten(),
-                    end: lesson_row.try_get("source_end").ok().flatten(),
+                // 课时 source 的 (kb_id, 库内相对路径) 解析（t4）：多库路径按
+                // 采样命名空间还原到来源库；单库/旧课程裸路径不解析。
+                let source = source_path.map(|path| {
+                    kb_sources.resolve_source(
+                        path,
+                        lesson_row.try_get("source_start").ok().flatten(),
+                        lesson_row.try_get("source_end").ok().flatten(),
+                    )
                 });
                 let content_generated: i64 =
                     lesson_row.try_get("content_generated").map_err(internal)?;
@@ -373,7 +414,14 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let enrollment_value = enrollment_id.map(LearningEnrollmentId::as_str);
         let row = sqlx::query(
-            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, COALESCE(p.status, 'not_started') AS status FROM learning_lessons l LEFT JOIN learning_lesson_progress p ON p.lesson_id = l.lesson_id AND p.enrollment_id = ? WHERE l.lesson_id = ?",
+            "SELECT l.lesson_id, l.title, l.summary, l.purpose, l.position, l.estimated_minutes, l.content_generated, l.source_path, l.source_start, l.source_end, \
+                    c.source_kb_id AS course_source_kb_id, c.source_kb_ids AS course_source_kb_ids, c.samples_meta_json AS course_samples_meta_json, \
+                    COALESCE(p.status, 'not_started') AS status \
+             FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id \
+             LEFT JOIN learning_lesson_progress p ON p.lesson_id = l.lesson_id AND p.enrollment_id = ? \
+             WHERE l.lesson_id = ?",
         )
         .bind(enrollment_value)
         .bind(lesson_id.as_str())
@@ -384,11 +432,17 @@ impl LearningService {
         let id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
         let status_text: String = row.try_get("status").map_err(internal)?;
         let status = LessonStatus::try_from(status_text.as_str()).map_err(AppError::Internal)?;
+        // 课程行的来源库材料（t4）：课时 source 按采样命名空间解析回
+        // (kb_id, 库内相对路径)，与目录视图同一把尺。
+        let existing = self.existing_knowledge_base_ids().await?;
+        let kb_sources = CourseKbSources::from_course_columns(&row)?.filtered(&existing);
         let source_path: Option<String> = row.try_get("source_path").map_err(internal)?;
-        let source = source_path.map(|path| SourceSpan {
-            path,
-            start: row.try_get("source_start").ok().flatten(),
-            end: row.try_get("source_end").ok().flatten(),
+        let source = source_path.map(|path| {
+            kb_sources.resolve_source(
+                path,
+                row.try_get("source_start").ok().flatten(),
+                row.try_get("source_end").ok().flatten(),
+            )
         });
         let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
         let activities = self.lesson_activities(&id).await?;
@@ -724,6 +778,19 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         .map_err(internal)?
         .map(parse_id)
         .transpose()?;
+    // 来源库列表（t4）：列上是 JSON 数组；坏值（历史手改等）视为空——诊断
+    // 字段不该让课程列表整体失败。列表空时回退单列的单元素视图（旧行兼容，
+    // 由 `apply_existing_kb_ids` 的过滤链保证）。
+    let source_kb_ids = parse_source_kb_ids(
+        row.try_get::<Option<String>, _>("source_kb_ids")
+            .map_err(internal)?
+            .as_deref(),
+    );
+    let source_kb_ids = if source_kb_ids.is_empty() {
+        source_kb_id.iter().cloned().collect()
+    } else {
+        source_kb_ids
+    };
     // 目标列 NOT NULL DEFAULT ''：空串即"无目标"（旧课程/描述流）。
     let learning_goal = row
         .try_get::<Option<String>, _>("learning_goal")
@@ -742,7 +809,9 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         domain: row.try_get("domain").map_err(internal)?,
         course_kind: CourseKind::try_from(row.try_get::<String, _>("course_kind").map_err(internal)?.as_str())
             .map_err(AppError::Internal)?,
-        source_kb_id,
+        // 主来源：列表首个（过滤后由 `apply_existing_kb_ids` 修正）。
+        source_kb_id: source_kb_ids.first().cloned().or(source_kb_id),
+        source_kb_ids,
         version: row.try_get("version").map_err(internal)?,
         enrolled: row.try_get::<i64, _>("enrolled").map_err(internal)? != 0,
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
@@ -754,12 +823,102 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
     })
 }
 
+/// `source_kb_ids` 列的 JSON 数组解析（t4）：只收合法库 id，坏值/坏 JSON
+/// 视为空（读侧过滤链会再剔已删库）。
+fn parse_source_kb_ids(raw: Option<&str>) -> Vec<KnowledgeBaseId> {
+    let Some(raw) = raw else { return Vec::new() };
+    let Ok(ids) = serde_json::from_str::<Vec<String>>(raw) else {
+        return Vec::new();
+    };
+    ids.iter().filter_map(|id| KnowledgeBaseId::parse(id).ok()).collect()
+}
+
+impl CourseSummary {
+    /// 来源库的读侧过滤（t4）：剔除已删库 id（不外泄悬空 id），主来源重算为
+    /// 过滤后首个——单列 `source_kb_id` 的 SetNull 语义由应用层读侧承担。
+    fn apply_existing_kb_ids(&mut self, existing: &HashSet<String>) {
+        self.source_kb_ids.retain(|id| existing.contains(id.as_str()));
+        self.source_kb_id = self.source_kb_ids.first().cloned();
+    }
+}
+
+/// 课程行的来源读侧材料（t4）：过滤后的来源库列表 + 采样披露的逐库归属。
+/// 课时 source 的 `(kb_id, rel_path)` 解析（目录/详情两个视图）与「来源：
+/// 库A、库B」展示都由它承载。
+#[derive(Default, Clone)]
+pub(super) struct CourseKbSources {
+    pub(super) ids: Vec<KnowledgeBaseId>,
+    /// 逐库归属（**不做 id 过滤**：路径命名空间需要它认领已删库的路径，
+    /// 由 `resolve_source` 再把归属过滤成"现存库或无归属"）。
+    pub(super) bases: Vec<SampleBaseDisclosure>,
+}
+
+impl CourseKbSources {
+    /// 从课程行（`source_kb_id` / `source_kb_ids` / `samples_meta_json` 三列）。
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, AppError> {
+        Self::from_course_columns(row)
+    }
+
+    /// 课程列前缀固定的读取（lesson_view 的 join 别名列）。
+    pub(super) fn from_course_columns(row: &sqlx::sqlite::SqliteRow) -> Result<Self, AppError> {
+        let (ids_raw, meta): (Option<String>, Option<String>) = (
+            row.try_get("course_source_kb_ids")
+                .or_else(|_| row.try_get("source_kb_ids"))
+                .map_err(internal)?,
+            row.try_get("course_samples_meta_json")
+                .or_else(|_| row.try_get("samples_meta_json"))
+                .map_err(internal)?,
+        );
+        let single: Option<String> = row
+            .try_get("course_source_kb_id")
+            .or_else(|_| row.try_get("source_kb_id"))
+            .map_err(internal)?;
+        let mut ids = parse_source_kb_ids(ids_raw.as_deref());
+        if ids.is_empty() {
+            if let Some(single) = single.as_deref().and_then(|id| KnowledgeBaseId::parse(id).ok()) {
+                ids.push(single);
+            }
+        }
+        let bases = meta
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<SampleDisclosure>(raw).ok())
+            .map(|disclosure| disclosure.bases)
+            .unwrap_or_default();
+        Ok(Self { ids, bases })
+    }
+
+    /// 读侧过滤已删库 id：列表剔除；逐库归属保留（见 `bases` 注释）。
+    pub(super) fn filtered(mut self, existing: &HashSet<String>) -> Self {
+        self.ids.retain(|id| existing.contains(id.as_str()));
+        self
+    }
+
+    pub(super) fn primary(&self) -> Option<KnowledgeBaseId> {
+        self.ids.first().cloned()
+    }
+
+    /// 课时 source 的库归属解析（t4）：多库路径按命名空间还原成
+    /// `(kb_id, 库内相对路径)`；单库/旧课程裸路径原样（`kb_id = None`，读侧
+    /// 回退课程主来源）；已删库的路径解析成"无归属"且路径保持原样（前端会
+    /// 读不到原文并如实报错，不外泄悬空 id）。
+    fn resolve_source(&self, path: String, start: Option<i64>, end: Option<i64>) -> SourceSpan {
+        let resolved = base_for_sample_path(&path, &self.bases, &self.ids)
+            .filter(|id| self.ids.iter().any(|candidate| candidate == id));
+        let path = match &resolved {
+            Some(id) => rel_path_for_base(&path, namespace_for_base(&self.bases, id)).to_owned(),
+            None => path,
+        };
+        SourceSpan { path, start, end, kb_id: resolved }
+    }
+}
+
 /// 采样披露的对外视图上限：低分未采样的示例路径（UI 披露够用，响应不背
 /// 全量清单）。
 const LOW_SCORE_EXAMPLES_MAX: usize = 20;
 
 /// 解析库里的采样披露快照（t2）为对外视图；无法解析的历史值视为无披露
-/// （诊断字段不该让课程列表整体失败）。
+/// （诊断字段不该让课程列表整体失败）。逐库归属（t4）一并映射——解析不出
+/// 库 id 的条目跳过（不造悬空 id）。
 fn parse_sampling_view(raw: &str) -> Option<CourseSamplingView> {
     let disclosure: crate::generation::SampleDisclosure = serde_json::from_str(raw).ok()?;
     Some(CourseSamplingView {
@@ -774,6 +933,20 @@ fn parse_sampling_view(raw: &str) -> Option<CourseSamplingView> {
             .iter()
             .take(LOW_SCORE_EXAMPLES_MAX)
             .cloned()
+            .collect(),
+        bases: disclosure
+            .bases
+            .iter()
+            .filter_map(|base| {
+                Some(crate::models::CourseSamplingBaseView {
+                    kb_id: base.kb_id.parse().ok()?,
+                    name: base.name.clone(),
+                    namespace: base.namespace.clone(),
+                    total_files: base.total_files,
+                    sampled_files: base.sampled_files,
+                    goal_fallback: base.goal_fallback,
+                })
+            })
             .collect(),
     })
 }

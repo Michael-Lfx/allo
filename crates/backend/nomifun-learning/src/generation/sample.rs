@@ -29,6 +29,13 @@ pub(crate) const GOAL_SAMPLE_MAX_TOTAL: usize = GOAL_SAMPLE_MAX_FILES * GOAL_SAM
 /// 且不超过该比例——防课程式库断链，又不能把采样变成全量。
 const GOAL_SAMPLE_COHERENCE_PERCENT: usize = 30;
 
+/// 多知识库分摊（t4）的每库保底：预算等分后每库至少这么多文件/字节。现行
+/// 选择上限（[`crate::models::COURSE_MAX_KNOWLEDGE_BASES`] = 5）下等分
+/// （40/5 = 8 文件）已高于保底，保底是上限放宽时的护栏——采样永不把某个
+/// 库压到零头。
+pub(crate) const MULTI_KB_PER_BASE_MIN_FILES: usize = 4;
+pub(crate) const MULTI_KB_PER_BASE_MIN_BYTES: usize = 16 * 1024;
+
 /// 打分与选摘的单文件扫描上限：超长文件只读前 1MB（确定性——不引入机器
 /// 相关的遍历预算，同一库同一目标在任何机器上产出同一份采样）。
 const SAMPLE_SCAN_MAX_BYTES: usize = 1024 * 1024;
@@ -85,6 +92,36 @@ pub struct SampleDisclosure {
     /// 因低于相关度阈值未入样的文件路径（字典序）。
     #[serde(default)]
     pub low_score_files: Vec<String>,
+    /// 多知识库（t4）：逐库归属与计数（单库为空——披露形状与 t2 逐字一致，
+    /// 序列化时整体省略）。命名空间是采样路径的前缀（`{namespace}/rel`），
+    /// 路径→库的归属解析与「来源：库A、库B」展示都由它承载。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bases: Vec<SampleBaseDisclosure>,
+}
+
+/// 单库的采样归属（t4 披露）：库 id / 库名 / 路径命名空间 / 逐库计数。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SampleBaseDisclosure {
+    /// 知识库 id（归属解析的事实源）。
+    #[serde(default)]
+    pub kb_id: String,
+    #[serde(default)]
+    pub name: String,
+    /// 采样路径前缀：`{namespace}/rel`。库名清洗（分隔符 → `_`）后按库序
+    /// 消歧（重名库第二个起加 `~2`、`~3`…），确定性。
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub total_files: usize,
+    #[serde(default)]
+    pub sampled_files: usize,
+    #[serde(default)]
+    pub coherence_files: usize,
+    #[serde(default)]
+    pub low_score_files: usize,
+    /// 该库目标零命中：采样退回默认顺序（逐库如实标注）。
+    #[serde(default)]
+    pub goal_fallback: bool,
 }
 
 impl SampleDisclosure {
@@ -110,6 +147,20 @@ impl SampleDisclosure {
             line.push_str(&format!(
                 "；{} 个低分文件未采样（按需可在课程详情查看）",
                 self.low_score_files.len()
+            ));
+        }
+        // 多库（t4）：部分库目标零命中时逐库如实标注——命中的库按目标采样，
+        // 零命中的库退回默认顺序，披露不把它们混成一句"按目标采样"。
+        let fallback_bases: Vec<&str> = self
+            .bases
+            .iter()
+            .filter(|base| base.goal_fallback)
+            .map(|base| base.name.as_str())
+            .collect();
+        if !fallback_bases.is_empty() {
+            line.push_str(&format!(
+                "；{} 未命中目标词条，已按默认顺序采样",
+                fallback_bases.join("、")
             ));
         }
         line
@@ -159,19 +210,76 @@ fn sample_goal_aware_blocking(
     max_per_file: usize,
     max_total: usize,
 ) -> SampleOutcome {
+    let selection = base_selection(root, goal, max_files, max_per_file, max_total);
+    SampleOutcome { samples: selection.samples, disclosure: selection.disclosure }
+}
+
+/// 单库采样的读数（多库分摊的内部件，也是单库披露的原料）：样本 + 计数。
+/// `disclosure` 与 t2 的单库披露同源（无目标路径为 `None`——旧形状）。
+struct BaseSelection {
+    samples: Vec<(String, String)>,
+    disclosure: Option<SampleDisclosure>,
+    total_files: usize,
+    tree: Vec<String>,
+    coherence_files: usize,
+    low_score_files: Vec<String>,
+    goal_fallback: bool,
+}
+
+/// 单库采样的唯一实现（目标感知 / 无目标回退共用）：目标词条非空且库里有
+/// 候选时走目标路径（相关度选入 + 连贯补入），否则逐字回退旧行为（字母序
+/// take + 文件头前缀）。
+fn base_selection(
+    root: &Path,
+    goal: &str,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> BaseSelection {
     let terms = term_slices(goal);
+    base_selection_with_terms(root, goal, &terms, max_files, max_per_file, max_total)
+}
+
+/// [`base_selection`] 的词条显式版（多库分摊逐库复用同一实现与同一套词条）。
+fn base_selection_with_terms(
+    root: &Path,
+    goal: &str,
+    terms: &[String],
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> BaseSelection {
     if terms.is_empty() || max_files == 0 {
         // 无目标 / 目标全是标点：回退旧行为（字母序 + 文件头前缀），不披露。
-        return SampleOutcome::legacy(sample_base_files_blocking(
-            root,
-            max_files,
-            max_per_file,
-            max_total,
-        ));
+        let candidates = candidate_files(root);
+        let samples = legacy_take(&candidates, root, max_files, max_per_file, max_total);
+        let sampled: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
+        let low_score_files: Vec<String> = candidates
+            .iter()
+            .filter(|path| !sampled.contains(path.as_str()))
+            .cloned()
+            .collect();
+        return BaseSelection {
+            samples,
+            disclosure: None,
+            total_files: candidates.len(),
+            tree: candidates,
+            coherence_files: 0,
+            low_score_files,
+            goal_fallback: false,
+        };
     }
     let candidates = candidate_files(root);
     if candidates.is_empty() {
-        return SampleOutcome::legacy(Vec::new());
+        return BaseSelection {
+            samples: Vec::new(),
+            disclosure: None,
+            total_files: 0,
+            tree: Vec::new(),
+            coherence_files: 0,
+            low_score_files: Vec::new(),
+            goal_fallback: false,
+        };
     }
     // 打分：与 KnowledgeService::score_md 同尺（路径词条 +4、首标题词条 +3、
     // 正文词频每词条封顶 5），分数为 0 = 低于相关度阈值。读不出的文件按 0 分
@@ -203,23 +311,33 @@ fn sample_goal_aware_blocking(
     // 与库不一致时生成照常可跑（不比今天差），但披露如实标注 fallback，绝不
     // 冒充"按目标采样"。
     if sampled_paths.is_empty() {
-        let samples = sample_base_files_blocking(root, max_files, max_per_file, max_total);
+        let samples = legacy_take(&candidates, root, max_files, max_per_file, max_total);
         let sampled: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
+        let low_score_files: Vec<String> = candidates
+            .iter()
+            .filter(|path| !sampled.contains(path.as_str()))
+            .cloned()
+            .collect();
         let disclosure = SampleDisclosure {
             goal: Some(goal.trim().to_owned()),
             total_files: candidates.len(),
             sampled_files: samples.len(),
             coherence_files: 0,
             goal_fallback: true,
-            goal_terms: terms.clone(),
-            low_score_files: candidates
-                .iter()
-                .filter(|path| !sampled.contains(path.as_str()))
-                .cloned()
-                .collect(),
-            tree: candidates,
+            goal_terms: terms.to_vec(),
+            low_score_files: low_score_files.clone(),
+            tree: candidates.clone(),
+            bases: Vec::new(),
         };
-        return SampleOutcome { samples, disclosure: Some(disclosure) };
+        return BaseSelection {
+            samples,
+            disclosure: Some(disclosure),
+            total_files: candidates.len(),
+            tree: candidates,
+            coherence_files: 0,
+            low_score_files,
+            goal_fallback: true,
+        };
     }
     // 连贯预算：相关文件优先占额度，余下额度里最多补 30% 的结构相邻文件
     // （同目录兄弟优先、序号相邻次之——课程式库的中间必经章不断链）。
@@ -257,18 +375,350 @@ fn sample_goal_aware_blocking(
         .iter()
         .filter(|file| file.score == 0 && !sampled_paths.contains(file.path.as_str()))
         .map(|file| file.path.clone())
-        .collect();
+        .collect::<Vec<String>>();
     let disclosure = SampleDisclosure {
         goal: Some(goal.trim().to_owned()),
         total_files: candidates.len(),
         sampled_files: samples.len(),
         coherence_files,
         goal_fallback: false,
-        goal_terms: terms,
+        goal_terms: terms.to_vec(),
+        tree: candidates.clone(),
+        low_score_files: low_score_files.clone(),
+        bases: Vec::new(),
+    };
+    BaseSelection {
+        samples,
+        disclosure: Some(disclosure),
+        total_files: candidates.len(),
         tree: candidates,
+        coherence_files,
         low_score_files,
+        goal_fallback: false,
+    }
+}
+
+/// 一个知识库的采样输入（t4）：库 id（归属事实源）、库名（命名空间源）与
+/// 内容根（采样读的文件树）。
+pub(crate) struct SampleBaseInput<'a> {
+    pub kb_id: &'a str,
+    pub name: &'a str,
+    pub root: &'a Path,
+}
+
+/// 多库采样的异步入口（t4）：单库逐字走 t2 旧路径（不命名空间化、披露形状
+/// 不变）；多库按库分摊预算、路径带 `{库名}/rel` 命名空间、逐库归属进披露。
+pub(crate) async fn sample_bases_with_budget(
+    bases: &[SampleBaseInput<'_>],
+    goal: Option<&str>,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> SampleOutcome {
+    if bases.is_empty() {
+        return SampleOutcome::legacy(Vec::new());
+    }
+    if bases.len() == 1 {
+        // 单库零回归：行为与披露与 t2 逐字一致（无命名空间、无逐库条目）。
+        let root = bases[0].root.to_path_buf();
+        let goal = goal.map(ToOwned::to_owned);
+        return tokio::task::spawn_blocking(move || match goal {
+            Some(goal) => sample_goal_aware_blocking(&root, &goal, max_files, max_per_file, max_total),
+            None => SampleOutcome::legacy(sample_base_files_blocking(
+                &root,
+                max_files,
+                max_per_file,
+                max_total,
+            )),
+        })
+        .await
+        .unwrap_or_else(|_| SampleOutcome::legacy(Vec::new()));
+    }
+    let inputs: Vec<(String, String, std::path::PathBuf)> = bases
+        .iter()
+        .map(|base| (base.kb_id.to_owned(), base.name.to_owned(), base.root.to_path_buf()))
+        .collect();
+    let goal = goal.map(ToOwned::to_owned);
+    tokio::task::spawn_blocking(move || {
+        sample_multi_base_blocking(&inputs, goal.as_deref(), max_files, max_per_file, max_total)
+    })
+    .await
+    .unwrap_or_else(|_| SampleOutcome::legacy(Vec::new()))
+}
+
+/// 多库采样（阻塞体）：库序 = 库名 + 库 id 字典序（确定性，与提交顺序无关）
+/// → 逐库等分配额（余量借给后面的库，每库保底
+/// [`MULTI_KB_PER_BASE_MIN_FILES`]/[`MULTI_KB_PER_BASE_MIN_BYTES`]）→ 路径加
+/// 命名空间 → 合并清单回到全局字典序（不倒退纪律：结构按路径序读）。
+/// 无目标时逐库走字母序回退，但**仍产出披露**——命名空间需要披露承载库归属。
+fn sample_multi_base_blocking(
+    bases: &[(String, String, std::path::PathBuf)],
+    goal: Option<&str>,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> SampleOutcome {
+    // 确定性库序：库名（trim）字典序，同名前缀按库 id——用户提交顺序不影响
+    // 分摊结果（乱序提交同一组库得到同一份采样）。
+    let mut order: Vec<usize> = (0..bases.len()).collect();
+    order.sort_by(|left, right| {
+        bases[*left]
+            .1
+            .trim()
+            .cmp(bases[*right].1.trim())
+            .then_with(|| bases[*left].0.cmp(&bases[*right].0))
+    });
+    // 命名空间：库名清洗 + 同库序内消歧（重名库第二个起加 `~2`、`~3`…）。
+    let mut namespaces: Vec<String> = vec![String::new(); bases.len()];
+    let mut used = HashSet::new();
+    for index in &order {
+        let (kb_id, name, _) = &bases[*index];
+        let base_ns = sanitize_namespace(name, kb_id);
+        let mut candidate = base_ns.clone();
+        let mut suffix = 2usize;
+        while !used.insert(candidate.clone()) {
+            candidate = format!("{base_ns}~{suffix}");
+            suffix += 1;
+        }
+        namespaces[*index] = candidate;
+    }
+    let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
+    let terms = goal.map(term_slices).unwrap_or_default();
+    let select = |root: &Path, quota_files: usize, quota_bytes: usize| -> BaseSelection {
+        match goal {
+            Some(goal) => goal_aware_selection(root, goal, &terms, quota_files, max_per_file, quota_bytes),
+            None => legacy_selection(root, quota_files, max_per_file, quota_bytes),
+        }
+    };
+    // 名额分摊（确定性）：逐库按「剩余 / 剩余库数」等分（余量前向借用——用不
+    // 满的库把它后面的库的份额留大），每库保底
+    // [`MULTI_KB_PER_BASE_MIN_FILES`]/[`MULTI_KB_PER_BASE_MIN_BYTES`]，总量
+    // 永不超预算。第二遍把末尾库没用掉的余量按「打满配额的库」再分摊——
+    // 小库不再让整锅预算缩水（确定性：按库序均分，余数给靠前的库）。
+    let mut quotas: Vec<(usize, usize)> = Vec::with_capacity(order.len());
+    let mut selections: Vec<BaseSelection> = Vec::with_capacity(order.len());
+    let mut remaining_files = max_files;
+    let mut remaining_bytes = max_total;
+    for (position, index) in order.iter().enumerate() {
+        let remaining_bases = order.len() - position;
+        let quota_files = (remaining_files / remaining_bases)
+            .max(MULTI_KB_PER_BASE_MIN_FILES)
+            .min(remaining_files);
+        let quota_bytes = (remaining_bytes / remaining_bases)
+            .max(MULTI_KB_PER_BASE_MIN_BYTES)
+            .min(remaining_bytes);
+        let selection = select(&bases[*index].2, quota_files, quota_bytes);
+        remaining_files -= selection.samples.len();
+        remaining_bytes -= selection.samples.iter().map(|(_, text)| text.len()).sum::<usize>();
+        quotas.push((quota_files, quota_bytes));
+        selections.push(selection);
+    }
+    if remaining_files > 0 {
+        let saturated: Vec<usize> = (0..selections.len())
+            .filter(|index| quotas[*index].0 > 0 && selections[*index].samples.len() >= quotas[*index].0)
+            .collect();
+        if !saturated.is_empty() {
+            let share_files = remaining_files / saturated.len();
+            let share_bytes = remaining_bytes / saturated.len();
+            let mut rest_files = remaining_files % saturated.len();
+            for index in saturated {
+                let extra_files = share_files + usize::from(rest_files > 0);
+                rest_files = rest_files.saturating_sub(1);
+                if extra_files == 0 {
+                    continue;
+                }
+                let (quota_files, quota_bytes) = quotas[index];
+                let extra_bytes = (extra_files * max_per_file).min(share_bytes);
+                selections[index] = select(
+                    &bases[order[index]].2,
+                    quota_files + extra_files,
+                    quota_bytes + extra_bytes,
+                );
+            }
+        }
+    }
+    let mut samples: Vec<(String, String)> = Vec::new();
+    let mut base_disclosures: Vec<SampleBaseDisclosure> = Vec::new();
+    let mut tree: Vec<String> = Vec::new();
+    let mut low_score_files: Vec<String> = Vec::new();
+    let mut coherence_files = 0usize;
+    for (position, index) in order.iter().enumerate() {
+        let (kb_id, name, _) = &bases[*index];
+        let selection = &selections[position];
+        let namespace = &namespaces[*index];
+        for (path, excerpt) in &selection.samples {
+            samples.push((format!("{namespace}/{path}"), excerpt.clone()));
+        }
+        coherence_files += selection.coherence_files;
+        tree.extend(selection.tree.iter().map(|path| format!("{namespace}/{path}")));
+        low_score_files.extend(
+            selection
+                .low_score_files
+                .iter()
+                .map(|path| format!("{namespace}/{path}")),
+        );
+        base_disclosures.push(SampleBaseDisclosure {
+            kb_id: kb_id.clone(),
+            name: name.trim().to_owned(),
+            namespace: namespace.clone(),
+            total_files: selection.total_files,
+            sampled_files: selection.samples.len(),
+            coherence_files: selection.coherence_files,
+            low_score_files: selection.low_score_files.len(),
+            goal_fallback: selection.goal_fallback,
+        });
+    }
+    // 合并清单回到全局字典序（每库内部序不变，跨库按命名空间分组）。
+    samples.sort_by(|left, right| left.0.cmp(&right.0));
+    tree.sort();
+    low_score_files.sort();
+    // 顶层 fallback：仅当目标对**所有**有候选的库都零命中（逐库如实值在
+    // bases 里，不把部分命中冒充成全局失败，也不把部分回退冒充成按目标采样）。
+    let goal_fallback = goal.is_some()
+        && !base_disclosures.is_empty()
+        && base_disclosures
+            .iter()
+            .all(|base| base.goal_fallback || base.total_files == 0);
+    let disclosure = SampleDisclosure {
+        goal: goal.map(str::to_owned),
+        total_files: base_disclosures.iter().map(|base| base.total_files).sum(),
+        sampled_files: samples.len(),
+        coherence_files,
+        goal_fallback,
+        goal_terms: terms,
+        tree,
+        low_score_files,
+        bases: base_disclosures,
     };
     SampleOutcome { samples, disclosure: Some(disclosure) }
+}
+
+/// 目标路径的单库采样（多库分摊复用 [`base_selection`]）。
+fn goal_aware_selection(
+    root: &Path,
+    goal: &str,
+    terms: &[String],
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> BaseSelection {
+    let selection = base_selection_with_terms(root, goal, terms, max_files, max_per_file, max_total);
+    selection
+}
+
+/// 无目标路径的单库采样：字母序 take + 文件头前缀（旧行为逐字一致）。
+fn legacy_selection(
+    root: &Path,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> BaseSelection {
+    let candidates = candidate_files(root);
+    let samples = legacy_take(&candidates, root, max_files, max_per_file, max_total);
+    let sampled: HashSet<&str> = samples.iter().map(|(path, _)| path.as_str()).collect();
+    let low_score_files: Vec<String> = candidates
+        .iter()
+        .filter(|path| !sampled.contains(path.as_str()))
+        .cloned()
+        .collect();
+    BaseSelection {
+        samples,
+        disclosure: None,
+        total_files: candidates.len(),
+        tree: candidates,
+        coherence_files: 0,
+        low_score_files,
+        goal_fallback: false,
+    }
+}
+
+/// 命名空间清洗（t4）：库名 trim 后把路径分隔符与控制字符替换为 `_`；清洗
+/// 后为空（或只剩 `.`/`..`）退回 `kb-{id 前 8 位}`——命名空间必须非空且不
+/// 携带路径语义。确定性纯函数。
+fn sanitize_namespace(name: &str, kb_id: &str) -> String {
+    let mut cleaned = String::new();
+    for ch in name.trim().chars() {
+        if ch == '/' || ch == '\\' || ch.is_control() {
+            cleaned.push('_');
+        } else {
+            cleaned.push(ch);
+        }
+    }
+    let cleaned = cleaned.trim().to_owned();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return format!("kb-{}", kb_id.chars().take(8).collect::<String>());
+    }
+    cleaned
+}
+
+/// 采样路径 → 来源库（t4）：`{namespace}/rel` 的命名空间命中披露里的库；
+/// 裸路径（单库/旧课程）回退唯一来源库。解析不出返回 `None`（读侧再退课程
+/// 主来源；披露不许凭空造归属）。
+pub(crate) fn base_for_sample_path(
+    path: &str,
+    bases: &[SampleBaseDisclosure],
+    fallback_ids: &[KnowledgeBaseId],
+) -> Option<KnowledgeBaseId> {
+    if let Some((namespace, _)) = path.split_once('/') {
+        if let Some(base) = bases
+            .iter()
+            .find(|base| !base.namespace.is_empty() && base.namespace == namespace)
+        {
+            if let Ok(id) = KnowledgeBaseId::parse(&base.kb_id) {
+                return Some(id);
+            }
+        }
+    }
+    // 裸路径（单库/旧课程）：唯一来源库是确定性归属。有逐库披露（多库）时
+    // 不做回退——命名空间是唯一归属依据，绝不把未知前缀的路径错认给别的库
+    // （已删库的路径必须解析成"无归属"，而不是落到幸存库）。
+    match fallback_ids {
+        [only] if bases.is_empty() => Some(only.clone()),
+        _ => None,
+    }
+}
+
+/// 某库的采样命名空间（多库课程读侧去前缀用）：披露逐库条目里按库 id 命中；
+/// 单库/旧课程无条目 → `None`（路径本就没有命名空间）。
+pub(crate) fn namespace_for_base<'a>(
+    bases: &'a [SampleBaseDisclosure],
+    kb_id: &KnowledgeBaseId,
+) -> Option<&'a str> {
+    bases
+        .iter()
+        .find(|base| base.kb_id == kb_id.as_str() && !base.namespace.is_empty())
+        .map(|base| base.namespace.as_str())
+}
+
+/// 库内相对路径（去命名空间前缀，t4）：`{namespace}/rel` → `rel`；没有该
+/// 前缀（单库裸路径/旧课程）原样返回——读侧永远拿库内路径去 `read_file`。
+pub(crate) fn rel_path_for_base<'a>(path: &'a str, namespace: Option<&str>) -> &'a str {
+    match namespace {
+        Some(namespace) if !namespace.is_empty() => path
+            .strip_prefix(namespace)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(path),
+        _ => path,
+    }
+}
+
+/// 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
+/// [`SourceSpan::kb_id`]——快照/蓝图/课时三处的库归属由此统一。多库路径按
+/// 命名空间解析；单库裸路径回退唯一来源库；解析不出的保持 `None`（读侧再
+/// 退课程主来源，绝不猜）。
+pub(crate) fn annotate_blueprint_sources(
+    blueprint: &mut super::Blueprint,
+    disclosure: Option<&SampleDisclosure>,
+    fallback_ids: &[KnowledgeBaseId],
+) {
+    let empty: Vec<SampleBaseDisclosure> = Vec::new();
+    let bases = disclosure.map(|d| d.bases.as_slice()).unwrap_or(empty.as_slice());
+    for module in &mut blueprint.modules {
+        for lesson in &mut module.lessons {
+            let Some(source) = lesson.source.as_mut() else { continue };
+            source.kb_id = base_for_sample_path(&source.path, bases, fallback_ids);
+        }
+    }
 }
 
 /// 一个候选文件的打分原料：路径、相关度、扫描上限内的正文。
@@ -483,22 +933,33 @@ fn sample_base_files_blocking(
     max_per_file: usize,
     max_total: usize,
 ) -> Vec<(String, String)> {
-    let rels = candidate_files(root);
+    legacy_take(&candidate_files(root), root, max_files, max_per_file, max_total)
+}
+
+/// 旧采样（无目标）：候选清单（字典序）里 take 预算内的文件、按文件头前缀
+/// 取摘录。候选清单由调用方给出——多库分摊复用同一次目录遍历的读数。
+fn legacy_take(
+    rels: &[String],
+    root: &Path,
+    max_files: usize,
+    max_per_file: usize,
+    max_total: usize,
+) -> Vec<(String, String)> {
     let mut samples = Vec::new();
     let mut total = 0usize;
-    for rel in rels.into_iter().take(max_files) {
+    for rel in rels.iter().take(max_files) {
         if total >= max_total {
             break;
         }
         let budget = max_per_file.min(max_total - total);
-        let Some(excerpt) = read_prefix_lossy(&root.join(&rel), budget) else {
+        let Some(excerpt) = read_prefix_lossy(&root.join(rel), budget) else {
             continue;
         };
         if excerpt.trim().is_empty() {
             continue;
         }
         total += excerpt.len();
-        samples.push((rel, excerpt));
+        samples.push((rel.clone(), excerpt));
     }
     samples
 }
@@ -530,55 +991,87 @@ fn is_md(path: &Path) -> bool {
 }
 
 
-/// Sample the knowledge base's markdown documents for course generation.
-/// Shared by the synchronous pipeline and the background job runner so the
-/// snapshot stored in `learning_course_jobs` has the same shape everywhere.
+/// 多知识库采样入口（t4）：逐库解析元数据与内容根，预算按库分摊、路径带
+/// `{库名}/rel` 命名空间、逐库归属进披露。单库走逐字旧行为（不命名空间化、
+/// 披露形状不变）。
 ///
-/// 目标感知（t2）：带目标时按目标相关度选入 + 连贯预算补相邻，并返回披露
-/// 快照；无目标（t1 的旧客户端路径）时行为与旧采样逐字一致、无披露。
-pub(crate) async fn sample_base_files(
+/// 缺库口径（写进票面 Resolution）：单库内容目录缺失/无 markdown → 沿用
+/// 400（零回归）；多库下按库跳过（缺失的库计数 0、不阻断其他库），仅当
+/// **全部**库都没有可采文件时才 400。
+pub(crate) async fn sample_bases(
     knowledge: &KnowledgeService,
-    knowledge_base_id: &str,
+    knowledge_base_ids: &[String],
     goal: Option<&str>,
 ) -> Result<SampleOutcome, AppError> {
+    let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
+    let goal_aware = goal.is_some_and(|goal| !term_slices(goal).is_empty());
+    let (max_files, max_per_file, max_total) = if goal_aware {
+        (GOAL_SAMPLE_MAX_FILES, GOAL_SAMPLE_MAX_PER_FILE, GOAL_SAMPLE_MAX_TOTAL)
+    } else {
+        (
+            LEARNING_SAMPLE_MAX_FILES,
+            LEARNING_SAMPLE_MAX_PER_FILE,
+            LEARNING_SAMPLE_MAX_TOTAL,
+        )
+    };
     // A local folder's public `root_path` is its read-only source location.
     // Course generation samples the app-managed Markdown projection so it
     // sees converted documents while the source remains available.
-    let content_root = knowledge
-        .content_root_for_base(knowledge_base_id)
-        .await?;
-    if !content_root.is_dir() {
-        return Err(AppError::BadRequest(
-            "selected knowledge base content directory does not exist".into(),
-        ));
-    }
-    let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
-    let outcome = match goal {
-        // 目标词条化为空（纯标点等）时按无目标处理：预算与行为都回到旧路径。
-        Some(goal) if !term_slices(goal).is_empty() => {
-            sample_goal_aware_with_budget(
-                &content_root,
-                goal,
-                GOAL_SAMPLE_MAX_FILES,
-                GOAL_SAMPLE_MAX_PER_FILE,
-                GOAL_SAMPLE_MAX_TOTAL,
-            )
-            .await
+    let mut resolved: Vec<(String, String, std::path::PathBuf)> = Vec::with_capacity(knowledge_base_ids.len());
+    for kb_id in knowledge_base_ids {
+        if knowledge_base_ids.len() == 1 {
+            let content_root = knowledge.content_root_for_base(kb_id).await?;
+            if !content_root.is_dir() {
+                return Err(AppError::BadRequest(
+                    "selected knowledge base content directory does not exist".into(),
+                ));
+            }
+            resolved.push((kb_id.clone(), String::new(), content_root));
+            continue;
         }
-        _ => SampleOutcome::legacy(
-            sample_base_files_with_budget(
-                &content_root,
-                LEARNING_SAMPLE_MAX_FILES,
-                LEARNING_SAMPLE_MAX_PER_FILE,
-                LEARNING_SAMPLE_MAX_TOTAL,
-            )
-            .await,
-        ),
+        // 逐库核验存在（写票面要求）：库不存在/内容根缺失按库跳过，披露里
+        // 计数为 0——不让一个坏库阻断其余库的建课。
+        let name = match knowledge.get_base_info(kb_id).await {
+            Ok(base) => base.name,
+            Err(_) => {
+                resolved.push((kb_id.clone(), kb_id.clone(), std::path::PathBuf::from("")));
+                continue;
+            }
+        };
+        let content_root = knowledge
+            .content_root_for_base(kb_id)
+            .await
+            .unwrap_or_else(|_| std::path::PathBuf::from(""));
+        resolved.push((kb_id.clone(), name, content_root));
+    }
+    let outcome = if knowledge_base_ids.len() == 1 {
+        let root = &resolved[0].2;
+        match goal {
+            // 目标词条化为空（纯标点等）时按无目标处理：预算与行为都回到旧路径。
+            Some(goal) if goal_aware => {
+                sample_goal_aware_with_budget(root, goal, max_files, max_per_file, max_total).await
+            }
+            _ => SampleOutcome::legacy(
+                sample_base_files_with_budget(root, max_files, max_per_file, max_total).await,
+            ),
+        }
+    } else {
+        let inputs: Vec<SampleBaseInput<'_>> = resolved
+            .iter()
+            .map(|(kb_id, name, root)| SampleBaseInput {
+                kb_id: kb_id.as_str(),
+                name: name.as_str(),
+                root: root.as_path(),
+            })
+            .collect();
+        sample_bases_with_budget(&inputs, goal, max_files, max_per_file, max_total).await
     };
     if outcome.samples.is_empty() {
-        return Err(AppError::BadRequest(
-            "knowledge base has no markdown documents to generate a course from".into(),
-        ));
+        return Err(AppError::BadRequest(if knowledge_base_ids.len() > 1 {
+            "selected knowledge bases have no markdown documents to generate a course from".into()
+        } else {
+            "knowledge base has no markdown documents to generate a course from".into()
+        }));
     }
     Ok(outcome)
 }
@@ -942,5 +1435,261 @@ mod tests {
             "{}",
             disclosure.brief_line()
         );
+    }
+
+    // ── 多知识库（t4）：预算分摊 + 路径命名空间 + 逐库披露 ─────────────────
+
+    /// 测试库：库名 + 内容根（TempDir 活到用例结束）。
+    struct TestBase {
+        kb_id: String,
+        name: String,
+        dir: tempfile::TempDir,
+    }
+
+    impl TestBase {
+        fn new(kb_id: &str, name: &str) -> Self {
+            Self {
+                kb_id: kb_id.to_owned(),
+                name: name.to_owned(),
+                dir: tempfile::TempDir::new().unwrap(),
+            }
+        }
+
+        fn root(&self) -> &Path {
+            self.dir.path()
+        }
+
+        fn write(&self, rel: &str, content: &str) {
+            let path = self.dir.path().join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, content).unwrap();
+        }
+    }
+
+    fn inputs<'a>(bases: &'a [&'a TestBase]) -> Vec<SampleBaseInput<'a>> {
+        bases
+            .iter()
+            .map(|base| SampleBaseInput {
+                kb_id: base.kb_id.as_str(),
+                name: base.name.as_str(),
+                root: base.root(),
+            })
+            .collect()
+    }
+
+    const KB_A: &str = "0190f5fe-7c00-7a00-8abc-00000000000a";
+    const KB_B: &str = "0190f5fe-7c00-7a00-8abc-00000000000b";
+
+    /// 预算按库等分（40 文件 / 2 库 = 每库 20），路径带 `{库名}/rel` 命名
+    /// 空间，合并清单仍是全局字典序，披露逐库给出归属与计数。
+    #[tokio::test]
+    async fn multi_base_sampling_splits_the_quota_and_namespaces_paths() {
+        let first = TestBase::new(KB_A, "笔记库");
+        let second = TestBase::new(KB_B, "课程库");
+        for index in 0..30 {
+            first.write(&format!("a/{index:02}.md"), &format!("# 甲 {index}\n聚类分析要点 {index}"));
+            second.write(&format!("b/{index:02}.md"), &format!("# 乙 {index}\n回归分析要点 {index}"));
+        }
+
+        let bases = [&first, &second];
+        let outcome = sample_bases_with_budget(
+            &inputs(&bases),
+            Some("聚类分析"),
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+
+        let paths: Vec<&str> = outcome.samples.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths.len(), GOAL_MAX_FILES, "总量预算不变：{paths:?}");
+        assert!(
+            paths.iter().all(|path| path.starts_with("笔记库/") || path.starts_with("课程库/")),
+            "跨库路径带来源命名空间: {paths:?}"
+        );
+        let first_count = paths.iter().filter(|path| path.starts_with("笔记库/")).count();
+        let second_count = paths.iter().filter(|path| path.starts_with("课程库/")).count();
+        assert_eq!((first_count, second_count), (20, 20), "等分预算");
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted, "合并清单仍是字典序（不倒退纪律）");
+
+        let disclosure = outcome.disclosure.expect("多库路径恒有披露");
+        assert_eq!(disclosure.total_files, 60);
+        assert_eq!(disclosure.sampled_files, 40);
+        assert_eq!(disclosure.bases.len(), 2, "逐库归属");
+        let names: Vec<(&str, &str, usize)> = disclosure
+            .bases
+            .iter()
+            .map(|base| (base.name.as_str(), base.namespace.as_str(), base.sampled_files))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("笔记库", "笔记库", 20), ("课程库", "课程库", 20)],
+            "库序按库名字典序（确定性，与提交顺序无关）"
+        );
+        assert!(disclosure.tree.iter().all(|path| path.contains('/')), "{:?}", disclosure.tree);
+    }
+
+    /// 小库用不满配额时，余量被后面的库（前向借用）或打满配额的库（末尾回
+    /// 收）用掉——总量预算不因一个小库缩水；每库保底常量在现行上限内不约束
+    /// （等分已高于保底）。
+    #[tokio::test]
+    async fn multi_base_sampling_borrows_unused_quota() {
+        for (small_name, big_name) in [("A 小库", "B 大库"), ("B 小库", "A 大库")] {
+            let small = TestBase::new(KB_A, small_name);
+            let big = TestBase::new(KB_B, big_name);
+            for index in 0..3 {
+                small.write(&format!("s{index}.md"), &format!("# 小 {index}\n内容"));
+            }
+            for index in 0..30 {
+                big.write(&format!("b{index:02}.md"), &format!("# 大 {index}\n内容"));
+            }
+
+            let bases = [&small, &big];
+            let outcome = sample_bases_with_budget(&inputs(&bases), None, 20, GOAL_PER_FILE, 20 * GOAL_PER_FILE)
+                .await;
+            let paths: Vec<&str> = outcome.samples.iter().map(|(path, _)| path.as_str()).collect();
+            assert_eq!(
+                paths.len(),
+                20,
+                "小库 3 + 大库 17：余量被借用/回收（{small_name} / {big_name}）"
+            );
+            let small_ns = format!("{small_name}/");
+            assert_eq!(
+                paths.iter().filter(|path| path.starts_with(&small_ns)).count(),
+                3
+            );
+
+            let disclosure = outcome.disclosure.expect("无目标的多库路径也要披露（承载库归属）");
+            assert!(disclosure.goal.is_none(), "无目标：不冒充按目标采样");
+            let mut counts: Vec<usize> = disclosure.bases.iter().map(|base| base.sampled_files).collect();
+            counts.sort_unstable();
+            assert_eq!(counts, vec![3, 17]);
+        }
+        assert_eq!(MULTI_KB_PER_BASE_MIN_FILES, 4);
+        assert_eq!(MULTI_KB_PER_BASE_MIN_BYTES, 16 * 1024);
+    }
+
+    /// 库名重名 / 含路径分隔符：命名空间确定性消歧（同名第二个加 `~2`，
+    /// 分隔符替换为 `_`），路径仍能唯一归属到库。
+    #[tokio::test]
+    async fn multi_base_namespaces_disambiguate_duplicate_names() {
+        let first = TestBase::new(KB_A, "金融/笔记");
+        let second = TestBase::new(KB_B, "金融/笔记");
+        first.write("README-not.md", "# 甲\n聚类要点");
+        second.write("README-not.md", "# 乙\n聚类要点");
+
+        let bases = [&first, &second];
+        let outcome = sample_bases_with_budget(&inputs(&bases), None, GOAL_MAX_FILES, GOAL_PER_FILE, GOAL_TOTAL)
+            .await;
+        let paths: Vec<&str> = outcome.samples.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, vec!["金融_笔记/README-not.md", "金融_笔记~2/README-not.md"]);
+        let disclosure = outcome.disclosure.unwrap();
+        assert_eq!(
+            disclosure.bases.iter().map(|base| base.namespace.as_str()).collect::<Vec<_>>(),
+            vec!["金融_笔记", "金融_笔记~2"]
+        );
+        assert_eq!(disclosure.bases[0].kb_id, KB_A, "消歧后归属仍确定");
+    }
+
+    /// 单库零回归：路径不命名空间化，披露形状与 t2 逐字同源（无逐库条目）。
+    #[tokio::test]
+    async fn single_base_sampling_stays_unprefixed() {
+        let only = TestBase::new(KB_A, "笔记库");
+        only.write("docs/聚类.md", "# 聚类\nK-means 的簇数 k 需要预先指定。");
+
+        let bases = [&only];
+        let multi = sample_bases_with_budget(
+            &inputs(&bases),
+            Some("聚类"),
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+        let single = sample_goal_aware_with_budget(
+            only.root(),
+            "聚类",
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+        assert_eq!(multi.samples, single.samples, "单库行为与 t2 逐字一致");
+        assert_eq!(multi.disclosure, single.disclosure);
+        assert!(
+            multi.disclosure.unwrap().bases.is_empty(),
+            "单库不产逐库条目（旧披露形状）"
+        );
+    }
+
+    /// 一库为空（无 markdown）：按库跳过、不阻断其他库，披露如实标注 0；
+    /// 全部库为空时样本为空（由调用方报错）。
+    #[tokio::test]
+    async fn multi_base_skips_an_empty_base() {
+        let empty = TestBase::new(KB_A, "空库");
+        empty.write("notes.txt", "not markdown");
+        let filled = TestBase::new(KB_B, "有库");
+        filled.write("a.md", "# 甲\n内容");
+
+        let bases = [&empty, &filled];
+        let outcome = sample_bases_with_budget(&inputs(&bases), None, 10, 1024, 10 * 1024).await;
+        assert_eq!(
+            outcome.samples.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(),
+            vec!["有库/a.md"]
+        );
+        let disclosure = outcome.disclosure.unwrap();
+        let empty_entry = disclosure.bases.iter().find(|base| base.name == "空库").unwrap();
+        assert_eq!((empty_entry.total_files, empty_entry.sampled_files), (0, 0));
+
+        let all_empty = [&empty];
+        let outcome = sample_bases_with_budget(&inputs(&all_empty), None, 10, 1024, 10 * 1024).await;
+        assert!(outcome.samples.is_empty(), "全部为空 → 空样本（调用方报错）");
+    }
+
+    /// 目标只命中一个库：另一个库如实标注逐库 fallback，顶层 `goal_fallback`
+    /// 仅当所有库都零命中时才为真（不冒充"按目标采样"）。
+    #[tokio::test]
+    async fn multi_base_goal_fallback_is_per_base_and_honest() {
+        let matching = TestBase::new(KB_A, "甲库");
+        let unrelated = TestBase::new(KB_B, "乙库");
+        matching.write("a.md", "# 聚类分析\nK-means 的簇数 k 需要预先指定。");
+        unrelated.write("b.md", "# 期权入门\n认购与认沽的基本概念。");
+
+        let bases = [&matching, &unrelated];
+        let outcome = sample_bases_with_budget(
+            &inputs(&bases),
+            Some("聚类分析"),
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+        let disclosure = outcome.disclosure.unwrap();
+        assert!(!disclosure.goal_fallback, "有一个库命中即非全局回退");
+        let by_name = |name: &str| disclosure.bases.iter().find(|base| base.name == name).unwrap();
+        assert!(!by_name("甲库").goal_fallback);
+        assert!(by_name("乙库").goal_fallback, "零命中的库如实标注");
+        let line = disclosure.brief_line();
+        assert!(
+            line.contains("已按目标采样") && line.contains("乙库") && line.contains("未命中目标词条"),
+            "披露点名回退的库: {line}"
+        );
+
+        // 目标与所有库都无交集：全局回退为真。
+        let outcome = sample_bases_with_budget(
+            &inputs(&bases),
+            Some("零基础学油画"),
+            GOAL_MAX_FILES,
+            GOAL_PER_FILE,
+            GOAL_TOTAL,
+        )
+        .await;
+        let disclosure = outcome.disclosure.unwrap();
+        assert!(disclosure.goal_fallback, "全部退回默认顺序");
+        assert!(disclosure.brief_line().contains("已按默认顺序采样"), "{}", disclosure.brief_line());
     }
 }

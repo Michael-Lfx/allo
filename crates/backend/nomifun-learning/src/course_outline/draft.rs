@@ -601,6 +601,9 @@ impl OutlineDraft {
                                 path: path.clone(),
                                 start: None,
                                 end: None,
+                                // 库归属由生成管线按采样命名空间标注（t4）：
+                                // 草稿只持有路径，草稿层不认识库。
+                                kb_id: None,
                             }),
                         })
                         .collect(),
@@ -1023,6 +1026,7 @@ mod tests {
                 name: "数学基础".into(),
                 description: "代数入门".into(),
             }),
+            knowledge_bases: Vec::new(),
             samples: Vec::new(),
             domain: Some("math".into()),
             goal: None,
@@ -1034,6 +1038,7 @@ mod tests {
         OutlineBrief {
             description: Some("向量代数入门：从坐标到线性组合".into()),
             knowledge_base: None,
+            knowledge_bases: Vec::new(),
             samples: Vec::new(),
             domain: Some("math".into()),
             goal: None,

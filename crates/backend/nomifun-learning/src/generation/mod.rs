@@ -1,6 +1,7 @@
 pub(super) use std::collections::HashSet;
 
 pub(super) use nomifun_common::AppError;
+pub(super) use nomifun_common::KnowledgeBaseId;
 pub(super) use nomifun_knowledge::KnowledgeService;
 pub(super) use serde::Deserialize;
 pub(super) use serde::de::DeserializeOwned;
@@ -55,6 +56,9 @@ Rules:
 - Use the dominant language of the source documents.
 - Cover the most important ideas in a coherent learnable order.
 - Every lesson must cite an exact FILE path supplied in the samples. Never invent paths.
+- When the sampled paths are prefixed with a source-library name (e.g. `金融笔记/docs/a.md`),
+  the course draws on several libraries at once: cite those prefixed paths exactly as given —
+  the same relative path may exist in more than one library, and the prefix picks the right one.
 - Order lessons inside each module from foundational to advanced.
 - Course size is yours to decide: derive the number of modules and lessons per
   module from the scope and complexity of the material — compact for narrow
@@ -283,10 +287,15 @@ pub(crate) use self::lesson::{
     render_grounding_fragments, rewrite_section_body, validate_lesson_document,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
-pub(crate) use self::sample::sample_base_files;
+// 多知识库采样（t4）：单库逐字旧路径，多库按库分摊 + 路径命名空间。
+pub(crate) use self::sample::sample_bases;
+// 采样路径的库归属解析（t4）：蓝图来源标注、课时读库去前缀、视图解析共用。
+pub(crate) use self::sample::{
+    annotate_blueprint_sources, base_for_sample_path, namespace_for_base, rel_path_for_base,
+};
 // 目标词条化（t2 的确定性切片，t3 课时检索查询复用）跨模块消费：纯函数
 // 模块保持私有，两个入口公开到 crate 内。
 pub(crate) use self::terms::{TERM_MAX_COUNT, term_slices};
 // 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
 // `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
-pub use self::sample::SampleDisclosure;
+pub use self::sample::{SampleBaseDisclosure, SampleDisclosure};
