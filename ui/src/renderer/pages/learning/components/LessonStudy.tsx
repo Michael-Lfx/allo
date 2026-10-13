@@ -112,9 +112,12 @@ function ActivityBlock({
 function LessonSourcePanel({
   knowledgeBaseId,
   source,
+  sourceCount = 1,
 }: {
   knowledgeBaseId: string | null;
   source: NonNullable<Lesson['source']>;
+  /** 全部引用来源数（t4 多引用）：>1 时在主 source 旁如实标注「共 N 处来源」 */
+  sourceCount?: number;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -162,6 +165,11 @@ function LessonSourcePanel({
             {source.start !== null ? `:${source.start}` : ''}
             {source.end !== null ? `-${source.end}` : ''}
           </Text>
+          {sourceCount > 1 && (
+            <Text type='secondary' className='block text-12px'>
+              {t('learning.sourceCountHint', { count: sourceCount })}
+            </Text>
+          )}
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
           {sourceKbId !== null && (
@@ -787,7 +795,11 @@ export function LessonBlock({
         </Text>
       </div>
       {current.source && (
-        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={current.source} />
+        <LessonSourcePanel
+          knowledgeBaseId={sourceKbId}
+          source={current.source}
+          sourceCount={current.sources?.length ?? 1}
+        />
       )}
       {current.sections.length > 0 ? (
         <>
