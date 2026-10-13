@@ -158,9 +158,27 @@ impl ModelManager {
             info!("Force re-install: purging existing model files and .part artifacts in {:?}", self.models_dir);
             for &rel in EXPECTED_FILES {
                 let p = self.models_dir.join(rel);
-                let _ = tokio::fs::remove_file(&p).await;
+                if p.exists() {
+                    if let Err(e) = tokio::fs::remove_file(&p).await {
+                        // On Windows, if a file handle is briefly held, rename to a disposable tombstone
+                        let tombstone = p.with_extension(format!(
+                            "old.{}",
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis()
+                        ));
+                        if let Err(rename_err) = tokio::fs::rename(&p, &tombstone).await {
+                            warn!("Failed to remove or tombstone file {}: remove_err={}, rename_err={}", p.display(), e, rename_err);
+                        } else {
+                            let _ = tokio::fs::remove_file(&tombstone).await;
+                        }
+                    }
+                }
                 let part = PathBuf::from(format!("{}.part", p.display()));
-                let _ = tokio::fs::remove_file(&part).await;
+                if part.exists() {
+                    let _ = tokio::fs::remove_file(&part).await;
+                }
             }
         }
 

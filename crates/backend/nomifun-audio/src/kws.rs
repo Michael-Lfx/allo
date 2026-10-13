@@ -224,3 +224,128 @@ impl KwsEngine {
         None
     }
 }
+
+/// Matches whether a voice transcript contains wake words or common phonetic near-homophones.
+///
+/// Due to SenseVoice's generic multi-lingual vocabulary, the out-of-vocabulary brand word "Flowy"
+/// (/floʊi/) is frequently transcribed as:
+/// - "Hey, follow." / "Hey follow"
+/// - "Hey, flow" / "Hey flow"
+/// - "Hey, F." / "Hey F"
+/// - "Flowy" / "Floy"
+/// - Chinese variants: "黑 flowy", "嘿 flowy", "你好 flowy"
+fn normalize_speech_text(s: &str) -> String {
+    let lower = s.to_lowercase();
+    lower
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c > '\u{7f}' { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Matches whether a voice transcript contains wake words or common phonetic near-homophones.
+///
+/// Due to SenseVoice's generic multi-lingual vocabulary, the out-of-vocabulary brand word "Flowy"
+/// (/floʊi/) is frequently transcribed as:
+/// - "Hey, follow." / "Hey follow"
+/// - "Hey, flow" / "Hey flow"
+/// - "Hey, F." / "Hey F"
+/// - "Flowy" / "Floy"
+/// - Chinese variants: "黑 flowy", "嘿 flowy", "你好 flowy"
+pub fn is_wake_phrase_match(transcript: &str) -> bool {
+    let clean = normalize_speech_text(transcript);
+
+    const WAKE_PATTERNS: &[&str] = &[
+        "hey flowy",
+        "hey follow",
+        "hey flow",
+        "hey f",
+        "hi flowy",
+        "hi follow",
+        "hello flowy",
+        "flowy",
+        "floy",
+        "黑 flowy",
+        "嘿 flowy",
+        "嘿flowy",
+        "你好 flowy",
+        "你好flowy",
+        "小 flowy",
+        "小flowy",
+    ];
+
+    for pattern in WAKE_PATTERNS {
+        let norm_pattern = normalize_speech_text(pattern);
+        if clean.contains(&norm_pattern) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Strips the detected wake phrase from the start of an utterance, returning the remaining user command.
+pub fn strip_wake_phrase(transcript: &str) -> String {
+    let text = transcript.trim();
+    const PREFIXES: &[&str] = &[
+        "hey flowy", "hey follow", "hey flow", "hey f",
+        "hi flowy", "hi follow", "hello flowy",
+        "黑 flowy", "嘿 flowy", "嘿flowy", "你好 flowy", "你好flowy",
+        "小 flowy", "小flowy", "flowy",
+    ];
+
+    for prefix in PREFIXES {
+        let clean_prefix: Vec<char> = prefix.chars().filter(|c| c.is_alphanumeric() || *c > '\u{7f}').collect();
+        let mut text_matched_len = 0usize;
+        let mut prefix_matched = 0usize;
+
+        for (idx, c) in text.char_indices() {
+            let cl = c.to_lowercase().next().unwrap_or(c);
+            if cl.is_alphanumeric() || cl > '\u{7f}' {
+                if prefix_matched < clean_prefix.len() && cl == clean_prefix[prefix_matched] {
+                    prefix_matched += 1;
+                    text_matched_len = idx + c.len_utf8();
+                } else {
+                    break;
+                }
+            } else if prefix_matched > 0 {
+                text_matched_len = idx + c.len_utf8();
+            }
+        }
+
+        if prefix_matched == clean_prefix.len() {
+            let remainder = &text[text_matched_len..];
+            return remainder
+                .trim_start_matches(|c: char| c.is_ascii_punctuation() || c == '，' || c == '。' || c == ' ' || c == '、')
+                .trim()
+                .to_string();
+        }
+    }
+    text.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wake_phrase_matching() {
+        assert!(is_wake_phrase_match("Hey Flowy"));
+        assert!(is_wake_phrase_match("Hey, follow."));
+        assert!(is_wake_phrase_match("Hey, F."));
+        assert!(is_wake_phrase_match("Hey flow! How are you?"));
+        assert!(is_wake_phrase_match("嘿 Flowy，帮我查下天气"));
+        assert!(is_wake_phrase_match("你好Flowy"));
+
+        assert!(!is_wake_phrase_match("今天天气怎么样"));
+        assert!(!is_wake_phrase_match("Hello world"));
+    }
+
+    #[test]
+    fn test_strip_wake_phrase() {
+        assert_eq!(strip_wake_phrase("Hey, follow. 帮我整理桌面"), "帮我整理桌面");
+        assert_eq!(strip_wake_phrase("Hey Flowy, what time is it?"), "what time is it?");
+        assert_eq!(strip_wake_phrase("嘿flowy，写一段代码"), "写一段代码");
+    }
+}

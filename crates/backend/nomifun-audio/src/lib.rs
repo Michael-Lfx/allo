@@ -56,7 +56,7 @@ pub use events::spawn_meeting_event_bridge;
 pub use frame::{AudioChannel, TaggedFrame};
 pub use hotplug::{HotplugState, HotplugStats, UsbHotplugWatchdog, UsbHotplugWatchdogConfig};
 pub use keepawake::KeepAwakeGuard;
-pub use kws::{KwsEngine, KwsEngineConfig, KwsResult};
+pub use kws::{is_wake_phrase_match, strip_wake_phrase, KwsEngine, KwsEngineConfig, KwsResult};
 pub use loopback::LoopbackSource;
 pub use mic::{MicSource, probe_default_device, record_mic_snippet};
 pub use mixer::DualTrackMixer;

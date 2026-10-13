@@ -244,7 +244,14 @@ impl VoiceCompanionRuntime {
 
                                 let decision = if let Some(ref text) = text_opt {
                                     info!(text = %text, "ASR transcription produced text");
-                                    match router.route(text).await {
+                                    let clean_input = nomifun_audio::strip_wake_phrase(text);
+                                    let route_input = if clean_input.is_empty() {
+                                        // User uttered only wake word ("Hey Flowy" / "Hey follow") without follow-up command
+                                        "你好"
+                                    } else {
+                                        &clean_input
+                                    };
+                                    match router.route(route_input).await {
                                         Ok(dec) => Some(dec),
                                         Err(err) => {
                                             warn!(error = %err, "Routing error");
