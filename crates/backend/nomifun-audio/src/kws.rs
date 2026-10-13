@@ -121,11 +121,21 @@ impl KwsEngine {
         spotter_config.model_config.transducer.decoder = Some(decoder.to_string_lossy().to_string());
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
+
+        const DEFAULT_KEYWORDS_BPE: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
         if keywords.is_file() {
-            spotter_config.keywords_file = Some(keywords.to_string_lossy().to_string());
+            if let Ok(content) = std::fs::read_to_string(&keywords) {
+                if !content.contains('\u{2581}') {
+                    let _ = std::fs::write(&keywords, DEFAULT_KEYWORDS_BPE);
+                }
+            }
+        } else {
+            let _ = std::fs::write(&keywords, DEFAULT_KEYWORDS_BPE);
         }
-        spotter_config.keywords_score = 1.0;
-        spotter_config.keywords_threshold = 0.20;
+
+        spotter_config.keywords_file = Some(keywords.to_string_lossy().to_string());
+        spotter_config.keywords_score = 1.5;
+        spotter_config.keywords_threshold = 0.15;
 
         let spotter = sherpa_onnx::KeywordSpotter::create(&spotter_config)?;
         let stream = spotter.create_stream();
@@ -212,8 +222,14 @@ impl KwsEngine {
                     self.triggered = true;
                     self.last_trigger_ms = timestamp_ms;
                     session.spotter.reset(&session.stream);
+                    let clean_kw = result.keyword.replace('\u{2581}', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+                    let canonical_kw = if clean_kw.contains("FLOW") || clean_kw.contains("F L OW") || clean_kw.contains("F LO W") {
+                        "HEY FLOWY".to_string()
+                    } else {
+                        result.keyword
+                    };
                     return Some(KwsResult {
-                        keyword: result.keyword,
+                        keyword: canonical_kw,
                         score: 1.0,
                         timestamp_ms,
                     });
@@ -427,5 +443,33 @@ mod tests {
         assert_eq!(strip_wake_phrase("Hey, follow. 帮我整理桌面"), "帮我整理桌面");
         assert_eq!(strip_wake_phrase("Hey Flowy, what time is it?"), "what time is it?");
         assert_eq!(strip_wake_phrase("嘿flowy，写一段代码"), "写一段代码");
+    }
+
+    #[test]
+    #[cfg(feature = "local-stt")]
+    fn test_neural_kws_init_and_keywords() {
+        let local_app_data = dirs::data_local_dir().expect("local app data");
+        let dir = local_app_data.join("Flowy").join("models").join("kws");
+        
+        let valid_keywords = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
+        let temp_dir = tempfile::tempdir().unwrap();
+        let kws_dir = temp_dir.path().join("kws");
+        std::fs::create_dir_all(&kws_dir).unwrap();
+        
+        std::fs::copy(dir.join("encoder.int8.onnx"), kws_dir.join("encoder.int8.onnx")).unwrap();
+        std::fs::copy(dir.join("decoder.int8.onnx"), kws_dir.join("decoder.int8.onnx")).unwrap();
+        std::fs::copy(dir.join("joiner.int8.onnx"), kws_dir.join("joiner.int8.onnx")).unwrap();
+        std::fs::copy(dir.join("tokens.txt"), kws_dir.join("tokens.txt")).unwrap();
+        std::fs::write(kws_dir.join("keywords.txt"), valid_keywords).unwrap();
+
+        let mut config = KwsEngineConfig::default();
+        config.model_dir = Some(temp_dir.path().to_path_buf());
+        let engine = KwsEngine::new(config.clone()).expect("create engine");
+        assert!(engine.neural_session.is_some(), "Neural session must be loaded successfully with valid BPE tokens");
+
+        // Also assert auto-heal from legacy/corrupted keywords.txt
+        std::fs::write(kws_dir.join("keywords.txt"), "HEY FLOWY :1.0 #0.25 @1\n").unwrap();
+        let engine_auto_heal = KwsEngine::new(config).expect("create engine auto-heal");
+        assert!(engine_auto_heal.neural_session.is_some(), "Neural session must auto-heal invalid keywords.txt");
     }
 }

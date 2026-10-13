@@ -295,7 +295,8 @@ impl ModelManager {
             let _ = tokio::fs::write(&checksums_path, content).await;
         }
 
-        // Ensure keywords.txt is present (compiled locally or default fallback)
+        // Ensure keywords.txt is present and properly tokenized for Zipformer KWS
+        const DEFAULT_KWS_KEYWORDS: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
         let keywords_path = self.models_dir.join("kws/keywords.txt");
         if !keywords_path.exists() {
             let mut fetched_keywords = false;
@@ -313,7 +314,11 @@ impl ModelManager {
                 if let Some(parent) = keywords_path.parent() {
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
-                let _ = tokio::fs::write(&keywords_path, b"HEY FLOWY :1.0 #0.25 @1\n").await;
+                let _ = tokio::fs::write(&keywords_path, DEFAULT_KWS_KEYWORDS).await;
+            }
+        } else if let Ok(content) = tokio::fs::read_to_string(&keywords_path).await {
+            if !content.contains('\u{2581}') {
+                let _ = tokio::fs::write(&keywords_path, DEFAULT_KWS_KEYWORDS).await;
             }
         }
 
