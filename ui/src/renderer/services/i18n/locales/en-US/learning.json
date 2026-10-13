@@ -64,6 +64,8 @@
   "courseGoalHint": "The whole text is the goal: a short phrase is the course name, a longer text is the target description — the course title is exactly this text, and sampling and outline scope key off it.",
   "goalRequired": "Enter the learning goal first",
   "knowledgeBase": "Knowledge base",
+  "selectKnowledgeBaseHint": "Pick up to {{count}}: the first selection is the primary source; every selected library feeds sampling and lesson grounding.",
+  "courseSources": "Sources: {{names}}",
   "selectKnowledgeBase": "Select a knowledge base",
   "noUsableKnowledgeBases": "No available knowledge base contains Markdown documents",
   "loadBasesFailed": "Failed to load knowledge bases",

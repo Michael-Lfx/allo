@@ -7,6 +7,10 @@ import { learningApi } from '../api';
 import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
 import { errorMessage, type Translate } from '../utils';
 
+/** 一次建课的来源库上限（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES` 同一口径
+ * ——t2 采样预算按库分摊，5 库时每库 8 文件仍有完整的结构预算。 */
+export const MAX_COURSE_KNOWLEDGE_BASES = 5;
+
 /** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
  * 失败 / 已取消（用户主动取消，重试即重新发起）。
  * request 保留用于失败后的「重试」。 */
@@ -42,7 +46,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   const [creationGoal, setCreationGoal] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<IKnowledgeBase[]>([]);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState<string>();
+  // 多知识库（t4）：来源库列表（首个 = 主来源），上限与后端同一口径。
+  const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([]);
   const [generationDomain, setGenerationDomain] = useState('');
   // 讲解风格（ADR-0002，课程级）：创建时选择，随课程存储并驱动节写作变体
   const [teachingStyle, setTeachingStyle] = useState<TeachingStyle>('standard');
@@ -61,11 +66,13 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       );
       // 方式一需要库内已有 Markdown 文档；描述生成不再使用知识库
       setKnowledgeBases(bases.filter((base) => base.file_count > 0));
-      setSelectedKnowledgeBaseId((current) =>
-        current && bases.some((base) => base.knowledge_base_id === current)
-          ? current
-          : bases[0]?.knowledge_base_id
-      );
+      setSelectedKnowledgeBaseIds((current) => {
+        const usable = bases.filter((base) => base.file_count > 0);
+        const kept = current.filter((id) =>
+          usable.some((base) => base.knowledge_base_id === id)
+        );
+        return kept.length > 0 ? kept : usable[0] ? [usable[0].knowledge_base_id] : [];
+      });
     } catch (actionError) {
       Message.error(actionError instanceof Error ? actionError.message : t('learning.loadBasesFailed'));
     } finally {
@@ -145,7 +152,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
       model: modelChoice.model,
     };
     if (creationTab === 'base') {
-      if (!selectedKnowledgeBaseId) {
+      if (selectedKnowledgeBaseIds.length === 0) {
         Message.warning(t('learning.selectKnowledgeBase'));
         return;
       }
@@ -157,7 +164,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         return;
       }
       await generateCourse({
-        knowledge_base_id: selectedKnowledgeBaseId,
+        // 多知识库（t4）：列表提交（首个 = 主来源）；上限与服务端同口径
+        // （MAX_COURSE_KNOWLEDGE_BASES = 5）。
+        knowledge_base_ids: selectedKnowledgeBaseIds.slice(0, MAX_COURSE_KNOWLEDGE_BASES),
         goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,
@@ -178,7 +187,7 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     generationDomain,
     generateCourse,
     modelChoice,
-    selectedKnowledgeBaseId,
+    selectedKnowledgeBaseIds,
     t,
   ]);
 
@@ -258,8 +267,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     setCreationGoal,
     knowledgeBases,
     knowledgeLoading,
-    selectedKnowledgeBaseId,
-    setSelectedKnowledgeBaseId,
+    selectedKnowledgeBaseIds,
+    setSelectedKnowledgeBaseIds,
     generationDomain,
     setGenerationDomain,
     graphProficiency,

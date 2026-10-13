@@ -122,6 +122,9 @@ function LessonSourcePanel({
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 来源库（t4）：课时自身的归属优先（多库课程按采样命名空间解析），
+  // 老课程/单库课程没有 kb_id → 回退课程主来源。
+  const sourceKbId = source.kb_id ?? knowledgeBaseId;
 
   const toggle = () => {
     if (open) {
@@ -131,15 +134,15 @@ function LessonSourcePanel({
     setOpen(true);
     // 原文仅在用户主动查看时才加载；已加载或失败的内容直接复用
     if (content !== null || loading || error !== null) return;
-    if (knowledgeBaseId === null) {
-      // 未来可能出现的无知识库课程：没有可读取的原文，给出提示而不是报错
+    if (sourceKbId === null) {
+      // 无知识库课程（描述流）或来源库已被删除：没有可读取的原文
       setError(t('learning.sourceUnavailable'));
       return;
     }
     setLoading(true);
     void ipcBridge.knowledge.readFile
       .invoke({
-        knowledge_base_id: parseKnowledgeBaseId(knowledgeBaseId),
+        knowledge_base_id: parseKnowledgeBaseId(sourceKbId),
         path: source.path,
       })
       .then((file) => setContent(sliceSourceContent(file.content, source.start, source.end)))
@@ -161,12 +164,12 @@ function LessonSourcePanel({
           </Text>
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
-          {knowledgeBaseId !== null && (
+          {sourceKbId !== null && (
             <Button
               size='mini'
               onClick={() =>
                 navigate(
-                  `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
+                  `/knowledge/${sourceKbId}?highlight=${encodeURIComponent(source.path)}`
                 )
               }
             >

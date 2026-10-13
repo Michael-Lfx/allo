@@ -4,15 +4,18 @@ import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
 const { Text } = Typography;
 
 /** 后台生成悬浮指示条：创建对话框关闭后，生成仍在 HTTP 请求内继续——
- * 运行中/失败/取消/完成四种状态都从这里回到对话框进度视图，运行中可取消。 */
+ * 运行中/失败/取消/完成四种状态都从这里回到对话框进度视图，运行中可取消。
+ * 多知识库（t4）：sources 非空时展示「来源：库A、库B」（名称由调用方按库 id 解析）。 */
 export function CourseGenerationPill({
   status,
   topic,
+  sources = [],
   onView,
   onCancel,
 }: {
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   topic: string;
+  sources?: string[];
   onView: () => void;
   onCancel: () => void;
 }) {
@@ -45,6 +48,11 @@ export function CourseGenerationPill({
             {topic && (
               <Text type='secondary' className='block truncate text-12px'>
                 {topic}
+              </Text>
+            )}
+            {sources.length > 0 && (
+              <Text type='secondary' className='block truncate text-12px'>
+                {t('learning.courseSources', { names: sources.join('、') })}
               </Text>
             )}
           </div>

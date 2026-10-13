@@ -166,6 +166,15 @@ export function CourseWorkspace({
               {t('learning.source')}
             </Button>
           )}
+          {/* 多知识库（t4）：来源披露——课程由哪几个库生成（首个 = 主来源，
+              「知识来源」按钮指向它）；单库/旧课程不展示（采样披露无逐库条目） */}
+          {(course.sampling?.bases.length ?? 0) > 0 && (
+            <Text type='secondary' className='text-12px'>
+              {t('learning.courseSources', {
+                names: course.sampling?.bases.map((base) => base.name).join('、') ?? '',
+              })}
+            </Text>
+          )}
           {/* 采样披露（t2）：已采/总数 + 连贯补入 + 低分未采（悬浮看示例）；
               目标与库无交集时如实呈现退回默认顺序，不冒充按目标采样 */}
           {course.sampling && (
