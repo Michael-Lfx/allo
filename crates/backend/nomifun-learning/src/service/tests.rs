@@ -3608,7 +3608,8 @@ async fn lesson_grounding_prefers_the_live_file_over_the_stale_snapshot() {
 }
 
 /// t3 验收钉子③（锚定专项）：检索命中散落多个文件时，课时引用的主 source
-/// 不被替换；扩读片段带库+文件（+命中章节）归属，可溯源。
+/// 不被替换；扩读片段带库+文件（+命中章节）归属，可溯源；片段交付顺序按
+/// 结构（路径字典序）而非检索分——阅读线不因检索结果被打乱。
 #[tokio::test]
 async fn lesson_grounding_keeps_the_cited_source_and_traces_supplements() {
     let (service, knowledge, _data_dir, user_id) = grounding_test_service().await;
@@ -3622,16 +3623,17 @@ async fn lesson_grounding_keeps_the_cited_source_and_traces_supplements() {
         "docs/期权入门.md",
         "# 期权入门\n\n主线事实标记：期权的价值随标的价格变化。\n",
     );
-    // 两个强相关旁支文件：检索命中散落多文件，主 source 必须留在 primary。
+    // 两个命中散落的旁支文件：检索分与路径序刻意相反（z- 相关性更强），
+    // 交付顺序必须回到路径字典序——相关度决定读什么，结构决定按什么顺序读。
     write_kb_file(
         &base.base.root_path,
-        "notes/期权基础.md",
-        "# 期权基础\n\n补充事实标记甲：权利金是期权的价格。\n",
+        "notes/a-期权简记.md",
+        "# 期权简记\n\n补充事实标记甲：期权可以组合成价差。\n",
     );
     write_kb_file(
         &base.base.root_path,
-        "notes/期权策略.md",
-        "# 期权策略\n\n补充事实标记乙：牛市价差由买低卖高构成。\n",
+        "notes/z-期权基础.md",
+        "# 期权基础\n\n补充事实标记乙：权利金是期权的价格，买方持有权利、卖方承担义务。\n",
     );
     let detail = import_kb_lesson_course(
         &service,
@@ -3665,6 +3667,11 @@ async fn lesson_grounding_keeps_the_cited_source_and_traces_supplements() {
         primary.text.contains("主线事实标记"),
         "primary 是主 source 的全文"
     );
+    assert_eq!(
+        grounding[0].role,
+        ExcerptRole::Primary,
+        "primary 恒在首位（锚定纪律）"
+    );
     let supplements: Vec<_> = grounding
         .iter()
         .filter(|excerpt| excerpt.role == ExcerptRole::Supplement)
@@ -3673,13 +3680,10 @@ async fn lesson_grounding_keeps_the_cited_source_and_traces_supplements() {
         .iter()
         .map(|excerpt| excerpt.path.as_str())
         .collect();
-    assert!(
-        supplement_paths.contains(&"notes/期权基础.md"),
-        "命中扩读进补充片段：{supplement_paths:?}"
-    );
-    assert!(
-        supplement_paths.contains(&"notes/期权策略.md"),
-        "命中散落多文件都作补充：{supplement_paths:?}"
+    assert_eq!(
+        supplement_paths,
+        vec!["notes/a-期权简记.md", "notes/z-期权基础.md"],
+        "命中散落多文件都作补充，且按结构序（路径字典序）交付"
     );
     for supplement in &supplements {
         // 可溯源：库 + 文件（+ 命中章节）。

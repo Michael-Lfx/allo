@@ -54,6 +54,7 @@
   "genLessonsCount": "{{count}} lessons",
   "lessonGenRunning": "Generating",
   "lessonGenRound": "Round {{round}}",
+  "lessonGenSourceDegraded": "Source base unreachable — this run falls back to the course snapshot",
   "lessonGenAudit": "Audit: {{danger}} danger · {{warning}} warnings",
   "courseDescription": "Course description",
   "courseDescriptionPlaceholder": "Describe the course you want, e.g. Master Rust ownership and lifetimes",

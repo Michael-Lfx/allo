@@ -69,6 +69,17 @@ fn lesson_goal_terms(disclosure: Option<&SampleDisclosure>, goal: Option<&str>) 
     }
 }
 
+/// 补充片段按路径字典序交付（课程式库专项：primary 读源文件全文 + 按结构序
+/// 扩展，不因检索结果改写阅读线）。primary 在首位不动，其余按路径排序。
+fn sort_supplements_by_path(fragments: &mut [LessonExcerpt]) {
+    let primary_len = usize::from(
+        fragments
+            .first()
+            .is_some_and(|fragment| fragment.role == ExcerptRole::Primary),
+    );
+    fragments[primary_len..].sort_by(|left, right| left.path.cmp(&right.path));
+}
+
 /// 检索扩读（t3）：`search_bases` 取相关文件命中 → 逐条 `read_file` 读全文 →
 /// 补充片段（带库归属与命中章节，可溯源）。主 source 自己命中时跳过（它已是
 /// primary——锚定纪律：检索不替换主引用，也不重复占用预算）。单文件读不到只
@@ -308,6 +319,10 @@ impl LearningService {
             grounding.fragments,
             &retrieval_terms,
         );
+        // 不倒退纪律：相关度决定读什么（选摘与预算丢弃都按分），结构决定按
+        // 什么顺序读——交付顺序回到路径字典序，阅读线不因检索结果被打乱；
+        // primary 恒在首位（锚定纪律）。
+        sort_supplements_by_path(&mut grounding.fragments);
         // 预算可能丢掉了补充片段：读数与片段清单保持一致。
         grounding.supplements = grounding
             .fragments
