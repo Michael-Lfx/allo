@@ -89,11 +89,38 @@ impl KwsEngine {
     /// Checks if a neural KWS model suite is configured and present on disk.
     pub fn is_neural_backend(&self) -> bool {
         if let Some(ref dir) = self.config.model_dir {
-            dir.join("kws/encoder.int8.onnx").is_file()
+            if dir.join("kws/encoder.int8.onnx").is_file()
                 || dir.join("encoder.int8.onnx").is_file()
-        } else {
-            false
+            {
+                return true;
+            }
         }
+
+        if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(std::path::PathBuf::from) {
+            if ai_mate.join("kws/encoder.int8.onnx").is_file()
+                || ai_mate.join("encoder.int8.onnx").is_file()
+            {
+                return true;
+            }
+        }
+
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            let candidates = [
+                local_app_data.join("Flowy").join("Nomi").join("models"),
+                local_app_data.join("Flowy").join("Nomi-dev").join("models"),
+                local_app_data.join("Flowy").join("models"),
+                local_app_data.join("Flowy").join("AI-Mate").join("models"),
+            ];
+            for c in &candidates {
+                if c.join("kws/encoder.int8.onnx").is_file()
+                    || c.join("encoder.int8.onnx").is_file()
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Checks if the acoustic detector is active and calibrated.
