@@ -77,6 +77,10 @@ pub struct OutlineBrief {
     /// kb flow: the resolved base context.
     #[serde(default)]
     pub knowledge_base: Option<KnowledgeBaseBrief>,
+    /// 多知识库（t4）：全量来源库上下文（首个 = 主来源 = `knowledge_base`）。
+    /// 单库时为空（与 `knowledge_base` 同值语义，避免同一信息两处漂移）。
+    #[serde(default)]
+    pub knowledge_bases: Vec<KnowledgeBaseBrief>,
     /// kb flow: the sampled `(path, excerpt)` corpus, resolved by the
     /// synchronous pipeline BEFORE the engine starts (sampling is local
     /// file IO, milliseconds). The draft reads them via `co_read`; the
@@ -112,6 +116,16 @@ impl OutlineBrief {
     pub fn goal_title(&self) -> Option<String> {
         let title = crate::models::goal_course_title(self.goal.as_deref()?);
         (!title.is_empty()).then_some(title)
+    }
+
+    /// 全量来源库（t4）：多库走 `knowledge_bases`，单库回退
+    /// `knowledge_base`——调用方不必区分两者（顺序 = 用户选择顺序）。
+    pub fn source_knowledge_bases(&self) -> Vec<&KnowledgeBaseBrief> {
+        if self.knowledge_bases.is_empty() {
+            self.knowledge_base.iter().collect()
+        } else {
+            self.knowledge_bases.iter().collect()
+        }
     }
 }
 

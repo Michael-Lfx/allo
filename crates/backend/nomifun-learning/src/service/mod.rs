@@ -25,9 +25,11 @@ pub(super) use crate::lesson_draft::{
     LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 pub(super) use crate::generation::{
-    Blueprint, LessonOutput, SampleDisclosure, assemble_outline_pack, build_blueprint_prompt,
+    Blueprint, LessonOutput, SampleBaseDisclosure, SampleDisclosure, annotate_blueprint_sources,
+    assemble_outline_pack, base_for_sample_path, build_blueprint_prompt,
     build_description_blueprint_prompt, generate_blueprint, generate_lesson,
-    generate_lesson_activity, sample_base_files, validate_blueprint,
+    generate_lesson_activity, namespace_for_base, rel_path_for_base, sample_bases,
+    validate_blueprint,
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
@@ -50,11 +52,14 @@ pub(super) use crate::scheduler::{
 /// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
 /// （`learning_goal` / `samples_meta_json`，t1/t2）。无目标路径的
 /// `learning_goal` 为空串、`samples_meta_json` 为 `None`（列上 NULL）。
+/// 多知识库（t4）：`source_kb_ids` 是归一后的来源库列表（首个 = 主来源），
+/// 空列表由导入侧回退 `CoursePack.source_kb_id` 的单元素视图。
 pub(crate) struct OutlineSnapshot {
     pub blueprint_json: String,
     pub samples_json: String,
     pub learning_goal: String,
     pub samples_meta_json: Option<String>,
+    pub source_kb_ids: Vec<KnowledgeBaseId>,
 }
 
 #[derive(Clone)]
@@ -499,5 +504,6 @@ mod tags;
 #[cfg(test)]
 mod tests;
 
+use self::course::CourseKbSources;
 use self::lesson::validate_question_payload;
 use self::progress::{ensure_review_item, evaluate, update_mastery_and_review};

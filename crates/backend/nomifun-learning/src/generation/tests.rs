@@ -429,6 +429,7 @@
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
             goal: None,
+            knowledge_base_ids: Vec::new(),
         };
         assert_eq!(request.knowledge_base_id, Some(id));
     }
@@ -450,6 +451,7 @@
                         path: "real.md".into(),
                         start: None,
                         end: None,
+                        kb_id: None,
                     }),
                 }],
             }],
@@ -467,6 +469,7 @@
                 path: path.into(),
                 start: None,
                 end: None,
+                kb_id: None,
             }),
         };
         Blueprint {
@@ -1047,6 +1050,7 @@ fn assemble_outline_pack_uses_goal_as_course_title() {
         model: None,
         mode: crate::models::CourseGenerationMode::OnDemand,
         goal: goal.map(ToOwned::to_owned),
+        knowledge_base_ids: Vec::new(),
     };
 
     let pack = assemble_outline_pack(&blueprint("模型自定名"), &request(Some("零基础学 Python 数据分析")));
@@ -1054,4 +1058,45 @@ fn assemble_outline_pack_uses_goal_as_course_title() {
 
     let legacy = assemble_outline_pack(&blueprint("模型自定名"), &request(None));
     assert_eq!(legacy.title, "模型自定名");
+}
+
+/// 多知识库（t4）：`validate_blueprint` 的 source 校验语义不变——引用必须
+/// 来自**已采样路径**；多库下路径带 `{库名}/rel` 命名空间，同名文件靠前缀
+/// 区分，未被采样的路径（含别的库的前缀）照旧被拒。
+#[test]
+fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
+    let blueprint = |path: &str| Blueprint {
+        title: "C".into(),
+        description: "d".into(),
+        domain: "general".into(),
+        version: 1,
+        concepts: vec![ConceptPack {
+            key: "a".into(),
+            title: "A".into(),
+            description: String::new(),
+            prerequisites: Vec::new(),
+        }],
+        modules: vec![BlueprintModule {
+            title: "M".into(),
+            description: String::new(),
+            lessons: vec![BlueprintLesson {
+                title: "L".into(),
+                purpose: "p".into(),
+                concepts: vec!["a".into()],
+                source: Some(SourceSpan {
+                    path: path.into(),
+                    start: None,
+                    end: None,
+                    kb_id: None,
+                }),
+            }],
+        }],
+    };
+    let samples = vec![
+        ("金融笔记/docs/intro.md".to_owned(), "# 金融".to_owned()),
+        ("课程笔记/docs/intro.md".to_owned(), "# 课程".to_owned()),
+    ];
+    assert!(validate_blueprint(&blueprint("课程笔记/docs/intro.md"), &samples).is_ok());
+    let error = validate_blueprint(&blueprint("别的库/docs/intro.md"), &samples).unwrap_err();
+    assert!(error.contains("unsampled source path"), "{error}");
 }

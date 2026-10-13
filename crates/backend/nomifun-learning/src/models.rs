@@ -29,6 +29,13 @@ pub struct GenerateCourseRequest {
     /// `knowledge_base_id` / `description` must be provided.
     #[serde(default)]
     pub knowledge_base_id: Option<KnowledgeBaseId>,
+    /// 多知识库（t4）：来源库列表，首个 = 主来源（落库到
+    /// `learning_courses.source_kb_id`）。列表非空时以列表为准，单
+    /// `knowledge_base_id` 是旧客户端的单元素视图——两者同时给出时单值必须
+    /// 是列表成员（否则 400，不静默丢来源）。上限
+    /// [`COURSE_MAX_KNOWLEDGE_BASES`]。
+    #[serde(default)]
+    pub knowledge_base_ids: Vec<KnowledgeBaseId>,
     /// Free-text course brief (description flow): the course is generated
     /// from this briefing alone — no knowledge base is involved, sampled
     /// sources stay empty and lessons carry no `source` span.
@@ -68,6 +75,12 @@ pub struct GenerateCourseRequest {
 /// 滥用式的超长输入，不承担展示截断——课程标题的截断口径见
 /// [`goal_course_title`]。
 pub const COURSE_GOAL_MAX_CHARS: usize = 2000;
+
+/// 建课的来源库选择上限（t4）：按 t2 采样预算倒推——总量预算 40 文件在库间
+/// 等分（每库保底 [`crate::generation::MULTI_KB_PER_BASE_MIN_FILES`]），5 库
+/// 时每库 8 文件仍有完整的结构预算；再多的库只会把每库采样压到无意义的
+/// 零头。超限 400（在请求面拒绝，不进生成）。
+pub const COURSE_MAX_KNOWLEDGE_BASES: usize = 5;
 
 /// 课程标题的展示截断口径：目标文本折叠为单行（连续空白压成一个空格）、
 /// 去首尾空白，超过 [`COURSE_GOAL_TITLE_MAX_CHARS`] 字符时截断加省略号。
@@ -119,6 +132,37 @@ impl GenerateCourseRequest {
         Some(goal.chars().take(COURSE_GOAL_MAX_CHARS).collect())
     }
 
+    /// 归一后的来源库列表（t4）：`knowledge_base_ids` 非空时以列表为准（按
+    /// 首次出现去重、保序——顺序有意义，首个 = 主来源）；列表为空时回退单
+    /// `knowledge_base_id` 的单元素视图（旧客户端逐字兼容）；都没有则空。
+    pub fn knowledge_base_ids_normalized(&self) -> Vec<KnowledgeBaseId> {
+        let mut ids: Vec<KnowledgeBaseId> = Vec::new();
+        for id in &self.knowledge_base_ids {
+            if !ids.iter().any(|existing| existing == id) {
+                ids.push(id.clone());
+            }
+        }
+        if ids.is_empty() {
+            if let Some(id) = &self.knowledge_base_id {
+                ids.push(id.clone());
+            }
+        }
+        ids
+    }
+
+    /// 生成去重键（t4）：库 id 排序后以 `+` 拼接（单库保持 t2 的
+    /// `kb:{id}` 形状）——乱序提交同一组库命中同一槽位，不会重复建课。无来源
+    /// （描述流）为 `None`。
+    pub fn knowledge_base_key(&self) -> Option<String> {
+        let ids = self.knowledge_base_ids_normalized();
+        if ids.is_empty() {
+            return None;
+        }
+        let mut parts: Vec<&str> = ids.iter().map(KnowledgeBaseId::as_str).collect();
+        parts.sort_unstable();
+        Some(format!("kb:{}", parts.join("+")))
+    }
+
     /// Shared request validation for the synchronous generate endpoint and
     /// the agent tool sink: model fields come as a pair and exactly one of
     /// the two generation sources is chosen.
@@ -135,10 +179,29 @@ impl GenerateCourseRequest {
         {
             return Err(AppError::BadRequest("model must not be empty".into()));
         }
+        let kb_ids = self.knowledge_base_ids_normalized();
+        // 两者同时给出时列表优先，但单值必须是列表成员——静默丢掉用户指定
+        // 的来源等于从错误的库建课（t4 裁决）。
+        if let (Some(single), false) = (
+            self.knowledge_base_id.as_ref(),
+            self.knowledge_base_ids.is_empty(),
+        ) {
+            if !kb_ids.iter().any(|candidate| candidate == single) {
+                return Err(AppError::BadRequest(
+                    "knowledge_base_id must be one of knowledge_base_ids".into(),
+                ));
+            }
+        }
+        if kb_ids.len() > COURSE_MAX_KNOWLEDGE_BASES {
+            return Err(AppError::BadRequest(format!(
+                "at most {COURSE_MAX_KNOWLEDGE_BASES} knowledge bases can ground one course, got {}",
+                kb_ids.len()
+            )));
+        }
         if self.course_kind == CourseKind::LearningGraph {
             // 学习图课程只走描述流：描述即学习目标，知识库采样与
             // 模块/课时数都不参与生成。
-            if self.knowledge_base_id.is_some() {
+            if !kb_ids.is_empty() {
                 return Err(AppError::BadRequest(
                     "learning graph courses ground in the description only".into(),
                 ));
@@ -153,9 +216,10 @@ impl GenerateCourseRequest {
             }
             return Ok(());
         }
-        if self.knowledge_base_id.is_some() == self.description.is_some() {
+        // 恰好一个来源：知识库（列表或单值归一后的列表）与描述互斥。
+        if !kb_ids.is_empty() == self.description.is_some() {
             return Err(AppError::BadRequest(
-                "exactly one of knowledge_base_id or description must be provided".into(),
+                "exactly one of knowledge_base_id(s) or description must be provided".into(),
             ));
         }
         if let Some(description) = &self.description {
@@ -789,6 +853,12 @@ pub struct SourceSpan {
     pub start: Option<i64>,
     #[serde(default)]
     pub end: Option<i64>,
+    /// 来源库（t4）：该 source 文件所属的知识库。多库课程的采样路径带
+    /// `{库名}/rel` 命名空间，本字段是命名空间解析出的库 id（蓝图 source
+    /// 与课时视图都写）；单库/旧课程的裸路径为 `None`，读侧回退课程的
+    /// 主来源（`CourseSummary.source_kb_id`）。
+    #[serde(default)]
+    pub kb_id: Option<KnowledgeBaseId>,
 }
 
 /// Serde helper: tolerate an explicit `null` where a string is expected by
@@ -1283,7 +1353,12 @@ pub struct CourseSummary {
     pub description: String,
     pub domain: String,
     pub course_kind: CourseKind,
+    /// 主来源（t4）：列表首个**现存**库；老课程/已删库为 `None`（单列视图
+    /// 保留，读侧对已删库过滤后列表为空时即无来源）。
     pub source_kb_id: Option<KnowledgeBaseId>,
+    /// 来源库列表（t4）：多库选择的全量，读侧已剔除已删库 id（不外泄悬空
+    /// id）；空列表 = 描述流或老课程的单列回退视图为空。
+    pub source_kb_ids: Vec<KnowledgeBaseId>,
     pub version: i64,
     pub enrolled: bool,
     pub total_lessons: i64,
@@ -1309,6 +1384,22 @@ pub struct CourseSamplingView {
     pub goal_fallback: bool,
     pub low_score_files: usize,
     pub low_score_examples: Vec<String>,
+    /// 多知识库（t4）：逐库归属与计数（单库/旧课程为空列表）。命名空间是
+    /// 采样路径的前缀（`{namespace}/rel`），路径归属与「来源：库A、库B」
+    /// 的展示都由它解析。
+    pub bases: Vec<CourseSamplingBaseView>,
+}
+
+/// 单库的采样归属（t4 披露）：库 id + 库名 + 路径命名空间 + 采样计数。
+#[derive(Debug, Clone, Serialize)]
+pub struct CourseSamplingBaseView {
+    pub kb_id: KnowledgeBaseId,
+    pub name: String,
+    pub namespace: String,
+    pub total_files: usize,
+    pub sampled_files: usize,
+    /// 该库目标零命中：采样退回默认顺序（逐库如实披露，不冒充按目标采样）。
+    pub goal_fallback: bool,
 }
 
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
@@ -2071,6 +2162,7 @@ mod goal_tests {
             knowledge_base_id: Some(
                 KnowledgeBaseId::parse("0190f5fe-7c00-7a00-8abc-000000000001").unwrap(),
             ),
+            knowledge_base_ids: Vec::new(),
             description: None,
             domain: None,
             provider_id: None,
@@ -2121,6 +2213,114 @@ mod goal_tests {
         let expected: String = long.chars().take(COURSE_GOAL_TITLE_MAX_CHARS).collect();
         assert_eq!(title, format!("{expected}…"));
         assert_eq!(goal_course_title("   "), "");
+    }
+}
+
+#[cfg(test)]
+mod multi_kb_tests {
+    //! 多知识库选择（t4）的请求面契约：列表与单值并存时的优先级、去重、
+    //! 选择上限（按 t2 采样预算倒推）与去重键的乱序不敏感性。
+
+    use super::*;
+
+    fn kb(id: &str) -> KnowledgeBaseId {
+        KnowledgeBaseId::parse(id).unwrap()
+    }
+
+    fn request(single: Option<&str>, list: &[&str]) -> GenerateCourseRequest {
+        GenerateCourseRequest {
+            knowledge_base_id: single.map(kb),
+            knowledge_base_ids: list.iter().map(|id| kb(id)).collect(),
+            description: None,
+            domain: None,
+            provider_id: None,
+            model: None,
+            mode: CourseGenerationMode::OnDemand,
+            course_kind: CourseKind::Traditional,
+            teaching_style: None,
+            goal: None,
+        }
+    }
+
+    const A: &str = "0190f5fe-7c00-7a00-8abc-00000000000a";
+    const B: &str = "0190f5fe-7c00-7a00-8abc-00000000000b";
+    const C: &str = "0190f5fe-7c00-7a00-8abc-00000000000c";
+
+    /// 单值 / 列表两条输入路径归一成同一条列表：列表非空时以列表为准
+    /// （保序去重），列表为空时回退单值的单元素视图（旧客户端零变化）。
+    #[test]
+    fn multi_kb_list_normalizes_and_dedupes_in_order() {
+        assert_eq!(request(Some(A), &[]).knowledge_base_ids_normalized(), vec![kb(A)]);
+        assert_eq!(
+            request(None, &[B, A]).knowledge_base_ids_normalized(),
+            vec![kb(B), kb(A)],
+            "列表顺序原样保留（首个 = 主来源）"
+        );
+        assert_eq!(
+            request(Some(A), &[A, B, A]).knowledge_base_ids_normalized(),
+            vec![kb(A), kb(B)],
+            "重复项按首次出现去重"
+        );
+    }
+
+    /// 上限 5（t2 采样预算倒推）：第 6 个库 400，五个库合法。
+    #[test]
+    fn multi_kb_selection_is_capped_at_five() {
+        assert_eq!(COURSE_MAX_KNOWLEDGE_BASES, 5);
+        let five: Vec<String> = (0..5)
+            .map(|index| format!("0190f5fe-7c00-7a00-8abc-00000000001{index}"))
+            .collect();
+        let five_refs: Vec<&str> = five.iter().map(String::as_str).collect();
+        assert!(request(None, &five_refs).validate().is_ok());
+
+        let six: Vec<String> = (0..6)
+            .map(|index| format!("0190f5fe-7c00-7a00-8abc-00000000001{index}"))
+            .collect();
+        let six_refs: Vec<&str> = six.iter().map(String::as_str).collect();
+        let error = request(None, &six_refs).validate().unwrap_err();
+        assert!(error.to_string().contains('5'), "{error}");
+    }
+
+    /// 两者同时给出：单值必须是列表成员（列表优先，不静默丢来源）。
+    #[test]
+    fn multi_kb_and_single_field_must_agree() {
+        assert!(request(Some(A), &[A, B]).validate().is_ok(), "单值 ∈ 列表：列表生效");
+        let error = request(Some(C), &[A, B]).validate().unwrap_err();
+        assert!(error.to_string().contains("knowledge_base_ids"), "{error}");
+    }
+
+    /// 列表是与 description 互斥的知识库来源；学习图课程仍只走描述流。
+    #[test]
+    fn multi_kb_list_is_a_knowledge_base_source() {
+        let mut with_description = request(None, &[A, B]);
+        with_description.description = Some("brief".into());
+        assert!(with_description.validate().is_err(), "列表与描述互斥");
+
+        let mut graph = request(None, &[A, B]);
+        graph.course_kind = CourseKind::LearningGraph;
+        graph.description = Some("学会 Python".into());
+        let error = graph.validate().unwrap_err();
+        assert!(
+            error.to_string().contains("description only"),
+            "学习图课程不接库: {error}"
+        );
+    }
+
+    /// 去重键（生成槽位）：id 排序后拼接——乱序提交同一组库命中同一槽位；
+    /// 单库保持 t2 的 `kb:{id}` 形状。
+    #[test]
+    fn multi_kb_key_is_order_insensitive_and_single_compatible() {
+        assert_eq!(request(Some(A), &[]).knowledge_base_key().as_deref(), Some(&*format!("kb:{A}")));
+        assert_eq!(
+            request(None, &[A, B]).knowledge_base_key().as_deref(),
+            Some(&*format!("kb:{A}+{B}"))
+        );
+        assert_eq!(
+            request(None, &[B, A]).knowledge_base_key().as_deref(),
+            Some(&*format!("kb:{A}+{B}")),
+            "乱序提交同一组库 → 同一槽位"
+        );
+        assert_eq!(request(None, &[]).knowledge_base_key(), None);
     }
 }
 
