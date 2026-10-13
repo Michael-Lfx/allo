@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Input, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import type { TeachingStyle } from '../types';
-import type { CourseGenerationState } from '../hooks/useCourseCreation';
+import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
 import LearningModelSelector, {
   type LearningModelChoice,
 } from './LearningModelSelector';
@@ -19,7 +19,7 @@ export function CreateCourseDialog({
   busy,
   knowledgeLoading,
   knowledgeBases,
-  selectedKnowledgeBaseId,
+  selectedKnowledgeBaseIds,
   generationDomain,
   modelChoice,
   creationTab,
@@ -49,7 +49,8 @@ export function CreateCourseDialog({
   busy: boolean;
   knowledgeLoading: boolean;
   knowledgeBases: IKnowledgeBase[];
-  selectedKnowledgeBaseId?: string;
+  /** 多知识库（t4）：来源库列表（首个 = 主来源），上限 MAX_COURSE_KNOWLEDGE_BASES */
+  selectedKnowledgeBaseIds: string[];
   generationDomain: string;
   modelChoice: LearningModelChoice;
   creationTab: 'base' | 'description' | 'graph';
@@ -65,7 +66,7 @@ export function CreateCourseDialog({
   generation: CourseGenerationState | null;
   onClose: () => void;
   onOk: () => void;
-  onSelectedBaseChange: (value: string) => void;
+  onSelectedBaseChange: (values: string[]) => void;
   onDomainChange: (value: string) => void;
   onModelChange: (choice: LearningModelChoice) => void;
   onTabChange: (tab: 'base' | 'description' | 'graph') => void;
@@ -92,6 +93,10 @@ export function CreateCourseDialog({
   };
   const okText = graphWizard ? t('learning.learningGraphCreateSubmit') : t('learning.createSubmit');
 
+  // 多知识库（t4）：生成视图的来源披露（请求里的库 id → 库名）。
+  const generatingSources: string[] = (generation?.request.knowledge_base_ids ?? []).map(
+    (id) => knowledgeBases.find((base) => base.knowledge_base_id === id)?.name ?? id
+  );
   return (
     <Modal
       title={t('learning.createTitle')}
@@ -116,6 +121,7 @@ export function CreateCourseDialog({
           status={generation.status}
           result={generation.result}
           error={generation.error}
+          sources={generatingSources}
           onStartLearning={onStartLearning}
           onRetry={onRetry}
           onCancel={onCancel}
@@ -142,12 +148,16 @@ export function CreateCourseDialog({
                 </div>
                 <div>
                   <div className='mb-6px font-500'>{t('learning.knowledgeBase')}</div>
+                  {/* 多知识库（t4）：多选（参照 CS 智能体的挂载库多选）；
+                      首个选中 = 主来源，上限与后端同一口径 */}
                   <Select
                     className='w-full'
+                    mode='multiple'
                     loading={knowledgeLoading}
-                    value={selectedKnowledgeBaseId}
+                    value={selectedKnowledgeBaseIds}
                     placeholder={t('learning.selectKnowledgeBase')}
-                    onChange={(value: string) => onSelectedBaseChange(value)}
+                    maxTagCount={MAX_COURSE_KNOWLEDGE_BASES}
+                    onChange={(values: string[]) => onSelectedBaseChange(values ?? [])}
                   >
                     {knowledgeBases.map((base) => (
                       <Select.Option key={base.knowledge_base_id} value={base.knowledge_base_id}>
@@ -155,6 +165,9 @@ export function CreateCourseDialog({
                       </Select.Option>
                     ))}
                   </Select>
+                  <Text type='secondary' className='text-12px'>
+                    {t('learning.selectKnowledgeBaseHint', { count: MAX_COURSE_KNOWLEDGE_BASES })}
+                  </Text>
                   {!knowledgeLoading && knowledgeBases.length === 0 && (
                     <Text type='secondary'>{t('learning.noUsableKnowledgeBases')}</Text>
                   )}

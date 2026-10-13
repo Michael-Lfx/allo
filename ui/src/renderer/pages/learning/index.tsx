@@ -420,7 +420,7 @@ const LearningPage: React.FC = () => {
             busy={busyId === 'generate'}
             knowledgeLoading={creation.knowledgeLoading}
             knowledgeBases={creation.knowledgeBases}
-            selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
+            selectedKnowledgeBaseIds={creation.selectedKnowledgeBaseIds}
             generationDomain={creation.generationDomain}
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
@@ -433,7 +433,7 @@ const LearningPage: React.FC = () => {
             generation={creation.generation}
             onClose={creation.closeGenerator}
             onOk={() => void creation.submitGeneration()}
-            onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
+            onSelectedBaseChange={creation.setSelectedKnowledgeBaseIds}
             onDomainChange={creation.setGenerationDomain}
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
@@ -453,6 +453,10 @@ const LearningPage: React.FC = () => {
           <CourseGenerationPill
             status={creation.generation.status}
             topic={creation.generation.request.description ?? ''}
+            sources={(creation.generation.request.knowledge_base_ids ?? []).map(
+              (id) =>
+                creation.knowledgeBases.find((base) => base.knowledge_base_id === id)?.name ?? id
+            )}
             onView={() => void creation.openGenerator()}
             onCancel={() => void creation.cancelGeneration()}
           />

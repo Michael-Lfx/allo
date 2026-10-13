@@ -37,10 +37,14 @@ export type CourseKind = 'traditional' | 'learning_graph';
 
 /** 生成课程请求：知识库流与描述流二选一（都传时后端以知识库为准）。
  * 学习图课程只走描述流（描述即学习目标），程度/基础声明可选（缺省由结构
- * 生成扩写 / 按纯零基础画地形）。 */
+ * 生成扩写 / 按纯零基础画地形）。
+ * 多知识库（t4）：`knowledge_base_ids` 是来源库列表（首个 = 主来源，上限 5），
+ * 与单 `knowledge_base_id` 兼容（列表优先；两者同时给出时单值必须是列表成员）。 */
 export interface GenerateCourseRequest {
   course_kind?: CourseKind;
   knowledge_base_id?: string;
+  /** 多知识库来源列表（首个 = 主来源；上限 5） */
+  knowledge_base_ids?: string[];
   description?: string;
   /** 用户目标（知识库流）：整体文本即目标——简单时即课程名，复杂时是目标
    * 描述；课程标题默认即该文本。旧调用不传，缺省回退库名。 */
@@ -88,6 +92,20 @@ export interface CourseSamplingView {
   goal_fallback: boolean;
   low_score_files: number;
   low_score_examples: string[];
+  /** 多知识库（t4）：逐库归属与计数（单库/旧课程为空数组）；namespace 是
+   * 采样路径的前缀（`{namespace}/rel`），路径归属与「来源：库A、库B」由它解析 */
+  bases: CourseSamplingBaseView[];
+}
+
+/** 单库的采样归属（t4 披露条目） */
+export interface CourseSamplingBaseView {
+  kb_id: string;
+  name: string;
+  namespace: string;
+  total_files: number;
+  sampled_files: number;
+  /** 该库目标零命中：采样退回默认顺序 */
+  goal_fallback: boolean;
 }
 
 export interface CourseSummary {
@@ -95,7 +113,10 @@ export interface CourseSummary {
   title: string;
   description: string;
   domain: string;
+  /** 主来源（t4）：列表首个现存库；无来源/已删库为 null */
   source_kb_id: string | null;
+  /** 来源库列表（t4，读侧已剔除已删库 id；空数组 = 描述流或旧课程无来源） */
+  source_kb_ids: string[];
   version: number;
   enrolled: boolean;
   total_lessons: number;
@@ -129,7 +150,9 @@ export interface Lesson {
   position: number;
   generated: boolean;
   estimated_minutes: number;
-  source: { path: string; start: number | null; end: number | null } | null;
+  /** 来源文件（t4）：`kb_id` = 来源库（多库课程按命名空间解析；单库/旧课程为
+   * null，读侧回退课程主来源 `course.source_kb_id`）；`path` 是库内相对路径 */
+  source: { path: string; start: number | null; end: number | null; kb_id: string | null } | null;
   status: LessonStatus;
   activities: Activity[];
   /** 分节正文；空 = 旧课时的单篇 summary（双读回退） */
