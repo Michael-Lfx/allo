@@ -293,7 +293,6 @@ impl LearningService {
                     // 检索失败不阻断生成：补充片段是可选的加分项。
                     Ok(Ok((supplements, hits))) => {
                         grounding.hits = hits;
-                        grounding.supplements = supplements.len();
                         grounding.fragments.extend(supplements);
                     }
                     Ok(Err(error)) => {
