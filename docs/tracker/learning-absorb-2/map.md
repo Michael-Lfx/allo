@@ -1,6 +1,8 @@
 # Map: 学习模块二轮吸收 learnhub——2026-10-12 以来的 22 提交
 
 <!-- wayfinder:map -->
+<!-- 状态：已到达目的地（2026-10-13）——全部票关闭，二轮实施规格齐备，可拆实施票开工。
+      注意：g4 为推荐项默认裁决（问题发出未获回答），票面已标注可复议。 -->
 
 ## Destination
 
@@ -27,6 +29,16 @@
 
 ## Decisions so far
 
+- [重试循环机制定案](tickets/t1-retry-mechanics.md)：指纹 = 失败报告规范化 JSON，两循环
+  （growth_body / structure_gen）同款早停（连败两次即停、不烧预算）；顺带引入「未点名
+  被改」机械守卫（guard 豁免早停，配对「点修不是重写」）；重裁出口容量守卫（专用码
+  `ng.batch.redraft_capacity` + 定向指令，guard=false）；越权原地重试恰一次不占轮预算；
+  smoke 增 attempts_used/stop_reason 读数。
+- [装箱教义与提示词波（#85）](tickets/g4-packing-doctrine.md)（**推荐项默认裁决，可复议**）：
+  教义三条全采（道与术/概念不可学完/概念投影 → CONTEXT.md 词条 + COACH_SYSTEM 三条款）；
+  提示词波全采域中立（弧线跨批投影/对照限同轴/动词多样谱/首批特则/同批不重教/悬空技巧
+  与真实需要三问/定义文本前提闭包/评审禁则句）；COACH_SYSTEM 保持内联（一轮裁决不变）；
+  三条方法论落 learning.zh.md 新节。
 - [铸名门与命名面：别名闭环、deprecated 口径、近邻判定](tickets/g3-naming-face.md)：
   **复用通道全式**——近邻候选集装配（名字精确/近形/定义归一化+trigram/词面补位）+
   概念评审门扩权裁决（复用须指候选集内 ID，无新 LLM 调用，降级退化现状）；复用即提名名

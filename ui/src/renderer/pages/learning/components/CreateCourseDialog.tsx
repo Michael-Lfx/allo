@@ -100,6 +100,7 @@ export function CreateCourseDialog({
     generation?.request.knowledge_base_ids ?? [],
     knowledgeBases
   );
+
   return (
     <Modal
       title={t('learning.createTitle')}

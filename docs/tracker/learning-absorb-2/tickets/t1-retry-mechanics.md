@@ -2,8 +2,8 @@
 id: t1
 title: "重试循环机制定案：早停、guard 豁免、容量守卫、原地重试"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -43,3 +43,44 @@ learnhub 两件 P0 机制（#60 同指纹早停 + #85 容量守卫/点修原地�
 产出：以上六项的定案（每个落点的文件/函数/口径 + 测试口径清单），供实施票照单施工；
 实施随二轮整体切票进行。参考实现：learnhub `src-tauri/src/node_growth/facade.rs`
 （`assert_round_capacity`、`pass_naming_gate` 循环、`fail.guard` 字段）与其测试。
+
+## Resolution
+
+**速览**：六项定案——指纹 = 失败报告的规范化 JSON；早停两处循环同款（连败两次即停）；
+**顺带引入「未点名被改」机械守卫**（guard 豁免与其配对）；容量守卫在重裁出口、专用条款码；
+原地重试恰一次不占轮预算；smoke 增读数。
+
+1. **指纹与早停**：`fingerprint = serde_json::to_string(&failure_reports)`（报告结构体
+   序列化，字段序稳定即确定性；learnhub 用 reason 逐字，allo 报告是结构化清单，规范化
+   JSON 同义）。两处循环同款：
+   - `service/learning_graph.rs::growth_body`（:504-648）——指纹源 = 该轮失败面（形状
+     报告 / `validate_batch` 错误 / 评审 problems）之一，序列化后比对；
+   - `learning_graph/structure_gen.rs`（MAX_ATTEMPTS=3 循环）——指纹源 = gd.* 双产物
+     合并条款报告。
+   条件：`attempt > 1 && fingerprint == prev && !guard` → 立即 `Err(exhausted)`，不烧剩余
+   轮次（learnhub 口径「反馈回灌已无法改变结果」；连败两次即停，调用数 2 非 3）。
+2. **guard 豁免 + 顺带引入「未点名被改」守卫**：allo 现有失败面全为生成面（携带输出细节，
+   早停适用）；learnhub 的 guard 类失败（机械固定文案）在 allo 本不存在，**与「点修不是
+   重写」提示词纪律配对的守卫一并引入**：重裁输出与上一稿机械 diff——未出现在门报告/
+   评审 problems 点名清单中的节点必须逐字段相等（title/purpose/est/difficulty/teaches/
+   assumes），违者 = `AttemptFail{guard: true, reason: 固定文案}`。guard 失败豁免早停
+   （同指纹≠同输出前提不成立）。
+3. **容量守卫**：重裁出口前置检查 `nodes.len() > MAX_BATCH_NODES(7)` → 专用条款码
+   `ng.batch.redraft_capacity`，消息携带定向指令：「按拆分后的形态重新装箱，每批至多
+   7 条——超出容量的条目留待后续批次，不要放弃已正确的拆分」（learnhub
+   `assert_round_capacity` 同构；guard=false，可早停）。`ng.batch.size` 形状条款保持
+   起草轮执法单源不变。提示词配对红线（「修订不得超批容量，装不下宁可少拆」）随 g4
+   波次进 COACH_SYSTEM 自查条。
+4. **点修越权原地重试恰一次**：guard=true 失败时，带守卫原因在同一 attempt 内再裁一次
+   （**不占 3 轮预算**，保留评审上下文）；第二次越权计为该 attempt 失败，走正常轮推进。
+   learnhub 取舍照抄：原地重试保上下文 vs 回炉重装丢上下文。
+5. **早停适用面**：解析失败 / 形状条款 / 语义门 / 评审 problems / LLM 错误 = 生成面，
+   早停适用；guard 类（本票新引入的 diff 守卫）豁免。无第三类。
+6. **smoke 读数与测试口径**：learning-smoke grow/loop 输出增 `attempts_used` +
+   `stop_reason`（success | early_stop | exhausted）——读数面非门禁。测试（learnhub
+   口径为底）：同错连败两次即停（LLM 调用数 2 非 3）；异错烧满预算；重裁超容定向打回；
+   未点名被改 → 原地重试一次落位、再次越权计轮；structure_gen 至少一个早停用例。
+   落点文件：`service/learning_graph.rs`、`learning_graph/structure_gen.rs`、
+   共享小助手（指纹 + diff 守卫，放 `learning_graph/mod.rs` 或新 `growth_retry.rs`）、
+   `service/tests.rs` + structure 测试。
+
