@@ -123,7 +123,6 @@ async fn read_lesson_supplements(
         }
     }
     Ok((supplements, hit_count))
->>>>>>> cb0135df2 (feat(learning): 课时写作接回知识库——多片段 grounding、主源全文与检索补充)
 }
 
 impl LearningService {
@@ -1643,7 +1642,7 @@ impl LearningService {
                     serde_json::from_str(&samples_json).map_err(internal)?;
                 let module_position: i64 = row.try_get("module_position").map_err(internal)?;
                 let lesson_position: i64 = row.try_get("position").map_err(internal)?;
-                blueprint
+                let module = blueprint
                     .modules
                     .get(module_position as usize)
                     .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;

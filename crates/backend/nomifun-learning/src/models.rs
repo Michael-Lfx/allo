@@ -2662,6 +2662,8 @@ mod goal_tests {
             course_kind: CourseKind::Traditional,
             teaching_style: None,
             goal: goal.map(ToOwned::to_owned),
+        proficiency_statement: None,
+        learner_basis: None,
         }
     }
 
@@ -2730,6 +2732,8 @@ mod multi_kb_tests {
             course_kind: CourseKind::Traditional,
             teaching_style: None,
             goal: None,
+        proficiency_statement: None,
+        learner_basis: None,
         }
     }
 
