@@ -574,6 +574,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           ref={inspectorRef}
           sessionId={sessionId}
           scene={activeScene}
+          seedPacket={activePacket ?? null}
           artifacts={artifacts}
           generating={shotGenerating}
           planning={planning}

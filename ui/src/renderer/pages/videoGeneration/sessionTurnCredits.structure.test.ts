@@ -56,6 +56,15 @@ describe('video generation session video credits', () => {
     expect(infinite.includes('data-canvas-theme')).toBe(true);
     expect(inspector.includes('shot-api-prompt') || infinite.includes('shot-api-prompt')).toBe(true);
     expect(inspector.includes('ShotInfiniteCanvas')).toBe(true);
+    expect(inspector.includes('seedPacket')).toBe(true);
+    expect(inspector.includes('asShotPacketView')).toBe(true);
+    expect(board.includes('seedPacket={activePacket ?? null}')).toBe(true);
+    expect(infinite.includes('useShotNodeDrag')).toBe(true);
+    expect(infinite.includes('onNodeClick')).toBe(true);
+    expect(source('./shotInfiniteCanvas/packetToCanvas.ts').includes('packetHasCanvasRefs')).toBe(true);
+    expect(infinite.includes('window.addEventListener(\'mousemove\'')).toBe(false);
+    expect(source('./shotInfiniteCanvas/useShotNodeDrag.ts').includes('applyCanvasNodeDragPreview')).toBe(true);
+    expect(source('./shotInfiniteCanvas/useShotCanvasMedia.ts').includes('retainShotMediaUrls')).toBe(true);
     expect(inspector.includes('flushPendingSave')).toBe(true);
     expect(inspector.includes('PanZoomViewport')).toBe(false);
     expect(infinite.includes('InfiniteCanvas')).toBe(true);

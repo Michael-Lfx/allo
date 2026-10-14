@@ -30,6 +30,7 @@ import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import type {
   ArtifactNode,
   ShotGraphLayout,
+  ShotPacket,
   ShotPacketPatch,
   ShotPacketView,
   ShotRefRole,
@@ -38,7 +39,13 @@ import type {
 import type { CanvasNodeData, CanvasNodeMetadata, Position } from '@oc/types/canvas';
 import type { StoryboardVideoSlotStatus } from '../storyboardVideoStatus';
 import ShotInfiniteCanvas from '../shotInfiniteCanvas/ShotInfiniteCanvas';
-import { packetToCanvasGraph, parseShotNodeId, slotHasGenerationPrompt } from '../shotInfiniteCanvas/packetToCanvas';
+import {
+  packetHasCanvasRefs,
+  packetSlotSignature,
+  packetToCanvasGraph,
+  parseShotNodeId,
+  slotHasGenerationPrompt,
+} from '../shotInfiniteCanvas/packetToCanvas';
 import { nodeMentionsToSeedancePrompt } from '../shotInfiniteCanvas/shotMentions';
 import { shotCanvasMediaPaths } from '../shotInfiniteCanvas/shotCanvasMediaPaths';
 import { useShotCanvasMedia } from '../shotInfiniteCanvas/useShotCanvasMedia';
@@ -99,7 +106,15 @@ export interface ShotPacketInspectorProps {
   onUnsavedChange?: (dirty: boolean) => void;
   onPacket?: (packet: ShotPacketView | null) => void;
   onBusyAction?: () => void;
+  /** List payload for this shot so the canvas can paint nodes before getShotPacket returns. */
+  seedPacket?: ShotPacket | ShotPacketView | null;
   ref?: React.Ref<ShotPacketInspectorHandle>;
+}
+
+function asShotPacketView(packet: ShotPacket | ShotPacketView): ShotPacketView {
+  return Array.isArray((packet as ShotPacketView).takes)
+    ? (packet as ShotPacketView)
+    : { ...packet, takes: [] };
 }
 
 function packetSceneRoot(scene: StoryboardScene): string {
@@ -174,6 +189,7 @@ function ShotPacketInspector({
   onUnsavedChange,
   onPacket,
   onBusyAction,
+  seedPacket = null,
   ref,
 }: ShotPacketInspectorProps) {
   const { t } = useTranslation();
@@ -187,7 +203,7 @@ function ShotPacketInspector({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(VIDEO_NODE_ID);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [positions, setPositions] = useState<Record<string, MiniPoint>>({});
   const [viewport, setViewport] = useState<MiniViewport>({ x: 36, y: 28, k: 1 });
   const fileRef = useRef<HTMLInputElement>(null);
@@ -200,7 +216,10 @@ function ShotPacketInspector({
   const canvasRef = useRef<HTMLDivElement>(null);
   const fittedKey = useRef('');
   const loadSeq = useRef(0);
+  const layoutTouchedRef = useRef(false);
+  const seedPacketRef = useRef(seedPacket);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
+  seedPacketRef.current = seedPacket;
 
   const packetForScene = packetMatchesScene(packet, sceneRoot, shotIdx);
   // Content (prompt, refs, duration) is frozen while this shot renders or waits for review.
@@ -222,8 +241,8 @@ function ShotPacketInspector({
 
   const applyLayoutFromPacket = useCallback((next: ShotPacketView) => {
     const defaults = defaultNodePositions(
-      next.image_refs.map((slot) => slot.slot),
-      next.audio_refs.slice(0, MAX_SHOT_AUDIO_REFS).map((slot) => slot.slot)
+      (next.image_refs ?? []).map((slot) => slot.slot),
+      (next.audio_refs ?? []).slice(0, MAX_SHOT_AUDIO_REFS).map((slot) => slot.slot)
     );
     const merged = mergePositions(defaults, next.layout?.nodes ?? undefined);
     setPositions(merged);
@@ -256,16 +275,22 @@ function ShotPacketInspector({
       onPacket?.(null);
       return;
     }
-    setLoading(true);
+    const hasMatching = packetMatchesScene(packetRef.current, sceneRoot, shotIdx);
+    if (!hasMatching) setLoading(true);
     try {
       const next = await getShotPacket(sessionId, sceneRoot, shotIdx);
       if (seq !== loadSeq.current) return;
-      applyPacket(next, { keepLayout: fittedKey.current === `${sceneRoot}:${shotIdx}` });
+      const slotsChanged = packetSlotSignature(packetRef.current) !== packetSlotSignature(next);
+      const keepLayout = hasMatching && layoutTouchedRef.current && !slotsChanged;
+      if (!keepLayout) fittedKey.current = '';
+      applyPacket(next, { keepPrompt: hasMatching && !slotsChanged, keepLayout });
     } catch {
       if (seq !== loadSeq.current) return;
-      setPacket(null);
-      packetRef.current = null;
-      onPacket?.(null);
+      if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) {
+        setPacket(null);
+        packetRef.current = null;
+        onPacket?.(null);
+      }
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
@@ -276,13 +301,11 @@ function ShotPacketInspector({
   }, [loadPacket, scene.id, generating, planning]);
 
   useLayoutEffect(() => {
-    setSelectedNodeId(VIDEO_NODE_ID);
-    setImagePrompts({});
+    setSelectedNodeId(null);
     setMetaPatch({});
     setCanvasExpanded(false);
     fittedKey.current = '';
-    setPacket(null);
-    packetRef.current = null;
+    layoutTouchedRef.current = false;
     if (layoutTimer.current) {
       window.clearTimeout(layoutTimer.current);
       layoutTimer.current = null;
@@ -291,6 +314,22 @@ function ShotPacketInspector({
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
+    const seed = seedPacketRef.current;
+    const seedView =
+      seed && packetMatchesScene(asShotPacketView(seed), packetSceneRoot(scene), packetShotIdx(scene))
+        ? asShotPacketView(seed)
+        : null;
+    // List packets skip live disk merge, so empty refs would paint a video-only
+    // board and hide the real 定妆/场景 nodes until (or unless) GET wins.
+    if (seedView && packetHasCanvasRefs(seedView)) {
+      applyPacket(seedView);
+    } else {
+      setPacket(null);
+      packetRef.current = null;
+    }
+    // Only the filmstrip card identity should wipe the board. `scene` object
+    // identity changes on artifact polls and must not remount the graph.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene.id]);
 
   useLayoutEffect(() => {
@@ -569,22 +608,34 @@ function ShotPacketInspector({
   useLayoutEffect(() => {
     if (!packet || !sceneRoot) return;
     if (packet.scene_root.replace(/\\/g, '/') !== sceneRoot || packet.shot_idx !== shotIdx) return;
-    const key = `${sceneRoot}:${shotIdx}`;
-    if (fittedKey.current === key) return;
+    const nodeFitKey = nodes.map((node) => node.id).join('|');
+    const key = `${sceneRoot}:${shotIdx}:${nodeFitKey}`;
     const el = canvasRef.current;
     if (!el) return;
-    const box = el.getBoundingClientRect();
-    if (box.width < 40 || box.height < 40) return;
-    const next = clampViewport(
-      fitViewport(
-        nodes.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width, h: node.height })),
-        box.width,
-        box.height
-      )
-    );
-    setViewport(next);
-    viewportRef.current = next;
-    fittedKey.current = key;
+
+    const tryFit = () => {
+      if (fittedKey.current === key) return true;
+      const box = el.getBoundingClientRect();
+      if (box.width < 40 || box.height < 40) return false;
+      const next = clampViewport(
+        fitViewport(
+          nodes.map((node) => ({ x: node.position.x, y: node.position.y, w: node.width, h: node.height })),
+          box.width,
+          box.height
+        )
+      );
+      setViewport(next);
+      viewportRef.current = next;
+      fittedKey.current = key;
+      return true;
+    };
+
+    if (tryFit()) return;
+    const observer = new ResizeObserver(() => {
+      if (tryFit()) observer.disconnect();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [nodes, packet, sceneRoot, shotIdx]);
 
   const handleRefFile = (kind: 'image' | 'audio', slot: number) => {
@@ -715,27 +766,46 @@ function ShotPacketInspector({
     }
   };
 
-  const handleNodeMove = (nodeId: string, position: Position) => {
-    const current = positionsRef.current[nodeId] ?? { x: position.x, y: position.y };
-    const next = { ...positionsRef.current, [nodeId]: { ...current, x: position.x, y: position.y } };
-    positionsRef.current = next;
-    setPositions(next);
-    persistLayout(next);
-  };
+  const handleNodeMove = useCallback(
+    (nodeId: string, position: Position) => {
+      layoutTouchedRef.current = true;
+      const current = positionsRef.current[nodeId] ?? { x: position.x, y: position.y };
+      const next = { ...positionsRef.current, [nodeId]: { ...current, x: position.x, y: position.y } };
+      positionsRef.current = next;
+      setPositions(next);
+      persistLayout(next);
+    },
+    [persistLayout]
+  );
 
-  const handleNodeResize = (nodeId: string, width: number, height: number, position?: Position) => {
-    const current = positionsRef.current[nodeId] ?? { x: 0, y: 0 };
-    const nextPoint: MiniPoint = {
-      x: position?.x ?? current.x,
-      y: position?.y ?? current.y,
-      w: width,
-      h: height,
-    };
-    const next = { ...positionsRef.current, [nodeId]: nextPoint };
-    positionsRef.current = next;
-    setPositions(next);
-    persistLayout(next);
-  };
+  const handleNodeResize = useCallback(
+    (nodeId: string, width: number, height: number, position?: Position) => {
+      layoutTouchedRef.current = true;
+      const current = positionsRef.current[nodeId] ?? { x: 0, y: 0 };
+      const nextPoint: MiniPoint = {
+        x: position?.x ?? current.x,
+        y: position?.y ?? current.y,
+        w: width,
+        h: height,
+      };
+      const next = { ...positionsRef.current, [nodeId]: nextPoint };
+      positionsRef.current = next;
+      setPositions(next);
+      persistLayout(next);
+    },
+    [persistLayout]
+  );
+
+  const handleViewportChange = useCallback(
+    (next: MiniViewport) => {
+      layoutTouchedRef.current = true;
+      const clamped = clampViewport(next);
+      setViewport(clamped);
+      viewportRef.current = clamped;
+      persistLayout(positionsRef.current, clamped);
+    },
+    [persistLayout]
+  );
 
   const handlePromptChange = (nodeId: string, prompt: string) => {
     const parsed = parseShotNodeId(nodeId);
@@ -946,15 +1016,11 @@ function ShotPacketInspector({
       </div>
       <ShotInfiniteCanvas
         containerRef={canvasRef}
+        shotKey={`${sceneRoot}:${shotIdx}`}
         nodes={nodes}
         connections={connections}
         viewport={viewport}
-        onViewportChange={(next) => {
-          const clamped = clampViewport(next);
-          setViewport(clamped);
-          viewportRef.current = clamped;
-          persistLayout(positionsRef.current, clamped);
-        }}
+        onViewportChange={handleViewportChange}
         selectedNodeId={selectedNodeId}
         onSelectNode={setSelectedNodeId}
         readOnly={!editable}

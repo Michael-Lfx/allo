@@ -1360,7 +1360,7 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
         "bottom-right": "-bottom-[14px] -right-[14px] cursor-nwse-resize",
     }[corner];
 
-    return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
+    return <div className={`canvas-node-resize absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
 function NodeExternalHeader({ node, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {

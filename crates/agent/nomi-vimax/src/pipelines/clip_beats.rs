@@ -124,6 +124,10 @@ pub(crate) fn pack_briefs_for_publish(
     max_shots: Option<usize>,
     over_budget: OverBudget,
 ) -> Vec<ShotBriefDescription> {
+    let mut briefs = briefs;
+    // Strip repeated 「」 lines *before* pack: a copied line inflates speech
+    // need so two coverage rows of the SAME beat refuse to join.
+    dedupe_repeat_dialogue(&mut briefs);
     let packed = pack_scene_briefs_with(bounds, briefs, opts.clone());
     let budgeted = match max_shots.filter(|&n| n > 0) {
         Some(max) => apply_shot_budget(packed, max, over_budget),
@@ -134,6 +138,10 @@ pub(crate) fn pack_briefs_for_publish(
     // film then has more clips than the duration quota.
     let mut out = split_overflow_briefs(bounds, budgeted, opts.max_voice_ref_speakers);
     out = absorb_reaction_leftovers(bounds, out);
+    // Overflow split / quote-survival can re-append a parent line onto the
+    // later file as unquoted prose — drop it so the next clip does not replay
+    // the previous clip's speech.
+    dedupe_repeat_dialogue(&mut out);
     reindex_briefs(&mut out);
     out
 }
@@ -952,22 +960,34 @@ fn ensure_quotes_survive(lenses: &mut [PromptLens], parent_audio: &str) {
     if lenses.is_empty() {
         return;
     }
-    let parent_quotes = quoted_payloads(parent_audio);
-    if parent_quotes.is_empty() {
-        return;
-    }
     let mut have = String::new();
     for lens in lenses.iter() {
         have.push_str(lens.audio.as_deref().unwrap_or(""));
         have.push(' ');
     }
+    // Prefer original speaker-prefixed turns. Raw payloads dumped onto the
+    // last lens become 音效 and the next file re-speaks the previous lines.
+    let (turns, _) = parse_spoken_turns(parent_audio);
     let mut missing = Vec::new();
-    for q in parent_quotes {
-        if q.trim().is_empty() {
-            continue;
+    if turns.is_empty() {
+        for q in quoted_payloads(parent_audio) {
+            if q.trim().is_empty() || payload_covered(&have, &q) {
+                continue;
+            }
+            missing.push(format!("「{q}」"));
         }
-        if !have.contains(&q) {
-            missing.push(q);
+    } else {
+        for turn in turns {
+            let payloads = quoted_payloads(&turn.text);
+            let payload = if payloads.is_empty() {
+                turn.text.trim().to_string()
+            } else {
+                payloads.join("")
+            };
+            if payload.trim().is_empty() || payload_covered(&have, &payload) {
+                continue;
+            }
+            missing.push(turn.text);
         }
     }
     if missing.is_empty() {
@@ -2225,6 +2245,387 @@ fn join_distinct<'a>(parts: impl Iterator<Item = &'a str>, sep: &str) -> String 
     out.join(sep)
 }
 
+/// Drop a spoken payload that a previous storyboard row already delivered.
+///
+/// The planner copies a line onto the next row "for coverage", and overflow
+/// split can re-append the parent speech as unquoted prose on the later file.
+/// Either way the next clip's video prompt re-speaks the previous beat.
+fn dedupe_repeat_dialogue(briefs: &mut [ShotBriefDescription]) {
+    let mut seen: Vec<String> = Vec::new();
+    for brief in briefs.iter_mut() {
+        strip_repeat_from_brief(brief, &seen);
+        for payload in quoted_payloads(&brief_audio_blob(brief)) {
+            if payload_weight(&payload) < 4 {
+                continue;
+            }
+            if !seen.iter().any(|have| payloads_match(have, &payload)) {
+                seen.push(payload);
+            }
+        }
+    }
+    for i in 0..briefs.len().saturating_sub(1) {
+        let next_visual = briefs[i + 1].visual_desc.clone();
+        strip_sfx_actions_covered_by_next(&mut briefs[i], &next_visual);
+    }
+}
+
+fn strip_repeat_from_brief(brief: &mut ShotBriefDescription, prior: &[String]) {
+    if let Some(audio) = brief.audio_desc.as_mut() {
+        *audio = strip_repeat_from_audio(audio, prior);
+        if audio.trim().is_empty() {
+            brief.audio_desc = None;
+        }
+    }
+    for beat in &mut brief.beats {
+        if let Some(audio) = beat.audio_desc.as_mut() {
+            *audio = strip_repeat_from_audio(audio, prior);
+            if audio.trim().is_empty() {
+                beat.audio_desc = None;
+            }
+        }
+    }
+    sync_brief_audio_from_beats(brief);
+}
+
+fn sync_brief_audio_from_beats(brief: &mut ShotBriefDescription) {
+    if brief.beats.len() < 2 {
+        return;
+    }
+    let joined = join_distinct(
+        brief.beats.iter().filter_map(|beat| beat.audio_desc.as_deref()),
+        " ",
+    );
+    brief.audio_desc = (!joined.is_empty()).then_some(joined);
+}
+
+pub(crate) fn strip_sfx_restating_line(line: &str, sfx: &str) -> String {
+    strip_payload_mentions(sfx, &quoted_payloads(line))
+}
+
+/// Strip previous-clip speech from this shot before the video prompt is built.
+/// Existing storyboards keep their row text; only the generation prompt changes.
+pub(crate) fn sanitize_shot_prompt_payloads(shot: &mut ShotDescription, prior: Option<&ShotDescription>) {
+    let prior_payloads = prior
+        .map(payloads_in_shot)
+        .unwrap_or_default();
+    if !prior_payloads.is_empty() {
+        apply_audio_map(shot, |audio| strip_repeat_from_audio(audio, &prior_payloads));
+    }
+    apply_audio_map(shot, strip_self_restated_sfx);
+}
+
+fn payloads_in_shot(shot: &ShotDescription) -> Vec<String> {
+    let mut blob = shot.audio_source();
+    blob.push(' ');
+    blob.push_str(&shot.visual_desc);
+    blob.push(' ');
+    blob.push_str(&shot.motion_desc);
+    for beat in &shot.beats {
+        blob.push(' ');
+        blob.push_str(&beat.motion_desc);
+        if let Some(audio) = &beat.audio_desc {
+            blob.push(' ');
+            blob.push_str(audio);
+        }
+    }
+    quoted_payloads(&blob)
+        .into_iter()
+        .filter(|p| payload_weight(p) >= 2)
+        .collect()
+}
+
+fn apply_audio_map(shot: &mut ShotDescription, map: impl Fn(&str) -> String) {
+    if let Some(audio) = shot.audio_desc.as_mut() {
+        *audio = map(audio);
+        if audio.trim().is_empty() {
+            shot.audio_desc = None;
+        }
+    }
+    for beat in &mut shot.beats {
+        if let Some(audio) = beat.audio_desc.as_mut() {
+            *audio = map(audio);
+            if audio.trim().is_empty() {
+                beat.audio_desc = None;
+            }
+        }
+    }
+}
+
+fn strip_self_restated_sfx(audio: &str) -> String {
+    strip_repeat_from_audio(audio, &[])
+}
+
+fn strip_repeat_from_audio(audio: &str, prior_payloads: &[String]) -> String {
+    let dropped = strip_turns_matching(audio, prior_payloads);
+    let (line, sfx) = crate::dialogue::split_spoken_and_sfx(&dropped);
+    let mut known = prior_payloads.to_vec();
+    known.extend(quoted_payloads(&line));
+    join_line_sfx(&line, &strip_payload_mentions(&sfx, &known))
+}
+
+fn strip_turns_matching(audio: &str, drop: &[String]) -> String {
+    if drop.is_empty() {
+        return audio.to_string();
+    }
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    let mut search = 0usize;
+    while search < audio.len() {
+        let Some(rel) = crate::dialogue::find_spoken_quote_byte(&audio[search..]) else {
+            break;
+        };
+        let open = search + rel;
+        let start = crate::dialogue::speaker_line_start(audio, open).min(open);
+        let end = matching_quote_end(audio, open).unwrap_or(audio.len());
+        if end <= open {
+            break;
+        }
+        let payload = quoted_payloads(&audio[open..end])
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| audio[open..end].trim().to_string());
+        if start > cursor {
+            out.push_str(&audio[cursor..start]);
+        }
+        if !drop.iter().any(|item| payloads_match(&payload, item)) {
+            let keep_from = start.max(cursor);
+            if keep_from < end {
+                out.push_str(&audio[keep_from..end]);
+            }
+        }
+        cursor = end;
+        search = end;
+    }
+    if cursor < audio.len() {
+        out.push_str(&audio[cursor..]);
+    }
+    collapse_ws(&out)
+}
+
+fn strip_payload_mentions(text: &str, payloads: &[String]) -> String {
+    let mut items: Vec<String> = payloads
+        .iter()
+        .map(|p| crate::dialogue::sanitize_spoken_payload(p))
+        .map(|p| p.trim().to_string())
+        .filter(|p| p.chars().count() >= 2)
+        .collect();
+    items.sort_by_key(|p| std::cmp::Reverse(p.chars().count()));
+    items.dedup();
+    let mut s = text.to_string();
+    for payload in items {
+        s = s.replace(&payload, " ");
+    }
+    collapse_ws(&s)
+}
+
+fn strip_sfx_actions_covered_by_next(brief: &mut ShotBriefDescription, next_visual: &str) {
+    if let Some(audio) = brief.audio_desc.as_mut() {
+        *audio = drop_sfx_clauses_covered(audio, next_visual);
+        if audio.trim().is_empty() {
+            brief.audio_desc = None;
+        }
+    }
+    for beat in &mut brief.beats {
+        if let Some(audio) = beat.audio_desc.as_mut() {
+            *audio = drop_sfx_clauses_covered(audio, next_visual);
+            if audio.trim().is_empty() {
+                beat.audio_desc = None;
+            }
+        }
+    }
+    sync_brief_audio_from_beats(brief);
+}
+
+fn drop_sfx_clauses_covered(audio: &str, next_visual: &str) -> String {
+    let (line, sfx) = crate::dialogue::split_spoken_and_sfx(audio);
+    if sfx.trim().is_empty() {
+        return audio.to_string();
+    }
+    let next_n = compact_speech(next_visual);
+    let kept: Vec<String> = split_sfx_clauses(&sfx)
+        .into_iter()
+        .filter(|clause| !action_clause_covered_by(clause, &next_n))
+        .collect();
+    join_line_sfx(&line, &kept.join(""))
+}
+
+fn split_sfx_clauses(sfx: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in sfx.chars() {
+        cur.push(ch);
+        if matches!(ch, '。' | '！' | '？' | '!' | '?' | '\n') {
+            let piece = cur.trim().to_string();
+            if !piece.is_empty() {
+                out.push(piece);
+            }
+            cur.clear();
+        }
+    }
+    let tail = cur.trim();
+    if !tail.is_empty() {
+        out.push(tail.to_string());
+    }
+    if out.is_empty() && !sfx.trim().is_empty() {
+        out.push(sfx.trim().to_string());
+    }
+    out
+}
+
+fn action_clause_covered_by(clause: &str, next_n: &str) -> bool {
+    if !looks_like_stage_action(clause) || looks_like_ambience(clause) || next_n.is_empty() {
+        return false;
+    }
+    let clause_n = compact_speech(clause);
+    // Paraphrase (它后腿 vs 最瘦那只羊的后腿) breaks a long substring, but a
+    // strong verb that both rows name is the same beat replayed in 音效.
+    const STRONG: &[&str] = &[
+        "按住", "倒进", "倒入", "勒紧", "夺过", "扔出", "拍在", "咬住", "绕上",
+    ];
+    STRONG
+        .iter()
+        .any(|verb| clause_n.contains(verb) && next_n.contains(verb))
+}
+
+fn looks_like_stage_action(s: &str) -> bool {
+    const VERBS: &[&str] = &[
+        "按住", "伸手", "倒进", "倒入", "勒紧", "夺过", "扔出", "拍在", "咬住", "攥", "绕上",
+        "话音落",
+    ];
+    VERBS.iter().any(|verb| s.contains(verb))
+}
+
+fn looks_like_ambience(s: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "弦乐", "BGM", "bgm", "铺底", "underscore", "音量", "山风", "夜风", "鼓点",
+    ];
+    MARKS.iter().any(|mark| s.contains(mark)) && !looks_like_stage_action(s)
+}
+
+fn join_line_sfx(line: &str, sfx: &str) -> String {
+    let line = line.trim();
+    let sfx = collapse_ws(sfx);
+    match (line.is_empty(), sfx.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => sfx,
+        (false, true) => line.to_string(),
+        (false, false) => format!("{line} {sfx}"),
+    }
+}
+
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_space = true;
+    let mut prev_punct = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+            continue;
+        }
+        prev_space = false;
+        if matches!(
+            ch,
+            '。' | '，' | ',' | '；' | ';' | '！' | '？' | '!' | '?' | '.' | '、'
+        ) {
+            if prev_punct || out.is_empty() {
+                continue;
+            }
+            prev_punct = true;
+            out.push(ch);
+            continue;
+        }
+        prev_punct = false;
+        out.push(ch);
+    }
+    out.trim()
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '。' | '，' | ',' | '；' | ';' | '！' | '？' | '!' | '?' | '.' | '、'
+            )
+        })
+        .trim()
+        .to_string()
+}
+
+fn payloads_match(a: &str, b: &str) -> bool {
+    let a = compact_speech(a);
+    let b = compact_speech(b);
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a == b
+        || (a.chars().count() >= 4 && b.contains(&a))
+        || (b.chars().count() >= 4 && a.contains(&b))
+}
+
+fn payload_covered(have: &str, quote: &str) -> bool {
+    if quote.trim().is_empty() {
+        return true;
+    }
+    if have.contains(quote) {
+        return true;
+    }
+    let have_n = compact_speech(have);
+    let quote_n = compact_speech(quote);
+    if quote_n.is_empty() {
+        return true;
+    }
+    if have_n.contains(&quote_n) {
+        return true;
+    }
+    if quote_n.chars().count() < 8 {
+        return false;
+    }
+    let windows = char_windows(&quote_n, 4);
+    if windows.is_empty() {
+        return false;
+    }
+    let hits = windows
+        .iter()
+        .filter(|window| have_n.contains(window.as_str()))
+        .count();
+    hits * 2 >= windows.len()
+}
+
+fn compact_speech(s: &str) -> String {
+    crate::dialogue::sanitize_spoken_payload(s)
+        .chars()
+        .filter(|c| crate::planning::is_cjk_speech_char(*c) || c.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn char_windows(s: &str, n: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < n {
+        return Vec::new();
+    }
+    chars.windows(n).map(|window| window.iter().collect()).collect()
+}
+
+fn payload_weight(text: &str) -> u32 {
+    let mut cjk = 0u32;
+    let mut words = 0u32;
+    let mut in_word = false;
+    for ch in text.chars() {
+        if crate::planning::is_cjk_speech_char(ch) {
+            cjk += 1;
+            in_word = false;
+        } else if ch.is_ascii_alphabetic() {
+            if !in_word {
+                words += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+        }
+    }
+    cjk + words
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3235,5 +3636,116 @@ mod tests {
             .collect();
         assert!(all_audio.contains("倒吸一口凉气"), "{all_audio}");
         assert!(all_audio.contains("票价"), "{all_audio}");
+    }
+
+    #[test]
+    fn publish_drops_a_line_copied_onto_the_next_row() {
+        let briefs = vec![
+            brief(
+                0,
+                0,
+                "低机位广角,阿福蹲在破洞前偏左,双手端着铁盆,最瘦那只羊后腿一直抖。",
+                Some("山风穿过破洞。阿福:「别抖。我还在。」(克制)话音落,阿福伸手按住它后腿,指节一点点收紧直到发白。低沉弦乐铺底。"),
+            ),
+            brief(
+                1,
+                1,
+                "中近景,阿福把铁盆里最后一口粥倒进石槽,三只羊低头抢食;然后他伸手按住最瘦那只羊的后腿,指节收紧到发白。CUT TO 特写:嘴唇微微抿紧。",
+                Some("铁盆刮过石槽。阿福:「别抖。我还在。」(字尾带气声)同一弦乐铺底,音量稍收。"),
+            ),
+        ];
+        let packed = pack_briefs_for_publish(
+            SEEDANCE,
+            briefs,
+            PackOpts::default(),
+            None,
+            OverBudget::Fold,
+        );
+        let all_audio = packed
+            .iter()
+            .filter_map(|row| row.audio_desc.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            all_audio.matches("别抖").count(),
+            1,
+            "the line is spoken once: {all_audio}"
+        );
+        if packed.len() >= 2 {
+            let first = packed[0].audio_desc.as_deref().unwrap_or("");
+            let later = packed
+                .iter()
+                .skip(1)
+                .filter_map(|row| row.audio_desc.as_deref())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(first.contains("别抖"), "first row keeps the line: {first}");
+            assert!(!later.contains("别抖"), "later row must not re-speak it: {later}");
+            assert!(
+                !first.contains("按住"),
+                "press-leg action belongs on the next visual, not this row's 音效: {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn publish_strips_unquoted_restatement_of_earlier_speech() {
+        let briefs = vec![
+            brief(
+                0,
+                1,
+                "中景:阿福弯腰去捡牧羊棍;然后阿强夺过棍子扔出院子。",
+                Some("阿强:「你还拿它干什么？」 阿强:「羊都没了！」 阿强:「你守着一个破洞守出什么来了？」 阿强:「昨晚叼走四只,今晚呢？」"),
+            ),
+            brief(
+                1,
+                1,
+                "棍子飞出画面,砸在石阶上弹了两下,滚进杂草丛。",
+                Some("阿强:「明晚呢？」 阿强:「等三只全没了,你连个念想都剩不下！」 同一段弦乐持续。 你还拿它干什么？羊都没了！你守着一个破洞守出什么来了？昨晚叼走四只,今晚呢？明晚呢？等三只全没了,你连个念想都剩不下！"),
+            ),
+        ];
+        let packed = pack_briefs_for_publish(
+            SEEDANCE,
+            briefs,
+            PackOpts::default(),
+            None,
+            OverBudget::Fold,
+        );
+        let later = packed
+            .last()
+            .and_then(|row| row.audio_desc.as_deref())
+            .unwrap_or("");
+        assert!(later.contains("明晚呢"), "{later}");
+        assert!(later.contains("念想都剩不下"), "{later}");
+        assert!(
+            !later.contains("你还拿它干什么"),
+            "previous tirade must not leak into 音效: {later}"
+        );
+        assert!(
+            !later.contains("羊都没了"),
+            "previous tirade must not leak into 音效: {later}"
+        );
+    }
+
+    #[test]
+    fn prompt_sanitize_drops_prior_line_from_the_next_clip() {
+        let prior = shot(
+            0,
+            0,
+            "蹲着端盆",
+            Some("山风。阿福:「别抖。我还在。」低沉弦乐铺底。"),
+        );
+        let mut next = shot(
+            1,
+            1,
+            "倒粥按羊",
+            Some("铁盆刮槽。阿福:「别抖。我还在。」同一弦乐铺底。"),
+        );
+        sanitize_shot_prompt_payloads(&mut next, Some(&prior));
+        let audio = next.audio_desc.as_deref().unwrap_or("");
+        assert!(
+            !audio.contains("别抖"),
+            "generation must not re-send the previous line: {audio}"
+        );
     }
 }
