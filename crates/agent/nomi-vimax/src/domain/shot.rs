@@ -144,6 +144,92 @@ impl ShotDescription {
             .iter()
             .any(|beat| beat.cam_idx.is_some_and(|cam| cam != self.cam_idx))
     }
+
+    /// The audio the storyboard wrote for this clip: `audio_desc`, or the packed
+    /// beats' audio when the parent row left it empty.
+    pub fn audio_source(&self) -> String {
+        let top = self.audio_desc.as_deref().unwrap_or("").trim();
+        if !top.is_empty() {
+            return top.to_string();
+        }
+        let mut parts = Vec::new();
+        for beat in &self.beats {
+            if let Some(a) = beat
+                .audio_desc
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                parts.push(a);
+            }
+        }
+        parts.join(" ")
+    }
+
+    /// Does this clip carry a spoken line, not only SFX / BGM? A clip without one
+    /// is the only kind whose held final frame may be trimmed at concat.
+    pub fn has_spoken_dialogue(&self) -> bool {
+        crate::planning::text_looks_like_dialogue(&self.audio_source())
+            || crate::planning::text_looks_like_dialogue(&self.motion_desc)
+            || crate::planning::text_looks_like_dialogue(&self.visual_desc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shot(motion: &str, audio: Option<&str>) -> ShotDescription {
+        ShotDescription {
+            idx: 0,
+            is_last: false,
+            cam_idx: 0,
+            visual_desc: String::new(),
+            variation_type: "small".into(),
+            variation_reason: String::new(),
+            ff_desc: String::new(),
+            ff_vis_char_idxs: Vec::new(),
+            lf_desc: String::new(),
+            lf_vis_char_idxs: Vec::new(),
+            motion_desc: motion.into(),
+            audio_desc: audio.map(str::to_string),
+            location_id: String::new(),
+            beats: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_silent_action_clip_has_no_spoken_dialogue() {
+        let silent = shot("她转身。她抬头", Some("环境音：风声，BGM 低沉"));
+        assert!(!silent.has_spoken_dialogue());
+    }
+
+    #[test]
+    fn a_named_line_in_audio_is_spoken() {
+        let spoken = shot("她转身", Some("林晚：「今晚别等我。」"));
+        assert!(spoken.has_spoken_dialogue());
+    }
+
+    /// A packed clip's dialogue lives on its beats when the parent row left
+    /// `audio_desc` empty; it must still count as spoken.
+    #[test]
+    fn a_line_carried_by_a_packed_beat_is_spoken() {
+        let mut packed = shot("她转身", None);
+        packed.beats = vec![
+            ShotBeat {
+                motion_desc: "她转身".into(),
+                audio_desc: None,
+                cam_idx: Some(0),
+            },
+            ShotBeat {
+                motion_desc: "她开口".into(),
+                audio_desc: Some("林晚：「你来了。」".into()),
+                cam_idx: Some(0),
+            },
+        ];
+        assert_eq!(packed.audio_source(), "林晚：「你来了。」");
+        assert!(packed.has_spoken_dialogue());
+    }
 }
 
 /// True when both sides name a location and they are not the same place.

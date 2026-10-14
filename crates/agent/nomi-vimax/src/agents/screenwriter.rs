@@ -8,6 +8,7 @@ use crate::clip_bounds::ClipBounds;
 use crate::drama::{DramaEngine, lint_drama_engine};
 use crate::error::{VimaxError, VimaxResult};
 use crate::json_util::{LLM_JSON_PARSE_ATTEMPTS, complete_and_parse_llm_json, parse_llm_json};
+use crate::planning::{SILENT_ACTION_SECS, SILENT_PACK_CAP_SECS};
 
 use super::formats::{DRAMA_ENGINE, SCRIPT_SCENES};
 
@@ -97,7 +98,9 @@ impl Screenwriter {
             "../../prompts/screenwriter__system_prompt_template_write_script_based_on_story.txt"
         )
         .replace("{format_instructions}", SCRIPT_SCENES)
-        .replace("{clip_max_secs}", &self.clip.max_secs().to_string());
+        .replace("{clip_max_secs}", &self.clip.max_secs().to_string())
+        .replace("{silent_action_secs}", &SILENT_ACTION_SECS.to_string())
+        .replace("{silent_pack_cap_secs}", &SILENT_PACK_CAP_SECS.to_string());
         // Prompt file may not have format_instructions — inject into system if absent.
         let system = if system.contains("{format_instructions}") {
             system

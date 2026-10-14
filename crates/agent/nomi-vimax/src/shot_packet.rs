@@ -300,6 +300,20 @@ pub struct ShotPacketPatch {
     pub layout: Option<ShotGraphLayout>,
 }
 
+impl ShotPacketPatch {
+    /// Canvas layout save only (node positions / viewport). Layout never changes
+    /// what the video model receives, so it stays editable while a render runs.
+    pub fn is_layout_only(&self) -> bool {
+        self.layout.is_some()
+            && self.visual_desc.is_none()
+            && self.audio_desc.is_none()
+            && self.beats.is_none()
+            && self.duration_secs.is_none()
+            && self.prompt_override.is_none()
+            && matches!(self.recompile, None | Some(false))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PacketPatchOutcome {
     pub script_changed: bool,
@@ -1622,6 +1636,28 @@ mod tests {
             .unwrap();
         let loaded = load_packet(&scene, 1).await.unwrap().unwrap();
         assert_eq!(loaded.visual_desc, "kept");
+    }
+
+    #[test]
+    fn layout_only_patch_is_detected_for_lock_exemption() {
+        let layout = ShotGraphLayout::default();
+        assert!(ShotPacketPatch {
+            layout: Some(layout.clone()),
+            recompile: Some(false),
+            ..Default::default()
+        }
+        .is_layout_only());
+        assert!(!ShotPacketPatch {
+            layout: Some(layout.clone()),
+            visual_desc: Some("new".into()),
+            ..Default::default()
+        }
+        .is_layout_only());
+        assert!(!ShotPacketPatch {
+            prompt_override: Some(Some("x".into())),
+            ..Default::default()
+        }
+        .is_layout_only());
     }
 
     #[test]

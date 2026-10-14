@@ -1195,6 +1195,24 @@ pub const SPLICE_HEAD_TRIM_SECS: f64 = 0.25;
 /// beat, so the overlap is kept rather than gutting the shot.
 const MIN_TRIMMABLE_CLIP_SECS: f64 = 1.5;
 
+/// A held final frame shorter than this is not dead screen time, so it stays.
+/// Also the freeze detector's minimum duration: a shorter hold is never reported.
+pub const STATIC_TAIL_MIN_HOLD_SECS: f64 = 1.0;
+
+/// Seconds of the held pose kept after the motion stops. The cut lands on a
+/// settled frame instead of mid-motion, and the next shot's first frame matches it.
+pub const STATIC_TAIL_KEEP_SECS: f64 = 0.5;
+
+/// Frames closer than this (dB) count as the same still picture. Generated I2V
+/// holds carry encoder noise, so the threshold sits above it and below any motion.
+const STATIC_TAIL_NOISE_DB: &str = "-50dB";
+
+/// A remnant shorter than this is not a shot: a tail trim never leaves less.
+const MIN_STATIC_TAIL_KEEP_SECS: f64 = 2.0;
+
+/// A freeze that ends within this of the clip's end is a hold running to the last frame.
+const FREEZE_EDGE_TOLERANCE_SECS: f64 = 0.2;
+
 /// How a clip meets the clip before it on the timeline.
 ///
 /// Two independent things happen at a seam, and the variants below are exactly
@@ -1252,11 +1270,24 @@ impl SpliceSeam {
 pub struct ConcatClip<'a> {
     pub path: &'a Path,
     pub seam: SpliceSeam,
+    /// Cut a held final frame off this clip. Only for a clip with no spoken line:
+    /// a frozen picture is dead time, while speech must finish on its own.
+    pub static_tail_trim: bool,
 }
 
 impl<'a> ConcatClip<'a> {
     pub fn new(path: &'a Path, seam: SpliceSeam) -> Self {
-        Self { path, seam }
+        Self {
+            path,
+            seam,
+            static_tail_trim: false,
+        }
+    }
+
+    /// Opt this clip into trimming its held final frame (see [`Self::static_tail_trim`]).
+    pub fn with_static_tail_trim(mut self) -> Self {
+        self.static_tail_trim = true;
+        self
     }
 
     /// A clip that shares nothing with its predecessor.
@@ -1327,6 +1358,8 @@ struct ClipEdit {
     head_trim: f64,
     fade_in: f64,
     fade_out: f64,
+    /// Whether a held final frame may be cut (decided per clip by the caller).
+    static_tail_trim: bool,
 }
 
 impl ClipEdit {
@@ -1336,6 +1369,7 @@ impl ClipEdit {
         head_trim: 0.0,
         fade_in: CONCAT_AUDIO_EDGE_FADE_SECS,
         fade_out: CONCAT_AUDIO_EDGE_FADE_SECS,
+        static_tail_trim: false,
     };
 
     /// Derive each clip's edit from the seams around it.
@@ -1363,6 +1397,7 @@ impl ClipEdit {
                     },
                     fade_in: fade(clip.seam),
                     fade_out: fade(next_seam),
+                    static_tail_trim: clip.static_tail_trim,
                 }
             })
             .collect()
@@ -1376,6 +1411,65 @@ impl ClipEdit {
             self.head_trim
         }
     }
+}
+
+/// Seconds of a clip to keep when its last moments are a held still frame, or
+/// `None` when the clip ends in motion, the hold is too short to be dead time,
+/// or trimming would leave a remnant too short to be a shot.
+async fn static_tail_keep_secs(ffmpeg: &Path, input: &Path, source_dur: f64) -> Option<f64> {
+    if source_dur < MIN_STATIC_TAIL_KEEP_SECS + STATIC_TAIL_MIN_HOLD_SECS {
+        return None;
+    }
+    let args: Vec<String> = [
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        input.to_str()?,
+        "-map",
+        "0:v:0",
+        "-vf",
+        &format!("freezedetect=n={STATIC_TAIL_NOISE_DB}:d={STATIC_TAIL_MIN_HOLD_SECS}"),
+        "-f",
+        "null",
+        "-",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let (_, stderr) = run_ffmpeg_owned_capture(ffmpeg, &args).await.ok()?;
+    let hold_start = trailing_freeze_start(&stderr, source_dur)?;
+    let keep = (hold_start + STATIC_TAIL_KEEP_SECS).min(source_dur);
+    let worth_cutting = source_dur - keep >= STATIC_TAIL_KEEP_SECS;
+    (worth_cutting && keep >= MIN_STATIC_TAIL_KEEP_SECS).then_some(keep)
+}
+
+/// Start time of a freeze that runs to the end of the clip, from `freezedetect`
+/// log lines. A hold is open until `freeze_end`; a hold with no end, or one whose
+/// end falls on the last frame, is the tail.
+fn trailing_freeze_start(log: &str, source_dur: f64) -> Option<f64> {
+    let mut start: Option<f64> = None;
+    let mut end: Option<f64> = None;
+    for line in log.lines() {
+        if let Some(t) = freezedetect_time(line, "freeze_start") {
+            start = Some(t);
+            end = None;
+        } else if let Some(t) = freezedetect_time(line, "freeze_end") {
+            end = Some(t);
+        }
+    }
+    let start = start?;
+    match end {
+        None => Some(start),
+        Some(t) if t >= source_dur - FREEZE_EDGE_TOLERANCE_SECS => Some(start),
+        Some(_) => None,
+    }
+}
+
+/// `lavfi.freezedetect.<key>: <seconds>` → seconds.
+fn freezedetect_time(line: &str, key: &str) -> Option<f64> {
+    let marker = format!("lavfi.freezedetect.{key}: ");
+    let rest = line.split(&marker).nth(1)?;
+    rest.split_whitespace().next()?.parse().ok()
 }
 
 /// Build the per-clip audio filter used before concat.
@@ -1432,7 +1526,21 @@ async fn normalize_clip_for_concat(
     }
     let source_dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
     let head_trim = edit.affordable_head_trim(source_dur);
-    let dur = (source_dur - head_trim).max(0.0);
+    let keep_secs = if edit.static_tail_trim {
+        static_tail_keep_secs(ffmpeg, input, source_dur).await
+    } else {
+        None
+    };
+    let tail_trim = keep_secs.map_or(0.0, |keep| (source_dur - keep).max(0.0));
+    if tail_trim > 0.0 {
+        tracing::debug!(
+            clip = %input.display(),
+            tail_trim,
+            source_dur,
+            "trimming held final frame from clip tail"
+        );
+    }
+    let dur = (source_dur - head_trim - tail_trim).max(0.0);
     if head_trim > 0.0 {
         tracing::debug!(
             clip = %input.display(),
@@ -2597,10 +2705,171 @@ mod tests {
             head_trim: SPLICE_HEAD_TRIM_SECS,
             fade_in: CONCAT_AUDIO_SEAM_FADE_SECS,
             fade_out: CONCAT_AUDIO_SEAM_FADE_SECS,
+            static_tail_trim: false,
         };
         assert_eq!(edit.affordable_head_trim(5.0), SPLICE_HEAD_TRIM_SECS);
         assert_eq!(edit.affordable_head_trim(1.0), 0.0);
         assert_eq!(ClipEdit::CUT.affordable_head_trim(5.0), 0.0);
+    }
+
+    fn freeze_line(key: &str, t: f64) -> String {
+        format!("[freezedetect @ 0x55d0] lavfi.freezedetect.{key}: {t}\n")
+    }
+
+    #[test]
+    fn a_hold_still_open_at_the_end_is_the_tail() {
+        let log = freeze_line("freeze_start", 2.04);
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(2.04));
+    }
+
+    #[test]
+    fn a_hold_ending_on_the_last_frame_is_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 3.0),
+            freeze_line("freeze_end", 4.98),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(3.0));
+    }
+
+    #[test]
+    fn a_hold_that_motion_resumes_from_is_not_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 1.0),
+            freeze_line("freeze_end", 2.5),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), None);
+    }
+
+    #[test]
+    fn only_the_last_unresumed_hold_counts_as_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 1.0),
+            freeze_line("freeze_end", 2.0),
+            freeze_line("freeze_start", 3.5),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(3.5));
+    }
+
+    #[test]
+    fn a_clip_without_any_hold_has_no_tail() {
+        assert_eq!(trailing_freeze_start("", 5.0), None);
+    }
+
+    /// Changing picture for `motion_secs`, then one still frame for `hold_secs`
+    /// (none when zero): the shape of a silent I2V shot whose model held its pose.
+    async fn motion_then_hold(ffmpeg: &Path, path: &Path, motion_secs: f64, hold_secs: f64) {
+        let motion = format!("testsrc2=size=320x240:rate=24:duration={motion_secs}");
+        let hold = format!("color=c=gray:s=320x240:r=24:d={hold_secs}");
+        let out = path.to_str().unwrap();
+        let status = if hold_secs > 0.0 {
+            run_ffmpeg(
+                ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    motion.as_str(),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    hold.as_str(),
+                    "-filter_complex",
+                    "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                    "-map",
+                    "[v]",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    out,
+                ],
+            )
+            .await
+        } else {
+            run_ffmpeg(
+                ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    motion.as_str(),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    out,
+                ],
+            )
+            .await
+        };
+        assert!(status.unwrap().success(), "test clip generation failed");
+    }
+
+    #[tokio::test]
+    async fn a_held_final_frame_is_found_and_cut_to_a_short_keep() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("held.mp4");
+        motion_then_hold(&ffmpeg, &clip, 2.0, 3.0).await;
+
+        let keep = static_tail_keep_secs(&ffmpeg, &clip, 5.0)
+            .await
+            .expect("a 3s still frame is dead time");
+        // Motion stops at 2s; the cut keeps STATIC_TAIL_KEEP_SECS of the pose.
+        assert!(
+            (keep - (2.0 + STATIC_TAIL_KEEP_SECS)).abs() < 0.3,
+            "kept {keep}s"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clip_still_in_motion_keeps_its_full_length() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("moving.mp4");
+        motion_then_hold(&ffmpeg, &clip, 4.0, 0.0).await;
+
+        assert_eq!(static_tail_keep_secs(&ffmpeg, &clip, 4.0).await, None);
+    }
+
+    /// The seam a silent shot ends on: concat cuts its held frame, so the film
+    /// runs on from the pose instead of standing still for the rest of the clip.
+    #[tokio::test]
+    async fn concat_cuts_the_held_tail_of_a_marked_silent_clip() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.mp4");
+        let held = dir.path().join("held.mp4");
+        let out = dir.path().join("film.mp4");
+        motion_then_hold(&ffmpeg, &first, 3.0, 0.0).await;
+        motion_then_hold(&ffmpeg, &held, 2.0, 3.0).await;
+
+        let seq = [
+            ConcatClip::cut(&first),
+            ConcatClip::cut(&held).with_static_tail_trim(),
+        ];
+        concat_videos(&seq, &out).await.unwrap();
+
+        let secs = probe_media_duration_secs(&out).await.unwrap();
+        // 3s + (2s of motion + the kept hold), not 3s + the full 5s clip.
+        assert!(
+            (secs - (3.0 + 2.0 + STATIC_TAIL_KEEP_SECS)).abs() < 0.4,
+            "film is {secs}s"
+        );
     }
 
     /// A camera change is a real cut: the prompt tells the model not to replay

@@ -74,8 +74,8 @@ impl ClipBounds {
             max_secs,
             preferred_min_secs,
             preferred_max_secs,
-            // Guess made before content exists: pack toward a 12s drama beat
-            // so leftover seconds become longer clips, not extra splices.
+            // Prompt guidance only: a spoken line with its reaction typically runs
+            // this long. Each clip's real length comes from its content.
             typical_beat_secs: clamp_u32(
                 Self::DRAMA_BEAT_SECS,
                 preferred_min_secs,
