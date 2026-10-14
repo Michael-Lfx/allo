@@ -1348,6 +1348,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
         if let Some(p) = &packet {
             apply_packet_to_shot(&mut shot_owned, p);
         }
+        super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prev);
         let shot = &shot_owned;
         let duration_secs = packet
             .as_ref()
@@ -1824,6 +1825,12 @@ pub(crate) async fn refresh_shot_packet(
 
     let mut shot_owned = shot.clone();
     apply_packet_to_shot(&mut shot_owned, &packet);
+    let prior = if shot.idx > 0 {
+        load_shot_for_packet(scene_dir, shot.idx - 1).await.ok()
+    } else {
+        None
+    };
+    super::clip_beats::sanitize_shot_prompt_payloads(&mut shot_owned, prior.as_ref());
     let continuity = if continuity_unbound(&packet) {
         None
     } else {
@@ -2988,6 +2995,7 @@ fn render_lens_audio(
     } else {
         split_dialogue_and_sfx(&mined)
     };
+    let sfx = super::clip_beats::strip_sfx_restating_line(&line, &sfx);
     let line = crate::dialogue::rewrite_spoken_payloads(&trim_audio_brackets(&line));
     let (line, peeled_sfx) = super::clip_beats::peel_trailing_stage_sfx(&line);
     let mut sfx = trim_audio_brackets(&sfx);

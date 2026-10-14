@@ -1321,7 +1321,7 @@ row opens on that exit unless the story changes it.\n\
 row's exit framing — open exactly where this row ended and move on from there. Keep each named \
 person on the SAME screen side (left/right).\n\
            * NEW opening cam_idx = A CUT into the next *row*: do NOT replay or re-describe this \
-row's ending pose. Open on the next action already in progress from the new angle. Keep the \
+row's ending pose, and do NOT copy this row's 「」 line into the next audio_desc. Open on the next action already in progress from the new angle. Keep the \
 180-degree axis: who is screen-left vs screen-right MUST match the previous row unless THIS row \
 explicitly writes 反打 / 过肩 / reverse as an in-file CUT TO. Flipping left/right across a file \
 splice looks like a teleport.\n\
