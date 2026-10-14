@@ -267,6 +267,22 @@ categories AFTER  a list:  items=15 marketplace_tags=11
 
 > 这两个问题都是「先做真机读数、再回看断言」抓出来的：单测（构造 `CategoryDictionary` 后显式塞 root）永远走不到冷启动那条路径。
 
+#### 6.4.2 生产路径（zip 市场）读数
+
+上面的探针用的是 `directory` 市场（读源码树），而**线上三个市场都是 zip 归档**，市场根是解压出来的 `live` 根——不同代码路径。因此补测一次官方源：
+
+```text
+market/add kind=zip source=…/skills.zip        ← 真实下载 + 解压
+store/categories (cold，此前没有 store/list): items=15 marketplace_tags=11
+  tag: OPC·一人公司 / OPC · Solo Business
+  tag: 生活服务 / Lifestyle Services
+  tag: 开发工具 / Development Tools
+store/list: items=262 with_tags=262 kind=["skill"]
+  sample: 腾讯文档 => [{"en":"Collaboration","zh":"办公协同"}]
+```
+
+三点结论：**zip 路径下字典与标签都能读到**（`live` 根上的 `.codebuddy-skill/marketplace.json` 与行内 tags 都按预期生效）；**顺序修复在生产路径上同样成立**（冷启动即 11 项）；技能标签在真实归档上 262/262 全覆盖。
+
 ### 6.5 剩余事项
 
 1. **不需要发布归档**（§6.3 ③ 的决定）：线上 `experts.zip` 与 `content/market-hosts.json` 保持一致，客户端行为不变。
