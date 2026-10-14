@@ -991,7 +991,7 @@ impl Script2VideoPipeline {
                 "video_clip_start",
                 &format!("串行生成镜头视频（{}/{}）· 镜头 {}", i + 1, total, shot.idx),
                 pct,
-                serde_json::json!({ "shot_idx": shot.idx }),
+                shot_clip_start_meta(&self.working_dir, shot.idx),
             );
 
             // Timeline-adjacent continuity: previous shot (or prior scene tail) ending still.
@@ -1485,7 +1485,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 use_voice_audio_ref,
                 ref_names.join(", ")
             ),
-            serde_json::json!({ "shot_idx": shot.idx }),
+            shot_clip_start_meta(&self.working_dir, shot.idx),
         );
         tracing::info!(
             shot = shot.idx,
@@ -1524,7 +1524,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                 // wording, so fail fast if the text is still blocked.
                 let strict_prompt =
                     crate::prompt_safety::sanitize_video_prompt_strict(&prompt);
-                emit(
+                emit_meta(
                     progress,
                     "video_clip_start",
                     &format!(
@@ -1532,6 +1532,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         shot.idx,
                         truncate_err(&err, 100)
                     ),
+                    shot_clip_start_meta(&self.working_dir, shot.idx),
                 );
                 match self
                     .backends
@@ -1601,7 +1602,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                             .to_string()
                     })
                     .collect();
-                emit(
+                emit_meta(
                     progress,
                     "video_clip_start",
                     &format!(
@@ -1610,6 +1611,7 @@ so video_last_frame.png is unavailable. Fix/regenerate shot {} first.",
                         if targeted { "定位" } else { "主体图扫描" },
                         labels.join(", ")
                     ),
+                    shot_clip_start_meta(&self.working_dir, shot.idx),
                 );
 
                 let mut any_rewrite = false;
@@ -1889,6 +1891,16 @@ pub(crate) async fn refresh_shot_packet(
         save_packet(scene_dir, &packet).await?;
     }
     Ok(packet)
+}
+
+/// `video_clip_start` meta: the shot index plus the scene it renders in. The
+/// service freezes exactly this shot's packet while its request is in flight.
+fn shot_clip_start_meta(working_dir: &Path, shot_idx: i32) -> serde_json::Value {
+    let session_root = resolve_session_root(working_dir);
+    serde_json::json!({
+        "shot_idx": shot_idx,
+        "scene_root": shot_packet::scene_root_rel(&session_root, working_dir),
+    })
 }
 
 /// Disk-only refresh for GET packet (no in-flight continuity argument).
@@ -3380,9 +3392,7 @@ pub(crate) fn shot_video_ref_pairs(
 
     let world_query = shot_world_query(shot);
     if keep_env {
-        if let Some(env) =
-            resolve_environment_plate(&shot.location_id, &world_query, world_pairs)
-        {
+        if let Some(env) = resolve_environment_plate(&shot.location_id, world_pairs) {
             pairs.push(env);
         }
     }

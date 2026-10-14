@@ -55,7 +55,10 @@ export type ShotInfiniteCanvasProps = {
   onViewportChange: (viewport: ViewportTransform) => void;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
+  /** Content is read-only (links, uploads, deletes). */
   readOnly: boolean;
+  /** Node positions are read-only. Independent from `readOnly`: moving a node never changes the video. */
+  layoutLocked?: boolean;
   generating: boolean;
   overlay?: React.ReactNode;
   expanded?: boolean;
@@ -115,6 +118,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   selectedNodeId,
   onSelectNode,
   readOnly,
+  layoutLocked = false,
   generating,
   overlay,
   expanded = false,
@@ -360,7 +364,8 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     onSelectNode(nodeId);
     setSelectedConnectionId(null);
     setMenu(null);
-    if (readOnly || node.metadata?.locked) return;
+    // Dragging only moves the node on the board; it is gated by layout, not content.
+    if (layoutLocked || node.metadata?.locked) return;
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest('button, input, textarea, select, label, [data-canvas-no-zoom], .canvas-node-resize')) return;
     dragRef.current = {

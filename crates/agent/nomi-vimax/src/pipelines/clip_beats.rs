@@ -671,6 +671,59 @@ pub(crate) fn split_visual_on_cuts(visual: &str) -> Vec<String> {
     }
 }
 
+const ACTION_SENTENCE_MARKS: &[char] = &['。', '；', ';', '\n'];
+const ACTION_CLAUSE_MARKS: &[char] = &['，', ','];
+/// Shorter fragments join their neighbour instead of becoming a clip of their own.
+const ACTION_MIN_FRAGMENT_CHARS: usize = 4;
+
+/// Action parts of a visual without an in-file CUT: sentence marks first, then
+/// clause marks. Parts keep their own punctuation, so joining them restores the
+/// visual exactly. Returns one part when the visual has no usable mark.
+fn split_visual_on_actions(visual: &str) -> Vec<String> {
+    let sentences = split_keeping_marks(visual, ACTION_SENTENCE_MARKS);
+    if sentences.len() >= 2 {
+        return sentences;
+    }
+    let all_marks: Vec<char> = ACTION_SENTENCE_MARKS
+        .iter()
+        .chain(ACTION_CLAUSE_MARKS)
+        .copied()
+        .collect();
+    let clauses = split_keeping_marks(visual, &all_marks);
+    if clauses.len() >= 2 {
+        clauses
+    } else {
+        vec![visual.trim().to_string()]
+    }
+}
+
+fn split_keeping_marks(text: &str, marks: &[char]) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.trim().chars() {
+        current.push(ch);
+        if marks.contains(&ch) {
+            push_action_fragment(&mut parts, &current);
+            current.clear();
+        }
+    }
+    push_action_fragment(&mut parts, &current);
+    parts
+}
+
+fn push_action_fragment(parts: &mut Vec<String>, fragment: &str) {
+    let trimmed = fragment.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    match parts.last_mut() {
+        Some(last) if trimmed.chars().count() < ACTION_MIN_FRAGMENT_CHARS => {
+            last.push_str(trimmed);
+        }
+        _ => parts.push(trimmed.to_string()),
+    }
+}
+
 /// Move stage-direction / BGM prose that sits after the last spoken quote
 /// out of the dialogue span so it is not vocalized.
 pub(crate) fn peel_trailing_stage_sfx(raw: &str) -> (String, String) {
@@ -947,15 +1000,75 @@ fn bind_audio_to_lenses(lenses: &mut [PromptLens], parent_audio: Option<&str>) {
     ensure_quotes_survive(lenses, parent);
 }
 
+/// Content-overrun split: the row's spoken turns go to its action parts in
+/// order, so each line sits with the action it follows. First-mention binding
+/// would park every line on the first part and make that part overrun again. A
+/// single line goes to the last part, after the actions that lead into it.
+/// Returns `false` (nothing assigned) when there is no spoken line to spread.
+fn spread_turns_over_parts(
+    lenses: &mut [PromptLens],
+    audio: &str,
+    bounds: ClipBounds,
+) -> bool {
+    let (turns, trailing) = parse_spoken_turns(audio);
+    let turns = split_overlong_single_turn(bounds, turns);
+    let parts = lenses.len();
+    let count = turns.len();
+    if count == 0 || parts < 2 {
+        return false;
+    }
+    let mut buckets: Vec<Vec<String>> = vec![Vec::new(); parts];
+    for (k, turn) in turns.iter().enumerate() {
+        let idx = if count == 1 {
+            parts - 1
+        } else {
+            (k * parts / count).min(parts - 1)
+        };
+        buckets[idx].push(turn.text.clone());
+    }
+    for (lens, bucket) in lenses.iter_mut().zip(buckets) {
+        if !bucket.is_empty() {
+            lens.audio = Some(bucket.join(" "));
+        }
+    }
+    if !trailing.is_empty() {
+        let dest = lenses.last_mut().expect("parts checked");
+        match &mut dest.audio {
+            Some(a) => {
+                a.push(' ');
+                a.push_str(&trailing);
+            }
+            None => dest.audio = Some(trailing),
+        }
+    }
+    ensure_quotes_survive(lenses, audio);
+    true
+}
+
 fn brief_overflows(bounds: ClipBounds, brief: &ShotBriefDescription, max_speakers: usize) -> bool {
     let blob = brief_audio_blob(brief);
     if max_speakers > 0 && named_dialogue_speakers(&blob).len() > max_speakers {
         return true;
     }
     crate::planning::unclamped_speech_need_secs(Some(&blob)) > bounds.max_secs()
+        || brief_content_overflows(bounds, brief)
 }
 
-fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
+/// Visual + speech content of one row runs past a single model clip. Speech-only
+/// checks miss action-heavy rows, and the renderer would then cut them at the
+/// window edge (the tail of the row is never filmed).
+fn brief_content_overflows(bounds: ClipBounds, brief: &ShotBriefDescription) -> bool {
+    brief_content_secs(brief) > bounds.max_secs()
+}
+
+/// `split_actions`: the row overruns the clip window on action content, so its
+/// visual is split into parts (CUT TO, then sentence / clause marks) and the
+/// spoken lines are spread over those parts in order.
+fn explode_brief(
+    brief: &ShotBriefDescription,
+    bounds: ClipBounds,
+    split_actions: bool,
+) -> Vec<ShotBriefBeat> {
     if brief.beats.len() >= 2 {
         let mut lenses = Vec::new();
         let mut cams = Vec::new();
@@ -987,7 +1100,10 @@ fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
     } else {
         brief.visual_desc.clone()
     };
-    let parts = split_visual_on_cuts(&visual);
+    let mut parts = split_visual_on_cuts(&visual);
+    if split_actions && parts.len() < 2 {
+        parts = split_visual_on_actions(&visual);
+    }
     if parts.is_empty() {
         return vec![ShotBriefBeat {
             visual_desc: visual,
@@ -1005,7 +1121,11 @@ fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
             secs_hint: None,
         })
         .collect();
-    bind_audio_to_lenses(&mut lenses, brief.audio_desc.as_deref());
+    let spread = split_actions
+        && spread_turns_over_parts(&mut lenses, brief.audio_desc.as_deref().unwrap_or(""), bounds);
+    if !spread {
+        bind_audio_to_lenses(&mut lenses, brief.audio_desc.as_deref());
+    }
     lenses
         .into_iter()
         .map(|lens| ShotBriefBeat {
@@ -1083,6 +1203,58 @@ fn brief_from_atoms(
     }
 }
 
+/// One line that alone overruns the window is cut at its sentence ends. Each
+/// piece keeps the speaker and the quote marks, so the voice binding and the
+/// speech pricing still see a normal line. Without this, a single long quote
+/// (no second speaker to split on) is truncated at the window edge.
+fn split_overlong_single_turn(bounds: ClipBounds, turns: Vec<SpokenTurn>) -> Vec<SpokenTurn> {
+    if turns.len() == 1
+        && crate::planning::unclamped_speech_need_secs(Some(&turns[0].text)) > bounds.max_secs()
+    {
+        return split_turn_at_sentences(&turns[0]);
+    }
+    turns
+}
+
+fn split_turn_at_sentences(turn: &SpokenTurn) -> Vec<SpokenTurn> {
+    const SPEECH_SENTENCE_MARKS: &[char] = &['。', '！', '？', '!', '?'];
+    let whole = || {
+        vec![SpokenTurn {
+            speaker: turn.speaker.clone(),
+            text: turn.text.clone(),
+        }]
+    };
+    let text = turn.text.as_str();
+    let Some((open_at, open)) = text
+        .char_indices()
+        .find(|(_, c)| matches!(c, '「' | '“' | '"' | '{'))
+    else {
+        return whole();
+    };
+    let close = match open {
+        '「' => '」',
+        '“' => '”',
+        '{' => '}',
+        _ => '"',
+    };
+    let body_start = open_at + open.len_utf8();
+    let Some(close_at) = text.rfind(close).filter(|at| *at >= body_start) else {
+        return whole();
+    };
+    let prefix = &text[..body_start];
+    let pieces = split_keeping_marks(&text[body_start..close_at], SPEECH_SENTENCE_MARKS);
+    if pieces.len() < 2 {
+        return whole();
+    }
+    pieces
+        .into_iter()
+        .map(|piece| SpokenTurn {
+            speaker: turn.speaker.clone(),
+            text: format!("{prefix}{piece}{close}"),
+        })
+        .collect()
+}
+
 fn split_turns_sharing_visual(
     bounds: ClipBounds,
     template: &ShotBriefDescription,
@@ -1091,6 +1263,7 @@ fn split_turns_sharing_visual(
     max_speakers: usize,
 ) -> Vec<ShotBriefDescription> {
     let (turns, trailing) = parse_spoken_turns(audio);
+    let turns = split_overlong_single_turn(bounds, turns);
     if turns.len() < 2 {
         return vec![brief_with_visual_audio(template, visual, audio)];
     }
@@ -1108,10 +1281,14 @@ fn split_turns_sharing_visual(
             .map(|t| t.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let speech = crate::planning::unclamped_speech_need_secs(Some(&trial_audio));
+        // Every group shares this visual, so judge the whole clip (speech plus
+        // action preamble), not the speech alone.
         let overflow_speakers = max_speakers > 0 && trial.len() > max_speakers;
-        let overflow_speech = speech > bounds.max_secs();
-        if !current.is_empty() && (overflow_speakers || overflow_speech) {
+        let overflow_content = brief_content_overflows(
+            bounds,
+            &brief_with_visual_audio(template, visual, &trial_audio),
+        );
+        if !current.is_empty() && (overflow_speakers || overflow_content) {
             groups.push(std::mem::take(&mut current));
             names.clear();
         }
@@ -1176,7 +1353,8 @@ fn split_overflow_briefs(
             out.push(brief);
             continue;
         }
-        let atoms = explode_brief(&brief);
+        let content_overrun = brief_content_overflows(bounds, &brief);
+        let atoms = explode_brief(&brief, bounds, content_overrun);
         if atoms.len() <= 1 {
             push_split_atoms(&mut out, bounds, &brief, atoms, max_speakers);
             continue;
@@ -2087,6 +2265,64 @@ mod tests {
         }
     }
 
+    /// Real row from a shipped project (scene 1, row 3): speech alone fits the
+    /// window, but the action preamble before the lines pushes the row past it.
+    /// The old packer kept it whole and the renderer cut the tail (lines lost).
+    #[test]
+    fn content_overrun_row_splits_and_keeps_every_spoken_line() {
+        let row = brief(
+            3,
+            2,
+            "近景。<阿慢>低头从腰间旧麻绳挂着的土黄色布袋里掏出一沓钱,手臂抬起,重重拍在木桌上,钱沓边缘散开。他抬起眼,目光直直看向画面右侧的<白兔>。CUT TO 过肩镜头:从<阿慢>肩后看<白兔>——她右手猛地攥住胸前的哨子,指节泛白,胸口剧烈起伏,琥珀色眼睛死死盯着<阿慢>。",
+            Some("阿慢:「跑,游泳,负重爬坡。」钱沓拍桌的重响。阿慢:「这是我全部奖金。我押我自己赢。」阿慢:「输家交出所有奖金,和参赛资格。」哨子被攥紧的细绳摩擦声。持续低音弦乐motif延续,弦乐微微收紧,音量低。"),
+        );
+        assert!(
+            brief_content_secs(&row) > SEEDANCE.max_secs(),
+            "fixture must overrun the model window"
+        );
+        let packed = pack_scene_briefs(SEEDANCE, vec![row]);
+        assert!(packed.len() >= 2, "overrun row must be split: {packed:#?}");
+        for clip in &packed {
+            assert!(
+                brief_content_secs(clip) <= SEEDANCE.max_secs(),
+                "clip still overruns the window: {clip:#?}"
+            );
+        }
+        for line in ["跑,游泳,负重爬坡", "这是我全部奖金", "输家交出所有奖金,和参赛资格"] {
+            assert!(
+                packed
+                    .iter()
+                    .any(|clip| clip.audio_desc.as_deref().unwrap_or("").contains(line)),
+                "spoken line lost: {line}"
+            );
+        }
+    }
+
+    /// Real row (scene 1, row 1): one speaker, one long line. No second speaker
+    /// exists to split on, so the line is cut at its sentence ends.
+    #[test]
+    fn single_overlong_line_is_cut_at_sentence_ends_without_losing_text() {
+        let row = brief(
+            1,
+            1,
+            "中景,稍仰角。<阿慢>站在木桌后,双手将泛黄的纸展开举过头顶,纸面折痕深白、边缘卷曲;他下颌微抬,字字清晰地开口。",
+            Some("阿慢:「森林运动会规则,第七章第三条......卫冕冠军须接受任一选手的赛制挑战。挑战书已递交组委会。赛制改为铁人三项。」"),
+        );
+        let packed = pack_scene_briefs(SEEDANCE, vec![row]);
+        assert!(packed.len() >= 2, "overlong single line must be cut: {packed:#?}");
+        let audio = packed
+            .iter()
+            .filter_map(|clip| clip.audio_desc.as_deref())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for sentence in ["卫冕冠军须接受任一选手的赛制挑战", "挑战书已递交组委会", "赛制改为铁人三项"] {
+            assert!(audio.contains(sentence), "lost sentence: {sentence}");
+        }
+        for clip in &packed {
+            assert!(brief_content_secs(clip) <= SEEDANCE.max_secs(), "{clip:#?}");
+        }
+    }
+
     #[test]
     fn shots_from_briefs_copy_visual_audio_and_packed_beats() {
         let mut packed = brief(2, 0, "她走近窗边", Some("雨声"));
@@ -2192,7 +2428,7 @@ mod tests {
     #[test]
     fn a_camera_change_that_would_overflow_stays_split() {
         // 17 CJK → ~8s speech floor each; 16s > 15s ceiling.
-        let line: String = "中".chars().cycle().take(17).collect();
+        let line = format!("她：「{}」", "中".repeat(17));
         let shots = vec![
             shot(0, 0, "she speaks", Some(&line)),
             shot(1, 1, "he answers", Some(&line)),
@@ -2236,7 +2472,7 @@ mod tests {
     fn a_narrow_model_window_merges_no_spoken_beats() {
         // min == max == 5s: each spoken beat is 8s, so no two can share a clip.
         let narrow = ClipBounds::new(5, 5);
-        let line: String = "中".chars().cycle().take(17).collect();
+        let line = format!("她：「{}」", "中".repeat(17));
         let shots: Vec<ShotDescription> = (0..3)
             .map(|i| shot(i, 0, "she speaks", Some(&line)))
             .collect();
@@ -2287,7 +2523,7 @@ mod tests {
 
     #[test]
     fn a_merged_clip_is_priced_for_every_beat() {
-        let line: String = "中".chars().cycle().take(12).collect();
+        let line = format!("她：「{}」", "中".repeat(12));
         let shots = vec![
             shot(0, 0, "she speaks", Some(&line)),
             shot(1, 0, "he answers", Some(&line)),
@@ -2487,7 +2723,7 @@ mod tests {
 
     #[test]
     fn pack_scene_briefs_does_not_swallow_overflow_speech() {
-        let line: String = "中".chars().cycle().take(17).collect();
+        let line = format!("她：「{}」", "中".repeat(17));
         let briefs = vec![
             brief(0, 0, "她说话", Some(&line)),
             brief(1, 1, "他回答", Some(&line)),
@@ -2825,18 +3061,31 @@ mod tests {
         );
     }
 
+    /// No voice-slot limit means speaker count never splits a row. The window
+    /// still does: this row runs past 15s of content, and the old packer kept
+    /// it whole, so the renderer dropped its tail.
     #[test]
     fn minimax_zero_voice_slots_does_not_split_on_speaker_count() {
+        let input = brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO));
+        assert!(
+            brief_content_secs(&input) > SEEDANCE.max_secs(),
+            "fixture must overrun the window on content alone"
+        );
         let packed = pack_scene_briefs_with(
             SEEDANCE,
-            vec![brief(0, 0, SIX_SPEAKER_VISUAL, Some(SIX_SPEAKER_AUDIO))],
+            vec![input],
             PackOpts {
                 policy: PackPolicy::Dense,
                 split_needles: Vec::new(),
                 max_voice_ref_speakers: 0,
             },
         );
-        assert_eq!(packed.len(), 1, "{packed:?}");
+        for clip in &packed {
+            assert!(
+                brief_content_secs(clip) <= SEEDANCE.max_secs(),
+                "{clip:?}"
+            );
+        }
         assert_eq!(
             quote_blob(&packed),
             quoted_payloads(SIX_SPEAKER_AUDIO).join("")

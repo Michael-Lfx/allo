@@ -8,6 +8,7 @@ import {
   VIDEO_NODE_ID,
   audioNodeId,
   imageNodeId,
+  nodeSize,
   type MiniPoint,
 } from '../shotMiniCanvas/layout';
 import { seedancePromptToNodeMentions, shotNodeModelValue } from './shotMentions';

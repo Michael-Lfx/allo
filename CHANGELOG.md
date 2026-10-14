@@ -7,6 +7,9 @@ at a high level rather than a complete commit log.
 
 - Short-drama shots no longer stretch silent actions to the video model's minimum clip length. A silent action plays at its natural ~2 seconds, silent shots pack by their content, and a held final frame on a shot with no spoken line is trimmed at the film join. Spoken lines are timed as before, and every request still stays within the selected model's clip window.
 - Storyboard and screenwriter prompts no longer ask for leftover seconds to be filled with extra shots, and the performance micro-beat applies to emotional turns only, so routine actions no longer read as slow.
+- A storyboard row whose action and speech exceed the clip window is split instead of dropping leftover lines, and unquoted SFX/BGM prose is no longer priced as speech.
+- Environment plates follow the screenplay's scene headings (built after the script exists), so a scene no longer borrows another location's set from overlapping words.
+- While one shot is rendering, other shots keep their node layout movable; switching shots only loads the current take's video, and a layout-only save is no longer rejected as "generating".
 
 ## v1.6.2 - 2026-10-13
 

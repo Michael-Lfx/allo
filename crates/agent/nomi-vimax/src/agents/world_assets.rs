@@ -76,11 +76,15 @@ impl WorldAssetsPlanner {
         self
     }
 
+    /// Describe the environments of `script_or_story`. When `locations` (the
+    /// screenplay's scene headings) is non-empty, the environments are exactly
+    /// those locations, in order: the LLM only supplies their descriptions.
     pub async fn extract(
         &self,
         script_or_story: &str,
         style: &str,
         scene_hint: &str,
+        locations: &[String],
     ) -> VimaxResult<WorldAssetsSpec> {
         let style = crate::planning::resolve_visual_style(style);
         let system = include_str!(
@@ -94,9 +98,14 @@ impl WorldAssetsPlanner {
         };
         let user = include_str!("../../prompts/world_assets__human_prompt_template_extract.txt")
             .replace("{style}", &style)
+            .replace("{locations}", &locations_prompt_block(locations))
             .replace("{text}", &text);
         let mut spec: WorldAssetsSpec =
             complete_and_parse_llm_json(self.chat.as_ref(), &system, &user).await?;
+        let pinned = !locations.is_empty();
+        if pinned {
+            spec.environments = pin_environments_to_locations(locations, &spec.environments);
+        }
         // Drop empty shells; backfill prop names from description when models omit `name`.
         spec.environments
             .retain(|e| !e.slugline.trim().is_empty() || !e.description.trim().is_empty());
@@ -133,7 +142,7 @@ impl WorldAssetsPlanner {
                 "dropped people-centric prop concepts (portraits / group photos)"
             );
         }
-        finalize_world_spec(&mut spec);
+        finalize_world_spec(&mut spec, pinned);
         Ok(spec)
     }
 
@@ -277,14 +286,38 @@ impl WorldAssetsPlanner {
             .cloned()
             .collect();
 
-        let spec: WorldAssetsSpec = if spec_path.exists() {
-            read_json_artifact(&spec_path).await?
+        // Environments are the screenplay's scene headings. Per-scene pipelines call
+        // `ensure` with one scene's text, so the stored bible is reused whenever it
+        // already covers this text's locations; only a bible that misses a location
+        // (an old story-derived one, or a changed script) is rebuilt.
+        let headings = location_headings(script_or_story);
+        let existing = if spec_path.exists() {
+            Some(read_json_artifact::<WorldAssetsSpec>(&spec_path).await?)
         } else {
-            let spec = self
-                .extract(script_or_story, &style, scene_hint)
-                .await?;
-            write_json_artifact(&spec_path, &spec).await?;
-            spec
+            None
+        };
+        let spec = match existing {
+            Some(spec) if spec_covers_locations(&spec, &headings) => spec,
+            stale => {
+                if stale.is_some() {
+                    tracing::info!(
+                        film_root = %film_root.display(),
+                        locations = headings.len(),
+                        "world bible does not cover this script's scene headings — rebuilding environments and plates"
+                    );
+                    invalidate_world_asset_artifacts(film_root).await?;
+                } else if headings.is_empty() {
+                    tracing::warn!(
+                        film_root = %film_root.display(),
+                        "script has no location headings; environments are inferred from text and may not match scenes"
+                    );
+                }
+                let spec = self
+                    .extract(script_or_story, &style, scene_hint, &headings)
+                    .await?;
+                write_json_artifact(&spec_path, &spec).await?;
+                spec
+            }
         };
 
         let mut registry: WorldAssetRegistry = if registry_path.exists() {
@@ -787,11 +820,12 @@ async fn invalidate_world_asset_artifacts(film_root: &Path) -> VimaxResult<()> {
             let _ = tokio::fs::remove_dir_all(&dir).await;
         }
     }
+    // The aspect lock is not removed: it records the aspect the plates are rendered
+    // at, and deleting it would make the next call regenerate every plate again.
     for name in [
         "world_assets.json",
         "world_assets_registry.json",
         "world_assets_cameo_lock.txt",
-        "world_assets_aspect.txt",
     ] {
         let p = film_root.join(name);
         if p.exists() {
@@ -840,9 +874,11 @@ async fn refresh_environment_plates_for_aspect(film_root: &Path, aspect: &str) -
     Ok(())
 }
 
-fn finalize_world_spec(spec: &mut WorldAssetsSpec) {
+/// `pinned`: environments mirror the screenplay's scene headings, so the
+/// guessing cap does not apply (truncating would leave a scene with no plate).
+fn finalize_world_spec(spec: &mut WorldAssetsSpec, pinned: bool) {
     spec.environments = dedup_environments(std::mem::take(&mut spec.environments));
-    if spec.environments.len() > MAX_ENVIRONMENTS {
+    if !pinned && spec.environments.len() > MAX_ENVIRONMENTS {
         spec.environments.truncate(MAX_ENVIRONMENTS);
     }
     if spec.props.len() > MAX_PROPS {
@@ -869,6 +905,108 @@ fn dedup_environments(envs: Vec<EnvironmentAsset>) -> Vec<EnvironmentAsset> {
         out.push(env);
     }
     out
+}
+
+/// Distinct screenplay locations, in order of first appearance. A location heading
+/// is `外景·地点·时间` / `内景·…` / `INT./EXT. …`; the first spelling of a place wins.
+pub fn location_headings(script: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for line in script.lines() {
+        if !is_location_heading(line) {
+            continue;
+        }
+        let heading: String = line
+            .trim()
+            .trim_start_matches(['#', ' ', '\t'])
+            .trim()
+            .chars()
+            .take(80)
+            .collect();
+        if seen.insert(place_identity(&heading)) {
+            out.push(heading);
+        }
+    }
+    out
+}
+
+/// A line that names a place. Narrative sentences that merely contain 内景/外景
+/// are excluded by their punctuation and length.
+fn is_location_heading(line: &str) -> bool {
+    let t = line.trim().trim_start_matches(['#', ' ', '\t']);
+    let count = t.chars().count();
+    if count == 0 || count > 48 || t.contains(['「', '」', '，', ',', '。', '；', '！', '？']) {
+        return false;
+    }
+    let upper = t.to_ascii_uppercase();
+    t.starts_with("内景")
+        || t.starts_with("外景")
+        || ["INT.", "INT ", "INT/", "EXT.", "EXT ", "EXT/"]
+            .iter()
+            .any(|m| upper.starts_with(m))
+}
+
+/// Case-, punctuation- and marker-insensitive key for a location heading, so
+/// `外景·补给站·白日` and `外景 补给站 白日` name the same place.
+fn place_identity(heading: &str) -> String {
+    let key: String = heading
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    ["外景", "内景", "int", "ext"]
+        .iter()
+        .find_map(|marker| key.strip_prefix(marker))
+        .unwrap_or(key.as_str())
+        .to_string()
+}
+
+fn same_place(a: &str, b: &str) -> bool {
+    let (ka, kb) = (place_identity(a), place_identity(b));
+    !ka.is_empty() && ka == kb
+}
+
+/// True when every location of `locations` already has an environment in `spec`.
+fn spec_covers_locations(spec: &WorldAssetsSpec, locations: &[String]) -> bool {
+    locations.iter().all(|loc| {
+        spec.environments
+            .iter()
+            .any(|env| same_place(&env.slugline, loc))
+    })
+}
+
+/// One environment per location, slugline = the screenplay's own heading. The
+/// LLM's description is kept when it names the same place.
+fn pin_environments_to_locations(
+    locations: &[String],
+    described: &[EnvironmentAsset],
+) -> Vec<EnvironmentAsset> {
+    locations
+        .iter()
+        .map(|loc| EnvironmentAsset {
+            idx: 0,
+            slugline: loc.clone(),
+            description: described
+                .iter()
+                .find(|env| same_place(&env.slugline, loc))
+                .map(|env| env.description.clone())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn locations_prompt_block(locations: &[String]) -> String {
+    if locations.is_empty() {
+        return String::new();
+    }
+    let list = locations
+        .iter()
+        .map(|loc| format!("- {loc}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Environments: the screenplay has exactly these locations. Return one environment per line below, with `slugline` copied verbatim. Do not rename, merge, split or add places.\n{list}\n\n"
+    )
 }
 
 /// First scene heading in a scene script (INT./EXT., 内景/外景, `1-3 夜 内 …`, 第N场).
@@ -920,64 +1058,42 @@ fn looks_like_scene_heading(t: &str) -> bool {
     false
 }
 
-/// Fill empty `location_id` from the scene heading, then snap to extracted sluglines.
+/// Bind each storyboard row to the place of its scene.
 ///
-/// Consecutive rows in one scene share that heading. Visual-token overlap must
-/// not retarget a row to another environment — that splits packing (and the
-/// story) for no location change.
-///
-/// Unmatched LLM `location_id` is kept (do not wipe to empty) so the renderer
-/// can still substring-match a plate path/description.
+/// The scene's own heading is the source of truth. A row keeps its `location_id`
+/// only when that names one of this scene's headings; anything else (a paraphrase
+/// from the storyboard LLM, or a place from another scene) is replaced by the
+/// scene heading. Names are then aligned to the film's environment slugs, so each
+/// row resolves to exactly one plate. A scene without any heading keeps the LLM's
+/// own id.
 pub fn bind_location_ids(
     briefs: &mut [crate::domain::ShotBriefDescription],
     script: &str,
     sluglines: &[String],
 ) {
-    let fallback = first_scene_slugline(script);
-    let scene_loc = match_slugline(&fallback, sluglines)
-        .or_else(|| {
-            if sluglines.len() == 1 {
-                sluglines.first().cloned()
-            } else if !fallback.is_empty() {
-                Some(fallback)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
+    let headings = location_headings(script);
+    let scene_heading = headings
+        .first()
+        .cloned()
+        .unwrap_or_else(|| first_scene_slugline(script));
+    let canonical = |heading: &str| {
+        sluglines
+            .iter()
+            .find(|s| same_place(s, heading))
+            .cloned()
+            .unwrap_or_else(|| heading.to_string())
+    };
+    let scene_loc = (!scene_heading.is_empty()).then(|| canonical(&scene_heading));
     for brief in briefs {
         let existing = brief.location_id.trim();
-        brief.location_id = if existing.is_empty() {
-            scene_loc.clone()
-        } else {
-            match_slugline(existing, sluglines).unwrap_or_else(|| existing.to_string())
-        };
+        let own = headings
+            .iter()
+            .find(|h| same_place(h, existing))
+            .map(|h| canonical(h));
+        brief.location_id = own
+            .or_else(|| scene_loc.clone())
+            .unwrap_or_else(|| existing.to_string());
     }
-}
-
-fn match_slugline(id: &str, sluglines: &[String]) -> Option<String> {
-    if sluglines.is_empty() {
-        return None;
-    }
-    let id = id.trim();
-    if id.is_empty() {
-        return None;
-    }
-    if let Some(s) = sluglines
-        .iter()
-        .find(|s| crate::domain::location_keys_match(id, s))
-    {
-        return Some(s.clone());
-    }
-    sluglines
-        .iter()
-        .find(|s| {
-            crate::domain::normalize_location_key(s)
-                .contains(&crate::domain::normalize_location_key(id))
-                || crate::domain::normalize_location_key(id)
-                    .contains(&crate::domain::normalize_location_key(s))
-        })
-        .cloned()
 }
 
 pub async fn environment_sluglines_from_dir(film_root: &Path) -> Vec<String> {
@@ -1013,11 +1129,14 @@ pub fn select_environment_plate(
         .cloned()
 }
 
-/// Location bible for a clip: match `location_id`, else the only env plate,
-/// else the env plate whose path/description overlaps the shot text.
+/// Location bible for a clip: the plate of `location_id`, or the only env plate.
+///
+/// No lexical guessing: with several environments, a location that has no plate
+/// returns `None` (the clip renders without a set bible) instead of borrowing
+/// whichever plate happens to share words with the shot text. That guess is what
+/// switched one story location between unrelated sets.
 pub fn resolve_environment_plate(
     location_id: &str,
-    shot_query: &str,
     pairs: &[(PathBuf, String)],
 ) -> Option<(PathBuf, String)> {
     let envs: Vec<(PathBuf, String)> = pairs
@@ -1034,9 +1153,12 @@ pub fn resolve_environment_plate(
     if envs.len() == 1 {
         return envs.into_iter().next();
     }
-    rank_world_pairs_for_frame(shot_query, &envs, 1)
-        .into_iter()
-        .next()
+    tracing::warn!(
+        location_id,
+        environments = envs.len(),
+        "no environment plate matches this location; rendering without a set bible"
+    );
+    None
 }
 
 fn plate_matches_location(path: &Path, text: &str, location_id: &str) -> bool {
@@ -1277,88 +1399,13 @@ pub fn world_asset_pairs(
     out
 }
 
-/// Rank env/prop plates by overlap with the frame description (avoid wrong location).
-pub fn rank_world_pairs_for_frame(
-    frame_desc: &str,
-    pairs: &[(PathBuf, String)],
-    max: usize,
-) -> Vec<(PathBuf, String)> {
-    if pairs.is_empty() || max == 0 {
-        return Vec::new();
-    }
-    let desc = frame_desc.to_ascii_lowercase();
-    let mut scored: Vec<(i32, usize)> = pairs
-        .iter()
-        .enumerate()
-        .map(|(i, (path, text))| {
-            let blob = format!("{} {}", path.to_string_lossy(), text).to_ascii_lowercase();
-            let mut score = 0i32;
-            for tok in match_tokens(&blob) {
-                if tok.chars().count() < 2 {
-                    continue;
-                }
-                if desc.contains(&tok) {
-                    score += if tok.chars().count() >= 4 { 3 } else { 1 };
-                }
-            }
-            // Slight preference for environment plates over props when tied later.
-            if blob.contains("environments") || blob.contains("empty environment") {
-                score += 1;
-            }
-            (score, i)
-        })
-        .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-
-    let mut out = Vec::new();
-    for (score, i) in scored {
-        if out.len() >= max {
-            break;
-        }
-        if score <= 1 {
-            continue;
-        }
-        out.push(pairs[i].clone());
-    }
-    out
-}
-
-fn match_tokens(blob: &str) -> Vec<String> {
-    let mut toks = Vec::new();
-    let mut cur = String::new();
-    for ch in blob.chars() {
-        if ch.is_ascii_alphanumeric() || (ch as u32) > 127 {
-            cur.push(ch.to_ascii_lowercase());
-        } else if !cur.is_empty() {
-            toks.push(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        toks.push(cur);
-    }
-    // Also add 2-char CJK bigrams from longer CJK runs for better Chinese matching.
-    let cjk: String = blob
-        .chars()
-        .filter(|c| {
-            let u = *c as u32;
-            (0x4E00..=0x9FFF).contains(&u)
-        })
-        .collect();
-    if cjk.chars().count() >= 2 {
-        let chars: Vec<char> = cjk.chars().collect();
-        for w in chars.windows(2) {
-            toks.push(format!("{}{}", w[0], w[1]));
-        }
-    }
-    toks
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        WorldAssetsSpec, bind_location_ids, environment_plate_prompt, first_scene_slugline,
-        is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref, is_world_vision_thumb,
-        prop_plate_prompt, rank_world_pairs_for_frame, resolve_environment_plate,
+        EnvironmentAsset, WorldAssetsSpec, bind_location_ids, environment_plate_prompt,
+        first_scene_slugline, is_look_plate_path, is_people_centric_prop, is_safe_world_style_ref,
+        is_world_vision_thumb, location_headings, pin_environments_to_locations,
+        prop_plate_prompt, resolve_environment_plate, spec_covers_locations,
         select_environment_plate, strip_people_mentions, sweep_world_vision_thumbs,
         theme_excerpt, vision_reply_has_people,
     };
@@ -1491,39 +1538,7 @@ mod tests {
     }
 
     #[test]
-    fn ranks_matching_environment_higher() {
-        let pairs = vec![
-            (
-                PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
-                "GLOBAL EMPTY environment plate (no people): INT. OFFICE - DAY.".into(),
-            ),
-            (
-                PathBuf::from(
-                    "environments/1_INT_COFFEE_SHOP/INT_COFFEE_SHOP_environment_plate.png",
-                ),
-                "GLOBAL EMPTY environment plate (no people): INT. COFFEE SHOP - NIGHT.".into(),
-            ),
-            (
-                PathBuf::from("props/0_mug/mug_prop.png"),
-                "GLOBAL prop bible (object only, no people): <mug>.".into(),
-            ),
-        ];
-        let ranked = rank_world_pairs_for_frame(
-            "Wide shot inside the coffee shop at night, steam rising",
-            &pairs,
-            2,
-        );
-        assert!(
-            ranked[0]
-                .0
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("coffee")
-        );
-    }
-
-    #[test]
-    fn rank_does_not_fall_back_to_the_first_environment() {
+    fn unmatched_location_never_borrows_another_plate() {
         let pairs = vec![
             (
                 PathBuf::from("environments/0_INT_OFFICE/INT_OFFICE_environment_plate.png"),
@@ -1534,8 +1549,13 @@ mod tests {
                 "GLOBAL EMPTY environment plate (no people): EXT. DOCK - NIGHT.".into(),
             ),
         ];
-        let ranked = rank_world_pairs_for_frame("a close-up of two hands exchanging a letter", &pairs, 2);
-        assert!(ranked.is_empty(), "{ranked:?}");
+        // The shot text shares words with the office plate; that must not select it.
+        assert!(
+            resolve_environment_plate("外景·别的地方·白日", &pairs).is_none(),
+            "a location without its own plate must not be guessed from shot text"
+        );
+        let exact = resolve_environment_plate("EXT. DOCK - NIGHT", &pairs).expect("dock plate");
+        assert!(exact.0.to_string_lossy().contains("DOCK"));
     }
 
     #[test]
@@ -1561,8 +1581,8 @@ mod tests {
                 .contains("coffee")
         );
         assert!(select_environment_plate("", &pairs).is_none());
-        let only_taxi = vec![pairs[1].clone()];
-        let fallback = resolve_environment_plate("", "close-up of hands", &only_taxi)
+        let only_coffee = vec![pairs[1].clone()];
+        let fallback = resolve_environment_plate("", &only_coffee)
             .expect("single plate is the set");
         assert!(
             fallback
@@ -1571,15 +1591,7 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("coffee")
         );
-        let ranked = resolve_environment_plate("", "coffee shop glass steam", &pairs)
-            .expect("rank by shot text");
-        assert!(
-            ranked
-                .0
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("coffee")
-        );
+        assert!(resolve_environment_plate("", &pairs).is_none());
     }
 
     #[test]
@@ -1655,6 +1667,81 @@ mod tests {
         );
         assert_eq!(briefs[0].location_id, "INT. COFFEE SHOP - NIGHT");
         assert_eq!(briefs[1].location_id, "INT. COFFEE SHOP - NIGHT");
+    }
+
+    #[test]
+    fn location_headings_keep_one_spelling_per_place() {
+        let script = "[第二场:泛黄的规则]\n\n外景·补给站·白日\n\n她从内景走出来，停下脚步。\n\nEXT. 森林泳池 - DAY\n外景 补给站 白日";
+        assert_eq!(
+            location_headings(script),
+            vec!["外景·补给站·白日".to_string(), "EXT. 森林泳池 - DAY".to_string()]
+        );
+    }
+
+    #[test]
+    fn environments_mirror_scene_headings_not_story_names() {
+        let locations = location_headings("外景·补给站·白日\n\n外景·森林泳池·白日");
+        // A bible invented from the story uses other names, so it does not cover the script.
+        let story_bible = WorldAssetsSpec {
+            environments: vec![EnvironmentAsset {
+                idx: 0,
+                slugline: "EXT. 补给站 - 白天".into(),
+                description: "wooden water station".into(),
+            }],
+            props: Vec::new(),
+        };
+        assert!(!spec_covers_locations(&story_bible, &locations));
+
+        let pinned = pin_environments_to_locations(
+            &locations,
+            &[EnvironmentAsset {
+                idx: 0,
+                slugline: "外景 补给站 白日".into(),
+                description: "wooden water station".into(),
+            }],
+        );
+        assert_eq!(pinned.len(), 2);
+        assert_eq!(pinned[0].slugline, "外景·补给站·白日");
+        assert_eq!(pinned[0].description, "wooden water station");
+        assert_eq!(pinned[1].slugline, "外景·森林泳池·白日");
+        assert!(pinned[1].description.is_empty());
+
+        let mut covering = story_bible;
+        covering.environments = pinned;
+        assert!(spec_covers_locations(&covering, &locations));
+        // A later scene of the same film is covered by the film-level bible.
+        assert!(spec_covers_locations(&covering, &location_headings("外景·森林泳池·白日")));
+    }
+
+    #[test]
+    fn bind_location_ids_snaps_paraphrased_row_to_scene_heading() {
+        let mut briefs = vec![
+            crate::domain::ShotBriefDescription {
+                idx: 0,
+                is_last: false,
+                cam_idx: 0,
+                visual_desc: "wide of the station".into(),
+                audio_desc: None,
+                location_id: "补给站".into(),
+                beats: Vec::new(),
+            },
+            crate::domain::ShotBriefDescription {
+                idx: 1,
+                is_last: true,
+                cam_idx: 0,
+                visual_desc: "a pool from another scene".into(),
+                audio_desc: None,
+                location_id: "森林泳池".into(),
+                beats: Vec::new(),
+            },
+        ];
+        bind_location_ids(
+            &mut briefs,
+            "外景·补给站·白日\n白兔抓起水杯灌了两口。",
+            &["外景·补给站·白日".into(), "外景·森林泳池·白日".into()],
+        );
+        assert_eq!(briefs[0].location_id, "外景·补给站·白日");
+        assert_eq!(briefs[1].location_id, "外景·补给站·白日");
     }
 
     #[test]

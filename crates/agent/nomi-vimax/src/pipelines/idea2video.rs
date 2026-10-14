@@ -9,7 +9,7 @@ use crate::agents::{
 use crate::drama::{
     DramaEngine, with_drama_engine, with_scene_drama_engine,
 };
-use crate::error::{VimaxError, VimaxResult};
+use crate::error::VimaxResult;
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
@@ -302,38 +302,6 @@ impl Idea2VideoPipeline {
                 }
             }
         };
-        let world = async {
-            emit_pct(
-                &progress,
-                "world_assets_start",
-                "正在生成全局环境与道具参考图",
-                45.0,
-            );
-            let world_planner = self.backends.world_planner(&self.working_dir).await;
-            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            match world_planner
-                .ensure(
-                    &self.working_dir,
-                    &story,
-                    &style,
-                    &style_refs,
-                    &scene_hint,
-                    &lock_token,
-                )
-                .await
-            {
-                Ok(_) => Ok::<_, VimaxError>(()),
-                Err(err) => {
-                    emit_pct(
-                        &progress,
-                        "world_assets_start",
-                        "世界参考图生成失败",
-                        45.0,
-                    );
-                    Err(err)
-                }
-            }
-        };
         let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
         let script = async {
             emit_pct(&progress, "write_script", "正在撰写分场剧本", 52.0);
@@ -346,7 +314,7 @@ impl Idea2VideoPipeline {
             })
             .await
         };
-        let ((), (), mut scenes) = tokio::try_join!(portraits_voices, world, script)?;
+        let ((), mut scenes) = tokio::try_join!(portraits_voices, script)?;
 
         let clip = self.backends.clip;
         if let Some(film_total) = film_total {
@@ -372,6 +340,39 @@ impl Idea2VideoPipeline {
                     );
                     write_json_artifact(&self.working_dir.join("script.json"), &scenes).await?;
                 }
+            }
+        }
+
+        // Environments mirror the final scenes' headings, so the world bible is built
+        // from the script (not the story), before the per-scene pipelines bind to it.
+        {
+            emit_pct(
+                &progress,
+                "world_assets_start",
+                "正在生成全局环境与道具参考图",
+                54.0,
+            );
+            let world_planner = self.backends.world_planner(&self.working_dir).await;
+            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+            let script_text = scenes.join("\n\n");
+            if let Err(err) = world_planner
+                .ensure(
+                    &self.working_dir,
+                    &script_text,
+                    &style,
+                    &style_refs,
+                    &scene_hint,
+                    &lock_token,
+                )
+                .await
+            {
+                emit_pct(
+                    &progress,
+                    "world_assets_start",
+                    "世界参考图生成失败",
+                    54.0,
+                );
+                return Err(err);
             }
         }
 

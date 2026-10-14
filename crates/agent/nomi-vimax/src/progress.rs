@@ -82,8 +82,33 @@ pub struct RenderStatus {
     /// Populated while [`RunStatus::AwaitingReview`] — which shot is gated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_review: Option<PendingShotReview>,
+    /// Shot whose video request is in flight (`video_clip_start` until
+    /// `video_clip_done` / `video_clip_exists`). While [`RunStatus::Rendering`]
+    /// only this shot is locked; sibling shots stay editable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generating_shot: Option<GeneratingShot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_mode: Option<String>,
+}
+
+/// Identity of the shot whose video generation is in flight.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratingShot {
+    /// Normalized scene root (`idea2video/scene_0`). `None` when the emitter did
+    /// not report one; the lock then covers that shot index in every scene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_root: Option<String>,
+    pub shot_idx: i32,
+}
+
+impl GeneratingShot {
+    pub fn matches(&self, scene_root: &str, shot_idx: i32) -> bool {
+        self.shot_idx == shot_idx
+            && self
+                .scene_root
+                .as_deref()
+                .map_or(true, |root| root == scene_root)
+    }
 }
 
 /// Shot currently held at the review gate (render job still alive).
@@ -238,6 +263,24 @@ pub fn compose_job_failure_message(prev_stage: &str, prev_message: &str, detail:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generating_shot_locks_only_its_scene_and_index() {
+        let lock = GeneratingShot {
+            scene_root: Some("idea2video/scene_0".into()),
+            shot_idx: 2,
+        };
+        assert!(lock.matches("idea2video/scene_0", 2));
+        assert!(!lock.matches("idea2video/scene_0", 1));
+        assert!(!lock.matches("idea2video/scene_1", 2));
+
+        let any_scene = GeneratingShot {
+            scene_root: None,
+            shot_idx: 2,
+        };
+        assert!(any_scene.matches("idea2video/scene_3", 2));
+        assert!(!any_scene.matches("idea2video/scene_3", 0));
+    }
 
     #[test]
     fn emit_collapses_consecutive_same_stage() {

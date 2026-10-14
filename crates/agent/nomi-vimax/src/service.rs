@@ -18,8 +18,8 @@ use crate::pipelines::{
     PipelineBackends, ScriptFilmPipeline,
 };
 use crate::progress::{
-    compose_job_failure_message, duration_ms_from_status, film_event_name, INTERRUPTED_SUMMARY,
-    RenderStatus, RunStatus, VimaxTerminalTelemetry,
+    compose_job_failure_message, duration_ms_from_status, film_event_name, GeneratingShot,
+    INTERRUPTED_SUMMARY, RenderStatus, RunStatus, VimaxTerminalTelemetry,
 };
 use crate::session::{
     ArtifactNode, CameoPhotoEntry, CameoUpdate, SessionIndex, SessionRecord, SessionSummary,
@@ -140,6 +140,7 @@ fn mark_cancelled_or_interrupted(st: &mut RenderStatus, index: &SessionIndex, id
         .is_some_and(|r| r.status == RunStatus::Interrupted)
         || st.status == RunStatus::Interrupted;
     st.pending_review = None;
+    st.generating_shot = None;
     if already_interrupted {
         st.status = RunStatus::Interrupted;
         if st.message.is_empty() {
@@ -242,6 +243,7 @@ impl VimaxService {
                 st.message = INTERRUPTED_SUMMARY.into();
                 st.error = None;
                 st.pending_review = None;
+                st.generating_shot = None;
                 st.emit_terminal("interrupted", INTERRUPTED_SUMMARY);
                 persist_run_status(&self.index, id, st);
                 ids.insert(id.clone());
@@ -1134,16 +1136,21 @@ impl VimaxService {
         id: &str,
         scene_root: &str,
         shot_idx: i32,
+        edit: PacketEdit,
     ) -> VimaxResult<()> {
         let record = self.index.get(id)?;
         // Live run status is the in-flight source of truth. The session index
         // can lag a completed plan (`stage=planned` is written before Idle),
         // and a stale Planning row must not block the director desk.
-        let (status, pending) = {
+        let (status, pending, generating) = {
             let map = self.statuses.lock().unwrap_or_else(|e| e.into_inner());
             match map.get(id) {
-                Some(st) => (st.status, st.pending_review.clone()),
-                None => (record.status, None),
+                Some(st) => (
+                    st.status,
+                    st.pending_review.clone(),
+                    st.generating_shot.clone(),
+                ),
+                None => (record.status, None, None),
             }
         };
         if status == RunStatus::Planning {
@@ -1151,7 +1158,17 @@ impl VimaxService {
                 "cannot edit a shot packet while planning".into(),
             ));
         }
-        if status == RunStatus::Rendering {
+        if edit == PacketEdit::Layout {
+            return Ok(());
+        }
+        // Only the shot whose video request is in flight is frozen. The render
+        // loads every packet from disk when it reaches that shot, so edits to
+        // other shots take effect on their next generation.
+        if status == RunStatus::Rendering
+            && generating
+                .as_ref()
+                .is_some_and(|g| g.matches(&scene_root_key(scene_root), shot_idx))
+        {
             return Err(VimaxError::InvalidParams(
                 "cannot edit a shot packet while it is generating".into(),
             ));
@@ -1246,7 +1263,13 @@ impl VimaxService {
         shot_idx: i32,
         patch: crate::shot_packet::ShotPacketPatch,
     ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
-        self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
+        let edit = if patch.is_layout_only() {
+            PacketEdit::Layout
+        } else {
+            PacketEdit::Content
+        };
+        self.ensure_packet_mutable(id, scene_root, shot_idx, edit)
+            .await?;
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
         let mut packet = self.load_or_seed_packet(id, &scene_dir, shot_idx).await?;
         let had_video = crate::media_local::is_usable_video_file(
@@ -1280,7 +1303,8 @@ impl VimaxService {
         bytes: Option<Vec<u8>>,
         filename: Option<String>,
     ) -> VimaxResult<crate::shot_packet::ShotPacketView> {
-        self.ensure_packet_mutable(id, scene_root, shot_idx).await?;
+        self.ensure_packet_mutable(id, scene_root, shot_idx, PacketEdit::Content)
+            .await?;
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
         let session_root = self.index.working_dir(id)?;
         let mut packet = self.load_or_seed_packet(id, &scene_dir, shot_idx).await?;
@@ -2284,6 +2308,34 @@ fn resolve_fps_for_session(record: &SessionRecord, media: &nomi_config::MediaGen
     crate::video_quality::normalize_fps_for_model(model, raw)
 }
 
+/// Canonical `scene_root` key shared by packet API requests and render events
+/// (`idea2video/scene_0`, forward slashes, no edge slashes).
+pub(crate) fn scene_root_key(raw: &str) -> String {
+    raw.replace('\\', "/").trim().trim_matches('/').to_string()
+}
+
+/// What a packet write changes. Layout never reaches the video model, so it is
+/// not gated by generation or review; content edits are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketEdit {
+    Content,
+    Layout,
+}
+
+/// `video_clip_start` meta → the shot whose video request is now in flight.
+fn generating_shot_from_meta(meta: Option<&serde_json::Value>) -> Option<GeneratingShot> {
+    let meta = meta?;
+    let shot_idx = meta.get("shot_idx")?.as_i64()? as i32;
+    let scene_root = meta
+        .get("scene_root")
+        .and_then(|v| v.as_str())
+        .map(scene_root_key);
+    Some(GeneratingShot {
+        scene_root,
+        shot_idx,
+    })
+}
+
 fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::ProgressCallback {
     let id = id.to_string();
     Arc::new(move |stage, message, meta| {
@@ -2306,6 +2358,18 @@ fn progress_callback(svc: Arc<VimaxService>, id: &str) -> crate::progress::Progr
                 .and_then(|v| v.as_f64())
             {
                 st.progress = pct.clamp(0.0, 100.0) as f32;
+            }
+            // Freeze exactly the shot whose request is in flight. A retry notice
+            // without shot meta keeps the current lock instead of releasing it.
+            match stage {
+                "video_clip_start" => {
+                    if let Some(shot) = generating_shot_from_meta(meta.as_ref()) {
+                        st.generating_shot = Some(shot);
+                    }
+                }
+                "video_clip_done" | "video_clip_exists" | "shot_awaiting_review"
+                | "render_scene" => st.generating_shot = None,
+                _ => {}
             }
             if stage == "shot_awaiting_review" {
                 st.status = RunStatus::AwaitingReview;

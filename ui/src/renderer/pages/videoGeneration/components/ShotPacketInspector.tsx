@@ -40,6 +40,7 @@ import type { StoryboardVideoSlotStatus } from '../storyboardVideoStatus';
 import ShotInfiniteCanvas from '../shotInfiniteCanvas/ShotInfiniteCanvas';
 import { packetToCanvasGraph, parseShotNodeId, slotHasGenerationPrompt } from '../shotInfiniteCanvas/packetToCanvas';
 import { nodeMentionsToSeedancePrompt } from '../shotInfiniteCanvas/shotMentions';
+import { shotCanvasMediaPaths } from '../shotInfiniteCanvas/shotCanvasMediaPaths';
 import { useShotCanvasMedia } from '../shotInfiniteCanvas/useShotCanvasMedia';
 import {
   MAX_SHOT_AUDIO_REFS,
@@ -202,12 +203,16 @@ function ShotPacketInspector({
   const [canvasExpanded, setCanvasExpanded] = useState(false);
 
   const packetForScene = packetMatchesScene(packet, sceneRoot, shotIdx);
+  // Content (prompt, refs, duration) is frozen while this shot renders or waits for review.
   const editable =
     packetForScene &&
     !planning &&
     !generating &&
     !reviewLocked &&
     packet?.run_state !== 'generating';
+  // Node positions and viewport never reach the video model, so they stay movable
+  // during a render. The backend accepts layout-only saves for the same reason.
+  const layoutEditable = packetForScene && !planning;
   const canGenerate =
     packetForScene &&
     !planning &&
@@ -302,8 +307,9 @@ function ShotPacketInspector({
   }, [dirty, onUnsavedChange]);
 
   const persist = useCallback(
-    async (patch: ShotPacketPatch): Promise<boolean> => {
-      if (!sceneRoot || !editable) return false;
+    async (patch: ShotPacketPatch, scope: 'content' | 'layout' = 'content'): Promise<boolean> => {
+      const writable = scope === 'layout' ? layoutEditable : editable;
+      if (!sceneRoot || !writable) return false;
       if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return false;
       setSaving(true);
       try {
@@ -326,7 +332,7 @@ function ShotPacketInspector({
         setSaving(false);
       }
     },
-    [applyPacket, editable, message, sceneRoot, sessionId, shotIdx, t]
+    [applyPacket, editable, layoutEditable, message, sceneRoot, sessionId, shotIdx, t]
   );
 
   const layoutPayload = useCallback(
@@ -346,7 +352,7 @@ function ShotPacketInspector({
 
   const persistLayout = useCallback(
     (nextPositions = positionsRef.current, nextViewport = viewportRef.current) => {
-      if (!editable) return;
+      if (!layoutEditable) return;
       if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
       const next = layoutPayload(nextPositions, nextViewport);
       if (sameShotLayout(packetRef.current?.layout, next)) return;
@@ -354,10 +360,10 @@ function ShotPacketInspector({
       layoutTimer.current = window.setTimeout(() => {
         if (!packetMatchesScene(packetRef.current, sceneRoot, shotIdx)) return;
         if (sameShotLayout(packetRef.current?.layout, next)) return;
-        void persist({ layout: next, recompile: false });
+        void persist({ layout: next, recompile: false }, 'layout');
       }, LAYOUT_DEBOUNCE_MS);
     },
-    [editable, layoutPayload, persist, sceneRoot, shotIdx]
+    [layoutEditable, layoutPayload, persist, sceneRoot, shotIdx]
   );
 
   const flushPendingSave = useCallback(async () => {
@@ -369,20 +375,16 @@ function ShotPacketInspector({
       window.clearTimeout(layoutTimer.current);
       layoutTimer.current = null;
     }
-    if (!editable || !sceneRoot) return;
+    if (!sceneRoot) return;
     const current = packetRef.current;
     if (!packetMatchesScene(current, sceneRoot, shotIdx) || !current) return;
+    // Layout is cosmetic: a failed layout save is reported by `persist` but must not
+    // block switching shots or approving a review, so its result is not thrown here.
     const nextLayout = layoutPayload();
-    if (!sameShotLayout(current.layout, nextLayout)) {
-      const saved = await persist({ layout: nextLayout, recompile: false });
-      if (!saved) {
-        throw new Error(
-          t('videoGeneration.studio.storyboard.packetSaveFailed', {
-            defaultValue: '镜头包保存失败',
-          })
-        );
-      }
+    if (layoutEditable && !sameShotLayout(current.layout, nextLayout)) {
+      await persist({ layout: nextLayout, recompile: false }, 'layout');
     }
+    if (!editable) return;
     const latest = packetRef.current ?? current;
     const outbound = nodeMentionsToSeedancePrompt(promptText, latest);
     if (outbound !== effectivePrompt(latest)) {
@@ -395,7 +397,7 @@ function ShotPacketInspector({
         );
       }
     }
-  }, [editable, layoutPayload, persist, promptText, sceneRoot, shotIdx, t]);
+  }, [editable, layoutEditable, layoutPayload, persist, promptText, sceneRoot, shotIdx, t]);
 
   useImperativeHandle(ref, () => ({ flushPendingSave }), [flushPendingSave]);
 
@@ -443,11 +445,15 @@ function ShotPacketInspector({
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
+  }, [editable]);
+
+  useEffect(() => {
+    if (layoutEditable) return;
     if (layoutTimer.current) {
       window.clearTimeout(layoutTimer.current);
       layoutTimer.current = null;
     }
-  }, [editable]);
+  }, [layoutEditable]);
 
   const imageRefs = packet?.image_refs ?? EMPTY_REFS;
   const audioRefs = (packet?.audio_refs ?? EMPTY_REFS).slice(0, MAX_SHOT_AUDIO_REFS);
@@ -478,13 +484,17 @@ function ShotPacketInspector({
     };
   }, [packet, sessionId]);
 
-  const mediaPaths = useMemo(() => {
-    const paths: Array<string | null | undefined> = [videoPath, posterPath];
-    for (const slot of imageRefs) paths.push(slot.path);
-    for (const slot of audioRefs) paths.push(slot.path);
-    for (const take of packet?.takes ?? []) paths.push(take.video_path);
-    return paths;
-  }, [audioRefs, imageRefs, packet?.takes, posterPath, videoPath]);
+  const mediaPaths = useMemo(
+    () =>
+      shotCanvasMediaPaths({
+        videoPath,
+        posterPath,
+        imagePaths: imageRefs.map((slot) => slot.path),
+        audioPaths: audioRefs.map((slot) => slot.path),
+        takes: packet?.takes,
+      }),
+    [audioRefs, imageRefs, packet?.takes, posterPath, videoPath]
+  );
 
   const mediaUrls = useShotCanvasMedia(sessionId, mediaPaths);
   const imageLibrary = useMemo(() => libraryOptions(artifacts, 'image'), [artifacts]);
@@ -948,6 +958,7 @@ function ShotPacketInspector({
         selectedNodeId={selectedNodeId}
         onSelectNode={setSelectedNodeId}
         readOnly={!editable}
+        layoutLocked={!layoutEditable}
         generating={generating || packet?.run_state === 'generating'}
         overlay={preview}
         expanded={canvasExpanded}

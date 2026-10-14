@@ -1737,11 +1737,14 @@ fn extract_spoken_payload(audio_desc: &str) -> String {
     if !chunks.is_empty() {
         return chunks.join(" ");
     }
+    // Lines are written as 「」 quotes. Unquoted prose is SFX / BGM / ambience
+    // ("环境音…… motif……") and must not be priced as speech; only prose with an
+    // explicit speaking cue counts.
     let stripped = strip_non_speech_markup(audio_desc);
-    if looks_like_ambient_only(&stripped) {
-        String::new()
-    } else {
+    if text_looks_like_dialogue(&stripped) {
         stripped
+    } else {
+        String::new()
     }
 }
 
@@ -1771,24 +1774,6 @@ fn strip_non_speech_markup(s: &str) -> String {
         i += 1;
     }
     out
-}
-
-fn looks_like_ambient_only(s: &str) -> bool {
-    let t = s.trim();
-    if t.is_empty() {
-        return true;
-    }
-    if text_looks_like_dialogue(t) {
-        return false;
-    }
-    let lower = t.to_ascii_lowercase();
-    t.contains("底噪")
-        || t.contains("背景音乐")
-        || t.contains("拟音")
-        || lower.contains("room tone")
-        || lower.contains("underscore")
-        || lower.contains("ambient")
-        || lower.contains("bgm")
 }
 
 pub(crate) fn is_cjk_speech_char(ch: char) -> bool {
@@ -2570,16 +2555,24 @@ mod tests {
         // Quoted payload only (ignore stage directions outside 「」)
         assert_eq!(
             estimate_speech_secs("环境底噪。李薇：「今晚别等我」"),
-            estimate_speech_secs("今晚别等我")
+            estimate_speech_secs("李薇：「今晚别等我」")
         );
         // Ambient / BGM copy must not count as speech.
         assert_eq!(
             estimate_speech_secs("环境底噪与连贯电影感背景音乐，配合画面动作的细微拟音"),
             0
         );
+        // Unquoted SFX / BGM prose (no speaking cue) is not speech either.
+        assert_eq!(
+            estimate_speech_secs(
+                "补给站环境音:远处观众席的嘈杂嗡鸣、风吹树叶沙沙声、水杯磕碰木桌的钝响。阿慢脚步声沉重。持续低音弦乐motif,节奏缓慢压抑,音量低。"
+            ),
+            0
+        );
+        // An unquoted line with an explicit speaking cue still counts.
+        assert!(estimate_speech_secs("阿慢轻声说今天的风很温柔，你别走") > 0);
         // ~14 English words @ 2.3/wps → ceil(14/2.3)=7s
-        let en = "one two three four five six seven eight nine ten \
-eleven twelve thirteen fourteen";
+        let en = "Tom：「one two three four five six seven eight nine ten eleven twelve thirteen fourteen」";
         assert_eq!(estimate_speech_secs(en), 7);
         assert_eq!(estimate_speech_secs(""), 0);
         assert_eq!(estimate_speech_secs("   "), 0);
@@ -2599,12 +2592,13 @@ eleven twelve thirteen fourteen";
     #[test]
     fn estimate_shot_need_includes_speech_tail() {
         // 17 CJK → ceil(17/3.3)=6s speech + 1s lead + 1s tail = 8
-        let line: String = "中".chars().cycle().take(17).collect();
-        assert_eq!(line.chars().count(), 17);
+        // (speaker prefix 她 adds one spoken char; ceil keeps 6s)
+        let line = format!("她：「{}」", "中".repeat(17));
+        assert_eq!(line.chars().filter(|c| *c == '中').count(), 17);
         let need = estimate_shot_need_secs(SEEDANCE, Some(&line), "slow pan", "small");
         assert_eq!(need, 8);
         // Shorter line: 9 CJK → ceil(9/3.3)=3 + 1 + 1 = 5 (dialogue floor)
-        let mid: String = "中".chars().cycle().take(9).collect();
+        let mid = format!("她：「{}」", "中".repeat(8));
         let mid_need = estimate_shot_need_secs(SEEDANCE, Some(&mid), "slow pan", "small");
         assert_eq!(mid_need, 5);
         // No dialogue → visual floor (model min)
@@ -2617,7 +2611,7 @@ eleven twelve thirteen fourteen";
             SEEDANCE.min_secs()
         );
         // Long dialogue clamped to the model ceiling
-        let long: String = "中".chars().cycle().take(80).collect();
+        let long = format!("她：「{}」", "中".repeat(80));
         let capped =
             estimate_shot_need_secs(SEEDANCE, Some(&long), "walk across room", "large");
         assert_eq!(capped, SEEDANCE.max_secs());
@@ -2662,7 +2656,7 @@ eleven twelve thirteen fourteen";
     #[test]
     fn shot_need_never_leaves_a_narrow_model_window() {
         let narrow = ClipBounds::new(4, 8);
-        let long: String = "中".chars().cycle().take(80).collect();
+        let long = format!("她：「{}」", "中".repeat(80));
         let capped = estimate_shot_need_secs(narrow, Some(&long), "walk", "large");
         assert_eq!(capped, narrow.max_secs());
         let silent = estimate_shot_need_secs(narrow, None, "hold", "small");
