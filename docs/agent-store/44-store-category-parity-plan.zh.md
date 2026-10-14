@@ -197,9 +197,45 @@ pub category_id: Option<String>,
 - 上游若新增分类 id，内置词表不认识它 → 该条目的 `category` 缺席、退回显示裸 id（`08-FinanceInvestment` 这种 `NN-Name` 形态仍可读）。补救是一条明确动作：更新 `app_server_categories_builtin.json`（逐字取自上游索引，带 `_source_sha256` 溯源）并随下次发版生效；
 - 市场自己带字典时依旧以市场为准（源 1 优先），所以将来任一方补上字典都不需要改宿主。
 
-### 6.4 剩余事项
+### 6.4 真机读数（2026-10-14，宿主 `fp-16`）
+
+启动本机 debug 宿主（隔离数据目录；`AGENT_STORE_CONFIG` 指向无默认市场的临时配置、`AGENT_STORE_MARKET_DOWNLOAD=none`，因此不会去下 289 MiB 官方归档），把站点仓的 `market-source/experts`（14,713 文件的**真实**镜像，且**不带**字典）注册成 `directory` 市场，再读两个面：
+
+```text
+initialize: protocol=fp-16 store=true
+market/add: id=experts
+
+store/categories: items=15 marketplace_tags=0
+  13-TencentZone       => 腾讯专区 / Tencent Zone
+  01-ProductDesign     => 产品设计 / Product Design
+  02-Engineering       => 技术工程 / Engineering
+  08-FinanceInvestment => 金融投资 / Finance Investment
+  ...(+11 more)
+
+store/list: items=381  with_category_id=361  resolved_category=361
+distinct category ids seen: 15
+  02-Engineering (38)       => 技术工程 / Engineering
+  04-DataAI (34)            => 数据智能 / Data & AI
+  08-FinanceInvestment (26) => 金融投资 / Finance Investment
+UNRESOLVED items: 0
+sample: experts/senior-developer
+  category_id=02-Engineering
+  category={"id":"02-Engineering","name":{"en":"Engineering","zh":"技术工程"},...}
+  tags=[{"en":"Senior Development","zh":"高级开发"}, ...]
+```
+
+四点值得记下：
+
+1. **兜底确实生效**：该市场根上**没有** `manifest.json`（正是线上归档的形状），`store/categories` 仍返回 15 行完整双语字典；381 个条目里 361 个声明了 `categoryId`，**全部**解析成功（`UNRESOLVED items: 0`）。
+2. **词表覆盖是满的**：条目实际用到的 id 恰好 15 个，与内置词表一一对应——印证「15 个 id 是闭集」不是抽样巧合。
+3. **`marketplace_tags=0` 是如实结果**：市场级标签只存在于技能市场的 `.codebuddy-skill/marketplace.json`，而这里注册的是专家市场。
+4. **握手面同步**：宿主自报 `protocol_version: fp-16`，与 SDK 常量一致（跨仓落点由 `check:fingerprint` 守着）。
+
+> 复现：`cargo build -p agent-store`，隔离 `--data-dir` 起在 `127.0.0.1:8787`；WS 上依次 `initialize` → `initialized`（**少这一步每个方法都回 `not_initialized`**）→ `market/add{source_kind:"directory"}` → `store/categories` / `store/list`。
+
+### 6.5 剩余事项
 
 1. **不需要发布归档**（§6.3 ③ 的决定）：线上 `experts.zip` 与 `content/market-hosts.json` 保持一致，客户端行为不变。
 2. **兜底词表的维护**：上游新增分类 id 时更新 `app_server_categories_builtin.json`（逐字复制上游索引的 `categories[]`，保留 `_source*` 溯源键）。这是唯一需要人跟的地方，且漏跟的后果是「显示裸 id」而非「显示错名」。
-3. **`pack:market --only <market>` 会截断记录**（既有缺陷，与本轮决定无关，未改）：该脚本按选中的市场**重建** `content/market-hosts.json`，所以 `--only experts`（不带 `--check`）会把另外两个市场的摘要从记录里抹掉。本轮验证走的是 `--check`（只打临时目录、不写记录），因此没踩到；修法应是「`--only` 时读入现有记录并只覆盖选中的那一项」——留给下一次动打包脚本的人。
-4. **本机上游树残缺，别跑真同步**：`~/.workbuddy/plugins/marketplaces/experts` 只有 2,103 个文件，而镜像有 14,714；`bun run sync:tree`（非 `--listing-only`）会把镜像剪掉约 12,857 个文件。本轮只用了 `--listing-only`（只读镜像）。
+3. **本机上游树残缺，别跑真同步**：`~/.workbuddy/plugins/marketplaces/experts` 只有 2,103 个文件，而镜像有 14,713；`bun run sync:tree`（非 `--listing-only`）会把镜像剪掉约 12,857 个文件。本轮只用了 `--listing-only`（只读镜像）。
+4. **`pack:market --only <market>` 的截断缺陷已修**（站点仓同批）：现在 `--only` 会读入现有台账并只覆盖选中的那一项，另外两个市场的摘要不再消失；`test:market-zips` 增了两条断言钉住它。
