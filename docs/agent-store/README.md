@@ -1,7 +1,7 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
 > 状态：导航总览（全目录 44 份核心方案已全面完成标准化重构）  
-> 当前版本：`0.1.0-beta.10` | 协议契约指纹：`fp-16` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点  
+> 当前版本：`0.1.0-beta.11` | 协议契约指纹：`fp-16` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点  
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
 ---
@@ -297,6 +297,20 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-14 发布 `0.1.0-beta.11`）
+
+`0.1.0-beta.11` 三出口发布完成（npm 四包 / GitHub Release / 站点），内容 = `43` 的市场分类与标签透出（`fp-14 → fp-15`）+ `44` 的四个面补齐（`fp-15 → fp-16`、`pack_format 3`），两轮**同批发布**，指纹因此一次跨两级：
+
+1. **版本锁步**：`0.1.0-beta.11`（PR #335）；canonical packument 四包 `dist-tags.beta` 与 `versions` 均已转正（`time."0.1.0-beta.11" = 2026-10-14T11:18:29.844Z`）；`latest` 不动（仍为 `0.1.0-beta.2`）；`check:release-sync` 绿（四 manifest + 8 pin + 站点 `release.json` 同值，站点双语文案 `56 / 83` 同值）。
+2. **同一份 exe 服务两个出口**（不变量 4）：`agent-store:build`（release + `static-webui`）产出 `B67D987D…F2EA1A7`（209,452,544 B）；npm runtime vendor 与 Release zip 内部 exe 同哈希（`release:pack --expect-sha256` 通过）。
+3. **npm 发布**：`protocol → client → runtime-win32-x64 → sdk` 顺序上架，四包均为 `0.1.0-beta.11`、`tag=beta`；凭据用 granular token 经临时 `npm_config_userconfig` 注入（`npm whoami` = `starwaveai`），未改全局 `~/.npmrc`。
+4. **GitHub Release**：`v0.1.0-beta.11` prerelease（`draft=false`），zip 80,717,341 B / 容器 sha256 `ae31144cd241a074…` 与 GitHub 服务端 digest 一致；本次 `release:publish` 的**下载回验一次通过**（beta.10 那次挂在 gh 的 TLS 抖动、需手工 `gh api` 收尾——本次设了 `HTTPS_PROXY=http://127.0.0.1:7890` 后未复现，登记为环境差异）；资产直链 `HEAD` 200。
+5. **站点上线**：commit `bed53e8c`（PR #8）经 `CreatePagesDeployment` 触发（`dp0ktzaltwqn`），Success / `usedInProd=true`；部署后自检——中英 `typescript-sdk` 200 且正文含 `fp-16` / `56 / 83`、`changelog` 含 `0.1.0-beta.11`、`/source/**` 退役路径全 404、构建日志无文件数与体积超限、三市场 ModelScope 归档摘要一致（`publish:market --verify-only` 全绿）。
+6. **台账转正**：本仓 `CHANGELOG.md` Unreleased → `0.1.0-beta.11`；站点 `changelog` §2 新增 2.1（JSON 块 / 表行 / 正文，旧条目顺延重编号）、`upgrade` §2 / §3 / §4 / §6.10 / §8；`docs-sync` 10 页 0 drift。
+7. **更正（2026-10-14）**：站点 `changelog` §2 JSON 块里 `0.1.0-beta.10` 的发布时间原记整点值 `2026-10-12T07:30:00.000Z`，注册表实际输出为 `2026-10-12T07:31:25.974Z`（其余九个版本的 `time` 与注册表逐字一致）。按 D10=A 追加更正记录并改正三处（JSON 块 / §2.2 标题 / `upgrade` §2 表行）；发布日期 `2026-10-12` 这一事实不变。
+8. **门禁口径**：`release:check` 第 1 环（`ui/` typecheck）仍是既有红，按 runbook §7.8 逐环执行——`check:fingerprint`（`fp-16`，本仓 7 文件 10 处 + 站点 2 处）、`check:release-sync`、`cd web && bun run typecheck && bun run test`（564 通过 / 1 skipped）、`cargo test -p nomifun-app-server`（191 通过）、站点 `check:release`（docs-sync 10 页 0 drift / market 0 finding / market-zips 10 / typecheck exit 0）全绿。
+9. **既有观察（非本次引入）**：EdgeOne 构建日志仍打印 4 条 `error in root.headers.[0].source: char match error`（`edgeone.json` 的 headers 配置告警）；beta.10 的部署 `dpf5e0ewamu3` 日志里同样是 4 条，两次部署结果均为 Success——登记待查，不影响上线。
 
 ## 本轮（2026-10-13 实施 `44`：类别信息全面透出，尚未发版）
 
