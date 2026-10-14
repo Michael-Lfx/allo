@@ -145,7 +145,7 @@ pub category_id: Option<String>,
 
 - **`skill/get` 的 tags 依赖 `assets` provider 被接线**：未接线 `AppServerEntryAssets` 的宿主（测试替身、极简宿主）技能面 tags 恒空——与头像字段的既有行为一致，不是新缺口；
 - **`store/categories` 与 pack 的解析**：pack 只带 `category_id`，外部 runtime 若要显示分类名，需要自己持有等价字典（本仓的字典在 `store/categories`，跨宿主不通用）；
-- **连接器面未加 tags**：连接器条目的 tags 同样来自索引行，但 `connector/list` 的消费方（抽屉开关）目前不展示标签，按「不做投机性字段」留待有需求时再加（数据侧已具备：`ConnectorCatalog` 走同一条 assets provider）。
+- **连接器面未加 tags**：`connector/list` 的消费方（抽屉开关）目前不展示标签，且**连接器市场索引里根本没有标签数据**——实测 `connectors.json` 228 行的键集（`id`/`name`/`name_en`/`description*`/`source`/`auth_mode`/`type`/`examples_*`/`visible_in`/`version`/…）**无一 tag 字段**，连接器也没有 `plugin.json`。所以这不是「留待有需求时再加」，而是**没有数据源**。（本轮修正：原措辞写了「数据侧已具备」，与实测不符。若将来市场补上，`read_index` 已经在读 `tags_zh`/`tags_en`，无需改代码。）
 
 ---
 
@@ -232,6 +232,40 @@ sample: experts/senior-developer
 4. **握手面同步**：宿主自报 `protocol_version: fp-16`，与 SDK 常量一致（跨仓落点由 `check:fingerprint` 守着）。
 
 > 复现：`cargo build -p agent-store`，隔离 `--data-dir` 起在 `127.0.0.1:8787`；WS 上依次 `initialize` → `initialized`（**少这一步每个方法都回 `not_initialized`**）→ `market/add{source_kind:"directory"}` → `store/categories` / `store/list`。
+
+#### 6.4.1 技能市场读数，以及探针抓到的两个真问题
+
+换注册站点仓的 `market-source/skills`（4,633 文件，索引带市场级 tags 与行内 tags）：
+
+```text
+store/list: items=262  with_tags=262          ← 技能条目的标签全部来自索引行（`43` 的链路）
+  sample: 腾讯文档 => [{"en":"Collaboration","zh":"办公协同"}]
+```
+
+**问题 A（已修）：`store/categories` 的答案依赖调用顺序。** 同一次会话里：
+
+```text
+categories BEFORE any list: items=15 marketplace_tags=0     ← 冷启动，字典读取器还不知道市场根
+categories AFTER  a list:  items=15 marketplace_tags=11     ← 这才拿到技能市场的 11 项词汇表
+```
+
+根因：`CategoryDictionary` 只在 `StoreProvider::list()` 遍历市场时才知道各市场的根；而 `store/categories` 正是客户端（筛选栏）**可能最先调**的接口。若某个市场自带分类字典，冷启动那次还会把**内置词表**当成答案返给客户端——不只是缺标签，是**错数据**。
+
+修法：把「走上启用的市场、记下它们的根」抽成一个 helper（`remember_market_roots`，只读注册表 + 解析路径，不碰条目），`list()` 与 `categories()` 都先调它；并把 `remember_root` 改为 **`set_roots`（整体替换）**——原实现只累加，市场被停用/移除后它的字典仍会继续参与合并（同一次探针暴露的第二个隐患）。
+
+修后**同一个实验**（重建二进制后重跑，注册同一个技能市场目录）：
+
+```text
+categories BEFORE any list: items=15 marketplace_tags=11   ← 冷启动即正确（修前是 0）
+store/list: items=262
+categories AFTER  a list:  items=15 marketplace_tags=11
+```
+
+单测补了 `the_market_tag_vocabulary_follows_the_root_set`（认得的根会被读、`set_roots` 换掉后不再贡献）与 `a_declared_market_wins_and_the_builtin_covers_its_absence` 里的「停用后回落到内置」断言。
+
+**问题 B（已修文档）：`connectors.json` 没有 tags** —— 见 §5.5 的修正，我原先多写了一句不成立的「数据侧已具备」。
+
+> 这两个问题都是「先做真机读数、再回看断言」抓出来的：单测（构造 `CategoryDictionary` 后显式塞 root）永远走不到冷启动那条路径。
 
 ### 6.5 剩余事项
 

@@ -158,7 +158,7 @@ plugin.json manifest.tags（专家链路，权威）
 
 **category join 规则**（M2）：条目 `category_id` 在**同 marketplace** 的字典中命中 → 内嵌完整 `category`；未命中（字典缺失/源未升级）→ 只给 `category_id`，不给 `category`——宁可少给，不猜。
 
-**字典缓存**（M4）：按**文件身份**（路径 + mtime + 长度）memoize 解析结果，不是只按 marketplace_id——市场扫掠是**原地**替换 live 根里的文件，只按路径做键会永久供应过期字典；文件一变换了戳就重新解析。文件缺失或解析失败返回空 `items`（不 500，分类缺失不是错误）；无任何市场声明字典时回落到宿主内置词表（见 §6）。
+**字典缓存**（M4）：按**文件身份**（路径 + mtime + 长度）memoize 解析结果，不是只按 marketplace_id——市场扫掠是**原地**替换 live 根里的文件，只按路径做键会永久供应过期字典；文件一变换了戳就重新解析。**市场根集合用 `set_roots` 整体替换**（不累加：市场被停用或移除后必须停止贡献字典），且 `store/list` 与 `store/categories` 都先走同一个 `remember_market_roots`——只让 `list()` 教它认路会让 `store/categories` 冷启动答错（真机探针抓到，见 `44` §6.4.1）。文件缺失或解析失败返回空 `items`（不 500，分类缺失不是错误）；无任何市场声明字典时回落到宿主内置词表（见 §6）。
 
 ### 3.4 交互时序
 

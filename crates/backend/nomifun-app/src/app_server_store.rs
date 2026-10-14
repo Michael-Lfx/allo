@@ -67,6 +67,28 @@ impl AppServerStoreProvider {
             ),
         }
     }
+
+    /// Point the dictionary reader at the currently enabled markets' roots.
+    ///
+    /// One helper for both store faces on purpose: `list()` used to be the only
+    /// caller, which made `store/categories` answer differently depending on
+    /// whether a `store/list` had happened first (a client whose first call is
+    /// the filter-bar call got the built-in dictionary and no tag vocabulary —
+    /// probed 2026-10-14). Cheap: a registry read plus path resolution, no
+    /// per-entry work, so calling it from both is free.
+    async fn remember_market_roots(&self) -> Result<(), AppError> {
+        let markets = self.market_rows.list_marketplaces().await.map_err(AppError::from)?;
+        let roots = markets
+            .iter()
+            .filter(|market| market.enabled == 1)
+            .filter_map(|market| {
+                market_root_dir(market, &self.market_root)
+                    .map(|root| (market.marketplace_id.clone(), root))
+            })
+            .collect();
+        self.categories.set_roots(roots);
+        Ok(())
+    }
 }
 
 fn to_localized(text: &LocalizedText) -> AppServerLocalizedText {
@@ -351,6 +373,10 @@ impl StoreProvider for AppServerStoreProvider {
         // The roots are learned by `list()`, so a cold `categories` call before
         // any `store/list` legitimately answers empty — same partial-catalog
         // honesty as `markets_pending`.
+        // Learn the enabled markets' roots first: the dictionary reader is
+        // otherwise blind on a cold provider, and this endpoint is exactly the
+        // filter-bar call a client may make **before** any `store/list`.
+        self.remember_market_roots().await?;
         let items = self.categories.load().await?;
         let marketplace_tags = self.categories.load_marketplace_tags().await;
         Ok(AppServerStoreCategoriesResponse {
@@ -369,6 +395,9 @@ impl StoreProvider for AppServerStoreProvider {
             .list_marketplaces()
             .await
             .map_err(AppError::from)?;
+        // The dictionary reader learns each enabled market's root here — shared
+        // with `categories()` through one helper so the two faces cannot drift.
+        self.remember_market_roots().await?;
         // One dictionary read per catalog build (`43` §3.3): the join needs the
         // enabled markets' category rows, and re-reading the (31k-line) experts
         // manifest per entry would be waste.
@@ -384,11 +413,6 @@ impl StoreProvider for AppServerStoreProvider {
                 continue;
             }
             let market_root = market_root_dir(&market, &self.market_root);
-            // The dictionary reader learns each market's root here: `list` and
-            // `store/categories` then share one cached read (`43` M4).
-            if let Some(root) = &market_root {
-                self.categories.remember_root(&market.marketplace_id, root.clone());
-            }
             let index = market_root
                 .as_ref()
                 .map(|root| MarketIndex::read(root))

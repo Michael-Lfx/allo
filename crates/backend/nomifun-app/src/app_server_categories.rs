@@ -108,13 +108,22 @@ pub struct CategoryDictionary {
 }
 
 impl CategoryDictionary {
-    /// Remember where a market's source root lives (called by the store
-    /// provider while it walks the enabled markets).
-    pub fn remember_root(&self, marketplace_id: &str, root: PathBuf) {
-        self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(
-            marketplace_id.to_owned(),
-            root,
-        );
+    /// Point the reader at the **currently enabled** markets' source roots.
+    ///
+    /// Replaces the previous set instead of accumulating: the caller walks the
+    /// enabled markets, so one that was disabled or removed since must stop
+    /// contributing its dictionary. Cheap (a registry read, no per-entry work) —
+    /// which is exactly why `store/categories` can call it itself rather than
+    /// depending on a prior `store/list`. That dependency was a real defect: a
+    /// client whose first call is the filter-bar call got the built-in dictionary
+    /// and an empty tag vocabulary (probed 2026-10-14: `marketplace_tags` was `0`
+    /// before a `store/list` and `11` after it).
+    pub fn set_roots(&self, roots: Vec<(String, PathBuf)>) {
+        let mut map = self.roots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.clear();
+        for (marketplace_id, root) in roots {
+            map.insert(marketplace_id, root);
+        }
     }
 
     fn roots(&self) -> Vec<PathBuf> {
@@ -354,7 +363,7 @@ mod tests {
             r#"{"categories":[{"id":"99-Custom","name":{"zh":"自定义","en":"Custom"}}]}"#,
         )
         .unwrap();
-        dict.remember_root("demo-market", dir.clone());
+        dict.set_roots(vec![("demo-market".to_owned(), dir.clone())]);
         let items = dict.load().await.unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "99-Custom");
@@ -362,6 +371,38 @@ mod tests {
             !items.iter().any(|c| c.id == "08-FinanceInvestment"),
             "the builtin set must not leak into a market that declares its own"
         );
+
+        // Disabling or removing that market drops its dictionary again: the root
+        // set is replaced wholesale, never accumulated.
+        dict.set_roots(Vec::new());
+        assert_eq!(dict.load().await.unwrap().len(), 15, "back to the builtin set");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// One known market contributes its tags; a later `set_roots` that no longer
+    /// lists it must stop contributing them. This is the shape of the call-order
+    /// defect the live probe found: `store/categories` was blind until a
+    /// `store/list` taught it the roots, so a filter-bar-first client got
+    /// `marketplace_tags: []`.
+    #[tokio::test]
+    async fn the_market_tag_vocabulary_follows_the_root_set() {
+        let dict = CategoryDictionary::default();
+        let dir = scratch("roots");
+        std::fs::create_dir_all(dir.join(".codebuddy-skill")).unwrap();
+        std::fs::write(
+            dir.join(".codebuddy-skill").join("marketplace.json"),
+            r#"{"tags_zh":["办公协同"],"tags_en":["Collaboration"]}"#,
+        )
+        .unwrap();
+
+        assert!(dict.load_marketplace_tags().await.is_empty(), "no roots known yet");
+        dict.set_roots(vec![("skills".to_owned(), dir.clone())]);
+        let tags = dict.load_marketplace_tags().await;
+        assert_eq!(tags.len(), 1, "a known root is read without any prior store/list");
+        assert_eq!(tags[0].zh.as_deref(), Some("办公协同"));
+
+        dict.set_roots(Vec::new());
+        assert!(dict.load_marketplace_tags().await.is_empty(), "a removed market stops contributing");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -378,7 +419,7 @@ mod tests {
             r#"{"categories":[{"id":"01-One","name":{"zh":"一"}}]}"#,
         )
         .unwrap();
-        dict.remember_root("demo-market", dir.clone());
+        dict.set_roots(vec![("demo-market".to_owned(), dir.clone())]);
         assert_eq!(dict.load().await.unwrap().len(), 1);
 
         // A refresh rewrites the file (different length ⇒ a different stamp even
