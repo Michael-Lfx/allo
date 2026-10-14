@@ -33,7 +33,7 @@ You must output a well-structured and clearly formatted story document as follow
 Main Characters Introduction: Briefly introduce the core characters, including their names, key traits, and motivations.
 - Full Story Narrative:
     - If the number of scenes is unspecified, narrate the story naturally in paragraphs following the "Introduction - Development - Climax - Conclusion" structure.
-    - If a specific number of scenes (e.g., N scenes) is specified, clearly divide the story into N scenes, giving each a subheading (e.g., Scene One: Code at Midnight). The description for each scene should be relatively balanced, including atmosphere, character actions, and dialogue, all working together to advance the plot.
+    - If a specific number of scenes (e.g., N scenes) is specified, clearly divide the story into N scenes, giving each a subheading (e.g., Scene One: Code at Midnight). The description for each scene should be relatively balanced, built from the character actions and dialogue that advance the plot, with atmosphere only where the scene needs it.
 - The narrative should be vivid and detailed, matching the specified genre and target audience.
 - The output should begin directly with the story, without any extra words.
 
