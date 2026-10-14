@@ -123,7 +123,6 @@ async fn read_lesson_supplements(
         }
     }
     Ok((supplements, hit_count))
->>>>>>> 475516457 (feat(learning): 课时写作接回知识库——多片段 grounding、主源全文与检索补充)
 }
 
 impl LearningService {
@@ -753,7 +752,7 @@ impl LearningService {
             }),
             // 学习图节点的目标在 graph.goal；本字段只承载传统课程目标。
             goal: None,
-            // 防超纲黑名单：可及后代节点标题清单（graph_node_topology 推导）。
+            // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
             forbidden_concepts,
         };
 
@@ -1589,7 +1588,7 @@ impl LearningService {
                     serde_json::from_str(&samples_json).map_err(internal)?;
                 let module_position: i64 = row.try_get("module_position").map_err(internal)?;
                 let lesson_position: i64 = row.try_get("position").map_err(internal)?;
-                blueprint
+                let module = blueprint
                     .modules
                     .get(module_position as usize)
                     .ok_or_else(|| AppError::Internal("outline module position out of range".into()))?;
@@ -1607,7 +1606,8 @@ impl LearningService {
                             .find(|(path, _)| path == &source.path)
                             .map(|(_, excerpt)| excerpt.clone())
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                excerpt
             }
             _ => String::new(),
         };
