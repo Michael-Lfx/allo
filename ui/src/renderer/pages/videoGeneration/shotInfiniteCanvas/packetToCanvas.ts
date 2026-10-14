@@ -28,6 +28,22 @@ export function parseShotNodeId(id: string): ShotCanvasNodeRef | null {
   return null;
 }
 
+/** List payloads skip live disk merge; empty refs are not a reliable canvas seed. */
+export function packetHasCanvasRefs(
+  packet: { image_refs?: ShotRefSlot[]; audio_refs?: ShotRefSlot[] } | null | undefined
+): boolean {
+  return (packet?.image_refs?.length ?? 0) > 0 || (packet?.audio_refs?.length ?? 0) > 0;
+}
+
+export function packetSlotSignature(
+  packet: { image_refs?: ShotRefSlot[]; audio_refs?: ShotRefSlot[] } | null | undefined
+): string {
+  if (!packet) return '';
+  const images = (packet.image_refs ?? []).map((slot) => `i${slot.slot}`).join(',');
+  const audios = (packet.audio_refs ?? []).slice(0, 3).map((slot) => `a${slot.slot}`).join(',');
+  return `${images}|${audios}`;
+}
+
 export function shotStorageKey(kind: ShotCanvasRefKind | 'video', path: string): string {
   return `${kind}:shot:${path}`;
 }
