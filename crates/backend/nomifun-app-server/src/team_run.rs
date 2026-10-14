@@ -686,6 +686,8 @@ mod tests {
                 member_agent_ids: vec!["wb-demo-dev".into()],
                 source: "imported".into(),
                 compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::Compatible,
+                tags: vec![],
+                category_id: None,
             },
             planner_policy: "planned".into(),
             routing_constraints: vec!["prefer_frontend".into()],

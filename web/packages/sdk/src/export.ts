@@ -6,7 +6,11 @@
  * The wire face (`agent/export` / `team/export`, docs/agent-store/32) carries
  * skills **by reference** — `{name, id}`, never bytes — and, since
  * `pack_format 2`, the plugin-level **assets** by reference too (`{path, kind,
- * size, digest}`, doc 38). "Export the team" therefore means: walk the pack,
+ * size, digest}`, doc 38). Since `pack_format 3` the pack also carries the
+ * market **display metadata** (`tags` / `category_id`, doc 44): it rides into
+ * `expert-pack.json` verbatim, so a consumer can restore the market's category
+ * structure (resolving the id needs that host's `store.categories()`).
+ * "Export the team" therefore means: walk the pack,
  * fetch every referenced skill through `skill/files` + `skill/file`, fetch
  * every asset through `import/assets` + `import/asset`, and write the whole
  * thing to a directory the *caller* owns. Doc `32` §6.5 originally shipped

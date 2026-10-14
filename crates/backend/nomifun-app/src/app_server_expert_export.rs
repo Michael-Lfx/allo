@@ -39,7 +39,7 @@ use nomifun_app_server::{
 use nomifun_common::AppError;
 use nomifun_db::{IPluginSnapshotRepository, PluginSnapshotComponentRow};
 
-use crate::app_server_importer::{localized_field, payload, string_array, string_field};
+use crate::app_server_importer::{localized_field, localized_list, payload, string_array, string_field};
 
 /// The runtime engine every installed expert is pinned to on this host.
 ///
@@ -281,6 +281,10 @@ impl AppServerExpertExport {
             name: row.name.clone(),
             display_name: localized_field(&value, "display_name"),
             description: string_field(&value, "description"),
+            // Display metadata (`44` §2.3): on every pack including members —
+            // a member's category is its own declaration, not snapshot-scoped.
+            tags: localized_list(&value, "tags"),
+            category_id: string_field(&value, "category_id"),
             persona: AppServerExpertPersona {
                 instructions: string_field(&value, "instructions").unwrap_or_default(),
                 memory: string_field(&value, "memory"),
@@ -515,6 +519,8 @@ impl ExpertPackProvider for AppServerExpertExport {
             name: row.name.clone(),
             display_name: localized_field(&value, "display_name"),
             description: string_field(&value, "description"),
+            tags: localized_list(&value, "tags"),
+            category_id: string_field(&value, "category_id"),
             // A team has no persona of its own — the members do. The team's own
             // Preset exists so `team/run` and `conversation/create` have
             // something resolvable; it is not part of the Definition, so nothing
@@ -720,6 +726,9 @@ mod tests {
             "display_name": { "zh": "组长", "en": "Lead" },
             "memory": "keep notes",
             "avatar": "avatars/lead.png",
+            // Doc `44`: the member's category is its own declaration.
+            "category_id": "02-Engineering",
+            "tags": [{ "zh": "技术工程", "en": "Engineering" }],
         })
         .to_string();
         let member = serde_json::json!({
@@ -742,6 +751,12 @@ mod tests {
             "routing_constraints": ["prefer_frontend"],
             "workflow_limits": { "max_parallel": 4 },
             "team_runtime_capabilities": ["planned_dag", "local_parallel"],
+            // Doc `44`: package-level display metadata, on the top-level pack.
+            "category_id": "04-DataAI",
+            "tags": [
+                { "zh": "数据智能", "en": "Data & AI" },
+                { "zh": "办公效率", "en": null },
+            ],
         })
         .to_string();
         let connector = serde_json::json!({
@@ -1327,6 +1342,38 @@ mod tests {
         // snapshot-scoped list.
         let agent = provider.export_agent(AGENT_ID).await.expect("export");
         assert_eq!(agent.assets.len(), 4);
+    }
+
+    /// Doc `44` TC-CAT-011: the pack carries the market's display metadata —
+    /// the top-level pack from its own package row, every member pack from its
+    /// own declaration (unlike the snapshot-scoped `assets`, doc `44` D3), and
+    /// a member with no declaration carries none.
+    #[tokio::test]
+    async fn a_pack_carries_its_own_category_and_tags() {
+        let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+        assert_eq!(pack.pack_format, 3, "doc 44 moves the pack to format 3");
+        assert_eq!(pack.category_id.as_deref(), Some("04-DataAI"));
+        assert_eq!(pack.tags.len(), 2);
+        assert_eq!(pack.tags[0].zh.as_deref(), Some("数据智能"));
+        assert_eq!(pack.tags[0].en.as_deref(), Some("Data & AI"));
+        // A one-sided tag keeps the missing locale absent on the wire type.
+        assert_eq!(pack.tags[1].zh.as_deref(), Some("办公效率"));
+        assert_eq!(pack.tags[1].en, None);
+
+        let members = &pack.team.as_ref().expect("team pack").members;
+        let lead = members.iter().find(|m| m.id == AGENT_ID).expect("leader pack");
+        assert_eq!(lead.category_id.as_deref(), Some("02-Engineering"));
+        assert_eq!(lead.tags[0].zh.as_deref(), Some("技术工程"));
+
+        let qa = members.iter().find(|m| m.id == MEMBER_ID).expect("member pack");
+        assert!(qa.category_id.is_none());
+        assert!(qa.tags.is_empty(), "an undeclared member carries no tags");
+
+        // The single-agent export is the same row read as its own package.
+        let agent = provider.export_agent(AGENT_ID).await.expect("export");
+        assert_eq!(agent.category_id.as_deref(), Some("02-Engineering"));
     }
 
     #[tokio::test]

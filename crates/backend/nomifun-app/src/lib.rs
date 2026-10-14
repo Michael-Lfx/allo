@@ -15,6 +15,7 @@ pub mod app_server_installer;
 pub mod app_server_skill_files;
 pub mod app_server_snapshot_assets;
 pub mod app_server_marketplace;
+pub mod app_server_categories;
 pub mod app_server_store;
 pub mod market_fetch;
 pub mod market_source;

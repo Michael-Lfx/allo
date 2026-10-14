@@ -93,7 +93,7 @@ use nomifun_api_types::{
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,
-    AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerStoreCategoriesResponse, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
     AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, McpServerId, MessageResponse,
     PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest, UpdateProviderModelRequest,
@@ -218,7 +218,23 @@ use tokio::sync::mpsc;
 /// on `AppServerExpertPack` (`pack_format 2`), so `exportTeam` can materialize a
 /// directory the package's own scripts recognize as the plugin root. Both new
 /// methods are unmapped, so the documented split moves to `55 / 82`.
-pub const PROTOCOL_VERSION: &str = "fp-14";
+/// **`fp-15` exposes market categories and tags over the wire** (doc 43): a new
+/// **mapped** method `store/categories`
+/// (`GET /api/app-server/store/categories`) returns the category dictionaries
+/// of all enabled markets plus the market-level tag vocabulary;
+/// `AppServerStoreItem` gains `category_id` / `category` (the host joins the
+/// dictionary); `AppServerAgentSummary` gains `tags` / `category_id` — moved
+/// up from `AppServerAgentDetail`, which loses those two fields (a `flatten`
+/// cannot carry the same key twice). One method with an HTTP route, so the
+/// documented split moves to `56 / 83`.
+/// **`fp-16` closes the remaining category gaps** (doc 44):
+/// `AppServerTeamSummary` gains `tags` / `category_id` (the package-level
+/// display metadata the import already records) and `AppServerSkillSummary`
+/// gains `tags` (from the market index row — the only tag source a skill, which
+/// ships no `plugin.json`, has). No method is added or removed, so the
+/// documented split stays `56 / 83`; the expert pack's own version moves
+/// independently (`pack_format 2 → 3`).
+pub const PROTOCOL_VERSION: &str = "fp-16";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1446,6 +1462,9 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         )
         // Agent Store unified store catalog (winget-style)
         .route("/api/app-server/store", get(store_list_route))
+        // Static segment, registered like `market-settings` before the
+        // parameterized entry routes: a market id could otherwise shadow it.
+        .route("/api/app-server/store/categories", get(store_categories_route))
         .route(
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
             post(store_install_entry_route),
@@ -3113,6 +3132,16 @@ async fn store_list_impl(
     store_provider(state)?.list().await.map_err(AppServerError::from)
 }
 
+/// `store/categories` (`43` §3.1): dictionary + market tag vocabulary. Warms
+/// the default marketplaces too — the roots the dictionary reads are learned
+/// during `list()`'s market walk, so a cold call needs the same warm-up.
+async fn store_categories_impl(
+    state: &AppServerRouterState,
+) -> Result<AppServerStoreCategoriesResponse, AppServerError> {
+    warm_default_marketplaces(state);
+    store_provider(state)?.categories().await.map_err(AppServerError::from)
+}
+
 async fn store_install_entry_impl(
     state: &AppServerRouterState,
     marketplace_id: &str,
@@ -3553,6 +3582,15 @@ async fn store_list_route(
 ) -> Result<Json<AppServerStoreList>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(store_list_impl(&state).await?))
+}
+
+async fn store_categories_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AppServerStoreCategoriesResponse>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_categories_impl(&state).await?))
 }
 
 async fn store_install_entry_route(
@@ -8058,6 +8096,13 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode store: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        "store/categories" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let categories = store_categories_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(categories).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store categories: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         "store/install-entry" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsStoreEntry>(params)?;
@@ -9339,6 +9384,8 @@ mod tests {
             display_name: None,
             profession: None,
             avatar_url: None,
+            tags: vec![],
+            category_id: None,
         };
         let mut state = AppServerRouterState::default();
         state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
@@ -9461,6 +9508,8 @@ mod tests {
                 display_name: None,
                 profession: None,
                 avatar_url: None,
+                tags: vec![],
+                category_id: None,
             }],
         }));
         let mut preset_id = String::new();
@@ -9530,6 +9579,8 @@ mod tests {
                 display_name: None,
                 profession: None,
                 avatar_url: None,
+                tags: vec![],
+                category_id: None,
             }],
         }));
         let mut preset_id = String::new();
@@ -12184,6 +12235,7 @@ model = "mimo-v2.5-free"
             enabled: true,
             required_connectors: vec![],
             avatar_url: None,
+            tags: vec![],
         }
     }
 
@@ -12618,6 +12670,8 @@ model = "mimo-v2.5-free"
             display_name: None,
             profession: None,
             avatar_url: None,
+            tags: vec![],
+            category_id: None,
         }
     }
 
@@ -12631,6 +12685,8 @@ model = "mimo-v2.5-free"
             member_agent_ids: vec!["wb-demo-software-qa-engineer".into()],
             source: "codebuddy-plugin".into(),
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            tags: vec![],
+            category_id: None,
         }
     }
 
@@ -12770,6 +12826,8 @@ model = "mimo-v2.5-free"
             name: "software-team-lead".into(),
             display_name: None,
             description: Some("lead".into()),
+            tags: vec![],
+            category_id: None,
             persona: nomifun_api_types::AppServerExpertPersona {
                 instructions: PERSONA_SENTINEL.into(),
                 memory: None,
@@ -12984,10 +13042,8 @@ model = "mimo-v2.5-free"
             permission_mode_ignored: false,
             display_description: None,
             quick_prompts: vec![],
-            tags: vec![],
             default_init_prompt: None,
             expert_type: None,
-            category_id: None,
         };
         let catalog_json = serde_json::to_value(&detail).unwrap();
         assert!(
@@ -13288,16 +13344,25 @@ model = "mimo-v2.5-free"
     }
 
     #[test]
-    fn sample_expert_pack_serializes_pack_format_2_with_assets() {
-        // Doc `38` flips `pack_format` to 2 and puts the asset list on the wire;
-        // the shape guard here keeps a future bump a conscious act.
+    fn sample_expert_pack_serializes_the_current_pack_format_with_assets() {
+        // Doc `38` flipped `pack_format` to 2 and put the asset list on the wire;
+        // doc `44` moved it to 3 for the display metadata. The shape guard here
+        // keeps a future bump a conscious act.
         let json = serde_json::to_value(sample_expert_pack()).unwrap();
-        assert_eq!(json["pack_format"], 2);
+        assert_eq!(
+            json["pack_format"],
+            nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT
+        );
+        assert_eq!(json["pack_format"], 3);
         assert_eq!(json["assets"][0]["path"], "bin/init_task.py");
         assert_eq!(json["assets"][0]["kind"], "script");
         // `avatar` is absent when unset (`skip_serializing_if`), so `null` can
         // never imply "no avatar" versus "no field".
         assert!(json.get("avatar").is_none());
+        // Doc `44`: the display metadata is optional in the same way — an
+        // undeclared category is an absent key, never a null placeholder.
+        assert!(json.get("tags").is_none());
+        assert!(json.get("category_id").is_none());
     }
 
     // ---- Connector call proxy: `connector/call` (doc 24 §5) ---------------
@@ -13502,6 +13567,7 @@ model = "mimo-v2.5-free"
                         // 这个测试替身只枚举磁盘上的技能；市场图标的解析在
                         // `nomifun-app`（`app_server_entry_assets`），不在这里。
                         avatar_url: None,
+                        tags: vec![],
                     }
                 })
                 .collect())

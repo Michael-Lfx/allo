@@ -1193,7 +1193,13 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // `store/list` shows the index version — an update that can never be
         // delivered, and a content change that collides with the snapshot
         // already stored under `1.0.0`.
-        .with_declared_version(Some(facts.version.clone()));
+        //
+        // The index row's localized tags ride along (`44`): the only tag
+        // source for skill/connector entries, stamped into the component
+        // payload so the installed-skill catalog shows what the store shows.
+        // Plugin imports keep their `plugin.json` tags.
+        .with_declared_version(Some(facts.version.clone()))
+        .with_index_tags(facts.index_info.as_ref().map(|info| info.tags.clone()));
         self.importer
             .run_import(&request)
             .await

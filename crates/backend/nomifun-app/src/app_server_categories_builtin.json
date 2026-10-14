@@ -1,0 +1,174 @@
+{
+  "_source": "WorkBuddy expert catalog index (app cache)",
+  "_source_file": "~/.workbuddy/app/cache/experts/manifest.json",
+  "_source_lastUpdated": "2026-08-18T03:00:00Z",
+  "_source_sha256": "bdf8bde3c2d38c92e10b435dcc39bd16049831af59f03a2e7eec6549b63697fb",
+  "_note": "Verbatim copy of the catalog index categories[] (id + localized name/description). The market-declared dictionary wins whenever a market ships one; this is only the fallback for market archives that ship none (the ModelScope experts.zip root has no manifest.json).",
+  "categories": [
+    {
+      "id": "13-TencentZone",
+      "name": {
+        "en": "Tencent Zone",
+        "zh": "腾讯专区"
+      },
+      "description": {
+        "en": "Tencent ecosystem experts: Tencent Cloud, WeChat Mini Programs, WeCom, Tencent Games, and other Tencent technology stack specialists",
+        "zh": "腾讯生态专家：腾讯云、微信小程序、企业微信、腾讯游戏等腾讯技术栈专家"
+      }
+    },
+    {
+      "id": "01-ProductDesign",
+      "name": {
+        "en": "Product Design",
+        "zh": "产品设计"
+      },
+      "description": {
+        "en": "Product managers, UI/UX designers, interaction designers, user researchers",
+        "zh": "产品经理、UI/UX设计师、交互设计师、用户研究员"
+      }
+    },
+    {
+      "id": "15-BackToSchool",
+      "name": {
+        "en": "Back to School",
+        "zh": "开学季"
+      },
+      "description": {
+        "en": "Back-to-school season experts: new semester planning, study supplies & education products, exam preparation, campus life preparation",
+        "zh": "开学季主题专家：新学期规划、学习用品与教育产品、备考升学、校园生活准备"
+      }
+    },
+    {
+      "id": "02-Engineering",
+      "name": {
+        "en": "Engineering",
+        "zh": "技术工程"
+      },
+      "description": {
+        "en": "Frontend, backend, full-stack, mobile, DevOps, security engineers",
+        "zh": "前端工程师、后端工程师、全栈开发、移动端开发、DevOps、安全工程师"
+      }
+    },
+    {
+      "id": "08-FinanceInvestment",
+      "name": {
+        "en": "Finance Investment",
+        "zh": "金融投资"
+      },
+      "description": {
+        "en": "Financial analysis, accounting, investment banking, equity research, wealth management",
+        "zh": "财务分析、会计、投资银行、股票研究、财富管理"
+      }
+    },
+    {
+      "id": "03-GameSpatial",
+      "name": {
+        "en": "Game & Spatial",
+        "zh": "游戏空间"
+      },
+      "description": {
+        "en": "Game design, game development (Unity/Unreal/Godot/Roblox), XR/spatial computing",
+        "zh": "游戏设计、游戏开发(Unity/Unreal/Godot/Roblox)、XR/空间计算"
+      }
+    },
+    {
+      "id": "04-DataAI",
+      "name": {
+        "en": "Data & AI",
+        "zh": "数据智能"
+      },
+      "description": {
+        "en": "Data analysts, data scientists, AI/ML engineers, BI experts",
+        "zh": "数据分析师、数据科学家、AI/ML工程师、BI专家"
+      }
+    },
+    {
+      "id": "05-MarketingGrowth",
+      "name": {
+        "en": "Marketing Growth",
+        "zh": "营销增长"
+      },
+      "description": {
+        "en": "Marketing, SEO/SEM, content marketing, brand strategy, growth hacking, advertising",
+        "zh": "市场营销、SEO/SEM、内容营销、品牌策略、增长黑客、广告投放"
+      }
+    },
+    {
+      "id": "06-ContentCreative",
+      "name": {
+        "en": "Content Creative",
+        "zh": "内容创作"
+      },
+      "description": {
+        "en": "Copywriting, content editing, short video scripts, self-media operations, video production",
+        "zh": "文案策划、内容编辑、短视频脚本、自媒体运营、视频制作"
+      }
+    },
+    {
+      "id": "07-SalesCommerce",
+      "name": {
+        "en": "Sales Commerce",
+        "zh": "销售商务"
+      },
+      "description": {
+        "en": "Sales strategy, business development, proposal writing, client management",
+        "zh": "销售策略、商务拓展、方案撰写、客户管理"
+      }
+    },
+    {
+      "id": "09-OperationsHR",
+      "name": {
+        "en": "Operations HR",
+        "zh": "运营人力"
+      },
+      "description": {
+        "en": "Product operations, user operations, customer success, HR, recruitment, training, public welfare",
+        "zh": "产品运营、用户运营、客户成功、人力资源、招聘、培训、公益"
+      }
+    },
+    {
+      "id": "10-ProjectQuality",
+      "name": {
+        "en": "Project Quality",
+        "zh": "项目质量"
+      },
+      "description": {
+        "en": "Project management, agile coaching, process optimization, quality management, testing",
+        "zh": "项目管理、敏捷教练、流程优化、质量管理、测试"
+      }
+    },
+    {
+      "id": "11-SecurityCompliance",
+      "name": {
+        "en": "Security Compliance",
+        "zh": "法务安全"
+      },
+      "description": {
+        "en": "Legal compliance, information security, privacy protection, blockchain security",
+        "zh": "法律合规、信息安全、隐私保护、区块链安全"
+      }
+    },
+    {
+      "id": "12-IndustryConsultant",
+      "name": {
+        "en": "Industry Consultant",
+        "zh": "行业顾问"
+      },
+      "description": {
+        "en": "Industry-specific consulting: entrepreneurship, healthcare, public sector, specialized domain expertise",
+        "zh": "行业专项咨询：创业辅导、医疗健康、公共事业、垂直领域专家"
+      }
+    },
+    {
+      "id": "14-GlobalDevelopment",
+      "name": {
+        "en": "Global Development",
+        "zh": "全球发展"
+      },
+      "description": {
+        "en": "Cross-border business experts: overseas expansion, international HR, global compliance, foreign market entry, expatriate management",
+        "zh": "跨境业务专家：企业出海、国际人力、全球合规、海外市场进入、外派管理"
+      }
+    }
+  ]
+}
