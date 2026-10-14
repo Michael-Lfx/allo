@@ -111,6 +111,8 @@ const TELEMETRY_EVENT_NAMES: &[&str] = &[
     "update_download_started",
     "update_download_succeeded",
     "update_download_failed",
+    "update_download_progress",
+    "update_install_prompted",
     "update_install_started",
     "update_install_failed",
     "update_install_blocked",
@@ -268,6 +270,8 @@ fn expected_growth_module(name: &str, feature: Option<&str>) -> &'static str {
             | "update_download_started"
             | "update_download_succeeded"
             | "update_download_failed"
+            | "update_download_progress"
+            | "update_install_prompted"
             | "update_install_started"
             | "update_install_failed"
             | "update_install_blocked"
@@ -552,6 +556,8 @@ mod growth_tests {
             "update_download_started",
             "update_download_succeeded",
             "update_download_failed",
+            "update_download_progress",
+            "update_install_prompted",
             "update_install_started",
             "update_install_failed",
             "update_install_blocked",

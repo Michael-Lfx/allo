@@ -373,6 +373,8 @@ export type TurnTimingProps = {
   session_id?: string;
   /** Wire/billing turn id (X-Flowy-Turn-Id); joins tb_user_chat.turn_id. */
   turn_id?: string;
+  /** Dialogue vs cron/companion/eval. User composers default to session_dialogue. */
+  session_kind?: string;
 };
 
 type TurnTimingSession = {
@@ -396,6 +398,8 @@ function compactTurnJoinProps(session: TurnTimingSession): FunnelEvent['props'] 
   if (sessionId) props.session_id = sessionId;
   const turnId = session.props.turn_id?.trim();
   if (turnId) props.turn_id = turnId;
+  const sessionKind = session.props.session_kind?.trim() || 'session_dialogue';
+  props.session_kind = sessionKind;
   return props;
 }
 

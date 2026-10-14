@@ -94,6 +94,7 @@ describe('product funnel', () => {
     const firstToken = queued.find((event) => event.name === 'first_token');
     const idle = queued.find((event) => event.name === 'turn_idle');
     expect(submitted?.properties.session_id).toBe('550e8400-e29b-41d4-a716-446655440000');
+    expect(submitted?.properties.session_kind).toBe('session_dialogue');
     expect(submitted?.properties.turn_id).toBeUndefined();
     expect(accepted?.properties.turn_id).toBe('0193f0a0-0000-7000-8000-000000000001');
     expect(firstToken?.properties.session_id).toBe('550e8400-e29b-41d4-a716-446655440000');
