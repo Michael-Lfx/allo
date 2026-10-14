@@ -12,7 +12,7 @@ use std::path::Path;
 use nomifun_api_types::{
     AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
     AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
-    AppServerConnectorTool, AppServerModelList, AppServerModelSummary,
+    AppServerConnectorTool, AppServerLocalizedText, AppServerModelList, AppServerModelSummary,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpToolResponse,
     McpTransport, oauth_state,
@@ -68,6 +68,15 @@ impl AppServerSkillCatalog {
         let (snapshot_id, slug) = managed_snapshot_provenance(&self.paths, Path::new(location))?;
         assets.avatar_for_snapshot_slug(&snapshot_id, Some(&slug)).await
     }
+
+    /// Localized tags for one skill: marketplace products read the tags their
+    /// market index row declared (stamped into the snapshot payload, `44`);
+    /// builtin / user skills have none.
+    async fn tags_for(&self, location: &str) -> Option<Vec<AppServerLocalizedText>> {
+        let assets = self.assets.as_ref()?;
+        let (snapshot_id, slug) = managed_snapshot_provenance(&self.paths, Path::new(location))?;
+        assets.tags_for_skill(&snapshot_id, Some(&slug)).await
+    }
 }
 
 fn skill_summary(
@@ -75,6 +84,7 @@ fn skill_summary(
     origin: SkillOrigin,
     writable: bool,
     avatar_url: Option<String>,
+    tags: Vec<AppServerLocalizedText>,
 ) -> AppServerSkillSummary {
     let (source, compatibility) = match item.source {
         SkillSource::Builtin => ("builtin", AppServerCompatibilityStatus::Compatible),
@@ -99,6 +109,7 @@ fn skill_summary(
         enabled: true,
         required_connectors: Vec::new(),
         avatar_url,
+        tags,
     }
 }
 
@@ -130,7 +141,8 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
             let writable =
                 skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
             let avatar_url = self.avatar_for(&item.location).await;
-            out.push(skill_summary(item, origin, writable, avatar_url));
+            let tags = self.tags_for(&item.location).await.unwrap_or_default();
+            out.push(skill_summary(item, origin, writable, avatar_url, tags));
         }
         Ok(out)
     }
@@ -146,6 +158,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         let writable =
             skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
         let avatar_url = self.avatar_for(&item.location).await;
+        let tags = self.tags_for(&item.location).await.unwrap_or_default();
         // Public body is a bounded, trimmed summary. Internal routing rules,
         // credentials and the full raw Markdown stay behind the seam.
         //
@@ -159,7 +172,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         .map(|body| body.trim().chars().take(1200).collect::<String>())
         .filter(|body| !body.is_empty());
         Ok(AppServerSkillDetail {
-            summary: skill_summary(item, origin, writable, avatar_url),
+            summary: skill_summary(item, origin, writable, avatar_url, tags),
             mode: "store-agent".into(),
             invocation_policy: "model-auto".into(),
             instructions_summary,

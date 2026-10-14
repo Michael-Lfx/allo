@@ -33,6 +33,7 @@ import {
   type MarketplaceSummary,
   type MarketSettings,
   type MarketSettingsPatch,
+  type StoreCategories,
   type StoreInstallResult,
   type StoreList,
 } from "@flowy-agent-store/protocol";
@@ -337,6 +338,15 @@ export class AppServerClient {
   /** All store items across enabled marketplaces (display + install state). */
   async listStore(): Promise<StoreList> {
     return this.transport.request<StoreList>("store/list", {});
+  }
+
+  /**
+   * Category dictionary across enabled markets plus the market-level tag
+   * vocabulary (doc `43`) — filter-bar material. An empty `items` means no
+   * market declares a dictionary, not a failure.
+   */
+  async listStoreCategories(): Promise<StoreCategories> {
+    return this.transport.request<StoreCategories>("store/categories", {});
   }
 
   /** One-click install: import (when missing) + register in one call. */

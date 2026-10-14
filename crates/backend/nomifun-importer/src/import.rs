@@ -57,12 +57,24 @@ pub struct ImportRequest {
     /// snapshot instead of becoming a new version. `None` = keep the historical
     /// behaviour (use the manifest's own version).
     pub declared_version: Option<String>,
+    /// Localized display tags from the **market index row** (`43` M1 pairing,
+    /// doc `44`): the only tag source for skill / connector entries, which ship
+    /// no `plugin.json`. Written into every skill/connector component payload
+    /// so the installed-skill catalog can show the same tags the store item
+    /// does. `None` = the entry (or its market) declares none.
+    pub index_tags: Option<Vec<crate::manifest::LocalizedText>>,
 }
 
 impl ImportRequest {
     /// Override the version this import is stored under (`36` D2).
     pub fn with_declared_version(mut self, version: Option<String>) -> Self {
         self.declared_version = version;
+        self
+    }
+
+    /// Carry the market index row's localized tags into the snapshot (`44`).
+    pub fn with_index_tags(mut self, tags: Option<Vec<crate::manifest::LocalizedText>>) -> Self {
+        self.index_tags = tags;
         self
     }
 
@@ -75,6 +87,7 @@ impl ImportRequest {
             entry_name: None,
             source_revision: None,
             declared_version: None,
+            index_tags: None,
         }
     }
 
@@ -92,6 +105,7 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: None,
             declared_version: None,
+            index_tags: None,
         }
     }
 
@@ -110,6 +124,7 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: Some(source_revision),
             declared_version: None,
+            index_tags: None,
         }
     }
 }
@@ -261,7 +276,11 @@ impl ImporterService {
             source_kind: request.source_kind,
             source_uri: source.display().to_string(), // internal only
         };
-        let mut builder = ComponentBuilder::new(declared_version);
+        let mut builder = ComponentBuilder::new(declared_version)
+            // The market index row's tags (`44`): the only tag source for
+            // skill/connector entries. Plugin imports ignore it — their
+            // `plugin.json` tags win.
+            .with_index_tags(request.index_tags.clone().unwrap_or_default());
         let mut agents: Vec<(String, AgentDoc)> = Vec::new();
         // `dependencies` are consumed by the component builder, which only
         // *registers* them; keep a copy for the optional decision below.
@@ -459,6 +478,11 @@ impl ImporterService {
 
 struct ComponentBuilder {
     version: String,
+    /// Localized tags the market index row declares (`44`): stamped into every
+    /// skill / connector component payload, so an installed skill's catalog
+    /// face shows the same tags the store item does. Empty = the entry's
+    /// market declares none (or this import had no marketplace provenance).
+    index_tags: Vec<crate::manifest::LocalizedText>,
     components: Vec<Component>,
     /// snapshot-relative paths already claimed (component id uniqueness)
     claimed: HashSet<String>,
@@ -472,11 +496,29 @@ impl ComponentBuilder {
     fn new(version: String) -> Self {
         Self {
             version,
+            index_tags: Vec::new(),
             components: Vec::new(),
             claimed: HashSet::new(),
             warnings: Vec::new(),
             errors: Vec::new(),
             blocking_errors: Vec::new(),
+        }
+    }
+
+    /// Set the index-row tags for this import (`44`). Called once, before the
+    /// component builders run.
+    fn with_index_tags(mut self, tags: Vec<crate::manifest::LocalizedText>) -> Self {
+        self.index_tags = tags;
+        self
+    }
+
+    /// The payload fragment carrying the index tags; empty (and omitted from
+    /// the payload) when the market declares none.
+    fn index_tags_payload(&self) -> serde_json::Value {
+        if self.index_tags.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::to_value(&self.index_tags).unwrap_or_default()
         }
     }
 
@@ -914,24 +956,29 @@ fn build_skill_market_components(
                 Ok(doc) => {
                     let slug = entry.file_name().to_string_lossy().to_string();
                     let id = component_id(&meta.plugin_id, &slug);
+                    let mut payload = json!({
+                        "id": id,
+                        "version": builder.version,
+                        "name": doc.name,
+                        "slug": slug,
+                        "description": doc.description,
+                        "mode": "store-agent",
+                        "invocation_policy": "model-auto",
+                        "instructions_ref": rel,
+                        "relative_path": rel,
+                        "has_arguments_note": doc.has_arguments_note,
+                    });
+                    // Market index row tags (`44`): the skill's only tag source.
+                    if let Some(tags) = builder.index_tags_payload().as_array() {
+                        payload["tags"] = serde_json::Value::Array(tags.clone());
+                    }
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
                         doc.name.clone(),
                         Some(rel.clone()),
                         compat::skill(),
-                        json!({
-                            "id": id,
-                            "version": builder.version,
-                            "name": doc.name,
-                            "slug": slug,
-                            "description": doc.description,
-                            "mode": "store-agent",
-                            "invocation_policy": "model-auto",
-                            "instructions_ref": rel,
-                            "relative_path": rel,
-                            "has_arguments_note": doc.has_arguments_note,
-                        }),
+                        payload,
                     ));
                 }
                 Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
@@ -962,24 +1009,29 @@ fn build_single_skill_components(
             let id = component_id(&meta.plugin_id, &slug);
             match parse_skill(&text, &rel) {
                 Ok(doc) => {
+                    let mut payload = json!({
+                        "id": id,
+                        "version": builder.version,
+                        "name": doc.name,
+                        "slug": slug,
+                        "description": doc.description,
+                        "mode": "store-agent",
+                        "invocation_policy": "model-auto",
+                        "instructions_ref": rel,
+                        "relative_path": rel,
+                        "has_arguments_note": doc.has_arguments_note,
+                    });
+                    // Market index row tags (`44`): the skill's only tag source.
+                    if let Some(tags) = builder.index_tags_payload().as_array() {
+                        payload["tags"] = serde_json::Value::Array(tags.clone());
+                    }
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
                         doc.name.clone(),
                         Some(rel.clone()),
                         compat::skill(),
-                        json!({
-                            "id": id,
-                            "version": builder.version,
-                            "name": doc.name,
-                            "slug": slug,
-                            "description": doc.description,
-                            "mode": "store-agent",
-                            "invocation_policy": "model-auto",
-                            "instructions_ref": rel,
-                            "relative_path": rel,
-                            "has_arguments_note": doc.has_arguments_note,
-                        }),
+                        payload,
                     ));
                 }
                 Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),

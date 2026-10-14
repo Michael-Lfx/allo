@@ -247,14 +247,14 @@ describe("HttpTransport · route table count guard", () => {
    * This constant is the **source of truth for the prose**: the TypeScript SDK
    * reference page's "HTTP binding" section (`§5.3` of
    * `agent-store-site/content/docs/<lang>/typescript-sdk.md`) quotes the same
-   * numbers as `覆盖 **55 / 82** 个方法` / `Covers **55 / 82** methods`, and
+   * numbers as `覆盖 **56 / 83** 个方法` / `Covers **56 / 83** methods`, and
    * `scripts/check-agent-store-release-sync.mjs` reads this constant **by
    * identifier** to compare the two repositories. That guide lives in the
    * standalone `agent-store-site` repository, so nothing here can read it.
    * Mapping a new method (or dropping one) fails the assertions below — update
    * the guide in the same change.
    */
-  const DOCUMENTED_ROUTE_SPLIT = { mapped: 55, unmapped: 27 } as const;
+  const DOCUMENTED_ROUTE_SPLIT = { mapped: 56, unmapped: 27 } as const;
 
   const DOCUMENTED_UNMAPPED = [
     "initialize",

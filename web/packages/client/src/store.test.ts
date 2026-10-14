@@ -97,6 +97,10 @@ function fakeHost(options: FakeOptions = {}) {
       calls.push("listStore");
       return { items: options.store ?? [] };
     },
+    async listStoreCategories() {
+      calls.push("listStoreCategories");
+      return { fetched_at: 0, marketplace_tags: [], items: [] };
+    },
     async installStoreEntry(marketplaceId: string, entryName: string) {
       calls.push(`installStoreEntry:${marketplaceId}/${entryName}`);
       return options.install ?? installResult();
@@ -205,6 +209,26 @@ describe("StoreClient · catalog reads", () => {
     const client = new StoreClient(host);
 
     expect((await client.search("", { kind: "skill" })).map((entry) => entry.entry_name)).toEqual(["notes"]);
+  });
+
+  /**
+   * Doc 43: the host joins the dictionary, so a resolved category's name is
+   * searchable text; the raw `category_id` rides along untouched either way.
+   */
+  it("search reaches the joined category name, and categories() passes through", async () => {
+    const withCategory = item({
+      entry_name: "analyst",
+      id: "experts/analyst",
+      category_id: "04-DataAI",
+      category: { id: "04-DataAI", name: { zh: "数据智能", en: "Data & AI" } },
+    });
+    const { host } = fakeHost({ store: [withCategory] });
+    const client = new StoreClient(host);
+
+    expect((await client.search("数据智能")).map((entry) => entry.entry_name)).toEqual(["analyst"]);
+
+    const dictionary = await client.categories();
+    expect(dictionary.items).toEqual([]);
   });
 
   it("installed() returns only installed items", async () => {

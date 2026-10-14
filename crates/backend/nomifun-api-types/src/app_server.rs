@@ -66,6 +66,13 @@ pub struct AppServerSkillSummary {
     /// skills or markets that ship no icon for this entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Localized display tags from the market index row (`tags_zh`/`tags_en`,
+    /// position-paired, legacy names merged — doc `44`). A skill ships no
+    /// `plugin.json`, so the marketplace row is its only tag source; skills
+    /// have no category concept at all (the skill market declares flat tags,
+    /// no dictionary), hence no `category_id` here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
 }
 
 /// Public Skill detail: summary fields plus execution metadata. The raw
@@ -620,6 +627,16 @@ pub struct AppServerAgentSummary {
     /// `None` when the source did not declare an avatar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Localized display tags (`plugin.json` `tags`). `43` §3 moved these up
+    /// from the detail: the list page is the surface that renders tag chips,
+    /// and `#[serde(flatten)]` cannot carry the same key twice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
+    /// Raw category reference from the source manifest (e.g. `04-DataAI`).
+    /// Resolve it through `store/categories`; `category` on the store item is
+    /// the host-joined form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
 }
 
 /// A localized display value (`{en, zh}` subset; both optional).
@@ -659,14 +676,10 @@ pub struct AppServerAgentDetail {
     /// `quickPrompts`: the "专家帮你做" entries shown on the expert card.
     #[serde(default)]
     pub quick_prompts: Vec<AppServerLocalizedText>,
-    #[serde(default)]
-    pub tags: Vec<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_init_prompt: Option<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expert_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub category_id: Option<String>,
 }
 
 /// Agent Team definition summary (02 §6).
@@ -682,6 +695,15 @@ pub struct AppServerTeamSummary {
     pub member_agent_ids: Vec<String>,
     pub source: String,
     pub compatibility_status: AppServerCompatibilityStatus,
+    /// Localized display tags from the package's `plugin.json` (doc `44`):
+    /// a team's category comes from the package-level declaration, the same
+    /// facts `attach_plugin_display` records into the component payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
+    /// Raw category reference from the package's `plugin.json`; resolve
+    /// through `store/categories` (the same rule as `AgentSummary`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
 }
 
 /// Team detail: summary plus team policy fields (01 §5). The planning
@@ -725,10 +747,13 @@ pub struct AppServerTeamDetail {
 /// plugin-level asset list** (`assets` + the declared `avatar` path, doc `38`):
 /// an export now also names the `avatars/`, `bin/` and `scripts/` files that
 /// sit beside the skills — still by reference, the bytes stay on `import/asset`.
-/// A v1 consumer reading a v2 pack keeps working (unknown fields are skipped),
-/// it just sees no assets; stating that distinction is what this version exists
-/// for.
-pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 2;
+/// **`3` adds the display metadata** (`tags` + `category_id`, doc `44`): the
+/// market's organization structure travels with the pack, so a third-party
+/// runtime can restore it instead of importing a category-less flat list. A
+/// consumer reading a pack of a lower format keeps working (unknown fields are
+/// skipped), it just sees fewer of these optional fields; stating that
+/// distinction is what this version exists for.
+pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 3;
 
 /// Which catalog kind a pack describes.
 ///
@@ -765,6 +790,17 @@ pub struct AppServerExpertPack {
     pub display_name: Option<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Localized display tags from the package's `plugin.json` (`44` §2.3).
+    /// Present on **every** pack including member packs — a member's category
+    /// is its own declaration, not a snapshot-scoped resource like `assets`
+    /// (doc `44` D3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
+    /// Raw category reference from the package's `plugin.json` (e.g.
+    /// `04-DataAI`). The pack carries no resolved form: joining the dictionary
+    /// needs the market's `store/categories`, which the consuming host owns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
     pub persona: AppServerExpertPersona,
     pub model: AppServerExpertModel,
     /// The Definition's Skills, **by reference**: `id` and `name` are the same
@@ -1426,6 +1462,17 @@ pub struct AppServerStoreItem {
     pub tags: Vec<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quick_prompts: Vec<AppServerLocalizedText>,
+    /// Raw category reference from the source manifest (`plugin.json`
+    /// `category_id`, e.g. `04-DataAI`). `43` §3.3: absent when the entry's
+    /// source declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<String>,
+    /// The host-joined category: the entry's `category_id` resolved through the
+    /// same market's dictionary (`store/categories`). Absent when the id misses
+    /// the dictionary — the raw `category_id` is still the honest answer, and
+    /// the host never guesses a category the source did not declare (`43` D1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<AppServerStoreCategoryItem>,
     /// The market entry's own `publishedAt`, `YYYY-MM-DD` (`18` §3).
     ///
     /// A *calendar date*, not an instant, and never a derived one: a host that
@@ -1469,6 +1516,34 @@ pub struct AppServerStoreList {
     /// `false` so the addition stays wire-compatible.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub markets_pending: bool,
+}
+
+/// One category of a market's dictionary (`43` §3.1) — the experts manifest's
+/// top-level `categories` rows, verbatim. Pure display metadata: no paths, no
+/// credentials.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppServerStoreCategoryItem {
+    /// Source id (`04-DataAI`) — what a `plugin.json` `category_id` references.
+    pub id: String,
+    pub name: AppServerLocalizedText,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<AppServerLocalizedText>,
+}
+
+/// `store/categories` response (`43` §3.1): the category dictionaries of all
+/// enabled markets plus the market-level tag vocabulary. A market with no
+/// dictionary contributes nothing; absence of a dictionary is not an error.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppServerStoreCategoriesResponse {
+    pub fetched_at: i64,
+    /// Market-level tag vocabulary (`marketplace.json` top-level
+    /// `tags_zh`/`tags_en`), position-paired; empty when no enabled market
+    /// declares one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marketplace_tags: Vec<AppServerLocalizedText>,
+    /// Category rows across enabled markets.
+    #[serde(default)]
+    pub items: Vec<AppServerStoreCategoryItem>,
 }
 
 /// `market install-entry` / `store/update-entry` result: import (when missing) +

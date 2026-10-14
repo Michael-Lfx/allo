@@ -110,7 +110,8 @@ pub use app_server::{
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFile, AppServerSkillFileList,
     AppServerSkillSummary,
     AppServerStoreInstallResult,
-    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerStoreCategoriesResponse, AppServerStoreCategoryItem, AppServerStoreItem,
+    AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,

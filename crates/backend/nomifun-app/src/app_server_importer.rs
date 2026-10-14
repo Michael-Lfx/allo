@@ -77,6 +77,7 @@ impl ImportProvider for AppServerImportProvider {
             entry_name: None,
             source_revision: None,
             declared_version: None,
+            index_tags: None,
         };
         self.importer
             .run_import(&import_request)
@@ -199,7 +200,7 @@ pub(crate) fn localized_field(value: &serde_json::Value, key: &str) -> Option<Ap
     if out.en.is_none() && out.zh.is_none() { None } else { Some(out) }
 }
 
-fn localized_list(value: &serde_json::Value, key: &str) -> Vec<AppServerLocalizedText> {
+pub(crate) fn localized_list(value: &serde_json::Value, key: &str) -> Vec<AppServerLocalizedText> {
     value
         .get(key)
         .and_then(|value| value.as_array())
@@ -328,6 +329,11 @@ fn agent_summary(row: &PluginSnapshotComponentRow) -> AppServerAgentSummary {
         compatibility_status: semantic_status(&triple),
         display_name: localized_field(&value, "display_name"),
         profession: localized_field(&value, "profession"),
+        // Localized display tags + the raw category reference (`43` §3): moved
+        // up from the detail — the list page renders the tag chips, and
+        // `#[serde(flatten)]` cannot carry the same key twice.
+        tags: localized_list(&value, "tags"),
+        category_id: string_field(&value, "category_id"),
         avatar_url: asset_url(&value, row),
     }
 }
@@ -348,10 +354,8 @@ fn agent_detail(row: &PluginSnapshotComponentRow) -> AppServerAgentDetail {
             .unwrap_or(false),
         display_description: localized_field(&value, "display_description"),
         quick_prompts: localized_list(&value, "quick_prompts"),
-        tags: localized_list(&value, "tags"),
         default_init_prompt: localized_field(&value, "default_init_prompt"),
         expert_type: string_field(&value, "expert_type"),
-        category_id: string_field(&value, "category_id"),
     }
 }
 
@@ -473,6 +477,11 @@ fn team_summary(row: &PluginSnapshotComponentRow) -> AppServerTeamSummary {
         member_agent_ids: string_array(&value, "member_agent_ids"),
         source: string_field(&value, "source").unwrap_or_else(|| "imported".into()),
         compatibility_status: semantic_status(&triple),
+        // Package-level display metadata (`44`): `attach_plugin_display`
+        // already recorded `tags`/`category_id` into the team component's
+        // payload — the same facts the store item carries.
+        tags: localized_list(&value, "tags"),
+        category_id: string_field(&value, "category_id"),
     }
 }
 
@@ -527,5 +536,55 @@ mod installed_row_tests {
         released.installed = 0;
         released.disabled = 0;
         assert!(!installed_row(&released), "released drops out of the inventory");
+    }
+
+    /// Doc `44` TC-CAT-009: a team's category is package-level display
+    /// metadata, so `team/list` reads exactly what the import recorded — the
+    /// raw id plus the position-paired localized tags, with a missing locale
+    /// dropped rather than rendered as an empty string.
+    #[test]
+    fn team_summary_reads_the_recorded_category_and_tags() {
+        let row = PluginSnapshotComponentRow {
+            id: 1,
+            snapshot_id: "snap-1".into(),
+            component_id: "wb-demo-team".into(),
+            kind: "team".into(),
+            name: "demo-team".into(),
+            relative_path: None,
+            compatibility_json: "{}".into(),
+            payload_json: serde_json::json!({
+                "lead_agent_id": "wb-demo-lead",
+                "member_agent_ids": ["wb-demo-dev"],
+                "category_id": "04-DataAI",
+                "tags": [
+                    {"zh": "数据智能", "en": "Data & AI"},
+                    {"zh": "办公效率", "en": null},
+                ],
+            })
+            .to_string(),
+            installed: 1,
+            disabled: 0,
+            installed_at: Some(0),
+            preset_id: None,
+            runtime_ref: None,
+        };
+
+        let summary = team_summary(&row);
+        assert_eq!(summary.category_id.as_deref(), Some("04-DataAI"));
+        assert_eq!(summary.tags.len(), 2);
+        assert_eq!(summary.tags[0].zh.as_deref(), Some("数据智能"));
+        assert_eq!(summary.tags[0].en.as_deref(), Some("Data & AI"));
+        assert_eq!(summary.tags[1].zh.as_deref(), Some("办公效率"));
+        assert_eq!(summary.tags[1].en, None, "a one-sided tag keeps the absent locale absent");
+
+        // A team whose package declares no category: both fields are absent,
+        // not empty placeholders.
+        let bare = PluginSnapshotComponentRow {
+            payload_json: serde_json::json!({"lead_agent_id": "wb-demo-lead"}).to_string(),
+            ..row
+        };
+        let summary = team_summary(&bare);
+        assert!(summary.category_id.is_none());
+        assert!(summary.tags.is_empty());
     }
 }

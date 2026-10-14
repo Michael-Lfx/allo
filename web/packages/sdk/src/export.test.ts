@@ -14,7 +14,7 @@ import { exportAgent, exportTeam, materializePack, type ExportDeps } from "./exp
 
 function makePack(kind: "agent" | "team"): ExpertPack {
   const member = (id: string, skillNames: string[]): ExpertPack => ({
-    pack_format: 2,
+    pack_format: 3,
     kind: "agent",
     id,
     version: "1.0.0",

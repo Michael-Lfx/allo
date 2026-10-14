@@ -1,7 +1,7 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
-> 状态：导航总览（全目录 42 份核心方案已全面完成标准化重构）  
-> 当前版本：`0.1.0-beta.10` | 协议契约指纹：`fp-14` | 核心方法计数：55 WebSocket 专属方法 / 82 双端映射端点  
+> 状态：导航总览（全目录 44 份核心方案已全面完成标准化重构）  
+> 当前版本：`0.1.0-beta.10` | 协议契约指纹：`fp-16` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点  
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
 ---
@@ -117,6 +117,8 @@ flowchart TD
 | [`28-webui-composer-connector-switch-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/28-webui-composer-connector-switch-plan.zh.md) | 连接器退出 `@` 提及、输入区抽屉式开关、行内 OAuth 发起 | ✅ 已落地 |
 | [`31-sdk-entry-shape.zh.md`](file:///c:/workspace/allo/docs/agent-store/31-sdk-entry-shape.zh.md) | SDK 入口命名重构（`launchHarness` / `Harness`）、零额外中转 | ✅ 已实现 |
 | [`35-sdk-expert-export.zh.md`](file:///c:/workspace/allo/docs/agent-store/35-sdk-expert-export.zh.md) | SDK 目录导出 API（`exportAgent` / `exportTeam` / `materializePack`） | ✅ 已实施（2026-09-24；2026-10-10 订正「团的技能导不出来」见其 §6） |
+| [`43-store-categories-and-tags-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/43-store-categories-and-tags-plan.zh.md) | 市场分类与标签透出（`store/categories` 字典端点、StoreItem/AgentSummary 增量字段、tags 回退链、`legacy_tags_*` 合并） | ✅ 已实施 |
+| [`44-store-category-parity-plan.zh.md`](file:///c:/workspace/allo/docs/agent-store/44-store-category-parity-plan.zh.md) | 类别信息全面透出（Team/Skill 面字段、`pack_format 3` 的 `tags`/`category_id`、索引标签导入固化） | ✅ 已实施 |
 
 ### 2.4 研发计划与工程门禁（Engineering Gates & Runbooks）
 提供全生命周期的里程碑进度、实测证据、质量门禁与发布操作规范。
@@ -196,7 +198,7 @@ flowchart TD
 > 最后核对：2026-09-28（**商店条目更新（update）能力（doc 36）**：新增 `store/update-entry`（`POST /api/app-server/store/{marketplace_id}/entries/{entry}/update`）——**先导入并安装新版本，只有这次安装全部成功才释放旧版本**，失败时旧安装原样保留（`released_count: 0`），部分失败还会把新快照已装上的部分回滚，让条目落回可重试的旧版本；组件按 `component_id`（`wb-<plugin>-<slug>`，跨版本稳定）配对，专家**原地升级、Preset id 不变**（`PresetService::update`），连接器同名 upsert **复用同一 `mcp_servers` 行**（配置变了会被置为 disabled 直到重新探测，如实上报），技能按快照各自成目录、旧的删除；结果新增 `previous_version` / `previous_snapshot_id` / `released_count`（仅升级填）；`store/install-entry` 的「已装即 no-op」契约不变，安装永不偷偷升级。**同批修两个前置缺陷**：① 条目版本真进导入请求（`ImportRequest::declared_version`）——技能与连接器条目没有自带版本，此前快照被钉在 `1.0.0` 占位版本，`update_available` 恒为真且内容一改就撞 digest 冲突，顺带补上**此前根本没被读的技能市场索引**（`MarketIndex::read` 读 connectors.json + skill marketplace.json）；② 安装态写入按 `(snapshot_id, component_id)` 收窄（`mark_components_installed` / `set_components_disabled` / `clear_components_installed` 三处）——`component_id` 跨快照相同，不收窄则释放旧版本会把新版本的安装记录一起清掉（该缺陷在 `install/uninstall` 上此前已可达）。客户端 `store.update()` + `updateHint()` 由 `uninstall_reinstall` 改为 `update`，`StoreOperationOutcome` 补 `errors[]` / `warnings[]`（`18` §11 D10 收口）；WebUI 抽屉里那处说明改成真按钮（`21` D16 追记）；**指纹 `fp-11` → `fp-12`**（本仓 7 文件 10 处 + 站点 2 处，方法计数 `52 / 77` → `53 / 78`；`check:release-sync` 的站点计数 pattern 改为并集以兼容站点正在进行的文风规范化）；2026-09-17（**市场源改为 zip 单包托管（doc 30）**：`AppServerMarketplaceSourceKind` 新增 `zip`——一个归档、**归档根即市场根**；官方三个市场（experts/skills/connectors）从本站 `/source/<market>/…` 的逐文件托管迁到 ModelScope 归档，`experts` 首次获取由 14,714 个请求 / 611.3 MiB 降为 1 个请求 / 289.0 MiB，站点产物 22,706 → 约 742 个文件（只留 648 张目录页图标，`HOSTED_DEFAULT` 清空）；客户端用 `HEAD` 的 `X-Linked-Etag`（**内容 sha256**）判新旧并校验完整性、归档流式落盘且**不进入 staging**、解压走 `nomifun-common::zip_safe`（预算显式抬高：默认 256 MiB 装不下 611 MiB）；**指纹 bump 到 `fp-7`**（本仓 7 文件 10 处 + 站点 2 处，方法计数不变仍 `48 / 71`）；**顺带修掉两个真缺陷**——`looks_like_market` 漏了 `.codebuddy-plugin/marketplace.json`（官方 experts 市场根**只有**这一个清单，该布局的 github/git/zip 远程源一律被判「不像市场」），`plugin_marketplaces.source_kind` 的 CHECK 未含新值（迁移 `059` 重建表，带上 056/057 新增列）；`lib.rs` 里把未知 kind 静默当成 `url` 的 `_ =>` 兜底改为显式 `parse` + 跳过并告警；老用户 `config.toml` 迁移**只写文档不自动改写**；**三个归档已上传 ModelScope 并通过远端摘要回验**（`--verify-only` 三绿），客户端对真实归档的端到端见 `30` §9.6）；2026-09-15（**安装面五动词「做真事」：`install/run` 可重入（同快照不产生第二个 Preset）、`uninstall` 真正释放产物（skill 目录 / Preset / `mcp_servers` 行，已不在算成功、失败保留 `installed=1`）、`disable`/`enable` 真正移动运行时状态（skill 例外＝目录标记 `skill_disable_flag_only`）、新增结构化 `outcomes`（`action` 八值 + 稳定 `code` 闭集）、`store/install-entry` 版本感知（升级只有「卸载再安装」一条路）、client 新增 `store` 子客户端（20 例）、宿主管理面类型搬进 `protocol`、商店假「更新」控件已摘除；**协议指纹 bump 到 `2026-09-15`**（现有 DTO 加字段，8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`agent/run` 加稳定码 `preset_disabled`、`team/run` 加 `agent_disabled`（点名成员，检查在 `resolve_team_members` 每次运行、先于 Connector 栅栏）**；2026-09-14：**`20` §9.5 + `16` §5.3：`config/get.mcp` 新增 `adopted`（宿主是否真的把这批声明注入会话——`servers` 描述文件、`adopted` 描述宿主），设置页据此分出「使用中 / 未使用 / 无法判断」三态；**协议指纹 bump 到 `2026-09-14`**（8 处代码/夹具 + 2 处站点文档，方法计数不变）**；同日：**`16` R16 追记 · 消息渲染：设置页三个错误字段改判别式联合 `ConfigMessage`，宿主散文不再过 `t()`（i18next 的 `looksLikeObjectPath` 会把 `mcp.json is not valid JSON: …` 截成冒号后半段）**；2026-09-13：**`16` R16 追记 + `20` §9.4：设置页新增只读 `mcp` 分区渲染 `config/get.mcp`（nav 三→四；该批零协议变更）；同日上一轮：`20` §7.9.1–§7.9.3/§9.4 补齐参考实现文档里的全部可选字段（`cwd` / `bearerTokenEnvVar` / `startupTimeoutMs` / `enabledTools` / `disabledTools`）并把 `headers` 的 `secret:NAME` 语义在三条装配路径收敛为一个函数；server 级工具过滤在注册**之前**裁剪；**无协议变更**，指纹保持 `2026-09-13`**；再上一轮 2026-09-12：**`21` D14 + `20` §7.9/§9.3：Agent Store 支持 Kimi 式 `~/.agent-store/mcp.json` 声明 MCP（用户级、纯内存注入、不投影进 `mcp_servers`），协议指纹 bump 到 `2026-09-13`**；更早 2026-09-11：新增 `22-webui-productionization.zh.md`；`16` C 档二次复核改判；**版本框架订正：发版前只有一个版本，统一称 v1，见 `16` §7 决策 4**；引用/口径统一 + 证据与 `TC-*` 正文并入编号文档；**`20` 重构：工具面表达层定为 `~/.agent-store/config.toml [tools]`，新增 `16` §7 决策 5**；**`20` Step 7 全部落地：`team/run` + Team 层委派放行，协议指纹 bump 到 `2026-09-12`**）
 > 迁移编号调整（2026-09-18 与 `main` 合并）：本目录文档正文里的 **Agent Store 侧迁移短号**按合并前编号书写；合并后整体后移 6 位，以免与 `main` 的 `048`–`053` 撞号——`048→054`、`049→055`、`050→056`、`051→057`、`052→058`、`053→059`、`054→060`、`055→061`、`056→062`、`057→063`、`058→064`、`059→065`（`main` 的 `048`–`053` 保持不变）。带 `.sql` 的文件名已按新编号更新；短号保留原样，以免改写当时的实测记录。
 > 用途：本目录文档的地图、权威顺序与状态图例。新会话/新成员先读本文，再按需深入。
-> 维护约定：新增文档编号顺延（当前到 `36`）；状态变更时同步更新本索引与文档头部“更新”行；公共契约变更先写 `16-sdk-webui-site-priority-plan.zh.md` §7（决策记录），再改基线文档。
+> 维护约定：新增文档编号顺延（当前到 `44`）；状态变更时同步更新本索引与文档头部“更新”行；公共契约变更先写 `16-sdk-webui-site-priority-plan.zh.md` §7（决策记录），再改基线文档。
 
 ## 状态图例
 
@@ -295,6 +297,27 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-13 实施 `44`：类别信息全面透出，尚未发版）
+
+用户追问「通过 SDK 查看或导出专家/专家团/技能时，能看到类别信息吗」——`43` 只覆盖了商店目录面，四个面仍有缺口，本轮补齐。方案与实现见 [`44-store-category-parity-plan.zh.md`](44-store-category-parity-plan.zh.md)：
+
+1. **wire（`fp-15` → `fp-16`，计数 `56 / 83` 不变——无方法增删）**：`AppServerTeamSummary` 增 `tags` / `category_id`；`AppServerSkillSummary` 增 `tags`；`AppServerExpertPack` 增同名两字段，`pack_format 2 → 3`（**产物契约独立于指纹**再次确认）。
+2. **Team 面零导入器改动**：`attach_plugin_display` 本就对 agent 与 team 组件一视同仁地写入 `tags`/`category_id`，`team/list` 只是此前没读——补两行投影即生效。
+3. **Skill 面新增导入期固化**：技能无 `plugin.json`，唯一标签源是市场索引行。`ImportRequest` 增 `index_tags`（由安装链从 `EntryFacts.index_info.tags` 传入），`ComponentBuilder` 只往 skill / single-skill 组件 payload 注入；读取侧经 `AppServerEntryAssets::tags_for_skill` 走与头像同一条 provenance 链（运行时目录 → `agent-store/<snapshot_id>/<slug>` → payload），**投影期不回查市场活树**——快照不可变，市场改标签要走一次升级才生效。
+4. **导出面**：顶层包带团队行的声明，**每个成员包带自己的**（与 snapshot 作用域的 `assets`「顶层有、成员恒空」恰好相反，`44` D3）；包只带裸 `category_id`，解析需要消费方持有等价字典。
+5. **SDK**：`protocol` 的 `SkillSummary` / `TeamSummary` / `ExpertPack` 同步；`APP_SERVER_EXPERT_PACK_FORMAT = 3`；`materializePack` 的 `expert-pack.json` 原样携带（代码路径未变，仅文档说明）。
+6. **门禁**：`check:fingerprint` 绿（`fp-16`，本仓 7 文件 10 处 + 站点 2 处）；`check:release-sync` 绿（方法数未变，`56 / 83` 两语言同值）；`cargo test -p nomifun-importer` 74、`-p nomifun-app-server` 191、`-p nomifun-app --lib` 409、`web` 564 全通过（唯一红为既有基线 `every_production_conversation_service…`）。
+
+## 本轮（2026-10-13 实施 `43`：市场分类与标签透出，尚未发版）
+
+WorkBuddy 两个市场索引已带分类/标签元数据（experts manifest 顶层 `categories`、技能市场行内 `tags_zh/tags_en`），但 SDK 三个缺口让客户端拿不到。方案与实现见 [`43-store-categories-and-tags-plan.zh.md`](43-store-categories-and-tags-plan.zh.md)：
+
+1. **wire（`fp-14` → `fp-15`，计数 `55 / 82` → `56 / 83`）**：新增一个**有 HTTP 路由**的方法 `store/categories`（`GET /api/app-server/store/categories`，同时登记 WS dispatch）；`AppServerStoreItem` 增 `category_id` / `category`（宿主 join 字典，未命中只给裸 id——宁可少给不猜）；`AppServerAgentSummary` 增 `tags` / `category_id`，**自 detail 上移**（`flatten` 不能带两个同键，`AgentDetail` 相应删字段）。
+2. **store 投影**：tags 回退链 manifest → 索引行 → 空（技能/连接器无 plugin.json，marketplace.json 行内 tags 是唯一来源）；`read_index` 读 `tags_zh`/`tags_en` 按位配对，`legacy_tags_*` 以 zh 值去重后并入（真实样本：腾讯会议 `办公效率` 与主 tags 重复）。
+3. **字典面**（`app_server_categories.rs`，新）：读 experts manifest 顶层 `categories` 与市场级 tags 全集，按 marketplace_id 进程内缓存、`list()` 的市场走查处登记根；缺失/解析失败回空数组不 500（分类缺失不是故障）。
+4. **SDK**：`protocol` 增 `StoreCategory` / `StoreCategories`、`StoreItem`/`AgentSummary` 增量字段；`client.listStoreCategories()` + HTTP 绑定（静态段 `/store/categories`，防参数段遮蔽）+ `store.categories()`；`haystack()` 增分类名（「数据智能」可搜）。配对逻辑只在宿主做，SDK 消费已配对的 `LocalizedText[]`（D8）。
+5. **门禁**：`check:fingerprint` 绿（`fp-15`，本仓 7 文件 10 处 + 站点 2 处）；`check:release-sync` 绿（`DOCUMENTED_ROUTE_SPLIT` 55/27 → 56/27，站点双语文案同改 `56 / 83`）。
 
 ## 本轮（2026-10-12 发布 `0.1.0-beta.10`）
 

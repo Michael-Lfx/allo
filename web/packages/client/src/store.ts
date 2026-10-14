@@ -29,6 +29,7 @@ import type {
   InstallOutcome,
   InstallStatus,
   SkillSummary,
+  StoreCategories,
   StoreInstallResult,
   StoreItem,
   StoreItemKind,
@@ -168,6 +169,7 @@ export interface StoreOperationOutcome {
  */
 export interface StoreHost {
   listStore(): Promise<StoreList>;
+  listStoreCategories(): Promise<StoreCategories>;
   installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
   updateStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
   getInstallStatus(snapshotId: string): Promise<InstallStatus>;
@@ -204,6 +206,8 @@ function haystack(item: StoreItem): string {
     item.id,
     item.description ?? "",
     item.version,
+    item.category?.name.zh ?? "",
+    item.category?.name.en ?? "",
     ...localizedValues(item.display_name),
     ...localizedValues(item.display_description),
     ...localizedValues(item.profession),
@@ -257,6 +261,15 @@ export class StoreClient {
   async list(): Promise<StoreItem[]> {
     const store = await this.host.listStore();
     return store.items;
+  }
+
+  /**
+   * Category dictionary + market tag vocabulary (doc `43`) — the filter-bar
+   * material. Empty `items` means no market declares a dictionary; the raw
+   * `category_id` on an item stays usable regardless.
+   */
+  async categories(): Promise<StoreCategories> {
+    return this.host.listStoreCategories();
   }
 
   /** Case-insensitive substring search over the fields a user can see. */
