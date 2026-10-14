@@ -89,7 +89,7 @@ pub(crate) fn pack_scene_briefs_with(
     let mut run_speakers: HashSet<String> = HashSet::new();
 
     for brief in briefs {
-        let need = brief_need_secs(bounds, &brief);
+        let need = brief_content_secs(&brief);
         let shot_speakers = named_dialogue_speakers(&brief_audio_blob(&brief));
         let joins = run.last().is_some_and(|prev| {
             can_pack_briefs(prev, &brief, run_need, need, bounds, &opts)
@@ -458,7 +458,7 @@ pub(crate) fn pack_scene_clips(
     let mut run_speakers: HashSet<String> = HashSet::new();
 
     for shot in shots {
-        let need = beat_need_secs(bounds, &shot.variation_type, &shot);
+        let need = beat_content_secs(&shot.variation_type, &shot);
         let shot_speakers = named_dialogue_speakers(&shot_audio_blob(&shot));
         let joins = run.last().is_some_and(|prev| {
             can_pack_onto(prev, &shot, run_need, need, bounds)
@@ -507,7 +507,24 @@ fn can_pack_onto(
     }
     // Narrative-adjacent and still inside one generation. Angle changes are
     // CUT TO inside the file, not a new splice.
-    run_need + need <= bounds.max_secs()
+    pack_fits(bounds, run_need + need, silent_beat(prev) && silent_beat(shot))
+}
+
+/// Whether a run may grow to `content` seconds. A spoken run fills the model
+/// window. Two silent beats join only while the clip stays under
+/// [`SILENT_PACK_CAP_SECS`], so a chain of actions never becomes one rushed clip.
+fn pack_fits(bounds: ClipBounds, content: u32, silent_pair: bool) -> bool {
+    let limit = if silent_pair {
+        bounds.clamp_secs(crate::planning::SILENT_PACK_CAP_SECS)
+    } else {
+        bounds.max_secs()
+    };
+    content <= limit
+}
+
+/// A beat with no spoken line: its length is its action, not its speech.
+fn silent_beat<B: Beat>(beat: &B) -> bool {
+    !crate::planning::beat_is_spoken(beat.audio(), beat.motion())
 }
 
 fn can_pack_briefs(
@@ -527,7 +544,7 @@ fn can_pack_briefs(
     if is_reaction_leftover_brief(brief)
         && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
     {
-        return run_need + need <= bounds.max_secs();
+        return pack_fits(bounds, run_need + need, false);
     }
     if prev.is_merged() || brief.is_merged() {
         return false;
@@ -554,7 +571,15 @@ fn can_pack_briefs(
             brief.audio_desc.as_deref(),
         );
     }
-    run_need + need <= bounds.max_secs()
+    pack_fits(
+        bounds,
+        run_need + need,
+        brief_is_silent(prev) && brief_is_silent(brief),
+    )
+}
+
+fn brief_is_silent(brief: &ShotBriefDescription) -> bool {
+    !crate::planning::beat_is_spoken(brief.audio_desc.as_deref(), &brief.visual_desc)
 }
 
 /// `max == 0` means the model has no voice-ref slots — speaker count is not a
@@ -813,13 +838,16 @@ fn quoted_payloads(s: &str) -> Vec<String> {
 
 /// One visual beat the video prompt should play, in order.
 ///
-/// Seconds never belong in the prompt: this is prose plus optional per-beat
-/// audio, and a flag when the camera changes inside the generation.
+/// Prose plus optional per-beat audio, and a flag when the camera changes inside
+/// the generation. Seconds never reach the prompt as absolute values: the renderer
+/// windows the lens (see [`lens_timeline`]). `secs_hint` keeps only the planner's
+/// authored segment length, as a relative weight.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromptLens {
     pub visual: String,
     pub audio: Option<String>,
     pub cut: bool,
+    pub secs_hint: Option<u32>,
 }
 
 fn assign_turns_to_lenses(lenses: &mut [PromptLens], audio: &str) {
@@ -939,6 +967,7 @@ fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
                 visual: beat.visual_desc.clone(),
                 audio: beat.audio_desc.clone(),
                 cut: false,
+                secs_hint: None,
             });
             cams.push(beat.cam_idx);
         }
@@ -973,6 +1002,7 @@ fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
             visual,
             audio: None,
             cut: i > 0,
+            secs_hint: None,
         })
         .collect();
     bind_audio_to_lenses(&mut lenses, brief.audio_desc.as_deref());
@@ -986,13 +1016,16 @@ fn explode_brief(brief: &ShotBriefDescription) -> Vec<ShotBriefBeat> {
         .collect()
 }
 
-fn atom_need_secs(bounds: ClipBounds, beat: &ShotBriefBeat) -> u32 {
-    crate::planning::estimate_shot_need_secs(
-        bounds,
+fn atom_content_secs(beat: &ShotBriefBeat) -> u32 {
+    crate::planning::estimate_shot_content_secs(
         beat.audio_desc.as_deref(),
         &beat.visual_desc,
         "small",
     )
+}
+
+fn atom_is_silent(beat: &ShotBriefBeat) -> bool {
+    !crate::planning::beat_is_spoken(beat.audio_desc.as_deref(), &beat.visual_desc)
 }
 
 fn can_add_atom(
@@ -1005,18 +1038,23 @@ fn can_add_atom(
         return true;
     }
     let mut speakers = HashSet::new();
-    let mut need = 0u32;
+    let mut content = 0u32;
     for beat in run {
         speakers.extend(named_dialogue_speakers(
             beat.audio_desc.as_deref().unwrap_or(""),
         ));
-        need = need.saturating_add(atom_need_secs(bounds, beat));
+        content = content.saturating_add(atom_content_secs(beat));
     }
     let next_speakers = named_dialogue_speakers(next.audio_desc.as_deref().unwrap_or(""));
     if !can_join_voice_ref_speakers(&speakers, &next_speakers, max_speakers) {
         return false;
     }
-    need.saturating_add(atom_need_secs(bounds, next)) <= bounds.max_secs()
+    let silent_run = run.iter().all(atom_is_silent) && atom_is_silent(next);
+    pack_fits(
+        bounds,
+        content.saturating_add(atom_content_secs(next)),
+        silent_run,
+    )
 }
 
 fn brief_from_atoms(
@@ -1201,8 +1239,8 @@ fn fold_trailing_carrier_into_last(
         return false;
     }
     let extra = brief_from_atoms(template, carrier.to_vec());
-    let need = brief_need_secs(bounds, last).saturating_add(brief_need_secs(bounds, &extra));
-    if need > bounds.max_secs() {
+    let content = brief_content_secs(last).saturating_add(brief_content_secs(&extra));
+    if !pack_fits(bounds, content, false) {
         return false;
     }
     let prev = out.pop().expect("len checked");
@@ -1221,8 +1259,11 @@ fn absorb_reaction_leftovers(
             !crate::domain::location_changed(&prev.location_id, &brief.location_id)
                 && is_reaction_leftover_brief(&brief)
                 && !named_dialogue_speakers(&brief_audio_blob(prev)).is_empty()
-                && brief_need_secs(bounds, prev).saturating_add(brief_need_secs(bounds, &brief))
-                    <= bounds.max_secs()
+                && pack_fits(
+                    bounds,
+                    brief_content_secs(prev).saturating_add(brief_content_secs(&brief)),
+                    false,
+                )
         });
         if joins {
             let prev = out.pop().expect("len checked");
@@ -1469,31 +1510,40 @@ fn push_assignment(
     out.push((name.to_string(), side));
 }
 
-fn brief_need_secs(bounds: ClipBounds, brief: &ShotBriefDescription) -> u32 {
+/// Content seconds of one storyboard row. A merged row sums the beats it holds.
+fn brief_content_secs(brief: &ShotBriefDescription) -> u32 {
     if brief.is_merged() {
-        let total: u32 = brief
+        return brief
             .beats
             .iter()
             .map(|beat| {
-                crate::planning::estimate_shot_need_secs(
-                    bounds,
+                crate::planning::estimate_shot_content_secs(
                     beat.audio_desc.as_deref(),
                     &beat.visual_desc,
                     "small",
                 )
             })
             .sum();
-        return bounds.clamp_secs(total);
     }
-    crate::planning::estimate_shot_need_secs(
-        bounds,
+    crate::planning::estimate_shot_content_secs(
         brief.audio_desc.as_deref(),
         &brief.visual_desc,
         "small",
     )
 }
 
-/// Content need for one clip, in seconds, clamped to the model window.
+/// Content seconds of one clip: its beats played back to back, before the model window.
+pub(crate) fn clip_content_secs(shot: &ShotDescription) -> u32 {
+    if !shot.is_merged() {
+        return beat_content_secs(&shot.variation_type, shot);
+    }
+    shot.beats
+        .iter()
+        .map(|beat| beat_content_secs(&shot.variation_type, beat))
+        .sum()
+}
+
+/// Requested length of one generated clip, in seconds, clamped to the model window.
 ///
 /// A merged clip pays for every beat it absorbed. Pricing it as a single beat
 /// would squeeze the whole run into one beat's worth of seconds, and the model
@@ -1502,12 +1552,7 @@ pub(crate) fn clip_need_secs(bounds: ClipBounds, shot: &ShotDescription) -> u32 
     if !shot.is_merged() {
         return beat_need_secs(bounds, &shot.variation_type, shot);
     }
-    let total: u32 = shot
-        .beats
-        .iter()
-        .map(|beat| beat_need_secs(bounds, &shot.variation_type, beat))
-        .sum();
-    bounds.clamp_secs(total)
+    bounds.clamp_secs(clip_content_secs(shot))
 }
 
 /// One beat placed on the clip's real timeline.
@@ -1516,42 +1561,44 @@ pub(crate) struct TimedBeat {
     pub(crate) start_secs: u32,
     pub(crate) end_secs: u32,
     pub(crate) text: String,
-    pub(crate) cam_idx: Option<i32>,
 }
 
 /// Lay a clip's beats on its **actual** `duration_secs`, or return empty when the
 /// clip plays a single beat.
 ///
-/// Two kinds of clip need a timeline, and both must be measured against the
-/// duration the render actually requests — never against seconds a planner
-/// guessed before the duration existed:
-/// - a clip that absorbed adjacent shots ([`pack_scene_clips`]);
-/// - a clip whose `motion_desc` was written as timed segments (`0-4s: … 4-7s: …`)
-///   by the storyboard LLM, which cannot know the final clip length.
-///
-/// Spans are proportional to each beat's weight, cover the clip exactly, and
-/// never collapse to zero length — a beat with no time on screen is a beat the
-/// model will skip.
-pub(crate) fn clip_timeline(
-    bounds: ClipBounds,
-    shot: &ShotDescription,
+/// The beats are the prompt lenses the model reads, so every window labels the
+/// lens it belongs to. Two kinds of clip need a timeline, and both are measured
+/// against the duration the render requests, never against seconds a planner
+/// guessed before that duration existed:
+/// - a clip that absorbed adjacent rows ([`pack_scene_clips`]);
+/// - a single row with several CUT TO parts or authored `0-4s:` segments.
+pub(crate) fn clip_timeline(shot: &ShotDescription, duration_secs: u32) -> Vec<TimedBeat> {
+    lens_timeline(&prompt_lenses(shot), &shot.variation_type, duration_secs)
+}
+
+/// [`clip_timeline`] over an already-built lens list, so the prompt and its
+/// windows are cut from the same list.
+pub(crate) fn lens_timeline(
+    lenses: &[PromptLens],
+    variation_type: &str,
     duration_secs: u32,
 ) -> Vec<TimedBeat> {
-    let beats = weighted_beats(bounds, shot);
-    if beats.len() < 2 || duration_secs < beats.len() as u32 {
+    if lenses.len() < 2 || duration_secs < lenses.len() as u32 {
         return Vec::new();
     }
-    let weights: Vec<u32> = beats.iter().map(|(_, weight, _)| (*weight).max(1)).collect();
+    let weights: Vec<u32> = lenses
+        .iter()
+        .map(|lens| lens_weight(lens, variation_type))
+        .collect();
     let mut cursor = 0u32;
     apportion(&weights, duration_secs)
         .into_iter()
-        .zip(beats)
-        .map(|(len, (text, _, cam_idx))| {
+        .zip(lenses)
+        .map(|(len, lens)| {
             let beat = TimedBeat {
                 start_secs: cursor,
                 end_secs: cursor + len,
-                text,
-                cam_idx,
+                text: lens.visual.clone(),
             };
             cursor += len;
             beat
@@ -1559,27 +1606,19 @@ pub(crate) fn clip_timeline(
         .collect()
 }
 
-/// `(text, weight, cam)` per beat, from whichever source this clip has.
-fn weighted_beats(bounds: ClipBounds, shot: &ShotDescription) -> Vec<(String, u32, Option<i32>)> {
-    if shot.beats.len() >= 2 {
-        return shot
-            .beats
-            .iter()
-            .map(|beat| {
-                (
-                    strip_authored_timecodes(&beat.motion_desc),
-                    beat_need_secs(bounds, &shot.variation_type, beat),
-                    beat.cam_idx.or(Some(shot.cam_idx)),
-                )
-            })
-            .collect();
-    }
-    // A single shot whose motion was authored as timed segments: keep the
-    // planner's relative pacing as the weight, drop its absolute seconds.
-    authored_beats(&shot.motion_desc)
-        .into_iter()
-        .map(|beat| (beat.text, beat.secs, Some(shot.cam_idx)))
-        .collect()
+/// A lens's share of the clip: the seconds the planner authored when it wrote
+/// timed segments, otherwise the lens's content seconds. Spans are spent on
+/// what plays, so a silent action gets its action's length, not a model floor.
+fn lens_weight(lens: &PromptLens, variation_type: &str) -> u32 {
+    lens.secs_hint
+        .unwrap_or_else(|| {
+            crate::planning::estimate_shot_content_secs(
+                lens.audio.as_deref(),
+                &lens.visual,
+                variation_type,
+            )
+        })
+        .max(1)
 }
 
 /// Split `duration_secs` across `weights`, giving every entry at least 1s.
@@ -1691,6 +1730,7 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
                 visual,
                 audio: beat.audio_desc.clone(),
                 cut,
+                secs_hint: None,
             });
         }
         bind_audio_to_lenses(&mut out, shot.audio_desc.as_deref());
@@ -1710,6 +1750,7 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
                 visual,
                 audio: None,
                 cut: i > 0,
+                secs_hint: None,
             })
             .collect();
         bind_audio_to_lenses(&mut out, shot.audio_desc.as_deref());
@@ -1721,6 +1762,7 @@ pub(crate) fn prompt_lenses(shot: &ShotDescription) -> Vec<PromptLens> {
             visual: beat.text,
             audio: None,
             cut: false,
+            secs_hint: Some(beat.secs),
         })
         .collect();
     if authored.len() < 2 {
@@ -1772,6 +1814,10 @@ impl Beat for ShotBeat {
 
 fn beat_need_secs(bounds: ClipBounds, variation_type: &str, beat: &impl Beat) -> u32 {
     crate::planning::estimate_shot_need_secs(bounds, beat.audio(), beat.motion(), variation_type)
+}
+
+fn beat_content_secs(variation_type: &str, beat: &impl Beat) -> u32 {
+    crate::planning::estimate_shot_content_secs(beat.audio(), beat.motion(), variation_type)
 }
 
 /// Collapse a finished run into `out`. A run of one is passed through untouched
@@ -2156,42 +2202,44 @@ mod tests {
         assert!(merged.iter().all(|s| !s.is_merged()));
     }
 
-    /// Four silent beats need 20s; the window is 15s, so the fourth is a new
-    /// clip. Different cameras do not themselves cause the split.
+    /// Silent actions are priced at their content (2s each), so five of them
+    /// reach the 10s silent cap; the sixth opens a new clip. Different cameras
+    /// do not themselves cause the split.
     #[test]
-    fn a_run_that_overflows_the_window_starts_a_new_clip() {
-        let shots: Vec<ShotDescription> = (0..4)
-            .map(|i| shot(i, i, "hold", None))
-            .collect();
+    fn a_silent_run_stops_at_its_content_cap() {
+        let shots: Vec<ShotDescription> = (0..6).map(|i| shot(i, i, "hold", None)).collect();
         let merged = pack_scene_clips(SEEDANCE, shots);
         assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].beats.len(), 3);
+        assert_eq!(merged[0].beats.len(), 5);
         assert!(merged[0].has_camera_cuts());
-        assert_eq!(merged[1].idx, 3);
+        assert_eq!(merged[1].idx, 5);
         assert!(!merged[1].is_merged());
     }
 
+    /// The model maximum binds before the silent cap when the window is narrow:
+    /// under a 5–8s window four 2s actions fill the clip, the fifth starts another.
     #[test]
-    fn a_run_stops_at_the_model_ceiling() {
-        // Silent shots need the 5s model minimum each, so 15s fits exactly three.
-        let shots: Vec<ShotDescription> =
-            (0..5).map(|i| shot(i, 0, "hold", None)).collect();
-        let merged = pack_scene_clips(SEEDANCE, shots);
+    fn a_silent_run_never_exceeds_the_model_maximum() {
+        let window = ClipBounds::new(5, 8);
+        let shots: Vec<ShotDescription> = (0..5).map(|i| shot(i, 0, "hold", None)).collect();
+        let merged = pack_scene_clips(window, shots);
 
         assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].beats.len(), 3);
-        assert_eq!(merged[1].beats.len(), 2);
+        assert_eq!(merged[0].beats.len(), 4);
+        assert!(!merged[1].is_merged());
         for clip in &merged {
-            assert!(clip_need_secs(SEEDANCE, clip) <= SEEDANCE.max_secs());
+            assert!(clip_need_secs(window, clip) <= window.max_secs());
         }
     }
 
     #[test]
-    fn a_narrow_model_window_merges_nothing() {
-        // min == max: one beat already fills the clip, so every shot stands alone.
+    fn a_narrow_model_window_merges_no_spoken_beats() {
+        // min == max == 5s: each spoken beat is 8s, so no two can share a clip.
         let narrow = ClipBounds::new(5, 5);
-        let shots: Vec<ShotDescription> =
-            (0..3).map(|i| shot(i, 0, "hold", None)).collect();
+        let line: String = "中".chars().cycle().take(17).collect();
+        let shots: Vec<ShotDescription> = (0..3)
+            .map(|i| shot(i, 0, "she speaks", Some(&line)))
+            .collect();
         let merged = pack_scene_clips(narrow, shots);
         assert_eq!(merged.len(), 3);
         assert!(merged.iter().all(|s| !s.is_merged()));
@@ -2287,7 +2335,7 @@ mod tests {
     #[test]
     fn the_timeline_covers_the_clip_and_gives_every_beat_time() {
         let clip = spoken_then_silent();
-        let timeline = clip_timeline(SEEDANCE, &clip, 15);
+        let timeline = clip_timeline(&clip, 15);
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].start_secs, 0);
@@ -2318,7 +2366,7 @@ mod tests {
         let clip = spoken_then_silent();
 
         for duration in 2..=SEEDANCE.max_secs() {
-            let timeline = clip_timeline(SEEDANCE, &clip, duration);
+            let timeline = clip_timeline(&clip, duration);
             assert_eq!(
                 timeline.last().expect("two beats").end_secs,
                 duration,
@@ -2335,7 +2383,7 @@ mod tests {
     #[test]
     fn a_single_beat_clip_has_no_beat_layout() {
         let single = shot(0, 0, "hold", None);
-        assert!(clip_timeline(SEEDANCE, &single, 8).is_empty());
+        assert!(clip_timeline(&single, 8).is_empty());
     }
 
     #[test]
@@ -2343,7 +2391,7 @@ mod tests {
         let shots: Vec<ShotDescription> = (0..3).map(|i| shot(i, 0, "hold", None)).collect();
         let merged = pack_scene_clips(SEEDANCE, shots);
         assert_eq!(merged[0].beats.len(), 3);
-        assert!(clip_timeline(SEEDANCE, &merged[0], 2).is_empty());
+        assert!(clip_timeline(&merged[0], 2).is_empty());
     }
 
     /// Regression: the storyboard LLM writes `0-4s / 4-7s` before the clip length
@@ -2354,7 +2402,7 @@ mod tests {
         let mut s = shot(0, 0, "", None);
         s.motion_desc = "0-4s:男生骑车从左向右横贯画面;4-7s:他继续向右骑行,落叶被风吹卷而起。".into();
 
-        let timeline = clip_timeline(SEEDANCE, &s, 5);
+        let timeline = clip_timeline(&s, 5);
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].start_secs, 0);
         assert_eq!(timeline.last().expect("two beats").end_secs, 5);
@@ -2375,7 +2423,7 @@ mod tests {
         let mut s = shot(0, 0, "", None);
         s.motion_desc = "固定机位。[0-3s] 她抬头; [3-8s] 她起身离开".into();
 
-        let timeline = clip_timeline(SEEDANCE, &s, 11);
+        let timeline = clip_timeline(&s, 11);
         assert_eq!(timeline.len(), 2);
         assert!(timeline[0].text.starts_with("固定机位。"), "{timeline:?}");
         assert!(timeline[0].text.contains("她抬头"), "{timeline:?}");
@@ -2389,7 +2437,7 @@ mod tests {
         let mut s = shot(0, 0, "", None);
         s.motion_desc = "0-8s: 她慢慢转身".into();
 
-        assert!(clip_timeline(SEEDANCE, &s, 8).is_empty());
+        assert!(clip_timeline(&s, 8).is_empty());
         assert_eq!(strip_authored_timecodes(&s.motion_desc), "她慢慢转身");
     }
 
@@ -2410,7 +2458,7 @@ mod tests {
         let merged = pack_scene_clips(SEEDANCE, vec![a, b]);
         assert_eq!(merged.len(), 1);
 
-        let timeline = clip_timeline(SEEDANCE, &merged[0], 12);
+        let timeline = clip_timeline(&merged[0], 12);
         assert_eq!(timeline.len(), 2);
         assert!(!timeline[0].text.contains("0-4s"), "{timeline:?}");
         assert!(!timeline[0].text.contains("4-7s"), "{timeline:?}");
@@ -2426,18 +2474,15 @@ mod tests {
             brief(3, 2, "窗外雨", None),
         ];
         let packed = pack_scene_briefs(SEEDANCE, briefs);
-        // 5+5+5+5s: duration window fits three; the fourth is a new story clip,
-        // not because its camera changed.
-        assert_eq!(packed.len(), 2);
+        // Four 2s single actions are 8s of content, under the 10s silent cap, so
+        // they play as one clip; the camera changes are CUT TO parts inside it.
+        assert_eq!(packed.len(), 1);
         assert_eq!(packed[0].idx, 0);
-        assert_eq!(packed[1].idx, 1);
         assert!(packed[0].is_merged());
-        assert_eq!(packed[0].beats.len(), 3);
+        assert_eq!(packed[0].beats.len(), 4);
         assert!(packed[0].visual_desc.contains("切到新机位"), "{}", packed[0].visual_desc);
-        assert!(packed[1].is_last);
-        assert!(!packed[0].is_last);
-        assert_eq!(packed[0].exit_cam_idx(), 1);
-        assert_eq!(packed[1].exit_cam_idx(), 2);
+        assert!(packed[0].is_last);
+        assert_eq!(packed[0].exit_cam_idx(), 2);
     }
 
     #[test]

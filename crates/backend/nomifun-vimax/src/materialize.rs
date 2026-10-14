@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nomi_vimax::domain::ShotDescription;
 use nomi_vimax::{
     build_canvas_document, media_local, scan_session_film, CreativeFilm, IngestedMedia, MediaIdMap,
     SessionRecord,
@@ -487,7 +488,7 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
     // 没产物文件则保守地要求 shots/ 下每一个 idx 子目录都产出可用的 video.mp4，
     // 缺失或损坏的 shot 不允许拼成成片。
     let planned = read_planned_shots(scene_dir).await.unwrap_or_default();
-    let expected_shot_idxs: Vec<i32> = planned.iter().map(|(idx, _, _)| *idx).collect();
+    let expected_shot_idxs: Vec<i32> = planned.iter().map(|(idx, _, _, _)| *idx).collect();
     let target_idxs: &[i32] = if expected_shot_idxs.is_empty() {
         &idxs
     } else {
@@ -529,7 +530,7 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
     let (entries, exits): (Vec<i32>, Vec<i32>) = if planned.len() == paths.len() {
         planned
             .iter()
-            .filter_map(|(_, entry, exit)| {
+            .filter_map(|(_, entry, exit, _)| {
                 let entry = (*entry)?;
                 Some((entry, exit.unwrap_or(entry)))
             })
@@ -544,6 +545,22 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
     } else {
         media_local::ConcatClip::scene(&refs, &[], opening)
     };
+    // Same rule as the renderer: only a silent shot may lose its held final frame.
+    let clips: Vec<media_local::ConcatClip<'_>> = if planned.len() == paths.len() {
+        clips
+            .into_iter()
+            .zip(&planned)
+            .map(|(clip, (_, _, _, spoken))| {
+                if *spoken {
+                    clip
+                } else {
+                    clip.with_static_tail_trim()
+                }
+            })
+            .collect()
+    } else {
+        clips
+    };
     media_local::concat_videos(&clips, &out)
         .await
         .map_err(|e| e.to_string())?;
@@ -555,7 +572,7 @@ async fn reconcat_scene(scene_dir: &Path) -> Result<PathBuf, String> {
 /// planner (not from whatever happens to be on disk).
 async fn read_planned_shots(
     scene_dir: &Path,
-) -> Result<Vec<(i32, Option<i32>, Option<i32>)>, String> {
+) -> Result<Vec<(i32, Option<i32>, Option<i32>, bool)>, String> {
     let path = scene_dir.join("shot_descriptions.json");
     if !path.is_file() {
         return Ok(Vec::new());
@@ -567,7 +584,7 @@ async fn read_planned_shots(
     let arr = parsed
         .as_array()
         .ok_or_else(|| "shot_descriptions.json is not an array".to_string())?;
-    let mut shots: Vec<(i32, Option<i32>, Option<i32>)> = arr
+    let mut shots: Vec<(i32, Option<i32>, Option<i32>, bool)> = arr
         .iter()
         .filter_map(|s| {
             let idx = s.get("idx").and_then(|v| v.as_i64())? as i32;
@@ -580,11 +597,15 @@ async fn read_planned_shots(
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32)
                 .or(entry);
-            Some((idx, entry, exit))
+            // An unreadable shot counts as spoken: only a shot known to be silent may be trimmed.
+            let spoken = serde_json::from_value::<ShotDescription>(s.clone())
+                .map(|shot| shot.has_spoken_dialogue())
+                .unwrap_or(true);
+            Some((idx, entry, exit, spoken))
         })
         .collect();
-    shots.sort_unstable_by_key(|(idx, _, _)| *idx);
-    shots.dedup_by_key(|(idx, _, _)| *idx);
+    shots.sort_unstable_by_key(|(idx, _, _, _)| *idx);
+    shots.dedup_by_key(|(idx, _, _, _)| *idx);
     Ok(shots)
 }
 
