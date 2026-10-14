@@ -3,6 +3,11 @@
 Flowy 1.0.0 is the first public release. This file records user-facing notes
 at a high level rather than a complete commit log.
 
+## Unreleased
+
+- Short-drama shots no longer stretch silent actions to the video model's minimum clip length. A silent action plays at its natural ~2 seconds, silent shots pack by their content, and a held final frame on a shot with no spoken line is trimmed at the film join. Spoken lines are timed as before, and every request still stays within the selected model's clip window.
+- Storyboard and screenwriter prompts no longer ask for leftover seconds to be filled with extra shots, and the performance micro-beat applies to emotional turns only, so routine actions no longer read as slow.
+
 ## v1.6.2 - 2026-10-13
 
 - The billing page explains credits from the real account: a check-in calendar with each day's credited amount, today's arrival status, the batches that actually expire (including team-seat credits) with their dates, and the sources behind the balance. Plans, packs, and the payment flow are unchanged.
