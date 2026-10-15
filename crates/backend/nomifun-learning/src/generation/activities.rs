@@ -3,7 +3,7 @@ use super::parser::{normalize_prompt, parse_json_object};
 use super::*;
 
 
-/// Stage 2 of one lesson: produce `estimated_minutes` + activities as a
+/// Stage 2 of one lesson: produce `est` + activities as a
 /// small JSON object, grounded in the finished document.
 pub(super) async fn generate_lesson_activities(
     completer: &dyn LearningCompleter,

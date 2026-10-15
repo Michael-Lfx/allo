@@ -10,7 +10,7 @@ export const EMPTY_PACK = `{
       "lessons": [
         {
           "title": "What is a vector?",
-          "estimated_minutes": 10,
+          "est": 10,
           "activities": [
             {
               "kind": "true_false",

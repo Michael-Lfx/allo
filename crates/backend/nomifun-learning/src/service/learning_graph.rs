@@ -1057,7 +1057,8 @@ impl LearningService {
         let mut node_ids: Vec<String> = Vec::with_capacity(batch.nodes.len());
         for (offset, node) in batch.nodes.iter().enumerate() {
             let lesson_id = LearningLessonId::new();
-            let minutes = node.minutes.unwrap_or(10).max(1) as i64;
+            // est 缺省 10（专注工作量尺寸锚；列名保留旧名 estimated_minutes）。
+            let est = node.est.unwrap_or(10).max(1) as i64;
             sqlx::query(
                 "INSERT INTO learning_lessons \
                  (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
@@ -1069,7 +1070,7 @@ impl LearningService {
             .bind(node.title.trim())
             .bind(node.purpose.trim())
             .bind(next_position + offset as i64)
-            .bind(minutes)
+            .bind(est)
             .bind(i64::from(node.difficulty.unwrap_or(2)))
             .execute(&mut *transaction)
             .await
@@ -1588,7 +1589,7 @@ impl LearningService {
                 nodes.push(crate::models::GraphNodeHistoryView {
                     lesson_id,
                     title: row.try_get("title").map_err(internal)?,
-                    estimated_minutes: row.try_get("estimated_minutes").map_err(internal)?,
+                    est: row.try_get("estimated_minutes").map_err(internal)?,
                     status: LessonStatus::try_from(status_text.as_str())
                         .map_err(AppError::Internal)?,
                     completed_at: row.try_get("completed_at").map_err(internal)?,
@@ -1813,7 +1814,7 @@ impl LearningService {
         Ok(names)
     }
 
-    /// 花名册：每节点一行的紧凑文本（状态 | 标题 | 分钟 | teaches | assumes）。
+    /// 花名册：每节点一行的紧凑文本（状态 | 标题 | teaches | assumes）。
     async fn render_roster(
         &self,
         course_id: &LearningCourseId,

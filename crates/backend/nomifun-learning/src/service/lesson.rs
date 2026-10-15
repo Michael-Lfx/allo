@@ -596,7 +596,7 @@ impl LearningService {
                         "lesson_id": lesson_id.as_str(),
                         "title": lesson.title,
                         "activities": output.activities.len(),
-                        "estimated_minutes": output.estimated_minutes,
+                        "est": output.estimated_minutes,
                         "visuals": crate::models::visual_distribution(&output.sections),
                     })),
                     Err(error) => self.emit_lesson_event(serde_json::json!({
@@ -645,7 +645,7 @@ impl LearningService {
                             "lesson_id": lesson_id.as_str(),
                             "title": lesson.title,
                             "activities": output.activities.len(),
-                            "estimated_minutes": output.estimated_minutes,
+                            "est": output.estimated_minutes,
                             "visuals": crate::models::visual_distribution(&output.sections),
                         }));
                         output
@@ -782,7 +782,7 @@ impl LearningService {
                 "lesson_id": lesson_id.as_str(),
                 "title": context.lesson_title,
                 "activities": output.activities.len(),
-                "estimated_minutes": output.estimated_minutes,
+                "est": output.estimated_minutes,
                 "visuals": crate::models::visual_distribution(&output.sections),
             })),
             Err(error) => self.emit_lesson_event(serde_json::json!({

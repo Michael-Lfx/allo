@@ -5,7 +5,7 @@
 //! 是读侧条款）；本模块执法**形状**（键白名单/词表/量级/批内唯一）；DB 语义门
 //! （登记表撞名、引用可解析、就绪即发布、课程内标题唯一）留
 //! [`super::validate_batch`]，同用 ng.* 编号——重试装配按编号逐条修正。
-//! **容错 deserializer 已退役**（g4）：`"minutes": "15"`、中文档位、单对象数组
+//! **容错 deserializer 已退役**（g4）：`"est": "15"`、中文档位、单对象数组
 //! 等旧习惯一律按违约打回，由条款报告引导重试。
 
 use serde_json::Value;
@@ -17,13 +17,14 @@ pub const TIERS: &[&str] = &["know", "apply", "teach"];
 /// 节点批次顶层键白名单。
 pub const BATCH_KEYS: &[&str] = &["nodes", "mints", "note"];
 /// 节点键白名单（缺省可选键见各条款）。
-pub const NODE_KEYS: &[&str] = &["title", "purpose", "minutes", "difficulty", "teaches", "assumes"];
+pub const NODE_KEYS: &[&str] = &["title", "purpose", "est", "difficulty", "teaches", "assumes"];
 /// 铸名键白名单。
 pub const MINT_KEYS: &[&str] = &["canonical", "aliases", "definition"];
 /// 节点标题长度上限（字符）。
 pub const TITLE_MAX_CHARS: usize = 80;
-/// 分钟预算区间（门放行 1–60）。
-pub const MINUTES_RANGE: (u64, u64) = (1, 60);
+/// est 区间（门放行 1–60）。est = 专注工作量尺寸锚（1 est 分钟 = 1 分钟
+/// 专注学习）；键名统一 est（j01），DB 列保留旧名 `estimated_minutes`。
+pub const EST_RANGE: (u64, u64) = (1, 60);
 /// 难度区间。
 pub const DIFFICULTY_RANGE: (u64, u64) = (1, 5);
 /// 评审问题条数上限。
@@ -115,16 +116,16 @@ pub fn validate_proposal(value: &Value) -> Vec<ContractViolation> {
                 format!("{at}（{title}）的 purpose 缺失或为空——每个节点必须带日常经验切口"),
             ));
         }
-        if let Some(minutes) = node_map.get("minutes") {
-            let valid = minutes
+        if let Some(est) = node_map.get("est") {
+            let valid = est
                 .as_u64()
-                .is_some_and(|value| (MINUTES_RANGE.0..=MINUTES_RANGE.1).contains(&value));
+                .is_some_and(|value| (EST_RANGE.0..=EST_RANGE.1).contains(&value));
             if !valid {
                 violations.push(red(
-                    "ng.nodes.minutes",
+                    "ng.nodes.est",
                     format!(
-                        "节点 {title} 的 minutes 必须是 {}-{} 的整数（字符串等旧形状已退役）：{minutes}",
-                        MINUTES_RANGE.0, MINUTES_RANGE.1
+                        "节点 {title} 的 est 必须是 {}-{} 的整数（1 est 分钟 = 1 分钟专注；字符串等旧形状已退役）：{est}",
+                        EST_RANGE.0, EST_RANGE.1
                     ),
                 ));
             }
@@ -317,10 +318,10 @@ pub fn proposal_schema() -> Value {
                     "properties": {
                         "title": { "type": "string", "minLength": 1, "maxLength": TITLE_MAX_CHARS },
                         "purpose": { "type": "string", "minLength": 1 },
-                        "minutes": {
+                        "est": {
                             "type": "integer",
-                            "minimum": MINUTES_RANGE.0,
-                            "maximum": MINUTES_RANGE.1,
+                            "minimum": EST_RANGE.0,
+                            "maximum": EST_RANGE.1,
                         },
                         "difficulty": {
                             "type": "integer",
@@ -400,10 +401,10 @@ mod tests {
         json!({
             "nodes": [
                 { "title": "用定义计算极限", "purpose": "从数格子接近某数的经验切入",
-                  "minutes": 15, "difficulty": 2,
+                  "est": 15, "difficulty": 2,
                   "teaches": [{ "name": "极限", "tier": "know" }], "assumes": [] },
                 { "title": "用极限法则求切线", "purpose": "从坡道倾斜度的日常经验切入",
-                  "minutes": 20, "difficulty": 3,
+                  "est": 20, "difficulty": 3,
                   "teaches": [{ "name": "求导法则", "tier": "apply" }],
                   "assumes": [{ "name": "极限", "tier": "know" }] }
             ],
@@ -422,18 +423,21 @@ mod tests {
 
     #[test]
     fn legacy_tolerant_shapes_are_now_violations() {
-        // 容错 deserializer 退役：字符串 minutes + 中文档位 + 单对象引用形状。
+        // 容错 deserializer 退役：字符串 est + 退役键名 minutes + 中文档位 +
+        // 单对象引用形状。
         let value = json!({
             "nodes": [{
                 "title": "用配方法解方程", "purpose": "p",
-                "minutes": "15",
+                "est": "15",
+                "minutes": 15,
                 "teaches": { "name": "配方法", "tier": "会用" },
                 "assumes": []
             }],
             "mints": []
         });
         let codes: Vec<&str> = validate_proposal(&value).iter().map(|v| v.code).collect();
-        assert!(codes.contains(&"ng.nodes.minutes"), "{codes:?}");
+        assert!(codes.contains(&"ng.nodes.est"), "{codes:?}");
+        assert!(codes.contains(&"ng.keys"), "{codes:?}");
         assert!(codes.contains(&"ng.refs.shape"), "{codes:?}");
     }
 
@@ -525,7 +529,7 @@ mod tests {
         let schema = proposal_schema();
         let node_items = &schema["properties"]["nodes"]["items"];
         assert_eq!(node_items["required"], json!(["title", "purpose"]));
-        assert_eq!(node_items["properties"]["minutes"]["maximum"], json!(MINUTES_RANGE.1));
+        assert_eq!(node_items["properties"]["est"]["maximum"], json!(EST_RANGE.1));
         assert_eq!(node_items["properties"]["difficulty"]["maximum"], json!(DIFFICULTY_RANGE.1));
         assert_eq!(schema["properties"]["nodes"]["maxItems"], json!(MAX_BATCH_NODES));
         assert_eq!(schema["$defs"]["refs"]["items"]["properties"]["tier"]["enum"], json!(TIERS));

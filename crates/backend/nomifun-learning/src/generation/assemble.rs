@@ -22,7 +22,7 @@ pub(crate) fn assemble_outline_pack(
                     title: lesson.title.clone(),
                     summary: String::new(),
                     // No content yet: use the default study-time estimate.
-                    estimated_minutes: 10,
+                    est: 10,
                     purpose: lesson.purpose.clone(),
                     // 引用清单（t4 评审补齐）：列表原样携带（首个 = 兼容位），
                     // 落库时列表进 `source_paths_json`、首个进三列。

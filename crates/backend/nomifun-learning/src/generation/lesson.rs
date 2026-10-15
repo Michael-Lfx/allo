@@ -351,7 +351,7 @@ pub(crate) async fn generate_lesson(
 
     Ok(LessonOutput {
         summary: assembled,
-        estimated_minutes: activities.estimated_minutes,
+        estimated_minutes: activities.est,
         activities: activities.activities,
         degraded_keys,
         sections,
