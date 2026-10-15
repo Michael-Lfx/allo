@@ -76,6 +76,13 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
+【写作成色（域中立纪律——写作取向，不是格式模板）】
+- 先推后练：方法与公式型结论先从已教前提推出，再进例题；不要先甩断言再补证明。
+- 档位决定内容形态：标到「知道」的概念做认识性介绍，标到「会用」以应用示范为主，标到「能教」才给完整推导与反例；没有档位声明的课时按节任务命名的内容形态把握深浅。
+- 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
+- 对照要真对照：比较必须落在可核查的维度（适用范围、代价、失败形态），不写「X 更好」式的空对照。
+- 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。
+
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
 - 题型答案形状：single_choice 3-5 选项且 answer 恰等于其一；true_false 是布尔；fill_in_blank 恰含一个 "___"、answer 是 1-3 个等价答案数组、必须带 distractors 近义干扰；multi_choice 是 2+ 选项的数组（顺序无关）；numeric 是数字（可带 tol 容差）；ordering 的 options 是打乱条目、answer 是正确顺序；matching 的 options 是左列、answer 是一一对应的右列数组；reflection 与 open_question 的 answer 必须是 null。
@@ -544,6 +551,11 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                     "后续节点（结尾句要为它们做衔接铺垫，但不要展开其内容）：\n{}\n",
                     graph.upcoming_nodes
                 ));
+            }
+            // 概念面（j07 读侧投影，图节点路径专属）：首现/非首现 + 引用名
+            // + 活跃别名池 + 概念登场纪律（R2/R5 条款只落此处）。
+            if let Some(faces) = &graph.concept_faces {
+                text.push_str(&format!("\n{}\n", faces.render_text()));
             }
         }
         None => {
@@ -1029,6 +1041,7 @@ mod tests {
             degree_statement: "聚焦场内标准期权，不含结构性产品".into(),
             prerequisite_path: "1. 什么是衍生品 — 先建立衍生品框架\n".into(),
             upcoming_nodes: "- 期权定价基础（为理解希腊字母铺垫）\n".into(),
+            concept_faces: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("学习图节点"));
@@ -1051,10 +1064,44 @@ mod tests {
             degree_statement: "聚焦场内标准期权".into(),
             prerequisite_path: String::new(),
             upcoming_nodes: String::new(),
+            concept_faces: None,
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("从零讲起"));
         assert!(text.contains("整个学习图的收束"));
+    }
+
+    /// 概念面投影（j07）：图节点路径的用户回合渲染概念面段（首现/非首现/
+    /// 引用名/旧叫法）；传统路径（graph = None）不出现该段。
+    #[test]
+    fn lesson_user_text_renders_concept_faces_for_graph_nodes_only() {
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: Some(nomifun_learning::GraphConceptFaces {
+                first_seen: vec!["希腊字母".into()],
+                returning: vec!["衍生品".into()],
+                ref_names: vec![("Delta".into(), "德尔塔".into())],
+                aliases: vec![("衍生品".into(), vec!["衍生工具".into()])],
+            }),
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("概念面"));
+        assert!(text.contains("首现"));
+        assert!(text.contains("非首现"));
+        assert!(text.contains("引用名"));
+        assert!(text.contains("旧叫法"));
+        assert!(text.contains("用名纪律"));
+
+        // 传统路径：graph = None → 概念面段不出现。
+        let mut plain = lesson_context();
+        plain.clear_grounding();
+        let text = lesson_user_text(&plain);
+        assert!(!text.contains("概念面"));
     }
 
     /// The user turn embeds the outline tree and the adjacent-lesson

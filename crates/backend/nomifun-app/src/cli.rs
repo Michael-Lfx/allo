@@ -360,7 +360,7 @@ pub enum Command {
 }
 
 /// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop +
-/// j05 的 xp 读数面）。
+/// j07 的 content 读数面）。
 #[derive(Debug, Clone, Subcommand)]
 pub enum LearningSmokeCommand {
     /// XP 读数面冒烟（j05）：临时库结算几笔（教新 full + 复习线一笔）→
@@ -369,6 +369,20 @@ pub enum LearningSmokeCommand {
         /// SQLite 库路径（缺省从零临时库）。
         #[arg(long)]
         db: Option<PathBuf>,
+    },
+    /// 内容成色冒烟（j07）：立一门两节点学习图课程（概念挂接 + 别名池 +
+    /// 引用名），为汇合节点生成正文落观测面，读数 = 字数/小节数/题目数/
+    /// 首现标注——读数面非门禁。
+    Content {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
     },
     /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
     /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
