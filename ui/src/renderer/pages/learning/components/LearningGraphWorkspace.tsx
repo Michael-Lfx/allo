@@ -126,6 +126,7 @@ const LearningGraphWorkspace: React.FC<{
   const [structureError, setStructureError] = useState<string | null>(null);
   const [structureRunning, setStructureRunning] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [mounting, setMounting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -545,7 +546,7 @@ const LearningGraphWorkspace: React.FC<{
           <ConceptTable courseId={detail.course.id} />
         </Tabs.TabPane>
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
-          <StructureGraphTab view={structure} />
+          <StructureGraphTab view={structure} onMount={() => void mountStructure()} mounting={mounting} />
         </Tabs.TabPane>
       </Tabs>
       </div>

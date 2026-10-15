@@ -96,17 +96,7 @@ export function StructureGraphTab({
                 {t('learningGraphMountRun')}
               </Button>
             )}
-            {onRepair && (
-              <Button size='mini' loading={repairing} onClick={onRepair}>
-                {t('learningGraphRepairRun')}
-              </Button>
-            )}
           </div>
-          {mounts.stale && (
-            <Text type='warning' className='text-11px leading-16px'>
-              {t('learningGraphRepairStaleBanner')}
-            </Text>
-          )}
           {mounts.index.length > 0 && (
             <div className='flex flex-col gap-2px'>
               {mounts.index.map((entry) => (

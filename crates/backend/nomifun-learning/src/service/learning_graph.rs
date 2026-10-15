@@ -2732,9 +2732,32 @@ impl LearningService {
             .map(serde_json::from_str::<serde_json::Value>)
             .transpose()
             .map_err(internal)?;
+        // 挂载三态投影的数据面（j08）：现存节点标题 + 挂载行（一课一行）+
+        // 当前结构 hash（与落盘 hash 比对 = stale）。
+        let node_titles: Vec<String> = sqlx::query_scalar(
+            "SELECT l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mount_row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let current_hash =
+            crate::learning_graph::mounting::fnv1a_64(snapshot.as_deref().unwrap_or("").as_bytes());
         Ok(crate::learning_graph::structure_view::build_structure_view(
             course_id.clone(),
             envelope.as_ref(),
+            &node_titles,
+            mount_row.as_ref().map(|(json, hash)| (json.as_str(), *hash)),
+            current_hash,
         ))
     }
 
