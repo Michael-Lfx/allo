@@ -7,6 +7,7 @@
       ../learning-absorb-3/map.md——其 g2 修订本 effort g3 的别名落池形态（字符串 →
       结构化记录），t1 是本 effort g1 的实现参考，t2 修复相关重试循环的取消语义。
       本 effort 决议（g1–g4/t1）未实施落码，与三轮合并切票。 -->
+<!-- 实施波已切：impl/（j01–j10，二轮 + 三轮决议合并实施，依赖序见 impl/README.md）。 -->
 
 ## Destination
 
