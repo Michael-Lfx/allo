@@ -29,6 +29,11 @@
 
 ## Decisions so far
 
+- [结构转活文档：挂载 + 修补 + 维护回合进多少？](tickets/g1-living-structure.md)
+  （**推荐项默认裁决，可复议**）：**全量进**，实施两步走（先挂载后修补）；载体 = 挂载
+  单行 JSON 表 + 修补审计表；findings 采纳评审 warn 通道（第一轮生长即留痕）；连带定案 =
+  门位口径随二轮提示词波、RoundRetry 与二轮 t1 合并、ops 空 = 合法/skipped 零 LLM、
+  手写 FNV-1a、显式命令触发、smoke 判据裁剪（渲染一致删除）。
 - [learnhub 结构维护体系深挖](tickets/r1-structure-maintenance.md)：挂载 facts（FNV-1a
   hash 锚定 + 三态失效降级 + merge_mounts 幂等）、七型修补 ops（ops=意图引擎管自洽 +
   st.ops.apply 全量重过 + no_slug_churn）、维护回合（显式触发/RoundRetry/ops 空=合法）、
@@ -48,9 +53,7 @@
 
 ## Not yet specified
 
-- 三轮 + 二轮合并切票的粒度与顺序（等 g1–g4 裁决后切）。
-- findings 留痕的生产方（allo 概念评审门是否加「不打回只留痕」通道）——随 g1。
-- smoke-mount / smoke-repair 对应的 allo 冒烟子命令判据——随 g1。
+- 三轮 + 二轮合并切票的粒度与顺序（等 g2–g4 裁决后切）。
 - AI 批改轨题型是否入 XP 账、九题型当量表取值——随 t1。
 - 会话体系若缓，复习中心聚合读数/检测记录读面的挂点——随 g4。
 
