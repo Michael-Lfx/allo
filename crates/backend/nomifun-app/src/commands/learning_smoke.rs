@@ -478,7 +478,16 @@ async fn run_grow(
             return Ok(ExitCode::from(2));
         }
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
-        println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green");
+        // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
+        let stats = wiring.service.growth_run_stats();
+        match stats {
+            Some(stats) => println!(
+                "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
+                 [retry: attempts_used={}, stop_reason={}]",
+                stats.attempts_used, stats.stop_reason
+            ),
+            None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
+        }
     }
 
     if with_structure {

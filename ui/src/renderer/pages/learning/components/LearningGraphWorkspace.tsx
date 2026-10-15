@@ -22,6 +22,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { lessonStatusTagColors } from '../model';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
+import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { learningApi } from '../api';
 import { errorMessage } from '../utils';
 import type {
@@ -88,22 +89,7 @@ const LearningGraphWorkspace: React.FC<{
   // 后台结构生成/生长的 WS 事件触发刷新：结构启动翻出「生成中」徽章、
   // 画完立即上屏、终结（完成/失败/取消）落定状态——思考化之后结构与生长
   // 都要跑分钟级，不刷新用户会以为什么都没发生。
-  useEffect(() => {
-    return ipcBridge.learning.courseGeneration.on((event) => {
-      if (
-        event.course_id === detail.course.id &&
-        (event.event === 'growth_started' ||
-          event.event === 'growth_completed' ||
-          event.event === 'growth_failed' ||
-          event.event === 'growth_cancelled' ||
-          event.event === 'structure_started' ||
-          event.event === 'structure_completed' ||
-          event.event === 'structure_failed')
-      ) {
-        onRefresh();
-      }
-    });
-  }, [detail.course.id, onRefresh]);
+  useGraphGenerationEvents(detail.course.id, () => onRefresh());
 
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
     () => graph?.recommended[0] ?? null
@@ -166,7 +152,7 @@ const LearningGraphWorkspace: React.FC<{
       if (event.course_id !== detail.course.id) return;
       if (event.event === 'structure_started') setStructureRunning(true);
       if (event.event === 'structure_completed') load();
-      if (event.event === 'structure_failed') {
+      if (event.event === 'structure_failed' || event.event === 'structure_cancelled') {
         setStructureRunning(false);
         load();
       }

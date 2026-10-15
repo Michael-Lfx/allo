@@ -57,14 +57,31 @@ pub(crate) struct StructureArtifacts {
 
 /// 运行结构生成：双调用 + 契约门 + 门口对账 + 整批重试带反馈。
 /// 返回 Err = 预算耗尽（消息携带最后一轮的逐条款报告或 LLM 错误）。
-pub async fn generate_structure_artifacts(
+/// 重试机制（二轮 t1）：同指纹早停——连败两次的逐条款报告相同即判「反馈
+/// 回灌已无法改变结果」，立即耗尽（LLM 调用数 2 非 3）。真取消（三轮 t2）：
+/// `cancel` 令牌在循环头检查、并与两次 LLM 调用 `select!` 竞速（中断 =
+/// 断 HTTP）；快照落列前的取消检查在 service 层（写前取消 = 零快照）。
+pub(crate) async fn generate_structure_artifacts(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     input: &StructureInput,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<StructureArtifacts, AppError> {
+    let cancellation = cancel
+        .map(|token| crate::service::CancellationCompleter::new(completer, token.clone()));
+    let completer: &dyn LearningCompleter = match &cancellation {
+        Some(wrapper) => wrapper,
+        None => completer,
+    };
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
+    let mut prev_fingerprint: Option<String> = None;
     for attempt in 1..=MAX_ATTEMPTS {
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(AppError::Conflict(
+                crate::service::CANCELLED_MESSAGE.to_owned(),
+            ));
+        }
         match attempt_once(completer, model_override, input, &feedback).await {
             Ok(artifacts) => return Ok(artifacts),
             Err(report) => {
@@ -73,6 +90,18 @@ pub async fn generate_structure_artifacts(
                     report_head = %report.chars().take(400).collect::<String>(),
                     "structure generation rejected — regenerating both artifacts with clause feedback"
                 );
+                // 同指纹早停：上一轮也是这份逐条款报告 → 重试已无收敛可能
+                //（反馈回灌已无法改变结果，连败两次即停，调用数 2 非 3）。
+                let fingerprint = super::growth_retry::normalize_report(&report);
+                if attempt > 1 && prev_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                    tracing::warn!(
+                        attempt,
+                        "structure generation produced the same violations twice — stopping early"
+                    );
+                    last = report;
+                    break;
+                }
+                prev_fingerprint = Some(fingerprint);
                 last = report;
                 // 重试反馈（契约 v2.1 §0 同款）：违规报告注入重试装配——无
                 // 反馈的盲目重试零收敛。两产物共用同一份报告，各自认领本产
@@ -316,6 +345,7 @@ mod tests {
                 proficiency_statement: None,
                 learner_basis: None,
             },
+            None,
         )
         .await
         .expect("golden artifacts pass");
@@ -343,6 +373,7 @@ mod tests {
                 proficiency_statement: None,
                 learner_basis: None,
             },
+            None,
         )
         .await
         .expect("second attempt aligns the doors");
@@ -363,6 +394,7 @@ mod tests {
                 proficiency_statement: None,
                 learner_basis: None,
             },
+            None,
         )
         .await
         .unwrap_err();

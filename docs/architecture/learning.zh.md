@@ -73,8 +73,21 @@ assumes 概念 + 跨课程教师节点摘要 + 下游禁止清单（概念网口
 标记落库（迁移 053），前端持久可见并提供 AI 重写入口，手动编辑即视为
 接管并清除标记。
 
-大纲生成与学习图生长的进行中状态/取消统一走 `generation_registry`
-（status/cancel 端点的数据源）。
+四类长任务（学习图生长/结构生成、大纲建课、课时内容生成）的进行中状态/取消
+统一走 `generation_tasks` 长任务注册表（j03：键 `{kind}:{course}:{node|-}`、
+状态机 running→done|failed|cancelled 终态幂等、同键并发拒绝、注册序排序）：
+快照命令 `GET /api/learning/generation-tasks`、统一取消
+`POST /api/learning/generation-tasks/{key}/cancel`（存量 `/generate/cancel`
+转发注册表）。取消 = 每任务一枚 `CancellationToken`——growth/structure 循环
+在检查点轮询 + 全部 LLM 调用经 `CancellationCompleter` `select!` 真中断
+（中断 = 断 HTTP，批事务原子落库 = 零落库；结构快照写前检查 = 零快照）；
+大纲 agent 循环经 `CancellableProvider`（token 化）逐请求边界与流中生效；
+课时内容循环未接 token（ADR-0004 显式差异：断开请求即中断，远程取消如实
+拒绝）。begin/finish 观测旁路 JSONL 落 `observation/learning-tasks.jsonl`
+（写失败降级）。生长循环的重试机制（二轮 t1）：同指纹早停（连败两次即停、
+调用数 2 非 3）+「未点名被改」机械守卫（豁免早停 + 原地重试恰一次不占轮
+预算）+ 重裁出口容量定向打回（`ng.batch.redraft_capacity`）；smoke 增
+`attempts_used`/`stop_reason` 读数。
 
 ## 提示词纪律方法论
 

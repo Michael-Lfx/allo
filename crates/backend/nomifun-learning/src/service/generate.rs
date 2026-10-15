@@ -57,13 +57,14 @@ impl LearningService {
             _ => unreachable!("validated request always carries one source"),
         };
         let _slot = self.acquire_generation_slot(user_id, kind_key)?;
-        // 登记生成注册（status/cancel 端点的唯一数据源，学习图流同样登
-        // 记）：RAII 守卫在请求结束——含客户端断连中止——时注销。主题取
-        // 知识库流的用户目标（目标即课程的意图）、描述前 120 字或库名，
-        // 供悬浮指示条展示。
+        // 登记长任务（generation_tasks 注册表，status/cancel/快照端点的
+        // 唯一数据源）：守卫 drop（含客户端断连中止）按终态收尾。主题取
+        // 知识库流的用户目标（目标即课程的意图）、描述前 120 字或库名。
+        // 键的课程段 = 会话 id（建课时课程尚不存在）。
         let topic = outline_brief_topic(&brief);
-        let _run = self.begin_generation(&topic);
         let session = generate_id();
+        let _task =
+            self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
         let model_override = request
             .provider_id
             .as_ref()

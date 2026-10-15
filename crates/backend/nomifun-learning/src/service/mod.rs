@@ -105,24 +105,28 @@ pub struct LearningService {
     /// restart loses in-flight generations, and a 1-3 minute task is
     /// simply re-issued.
     agent_course_jobs: Arc<Mutex<HashMap<String, AgentCourseJobEntry>>>,
-    /// 课程生成的运行注册与取消旗标（学习图与大纲两条生成流共用，是
-    /// status/cancel 端点的唯一数据源）：`begin` 清零旗标并登记主题/开始
-    /// 时刻（RAII 守卫注销），取消端点置位旗标，状态端点读取。旗标 Arc
-    /// 永不更换——引擎在循环开始前克隆给 CancellableProvider，置位即可达。
-    /// 内存态，与草稿存储同生命周期（重启即失）。
-    generation_registry: Arc<GenerationRegistry>,
+    /// 课程生成的运行注册与取消（学习图生长/结构、大纲、课时四类长任务
+    /// 共用，是 status/cancel/快照端点的唯一数据源，见
+    /// [`generation_tasks`]）：每任务一枚 CancellationToken——任务体在检查
+    /// 点轮询 + `select!` 真中断；取消端点触发 token；终态首写即定（取消
+    /// 先到 = cancelled，任务先完成 = 竞速落败如实 done）。内存态，重启
+    /// 即清（终态留痕由批行/草稿等持久面承担）。
+    generation_tasks: Arc<GenerationTaskRegistry>,
+    /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
+    /// 读数面）。内存态，仅诊断。
+    growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
 }
 
-/// 生成注册的内部状态（见 [`LearningService::generation_registry`]）。
-pub(super) struct GenerationRegistry {
-    cancel: Arc<AtomicBool>,
-    run: Mutex<Option<GenerationRun>>,
+/// 生长循环的重试读数（learning-smoke grow/loop 输出用；读数面非门禁）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GrowthRunStats {
+    pub attempts_used: usize,
+    /// success | early_stop | exhausted | cancelled。
+    pub stop_reason: String,
 }
 
-pub(super) struct GenerationRun {
-    pub(super) topic: String,
-    pub(super) started_at: std::time::Instant,
-}
+/// 生成注册的内部状态（见 [`LearningService::generation_tasks`]）。
+pub(crate) type GenerationRegistry = generation_tasks::GenerationTaskRegistry;
 
 impl LearningService {
     pub fn new(pool: SqlitePool) -> Self {
@@ -138,11 +142,18 @@ impl LearningService {
             event_sink: Arc::new(RwLock::new(None)),
             generation_slots: Arc::new(Mutex::new(HashSet::new())),
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
-            generation_registry: Arc::new(GenerationRegistry {
-                cancel: Arc::new(AtomicBool::new(false)),
-                run: Mutex::new(None),
-            }),
+            generation_tasks: Arc::new(GenerationTaskRegistry::new()),
+            growth_run_stats: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// 注入长任务的观测旁路（begin/finish JSONL 行；组合根接
+    /// `<data-dir>/observation/learning-tasks.jsonl`，写失败降级）。
+    pub fn set_generation_task_observer(
+        &self,
+        observer: Arc<dyn Fn(&str) + Send + Sync>,
+    ) {
+        self.generation_tasks.set_observer(observer);
     }
 
     pub fn set_generation_dependencies(
@@ -456,12 +467,9 @@ pub(crate) struct GenerationRunGuard<'a>(&'a LearningService);
 
 impl Drop for GenerationRunGuard<'_> {
     fn drop(&mut self) {
-        *self
-            .0
-            .generation_registry
-            .run
-            .lock()
-            .expect("generation run lock poisoned") = None;
+        // 终态收尾已由 GenerationTaskGuard 的显式 finish 承担；守卫类型
+        // 保留给未迁移的旧调用面（空操作）。
+        let _ = self.0;
     }
 }
 
@@ -493,6 +501,7 @@ mod learning_graph;
 mod course;
 mod course_outline;
 mod diagnostic;
+mod generation_tasks;
 mod generate;
 mod lesson;
 mod lesson_draft;
@@ -500,6 +509,11 @@ mod memory;
 mod progress;
 mod review;
 mod tags;
+
+pub(crate) use generation_tasks::{
+    CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
+    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE, STATE_RUNNING,
+};
 
 #[cfg(test)]
 mod tests;

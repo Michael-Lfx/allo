@@ -30,10 +30,9 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route(
-            "/api/learning/courses/generate/status",
-            get(learning_graph_generation_status),
-        )
+        .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
+        .route("/api/learning/generation-tasks", get(list_generation_tasks))
+        .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
         .route(
             "/api/learning/courses/generate/cancel",
             post(cancel_learning_graph_generation),
@@ -201,8 +200,30 @@ async fn learning_graph_generation_status(
     Ok(Json(ApiResponse::ok(state.service.generation_status())))
 }
 
-/// 取消进行中的课程生成/生长：置位旗标，在下一个 LLM 请求边界停止。
-/// 无进行中的生成时返回 cancelled=false（幂等）。
+/// 长任务快照（三轮 t2）：四类生成任务的在跑/终态一览（在跑置顶、注册序
+/// 倒序），供指示条与诊断面。
+async fn list_generation_tasks(
+    State(state): State<LearningRouterState>,
+) -> Result<Json<ApiResponse<Vec<crate::service::GenerationTaskView>>>, AppError> {
+    Ok(Json(ApiResponse::ok(state.service.generation_task_snapshot())))
+}
+
+/// 统一取消（按任务键，三轮 t2 真取消）：取消胜出 = `{state: "cancelled"}`
+/// （不报错误）；任务先完成 = 竞速落败如实 `{state: "done"|"failed"}`；
+/// 键不存在 = 404。
+async fn cancel_generation_task(
+    State(state): State<LearningRouterState>,
+    Path(key): Path<String>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let outcome = state.service.cancel_generation_task(&key)?;
+    Ok(Json(ApiResponse::ok(
+        serde_json::json!({ "state": outcome }),
+    )))
+}
+
+/// 取消进行中的课程生成/生长（legacy 全局端点，转发到注册表）：触发全部
+/// 可取消在跑任务的 token（growth/structure/outline），任务在检查点或
+/// LLM 调用内（select! 真中断）停止。无可取消任务时 cancelled=false（幂等）。
 async fn cancel_learning_graph_generation(
     State(state): State<LearningRouterState>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {

@@ -37,13 +37,15 @@ use crate::one_shot::OneShotTool;
 /// 未接入取消——显式差异，见 ADR-0004）。
 pub(crate) const CANCEL_MESSAGE: &str = "生成已被用户取消";
 
-/// 生成循环共用的 provider 包装：每次 LLM 请求开始前与流转发途中轮询
-/// 取消旗标（旗标挂在 [`LearningService`] 的生成注册上，取消端点置位）。
-/// 取消在流边界即刻生效——请求前直接拒绝；流中把取消作为 Error 事件注入
-/// 并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP 流随之终止）。
+/// 生成循环共用的 provider 包装：每次 LLM 请求开始前轮询取消令牌，流转发
+/// 途中与令牌 `select!` 竞速（令牌挂在 LearningService 的长任务注册上，
+/// 取消端点触发）。取消在流边界即刻生效——请求前直接拒绝；流中把取消作为
+/// Error 事件注入并停止转发（下游 receiver 被 drop 后上游发送失败，HTTP
+/// 流随之终止）。j03 起旗标升级为 CancellationToken（真取消，与生长/结构
+/// 循环同一注册表单源）。
 pub(crate) struct CancellableProvider {
     pub(crate) inner: Arc<dyn LlmProvider>,
-    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
 }
 
 #[async_trait::async_trait]
@@ -56,24 +58,32 @@ impl LlmProvider for CancellableProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-        use std::sync::atomic::Ordering;
-        if self.cancel.load(Ordering::Relaxed) {
+        if self.cancel.is_cancelled() {
             return Err(ProviderError::Api {
                 status: 499,
                 message: CANCEL_MESSAGE.to_owned(),
             });
         }
         let mut rx = self.inner.stream(request).await?;
-        let cancel = Arc::clone(&self.cancel);
+        let cancel = self.cancel.clone();
         let (tx, out) = mpsc::channel(64);
         tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = tx.send(LlmEvent::Error(CANCEL_MESSAGE.to_owned())).await;
-                    break;
-                }
-                if tx.send(event).await.is_err() {
-                    break;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => {
+                        let _ = tx.send(LlmEvent::Error(CANCEL_MESSAGE.to_owned())).await;
+                        break;
+                    }
+                    event = rx.recv() => {
+                        match event {
+                            Some(event) => {
+                                if tx.send(event).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
                 }
             }
         });
