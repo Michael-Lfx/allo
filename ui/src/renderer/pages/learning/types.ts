@@ -121,6 +121,14 @@ export interface CourseSummary {
   enrolled: boolean;
   total_lessons: number;
   completed_lessons: number;
+  /** 课程级「现存且启用」（三轮 g3）：false = 已归档（可逆暂停），安排面不再出现本课 */
+  enabled: boolean;
+  /** 概况：已结算或已完成的课时/节点数（XP 账本落地前 = completed_lessons） */
+  settled_or_completed: number;
+  /** 概况：今日到期题数 */
+  due_today: number;
+  /** 概况：累计 XP（结算账本 j05 落地前为 null） */
+  total_xp: number | null;
   updated_at: number;
   tags: string[];
   course_kind: CourseKind;

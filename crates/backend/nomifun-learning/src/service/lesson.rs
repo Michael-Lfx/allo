@@ -403,7 +403,8 @@ impl LearningService {
     ) -> Result<LessonView, AppError> {
         let row = sqlx::query(
             "SELECT l.module_id, l.position, l.content_generated, m.course_id, \
-                    m.position AS module_position, c.course_kind, c.teaching_style \
+                    m.position AS module_position, c.course_kind, c.teaching_style, \
+                    c.deleted_at, c.enabled \
              FROM learning_lessons l \
              JOIN learning_modules m ON m.module_id = l.module_id \
              JOIN learning_courses c ON c.course_id = m.course_id \
@@ -414,6 +415,18 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("learning lesson {lesson_id}")))?;
+
+        // 安排面守卫（三轮 g3「现存且启用」）：已删课时的课程行只剩墓碑 →
+        // 404；归档课的内容生成入口给人面错误（可恢复），不再烧生成预算。
+        if row.try_get::<Option<i64>, _>("deleted_at").map_err(internal)?.is_some() {
+            let course_id: String = row.try_get("course_id").map_err(internal)?;
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        if row.try_get::<i64, _>("enabled").map_err(internal)? == 0 {
+            return Err(AppError::Conflict(
+                "课程已归档，恢复后可继续学习".into(),
+            ));
+        }
 
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let teaching_style: TeachingStyle = TeachingStyle::try_from(

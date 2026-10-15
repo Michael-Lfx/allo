@@ -29,6 +29,10 @@ impl LearningService {
         // Ranking quality: the forgettability order is computed over a wider
         // due-ordered window than the requested page, then truncated.
         let fetch_limit = (limit * 4).min(500);
+        // 安排面收窄（三轮 g3「现存且启用」单源口径）：只服务现存且启用的
+        // 课程——已归档（enabled = 0）与已删除（墓碑）的课程卡都不再出队；
+        // 历史面（日历/统计/打卡）不过筛。已出卡的单卡入口（review_entry）
+        // 不在此列，作答提交不因归档失败。
         let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.activity_id, a.kind, a.prompt, a.config_json, \
                     l.title AS lesson_title, m.title AS module_title, \
@@ -36,7 +40,8 @@ impl LearningService {
                     r.last_reviewed_at, r.edit_pending_at, r.edit_note \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-             LEFT JOIN learning_courses c ON c.course_id = e.course_id \
+             JOIN learning_courses c ON c.course_id = e.course_id \
+               AND c.deleted_at IS NULL AND c.enabled = 1 \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \

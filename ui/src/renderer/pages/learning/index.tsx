@@ -6,8 +6,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import ContentWidthToggle, { useWideContentLayout } from './components/ContentWidthToggle';
-import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
-import { CourseGenerationPill } from './components/CourseGenerationPill';
+import { CourseCard, CourseDeleteDialog } from './components/CourseCard';import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { ReviewBanner } from './components/ReviewBanner';
@@ -235,6 +234,7 @@ const LearningPage: React.FC = () => {
           onReview={(courseId) => void reviewSession.startCourseReviewSession(courseId)}
           onEditTags={() => void openTagEditor('course', course)}
           onDelete={() => setDeletingCourse(course)}
+          onChanged={() => void load()}
         />
       )),
     [courses, navigate, openTagEditor, reviewSession.startCourseReviewSession]
