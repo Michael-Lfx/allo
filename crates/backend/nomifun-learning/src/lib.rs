@@ -53,5 +53,5 @@ pub use models::{
     visual_menu_text,
 };
 pub use routes::learning_routes;
-pub use service::LearningService;
+pub use service::{GrowthRunStats, LearningService};
 pub use state::LearningRouterState;

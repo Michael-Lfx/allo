@@ -2912,6 +2912,24 @@ impl AppServices {
             event_bus.clone(),
             authoritative_user_id.clone(),
         ));
+        // 长任务观测旁路（三轮 t2）：begin/finish 两型 JSONL 行落
+        // `{data_dir}/observation/learning-tasks.jsonl`（追加式；写失败
+        // 静默降级，绝不阻断任务）。与 ArchivingCompleter 观测面同目录约定。
+        {
+            let observation_dir = data_dir.join("observation");
+            learning_service.set_generation_task_observer(Arc::new(move |line: &str| {
+                use std::io::Write;
+                let _ = std::fs::create_dir_all(&observation_dir);
+                let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(observation_dir.join("learning-tasks.jsonl"))
+                else {
+                    return;
+                };
+                let _ = writeln!(file, "{line}");
+            }));
+        }
         // Tutorial seed is TEMPORARILY DISABLED: first-boot creation of the
         // "Flowy 使用指南" knowledge base and the "学习模块上手指南" example
         // course is paused while its value is under review (uncertain the

@@ -402,7 +402,7 @@ impl LearningService {
         request: &GenerateLessonRequest,
     ) -> Result<LessonView, AppError> {
         let row = sqlx::query(
-            "SELECT l.module_id, l.position, l.content_generated, m.course_id, \
+            "SELECT l.module_id, l.position, l.content_generated, l.title AS lesson_title, m.course_id, \
                     m.position AS module_position, c.course_kind, c.teaching_style, \
                     c.deleted_at, c.enabled \
              FROM learning_lessons l \
@@ -443,12 +443,33 @@ impl LearningService {
 
         // 课程类型分流（幂等检查已共享）：学习图节点没有蓝图快照，走图
         // 专属路径——上下文来自课程行与前置边表，且只走 agent 引擎。
+        // 课时内容生成为长任务（三轮 t2 注册面：快照可见、断开请求即中断
+        // ——循环内取消接线的显式差异见 ADR-0004，取消请求如实拒绝）。
+        let lesson_title: String =
+            row.try_get("lesson_title").map_err(internal)?;
+        let mut task = self.begin_generation_task(
+            crate::service::KIND_LESSON,
+            course_id.as_str(),
+            Some(lesson_id.as_str()),
+            &format!("课时内容 · {lesson_title}"),
+        )?;
+        task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
         if row.try_get::<String, _>("course_kind").map_err(internal)?
             == CourseKind::LearningGraph.as_str()
         {
-            return self
+            let result = self
                 .generate_graph_lesson_content(user_id, lesson_id, &course_id, request)
                 .await;
+            return match result {
+                Ok(view) => {
+                    task.finish_done("课时内容已发布");
+                    Ok(view)
+                }
+                Err(error) => {
+                    task.finish_failed(error.to_string());
+                    Err(error)
+                }
+            };
         }
 
         let snapshot = sqlx::query(
@@ -670,6 +691,7 @@ impl LearningService {
                             "title": lesson.title,
                             "error": error,
                         }));
+                        task.finish_failed(format!("lesson '{}' failed", lesson.title));
                         return Err(AppError::UnprocessableEntity(format!(
                             "lesson '{}' failed to generate: {error}",
                             lesson.title
@@ -688,6 +710,7 @@ impl LearningService {
             }));
         }
         self.persist_lesson_output(lesson_id, &output).await?;
+        task.finish_done("课时内容已发布");
 
         let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
         self.lesson_view(lesson_id, enrollment.as_ref()).await
