@@ -21,7 +21,7 @@ use crate::models::{
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
     RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
-    UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
+    UpdateLessonSectionBodyRequest, UpdateQuestionRequest, XpCalendar, XpReading,
 };
 use crate::state::LearningRouterState;
 

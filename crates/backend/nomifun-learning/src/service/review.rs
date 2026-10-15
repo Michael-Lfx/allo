@@ -1547,6 +1547,21 @@ impl LearningService {
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
         let settings = self.scheduler_settings().await;
+        // 作答时刻的 FSRS 预测（g4 数据面 `predicted` 列）：仅对真有记忆状态
+        // 的卡有意义，与复习日志快照同一铸值口径。
+        let predicted = if snapshot.review_count > 0 {
+            predicted_retrievability(
+                snapshot.stability_days,
+                days_elapsed_between(
+                    snapshot.last_reviewed_at.unwrap_or(now),
+                    now,
+                    settings.tz_offset_minutes,
+                ),
+                &settings,
+            )
+        } else {
+            None
+        };
         let allowed = self
             .push_allowed(
                 ReviewSource::Course,
@@ -1596,6 +1611,7 @@ impl LearningService {
             .bind(elapsed_ms)
             .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
             .bind(i64::from(forgot))
+            .bind(predicted)
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;

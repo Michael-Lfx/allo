@@ -48,7 +48,7 @@ pub use models::{
     LessonView,
     ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
-    VISUAL_OPTIONS,
+    VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
 pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
