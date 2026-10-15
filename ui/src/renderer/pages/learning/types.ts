@@ -248,20 +248,61 @@ export interface ReviewResult {
   lapse_count: number;
 }
 
-/** 当日打卡快照（对齐后端 CheckinStatus）：复习日、目标、进度与锁定状态 */
+/** 当日 XP 快照（对齐后端 CheckinStatus，j05 起打卡按 XP 口径）：复习日、
+ *  XP 目标、今日净入账与锁定状态。字段名 reviewed_count 保留到 UI 数据源
+ *  完成切换（本类型即切换后的消费面），语义 = 今日净 XP。 */
 export interface CheckinStatus {
   /** 本地复习日 YYYYMMDD（02:00 日界线） */
   review_day: number;
-  /** 每日复习目标（0 = 仅清空队列） */
+  /** 每日 XP 目标（应用设置 learning.dailyXpGoal，缺省 40） */
   goal: number;
-  /** 本复习日已提交的复习数 */
+  /** 本复习日净入账 XP（负结算计入） */
   reviewed_count: number;
   /** 当前到期卡片数（课程 + 自定义） */
   due_count: number;
-  /** 当日是否已锁定为完成 */
+  /** 当日是否已锁定为完成（今日 XP 达标即锁定） */
   completed: boolean;
   /** 完成锁定时刻（UTC 毫秒），未完成时为 null */
   locked_at: number | null;
+}
+
+/** XP 读数（对齐后端 XpReading）：两把尺同源回放、互不换算——努力尺
+ *  （今日 XP/目标）与进度尺（结算/总节点，现存且启用双筛）。纯投影。 */
+export interface XpReading {
+  /** 当前本地复习日 YYYYMMDD */
+  review_day: number;
+  /** 本复习日净入账 XP */
+  today_xp: number;
+  /** 每日 XP 目标 */
+  goal: number;
+  /** 今日 XP 是否已达标（实时判定，未含锁定语义） */
+  goal_achieved: boolean;
+  /** 进度尺分子：现存且启用课程内已结算节点数 */
+  settled_nodes: number;
+  /** 进度尺分母：现存且启用课程总节点数 */
+  total_nodes: number;
+  /** 未结算节点的剩余 est 分钟 */
+  remaining_est: number;
+  /** 按近 7 个学习日步伐的剩余天数估计；无步伐信号为 null；纯投影绝不回写 */
+  eta_days: number | null;
+}
+
+/** XP 日历单日桶（学习日 02:00 翻转）：净入账，负账如实 */
+export interface XpCalendarDay {
+  /** 本地复习日 YYYYMMDD */
+  review_day: number;
+  /** 当日净 XP（可为负；无结算为 0） */
+  xp: number;
+}
+
+/** XP 日历：恒 weeks×7 桶、末桶 = 今日、不过课程筛 */
+export interface XpCalendar {
+  /** 窗口周数（1..=53） */
+  weeks: number;
+  /** 分桶所用时区偏移（分钟，东正） */
+  tz_offset: number;
+  /** 恒 weeks×7 个日桶，旧 → 新，末桶 = 今日 */
+  days: XpCalendarDay[];
 }
 
 /** 复习日内完成的课时（日历明细） */

@@ -28,6 +28,8 @@ import type {
   SubmitAttemptRequest,
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
+  XpCalendar,
+  XpReading,
 } from './types';
 
 const BASE = '/api/learning';
@@ -147,6 +149,11 @@ export const learningApi = {
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
   checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  /** XP 读数（两把尺同源回放：今日 XP/目标 + 结算进度尺，ETA 纯投影） */
+  getXpReading: () => httpRequest<XpReading>('GET', `${BASE}/xp/reading`),
+  /** XP 日历：恒 weeks×7 桶含零桶、末桶 = 今日（缺省 12 周） */
+  getXpCalendar: (weeks = 12) =>
+    httpRequest<XpCalendar>('GET', `${BASE}/xp/calendar?weeks=${weeks}`),
   getMemoryStats: (tzOffset: number) =>
     httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
   getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>

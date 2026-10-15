@@ -168,9 +168,10 @@ export type ConfigKeyMap = {
   'learning.reviewSessionLimit': number | undefined;
   // Max questions in a diagnostic plan (default 10).
   'learning.diagnosticLimit': number | undefined;
-  // Daily check-in review goal (default 15; 0 = clear-the-queue only).
-  // Read by the backend learning service for the daily check-in.
-  'learning.dailyCheckinGoal': number | undefined;
+  // Daily XP goal in XP units ≈ focused minutes (default 40; 1..=1000,
+  // out-of-range writes are rejected by the backend). Read by the backend
+  // learning service for the daily XP gauge (j05 打卡计数口径退役).
+  'learning.dailyXpGoal': number | undefined;
   // Local-time offset in minutes east of UTC for review-day boundaries
   // (02:00 rollover), reported by the frontend on startup as
   // `-Date().getTimezoneOffset()`. Read by the backend learning service.
