@@ -37,6 +37,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_content(cli, db, provider, model).await,
+        LearningSmokeCommand::Mount {
+            db,
+            provider,
+            model,
+        } => run_mount(cli, db, provider, model).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -1050,5 +1055,148 @@ async fn run_content(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
         cli.data_dir.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke mount`（j08）：结构挂载冒烟。从零库立一门带结构快照的
+/// 学习图课程（两块 + 三节点），跑真实挂载回合，机械判据：①落位（状态
+/// mounted、三节点全评估）②hash 锚定（挂载行 hash = 结构字节 FNV-1a）
+/// ③条数一致；随后**重跑幂等**——待挂集空必须 skipped，否则 EXIT=4。
+/// 读数面非门禁；无凭据临时库如实失败（structure 冒烟同纪律）。
+async fn run_mount(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 与应用同接线（completer 注入是挂载回合的硬依赖）。
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+
+    // 种子：图课程（结构快照两块）+ 三节点。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let now = nomifun_common::now_ms();
+    let structure = serde_json::json!({
+        "goal": "挂载冒烟目标",
+        "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
+        "blocks": [
+            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "第一块" },
+            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "第二块" }
+        ],
+        "edges": []
+    });
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": structure,
+        "terrain": { "doors": [] },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '挂载冒烟', '', 'general', 1, 'learning_graph', '挂载冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    for (position, title) in ["节点一", "节点二", "节点三"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+             VALUES (?, ?, ?, '', 'p', ?, 10)",
+        )
+        .bind(nomifun_common::LearningLessonId::new().into_string())
+        .bind(&module_id)
+        .bind(title)
+        .bind(position as i64)
+        .execute(&pool)
+        .await?;
+    }
+
+    let model_override = match provider.as_deref().zip(model.as_deref()) {
+        Some((p, m)) => Some((nomifun_common::ProviderId::parse(p)?, m.to_owned())),
+        None => None,
+    };
+    let override_ref =
+        model_override.as_ref().map(|(provider, model)| (provider, model.as_str()));
+
+    println!("[1/2] first mount round (real pipeline)…");
+    let first = service
+        .run_structure_mount(&owner, &nomifun_common::LearningCourseId::parse(&course_id)?, override_ref)
+        .await?;
+    println!(
+        "mount read-out: status={} pending={} mounted={} outside={} total_entries={} hash={}",
+        first.status,
+        first.pending_nodes,
+        first.mounted_nodes,
+        first.outside_nodes,
+        first.total_entries,
+        first.structure_hash
+    );
+    anyhow::ensure!(first.status == "mounted", "first round must mount, got {}", first.status);
+    anyhow::ensure!(
+        first.pending_nodes == 3 && first.mounted_nodes + first.outside_nodes == 3,
+        "three nodes must all be evaluated"
+    );
+    // hash 锚定：挂载行 hash = 结构字节 FNV-1a。
+    let structure_raw: String =
+        sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(&pool)
+            .await?;
+    let (row_hash, mounts_json): (i64, String) = sqlx::query_as(
+        "SELECT structure_hash, mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    let expected = nomifun_learning::learning_graph_hash(structure_raw.as_bytes());
+    anyhow::ensure!(
+        row_hash as u64 == expected,
+        "mount row hash {} != fnv1a(structure) {expected}",
+        row_hash
+    );
+    let entries: serde_json::Value = serde_json::from_str(&mounts_json)?;
+    anyhow::ensure!(
+        entries.as_array().is_some_and(|items| items.len() == 3),
+        "mount entries must cover all three nodes"
+    );
+
+    println!("[2/2] idempotency: second round must be skipped (pending set empty)…");
+    let second = service
+        .run_structure_mount(&owner, &nomifun_common::LearningCourseId::parse(&course_id)?, override_ref)
+        .await?;
+    println!(
+        "second round: status={} pending={} total_entries={}",
+        second.status, second.pending_nodes, second.total_entries
+    );
+    if second.status != "skipped" {
+        eprintln!("IDEMPOTENCY VIOLATION: second round must be skipped, got {}", second.status);
+        return Ok(ExitCode::from(4));
+    }
+    anyhow::ensure!(
+        second.total_entries == first.total_entries,
+        "skipped round must not touch the mount row"
+    );
+    println!("OK  course={course_id}");
     Ok(ExitCode::SUCCESS)
 }

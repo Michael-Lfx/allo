@@ -319,6 +319,277 @@ impl LearningService {
         Ok(true)
     }
 
+    /// 结构挂载回合（j08，三轮 g1「结构转活文档·上」）：把待挂集节点逐条
+    /// 挂到结构块（导航事实）。显式命令触发、单课串行（slot 锁）、可取消；
+    /// 待挂集空 = skipped（零 LLM 零写）；落盘 = 挂载行单行原子覆盖
+    /// （merge upsert：本轮替换、未评估保留、孤儿清出）。
+    pub async fn run_structure_mount(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::MountRoundSummary, AppError> {
+        use crate::learning_graph::mounting;
+        self.require_live_graph_course(course_id).await?;
+        let slot_key = format!("learning-mount-{}", course_id.as_str());
+        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        let mut task = self.begin_generation_task(
+            crate::service::KIND_STRUCTURE_MOUNT,
+            course_id.as_str(),
+            None,
+            "结构挂载",
+        )?;
+        let token = task.token();
+        task.set_step("mount", "正在挂载节点到结构块…");
+        self.emit_graph_event(
+            course_id,
+            "structure_mount_started",
+            serde_json::json!({ "phase": "started" }),
+        );
+
+        // 结构快照与宪章（宪章三项 + 结构参考行的数据源）。无结构 = 冲突
+        // （先跑结构生成再挂载）。
+        let course = sqlx::query(
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let title: String = course.try_get("title").map_err(internal)?;
+        let goal: String = course.try_get("learning_goal").map_err(internal)?;
+        let structure_raw: String = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .filter(|raw: &String| !raw.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Conflict("课程还没有知识结构快照——先生成结构再挂载".into())
+        })?;
+        let envelope: serde_json::Value = serde_json::from_str(&structure_raw).map_err(internal)?;
+        let structure = envelope
+            .get("structure")
+            .ok_or_else(|| AppError::Internal("结构快照信封缺 structure".into()))?;
+        let proficiency = structure
+            .get("proficiency_statement")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let basis = envelope
+            .get("terrain")
+            .and_then(|terrain| terrain.get("learner_basis_assumed"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let hash = mounting::fnv1a_64(structure_raw.as_bytes());
+
+        // 块参考行与 slug 集合。
+        let mut block_rows: Vec<(String, String)> = Vec::new();
+        if let Some(blocks) = structure.get("blocks").and_then(|value| value.as_array()) {
+            for block in blocks {
+                let slug = block.get("slug").and_then(|value| value.as_str()).unwrap_or("");
+                let name = block.get("name").and_then(|value| value.as_str()).unwrap_or("");
+                if slug.trim().is_empty() {
+                    continue;
+                }
+                let spine = block.get("spine").and_then(|value| value.as_str()).unwrap_or("");
+                let stage = block.get("stage").and_then(|value| value.as_str()).unwrap_or("");
+                let note = block.get("note").and_then(|value| value.as_str()).unwrap_or("");
+                block_rows.push((slug.to_owned(), name.to_owned()));
+                let _ = (spine, stage, note);
+            }
+        }
+        let block_slugs: std::collections::HashSet<String> =
+            block_rows.iter().map(|(slug, _)| slug.clone()).collect();
+
+        // 现存节点（现存且启用课程内的课时，图守卫已过；标题逐字）。
+        let node_rows: Vec<String> = sqlx::query_scalar(
+            "SELECT l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let node_titles = node_rows;
+        let node_title_set: std::collections::HashSet<String> =
+            node_titles.iter().cloned().collect();
+
+        // 既有挂载行 + stale 判定（hash 失配 = 结构变过，全量重评）。
+        let existing_row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let (existing, stale) = match &existing_row {
+            Some((mounts_json, stored_hash)) => {
+                let stored = (*stored_hash) as u64;
+                let value: serde_json::Value =
+                    serde_json::from_str(mounts_json).map_err(internal)?;
+                (mounting::parse_mount_entries(&value), stored != hash)
+            }
+            None => (Vec::new(), true),
+        };
+
+        // 待挂集；空 = skipped（零 LLM 零写）。
+        let pending = if stale {
+            node_titles.clone()
+        } else {
+            mounting::pending_nodes(&node_titles, &existing, &block_slugs)
+        };
+        if pending.is_empty() {
+            task.finish_done("挂载跳过：无待挂节点");
+            self.emit_graph_event(
+                course_id,
+                "structure_mount_completed",
+                serde_json::json!({ "phase": "completed", "outcome": "skipped" }),
+            );
+            return Ok(crate::models::MountRoundSummary {
+                status: "skipped".into(),
+                pending_nodes: 0,
+                mounted_nodes: 0,
+                outside_nodes: existing
+                    .iter()
+                    .filter(|entry| entry.block.is_none())
+                    .count(),
+                total_entries: existing.len(),
+                stale,
+                structure_hash: hash as i64,
+            });
+        }
+
+        // 回合输入（七件）。
+        let structure_blocks = block_rows
+            .iter()
+            .map(|(slug, name)| format!("- {slug} | {name}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pending_lines = pending
+            .iter()
+            .map(|title| format!("- {title}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let existing_text = if existing.is_empty() {
+            "（无——首次挂载）".to_owned()
+        } else {
+            let items: Vec<serde_json::Value> =
+                existing.iter().map(mounting::MountEntry::to_json).collect();
+            serde_json::json!({ "mounts": items }).to_string()
+        };
+        let round_input = mounting::MountRoundInput {
+            goal: if goal.trim().is_empty() { &title } else { goal.as_str() },
+            proficiency_statement: &proficiency,
+            learner_basis: &basis,
+            structure_blocks: &structure_blocks,
+            pending_nodes: &pending_lines,
+            existing_mounts: &existing_text,
+        };
+
+        let completer = self.course_completer()?;
+        let evaluated = mounting::run_mount_round(
+            completer.as_ref(),
+            model_override,
+            &round_input,
+            &block_slugs,
+            &node_title_set,
+            Some(&token),
+        )
+        .await;
+        let evaluated = match evaluated {
+            Ok(entries) => entries,
+            Err(error) => {
+                let cancelled = token.is_cancelled()
+                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
+                if cancelled {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_mount_cancelled",
+                        serde_json::json!({ "phase": "cancelled" }),
+                    );
+                } else {
+                    task.finish_failed(error.to_string());
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_mount_failed",
+                        serde_json::json!({ "phase": "failed", "error": error.to_string() }),
+                    );
+                }
+                return Err(error);
+            }
+        };
+        // 写前检查点（与结构生成同款）。
+        if token.is_cancelled() {
+            task.finish_cancelled();
+            self.emit_graph_event(
+                course_id,
+                "structure_mount_cancelled",
+                serde_json::json!({ "phase": "cancelled" }),
+            );
+            return Err(AppError::Conflict(
+                crate::service::CANCELLED_MESSAGE.to_owned(),
+            ));
+        }
+
+        // 单行原子覆盖（merge upsert）。
+        let merged = mounting::merge_mounts(
+            &existing,
+            &evaluated,
+            &pending,
+            &node_title_set,
+            &block_slugs,
+        );
+        let payload = mounting::entries_json(&merged);
+        sqlx::query(
+            "INSERT INTO learning_structure_mounts (course_id, mounts_json, structure_hash, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(course_id) DO UPDATE SET \
+               mounts_json = excluded.mounts_json, \
+               structure_hash = excluded.structure_hash, \
+               updated_at = excluded.updated_at",
+        )
+        .bind(course_id.as_str())
+        .bind(&payload)
+        .bind(hash as i64)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mounted = evaluated.iter().filter(|entry| entry.block.is_some()).count();
+        let outside = evaluated.iter().filter(|entry| entry.block.is_none()).count();
+        task.finish_done(format!(
+            "挂载完成：{}/{} 挂入块，{} 结构外",
+            mounted,
+            pending.len(),
+            outside
+        ));
+        self.emit_graph_event(
+            course_id,
+            "structure_mount_completed",
+            serde_json::json!({
+                "phase": "completed",
+                "outcome": "mounted",
+                "mounted": mounted,
+                "pending": pending.len(),
+            }),
+        );
+        Ok(crate::models::MountRoundSummary {
+            status: "mounted".into(),
+            pending_nodes: pending.len(),
+            mounted_nodes: mounted,
+            outside_nodes: outside,
+            total_entries: merged.len(),
+            stale: false,
+            structure_hash: hash as i64,
+        })
+    }
+
     /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
     /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
@@ -1779,9 +2050,32 @@ impl LearningService {
             .map(serde_json::from_str::<serde_json::Value>)
             .transpose()
             .map_err(internal)?;
+        // 挂载三态投影的数据面（j08）：现存节点标题 + 挂载行（一课一行）+
+        // 当前结构 hash（与落盘 hash 比对 = stale）。
+        let node_titles: Vec<String> = sqlx::query_scalar(
+            "SELECT l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mount_row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let current_hash =
+            crate::learning_graph::mounting::fnv1a_64(snapshot.as_deref().unwrap_or("").as_bytes());
         Ok(crate::learning_graph::structure_view::build_structure_view(
             course_id.clone(),
             envelope.as_ref(),
+            &node_titles,
+            mount_row.as_ref().map(|(json, hash)| (json.as_str(), *hash)),
+            current_hash,
         ))
     }
 

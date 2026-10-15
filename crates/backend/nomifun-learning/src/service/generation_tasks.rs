@@ -26,6 +26,7 @@ use crate::completer::LearningCompleter;
 /// 任务类别（键的第一段；快照面的机器名，人面文案由 `topic`/`detail` 承担）。
 pub(crate) const KIND_GROWTH: &str = "growth";
 pub(crate) const KIND_STRUCTURE: &str = "structure";
+pub(crate) const KIND_STRUCTURE_MOUNT: &str = "structure_mount";
 pub(crate) const KIND_OUTLINE: &str = "outline";
 pub(crate) const KIND_LESSON: &str = "lesson";
 

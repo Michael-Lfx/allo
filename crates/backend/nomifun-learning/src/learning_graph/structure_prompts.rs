@@ -94,8 +94,29 @@ pub static PREREQUISITE_TERRAIN: PromptSpec = PromptSpec {
     fence_words: FENCE_DEV_FACE,
 };
 
+/// 结构挂载 prompt 资产（j08 挂载回合）：temperature 0.0（导航事实零措辞
+/// 发散）+ thinking；输入七件（宪章三项 + 结构参考行 + 待挂集 + 既有挂载
+/// + 重试反馈）。
+pub static STRUCTURE_MOUNT: PromptSpec = PromptSpec {
+    id: "structure-mount",
+    template: include_str!("../../prompts/structure/structure-mount.md"),
+    placeholders: &[
+        "goal",
+        "proficiency_statement",
+        "learner_basis",
+        "structure_blocks",
+        "pending_nodes",
+        "existing_mounts",
+        "retry_feedback",
+    ],
+    task: "structure-mount",
+    temperature: 0.0,
+    fence_words: FENCE_DEV_FACE,
+};
+
 /// 全部已注册 prompt 资产（完备性与互锁测试的迭代面）。
-pub static REGISTRY: &[&PromptSpec] = &[&GOAL_DECOMPOSITION, &PREREQUISITE_TERRAIN];
+pub static REGISTRY: &[&PromptSpec] =
+    &[&GOAL_DECOMPOSITION, &PREREQUISITE_TERRAIN, &STRUCTURE_MOUNT];
 
 /// 装配失败（模板/注册表/值三方不一致；互锁测试之外的时刻性漂移）。
 #[derive(Debug, thiserror::Error)]
@@ -378,6 +399,21 @@ mod tests {
         ] {
             assert!(terrain_body.contains(phrase), "terrain prompt missing「{phrase}」");
         }
+        // 挂载（j08）：六条款的可执行措辞（validator 执法面——模型先被告知）。
+        let (_, mount_body) = split_template(STRUCTURE_MOUNT.template).unwrap();
+        for phrase in [
+            "mounts",
+            "node",
+            "block",
+            "reason",
+            "逐字照抄",
+            "null",
+            "导航事实",
+            "一个节点只出现一次",
+            "note",
+        ] {
+            assert!(mount_body.contains(phrase), "mount prompt missing「{phrase}」");
+        }
     }
 
     /// 金样快照：装配产物逐字节锁定；模板改动 → 金样 diff（人工复核）。
@@ -397,9 +433,19 @@ mod tests {
             ("learner_basis", "（未提供——按纯零基础处理）"),
             ("retry_feedback", "(无:首次)"),
         ];
+        let mount_values: &[(&'static str, &str)] = &[
+            ("goal", "能独立完成一元二次方程的求解与检验"),
+            ("proficiency_statement", "达成后能独立解任意一元二次方程并讲解每一步依据"),
+            ("learner_basis", "（未提供——按纯零基础处理）"),
+            ("structure_blocks", "- block-01 | 块一 | 主干一 | 入门 | 一句话描述"),
+            ("pending_nodes", "- 节点一"),
+            ("existing_mounts", "（无——首次挂载）"),
+            ("retry_feedback", "(无:首次)"),
+        ];
         for (spec, values, golden_name) in [
             (&GOAL_DECOMPOSITION, goal_values, "goal-decomposition.md"),
             (&PREREQUISITE_TERRAIN, terrain_values, "prerequisite-terrain.md"),
+            (&STRUCTURE_MOUNT, mount_values, "structure-mount.md"),
         ] {
             let assembled = assemble(spec, values).expect("golden values assemble").text;
             let golden_path = Path::new(env!("CARGO_MANIFEST_DIR"))

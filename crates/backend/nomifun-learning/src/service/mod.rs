@@ -520,7 +520,8 @@ pub use xp::CompanionXpSink;
 
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
-    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE, STATE_RUNNING,
+    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
+    KIND_STRUCTURE_MOUNT, STATE_RUNNING,
 };
 
 #[cfg(test)]

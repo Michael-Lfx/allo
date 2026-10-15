@@ -126,6 +126,7 @@ const LearningGraphWorkspace: React.FC<{
   const [structureError, setStructureError] = useState<string | null>(null);
   const [structureRunning, setStructureRunning] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [mounting, setMounting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +182,30 @@ const LearningGraphWorkspace: React.FC<{
       setRegenerating(false);
     }
   }, [detail.course.id, model.choice, t]);
+
+  // 结构挂载回合（j08）：同步命令，完成后重取投影（挂载三态段随之刷新）。
+  const mountStructure = useCallback(async () => {
+    setMounting(true);
+    try {
+      await learningApi.mountStructure(detail.course.id);
+      await new Promise((resolve) => {
+        learningApi
+          .graphStructure(detail.course.id)
+          .then((view) => {
+            setStructure(view);
+            resolve(null);
+          })
+          .catch(() => resolve(null));
+      });
+    } catch (actionError) {
+      Modal.error({
+        title: t('learning.learningGraphMountFailed'),
+        content: errorMessage(t, actionError),
+      });
+    } finally {
+      setMounting(false);
+    }
+  }, [detail.course.id, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
@@ -469,7 +494,7 @@ const LearningGraphWorkspace: React.FC<{
           <ConceptTable courseId={detail.course.id} />
         </Tabs.TabPane>
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
-          <StructureGraphTab view={structure} />
+          <StructureGraphTab view={structure} onMount={() => void mountStructure()} mounting={mounting} />
         </Tabs.TabPane>
       </Tabs>
       </div>

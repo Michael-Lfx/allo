@@ -466,13 +466,68 @@ export interface LearningGraphView {
 /** 结构读侧投影（GET /courses/{id}/graph/structure，always 200）：
  * structure = null 表示知识结构未生成（Missing 合法空状态，生成中态由
  * WS structure_* 事件表达）；投影运行时重算、永不落盘；严格课程内——
- * 只读本课 structure_json 快照，不 join 概念登记表 */
+ * 只读本课 structure_json 快照，不 join 概念登记表。mounts = 挂载三态
+ * 投影（j08），null = 从未跑过挂载回合 */
 export interface LearningStructureView {
   course_id: string;
   structure: StructureView | null;
   terrain: TerrainView | null;
   /** 快照生成时刻（ms）；null = 未生成 */
   generated_at: number | null;
+  mounts: StructureMountsView | null;
+}
+
+/** 挂载读侧三态投影（j08）：stale = 结构 hash 失配（挂载后结构又变过）；
+ * states 单源派生 mounted / outside / not_evaluated；index = 块 slug →
+ * 已挂节点清单；observations = 结构外/空块/超载块观察（修补输入源） */
+export interface StructureMountsView {
+  stale: boolean;
+  entries: MountEntryView[];
+  index: MountIndexEntryView[];
+  states: NodeMountStateView[];
+  observations: MountObservationView[];
+  mounted_count: number;
+  outside_count: number;
+  not_evaluated_count: number;
+}
+
+/** 节点挂载三态：mounted | outside | not_evaluated */
+export interface NodeMountStateView {
+  node: string;
+  state: 'mounted' | 'outside' | 'not_evaluated';
+}
+
+/** 一条挂载事实（悬挂 slug 的条目 dangling = true，逐条降级不 Broken） */
+export interface MountEntryView {
+  node: string;
+  block: string | null;
+  block_name: string | null;
+  reason: string;
+  dangling: boolean;
+}
+
+/** mount_index 单元：块 slug → 已挂节点清单（只含可解析块） */
+export interface MountIndexEntryView {
+  block: string;
+  block_name: string | null;
+  nodes: string[];
+}
+
+/** 挂载观察：outside-node | empty-block | overloaded-block */
+export interface MountObservationView {
+  kind: string;
+  detail: string;
+}
+
+/** 挂载回合摘要（POST graph/structure/mount）：mounted | skipped */
+export interface MountRoundSummary {
+  status: 'mounted' | 'skipped';
+  pending_nodes: number;
+  mounted_nodes: number;
+  outside_nodes: number;
+  total_entries: number;
+  stale: boolean;
+  structure_hash: number;
 }
 
 /** 结构产物读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /

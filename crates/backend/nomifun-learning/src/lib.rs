@@ -31,6 +31,7 @@ pub use lesson_draft::{
 pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure};
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
 pub use learning_graph::structure_contract::{
     reconcile_doors as reconcile_structure_doors,
     validate_terrain as validate_terrain_artifact,

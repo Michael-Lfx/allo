@@ -28,6 +28,7 @@ import type {
   SubmitAttemptRequest,
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
+  MountRoundSummary,
   XpCalendar,
   XpReading,
 } from './types';
@@ -92,6 +93,17 @@ export const learningApi = {
     httpRequest<{ kicked: boolean }>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
+      request
+    ),
+  // 结构挂载回合（j08）：把待挂集节点挂到结构块（导航事实）；同步返回
+  // 回合摘要（mounted | skipped）
+  mountStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<MountRoundSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/mount`,
       request
     ),
   getCourse: (id: string) =>
