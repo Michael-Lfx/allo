@@ -236,8 +236,16 @@ export const learningApi = {
     httpRequest<string>('POST', `${BASE}/custom-questions`, request),
   deleteCustomQuestion: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
-  deleteCourse: (id: string, deleteReviews: boolean) =>
-    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
-      delete_reviews: deleteReviews,
-    }),
+  /** 删除课程（三轮 g3：账本永远保留，无连带删卡选项；内容移除、学习记录保留） */
+  deleteCourse: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`),
+  /** 课程改名（只动显示名；目标/快照/学习数据不动） */
+  renameCourse: (id: string, title: string) =>
+    httpRequest<CourseSummary>('PATCH', `${BASE}/courses/${encodeURIComponent(id)}`, { title }),
+  /** 归档课程（enabled 翻转，数据零删零改，可恢复） */
+  archiveCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/archive`),
+  /** 恢复归档课程 */
+  restoreCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/restore`),
 };

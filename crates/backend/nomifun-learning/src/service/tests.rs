@@ -1877,11 +1877,11 @@ teaching_style: crate::models::TeachingStyle::Standard,
         )
     }
 
-    /// 图课程的目录级删除（不勾“同时删除复习数据”）：概念网引用随课时行
-    /// 一并保留（复习体系继续引用），课程行消失即可——ADR-0009 之后不存在
-    /// 目录删除（软删语义，ADR-0009 后续裁定）：课程行留墓碑（名称 +
+    /// 图课程的目录级删除（三轮 g3：账本永远保留，无连带删卡选项）：概念网
+    /// 引用随课时行一并保留（复习体系继续引用），课程行消失即可——目录删除
+    /// （软删语义，ADR-0009 后续裁定）：课程行留墓碑（名称 +
     /// deleted_at 状态位，遗留数据凭 course_id 归账），课时/模块/概念网边
-    /// 物理删除（不勾复习删除也一样——复习题不靠课时行续命），概念登记表
+    /// 物理删除，复习卡/作答/进度/注册保留；概念登记表
     /// 保留；供给侧随之清零，删课重建后新课从真·零基础起步。
     #[tokio::test]
     async fn graph_course_catalog_delete_tombstones_and_purges_content() {
@@ -1899,7 +1899,15 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .unwrap();
         let ledger_before = service.taught_ledger().await.unwrap();
         assert!(ledger_before.contains_key(&concept_id), "{:?}", ledger_before.keys());
-        service.delete_course(&course, &owner_id, false).await.unwrap();
+        // 删除前的学习记录锚点（注册/卡/进度）行数，删除后逐一核对保留。
+        let enrollment_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_enrollments WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        service.delete_course(&course, &owner_id).await.unwrap();
         // 墓碑：课程行还在，deleted_at 已置位；列表不再出现。
         let (title, deleted_at): (String, Option<i64>) = sqlx::query_as(
             "SELECT title, deleted_at FROM learning_courses WHERE course_id = ?",
@@ -1918,7 +1926,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .await
         .unwrap();
         assert_eq!(listed, 0, "tombstoned course must leave the catalog list");
-        // 内容删净：课时、概念网边全空（不勾复习删除也一样）。
+        // 内容删净：课时、概念网边全空。
         let lessons: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_lessons")
             .fetch_one(pool)
             .await
@@ -1929,17 +1937,221 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap();
         assert_eq!(refs, 0, "concept web refs go with their lessons");
-        // 概念登记表保留（未勾复习删除），但供给已清零——新课不再继承幽灵地基。
+        // 账本永远保留（三轮 g3）：注册行不删——卡/作答/进度凭它归账。
+        let enrollment_after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_enrollments WHERE course_id = ?",
+        )
+        .bind(&course_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            enrollment_after, enrollment_before,
+            "enrollment survives the delete (ledger is never wiped)"
+        );
+        // 概念登记表保留，但供给已清零——新课不再继承幽灵地基。
         let registry: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
             .fetch_one(pool)
             .await
             .unwrap();
-        assert_eq!(registry, 1, "registry survives the unchecked delete");
+        assert_eq!(registry, 1, "registry survives the delete");
         let ledger_after = service.taught_ledger().await.unwrap();
         assert!(
             !ledger_after.contains_key(&concept_id),
             "purged lessons must stop supplying coverage: {ledger_after:?}"
         );
+    }
+
+    /// 安排面收窄（三轮 g3「现存且启用」）：归档课的卡离开到期队列、恢复后
+    /// 回来；队列收窄不拦已出卡的作答提交（历史面如实落账）；概况读数随
+    /// enabled 与 due_today 反映。
+    #[tokio::test]
+    async fn archived_course_cards_leave_the_due_queue_and_come_back_on_restore() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = CoursePack {
+            title: "归档课".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "Vectors".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: vec![ActivityPack {
+                        difficulty: None,
+                        kind: ActivityKind::SingleChoice,
+                        prompt: "Pick the size of a vector.".into(),
+                        options: vec!["magnitude".into(), "speed".into()],
+                        answer: json!("magnitude"),
+                        explanation: String::new(),
+                        distractors: Vec::new(),
+                        tol: None,
+                        section_key: None,
+                    }],
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let course = service.import_course(pack).await.unwrap();
+        service.enroll(&course.course.id, &user_id).await.unwrap();
+        let detail = service
+            .course_detail(&course.course.id, Some(&user_id))
+            .await
+            .unwrap();
+        service
+            .update_lesson_progress(&detail.modules[0].lessons[0].id, &user_id, LessonStatus::Completed)
+            .await
+            .unwrap();
+        make_all_due(&service, &user_id).await;
+        let before = service
+            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1, "卡先在队列");
+
+        // 归档：卡出队、概况 enabled=false；课程本体与作答记录零删零改。
+        service
+            .set_course_archived(&course.course.id, true)
+            .await
+            .unwrap();
+        let due = service
+            .due_reviews(&user_id, 30, &[], true, false, &[])
+            .await
+            .unwrap();
+        assert!(due.is_empty(), "archived course cards leave the queue");
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let summary = listed.iter().find(|c| c.id == course.course.id).unwrap();
+        assert!(!summary.enabled, "summary carries the archived state");
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_review_items")
+            .fetch_one(service.pool_for_tests())
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "archiving deletes nothing");
+
+        // 队列收窄不拦已出卡的作答提交（历史面如实落账）。
+        let card = &before[0];
+        let rated = service
+            .rate_review(&card.id, &user_id, ReviewRating::Good)
+            .await
+            .unwrap_or_else(|error| panic!("answering an archived course card must work: {error}"));
+        assert_eq!(rated.review_count, 1, "the rating landed");
+
+        // 恢复：卡回到队列（评分已把它推到下一间隔，查在队而非查到期），
+        // enabled 翻回。
+        service
+            .set_course_archived(&course.course.id, false)
+            .await
+            .unwrap();
+        let after = service
+            .due_reviews(&user_id, 30, &[], false, false, &[])
+            .await
+            .unwrap();
+        assert_eq!(after.len(), 1, "restore returns the card to the queue");
+        let listed = service.list_courses(&user_id).await.unwrap();
+        assert!(listed.iter().find(|c| c.id == course.course.id).unwrap().enabled);
+    }
+
+    /// 改名（三轮 g3）：只动显示名；与现存课撞名 = 人面错误（409）；软删
+    /// 墓碑不阻塞新名——删课 A 后，新课可以取回 A 的旧名。
+    #[tokio::test]
+    async fn rename_moves_title_only_and_tombstones_do_not_block() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pack = |title: &'static str| CoursePack {
+            title: title.into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "general".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "Module".into(),
+                description: String::new(),
+                lessons: vec![LessonPack {
+                    title: "L".into(),
+                    summary: String::new(),
+                    purpose: String::new(),
+                    est: 10,
+                    source: None,
+                    sources: Vec::new(),
+                    activities: Vec::new(),
+                    sections: Vec::new(),
+                }],
+            }],
+        };
+        let alpha = service.import_course(pack("Alpha")).await.unwrap();
+        let beta = service.import_course(pack("Beta")).await.unwrap();
+        service.enroll(&alpha.course.id, &user_id).await.unwrap();
+
+        // 改名生效，学习数据不动。
+        service
+            .rename_course(&alpha.course.id, "Alpha 改")
+            .await
+            .unwrap();
+        let listed = service.list_courses(&user_id).await.unwrap();
+        let renamed = listed.iter().find(|c| c.id == alpha.course.id).unwrap();
+        assert_eq!(renamed.title, "Alpha 改");
+        assert_eq!(renamed.total_lessons, 1, "rename moves nothing else");
+
+        // 与现存课撞名 = 409。
+        let clash = service.rename_course(&alpha.course.id, "Beta").await;
+        assert!(matches!(clash, Err(AppError::Conflict(_))), "{clash:?}");
+
+        // 删课 Alpha（墓碑）后，名字可以被取回——墓碑不阻塞新名。
+        service.delete_course(&alpha.course.id, &user_id).await.unwrap();
+        service
+            .rename_course(&beta.course.id, "Alpha")
+            .await
+            .unwrap_or_else(|error| panic!("tombstone must not block the name: {error}"));
+        // 空名拒绝。
+        let blank = service.rename_course(&beta.course.id, "   ").await;
+        assert!(blank.is_err());
+    }
+
+    /// 归档课的安排面动作给人面错误（可恢复），不是 404：手动生长触发
+    /// 与结构重跑都报「课程已归档」。
+    #[tokio::test]
+    async fn archived_graph_course_rejects_arrangement_actions_with_human_error() {
+        let (service, _knowledge, owner_id) = job_test_service().await;
+        let (course_id, _lesson_a, _lesson_b) = seed_graph_course(&service).await;
+        let user_id = UserId::parse(owner_id).unwrap();
+        let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+        service
+            .set_course_archived(&course, true)
+            .await
+            .unwrap();
+        let kicked = service
+            .kick_growth(&user_id, &course, true, None)
+            .await
+            .unwrap_err();
+        assert!(
+            kicked.to_string().contains("课程已归档"),
+            "{kicked:?}"
+        );
+        // 恢复后同一动作放行：生长正常启动（Ok），不再是归档错误。
+        service.set_course_archived(&course, false).await.unwrap();
+        let kicked = service
+            .kick_growth(&user_id, &course, true, None)
+            .await
+            .unwrap_or_else(|error| panic!("restored course must grow again: {error}"));
+        assert!(kicked, "manual growth on a restored course kicks");
     }
 
     /// 学习图节点的内容生成只走 agent 引擎：未配置引擎时明确 Conflict

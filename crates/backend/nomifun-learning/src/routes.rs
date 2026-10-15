@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use axum::extract::{Extension, Json, Path, Query, RawQuery, State};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use nomifun_api_types::ApiResponse;
 use nomifun_auth::CurrentUser;
@@ -15,7 +15,7 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeleteCourseRequest,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
     RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
@@ -60,6 +60,9 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
+        .route("/api/learning/courses/{id}", patch(rename_course))
+        .route("/api/learning/courses/{id}/archive", post(archive_course))
+        .route("/api/learning/courses/{id}/restore", post(restore_course))
         .route("/api/learning/courses/{id}/tags", put(set_course_tags))
         .route("/api/learning/courses/{id}/enroll", post(enroll))
         .route(
@@ -650,14 +653,47 @@ async fn delete_course(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-    Json(request): Json<DeleteCourseRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let id = parse_id::<LearningCourseId>(id)?;
-    state
-        .service
-        .delete_course(&id, &user.id, request.delete_reviews)
-        .await?;
+    state.service.delete_course(&id, &user.id).await?;
     Ok(Json(ApiResponse::ok(())))
+}
+
+async fn rename_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<crate::models::RenameCourseRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.rename_course(&id, &request.title).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
+}
+
+async fn archive_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.set_course_archived(&id, true).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
+}
+
+async fn restore_course(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::CourseSummary>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    state.service.set_course_archived(&id, false).await?;
+    Ok(Json(ApiResponse::ok(
+        state.service.course_detail(&id, None).await?.course,
+    )))
 }
 
 #[derive(Debug, Deserialize)]

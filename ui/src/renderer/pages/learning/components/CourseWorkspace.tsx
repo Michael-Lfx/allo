@@ -11,6 +11,7 @@ import { IconLeft, IconRight } from '@arco-design/web-react/icon';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { learningApi } from '../api';
 import type {
   Activity,
@@ -34,7 +35,8 @@ import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonBlock } from './LessonStudy';
 import { CourseSamplingLine } from './CourseSamplingLine';
-import { statusLabel } from '../utils';
+import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
+import { errorMessage, statusLabel } from '../utils';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -132,21 +134,42 @@ export function CourseWorkspace({
             <div className='min-w-0 flex-1'>
               {/* 课程标题默认即学习目标（t1）：目标被折叠/截断时，标题悬浮
                   显示完整目标文本，截断口径可见 */}
-              {course.learning_goal && course.learning_goal !== course.title ? (
-                <Tooltip content={course.learning_goal}>
-                  <Title heading={3} className='!m-0 cursor-help'>
+              <div className='flex items-center gap-8px'>
+                {course.learning_goal && course.learning_goal !== course.title ? (
+                  <Tooltip content={course.learning_goal}>
+                    <Title heading={3} className='!m-0 cursor-help'>
+                      {course.title}
+                    </Title>
+                  </Tooltip>
+                ) : (
+                  <Title heading={3} className='!m-0'>
                     {course.title}
                   </Title>
-                </Tooltip>
-              ) : (
-                <Title heading={3} className='!m-0'>
-                  {course.title}
-                </Title>
-              )}
+                )}
+                {!course.enabled && <CourseArchivedBadge />}
+              </div>
               <Paragraph className='!mb-0 !mt-6px text-t-secondary'>{course.description}</Paragraph>
             </div>
             {/* 打开课程详情即自动加入，无显式「加入课程」步骤 */}
             <div className='flex shrink-0 items-center gap-8px'>
+              {!course.enabled && (
+                <Button
+                  size='small'
+                  type='primary'
+                  onClick={() => {
+                    learningApi
+                      .restoreCourse(course.id)
+                      .then(() => {
+                        Message.success(t('learning.courseRestoreDone'));
+                        onRefresh();
+                      })
+                      .catch((actionError) => Message.error(errorMessage(t, actionError)));
+                  }}
+                >
+                  {t('learning.courseRestore')}
+                </Button>
+              )}
+              <CourseRenameButton course={course} onChanged={onRefresh} size='small' />
               <ContentWidthToggle />
               <LearningModelSelector
                 choice={modelChoice}

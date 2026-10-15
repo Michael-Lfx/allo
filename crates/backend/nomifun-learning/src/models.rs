@@ -1390,6 +1390,16 @@ pub struct CourseSummary {
     pub enrolled: bool,
     pub total_lessons: i64,
     pub completed_lessons: i64,
+    /// 课程级「现存且启用」口径（三轮 g3）：`false` = 已归档（可逆暂停），
+    /// 安排面（到期队列/就绪推荐/生成入口）不再出现本课，历史面如实保留。
+    pub enabled: bool,
+    /// 概况读数（三轮 g3）：已结算或已完成的课时/节点数——XP 账本（j05）
+    /// 落地前先行等于 `completed_lessons`，j05 切换为结算口径。
+    pub settled_or_completed: i64,
+    /// 概况读数：今日到期题数（本用户本课，与到期队列同口径）。
+    pub due_today: i64,
+    /// 概况读数：累计 XP——j05 结算账本落地前恒为 `None`（可空先行）。
+    pub total_xp: Option<i64>,
     pub updated_at: TimestampMs,
     pub tags: Vec<String>,
     /// 用户目标（t1）：传统课程的知识库流目标文本；旧课程/描述流为空即
@@ -2151,13 +2161,11 @@ pub struct SetTagsRequest {
     pub apply_to_children: bool,
 }
 
+/// 课程改名请求（三轮 g3）：只动显示名 `title`——目标原句/结构快照/学习
+/// 数据一个不动。
 #[derive(Debug, Clone, Deserialize)]
-pub struct DeleteCourseRequest {
-    /// Also remove the learner's review items, mastery, progress, attempts
-    /// and enrollment for this course. When false the content stays in the
-    /// database so orphaned concepts remain reviewable.
-    #[serde(default)]
-    pub delete_reviews: bool,
+pub struct RenameCourseRequest {
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -199,9 +199,11 @@ impl LearningService {
     }
 
     pub async fn list_courses(&self, user_id: &UserId) -> Result<Vec<CourseSummary>, AppError> {
+        // 目录列出现存课程（归档课也在列——带徽标可恢复）；安排面收窄由
+        // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         let rows = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -211,12 +213,19 @@ impl LearningService {
                      JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(*) FROM learning_review_items r \
+                     JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                     WHERE e.user_id = ? AND e.course_id = c.course_id \
+                       AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
+                       AND r.due_at <= ?) AS due_today \
              FROM learning_courses c WHERE c.deleted_at IS NULL \
              ORDER BY c.updated_at DESC, c.course_id",
         )
         .bind(user_id.as_str())
         .bind(user_id.as_str())
+        .bind(user_id.as_str())
+        .bind(now_ms())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
@@ -239,7 +248,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -249,12 +258,19 @@ impl LearningService {
                      JOIN learning_enrollments e ON e.enrollment_id = p.enrollment_id \
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
-                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons \
+                     WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(*) FROM learning_review_items r \
+                     JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+                     WHERE e.user_id = ? AND e.course_id = c.course_id \
+                       AND r.archived_at IS NULL AND r.edit_pending_at IS NULL \
+                       AND r.due_at <= ?) AS due_today \
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
         )
         .bind(user_value)
         .bind(user_value)
+        .bind(user_value)
+        .bind(now_ms())
         .bind(course_id.as_str())
         .fetch_optional(&self.pool)
         .await
@@ -512,15 +528,90 @@ impl LearningService {
         Ok(sections)
     }
 
-    /// Deletes a course. With `delete_reviews` the learner's enrollment and
-    /// all derived data plus the course content are wiped. Otherwise the
-    /// catalog row and the course's graph edges disappear, while content,
-    /// questions and review data stay so orphaned concepts remain reviewable.
+    /// Renames a course display title (三轮 g3): only `title` moves — the
+    /// learning goal, structure snapshot and all learning data stay untouched.
+    /// Uniqueness follows the live-catalog rule: a soft-deleted tombstone row
+    /// does not block the new name, a live duplicate is a 409.
+    pub async fn rename_course(
+        &self,
+        course_id: &LearningCourseId,
+        title: &str,
+    ) -> Result<(), AppError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("course title must not be empty".into()));
+        }
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM learning_courses WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        let collision: Option<String> = sqlx::query_scalar(
+            "SELECT course_id FROM learning_courses \
+             WHERE title = ? AND deleted_at IS NULL AND course_id <> ?",
+        )
+        .bind(title)
+        .bind(course_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        if collision.is_some() {
+            return Err(AppError::Conflict(format!(
+                "course title already exists: {title}"
+            )));
+        }
+        sqlx::query("UPDATE learning_courses SET title = ?, updated_at = ? WHERE course_id = ?")
+            .bind(title)
+            .bind(now_ms())
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+        Ok(())
+    }
+
+    /// Archives or restores a course (三轮 g3): flips `enabled` only — zero
+    /// data loss either way. Archived courses drop out of every arrangement
+    /// surface via the existing-and-enabled filter and reappear on restore.
+    pub async fn set_course_archived(
+        &self,
+        course_id: &LearningCourseId,
+        archived: bool,
+    ) -> Result<(), AppError> {
+        let result = sqlx::query(
+            "UPDATE learning_courses SET enabled = ?, updated_at = ? \
+             WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(if archived { 0 } else { 1 })
+        .bind(now_ms())
+        .bind(course_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        Ok(())
+    }
+
+    /// Deletes a course (三轮 g3 语义对齐 learnhub：账本永远保留): the course
+    /// row becomes a tombstone and the course content (lessons/modules/concept
+    /// edges/activities) is physically removed, while review cards, attempts,
+    /// progress and the enrollment stay — the arrangement surfaces stop
+    /// listing the course via the existing-and-enabled filter, the history
+    /// surfaces keep the record. There is no option to wipe reviews anymore;
+    /// pausing without deletion is what archiving is for.
     pub async fn delete_course(
         &self,
         course_id: &LearningCourseId,
-        user_id: &UserId,
-        delete_reviews: bool,
+        _user_id: &UserId,
     ) -> Result<(), AppError> {
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         let exists: Option<String> =
@@ -532,38 +623,9 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
-        let enrollment_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ? AND user_id = ?",
-        )
-        .bind(course_id.as_str())
-        .bind(user_id.as_str())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(internal)?;
-        if delete_reviews {
-            for enrollment_id in &enrollment_ids {
-                for table in [
-                    "learning_review_items",
-                    "learning_lesson_progress",
-                    "learning_attempts",
-                ] {
-                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
-                        .bind(enrollment_id)
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(internal)?;
-                }
-            }
-            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ? AND user_id = ?")
-                .bind(course_id.as_str())
-                .bind(user_id.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
-        }
-        // 课程内容（课时/模块/概念网边）无论勾选与否都物理删除——复习保留
-        // 的只是题目数据，不靠课时行续命。孤儿课时曾把新课的入口层向上顶
-        // （全局已教账把幽灵供给当真），这条语义从根上掐掉污染源。
+        // 课程内容（课时/模块/概念网边）物理删除——复习保留的只是题目数据，
+        // 不靠课时行续命。孤儿课时曾把新课的入口层向上顶（全局已教账把幽灵
+        // 供给当真），这条语义从根上掐掉污染源。
         let content_sql = [
             "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
                 SELECT l.lesson_id FROM learning_lessons l \
@@ -588,17 +650,6 @@ impl LearningService {
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-        }
-        if delete_reviews {
-            // 概念登记表跟勾选走：全删时清掉不再被任何课时引用的概念——
-            // 概念是跨课程共享资产，只收紧无主条目，不误删他课在用的。
-            sqlx::query(
-                "DELETE FROM learning_concept_registry WHERE concept_id NOT IN (\
-                    SELECT DISTINCT concept_id FROM learning_lesson_concepts)",
-            )
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
         }
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
@@ -834,6 +885,12 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         enrolled: row.try_get::<i64, _>("enrolled").map_err(internal)? != 0,
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
+        enabled: row.try_get::<i64, _>("enabled").map_err(internal)? != 0,
+        // 结算口径随 XP 账本（j05）切换；先行 = 完成数。
+        settled_or_completed: row.try_get("completed_lessons").map_err(internal)?,
+        due_today: row.try_get("due_today").map_err(internal)?,
+        // XP 账本（j05）落地前恒空。
+        total_xp: None,
         updated_at: row.try_get("updated_at").map_err(internal)?,
         tags: Vec::new(),
         learning_goal,

@@ -276,20 +276,26 @@ impl LearningService {
         Ok(true)
     }
 
-    /// 学习图课程守卫（对齐软删语义）：存在、未软删、且是学习图课程。
+    /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
+    /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
-        let row: Option<(String, Option<i64>)> = sqlx::query_as(
-            "SELECT course_kind, deleted_at FROM learning_courses WHERE course_id = ?",
+        let row: Option<(String, Option<i64>, i64)> = sqlx::query_as(
+            "SELECT course_kind, deleted_at, enabled FROM learning_courses WHERE course_id = ?",
         )
         .bind(course_id.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(internal)?;
-        let Some((kind, deleted_at)) = row else {
+        let Some((kind, deleted_at, enabled)) = row else {
             return Err(AppError::NotFound(format!("course {course_id}")));
         };
         if deleted_at.is_some() {
             return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        if enabled == 0 {
+            return Err(AppError::Conflict(
+                "课程已归档，恢复后可继续学习".into(),
+            ));
         }
         if kind != CourseKind::LearningGraph.as_str() {
             return Err(AppError::NotFound(format!("learning graph course {course_id}")));
@@ -309,6 +315,9 @@ impl LearningService {
         force: bool,
         model_override: Option<(&ProviderId, &str)>,
     ) -> Result<bool, AppError> {
+        // 安排面守卫（三轮 g3）：生长只服务现存且启用的学习图课程——归档课
+        // 的手动/自动触发都给人面错误（可恢复），不再烧教练预算。
+        self.require_live_graph_course(course_id).await?;
         let ready_count = self.ready_count(course_id, user_id).await?;
         if !force && ready_count >= crate::learning_graph::READY_TRIGGER {
             return Ok(false);
