@@ -32,6 +32,7 @@ pub mod requirement_tools;
 pub mod round;
 pub mod session;
 pub mod skill_tool;
+pub mod tool_image_annotator;
 pub mod ssh_backend;
 pub mod ssh_tools;
 pub mod summon_tools;
@@ -58,4 +59,5 @@ pub use observation::{
     stream_llm, NudgeInfo, ObservationSession, ObservationTelemetryRecord,
 };
 pub use task_profile::TaskProfile;
+pub use tool_image_annotator::ToolResultImageAnnotator;
 pub use nomi_coding;

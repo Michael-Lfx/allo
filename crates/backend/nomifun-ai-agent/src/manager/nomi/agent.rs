@@ -1203,6 +1203,12 @@ impl NomiAgentManager {
         // chat models. Must land before the first turn so every LlmRequest
         // carries `reasoning_effort` when the catalog advertises levels.
         engine.set_initial_reasoning_effort(config_extra.reasoning_effort.clone());
+        engine.set_tool_image_annotator(Some(std::sync::Arc::new(
+            super::image_analyze::HostToolImageAnnotator::new(
+                backend_output_sink.clone(),
+                config_extra.image_analysis_model.clone(),
+            ),
+        )));
         if coding_profile {
             let cwd = std::path::PathBuf::from(&workspace);
             let write_root = config_extra
