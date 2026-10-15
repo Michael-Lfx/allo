@@ -875,7 +875,7 @@
 
     fn activities_json() -> String {
         r#"{
-          "estimated_minutes": 20,
+          "est": 20,
           "activities": [
             {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "section_key": "s1", "difficulty": 1},
             {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "section_key": "s1", "difficulty": 2},
@@ -948,7 +948,7 @@
             "太短。".into(),
             section_body("概念：向量"),
             practice_body(),
-            r#"{"estimated_minutes": 20, "activities": []}"#.into(),
+            r#"{"est": 20, "activities": []}"#.into(),
             activities_json(),
         ]);
         let output = generate_lesson(

@@ -331,8 +331,11 @@ pub struct LessonPack {
     pub summary: String,
     #[serde(default)]
     pub purpose: String,
-    #[serde(default = "default_estimated_minutes")]
-    pub estimated_minutes: i64,
+    /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
+    /// （j01）；`estimated_minutes` 是导入旧包的兼容别名（双读），DB 列
+    /// 保留旧名 `learning_lessons.estimated_minutes`。
+    #[serde(default = "default_est", alias = "estimated_minutes")]
+    pub est: i64,
     /// 主来源（兼容位）：落库时写进既有的 `source_path/start/end` 三列，
     /// 恒等于 [`LessonPack::sources`] 的首个。
     #[serde(default)]
@@ -866,7 +869,7 @@ impl TryFrom<&str> for TeachingStyle {
     }
 }
 
-const fn default_estimated_minutes() -> i64 {
+const fn default_est() -> i64 {
     10
 }
 
@@ -1624,7 +1627,8 @@ pub struct GraphBatchView {
 pub struct GraphNodeHistoryView {
     pub lesson_id: LearningLessonId,
     pub title: String,
-    pub estimated_minutes: i64,
+    /// est：专注工作量尺寸锚（DB 列保留旧名 `estimated_minutes`）。
+    pub est: i64,
     pub status: LessonStatus,
     pub completed_at: Option<i64>,
 }
@@ -1681,7 +1685,9 @@ pub struct LessonView {
     pub summary: String,
     pub purpose: String,
     pub position: i64,
-    pub estimated_minutes: i64,
+    /// est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注）。键名统一 est
+    /// （j01）；DB 列保留旧名 `estimated_minutes`。
+    pub est: i64,
     pub generated: bool,
     /// 主来源（兼容位）：恒等于 [`LessonView::sources`] 的首个；无引用为
     /// `None`（描述流/老课时无来源）。
@@ -2433,5 +2439,32 @@ mod contract_tests {
             budgets.contains(&format!("下限 {} 字", SectionKind::Concept.min_body_chars())),
             "{budgets}"
         );
+    }
+}
+
+#[cfg(test)]
+mod est_key_tests {
+    //! est 键名统一（j01）的双读契约：导入包新键 `est` 为准，旧键
+    //! `estimated_minutes` 是兼容别名——老导入文件不回归（缺省回退才可判）。
+
+    use super::*;
+
+    #[test]
+    fn lesson_pack_reads_new_key_and_legacy_alias() {
+        let new_key: LessonPack = serde_json::from_str(
+            r#"{"title": "t", "est": 42}"#,
+        )
+        .expect("new key parses");
+        assert_eq!(new_key.est, 42);
+
+        let legacy: LessonPack = serde_json::from_str(
+            r#"{"title": "t", "estimated_minutes": 25}"#,
+        )
+        .expect("legacy import packs keep parsing");
+        assert_eq!(legacy.est, 25);
+
+        let absent: LessonPack =
+            serde_json::from_str(r#"{"title": "t"}"#).expect("absent falls back");
+        assert_eq!(absent.est, 10, "缺省 10 不变");
     }
 }

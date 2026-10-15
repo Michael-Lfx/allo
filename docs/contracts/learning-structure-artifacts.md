@@ -1,9 +1,9 @@
 ---
 contract: learning-structure-artifacts
-version: "1.0"
-date: 2026-10-12
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）
-sources: [docs/tracker/learning-absorb/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.4]
+version: "1.1"
+date: 2026-10-15
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）
+sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
 # 学习结构产物契约 v1.0
@@ -159,8 +159,12 @@ sources: [docs/tracker/learning-absorb/map.md, docs/adr/0010-endpoint-anchors-an
 | gd.terrain.frontmatter | 四个标量键全非空 |
 | gd.terrain.doors | doors ≥1；键 ⊆ {id, criterion, kind}；id 形态 `G<数字>` 且唯一；criterion 非空且含能力动词（能/可——可验证判据的机械代理）；kind ∈ {hard, self_check}（hard = 无豁免硬前置，self_check = 可自检项） |
 
-地形与结构同为**参考面**产物：不参与判定、不与概念关联；门口以下是假设已会的
-前置，不属于本课程教学单元，由生长循环自己教出来。
+地形与结构同为**参考面**产物：不参与判定、不与概念关联。**门位口径（v2.10）**：门画在
+学习者的**真实起步地板**上——地板 = 基线学习者今天已具备、能直接踩着开始的那条线；
+「教材第一章」「正式入门」都不等于地板。门口以下是假设已会的前置（地板以下），不属于
+本课程教学单元；**地板以上的一切内容全进知识结构**（开局贴地、可学可挂）——结构入门档
+从门口贴地起排，门口与入门档之间不留无主地带。地形由此收缩为**地板以下与临门自检**
+两类判据（`hard` / `self_check`），由生长循环自己教出来的部分照旧归生长。
 
 ## 4 门口对账
 
@@ -206,3 +210,19 @@ NULL、无半成品落列**（建课接口不等待生成，失败不回收课�
 | 普查 / 交付账 / selectable / NoFrontier / 铸名门 | 不存在，也不得重新引入 | 铁律：learnhub 已用真机代价否决（map Notes） |
 | 落盘 YAML（wire-only 转换） | JSON 直存快照列 | 单字段快照语义，无第二真相形态 |
 | gd.edges.audit 参考质量告警 | 未引入（v1 观测面后置） | 契约 = validator 1:1，不纸上设条款 |
+
+## 8 契约文本随批注记（v1.1，j01）
+
+learnhub 窗口内四项纯文本契约演进的落点对账（三轮 t4）：
+
+| 项 | learnhub 出处 | 落点与状态 |
+|---|---|---|
+| 门位口径 v2.10 | decomposition-artifacts v2.10 | **本批采纳**：§3 语义段 + `prompts/structure/goal-decomposition.md` / `prerequisite-terrain.md`（金样随批重生成） |
+| 术语纠偏 v2.8 | v2.8「块 = 主题单元」 | **确认归档**：本文档 §2.1 与两份提示词的块定义已是「原子教学主题单元」口径；全仓 grep 无「转正/收敛率」残留（零命中） |
+| R9 叙述声部 | contract v2.6 | **随 j07**：内容面条款（正文自称「本课/这一课」、开发面结构词不入正文）落内容写作提示词与评审判据观察面——不进本结构契约 |
+| 跨课预告废除 | contract v2.6 | **随 j07**：节大纲小结收本课以内、「接下来/下一课」预告废除——落 `section_outline_system` 与 content 写作面 |
+
+est 命名统一（二轮 g1 第 6 项）同批落地：`ng.nodes.minutes` → `ng.nodes.est`、
+`ProposedNode.est`、DTO/前端镜像键 `est`；**DB 列 `learning_lessons.estimated_minutes`
+保留旧名**（SQLite 无列注释机制，语义注记住本条与本批 DTO 文档注释：列语义 =
+est，1 est 分钟 = 1 分钟专注学习）。

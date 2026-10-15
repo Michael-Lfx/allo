@@ -351,7 +351,7 @@ const LearningGraphWorkspace: React.FC<{
                     </div>
                     <div className='mt-4px text-11px text-t-tertiary'>
                       {t('learning.learningGraphNodeMinutes', {
-                        min: primaryLesson?.estimated_minutes ?? 10,
+                        min: primaryLesson?.est ?? 10,
                       })}
                     </div>
                     {primaryLesson && !primaryLesson.generated && (
@@ -391,7 +391,7 @@ const LearningGraphWorkspace: React.FC<{
                   >
                     <span className='min-w-0 truncate'>{lesson.title}</span>
                     <span className='shrink-0 text-11px text-t-tertiary'>
-                      {t('learning.learningGraphNodeMinutes', { min: lesson.estimated_minutes })}
+                      {t('learning.learningGraphNodeMinutes', { min: lesson.est })}
                     </span>
                   </button>
                 );
@@ -555,7 +555,7 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
                   {node.title}
                 </span>
                 <span className='flex shrink-0 items-center gap-8px text-11px text-t-tertiary'>
-                  <span>{t('learning.learningGraphNodeMinutes', { min: node.estimated_minutes })}</span>
+                  <span>{t('learning.learningGraphNodeMinutes', { min: node.est })}</span>
                   <Tag
                     size='small'
                     color={lessonStatusTagColors[node.status]}

@@ -149,7 +149,8 @@ export interface Lesson {
   purpose: string;
   position: number;
   generated: boolean;
-  estimated_minutes: number;
+  /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注；后端 DB 列保留旧名 estimated_minutes） */
+  est: number;
   /** 主来源（兼容位，= `sources` 首个）：`kb_id` = 来源库（多库课程按命名
    * 空间解析；单库/旧课程为 null，读侧回退课程主来源 `course.source_kb_id`）；
    * `path` 是库内相对路径 */
@@ -565,7 +566,8 @@ export interface GraphBatchView {
 export interface GraphNodeHistoryView {
   lesson_id: string;
   title: string;
-  estimated_minutes: number;
+  /** est：专注工作量尺寸锚（后端 DB 列保留旧名 estimated_minutes） */
+  est: number;
   status: LessonStatus;
   completed_at: number | null;
 }

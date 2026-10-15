@@ -1780,7 +1780,8 @@ export interface ILearningLessonGenerationEvent {
   info?: number;
   top?: string[];
   activities?: number;
-  estimated_minutes?: number;
+  /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注） */
+  est?: number;
   error?: string;
   /** t3 grounding 披露：primary 是否来自实时读库。 */
   primary_live?: boolean;
