@@ -1110,9 +1110,10 @@ impl LearningService {
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
         // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
         let pending = self.begin_pending_batch(course_id).await?;
-        let result = self.growth_body(engine, &pending).await;
+        let result = self.growth_body(engine, &pending, token.clone()).await;
         match &result {
             Ok(applied) => {
+                task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
                 // 空手批的 pending 行已在 growth_body 内自清；WS 以
                 // outcome=idle 收尾——前端刷新就绪读数即可，无历史噪音。
                 self.emit_graph_event(
@@ -1130,16 +1131,32 @@ impl LearningService {
             }
             Err(error) => {
                 // 失败留痕：pending 行转 failed，历史时间线可见可重试。
+                // 取消 = 中性终态（growth_cancelled，phase=cancelled），不
+                // 报错误——中断的本批零落库（事务原子），批行如实转 failed。
+                let cancelled = token.is_cancelled()
+                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
                 self.fail_pending_batch(&pending.batch_id).await;
-                let cancelled = self.generation_cancel_requested();
-                self.emit_graph_event(
-                    course_id,
-                    if cancelled { "growth_cancelled" } else { "growth_failed" },
-                    serde_json::json!({
-                        "phase": "failed",
-                        "error": error.to_string(),
-                    }),
-                );
+                if cancelled {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "growth_cancelled",
+                        serde_json::json!({
+                            "phase": "cancelled",
+                            "outcome": "cancelled",
+                        }),
+                    );
+                } else {
+                    task.finish_failed(error.to_string());
+                    self.emit_graph_event(
+                        course_id,
+                        "growth_failed",
+                        serde_json::json!({
+                            "phase": "failed",
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
         }
         result.map(|_| ())
@@ -1202,9 +1219,22 @@ impl LearningService {
         &self,
         engine: &crate::learning_graph::GrowthRunner,
         pending: &PendingBatch,
+        token: tokio_util::sync::CancellationToken,
     ) -> Result<GrowthApplied, AppError> {
+        use crate::learning_graph::growth_retry::{
+            AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
+            redraft_guard_violation, should_stop_early,
+        };
         let course_id = &engine.course_id;
-        let completer = self.course_completer()?;
+        let inner_completer = self.course_completer()?;
+        // 真取消（三轮 t2）：全部 completer 调用与 token select! 竞速——调用
+        // 前已取消 = 零调用；调用中被取消 = 断 HTTP。批事务原子落库 =
+        // 中断零落库。
+        let cancellation = crate::service::CancellationCompleter::new(
+            inner_completer.as_ref(),
+            token.clone(),
+        );
+        let completer: &dyn LearningCompleter = &cancellation;
         let model_override = engine
             .model_override
             .as_ref()
@@ -1220,45 +1250,134 @@ impl LearningService {
         // （ng.*）注入重试装配）：教练起草/重裁 → 形状与语义门/概念评审打回
         // 时把报告喂回重裁再试，直到某一稿同时过门与评审即落库；仅当预算
         // 耗尽才失败。首轮解析失败（无上一稿可点修）直接带报告重新起草。
+        // 重试机制（二轮 t1）：同指纹早停（连败两次即停）+「未点名被改」
+        // 机械守卫（豁免早停、原地重试恰一次不占预算）+ 重裁出口容量定向
+        // 打回；每轮起草/重裁/评审前后有取消检查点（loop 头 + select! 竞速）。
+        let cancel_err = || {
+            AppError::Conflict(crate::service::CANCELLED_MESSAGE.to_owned())
+        };
         let mut previous: Option<crate::learning_graph::ProposedBatch> = None;
         let mut feedback = String::new();
         let mut last = String::from("(未执行)");
+        let mut prev_fingerprint: Option<String> = None;
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
-        for attempt in 1..=GROWTH_MAX_ATTEMPTS {
-            let drafted = match &previous {
-                Some(previous) => crate::learning_graph::coach_redraft(
-                    completer.as_ref(),
-                    model_override,
-                    &context,
-                    previous,
-                    &feedback,
-                )
-                .await
-                .map_err(|error| error.to_string()),
-                None => crate::learning_graph::coach_draft(
-                    completer.as_ref(),
-                    model_override,
-                    &context,
-                    &feedback,
-                )
-                .await
-                .map_err(|error| error.to_string()),
-            };
-            let candidate = match drafted {
-                Ok(candidate) => candidate,
-                Err(report) => {
-                    // 形状违约/传输错误：报告已带条款编号（或原始错误），
-                    // 注入下一轮重新起草。
-                    last = report;
-                    feedback = last.clone();
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        attempt,
-                        report = %feedback,
-                        "coach draft failed — regenerating with feedback"
-                    );
-                    continue;
+        let mut attempts_used = 0usize;
+        let mut stop_reason = "exhausted";
+        'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
+            attempts_used = attempt;
+            if token.is_cancelled() {
+                stop_reason = "cancelled";
+                break 'budget;
+            }
+            let mut in_place_retried = false;
+            // ── 起草/重裁（guard 的原地重试在本 attempt 内恰一次）────────
+            let candidate = 'drafting: loop {
+                if token.is_cancelled() {
+                    // stop_reason 已由外层/本轮置位；无赋值必要。
+                    break 'budget;
                 }
+                let drafted = match previous.as_ref() {
+                    Some(previous) => {
+                        crate::learning_graph::coach_redraft(
+                            completer,
+                            model_override,
+                            &context,
+                            previous,
+                            &feedback,
+                        )
+                        .await
+                        .map_err(|error| AttemptFail::generation(error.to_string()))
+                    }
+                    None => crate::learning_graph::coach_draft(
+                        completer,
+                        model_override,
+                        &context,
+                        &feedback,
+                    )
+                    .await
+                    .map_err(|error| AttemptFail::generation(error.to_string())),
+                };
+                let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
+                    match drafted {
+                        Ok(candidate) => {
+                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比）。
+                            if let Some(prev_ref) = previous.as_ref() {
+                                if let Some(violation) =
+                                    redraft_guard_violation(prev_ref, &candidate, &feedback)
+                                {
+                                    if !in_place_retried {
+                                        // 原地重试恰一次（不占轮预算）：带守
+                                        // 卫原因对最新一稿点修，评审上下文保留。
+                                        in_place_retried = true;
+                                        tracing::warn!(
+                                            course = course_id.as_str(),
+                                            attempt,
+                                            "coach redraft edited unnamed nodes — in-place retry with the guard reason"
+                                        );
+                                        feedback = violation;
+                                        previous = Some(candidate);
+                                        continue 'drafting;
+                                    }
+                                    // 二次越权 = 本 attempt 失败，计轮推进
+                                    //（guard 豁免早停——固定文案 ≠ 同输出）。
+                                    tracing::warn!(
+                                        course = course_id.as_str(),
+                                        attempt,
+                                        "coach redraft violated the point-edit guard twice — attempt consumed"
+                                    );
+                                    Err(AttemptFail::guard(violation))
+                                } else {
+                                    Ok(candidate)
+                                }
+                            } else {
+                                Ok(candidate)
+                            }
+                        }
+                        Err(mut fail) => {
+                            // 容量守卫（重裁出口）：ng.batch.size 整批违规改判
+                            // 定向重装指令（专用条款码），起草轮执法单源不变。
+                            if previous.is_some() && is_batch_size_violation(&fail.report) {
+                                fail.report = redraft_capacity_report(
+                                    previous.as_ref().expect("redraft has previous"),
+                                );
+                            }
+                            Err(fail)
+                        }
+                    };
+                let candidate = match outcome {
+                    Ok(candidate) => candidate,
+                    Err(fail) => {
+                        // 本 attempt 失败收口：早停判据 + 报告回灌。
+                        let guard = fail.guard;
+                        let fingerprint = normalize_report(&fail.report);
+                        if should_stop_early(
+                            attempt,
+                            &fingerprint,
+                            prev_fingerprint.as_deref(),
+                            guard,
+                        ) {
+                            tracing::warn!(
+                                course = course_id.as_str(),
+                                attempt,
+                                "growth failed with the same fingerprint twice — stopping early (retry budget not burned)"
+                            );
+                            stop_reason = "early_stop";
+                            last = fail.report;
+                            break 'budget;
+                        }
+                        prev_fingerprint = if guard { None } else { Some(fingerprint) };
+                        last = fail.report.clone();
+                        feedback = fail.report;
+                        tracing::warn!(
+                            course = course_id.as_str(),
+                            attempt,
+                            report = %feedback,
+                            "coach draft failed — regenerating with feedback"
+                        );
+                        continue 'budget;
+                    }
+                };
+                break 'drafting candidate;
             };
             tracing::info!(
                 course = course_id.as_str(),
@@ -1641,6 +1760,24 @@ impl LearningService {
             sections.push(format!("提名「{}」的候选：\n{}", plan.name, lines.join("\n")));
         }
         sections.join("\n")
+    }
+
+    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据
+    /// 源；读数面非门禁）。内存态，仅诊断。
+    pub(crate) fn record_growth_stats(&self, attempts_used: usize, stop_reason: &str) {
+        if let Ok(mut stats) = self.growth_run_stats.lock() {
+            *stats = Some(GrowthRunStats {
+                attempts_used,
+                stop_reason: stop_reason.to_owned(),
+            });
+        }
+    }
+
+    pub fn growth_run_stats(&self) -> Option<GrowthRunStats> {
+        self.growth_run_stats
+            .lock()
+            .ok()
+            .and_then(|stats| stats.clone())
     }
 
     /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据

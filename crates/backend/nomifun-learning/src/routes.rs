@@ -32,10 +32,9 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
-        .route(
-            "/api/learning/courses/generate/status",
-            get(learning_graph_generation_status),
-        )
+        .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
+        .route("/api/learning/generation-tasks", get(list_generation_tasks))
+        .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
         .route(
             "/api/learning/courses/generate/cancel",
             post(cancel_learning_graph_generation),

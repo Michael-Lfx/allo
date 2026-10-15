@@ -22,6 +22,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { lessonStatusTagColors } from '../model';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
+import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
 import { learningApi } from '../api';
 import { errorMessage } from '../utils';
 import type {
@@ -151,7 +152,7 @@ const LearningGraphWorkspace: React.FC<{
       if (event.course_id !== detail.course.id) return;
       if (event.event === 'structure_started') setStructureRunning(true);
       if (event.event === 'structure_completed') load();
-      if (event.event === 'structure_failed') {
+      if (event.event === 'structure_failed' || event.event === 'structure_cancelled') {
         setStructureRunning(false);
         load();
       }

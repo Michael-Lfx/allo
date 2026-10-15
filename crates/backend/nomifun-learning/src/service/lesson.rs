@@ -402,7 +402,7 @@ impl LearningService {
         request: &GenerateLessonRequest,
     ) -> Result<LessonView, AppError> {
         let row = sqlx::query(
-            "SELECT l.module_id, l.position, l.content_generated, m.course_id, \
+            "SELECT l.module_id, l.position, l.content_generated, l.title AS lesson_title, m.course_id, \
                     m.position AS module_position, c.course_kind, c.teaching_style, \
                     c.deleted_at, c.enabled \
              FROM learning_lessons l \
