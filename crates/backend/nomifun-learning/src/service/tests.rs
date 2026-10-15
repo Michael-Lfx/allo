@@ -5856,3 +5856,184 @@ async fn checkin_today_locks_on_xp_gauge() {
     assert!(status.completed);
     assert!(status.locked_at.is_some());
 }
+
+/// 结构挂载回合（j08）：真实管线一次挂载（三节点全评估 + hash 锚定落盘），
+/// 重跑幂等（待挂集空 = skipped 零写）。
+#[tokio::test]
+async fn structure_mount_round_mounts_then_skips() {
+    use crate::learning_graph::mounting;
+    struct ScriptedMount(std::sync::Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl LearningCompleter for ScriptedMount {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            Err(nomifun_common::AppError::Internal("mount only uses json".into()))
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            let mut replies = self.0.lock().unwrap();
+            if replies.is_empty() {
+                return Err(nomifun_common::AppError::Internal("script exhausted".into()));
+            }
+            Ok(replies.remove(0))
+        }
+    }
+
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id.clone()).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let artifact = serde_json::json!({
+        "mounts": [
+            { "node": "节点一", "block": "block-01", "reason": "同主题" },
+            { "node": "节点二", "block": "block-02", "reason": "进阶同主题" },
+            { "node": "节点三", "block": null, "reason": "纯练习节点" }
+        ],
+        "note": "n"
+    });
+    service.set_generation_dependencies(
+        Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                database.pool().clone(),
+            )),
+            std::env::temp_dir().join("mount-test-kb").as_path(),
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(owner_id.as_str()),
+            ),
+        )),
+        Arc::new(ScriptedMount(std::sync::Mutex::new(vec![serde_json::to_string(
+            &artifact,
+        )
+        .unwrap()]))),
+    );
+
+    // 种子：图课程（结构两块）+ 三节点。
+    let now = now_ms();
+    let course_id = LearningCourseId::new().into_string();
+    let module_id = LearningModuleId::new().into_string();
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": {
+            "goal": "g",
+            "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+            "blocks": [
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" },
+                { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "n" }
+            ],
+            "edges": []
+        },
+        "terrain": { "doors": [] },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '挂载课程', '', 'general', 1, 'learning_graph', 'g', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope).unwrap())
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    for (position, title) in ["节点一", "节点二", "节点三"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+             VALUES (?, ?, ?, '', 'p', ?, 10)",
+        )
+        .bind(LearningLessonId::new().into_string())
+        .bind(&module_id)
+        .bind(title)
+        .bind(position as i64)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+
+    let course = LearningCourseId::parse(&course_id).unwrap();
+    let first = service
+        .run_structure_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(first.status, "mounted");
+    assert_eq!(first.pending_nodes, 3);
+    assert_eq!((first.mounted_nodes, first.outside_nodes), (2, 1));
+    // hash 锚定：挂载行 hash = 结构字节 FNV-1a 64。
+    let structure_raw: String = sqlx::query_scalar(
+        "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let (row_hash, mounts_json): (i64, String) = sqlx::query_as(
+        "SELECT structure_hash, mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(
+        row_hash as u64,
+        mounting::fnv1a_64(structure_raw.as_bytes())
+    );
+    let entries = mounting::parse_mount_entries(
+        &serde_json::from_str::<serde_json::Value>(&mounts_json).unwrap(),
+    );
+    assert_eq!(entries.len(), 3);
+
+    // 读侧三态：挂载行 + 结构 + 节点 → 2 mounted / 1 outside / 0 未评估。
+    let view = service.structure_view(&course).await.unwrap();
+    let mounts = view.mounts.expect("mount row exists");
+    assert!(!mounts.stale);
+    assert_eq!(mounts.mounted_count, 2);
+    assert_eq!(mounts.outside_count, 1);
+    assert_eq!(mounts.not_evaluated_count, 0);
+    assert_eq!(mounts.index.len(), 2);
+
+    // 重跑幂等：待挂集空 = skipped，零 LLM 零写（脚本已耗尽，任何调用都会
+    // 报错——skipped 分支根本不触 completer）。
+    let second = service
+        .run_structure_mount(&user_id, &course, None)
+        .await
+        .unwrap();
+    assert_eq!(second.status, "skipped");
+    assert_eq!(second.total_entries, first.total_entries);
+
+    // 结构变了（改一个字节）→ stale 显影 + 全量重评待挂。
+    sqlx::query("UPDATE learning_courses SET structure_json = ? WHERE course_id = ?")
+        .bind(&format!("{structure_raw} "))
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let view = service.structure_view(&course).await.unwrap();
+    let mounts = view.mounts.expect("mount row exists");
+    assert!(mounts.stale, "hash mismatch must surface as stale");
+}

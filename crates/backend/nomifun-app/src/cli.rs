@@ -380,7 +380,20 @@ pub enum LearningSmokeCommand {
         /// Provider id（与 --model 成对）。
         #[arg(long)]
         provider: Option<String>,
-        /// 模型名（与 --provider 成对）。
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// 结构挂载冒烟（j08）：落位 + hash 锚定 + 条数一致 + **重跑幂等**
+    /// （第二次必须 skipped，否则 EXIT=4）；无凭据临时库如实失败。
+    Mount {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
         #[arg(long)]
         model: Option<String>,
     },
