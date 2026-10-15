@@ -383,6 +383,7 @@
   "learningGraphConceptOtherCourses": "Also taught in",
   "learningGraphRoleTeaches": "teaches · {{tier}}",
   "learningGraphRoleAssumes": "assumes · {{tier}}",
+  "learningGraphRefAs": "referenced as \"{{name}}\"",
   "learningGraphTier_know": "Know",
   "learningGraphTier_apply": "Apply",
   "learningGraphTier_teach": "Teach",

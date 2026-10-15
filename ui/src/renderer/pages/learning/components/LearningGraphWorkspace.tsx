@@ -641,7 +641,13 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             <div className='min-w-0'>
               <div className='truncate font-500 text-[var(--color-text-1)]'>{row.canonical}</div>
               {row.aliases.length > 0 && (
-                <div className='truncate text-11px text-t-tertiary'>{row.aliases.join('、')}</div>
+                <div className='truncate text-11px text-t-tertiary'>
+                  {row.aliases
+                    .map((alias) =>
+                      alias.definition ? `${alias.name}（${alias.definition}）` : alias.name
+                    )
+                    .join('、')}
+                </div>
               )}
             </div>
           ),
@@ -667,6 +673,11 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
                         })}
                   </Tag>
                   <span className='min-w-0 truncate text-[var(--color-text-1)]'>{reference.title}</span>
+                  {reference.ref_name && reference.ref_name !== row.canonical && (
+                    <span className='shrink-0 text-11px text-t-tertiary'>
+                      {t('learning.learningGraphRefAs', { name: reference.ref_name })}
+                    </span>
+                  )}
                   <span className='shrink-0 text-11px text-t-tertiary'>
                     {statusLabel(reference.status, t)}
                   </span>

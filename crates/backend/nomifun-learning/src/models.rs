@@ -1648,12 +1648,22 @@ pub struct GraphNodeHistoryView {
 pub struct GraphConceptRowView {
     pub concept_id: String,
     pub canonical: String,
-    pub aliases: Vec<String>,
+    /// 活跃别名（j04 结构化记录：名字 + 投影定义 + 出处；退役名不列）。
+    pub aliases: Vec<GraphConceptAliasView>,
     pub definition: String,
     /// 本课程内教/假定该概念的节点（带学习者进度状态）。
     pub refs: Vec<GraphConceptRefView>,
     /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
     pub other_courses: Vec<String>,
+}
+
+/// 一条活跃别名（j04）：名字 + 该名字的意义（投影角度定义，缺席 = 与概念
+/// 定义同义）+ 出处（提名的 source）。
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphConceptAliasView {
+    pub name: String,
+    pub definition: Option<String>,
+    pub attestation: Option<String>,
 }
 
 /// 概念表行内的一条引用。
@@ -1665,6 +1675,9 @@ pub struct GraphConceptRefView {
     pub role: String,
     /// know | apply | teach。
     pub tier: String,
+    /// 投影名（j04）：节点引用该概念时使用的名字；老行为 None（读侧回退
+    /// 概念正名）。
+    pub ref_name: Option<String>,
     pub status: LessonStatus,
 }
 

@@ -169,12 +169,14 @@ mod tests {
         let previous = ProposedBatch {
             nodes: vec![node("甲", "p1"), node("乙", "p2")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         };
         // 点名甲、改甲：合法。
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "改了的 p1"), node("乙", "p2")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         };
         assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲").is_none());
@@ -182,6 +184,7 @@ mod tests {
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "p1"), node("乙", "偷偷改了")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         };
         let violation = redraft_guard_violation(&previous, &candidate, "问题涉及 甲");
@@ -193,6 +196,7 @@ mod tests {
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "p1")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         };
         assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲").is_some());
@@ -200,6 +204,7 @@ mod tests {
         let candidate = ProposedBatch {
             nodes: vec![node("甲", "p1"), node("乙", "p2"), node("丙", "新铺垫")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         };
         assert!(redraft_guard_violation(&previous, &candidate, "问题涉及 甲").is_none());
@@ -217,6 +222,7 @@ mod tests {
         ProposedBatch {
             nodes: vec![node("甲", "p"), node("乙", "p")],
             mints: Vec::new(),
+            new_aliases: Vec::new(),
             note: String::new(),
         }
     }
