@@ -35,6 +35,28 @@ use nomifun_terminal::{TerminalEventEmitter, TerminalLifecycleServer, TerminalSe
 
 use crate::config::{AppConfig, load_or_create_data_encryption_key};
 
+/// 学习结算入账桥（j05 统一账）：[`nomifun_learning::CompanionXpSink`] 的
+/// 生产实现——转发到 companion 服务，由 store 层按事件 id 幂等去重（重复
+/// 结算事件绝不二次入账），入账对象 = 生效默认伙伴（花名册空 = 滞后容忍，
+/// 返回成功让学习账继续走）。
+struct LearningCompanionXpBridge {
+    companions: Arc<nomifun_companion::CompanionService>,
+}
+
+#[async_trait::async_trait]
+impl nomifun_learning::CompanionXpSink for LearningCompanionXpBridge {
+    async fn grant_learning_xp(
+        &self,
+        event_id: &str,
+        delta_xp: i64,
+    ) -> Result<(), nomifun_common::AppError> {
+        self.companions
+            .grant_learning_xp(event_id, delta_xp)
+            .await
+            .map(|_granted| ())
+    }
+}
+
 fn require_utf8_executable_path(path: &std::path::Path) -> anyhow::Result<String> {
     path.to_str().map(str::to_owned).ok_or_else(|| {
         anyhow::anyhow!(
@@ -3070,6 +3092,13 @@ impl AppServices {
 
         let appearance_service = nomifun_appearance::AppearanceService::open(&data_dir)
             .map_err(|e| anyhow::anyhow!("appearance service start failed: {e}"))?;
+
+        // 学习结算入账桥（j05 统一账）：学习线 XP 结算落账后授予生效默认
+        // 伙伴（事件 id 幂等去重在 companion store 层；companion 写失败不
+        // 回滚学习账，余额滞后由学习线真相兜底）。
+        learning_service.set_companion_xp_sink(Arc::new(LearningCompanionXpBridge {
+            companions: companion_service.clone(),
+        }));
 
         // 客服独立域 (customer-service domain): agents/notes/bindings CRUD
         // service + the stateless concurrent dialogue engine. The engine's

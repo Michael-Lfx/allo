@@ -19,7 +19,7 @@ use crate::models::{
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, RateReviewRequest, RepairFigureRequest,
     RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest, UpdateLessonProgressRequest,
-    UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
+    UpdateLessonSectionBodyRequest, UpdateQuestionRequest, XpCalendar, XpReading,
 };
 use crate::state::LearningRouterState;
 
@@ -100,6 +100,8 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         )
         .route("/api/learning/reviews/due", get(due_reviews))
         .route("/api/learning/checkins/today", get(checkin_today))
+        .route("/api/learning/xp/reading", get(xp_reading))
+        .route("/api/learning/xp/calendar", get(xp_calendar))
         .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
@@ -554,6 +556,37 @@ async fn checkin_today(
 ) -> Result<Json<ApiResponse<CheckinStatus>>, AppError> {
     Ok(Json(ApiResponse::ok(
         state.service.checkin_today(&user.id).await?,
+    )))
+}
+
+/// XP 读数（j05）：今日 XP/日目标/达标 + 进度尺（结算数/总数/剩余 est/ETA）。
+/// 两把尺同源回放互不换算，ETA 纯投影绝不回写。
+async fn xp_reading(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<XpReading>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.xp_reading(&user.id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct XpCalendarQuery {
+    /// 窗口周数（缺省 12，夹取 1..=53）；恒 weeks×7 桶、末桶 = 今日。
+    weeks: Option<i64>,
+}
+
+/// XP 日历（j05）：恒 weeks×7 桶含零桶，负账如实出桶，不过课程筛。
+async fn xp_calendar(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<XpCalendarQuery>,
+) -> Result<Json<ApiResponse<XpCalendar>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .xp_calendar(&user.id, query.weeks.unwrap_or(12))
+            .await?,
     )))
 }
 

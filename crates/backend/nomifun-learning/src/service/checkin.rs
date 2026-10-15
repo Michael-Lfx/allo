@@ -76,42 +76,22 @@ impl LearningService {
         }
     }
 
-    /// Daily review goal from client preferences (`learning.dailyCheckinGoal`),
-    /// defaulting to 15; 0 means "clear the queue only" with no count target.
-    async fn daily_checkin_goal(&self) -> i64 {
-        let Ok(row) = sqlx::query_scalar::<_, String>(
-            "SELECT value FROM client_preferences WHERE key = 'learning.dailyCheckinGoal'",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        else {
-            return 15;
-        };
-        match row {
-            Some(value) => serde_json::from_str::<Value>(&value)
-                .ok()
-                .and_then(|parsed| parsed.as_i64())
-                .filter(|goal| (0..=10_000).contains(goal))
-                .unwrap_or(15),
-            None => 15,
-        }
-    }
-
-    /// Daily check-in status for the current review day. Completion is a
-    /// momentary snapshot: goal reached (when N > 0), or the queue cleared
-    /// after at least one review today — an empty queue with zero reviews is
-    /// just the initial state and never completes the day. Once satisfied the
-    /// day is locked in `learning_checkins`, so cards arriving later keep
-    /// showing in the queue without changing the check-in state.
+    /// Daily check-in status for the current review day — j05 起按 XP 口径
+    /// （打卡计数口径退役：`dailyCheckinGoal` 的「复习事件计数」停用，日的
+    /// 达标读数统一按 XP，日目标 = 应用设置 `learning.dailyXpGoal`，缺省 40；
+    /// 学习日 02:00 翻转沿用）。完成即锁定：今日 XP 达标锁定当天，锁定后
+    /// 新增到期卡不再改变打卡状态。`reviewed_count` 字段承载今日净入账
+    /// （字段名保留到 j06 换 UI 数据源）。
     pub async fn checkin_today(&self, user_id: &UserId) -> Result<CheckinStatus, AppError> {
         let now = now_ms();
         let tz_offset_minutes = self.tz_offset_minutes().await;
         let review_day_start = review_day_start_utc(now, tz_offset_minutes);
         let review_day = review_day_number(now, tz_offset_minutes);
 
-        let goal = self.daily_checkin_goal().await;
-        let reviewed_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_review_events WHERE user_id = ? AND created_at >= ?",
+        let goal = self.daily_xp_goal().await;
+        let today_xp: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+             WHERE user_id = ? AND ts >= ?",
         )
         .bind(user_id.as_str())
         .bind(review_day_start)
@@ -146,11 +126,10 @@ impl LearningService {
 
         let (completed, locked_at) = if let Some((_, completed_at)) = locked {
             (true, Some(completed_at))
-        } else if (goal > 0 && reviewed_count >= goal)
-            || (reviewed_count > 0 && due_count == 0)
-        {
+        } else if today_xp >= goal {
             // Lock the review day; the UNIQUE(user_id, review_day) constraint
-            // keeps concurrent evaluations idempotent.
+            // keeps concurrent evaluations idempotent. The snapshot stores the
+            // XP goal and the day's XP at lock time (was: count + count goal).
             sqlx::query(
                 "INSERT OR IGNORE INTO learning_checkins \
                  (checkin_id, user_id, review_day, goal, reviewed_count, completed_at) \
@@ -160,7 +139,7 @@ impl LearningService {
             .bind(user_id.as_str())
             .bind(review_day)
             .bind(goal)
-            .bind(reviewed_count)
+            .bind(today_xp)
             .bind(now)
             .execute(&self.pool)
             .await
@@ -181,7 +160,7 @@ impl LearningService {
         Ok(CheckinStatus {
             review_day,
             goal,
-            reviewed_count,
+            reviewed_count: today_xp,
             due_count,
             completed,
             locked_at,

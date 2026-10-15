@@ -359,9 +359,17 @@ pub enum Command {
     },
 }
 
-/// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop）。
+/// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop +
+/// j05 的 xp 读数面）。
 #[derive(Debug, Clone, Subcommand)]
 pub enum LearningSmokeCommand {
+    /// XP 读数面冒烟（j05）：临时库结算几笔（教新 full + 复习线一笔）→
+    /// 读数/日历快照打印；读数面非门禁——唯一硬判据是管线真实走通。
+    Xp {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
     /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
     /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
     Structure {

@@ -31,6 +31,7 @@ use crate::cli::{Cli, LearningSmokeCommand};
 
 pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Result<ExitCode> {
     match command {
+        LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -718,4 +719,135 @@ async fn audit_batch(
         }
     }
     Ok(violations)
+}
+
+/// `learning-smoke xp`（j05）：XP 读数面冒烟。从零临时库种一门单课时课程
+/// （est 25 + 一道单选），走真实管线结算两笔——教新线（练习全对完成课时 =
+/// full 27）与复习线（卡到期答对自评 good = full 5）——然后打印读数与日历
+/// 快照。读数面非门禁：唯一硬判据是两笔结算经真实服务路径落账。
+async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
+    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+
+    // 种子课程：单课时（est 25）+ 单选题，报名为 owner。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+    let activity_id = nomifun_common::LearningActivityId::new().into_string();
+    let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
+    let now = nomifun_common::now_ms();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'XP smoke course', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons (lesson_id, module_id, title, summary, position, estimated_minutes) \
+         VALUES (?, ?, 'Vectors', '', 0, 25)",
+    )
+    .bind(&lesson_id)
+    .bind(&module_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    let config = serde_json::json!({
+        "answer": "4",
+        "options": ["3", "4"],
+        "explanation": "",
+        "distractors": [],
+        "matches": []
+    });
+    sqlx::query(
+        "INSERT INTO learning_activities \
+         (activity_id, lesson_id, kind, prompt, config_json, position) \
+         VALUES (?, ?, 'single_choice', '2 + 2 = ?', ?, 0)",
+    )
+    .bind(&activity_id)
+    .bind(&lesson_id)
+    .bind(serde_json::to_string(&config)?.as_str())
+    .execute(&wiring.pool)
+    .await?;
+
+    // 教新线：练习全对 → 完成课时 → full（25 + bonus 2）。
+    let activity = nomifun_common::LearningActivityId::parse(&activity_id)?;
+    let lesson = nomifun_common::LearningLessonId::parse(&lesson_id)?;
+    let attempt = service
+        .submit_attempt(&activity, &owner, serde_json::json!("4"), None, None)
+        .await?;
+    anyhow::ensure!(attempt.passed, "smoke attempt must pass");
+    service
+        .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+        .await?;
+
+    // 复习线：卡重列到期 → 答对 → 自评 good → full（base 3 + bonus 2）。
+    sqlx::query("UPDATE learning_review_items SET due_at = ?")
+        .bind(nomifun_common::now_ms() - 1_000)
+        .execute(&wiring.pool)
+        .await?;
+    let due = service
+        .due_reviews(&owner, 10, &[], true, false, &[])
+        .await?;
+    anyhow::ensure!(due.len() == 1, "expected exactly one seeded card");
+    let card = due[0].id.clone();
+    let answer = service
+        .answer_review(&card, &owner, serde_json::json!("4"), false, Some(9_000))
+        .await?;
+    anyhow::ensure!(answer.correct, "smoke answer must be correct");
+    service.rate_review(&card, &owner, nomifun_learning::ReviewRating::Good).await?;
+
+    // 读数/日历快照打印（读数面非门禁）。
+    let reading = service.xp_reading(&owner).await?;
+    let calendar = service.xp_calendar(&owner, 12).await?;
+    println!(
+        "xp reading: {}",
+        serde_json::to_string_pretty(&reading)?
+    );
+    let today = calendar.days.last().map(|day| (day.review_day, day.xp));
+    println!(
+        "xp calendar: {} buckets, today {today:?}, nonzero days {}",
+        calendar.days.len(),
+        calendar.days.iter().filter(|day| day.xp != 0).count(),
+    );
+
+    // 机械自检（只报告，不改退出码）：教新 27 + 复习 5 = 32。
+    let settled: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN kind = 'node-completed' THEN 1 ELSE 0 END), 0), \
+         COALESCE(SUM(CASE WHEN kind = 'review-completed' THEN 1 ELSE 0 END), 0) \
+         FROM learning_xp_events",
+    )
+    .fetch_one(&wiring.pool)
+    .await?;
+    println!(
+        "xp events: total {} (node {} / review {}) — expected today_xp 32, got {}",
+        settled.0,
+        settled.1,
+        settled.2,
+        reading.today_xp
+    );
+    Ok(ExitCode::SUCCESS)
 }

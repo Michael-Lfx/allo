@@ -1914,23 +1914,70 @@ pub struct ReviewResult {
     pub advanced: bool,
 }
 
-/// Daily check-in snapshot for the current review day: goal, progress and
-/// due count, with the completion flag derived from a locking snapshot
-/// persisted in `learning_checkins`.
+/// Daily check-in snapshot for the current review day, in the XP reading
+/// (j05 retires the `dailyCheckinGoal` review-count gauge — j05 后端的打卡
+/// 口径即 XP：goal 是日 XP 目标，`reviewed_count` 字段承载今日净入账，字段
+/// 名保留到 j06 换 UI 数据源)。
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckinStatus {
     /// Local review day as YYYYMMDD.
     pub review_day: i64,
-    /// Daily review goal snapshot (0 = clear-the-queue only).
+    /// Daily XP goal (application setting `learning.dailyXpGoal`, default 40).
     pub goal: i64,
-    /// Reviews already submitted this review day.
+    /// Net XP earned so far this review day (was: review-event count).
     pub reviewed_count: i64,
     /// Cards currently due (`due_at <= now`), course + custom.
     pub due_count: i64,
-    /// Whether the day is locked as completed (either condition met).
+    /// Whether the day is locked as completed (today's XP reached the goal).
     pub completed: bool,
     /// Lock moment in UTC milliseconds when completed, else null.
     pub locked_at: Option<i64>,
+}
+
+/// XP 读数（j05）：两把尺同源回放、互不换算——今日 XP/日目标（努力尺，
+/// 回放 `learning_xp_events`）与结算进度（进度尺，分子分母按现存且启用同
+/// 筛）。纯投影零新状态：ETA 由近 7 个学习日步伐派生，绝不回写。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpReading {
+    /// Current local review day as YYYYMMDD (02:00 rollover).
+    pub review_day: i64,
+    /// Net XP earned so far this review day (negative settlements included).
+    pub today_xp: i64,
+    /// Daily XP goal (application setting `learning.dailyXpGoal`).
+    pub goal: i64,
+    /// Whether today's XP has reached the goal.
+    pub goal_achieved: bool,
+    /// Progress gauge numerator: settled nodes within existing-and-enabled
+    /// courses (same filter as the denominator).
+    pub settled_nodes: i64,
+    /// Progress gauge denominator: lessons of the user's existing-and-enabled
+    /// courses.
+    pub total_nodes: i64,
+    /// Remaining est minutes of unsettled lessons in the same scope.
+    pub remaining_est: i64,
+    /// Days to finish at the trailing-7-review-day pace; `null` when there is
+    /// no pace signal yet (or nothing remains → 0). Never written back.
+    pub eta_days: Option<i64>,
+}
+
+/// XP 日历的单日桶（学习日 02:00 翻转）：净入账，负账如实，含零桶。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpCalendarDay {
+    /// Local review day as YYYYMMDD.
+    pub review_day: i64,
+    /// Net XP settled that review day (can be negative).
+    pub xp: i64,
+}
+
+/// XP 日历（j05）：恒 `weeks × 7` 桶、末桶 = 今日，不过课程筛。
+#[derive(Debug, Clone, Serialize)]
+pub struct XpCalendar {
+    /// Requested window length in weeks (1..=53).
+    pub weeks: i64,
+    /// tz offset (minutes east of UTC) the buckets were computed with.
+    pub tz_offset: i32,
+    /// Exactly `weeks * 7` day buckets, oldest first, today last.
+    pub days: Vec<XpCalendarDay>,
 }
 
 /// Memory-health dashboard: one snapshot over the active card pool and the
