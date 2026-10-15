@@ -29,6 +29,12 @@
 
 ## Decisions so far
 
+- [概念别名结构化升级（修订二轮 g3）+ new_aliases 通道](tickets/g2-alias-records.md)
+  （**推荐项默认裁决，可复议**）：aliases_json 元素升为轻量四字段记录
+  `{name, definition?, attestation?, status}`（存量字符串迁移回填 active）；**new_aliases
+  通道采纳**（归一化直定宿主 → 近邻裁决必须裁复用否则整批打回指点 → 登记单点四保证：
+  宿主非废弃/活跃占池退役不占/幂等/复活）；层收缩原则入域文档；展示名不改。二轮 g3 的
+  近邻装配 + 评审扩权机制面不变，落池数据形态升级。
 - [结构转活文档：挂载 + 修补 + 维护回合进多少？](tickets/g1-living-structure.md)
   （**推荐项默认裁决，可复议**）：**全量进**，实施两步走（先挂载后修补）；载体 = 挂载
   单行 JSON 表 + 修补审计表；findings 采纳评审 warn 通道（第一轮生长即留痕）；连带定案 =
