@@ -310,13 +310,11 @@ gd.* 全量重过零放宽。三重护栏 = 全量 validator 门 + 观测审计�
 
 ### 10.3 修补回合与级联口径
 
-- 触发门槛 = findings 非空 ∪ 挂载观察非空（观察只在挂载回合已跑过时派生——未挂载
-  课程没有挂载事实，「空块」无从谈起）；**皆空 = skipped（零 LLM 零写）**。
+- 触发门槛 = findings 非空 ∪ 挂载观察非空；**皆空 = skipped（零 LLM 零写）**。
 - 装配（宪章三项 + 结构快照投影 + findings 行 + mount_observations + retry_feedback）
-  → RoundRetry ≤3（同指纹早停）→ ops 空 = noop（LLM 已跑、不写盘，**不留审计行**——
-  「无修补动作不留档案」）→ apply → gd.* 全量重过 → 结构快照原子写 → 修补审计行落
-  `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由与级联注记；**仅 applied
-  落行**）。
+  → RoundRetry ≤3（同指纹早停）→ ops 空 = noop → apply → gd.* 全量重过 → 结构快照
+  原子写 → 修补审计行落 `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由
+  与级联注记）。
 - **级联口径（ADR-0017）**：修补先落 → 挂载本回合不动 → hash 变 = 既有挂载待重评估
   （mounts_stale）→ 下回合全量重挂。**不建逐 op 跟迁**——挂载无判定身份，误编只伤
   导航，失效降级本即既定语义。

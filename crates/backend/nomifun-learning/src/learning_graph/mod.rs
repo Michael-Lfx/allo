@@ -758,6 +758,15 @@ pub(crate) struct ReviewFinding {
     pub advice: String,
 }
 
+/// 一条 findings 观察：留痕是线索不是第二真相。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReviewFinding {
+    pub node: String,
+    pub field: String,
+    pub issue: String,
+    pub advice: String,
+}
+
 /// 一条复用裁决：提名名 → 登记表中的宿主概念（候选集归属只作日志注记）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReuseRuling {
@@ -853,15 +862,19 @@ pub(crate) async fn concept_review(
         problems: Vec<ReviewProblem>,
         #[serde(default)]
         reuse: Vec<ReuseRuling>,
+        #[serde(default)]
+        findings: Vec<ReviewFinding>,
     }
     match serde_json::from_value::<Verdict>(value) {
         Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
             problems: verdict.problems.into_iter().take(8).collect(),
             reuse: Vec::new(),
+            findings: verdict.findings,
         },
         Ok(verdict) => ReviewOutcome {
             problems: Vec::new(),
             reuse: verdict.reuse,
+            findings: verdict.findings,
         },
         _ => ReviewOutcome::default(),
     }

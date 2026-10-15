@@ -138,7 +138,7 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // +learning_xp_events;079 挂载事实层:+learning_structure_mounts/
     // +learning_structure_findings。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 117);
+    assert_eq!(tables.len(), 118);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

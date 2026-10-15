@@ -1434,6 +1434,12 @@ impl LearningService {
                 &candidates_text,
             )
             .await;
+            // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
+            // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
+            // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
+            if !review.findings.is_empty() {
+                self.record_review_findings(course_id, &review.findings).await;
+            }
             if !review.problems.is_empty() {
                 let report = crate::learning_graph::format_review_problems(&review.problems);
                 tracing::warn!(
