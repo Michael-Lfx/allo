@@ -90,6 +90,9 @@ impl LearningService {
             )
             .await?;
             transaction.commit().await.map_err(internal)?;
+            // 教新线 XP 结算（j05，幂等锚 = 节点一次性）：完成即按 est 计价
+            // 入 `learning_xp_events`，重复完成被锚吸收（不重复结算）。
+            self.settle_node_completed(user_id, lesson_id, now).await?;
         }
         // 生长钩子（best-effort，ADR-0009 Amendment 1）：完成与跳过同为
         // satisfied，都会使就绪存量 −1——水位降到触发线以下就在后台补货。
@@ -539,7 +542,9 @@ async fn seed_lesson_review_items(
 /// Creates the initial review item for one objective question, due at the
 /// start of the next review day (02:00 local). Existing items keep their
 /// schedule untouched: in-course attempts never reschedule, only the review
-/// queue does.
+/// queue does. 种卡幂等显式化（三轮 t3）：已存在 = 跳过（幂等）；插入冲突
+/// （并发种卡的 UNIQUE(enrollment_id, activity_id) 违约）= fail loud 而非
+/// 静默吞掉——种卡是一次性事实，静默重置会污染调度。
 pub(super) async fn ensure_review_item(
     transaction: &mut Transaction<'_, Sqlite>,
     enrollment_id: &LearningEnrollmentId,
@@ -560,7 +565,7 @@ pub(super) async fn ensure_review_item(
         return Ok(());
     }
     let review_item_id = LearningReviewItemId::new().into_string();
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO learning_review_items \
          (review_item_id, enrollment_id, activity_id, due_at, stability_days, difficulty, \
           review_count, lapse_count, last_reviewed_at, updated_at) \
@@ -572,8 +577,19 @@ pub(super) async fn ensure_review_item(
     .bind(first_review_due_at(now, tz_offset_minutes))
     .bind(now)
     .execute(&mut **transaction)
-    .await
-    .map_err(internal)?;
+    .await;
+    if let Err(error) = inserted {
+        // 并发种卡撞 UNIQUE：显式冲突错误（fail loud），不伪装成功也不重置。
+        if error
+            .as_database_error()
+            .is_some_and(|db| db.message().contains("UNIQUE"))
+        {
+            return Err(AppError::Conflict(format!(
+                "review item for activity {activity_id} already exists (concurrent seeding)"
+            )));
+        }
+        return Err(internal(error));
+    }
     // Synthetic marker row: the card exists from this moment, but seeding
     // is not an answer — it never counts as a push, and memory statistics
     // and optimizer training exclude it (review log rating_source rules).

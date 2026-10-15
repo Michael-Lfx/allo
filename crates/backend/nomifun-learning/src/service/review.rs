@@ -1107,16 +1107,20 @@ impl LearningService {
         };
         // Answered reviews (including auto-rated lapses) count toward the
         // daily check-in regardless of the outcome — gate-blocked repeats
-        // do not.
+        // do not. j05 作答流水：同课程路径的完整作答锚（elapsed 缺席 = NULL）。
         if allowed {
             sqlx::query(
-                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-                 VALUES (?, ?, 'custom', ?, ?)",
+                "INSERT INTO learning_review_events \
+                 (event_id, user_id, source, item_id, created_at, elapsed_ms, response, \
+                  session_id, forgot, predicted) \
+                 VALUES (?, ?, 'custom', ?, ?, NULL, ?, NULL, ?, NULL)",
             )
             .bind(generate_id())
             .bind(user_id.as_str())
             .bind(question_id)
             .bind(now_ms())
+            .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
+            .bind(i64::from(forgot))
             .execute(&self.pool)
             .await
             .map_err(internal)?;
@@ -1156,7 +1160,7 @@ impl LearningService {
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
             "SELECT due_at, stability_days, difficulty, review_count, lapse_count, \
-                    last_reviewed_at \
+                    last_reviewed_at, kind \
              FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
@@ -1168,6 +1172,9 @@ impl LearningService {
         .ok_or_else(|| AppError::NotFound(format!("custom question {question_id}")))?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let kind = ActivityKind::try_from(kind_text.as_str())
+            .map_err(|message| AppError::BadRequest(message))?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
             stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -1237,6 +1244,19 @@ impl LearningService {
         )
         .await?;
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算（自建题无课程归属，锚 custom 段）：真实推进即一笔。
+        self.settle_review_push(
+            user_id,
+            ReviewSource::Custom,
+            question_id,
+            kind,
+            None,
+            None,
+            rating != ReviewRating::Again,
+            now,
+            settings.tz_offset_minutes,
+        )
+        .await?;
         Ok(ReviewResult {
             id: question_id.to_string(),
             due_at: next.due_at,
@@ -1297,9 +1317,12 @@ impl LearningService {
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
             "SELECT r.due_at, r.stability_days, r.difficulty, \
-                    r.review_count, r.lapse_count, r.last_reviewed_at \
+                    r.review_count, r.lapse_count, r.last_reviewed_at, \
+                    a.kind, e.course_id, l.lesson_id \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              WHERE r.review_item_id = ? AND e.user_id = ?",
         )
         .bind(review_id.as_str())
@@ -1310,6 +1333,10 @@ impl LearningService {
         .ok_or_else(|| AppError::NotFound(format!("review item {review_id}")))?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let lesson_id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
             stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -1379,6 +1406,20 @@ impl LearningService {
         )
         .await?;
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算：真实推进即一笔（自评 again = 承认遗忘 0 分，
+        // hard/good/easy = 全对）。
+        self.settle_review_push(
+            user_id,
+            ReviewSource::Course,
+            review_id.as_str(),
+            kind,
+            Some(&course_id),
+            Some(&lesson_id),
+            rating != ReviewRating::Again,
+            now,
+            settings.tz_offset_minutes,
+        )
+        .await?;
         Ok(ReviewResult {
             id: review_id.to_string(),
             due_at: next.due_at,
@@ -1448,10 +1489,11 @@ impl LearningService {
         let row = sqlx::query(
             "SELECT r.enrollment_id, r.activity_id, r.due_at, r.stability_days, \
                     r.difficulty, r.review_count, r.lapse_count, r.last_reviewed_at, \
-                    a.kind, a.config_json \
+                    a.kind, a.config_json, e.course_id, l.lesson_id \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              WHERE r.review_item_id = ? AND e.user_id = ?",
         )
         .bind(review_id.as_str())
@@ -1464,6 +1506,8 @@ impl LearningService {
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let activity_id: LearningActivityId =
             parse_id(row.try_get("activity_id").map_err(internal)?)?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let lesson_id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
@@ -1493,6 +1537,21 @@ impl LearningService {
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
         let settings = self.scheduler_settings().await;
+        // 作答时刻的 FSRS 预测（g4 数据面 `predicted` 列）：仅对真有记忆状态
+        // 的卡有意义，与复习日志快照同一铸值口径。
+        let predicted = if snapshot.review_count > 0 {
+            predicted_retrievability(
+                snapshot.stability_days,
+                days_elapsed_between(
+                    snapshot.last_reviewed_at.unwrap_or(now),
+                    now,
+                    settings.tz_offset_minutes,
+                ),
+                &settings,
+            )
+        } else {
+            None
+        };
         let allowed = self
             .push_allowed(
                 ReviewSource::Course,
@@ -1524,15 +1583,23 @@ impl LearningService {
         // Every answered review counts toward the daily check-in, so the
         // event lands in the same transaction as the attempt — but a stale
         // repeat blocked by the gate is not review work, so it does not.
+        // j05 作答流水：行内带完整作答锚（elapsed/response/forgot/predicted；
+        // session 锚待 g4 会话实体，暂 NULL）。
         if allowed {
             sqlx::query(
-                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-                 VALUES (?, ?, 'course', ?, ?)",
+                "INSERT INTO learning_review_events \
+                 (event_id, user_id, source, item_id, created_at, elapsed_ms, response, \
+                  session_id, forgot, predicted) \
+                 VALUES (?, ?, 'course', ?, ?, ?, ?, NULL, ?, ?)",
             )
             .bind(generate_id())
             .bind(user_id.as_str())
             .bind(review_id.as_str())
             .bind(now)
+            .bind(elapsed_ms)
+            .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
+            .bind(i64::from(forgot))
+            .bind(predicted)
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
@@ -1581,6 +1648,22 @@ impl LearningService {
             None
         };
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算：真实推进（auto-lapse 分支）在账本侧记一笔 0 分
+        // partial（锚 = 课程×卡×学习日）；0 值不过 companion 桥。
+        if rated.as_ref().is_some_and(|result| result.advanced) {
+            self.settle_review_push(
+                user_id,
+                ReviewSource::Course,
+                review_id.as_str(),
+                kind,
+                Some(&course_id),
+                Some(&lesson_id),
+                correct,
+                now,
+                settings.tz_offset_minutes,
+            )
+            .await?;
+        }
         Ok(ReviewAnswerResult {
             correct,
             feedback,

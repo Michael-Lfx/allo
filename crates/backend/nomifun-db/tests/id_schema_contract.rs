@@ -134,9 +134,10 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // 学习侧:050 课时分节:+learning_lesson_sections;052 复习日志:
     // +learning_review_log;066 退役 DAG 图与 per-course 概念体系:-5;067
     // 概念网生长:+learning_concept_registry/+learning_growth_batches;
-    // 071 终点锚退役:-learning_course_endpoints。
+    // 071 终点锚退役:-learning_course_endpoints;078 XP 结算账本:
+    // +learning_xp_events。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 114);
+    assert_eq!(tables.len(), 115);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)

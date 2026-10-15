@@ -83,6 +83,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_review_items",
     "learning_review_log",
     "learning_tags",
+    "learning_xp_events",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -177,6 +178,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
+    ("learning_xp_events", "event_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_sessions", "session_id"),
@@ -289,10 +291,17 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     // must not wipe the check-in accounting that aggregates these rows.
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
+    // 学习行为组锚（g4 数据面前置列，migration 078）：会话实体缺位时恒
+    // NULL，将来升会话即 session ULID——不是对现存表的引用。
+    ("learning_review_events", "session_id"),
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
     ("learning_review_log", "item_id"),
     ("learning_tags", "tag_id"),
+    // The ledger's own row id and its idempotency anchor are accounting
+    // identifiers: the XP ledger is append-only truth and never chases the
+    // lifetime of the node it settled.
+    ("learning_xp_events", "event_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_segments", "speaker_id"),
@@ -898,6 +907,12 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_course_jobs", "course_id" => "learning_courses", "course_id", true, "idx_learning_course_jobs_course_id", KeepHistory),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),
+    // XP 结算账本（migration 078）：追加只增的回放真相——课程/课时被删
+    // （墓碑式）后历史事件必须原样保留，两链接都是历史面（KeepHistory +
+    // 容忍缺失父行）；自建题复习事件两列同空。
+    text_ref!("learning_xp_events", "user_id" => "users", "user_id", false, "idx_learning_xp_events_user_anchor", Cascade),
+    historical_text_ref!("learning_xp_events", "course_id" => "learning_courses", "course_id", true, "idx_learning_xp_events_course", KeepHistory),
+    historical_text_ref!("learning_xp_events", "node_id" => "learning_lessons", "lesson_id", true, "idx_learning_xp_events_node", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
         .with_child_predicate("child.source = 'course'"),
     text_ref!("learning_question_tags", "question_id" => "learning_custom_questions", "custom_question_id", false, "idx_learning_question_tags_custom_question_id", Cascade)
