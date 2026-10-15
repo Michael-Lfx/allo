@@ -3,6 +3,7 @@ import { STORYBOARD_COMPOSER_MIN_HEIGHT, STORYBOARD_HEADER_HEIGHT, STORYBOARD_RO
 import type { CanvasImageAngleParams } from "@oc/components/canvas/canvas-node-angle-dialog";
 import type { NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { syncImageDeckAfterRemoval } from "@oc/lib/canvas/canvas-image-stack";
 import { nodeSizeFromRatio } from "@oc/lib/canvas/canvas-node-size";
 import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
 import { scopedLocalStorage } from "@oc/lib/user-scope";
@@ -320,6 +321,7 @@ export function isHiddenBatchChild(node: CanvasNodeData, nodes: CanvasNodeData[]
     const rootId = node.metadata?.batchRootId;
     if (!rootId) return false;
     const root = nodes.find((item) => item.id === rootId);
+    if (root?.metadata?.imageStackLayout === "deck") return false;
     if (root && collapsingBatchIds?.has(rootId)) return false;
     return Boolean(root && !root.metadata?.imageBatchExpanded);
 }
@@ -387,6 +389,7 @@ export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<str
             : detached;
         const childIds = cleaned.metadata?.batchChildIds?.filter((childId) => !removedIds.has(childId));
         if (!cleaned.metadata?.isBatchRoot || childIds?.length === cleaned.metadata.batchChildIds?.length) return cleaned;
+        if (cleaned.metadata?.imageStackLayout === "deck") return syncImageDeckAfterRemoval(cleaned, childIds || []);
         const primaryImageId = childIds?.includes(cleaned.metadata.primaryImageId || "") ? cleaned.metadata.primaryImageId : childIds?.[0];
         const primaryNode = remainingNodes.find((item) => item.id === primaryImageId);
         const batchRoot = { ...cleaned, metadata: { ...cleaned.metadata, batchChildIds: childIds, primaryImageId } };

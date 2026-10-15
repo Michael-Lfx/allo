@@ -228,6 +228,8 @@ export type CanvasNodeMetadata = {
     batchUsesReferenceImages?: boolean;
     primaryImageId?: string;
     imageBatchExpanded?: boolean;
+    /** `"grid"` is generation fan-out; `"deck"` is a stacked upload pile. Missing means grid. */
+    imageStackLayout?: "grid" | "deck";
     storageKey?: string;
     mediaId?: string;
     /** Exclusive Flowy TV cover. Only one image node should have this set. */

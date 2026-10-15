@@ -8,6 +8,7 @@ import { skillFromCanvasNode } from "@oc/lib/canvas/canvas-skill-mentions";
 import { craftStillUrl } from "@oc/lib/canvas/craft/covers";
 import { PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/playbooks";
 import type { Skill } from "@oc/services/api/skills";
+import { expandMentionResourceNodes } from "@oc/lib/canvas/canvas-image-stack";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@oc/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text" | "skill" | "character";
@@ -54,9 +55,22 @@ export function canvasResourceReferencesSignature(references: CanvasResourceRefe
 }
 
 export function getMentionResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {
+    const ownInputs = getContextResourceNodes(nodeId, nodes, connections);
     const configInputs = getConnectedConfigResourceNodes(nodeId, nodes, connections);
-    if (configInputs.length) return configInputs;
-    return getContextResourceNodes(nodeId, nodes, connections);
+    return expandMentionResourceNodes(mergeResourceNodes(ownInputs, configInputs), nodes);
+}
+
+function mergeResourceNodes(...groups: CanvasNodeData[][]) {
+    const seen = new Set<string>();
+    const merged: CanvasNodeData[] = [];
+    for (const group of groups) {
+        for (const node of group) {
+            if (seen.has(node.id)) continue;
+            seen.add(node.id);
+            merged.push(node);
+        }
+    }
+    return merged;
 }
 
 export function getGenerationResourceNodes(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]) {

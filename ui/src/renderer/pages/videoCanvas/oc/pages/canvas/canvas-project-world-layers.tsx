@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import React, { useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { Link2 } from "lucide-react";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 
@@ -7,6 +7,7 @@ import { CanvasFrameNode } from "@oc/components/canvas/canvas-frame-node";
 import { CanvasNode } from "@oc/components/canvas/canvas-node";
 import type { CanvasBatchConnectionPreview } from "@oc/lib/canvas/canvas-batch-connection";
 import { applyDragPreviewToDisplayConnections } from "@oc/lib/canvas/canvas-connection-draw-list";
+import { applyDeckDisplayConnections, deckPrimaryNodeId, getImageDeckRoot, imageDeckCount, imageDeckFanMotion, imageDeckMemberIndex, IMAGE_DECK_FAN_COLLAPSE_MS, resolveFannedDeckRootId } from "@oc/lib/canvas/canvas-image-stack";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { bringCanvasNodeToFront, sortCanvasNodesByStackOrder } from "@oc/lib/canvas/canvas-node-stack-order";
 import { resolveActiveCanvasMediaNodeId } from "@oc/lib/canvas/canvas-performance-mode";
@@ -70,6 +71,24 @@ type CanvasProjectWorldLayersProps = {
 const EMPTY_RESOURCE_REFERENCES: CanvasResourceReference[] = [];
 const EMPTY_CANVAS_NODES: CanvasNodeData[] = [];
 
+function deckPaintProps(node: CanvasNodeData, nodeById: Map<string, CanvasNodeData>, fannedDeckRootId: string | null) {
+    const deckRoot = getImageDeckRoot(node, nodeById);
+    if (!deckRoot) {
+        return { deckFanned: false, deckIndex: 0, deckCount: 0, deckFanMotion: undefined as ReturnType<typeof imageDeckFanMotion> | undefined, hideConnectionRails: false, deckPrimary: false };
+    }
+    const deckCount = imageDeckCount(deckRoot, nodeById);
+    const deckIndex = imageDeckMemberIndex(node, deckRoot);
+    const deckFanned = fannedDeckRootId === deckRoot.id;
+    return {
+        deckFanned,
+        deckIndex,
+        deckCount,
+        deckFanMotion: imageDeckFanMotion(deckIndex, deckCount),
+        hideConnectionRails: !deckFanned && node.id !== deckRoot.id,
+        deckPrimary: deckPrimaryNodeId(deckRoot) === node.id,
+    };
+}
+
 export function HideWhileNodeDragging({ children }: { children: ReactNode }) {
     const isNodeDragging = useCanvasInteractionStore((state) => state.isNodeDragging);
     if (isNodeDragging) return null;
@@ -89,8 +108,32 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
     const isNodeDragging = useCanvasInteractionStore((state) => state.isNodeDragging);
     const connectingParams = useCanvasInteractionStore((state) => state.connectingParams);
     const connectionTargetNodeId = useCanvasInteractionStore((state) => state.connectionTargetNodeId);
+    const setFannedDeckRootId = useCanvasInteractionStore((state) => state.setFannedDeckRootId);
     const selectionBox = useCanvasInteractionStore((state) => state.selectionBox);
     const [nodeStackOrder, setNodeStackOrder] = useState<string[]>([]);
+    const immediateFanRootId = useMemo(
+        () => resolveFannedDeckRootId({
+            hoveredNodeId,
+            selectedNodeIds: props.selectedNodeIds,
+            connectingNodeId: connectingParams?.nodeId,
+            connectionTargetNodeId,
+            nodes: props.nodeById,
+        }),
+        [connectingParams?.nodeId, connectionTargetNodeId, hoveredNodeId, props.nodeById, props.selectedNodeIds],
+    );
+    const [fannedDeckRootId, setLocalFannedDeckRootId] = useState<string | null>(null);
+    useEffect(() => {
+        if (immediateFanRootId) {
+            setLocalFannedDeckRootId(immediateFanRootId);
+            setFannedDeckRootId(immediateFanRootId);
+            return;
+        }
+        const timer = window.setTimeout(() => {
+            setLocalFannedDeckRootId(null);
+            setFannedDeckRootId(null);
+        }, IMAGE_DECK_FAN_COLLAPSE_MS);
+        return () => window.clearTimeout(timer);
+    }, [immediateFanRootId, setFannedDeckRootId]);
     const paintedNodes = useMemo(() => sortCanvasNodesByStackOrder(props.visibleNodes, nodeStackOrder), [nodeStackOrder, props.visibleNodes]);
     const mediaActiveNodeId = resolveActiveCanvasMediaNodeId(props.selectedNodeIds, props.nodeById);
     const bringNodeToFront = useCallback((nodeId: string) => {
@@ -111,8 +154,8 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
     );
     const dragNodeIds = useMemo(() => new Set(dragPreview?.nodeIds ?? []), [dragPreview]);
     const displayConnections = useMemo(
-        () => applyDragPreviewToDisplayConnections(props.displayConnections, dragPreview),
-        [dragPreview, props.displayConnections],
+        () => applyDeckDisplayConnections(applyDragPreviewToDisplayConnections(props.displayConnections, dragPreview), props.nodeById, fannedDeckRootId),
+        [dragPreview, fannedDeckRootId, props.displayConnections, props.nodeById],
     );
 
     return (
@@ -139,22 +182,26 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                 ))}
             </svg>
 
-            {paintedNodes.map((node) =>
-                isFrameNode(node) ? (
-                    <CanvasFrameNode
-                        key={node.id}
-                        data={node}
-                        dragOffset={dragNodeIds.has(node.id) && dragPreview ? dragPreview : undefined}
-                        childNodes={props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES}
-                        isSelected={props.selectedNodeIds.has(node.id)}
-                        isDropTarget={frameDropTargetId === node.id}
-                        onMouseDown={handleNodeMouseDown}
-                        onResize={props.onNodeResize}
-                        onToggleCollapsed={props.onToggleFrame}
-                        onTitleChange={props.onNodeTitleChange}
-                        onContextMenu={props.onNodeContextMenu}
-                    />
-                ) : (
+            {paintedNodes.map((node) => {
+                if (isFrameNode(node)) {
+                    return (
+                        <CanvasFrameNode
+                            key={node.id}
+                            data={node}
+                            dragOffset={dragNodeIds.has(node.id) && dragPreview ? dragPreview : undefined}
+                            childNodes={props.frameChildrenById.get(node.id) || EMPTY_CANVAS_NODES}
+                            isSelected={props.selectedNodeIds.has(node.id)}
+                            isDropTarget={frameDropTargetId === node.id}
+                            onMouseDown={handleNodeMouseDown}
+                            onResize={props.onNodeResize}
+                            onToggleCollapsed={props.onToggleFrame}
+                            onTitleChange={props.onNodeTitleChange}
+                            onContextMenu={props.onNodeContextMenu}
+                        />
+                    );
+                }
+                const deck = deckPaintProps(node, props.nodeById, fannedDeckRootId);
+                return (
                     <CanvasNode
                         key={node.id}
                         data={node}
@@ -167,11 +214,16 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         forceInputVisible={Boolean(props.batchConnectionPreview)}
                         batchCount={props.batchChildCountById.get(node.id) || 0}
                         batchExpanded={Boolean(node.metadata?.imageBatchExpanded)}
-                        batchClosing={Boolean(node.metadata?.batchRootId && props.collapsingBatchIds.has(node.metadata.batchRootId))}
+                        batchClosing={Boolean(node.metadata?.batchRootId && props.collapsingBatchIds.has(node.metadata.batchRootId) && node.metadata?.imageStackLayout !== "deck")}
                         batchOpening={props.openingBatchIds.has(node.id)}
                         batchRecovering={props.collapsingBatchIds.has(node.id)}
-                        batchPrimary={Boolean(node.metadata?.batchRootId && props.nodeById.get(node.metadata.batchRootId)?.metadata?.primaryImageId === node.id)}
-                        batchMotion={props.batchMotionById.get(node.id)}
+                        batchPrimary={deck.deckCount > 0 ? deck.deckPrimary : Boolean(node.metadata?.batchRootId && props.nodeById.get(node.metadata.batchRootId)?.metadata?.primaryImageId === node.id)}
+                        batchMotion={node.metadata?.imageStackLayout === "deck" ? undefined : props.batchMotionById.get(node.id)}
+                        deckFanned={deck.deckFanned}
+                        deckIndex={deck.deckIndex}
+                        deckCount={deck.deckCount}
+                        deckFanMotion={deck.deckFanMotion}
+                        hideConnectionRails={deck.hideConnectionRails}
                         mediaActive={mediaActiveNodeId === node.id}
                         hydrateMediaPreview={!props.reduceMediaEffects}
                         showImageInfo={props.showImageInfo}
@@ -200,8 +252,8 @@ export const CanvasProjectWorldLayers = React.memo(function CanvasProjectWorldLa
                         onOpenDrawing={props.onOpenDrawing}
                         onContextMenu={props.onNodeContextMenu}
                     />
-                ),
-            )}
+                );
+            })}
 
             {props.selectedNodeBounds && !selectionBox && !isNodeDragging ? (
                 <div

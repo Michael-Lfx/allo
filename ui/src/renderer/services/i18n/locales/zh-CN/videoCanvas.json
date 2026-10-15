@@ -75,7 +75,18 @@
   "upload": {
     "button": "上传素材",
     "ok": "素材已添加",
-    "failed": "上传失败"
+    "failed": "上传失败",
+    "imagesTitle": "上传图片",
+    "imagesReading": "读取图片文件",
+    "imagesProgress": "正在上传 {{current}}/{{total}} 张图片",
+    "imagesUpdating": "更新画布节点",
+    "imagesSyncing": "写入项目资产",
+    "imagesAdded": "已添加 {{count}} 张图片",
+    "imagesAddedRetry": "图片已添加，项目资产待重试",
+    "imagesTruncated": "一次最多添加 {{max}} 张图片，已忽略多余文件",
+    "imagesPartialFail": "已添加 {{ok}} 张图片，{{fail}} 张上传失败",
+    "imagesAllFailed": "图片上传失败",
+    "ignoredNonImage": "已忽略非图片文件"
   },
   "generation": {
     "duplicateTitle": "再次生成相同内容？",
@@ -527,6 +538,10 @@
     "placeholderImage": "描述画面，或选一个模板",
     "placeholderImageRegen": "输入新提示词，重新生成当前图片",
     "placeholderVideo": "描述画面，或选一个模板",
+    "placeholderVideoMention": "描述画面，输入 @ 引用已连接图片",
+    "mentionInsert": "引用 {{label}}",
+    "mentionInserted": "已引用 {{label}}",
+    "mentionPreview": "{{label}} 预览",
     "placeholderAudio": "描述要生成的音频内容",
     "placeholderText": "请输入你想要生成的文本内容",
     "placeholderTextEdit": "请输入你想要将本段文本修改成什么",
@@ -792,6 +807,7 @@
     "locked": "节点已锁定",
     "imageGroupExpanded": "图片组已展开",
     "imageGroupCollapsed": "图片组已收起",
+    "imageDeckCount": "{{count}} 张叠放图片",
     "currentPrimary": "当前主图",
     "tvCover": "封面",
     "tvCoverAria": "Flowy TV 封面",

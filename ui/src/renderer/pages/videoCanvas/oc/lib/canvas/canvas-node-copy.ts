@@ -1,3 +1,4 @@
+import { preserveCopiedImageDeck } from "@oc/lib/canvas/canvas-image-stack";
 import { resetGenerationTaskMetadata } from "@oc/lib/canvas/canvas-project-generation";
 import { CanvasNodeType, type CanvasNodeData, type CanvasNodeMetadata, type StoryboardRow } from "@oc/types/canvas";
 
@@ -47,7 +48,7 @@ function copyStoryboardRow(row: StoryboardRow, idMap: ReadonlyMap<string, string
 }
 
 // 副本只能继承内容和用户引用，运行中任务、批次及指向源生成结果的关系必须隔离。
-export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyMap<string, string>): CanvasNodeMetadata {
+export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyMap<string, string>, copiedSourceIds?: ReadonlySet<string>): CanvasNodeMetadata {
     const metadata = resetGenerationTaskMetadata(node.metadata, node.metadata?.content ? "success" : "idle");
     delete metadata.generationBatches;
     delete metadata.batchRootId;
@@ -56,6 +57,7 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
     delete metadata.isBatchRoot;
     delete metadata.primaryImageId;
     delete metadata.imageBatchExpanded;
+    delete metadata.imageStackLayout;
     delete metadata.batchUsesReferenceImages;
     delete metadata.versionOfNodeId;
     delete metadata.versionLabel;
@@ -98,5 +100,7 @@ export function isolateCopiedNodeMetadata(node: CanvasNodeData, idMap: ReadonlyM
         visibleColumns: [...node.metadata.storyboard.visibleColumns],
         referenceNodeIds: remapReferenceIds(node.metadata.storyboard.referenceNodeIds, idMap) || [],
     } : undefined;
+    const preservedDeck = preserveCopiedImageDeck(node, idMap, copiedSourceIds);
+    if (preservedDeck) Object.assign(metadata, preservedDeck);
     return metadata;
 }
