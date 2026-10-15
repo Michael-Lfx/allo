@@ -383,6 +383,7 @@
   "learningGraphConceptOtherCourses": "其他课程也在教",
   "learningGraphRoleTeaches": "教·{{tier}}",
   "learningGraphRoleAssumes": "假定·{{tier}}",
+  "learningGraphRefAs": "以「{{name}}」引用",
   "learningGraphTier_know": "知道",
   "learningGraphTier_apply": "会用",
   "learningGraphTier_teach": "能教",

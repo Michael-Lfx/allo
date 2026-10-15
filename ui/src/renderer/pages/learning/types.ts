@@ -584,12 +584,20 @@ export interface GraphNodeHistoryView {
 export interface GraphConceptRowView {
   concept_id: string;
   canonical: string;
-  aliases: string[];
+  /** 活跃别名（j04 结构化记录：名字 + 投影定义 + 出处；退役名不列） */
+  aliases: GraphConceptAliasView[];
   definition: string;
   /** 本课程内教/假定该概念的节点（带学习者进度状态） */
   refs: GraphConceptRefView[];
   /** 其他还在教该概念的课程标题（跨课程就绪的来源可见性） */
   other_courses: string[];
+}
+
+/** 一条活跃别名（j04）：该名字的意义（缺席 = 与概念定义同义）与出处 */
+export interface GraphConceptAliasView {
+  name: string;
+  definition: string | null;
+  attestation: string | null;
 }
 
 export interface GraphConceptRefView {
@@ -599,6 +607,8 @@ export interface GraphConceptRefView {
   role: 'teaches' | 'assumes';
   /** know | apply | teach */
   tier: ConceptTier;
+  /** 投影名（j04）：节点引用该概念时使用的名字；老行为 null（回退正名） */
+  ref_name: string | null;
   status: LessonStatus;
 }
 
