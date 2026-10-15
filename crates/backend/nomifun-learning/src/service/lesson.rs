@@ -758,9 +758,9 @@ impl LearningService {
         );
 
         // 一次载入概念网口径的拓扑上下文（前置 = assumes 的概念与跨课程
-        // 教它的节点；禁止清单 = 下游节点标题）。
-        let (prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes) =
-            self.graph_node_topology(course_id, lesson_id).await?;
+        // 教它的节点；禁止清单 = 下游节点标题；概念面 = 首现/引用名/别名池
+        // 投影，j07）。
+        let topology = self.graph_node_topology(course_id, lesson_id).await?;
 
         let context = LessonGenerationContext {
             lesson_id: lesson_id.as_str().to_owned(),
@@ -771,7 +771,7 @@ impl LearningService {
             module_index: 0,
             lesson_title,
             lesson_index: lesson_position.max(0) as usize,
-            total_lessons: total_nodes,
+            total_lessons: topology.total_nodes,
             // 衔接语义由 graph.upcoming_nodes 承担。
             next_lesson_title: None,
             purpose,
@@ -783,13 +783,14 @@ impl LearningService {
             graph: Some(GraphLessonContext {
                 goal,
                 degree_statement,
-                prerequisite_path,
-                upcoming_nodes,
+                prerequisite_path: topology.prerequisite_path,
+                upcoming_nodes: topology.upcoming_nodes,
+                concept_faces: topology.concept_faces,
             }),
             // 学习图节点的目标在 graph.goal；本字段只承载传统课程目标。
             goal: None,
             // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
-            forbidden_concepts,
+            forbidden_concepts: topology.forbidden_concepts,
         };
 
         self.emit_lesson_event(serde_json::json!({
@@ -846,16 +847,19 @@ impl LearningService {
     /// - 后续段 = 同课程位于本课之后的节点（按 position，衔接用）；
     /// - 禁止清单 = assumes 本课 teaches 概念的下游课程节点（标题+purpose，
     ///   防超纲）；
-    /// - 末位 = 本课程学习节点总数（终点标记课时除外）。
+    /// - 末位 = 本课程学习节点总数（终点标记课时除外）；
+    /// - 概念面 = 首现/非首现（祖先闭包不动点）+ 引用名 + 活跃别名池
+    ///   （j07 读侧投影，结构化进上下文、渲染进提示词、审计观察条共用）。
     async fn graph_node_topology(
         &self,
         course_id: &LearningCourseId,
         lesson_id: &LearningLessonId,
-    ) -> Result<(String, String, String, usize), AppError> {
+    ) -> Result<GraphNodeTopology, AppError> {
         // 1) 本课声明的概念（teaches/assumes，登记表 canonical + 档位 +
-        //    definition——definition 随铸名落库，是零正文场景下的概念摘要）。
-        let declares: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT lc.role, reg.canonical, lc.tier, reg.definition \
+        //    definition——definition 随铸名落库，是零正文场景下的概念摘要；
+        //    ref_name = 挂接时模型实际用名，j07 引用名开讲的数据源）。
+        let declares: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT lc.role, reg.canonical, lc.tier, reg.definition, lc.ref_name \
              FROM learning_lesson_concepts lc \
              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
              WHERE lc.lesson_id = ? ORDER BY reg.canonical",
@@ -865,11 +869,11 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let mut teaches: Vec<String> = Vec::new();
-        let mut assumes: Vec<(String, String, String)> = Vec::new();
-        for (role, canonical, tier, definition) in declares {
+        let mut assumes: Vec<(String, String, String, Option<String>)> = Vec::new();
+        for (role, canonical, tier, definition, ref_name) in declares {
             match role.as_str() {
                 "teaches" => teaches.push(canonical),
-                _ => assumes.push((canonical, tier, definition)),
+                _ => assumes.push((canonical, tier, definition, ref_name)),
             }
         }
 
@@ -888,7 +892,7 @@ impl LearningService {
             );
             let mut separated = query.separated(", ");
             separated.push_bind(lesson_id.as_str());
-            for (concept, _, _) in &assumes {
+            for (concept, _, _, _) in &assumes {
                 separated.push_bind(concept);
             }
             query.push(") ORDER BY reg.canonical, c.title, l.title");
@@ -974,7 +978,122 @@ impl LearningService {
         .await
         .map_err(internal)?;
 
-        Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes.max(0) as usize))
+        // 6) 概念面（j07）：首现闭包 + 引用名 + 别名池。本节点无概念挂接
+        //    （teaches/assumes 双空）时整体缺席。
+        let concept_faces = if teaches.is_empty() && assumes.is_empty() {
+            None
+        } else {
+            // 祖先闭包候选：全图其余节点的 teaches/assumes（现存且启用课程
+            // ——已删墓碑与归档课不参与闭包，archived 不夺首现；并行分支因
+            // 闭包只沿 assumes 链生长而天然不夺）。
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT lc.lesson_id, lc.role, reg.canonical \
+                 FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                 JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+                 WHERE lc.lesson_id <> ? \
+                   AND c.deleted_at IS NULL AND c.enabled = 1",
+            )
+            .bind(lesson_id.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            let mut candidates: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+            for (node, role, canonical) in rows {
+                let entry = candidates.entry(node).or_default();
+                if role == "teaches" {
+                    entry.0.push(canonical);
+                } else {
+                    entry.1.push(canonical);
+                }
+            }
+            let nodes: Vec<(String, Vec<String>, Vec<String>)> = candidates
+                .into_iter()
+                .map(|(node, (teaches, assumes))| (node, teaches, assumes))
+                .collect();
+            let assume_names: Vec<String> = assumes
+                .iter()
+                .map(|(canonical, _, _, _)| canonical.clone())
+                .collect();
+            let first_seen = first_appearance_set(&teaches, &assume_names, &nodes);
+            let returning: Vec<String> = teaches
+                .iter()
+                .filter(|concept| !first_seen.contains(concept))
+                .cloned()
+                .collect();
+            // 引用名：本节点挂接行里与正名不同的用名（正文以引用名开讲）。
+            let ref_names: Vec<(String, String)> = assumes
+                .iter()
+                .filter_map(|(canonical, _, _, ref_name)| match ref_name {
+                    Some(reference)
+                        if !reference.trim().is_empty() && reference.trim() != canonical =>
+                    {
+                        Some((reference.trim().to_owned(), canonical.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            // 投影词表（R3）：本节点概念（teaches ∪ assumes）的活跃别名。
+            let mut all_concepts: Vec<String> = teaches.clone();
+            all_concepts.extend(assumes.iter().map(|(canonical, _, _, _)| canonical.clone()));
+            let aliases = self.active_aliases_for(&all_concepts).await?;
+            let faces = crate::lesson_draft::GraphConceptFaces {
+                first_seen,
+                returning,
+                ref_names,
+                aliases,
+            };
+            (!faces.is_empty()).then_some(faces)
+        };
+
+        Ok(GraphNodeTopology {
+            prerequisite_path,
+            upcoming_nodes,
+            forbidden_concepts,
+            total_nodes: total_nodes.max(0) as usize,
+            concept_faces,
+        })
+    }
+
+    /// 一组正名概念的活跃别名（R3 投影词表；退役别名不占池）。正名 →
+    /// 别名列表，仅多名概念入表。
+    async fn active_aliases_for(
+        &self,
+        canonicals: &[String],
+    ) -> Result<Vec<(String, Vec<String>)>, AppError> {
+        if canonicals.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT reg.canonical, reg.aliases_json FROM learning_concept_registry reg \
+             WHERE reg.canonical IN (",
+        );
+        let mut separated = query.separated(", ");
+        for canonical in canonicals {
+            separated.push_bind(canonical);
+        }
+        query.push(")");
+        let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+        let mut pool = Vec::new();
+        for row in rows {
+            let canonical: String = row.try_get("canonical").map_err(internal)?;
+            let raw: String = row.try_get("aliases_json").map_err(internal)?;
+            let names: Vec<String> =
+                crate::learning_graph::alias_records::parse_alias_records(&raw)
+                    .iter()
+                    .filter(|record| {
+                        record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                    })
+                    .map(|record| record.name.clone())
+                    .collect();
+            if !names.is_empty() {
+                pool.push((canonical, names));
+            }
+        }
+        pool.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(pool)
     }
 
     /// 单节重写（迁移 051/ADR-0002 的节级操作语义）：只重写一节正文并原
@@ -1047,10 +1166,11 @@ impl LearningService {
         let next_section_title = sections.get(position + 1).map(|s| s.title.as_str());
 
         // 防超纲与 grounded 上下文按课程类型分流（与两条生成路径同口径）。
+        // 图路径带概念面段（首现/引用名/别名池——单节重写与整卡生成同一
+        // 名相口径，j07）。
         let (grounding, forbidden): (Option<(String, String)>, String) =
             if course_kind == CourseKind::LearningGraph.as_str() {
-                let (prerequisite_path, _upcoming, forbidden, _total) =
-                    self.graph_node_topology(&course_id, lesson_id).await?;
+                let topology = self.graph_node_topology(&course_id, lesson_id).await?;
                 let course = sqlx::query(
                     "SELECT learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
                 )
@@ -1067,12 +1187,19 @@ impl LearningService {
                 );
                 let mut context_text =
                     format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
-                if !prerequisite_path.trim().is_empty() {
+                if !topology.prerequisite_path.trim().is_empty() {
                     context_text.push_str(&format!(
-                        "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{prerequisite_path}"
+                        "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{}",
+                        topology.prerequisite_path
                     ));
                 }
-                (Some(("学习图节点上下文".into(), context_text)), forbidden)
+                if let Some(faces) = &topology.concept_faces {
+                    context_text.push_str(&format!("\n\n{}", faces.render_text()));
+                }
+                (
+                    Some(("学习图节点上下文".into(), context_text)),
+                    topology.forbidden_concepts,
+                )
             } else {
                 let (forbidden, excerpt) = self.traditional_lesson_grounding(&course_id, lesson_id).await?;
                 let grounding = (!excerpt.is_empty())
@@ -1732,6 +1859,55 @@ const GRAPH_SUCCESSOR_RENDER_LIMIT: usize = 10;
 /// 下游节点禁止清单的条目上限（learnhub 黑名单同款截断）。
 const GRAPH_FORBIDDEN_LIMIT: usize = 200;
 
+/// 学习图节点内容生成上下文的拓扑面（`graph_node_topology` 的产物）：
+/// 前置/后续/禁止清单的预渲染文本 + 概念面投影（j07）。
+pub(crate) struct GraphNodeTopology {
+    pub prerequisite_path: String,
+    pub upcoming_nodes: String,
+    pub forbidden_concepts: String,
+    pub total_nodes: usize,
+    pub concept_faces: Option<crate::lesson_draft::GraphConceptFaces>,
+}
+
+/// 首现判定（二轮 g2 / j07，纯函数——SQL 收集在调用方）：祖先闭包不动点。
+/// 起点 = 本节点 assumes；循环扫候选节点，凡 teaches 命中当前扫描集即纳入、
+/// 并入其 assumes、teaches 计入祖先已教集合，直至不动点。本节点 teaches 中
+/// 不在祖先已教集合的 = 首现。并行分支因闭包只沿 assumes 链生长而天然不
+/// 夺首现；archived 节点（归档/已删课程）由调用方过滤后不参与扫描。
+fn first_appearance_set(
+    self_teaches: &[String],
+    self_assumes: &[String],
+    candidates: &[(String, Vec<String>, Vec<String>)],
+) -> Vec<String> {
+    let mut scan_set: std::collections::HashSet<&str> =
+        self_assumes.iter().map(String::as_str).collect();
+    let mut ancestor_taught: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut included: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    loop {
+        let mut changed = false;
+        for (node, teaches, assumes) in candidates {
+            let hits = teaches.iter().any(|concept| scan_set.contains(concept.as_str()));
+            if hits && included.insert(node.as_str()) {
+                for concept in teaches {
+                    ancestor_taught.insert(concept.as_str());
+                }
+                for concept in assumes {
+                    scan_set.insert(concept.as_str());
+                }
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    self_teaches
+        .iter()
+        .filter(|concept| !ancestor_taught.contains(concept.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// 前置段渲染（概念网口径，ADR-0009）：开头一条档位契约（概念已教到标注
 /// 档位——不要重新讲授，只在需要时按该档位复述或引用；档位即停讲深度的
 /// 标尺），逐条 assumes 概念列出「概念 @档位」+ 登记表 definition + 跨课程
@@ -1739,8 +1915,10 @@ const GRAPH_FORBIDDEN_LIMIT: usize = 200;
 /// 零正文场景（教师节点尚未生成内容）不削弱前置段：purpose 与 definition
 /// 都是出生即有的字段。没有任何节点教的概念按未覆盖兜底提示（正常情况下
 /// 结构门已挡掉这种批次）。空串 = 本课零 assumes（第一批基节点）。
+/// j07 引用名开讲：挂接行带 ref_name（与正名不同）时行名用引用名、正名
+/// 括注——正文以引用名开讲，前置面与概念面同一名相。
 fn render_prerequisite_path(
-    assumes: &[(String, String, String)],
+    assumes: &[(String, String, String, Option<String>)],
     teachers: &HashMap<String, Vec<(String, String, String, String)>>,
     taught: &HashMap<String, Vec<(String, String)>>,
 ) -> String {
@@ -1751,16 +1929,23 @@ fn render_prerequisite_path(
         "前置契约：以下概念已由其他节点教到标注档位，不要重新讲授，只在必要时按该档位复述或引用。".to_owned(),
         "（档位标尺：知道=能辨认复述，会用=能解题应用，能教=能讲解纠错——正文深度不得超过标注档位。）".to_owned(),
     ];
-    for (concept, tier, definition) in assumes {
+    for (concept, tier, definition, ref_name) in assumes {
         let tier = crate::learning_graph::ConceptTier::try_from_str(tier)
             .map(crate::learning_graph::tier_zh)
             .unwrap_or("?");
+        // 引用名开讲（j07）：挂接用名与正名不同 = 行名引用名 + 正名括注。
+        let display = match ref_name.as_deref().map(str::trim).filter(|name| {
+            !name.is_empty() && *name != concept.as_str()
+        }) {
+            Some(reference) => format!("{reference}（正名：{concept}）"),
+            None => concept.clone(),
+        };
         match teachers.get(concept) {
             None => lines.push(format!(
-                "- {concept}（应已掌握到「{tier}」，但暂无节点教它——不要展开讲授）"
+                "- {display}（应已掌握到「{tier}」，但暂无节点教它——不要展开讲授）"
             )),
             Some(nodes) => {
-                lines.push(format!("- {concept}（学习者应已掌握到「{tier}」）："));
+                lines.push(format!("- {display}（学习者应已掌握到「{tier}」）："));
                 let definition = definition.trim();
                 if !definition.is_empty() {
                     lines.push(format!("   定义：{definition}"));
@@ -1935,8 +2120,9 @@ mod tests {
                 "勾股定理".to_owned(),
                 "apply".to_owned(),
                 "直角三角形三边间的平方关系".to_owned(),
+                None,
             ),
-            ("相似三角形".to_owned(), "know".to_owned(), String::new()),
+            ("相似三角形".to_owned(), "know".to_owned(), String::new(), None),
         ];
         let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
         teachers.insert(
@@ -1991,6 +2177,7 @@ mod tests {
             "因式分解".to_owned(),
             "apply".to_owned(),
             "把多项式化成几个整式乘积".to_owned(),
+            None,
         )];
         let mut teachers: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
         teachers.insert(
@@ -2027,6 +2214,109 @@ mod tests {
     fn prerequisite_path_empty_without_assumes() {
         let text = render_prerequisite_path(&[], &HashMap::new(), &HashMap::new());
         assert!(text.is_empty());
+    }
+
+    /// 引用名开讲（j07）：挂接行 ref_name 与正名不同 = 行名引用名 + 正名
+    /// 括注；ref_name 与正名相同（模型直接用了正名）不产生括注。
+    #[test]
+    fn prerequisite_path_renders_reference_names() {
+        let assumes = vec![
+            (
+                "德尔塔".to_owned(),
+                "apply".to_owned(),
+                String::new(),
+                Some("Delta".to_owned()),
+            ),
+            (
+                "伽马".to_owned(),
+                "know".to_owned(),
+                String::new(),
+                Some("伽马".to_owned()),
+            ),
+        ];
+        let text = render_prerequisite_path(&assumes, &HashMap::new(), &HashMap::new());
+        assert!(
+            text.contains("- Delta（正名：德尔塔）（应已掌握到「会用」"),
+            "{text}"
+        );
+        // 用名与正名相同：不重复括注。
+        assert!(text.contains("- 伽马（"), "{text}");
+        assert!(!text.contains("正名：伽马"), "{text}");
+    }
+
+    /// 首现判定（祖先闭包不动点）三形态：直系前置已教 = 非首现；间接
+    /// （assumes 的 assumes）已教 = 非首现；闭包不可达 = 首现。
+    #[test]
+    fn first_appearance_walks_the_assumes_closure() {
+        // 本节点 teaches [C, D]，assumes [A]；N1 教 A（直系教师）、
+        // assumes [B]；N2 教 B、assumes []；N3 教 D 但只被 N1 assume？
+        // N3 教 D 且 assumes [X]——D 是否进入闭包取决于链：A →(N1)→ B
+        // →(N2)；D 的教师 N3 teaches 不含扫描集成员 → 不纳入 → D 首现。
+        let candidates = vec![
+            ("n1".to_owned(), vec!["A".to_owned()], vec!["B".to_owned()]),
+            ("n2".to_owned(), vec!["B".to_owned()], vec![]),
+            ("n3".to_owned(), vec!["D".to_owned()], vec!["X".to_owned()]),
+        ];
+        let first = first_appearance_set(
+            &["C".to_owned(), "D".to_owned()],
+            &["A".to_owned()],
+            &candidates,
+        );
+        // C 无任何闭包节点教过 → 首现；D 的教师 N3 不在闭包上（它教的 D
+        // 不在扫描集）→ D 也首现——闭包只沿 assumes 链生长。
+        assert_eq!(first.len(), 2);
+
+        // 改：N1 也教 D（顺带覆盖）→ D 成为非首现（直系前置顺带已教）。
+        let candidates = vec![(
+            "n1".to_owned(),
+            vec!["A".to_owned(), "D".to_owned()],
+            vec!["B".to_owned()],
+        )];
+        let first = first_appearance_set(
+            &["C".to_owned(), "D".to_owned()],
+            &["A".to_owned()],
+            &candidates,
+        );
+        assert_eq!(first, vec!["C".to_owned()]);
+    }
+
+    /// 并行分支不夺首现：兄弟节点的 teaches 永不进入闭包（闭包只沿
+    /// assumes 链生长，兄弟节点不在本节点的祖先链上）。
+    #[test]
+    fn first_appearance_ignores_parallel_branches() {
+        // 本节点 teaches [C] assumes []；并行节点 N1 teaches [C]（兄弟，
+        // 无 assumes 链相连）→ 不纳入 → C 首现。
+        let candidates = vec![(
+            "sibling".to_owned(),
+            vec!["C".to_owned()],
+            vec![],
+        )];
+        let first = first_appearance_set(&["C".to_owned()], &[], &candidates);
+        assert_eq!(first, vec!["C".to_owned()]);
+    }
+
+    /// archived 节点不夺首现：调用方过滤（graph_node_topology 的 SQL 带
+    /// deleted_at IS NULL AND enabled = 1），纯函数面验证过滤后的输入 =
+    /// 该节点不在候选集即不进闭包。
+    #[test]
+    fn first_appearance_excludes_filtered_candidates() {
+        // archived 教师被调用方剔除后，C 无闭包覆盖 → 首现（archived 不
+        // 夺首现）。
+        let candidates: Vec<(String, Vec<String>, Vec<String>)> = vec![];
+        let first = first_appearance_set(&["C".to_owned()], &["A".to_owned()], &candidates);
+        assert_eq!(first, vec!["C".to_owned()]);
+    }
+
+    /// 空 assumes：扫描集为空，无节点可纳入 → 全部 teaches 首现。
+    #[test]
+    fn first_appearance_all_first_with_empty_assumes() {
+        let candidates = vec![(
+            "n1".to_owned(),
+            vec!["C".to_owned()],
+            vec![],
+        )];
+        let first = first_appearance_set(&["C".to_owned()], &[], &candidates);
+        assert_eq!(first, vec!["C".to_owned()]);
     }
 
     /// 下游禁止清单：非空时附「不得出现/不得引用」约束与总数，purpose 让

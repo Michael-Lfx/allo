@@ -32,6 +32,11 @@ use crate::cli::{Cli, LearningSmokeCommand};
 pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Result<ExitCode> {
     match command {
         LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
+        LearningSmokeCommand::Content {
+            db,
+            provider,
+            model,
+        } => run_content(cli, db, provider, model).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -122,8 +127,8 @@ async fn wire(
     let provider_repo = Arc::new(SqliteProviderRepository::new(pool.clone()));
     let provider_model_repo = Arc::new(SqliteProviderModelRepository::new(pool.clone()));
     let live: Arc<dyn LearningCompleter> = Arc::new(LiveLearningCompleter {
-        provider_repo: provider_repo as Arc<dyn nomifun_db::IProviderRepository>,
-        provider_model_repo,
+        provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+        provider_model_repo: provider_model_repo.clone(),
         encryption_key,
         workspace: cli.data_dir.clone(),
     });
@@ -150,6 +155,36 @@ async fn wire(
     ));
     let service = Arc::new(LearningService::new(pool.clone()));
     service.set_generation_dependencies(knowledge_service, pipeline);
+    // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
+    // 自行解析 provider（OneShotDeps），不经管线 completer。
+    service.set_lesson_engine(Arc::new(
+        nomifun_ai_agent::LiveLessonContentAgentEngine {
+            service: service.clone(),
+            deps: nomifun_ai_agent::OneShotDeps {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo,
+                encryption_key,
+                workspace: cli.data_dir.clone(),
+            },
+            round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        },
+    ));
+    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录。
+    {
+        let observation_dir = cli.data_dir.join("observation").join("learning-smoke");
+        service.set_generation_task_observer(Arc::new(move |line: &str| {
+            use std::io::Write;
+            let _ = std::fs::create_dir_all(&observation_dir);
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(observation_dir.join("learning-tasks.jsonl"))
+            else {
+                return;
+            };
+            let _ = writeln!(file, "{line}");
+        }));
+    }
 
     Ok((
         SmokeWiring {
@@ -848,6 +883,172 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         settled.1,
         settled.2,
         reading.today_xp
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke content`（j07）：内容成色冒烟。立一门两节点学习图课程
+/// （概念挂接 + 别名池 + 引用名），为汇合节点（assumes 前置 + teaches 两
+/// 概念）生成正文——概念面投影（首现/引用名/别名池）随真实管线注入——
+/// 然后打印读数：字数/小节数/题目数/首现与用名标注。读数面非门禁：唯一
+/// 硬判据是管线真实走通并发布。
+#[allow(clippy::too_many_arguments)]
+async fn run_content(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+
+    // 最小两节点课程：L1 教 α；L2 assumes α（引用名 Alpha）teaches β；
+    // β 带活跃别名「贝塔系数」。概念面投影的数据源全部真实落库。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, '内容成色冒烟', '', 'general', 1, 'learning_graph', \
+                 '理解衍生品的基础计量工具', '', ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    let lesson_a = nomifun_common::LearningLessonId::new().into_string();
+    let lesson_b = nomifun_common::LearningLessonId::new().into_string();
+    for (lesson_id, title, purpose, position) in [
+        (&lesson_a, "收益率与对数收益率", "建立收益率概念并能相互换算", 0),
+        (&lesson_b, "波动率的直观刻画", "用收益分布理解波动率的度量动机", 1),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, ?, '', ?, ?, 20, 0)",
+        )
+        .bind(lesson_id)
+        .bind(&module_id)
+        .bind(title)
+        .bind(purpose)
+        .bind(position)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    let concept_alpha = nomifun_common::LearningConceptId::new().into_string();
+    let concept_beta = nomifun_common::LearningConceptId::new().into_string();
+    for (concept_id, canonical, aliases, definition) in [
+        (
+            &concept_alpha,
+            "对数收益率",
+            serde_json::json!([]),
+            "价格比取对数的一阶近似收益度量",
+        ),
+        (
+            &concept_beta,
+            "历史波动率",
+            serde_json::json!([{"name": "贝塔系数", "status": "active"}]),
+            "收益序列离散程度的年化度量",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(concept_id)
+        .bind(canonical)
+        .bind(aliases.to_string())
+        .bind(definition)
+        .bind(now)
+        .bind(now)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    // 挂接：L1 teaches α；L2 assumes α（引用名 Alpha）+ teaches β。
+    for (lesson_id, role, concept_id, tier, ref_name) in [
+        (&lesson_a, "teaches", &concept_alpha, "apply", None),
+        (&lesson_b, "assumes", &concept_alpha, "apply", Some("Alpha")),
+        (&lesson_b, "teaches", &concept_beta, "know", None),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts \
+             (lesson_id, concept_id, role, tier, ref_name) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(lesson_id)
+        .bind(concept_id)
+        .bind(role)
+        .bind(tier)
+        .bind(ref_name)
+        .execute(&wiring.pool)
+        .await?;
+    }
+
+    println!("[1/1] generating node B content (concept faces ride the real pipeline)…");
+    let request = nomifun_learning::GenerateLessonRequest {
+        provider_id: provider
+            .as_deref()
+            .map(nomifun_common::ProviderId::parse)
+            .transpose()?,
+        model: model.clone(),
+        feedback: None,
+    };
+    let lesson_b_id = nomifun_common::LearningLessonId::parse(&lesson_b)?;
+    // 硬判据 = 管线真实走通并发布：生成失败如实非零退出（无凭据临时库
+    // 走到这里即报 no enabled provider——structure 冒烟同纪律）。
+    let view = match service
+        .generate_lesson_content(&owner, &lesson_b_id, &request)
+        .await
+    {
+        Ok(view) => view,
+        Err(error) => {
+            eprintln!("content generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+
+    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。
+    let body_chars: usize = view
+        .sections
+        .iter()
+        .map(|section| section.body_md.chars().filter(|c| !c.is_whitespace()).count())
+        .sum();
+    let joined: String = view
+        .sections
+        .iter()
+        .map(|section| section.body_md.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    println!(
+        "content read-out: sections={} activities={} body_chars={body_chars}",
+        view.sections.len(),
+        view.activities.len(),
+    );
+    println!(
+        "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",
+        joined.contains("对数收益率"),
+        joined.contains("历史波动率"),
+        joined.contains("贝塔系数"),
+    );
+    println!(
+        "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
+        cli.data_dir.display()
     );
     Ok(ExitCode::SUCCESS)
 }
