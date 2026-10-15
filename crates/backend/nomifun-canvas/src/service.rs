@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nomifun_common::{AppError, generate_id, now_ms};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -155,6 +155,9 @@ pub struct CanvasService {
     tasks_hydrated: AtomicBool,
     /// Hard-cancel tokens for in-flight Flowy video (and cooperative image) tasks.
     cancels: RwLock<HashMap<String, CancellationToken>>,
+    /// Serializes load-modify-save of `media/index.json` so concurrent uploads
+    /// cannot overwrite each other's entries.
+    media_index_lock: Mutex<()>,
 }
 
 impl CanvasService {
@@ -164,6 +167,7 @@ impl CanvasService {
             tasks: RwLock::new(HashMap::new()),
             tasks_hydrated: AtomicBool::new(false),
             cancels: RwLock::new(HashMap::new()),
+            media_index_lock: Mutex::new(()),
         })
     }
 
@@ -542,7 +546,7 @@ impl CanvasService {
         ext: &str,
         title: String,
     ) -> Result<String, AppError> {
-        self.store_media_bytes(bytes, kind, mime, ext, title).await
+        Ok(self.store_media_bytes(bytes, kind, mime, ext, title).await?.media_id)
     }
 
     /// Copy a local file into the canvas media store (avoids double-buffering large videos).
@@ -586,9 +590,7 @@ impl CanvasService {
             duration_ms: None,
             created_at: now_ms(),
         };
-        let mut idx = self.load_media_index().await?;
-        idx.items.insert(0, entry.clone());
-        self.save_media_index(&idx).await?;
+        self.insert_media_index_entry(entry.clone()).await?;
         Ok(Self::entry_to_meta(&entry))
     }
 
@@ -609,16 +611,17 @@ impl CanvasService {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| file_name.clone());
-        let media_id = self
+        let entry = self
             .store_media_bytes(bytes, kind, &mime, &ext, title)
             .await?;
-        let idx = self.load_media_index().await?;
-        let entry = idx
-            .items
-            .iter()
-            .find(|e| e.media_id == media_id)
-            .ok_or_else(|| AppError::Internal("media index missing after store".into()))?;
-        Ok(Self::entry_to_meta(entry))
+        Ok(Self::entry_to_meta(&entry))
+    }
+
+    async fn insert_media_index_entry(&self, entry: MediaIndexEntry) -> Result<(), AppError> {
+        let _guard = self.media_index_lock.lock().await;
+        let mut idx = self.load_media_index().await?;
+        idx.items.insert(0, entry);
+        self.save_media_index(&idx).await
     }
 
     async fn store_media_bytes(
@@ -628,13 +631,13 @@ impl CanvasService {
         mime: &str,
         ext: &str,
         title: String,
-    ) -> Result<String, AppError> {
+    ) -> Result<MediaIndexEntry, AppError> {
         self.ensure_dirs().await?;
         let media_id = generate_id();
         let path = self.media_dir().join(format!("{media_id}.{ext}"));
         write_atomic(&path, &bytes).await?;
         let entry = MediaIndexEntry {
-            media_id: media_id.clone(),
+            media_id,
             kind: kind.to_string(),
             title,
             mime: mime.to_string(),
@@ -645,10 +648,8 @@ impl CanvasService {
             duration_ms: None,
             created_at: now_ms(),
         };
-        let mut idx = self.load_media_index().await?;
-        idx.items.insert(0, entry);
-        self.save_media_index(&idx).await?;
-        Ok(media_id)
+        self.insert_media_index_entry(entry.clone()).await?;
+        Ok(entry)
     }
 
     pub async fn media_file_path(&self, media_id: &str) -> Result<PathBuf, AppError> {
@@ -732,6 +733,7 @@ impl CanvasService {
 
     pub async fn delete_media(&self, media_id: &str) -> Result<(), AppError> {
         validate_project_id(media_id)?;
+        let _guard = self.media_index_lock.lock().await;
         let mut idx = self.load_media_index().await?;
         let Some(pos) = idx.items.iter().position(|e| e.media_id == media_id) else {
             return Err(AppError::NotFound(format!("media {media_id}")));
@@ -1089,16 +1091,10 @@ impl CanvasService {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "concat".into());
-        let media_id = self
+        let entry = self
             .store_media_bytes(bytes, "video", "video/mp4", "mp4", title)
             .await?;
-        let idx = self.load_media_index().await?;
-        let entry = idx
-            .items
-            .iter()
-            .find(|e| e.media_id == media_id)
-            .ok_or_else(|| AppError::Internal("media index missing after concat".into()))?;
-        Ok(Self::entry_to_meta(entry))
+        Ok(Self::entry_to_meta(&entry))
     }
 
     /// ffmpeg extract + Flowy category-7 ASR. Returns plain text (no word timestamps).
@@ -1287,16 +1283,10 @@ impl CanvasService {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "timeline-export".into());
-        let media_id = self
+        let entry = self
             .store_media_bytes(bytes, "video", "video/mp4", "mp4", title)
             .await?;
-        let idx = self.load_media_index().await?;
-        let entry = idx
-            .items
-            .iter()
-            .find(|e| e.media_id == media_id)
-            .ok_or_else(|| AppError::Internal("media index missing after export".into()))?;
-        Ok(Self::entry_to_meta(entry))
+        Ok(Self::entry_to_meta(&entry))
     }
 }
 
@@ -1563,5 +1553,36 @@ mod tests {
         assert!(standalone[0].project_id.is_none());
         assert_eq!(service.task_count(true).await, 1);
         assert_eq!(service.task_count(false).await, 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_uploads_all_land_in_index() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = CanvasService::new(dir.path().to_path_buf());
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let svc = Arc::clone(&service);
+            handles.push(tokio::spawn(async move {
+                svc.upload_media(
+                    format!("img-{i}.bin"),
+                    Some("image/png".into()),
+                    format!("png-bytes-{i}").into_bytes(),
+                    Some(format!("img-{i}")),
+                )
+                .await
+            }));
+        }
+        let mut ids = Vec::new();
+        for handle in handles {
+            ids.push(handle.await.expect("join").expect("upload").media_id);
+        }
+        let idx = service.load_media_index().await.expect("index");
+        assert_eq!(idx.items.len(), ids.len());
+        for id in &ids {
+            assert!(
+                idx.items.iter().any(|entry| entry.media_id == *id),
+                "missing {id}"
+            );
+        }
     }
 }

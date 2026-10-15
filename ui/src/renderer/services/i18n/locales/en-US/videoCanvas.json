@@ -75,7 +75,18 @@
   "upload": {
     "button": "Upload media",
     "ok": "Media added",
-    "failed": "Upload failed"
+    "failed": "Upload failed",
+    "imagesTitle": "Upload images",
+    "imagesReading": "Reading image files",
+    "imagesProgress": "Uploading {{current}}/{{total}} images",
+    "imagesUpdating": "Updating canvas nodes",
+    "imagesSyncing": "Syncing project assets",
+    "imagesAdded": "Added {{count}} images",
+    "imagesAddedRetry": "Images added; project assets can be retried",
+    "imagesTruncated": "You can add up to {{max}} images at a time. Extra files were skipped.",
+    "imagesPartialFail": "Added {{ok}} images; {{fail}} failed to upload",
+    "imagesAllFailed": "Image upload failed",
+    "ignoredNonImage": "Non-image files were ignored"
   },
   "generation": {
     "duplicateTitle": "Generate the same content again?",
@@ -527,6 +538,10 @@
     "placeholderImage": "Describe the shot, or pick a template",
     "placeholderImageRegen": "Enter a new prompt to regenerate this image",
     "placeholderVideo": "Describe the shot, or pick a template",
+    "placeholderVideoMention": "Describe the shot, or type @ to mention connected images",
+    "mentionInsert": "Mention {{label}}",
+    "mentionInserted": "{{label}} already mentioned",
+    "mentionPreview": "{{label}} preview",
     "placeholderAudio": "Describe the audio to generate",
     "placeholderText": "Enter the text you want to generate",
     "placeholderTextEdit": "Enter how you want to rewrite this text",
@@ -792,6 +807,7 @@
     "locked": "Node locked",
     "imageGroupExpanded": "Image group expanded",
     "imageGroupCollapsed": "Image group collapsed",
+    "imageDeckCount": "{{count}} stacked images",
     "currentPrimary": "Primary image",
     "tvCover": "Cover",
     "tvCoverAria": "Flowy TV cover",

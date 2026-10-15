@@ -129,11 +129,13 @@ export function useCanvasNodeEditor({
         const rootId = child.metadata?.batchRootId;
         if (!rootId || !child.metadata?.content) return;
         setNodes((current) =>
-            current.map((node) =>
-                node.id === rootId
-                    ? applyBatchPrimaryImage(node, child)
-                    : node,
-            ),
+            current.map((node) => {
+                if (node.id !== rootId) return node;
+                if (node.metadata?.imageStackLayout === "deck") {
+                    return { ...node, metadata: { ...node.metadata, primaryImageId: child.id } };
+                }
+                return applyBatchPrimaryImage(node, child);
+            }),
         );
     }, [setNodes]);
 

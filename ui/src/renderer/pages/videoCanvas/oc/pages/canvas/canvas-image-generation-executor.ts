@@ -46,7 +46,7 @@ export async function executeImageGeneration({
     const batchSalt = Math.floor(Math.random() * 0x7fffffff);
     const isConfigNode = sourceNode?.type === CanvasNodeType.Config;
     const isImageNode = sourceNode?.type === CanvasNodeType.Image;
-    const reuseSourceNode = canGenerateImageInPlace(sourceNode);
+    const reuseSourceNode = canGenerateImageInPlace(sourceNode) && sourceNode?.metadata?.imageStackLayout !== "deck" && !sourceNode?.metadata?.batchRootId;
     const directCopiedBatch = count > 1 && isImageNode && Boolean(sourceNode?.metadata?.content) && reuseSourceNode;
     // 已有图片生成新结果并保留旧版本；参考图只来自入边，避免把旧结果误当成自身输入。
     const referenceImages = generationContext.referenceImages;
@@ -89,6 +89,7 @@ export async function executeImageGeneration({
             status: NODE_STATUS_LOADING,
             size: generationConfig.size,
             isBatchRoot: count > 1,
+            imageStackLayout: count > 1 ? "grid" : undefined,
             batchChildIds: count > 1 ? childIds : undefined,
             batchUsesReferenceImages: referenceImages.length > 0,
             primaryImageId: undefined,
@@ -107,7 +108,7 @@ export async function executeImageGeneration({
         position: imageGenerationChildPosition(rootNode.position, rootNode.width, outputNodeSize, index),
         width: outputNodeSize.width,
         height: outputNodeSize.height,
-        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, ...generationMetadata, seed: canvasGenerationSeed(index, batchSalt), generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
+        metadata: { prompt: effectivePrompt, status: NODE_STATUS_LOADING, size: generationConfig.size, batchRootId: count > 1 && !directCopiedBatch ? rootId : undefined, imageStackLayout: count > 1 ? "grid" : undefined, ...generationMetadata, seed: canvasGenerationSeed(index, batchSalt), generationErrorCode: undefined, failedPromptFingerprint: undefined, resourceReloadAvailable: undefined },
     }));
     const batchConnections = directCopiedBatch
         ? childIds.map((childId) => ({ id: nanoid(), fromNodeId: nodeId, toNodeId: childId }))

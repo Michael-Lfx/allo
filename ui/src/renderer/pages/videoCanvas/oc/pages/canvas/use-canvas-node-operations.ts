@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { FOLDER_COLLAPSED_HEIGHT, FOLDER_COLLAPSED_WIDTH, FRAME_HEADER_HEIGHT, getFrameChildIds, getFrameChildren, isFrameNode } from "@oc/lib/canvas/canvas-frame";
 import { alignCanvasNodes, layoutCanvasAuto, layoutCanvasFlow, layoutCanvasNodes, nextCanvasVersionLabel, type CanvasAlignmentMode } from "@oc/lib/canvas/canvas-layout";
 import { createCanvasNode, isHiddenBatchChild, removeCanvasNodes } from "@oc/lib/canvas/canvas-project-domain";
+import { collectImageDeckCopyIds } from "@oc/lib/canvas/canvas-image-stack";
 import { isolateCopiedNodeMetadata, nextCopiedNodeTitle } from "@oc/lib/canvas/canvas-node-copy";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { NODE_DEFAULT_SIZE } from "@oc/constant/canvas";
@@ -340,13 +341,16 @@ export function useCanvasNodeOperations({
     const duplicateNode = useCallback((nodeId: string, duplicateMode: "variant" | "copy" = "variant") => {
         const source = nodesRef.current.find((node) => node.id === nodeId);
         if (!source) return;
-        const sources = isFrameNode(source) ? [source, ...getFrameChildren(source.id, nodesRef.current)] : [source];
+        const sources = isFrameNode(source)
+            ? [source, ...getFrameChildren(source.id, nodesRef.current)]
+            : nodesRef.current.filter((node) => collectImageDeckCopyIds([source.id], nodesRef.current).has(node.id));
+        const copiedSourceIds = new Set(sources.map((node) => node.id));
         const idMap = new Map(sources.map((node, index) => [node.id, `${node.type}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`]));
         const versionRootId = duplicateMode === "variant" && !isFrameNode(source) ? source.metadata?.versionOfNodeId || source.id : undefined;
         const versionLabel = versionRootId ? nextCanvasVersionLabel(versionRootId, nodesRef.current) : undefined;
         const copyTitle = duplicateMode === "copy" ? nextCopiedNodeTitle(source.title, nodesRef.current.map((node) => node.title)) : undefined;
         const copiedNodes = sources.map((node) => {
-            const metadata = isolateCopiedNodeMetadata(node, idMap);
+            const metadata = isolateCopiedNodeMetadata(node, idMap, copiedSourceIds);
             if (node.type === CanvasNodeType.Drawing) {
                 metadata.drawingId = `${idMap.get(node.id)}-document`;
                 metadata.drawingRevision = 0;
@@ -405,6 +409,7 @@ export function useCanvasNodeOperations({
         nodesRef.current.forEach((node) => {
             if (targetIds.has(node.id) && isFrameNode(node)) getFrameChildIds(node.id, nodesRef.current).forEach((childId) => copyIds.add(childId));
         });
+        collectImageDeckCopyIds(copyIds, nodesRef.current).forEach((id) => copyIds.add(id));
         const copiedNodes = nodesRef.current
             .filter((node) => copyIds.has(node.id))
             .map((node) => ({ ...node, position: { ...node.position }, metadata: node.metadata ? { ...node.metadata, frame: node.metadata.frame ? { ...node.metadata.frame } : undefined } : undefined }));
@@ -458,7 +463,7 @@ export function useCanvasNodeOperations({
         const copiedSourceIds = new Set(clipboard.nodes.map((node) => node.id));
         const reservedTitles = new Set(nodesRef.current.map((node) => node.title));
         const nextNodes = clipboard.nodes.map((node) => {
-            const metadata = isolateCopiedNodeMetadata(node, idMap);
+            const metadata = isolateCopiedNodeMetadata(node, idMap, copiedSourceIds);
             const title = nextCopiedNodeTitle(node.title, reservedTitles);
             reservedTitles.add(title);
             if (node.type === CanvasNodeType.Drawing && metadata) {

@@ -239,7 +239,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
             }
         }));
         setNodes((current) => current.map((node) => {
-            if (!node.metadata?.isBatchRoot || !node.metadata.batchChildIds?.length || node.metadata.taskId) return node;
+            if (!node.metadata?.isBatchRoot || !node.metadata.batchChildIds?.length || node.metadata.taskId || node.metadata.imageStackLayout === "deck") return node;
             const children = node.metadata.batchChildIds.map((id) => current.find((item) => item.id === id)).filter(Boolean) as CanvasNodeData[];
             const primary = children.find((item) => item.id === node.metadata?.primaryImageId && item.metadata?.content) || children.find((item) => item.metadata?.content);
             const loading = children.some((item) => item.metadata?.status === NODE_STATUS_LOADING);

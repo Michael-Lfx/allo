@@ -12,6 +12,9 @@ import { audioMetadata, imageMetadata, videoMetadata } from "@oc/lib/canvas/canv
 import type { AssetSpaceItem, AssetSpaceKind } from "@oc/lib/canvas/canvas-asset-space";
 import { fileFromBriefingArtifact, fileFromVimaxArtifact } from "@oc/lib/canvas/canvas-asset-space-media";
 import { createCharacterSubjectNode, findCharacterSubjectNode } from "@oc/lib/canvas/canvas-character-subject";
+import { canvasT } from "@oc/lib/canvas/canvas-i18n";
+import { CANVAS_IMAGE_BATCH_MAX_COUNT } from "@oc/lib/canvas/canvas-generation-count";
+import { applyImageDeckUploads, getImageDeckRoot, type ImageDeckUploadItem } from "@oc/lib/canvas/canvas-image-stack";
 import { createCanvasNode } from "@oc/lib/canvas/canvas-project-domain";
 import { isAudioFile } from "@oc/lib/canvas/canvas-project-generation";
 import { fitNodeSize, VIDEO_NODE_MAX_SIZE } from "@oc/lib/canvas/canvas-node-size";
@@ -116,6 +119,70 @@ export function useCanvasUpload({
             return false;
         }
     }, [canvasId, domainProjectId, message, queryClient, setNodes]);
+
+    const persistDeckNodes = useCallback(async (nodes: CanvasNodeData[]) => {
+        const results = await Promise.all(nodes.map((node) => persistMediaNode(node)));
+        return results.every(Boolean);
+    }, [persistMediaNode]);
+
+    const uploadImageDeck = useCallback(async (files: File[], position: Position, targetNodeId?: string) => {
+        const taken = files.slice(0, CANVAS_IMAGE_BATCH_MAX_COUNT);
+        const truncated = files.length - taken.length;
+        if (truncated > 0) message.warning(canvasT("videoCanvas.upload.imagesTruncated", "一次最多添加 {{max}} 张图片，已忽略多余文件", { max: CANVAS_IMAGE_BATCH_MAX_COUNT }));
+        if (!taken.length) return false;
+
+        const progress = startUploadStatus(canvasT("videoCanvas.upload.imagesTitle", "上传图片"), canvasT("videoCanvas.upload.imagesReading", "读取图片文件"), domainProjectId ? taken.length + 2 : taken.length + 1);
+        try {
+            let completed = 0;
+            const uploads = await mapPool(taken, 3, async (file, index) => {
+                const image = await uploadImage(file);
+                completed += 1;
+                progress.update(canvasT("videoCanvas.upload.imagesProgress", "正在上传 {{current}}/{{total}} 张图片", { current: completed, total: taken.length }), Math.min(completed, taken.length));
+                return {
+                    id: `image-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+                    title: file.name,
+                    size: fitNodeSize(image.width, image.height),
+                    metadata: imageMetadata(image),
+                } satisfies ImageDeckUploadItem;
+            });
+            const items = uploads.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+            const failed = uploads.length - items.length;
+            if (!items.length) {
+                const details = canvasT("videoCanvas.upload.imagesAllFailed", "图片上传失败");
+                progress.fail(details);
+                message.error(details);
+                return false;
+            }
+
+            progress.update(canvasT("videoCanvas.upload.imagesUpdating", "更新画布节点"), taken.length + 1);
+            let applied = applyImageDeckUploads(nodesRef.current, { items, origin: position, targetNodeId });
+            setNodes((current) => {
+                applied = applyImageDeckUploads(current, { items, origin: position, targetNodeId });
+                return applied.nodes;
+            });
+            setSelectedNodeIds(new Set([applied.rootId, ...applied.addedIds]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(null);
+            if (domainProjectId) progress.update(canvasT("videoCanvas.upload.imagesSyncing", "写入项目资产"), taken.length + 2);
+            const persistIds = new Set([applied.rootId, ...applied.addedIds, targetNodeId].filter((id): id is string => Boolean(id)));
+            const persisted = await persistDeckNodes(applied.nodes.filter((node) => persistIds.has(node.id) && node.type === CanvasNodeType.Image));
+            if (failed > 0) {
+                const details = canvasT("videoCanvas.upload.imagesPartialFail", "已添加 {{ok}} 张图片，{{fail}} 张上传失败", { ok: items.length, fail: failed });
+                progress.done(details);
+                message.warning(details);
+            } else {
+                progress.done(persisted
+                    ? canvasT("videoCanvas.upload.imagesAdded", "已添加 {{count}} 张图片", { count: items.length })
+                    : canvasT("videoCanvas.upload.imagesAddedRetry", "图片已添加，项目资产待重试"));
+            }
+            return true;
+        } catch (error) {
+            const details = formatCanvasUserError(error, canvasT("videoCanvas.upload.imagesAllFailed", "图片上传失败"));
+            progress.fail(details);
+            message.error(details);
+            return false;
+        }
+    }, [domainProjectId, message, nodesRef, persistDeckNodes, setDialogNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, startUploadStatus]);
 
     const createImageFileNode = useCallback(async (file: File, position: Position) => {
         const progress = startUploadStatus("上传图片", "读取图片文件", domainProjectId ? 4 : 3);
@@ -352,6 +419,7 @@ export function useCanvasUpload({
                   : target?.type === CanvasNodeType.Audio
                     ? "audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav"
                     : "image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav";
+            imageInputRef.current.multiple = !target || target.type === CanvasNodeType.Image;
         }
         imageInputRef.current?.click();
     }, [nodesRef]);
@@ -402,6 +470,7 @@ export function useCanvasUpload({
             progress.update("上传到服务器并同步资源", 2);
             const image = await uploadImage(file);
             progress.update("更新画布节点", 3);
+            const keepDeck = Boolean(getImageDeckRoot(currentNode, nodesRef.current));
             const node = {
                 ...currentNode,
                 type: CanvasNodeType.Image,
@@ -413,10 +482,11 @@ export function useCanvasUpload({
                     taskId: undefined,
                     errorDetails: undefined,
                     freeResize: false,
-                    isBatchRoot: undefined,
-                    batchRootId: undefined,
-                    batchChildIds: undefined,
-                    batchUsesReferenceImages: undefined,
+                    isBatchRoot: keepDeck ? currentNode.metadata?.isBatchRoot : undefined,
+                    batchRootId: keepDeck ? currentNode.metadata?.batchRootId : undefined,
+                    batchChildIds: keepDeck ? currentNode.metadata?.batchChildIds : undefined,
+                    batchUsesReferenceImages: keepDeck ? currentNode.metadata?.batchUsesReferenceImages : undefined,
+                    imageStackLayout: keepDeck ? currentNode.metadata?.imageStackLayout : undefined,
                     generationType: undefined,
                     model: undefined,
                     size: undefined,
@@ -424,8 +494,8 @@ export function useCanvasUpload({
                     transparentBackground: undefined,
                     count: undefined,
                     references: undefined,
-                    primaryImageId: undefined,
-                    imageBatchExpanded: undefined,
+                    primaryImageId: keepDeck ? currentNode.metadata?.primaryImageId : undefined,
+                    imageBatchExpanded: keepDeck ? currentNode.metadata?.imageBatchExpanded : undefined,
                 },
             } satisfies CanvasNodeData;
             setNodes((current) => current.map((item) => item.id === nodeId ? node : item));
@@ -446,13 +516,19 @@ export function useCanvasUpload({
             const trimmed = value.trim();
             return trimmed.startsWith("open-ai-canvas-nodes:") || trimmed.startsWith("open-ai-canvas-nodes-json:");
         };
-        const pasteImageFile = async (file: File) => {
+        const pasteImageFiles = async (files: File[]) => {
+            const images = files.filter(isImageUploadFile);
+            if (!images.length) return false;
             const selected = nodesRef.current.filter((node) => selectedNodeIdsRef.current.has(node.id));
-            if (selected.length === 1 && selected[0].type === CanvasNodeType.Image) {
-                if (await replaceNodeMedia(selected[0].id, file)) message.success("已用剪切板图片替换，可撤销恢复");
+            const targetId = selected.length === 1 && selected[0].type === CanvasNodeType.Image ? selected[0].id : undefined;
+            if (images.length >= 2) {
+                return uploadImageDeck(images, position || getCanvasCenter(), targetId);
+            }
+            if (targetId) {
+                if (await replaceNodeMedia(targetId, images[0])) message.success("已用剪切板图片替换，可撤销恢复");
                 return true;
             }
-            const inserted = await createImageFileNode(file, position || getCanvasCenter());
+            const inserted = await createImageFileNode(images[0], position || getCanvasCenter());
             if (inserted) message.success("已从剪切板添加图片");
             return Boolean(inserted);
         };
@@ -464,7 +540,7 @@ export function useCanvasUpload({
                 .map((item) => item.getAsFile())
                 .filter((file): file is File => Boolean(file))
             : [];
-        if (filesFromEvent.length) return pasteImageFile(filesFromEvent[0]);
+        if (filesFromEvent.length) return pasteImageFiles(filesFromEvent);
 
         // 2) 若系统文本是节点标记，说明最近一次复制是画布节点，不要再读旧图片。
         const eventText = clipboardEvent?.clipboardData?.getData("text/plain") || "";
@@ -485,7 +561,7 @@ export function useCanvasUpload({
                     const imageType = imageItem.types.find((type) => type.startsWith("image/"));
                     if (!imageType) return false;
                     const blob = await imageItem.getType(imageType);
-                    return pasteImageFile(new File([blob], "clipboard-image.png", { type: imageType }));
+                    return pasteImageFiles([new File([blob], "clipboard-image.png", { type: imageType })]);
                 }
             } catch {
                 // 无权限时继续文本分支。
@@ -503,17 +579,30 @@ export function useCanvasUpload({
             // ignore
         }
         return false;
-    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, nodesRef, replaceNodeMedia, selectedNodeIdsRef]);
+    }, [createImageFileNode, createTextNodeFromClipboard, getCanvasCenter, message, nodesRef, replaceNodeMedia, selectedNodeIdsRef, uploadImageDeck]);
 
     const handleImageInputChange = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
+        const files = Array.from(event.target.files || []);
         const target = uploadTargetRef.current;
         try {
-            if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/") && !isAudioFile(file))) return;
+            const images = files.filter(isImageUploadFile);
             if (target?.nodeId) {
                 const targetNode = nodesRef.current.find((node) => node.id === target.nodeId);
+                if (targetNode?.type === CanvasNodeType.Image) {
+                    if (!images.length) {
+                        message.warning("请选择与当前节点相同类型的媒体文件");
+                        return;
+                    }
+                    if (images.length >= 2) {
+                        await uploadImageDeck(images, target.position || getCanvasCenter(), target.nodeId);
+                        return;
+                    }
+                    await replaceNodeMedia(target.nodeId, images[0]);
+                    return;
+                }
+                const file = files[0];
+                if (!file || (!file.type.startsWith("image/") && !file.type.startsWith("video/") && !isAudioFile(file))) return;
                 const compatible = !targetNode
-                    || (targetNode.type === CanvasNodeType.Image && file.type.startsWith("image/"))
                     || (targetNode.type === CanvasNodeType.Video && file.type.startsWith("video/"))
                     || (targetNode.type === CanvasNodeType.Audio && isAudioFile(file))
                     || ![CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio].includes(targetNode.type);
@@ -525,12 +614,19 @@ export function useCanvasUpload({
                 return;
             }
             const position = target?.position || getCanvasCenter();
+            if (images.length >= 2) {
+                if (images.length !== files.length) message.warning(canvasT("videoCanvas.upload.ignoredNonImage", "已忽略非图片文件"));
+                await uploadImageDeck(images, position);
+                return;
+            }
+            const file = files.find((item) => isImageUploadFile(item) || item.type.startsWith("video/") || isAudioFile(item));
+            if (!file) return;
             await (isAudioFile(file) ? createAudioFileNode(file, position) : file.type.startsWith("video/") ? createVideoFileNode(file, position) : createImageFileNode(file, position));
         } finally {
             uploadTargetRef.current = null;
             event.target.value = "";
         }
-    }, [createAudioFileNode, createImageFileNode, createVideoFileNode, getCanvasCenter, message, nodesRef, replaceNodeMedia]);
+    }, [createAudioFileNode, createImageFileNode, createVideoFileNode, getCanvasCenter, message, nodesRef, replaceNodeMedia, uploadImageDeck]);
 
     const handleDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
         event.preventDefault();
@@ -551,11 +647,23 @@ export function useCanvasUpload({
             void createMediaAssetNode(asset, screenToCanvas(event.clientX, event.clientY));
             return;
         }
-        const file = Array.from(event.dataTransfer.files).find((item) => item.type.startsWith("image/") || item.type.startsWith("video/") || isAudioFile(item));
-        if (!file) return;
+        const files = Array.from(event.dataTransfer.files);
+        const images = files.filter(isImageUploadFile);
         const position = screenToCanvas(event.clientX, event.clientY);
+        const imageTarget = [...nodesRef.current].reverse().find((node) => (
+            node.type === CanvasNodeType.Image
+            && position.x >= node.position.x && position.x <= node.position.x + node.width
+            && position.y >= node.position.y && position.y <= node.position.y + node.height
+        ));
+        if (images.length >= 2) {
+            if (images.length !== files.length) message.warning(canvasT("videoCanvas.upload.ignoredNonImage", "已忽略非图片文件"));
+            void uploadImageDeck(images, position, imageTarget?.id);
+            return;
+        }
+        const file = files.find((item) => isImageUploadFile(item) || item.type.startsWith("video/") || isAudioFile(item));
+        if (!file) return;
         const target = [...nodesRef.current].reverse().find((node) => {
-            const compatible = (node.type === CanvasNodeType.Image && file.type.startsWith("image/"))
+            const compatible = (node.type === CanvasNodeType.Image && isImageUploadFile(file))
                 || (node.type === CanvasNodeType.Video && file.type.startsWith("video/"))
                 || (node.type === CanvasNodeType.Audio && isAudioFile(file));
             return compatible && position.x >= node.position.x && position.x <= node.position.x + node.width && position.y >= node.position.y && position.y <= node.position.y + node.height;
@@ -567,7 +675,7 @@ export function useCanvasUpload({
             return;
         }
         void (isAudioFile(file) ? createAudioFileNode(file, position) : file.type.startsWith("video/") ? createVideoFileNode(file, position) : createImageFileNode(file, position));
-    }, [createAudioFileNode, createImageFileNode, createMediaAssetNode, createVideoFileNode, handleProjectChapterInsert, message, nodesRef, replaceNodeMedia, screenToCanvas]);
+    }, [createAudioFileNode, createImageFileNode, createMediaAssetNode, createVideoFileNode, handleProjectChapterInsert, message, nodesRef, replaceNodeMedia, screenToCanvas, uploadImageDeck]);
 
     const handleFileDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
         if (!hasDraggedFiles(event)) return;
@@ -818,4 +926,26 @@ function htmlToPlainText(value: string) {
     if (!value) return "";
     const document = new DOMParser().parseFromString(value, "text/html");
     return document.body.textContent?.trim() || "";
+}
+
+function isImageUploadFile(file: File) {
+    return file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name);
+}
+
+async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+        while (next < items.length) {
+            const index = next;
+            next += 1;
+            try {
+                results[index] = { status: "fulfilled", value: await fn(items[index], index) };
+            } catch (reason) {
+                results[index] = { status: "rejected", reason };
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker()));
+    return results;
 }

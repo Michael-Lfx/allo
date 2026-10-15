@@ -37,6 +37,33 @@ describe("canvas node generation mentions", () => {
         expect(buildNodeMentionReferences(source, [source], []).map((item) => item.nodeId)).toEqual([]);
     });
 
+    test("an independent connected image is mentionable on a video node", () => {
+        const target = node("video-1792053173280-pr4rr", CanvasNodeType.Video, "");
+        const image = node("image-1792053955991-7ftwy", CanvasNodeType.Image, "/api/video-canvas/media/01a13ebd-5c7c-7383-95a8-c270301a9250");
+        image.metadata = { ...image.metadata, storageKey: "resource:01a13ebd-5c7c-7383-95a8-c270301a9250", mimeType: "image/jpeg" };
+        expect(buildNodeMentionReferences(target, [image, target], [connection(image.id, target.id)]).map((item) => item.nodeId)).toEqual([image.id]);
+    });
+
+    test("storageKey-only images remain mentionable without metadata.content", () => {
+        const target = node("target", CanvasNodeType.Video, "");
+        const image = node("image-a", CanvasNodeType.Image, "");
+        image.metadata = { ...image.metadata, content: "", storageKey: "resource:abc" };
+        expect(buildNodeMentionReferences(target, [image, target], [connection(image.id)]).map((item) => item.nodeId)).toEqual(["image-a"]);
+    });
+
+    test("inbound images stay mentionable when the video node is also wired to a config", () => {
+        const target = node("target", CanvasNodeType.Video, "");
+        const imageA = node("image-a", CanvasNodeType.Image, "data:image/png;base64,a");
+        const config = node("config", CanvasNodeType.Config, "");
+        const imageB = node("image-b", CanvasNodeType.Image, "data:image/png;base64,b");
+        const connections = [
+            connection(imageA.id, target.id),
+            { id: "to-config", fromNodeId: target.id, toNodeId: config.id },
+            { id: "config-in", fromNodeId: imageB.id, toNodeId: config.id },
+        ];
+        expect(buildNodeMentionReferences(target, [imageA, imageB, config, target], connections).map((item) => item.nodeId)).toEqual(["image-a", "image-b"]);
+    });
+
     test("an existing image node is not silently reused as img2img without an @ mention", () => {
         const source = node("image-self", CanvasNodeType.Image, "data:image/png;base64,a");
         const context = buildNodeGenerationContext(source.id, [source], [], "生成一个新的构图");
@@ -121,6 +148,25 @@ describe("canvas node generation mentions", () => {
         );
 
         expect(context.referenceImages.map((image) => image.id).sort()).toEqual(["image-a", "image-b"]);
+    });
+
+    test("a stacked upload deck is mentionable as every member but generation without @ only uses the root", () => {
+        const target = node("target", CanvasNodeType.Video, "");
+        const root = node("root", CanvasNodeType.Image, "data:image/png;base64,r");
+        root.metadata = { ...root.metadata, isBatchRoot: true, imageStackLayout: "deck", batchChildIds: ["child"] };
+        const child = node("child", CanvasNodeType.Image, "data:image/png;base64,c");
+        child.metadata = { ...child.metadata, batchRootId: "root", imageStackLayout: "deck" };
+        const nodes = [root, child, target];
+        const connections = [connection(root.id)];
+
+        expect(buildNodeMentionReferences(target, nodes, connections).map((item) => item.nodeId)).toEqual(["root", "child"]);
+
+        const unused = buildNodeGenerationContext(target.id, nodes, connections, "镜头向前推进");
+        expect(unused.referenceImages.map((image) => image.id)).toEqual(["root"]);
+
+        const mentioned = buildNodeGenerationContext(target.id, nodes, connections, "让 @[node:child] 进入画面");
+        expect(mentioned.referenceImages.map((image) => image.id)).toEqual(["child"]);
+        expect(mentioned.prompt).toBe("让 图片1 进入画面");
     });
 
     test("video keyframe tokens submit all connected images including the middle reference", () => {
