@@ -515,14 +515,45 @@ fn render_script_timeout_cleanup(
     }
 }
 
-#[async_trait]
-impl Tool for ExecCommandTool {
-    fn name(&self) -> &str {
-        "exec_command"
+fn exec_command_description() -> &'static str {
+    #[cfg(windows)]
+    {
+        match nomi_process_runtime::windows_shell_edition() {
+            nomi_process_runtime::WindowsShellEdition::Pwsh7 => EXEC_COMMAND_DESC_PS7,
+            nomi_process_runtime::WindowsShellEdition::PowerShell51 => EXEC_COMMAND_DESC_PS51,
+        }
     }
+    #[cfg(not(windows))]
+    EXEC_COMMAND_DESC_PS51
+}
 
-    fn description(&self) -> &str {
-        "Runs either one shell command or one bounded, non-interactive shell/Python script through \
+const EXEC_COMMAND_DESC_PS7: &str = "Runs either one shell command or one bounded, non-interactive shell/Python script through \
+         the shared process supervisor. Command mode may return a numeric session_id for ongoing interaction.\n\n\
+         In command mode, the command is executed by the platform shell. On Windows this is \
+         the app-managed PowerShell 7 host (pwsh): the cmd or shell-script string runs directly through that host. \
+         Do not prefix it with powershell.exe or pwsh. PowerShell 7 syntax such as ??, ??=, ?:, &&, and || is available. \
+         Use Get-ChildItem, $env:NAME, and && / || for sequencing; run cmd /C \"...\" explicitly when cmd.exe syntax \
+         is required. On macOS/Linux this is POSIX sh. Separate Windows consoles and GUI \
+         launches are rejected; use the dedicated launch tool.\n\n\
+         Script mode requires script, language (shell or python), and a hard timeout in milliseconds. \
+         It is for deterministic, homogeneous local batches that need no intermediate model decision \
+         or approval. On Windows, both modes always use a hidden pipe transport (no console window); \
+         on macOS/Linux script mode uses pipe transport. Script mode never returns a live session and does not download \
+         Python when the host has no Python 3 interpreter. Validate preconditions, fail non-zero on a \
+         dependent-operation failure, bound output, and print a concise final summary. Do not use scripts \
+         to bypass dedicated file, browser, UI, MCP, or approval-aware tools.\n\n\
+         On macOS/Linux, use tty=true for REPLs, TUIs, and interactive installers.\n\n\
+         - On Windows, shell commands always use a hidden pipe transport; the tty flag is ignored there.\n\
+         - On macOS/Linux, tty=false uses separate stdout/stderr pipe streams.\n\
+         - On macOS/Linux, tty=true uses a merged PTY stream for interactive programs.\n\
+         - If the process exits within yield_time_ms, the result reports its exit_code and no \
+         session_id.\n\
+         - If it remains live, use write_stdin with the returned session_id.\n\n\
+         IMPORTANT (TUI submit): send the line of text first, then send the Enter/return key \
+         (\"\\r\") as its own write_stdin call. A TUI may treat text plus return in one burst as \
+         pasted input and leave the command unsubmitted.";
+
+const EXEC_COMMAND_DESC_PS51: &str = "Runs either one shell command or one bounded, non-interactive shell/Python script through \
          the shared process supervisor. Command mode may return a numeric session_id for ongoing interaction.\n\n\
          In command mode, the command is executed by the platform shell. On Windows this is \
          Windows PowerShell 5.1: the cmd or shell-script string runs directly through that host. \
@@ -547,7 +578,16 @@ impl Tool for ExecCommandTool {
          - If it remains live, use write_stdin with the returned session_id.\n\n\
          IMPORTANT (TUI submit): send the line of text first, then send the Enter/return key \
          (\"\\r\") as its own write_stdin call. A TUI may treat text plus return in one burst as \
-         pasted input and leave the command unsubmitted."
+         pasted input and leave the command unsubmitted.";
+
+#[async_trait]
+impl Tool for ExecCommandTool {
+    fn name(&self) -> &str {
+        "exec_command"
+    }
+
+    fn description(&self) -> &str {
+        exec_command_description()
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -636,6 +676,7 @@ impl Tool for ExecCommandTool {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
+        crate::windows_shell::ensure_windows_agent_shell().await;
         let invocation = match requested_invocation(&input) {
             Ok(invocation) => invocation,
             Err(error) => return ToolResult::error(format!("exec_command: {error}")),
@@ -733,7 +774,7 @@ impl Tool for ExecCommandTool {
                     .execute_legacy_started(handle, transport, yield_ms, guard)
                     .await;
                 clock.mark("exec.wait");
-                result
+                crate::windows_shell::prepend_windows_shell_host(result)
             }
             InvocationMode::Script {
                 language,
@@ -751,7 +792,7 @@ impl Tool for ExecCommandTool {
                 };
                 let result = self.execute_script_started(handle, context, guard).await;
                 clock.mark("exec.wait");
-                result
+                crate::windows_shell::prepend_windows_shell_host(result)
             }
         }
     }
@@ -1788,9 +1829,22 @@ mod tests {
         assert!(description.contains("Get-ChildItem"));
         assert!(description.contains("$env:NAME"));
         assert!(description.contains("cmd /C"));
-        assert!(description.contains("Windows PowerShell 5.1"));
         assert!(description.contains("Do not prefix it with powershell.exe"));
-        assert!(description.contains("PowerShell 7-only syntax"));
+        #[cfg(windows)]
+        match nomi_process_runtime::windows_shell_edition() {
+            nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
+                assert!(description.contains("PowerShell 7"));
+            }
+            nomi_process_runtime::WindowsShellEdition::PowerShell51 => {
+                assert!(description.contains("Windows PowerShell 5.1"));
+                assert!(description.contains("PowerShell 7-only syntax"));
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(description.contains("Windows PowerShell 5.1"));
+            assert!(description.contains("PowerShell 7-only syntax"));
+        }
         assert!(description.contains("On Windows, shell commands always use a hidden pipe transport"));
         assert!(description.contains("tty=false uses separate stdout/stderr pipe streams"));
         assert!(description.contains("Separate Windows consoles and GUI launches are rejected"));

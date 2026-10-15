@@ -29,7 +29,7 @@ pub use dep_check::{
 };
 pub use dep_gate::{await_tool_deps, spawn_background_install};
 pub use runtime_dep_install::{
-    auto_ensure_enabled, ensure_ffmpeg, ensure_missing_runtime_deps, ensure_ripgrep,
+    auto_ensure_enabled, ensure_ffmpeg, ensure_missing_runtime_deps, ensure_pwsh, ensure_ripgrep,
     ensure_runtime_dep, register_dep_gate_hooks,
 };
 pub use insights::{InsightsConfig, InsightsContributionConfig};

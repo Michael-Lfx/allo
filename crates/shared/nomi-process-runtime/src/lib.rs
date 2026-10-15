@@ -13,6 +13,8 @@ mod recovery;
 mod registry;
 mod request;
 mod supervisor;
+#[cfg(windows)]
+mod windows_shell;
 
 pub use capability::{CapabilityPolicy, SandboxPolicy};
 pub use command_builder::{
@@ -41,6 +43,11 @@ pub use supervisor::{
 pub use platform::windows::{
     WindowsExactProcess, WindowsProcessIdentity, WindowsProcessJob, WindowsRecoveryJob,
     windows_child_process_identity, windows_process_identity,
+};
+#[cfg(windows)]
+pub use windows_shell::{
+    WindowsShellEdition, WindowsShellResolution, is_usable_pwsh, resolve_windows_powershell_exe,
+    set_windows_powershell_override, windows_shell_edition,
 };
 #[cfg(target_os = "linux")]
 pub use platform::linux_recovery::LinuxProcessGroupAnchor;

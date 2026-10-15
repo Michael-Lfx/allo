@@ -810,7 +810,11 @@ impl AgentBootstrap {
             // Grep needs ripgrep; register install hooks and warm the managed
             // binary in the background so the first search rarely blocks.
             nomi_config::register_dep_gate_hooks();
-            nomi_config::spawn_background_install(vec![nomi_config::RuntimeDep::Ripgrep]);
+            let mut warmup = vec![nomi_config::RuntimeDep::Ripgrep];
+            if cfg!(windows) {
+                warmup.push(nomi_config::RuntimeDep::Pwsh);
+            }
+            nomi_config::spawn_background_install(warmup);
 
             registry.register(Box::new(
                 nomi_tools::bash::BashTool::new(

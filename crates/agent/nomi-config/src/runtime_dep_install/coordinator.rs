@@ -150,6 +150,7 @@ async fn wait_tool_deps(tool_name: &str, notify: NotifyFn) -> bool {
 
 /// Register dep-gate hooks so agent media tools can background-install and wait at tool time.
 pub fn register_dep_gate_hooks() {
+    crate::runtime_dep_install::advertise_managed_pwsh();
     dep_gate::register_hooks(
         Box::new(spawn_background_install),
         Arc::new(

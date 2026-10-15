@@ -28,6 +28,13 @@ pub fn spawn_background_install(deps: Vec<RuntimeDep>) {
 pub fn deps_for_tool(tool_name: &str) -> &'static [RuntimeDep] {
     match tool_name {
         "Grep" | "search_files" => &[RuntimeDep::Ripgrep],
+        "Bash" | "exec_command" => {
+            if cfg!(windows) {
+                &[RuntimeDep::Pwsh]
+            } else {
+                &[]
+            }
+        }
         name if name.starts_with("browser_") => &[RuntimeDep::Browser],
         "computer_use" => &[RuntimeDep::Browser],
         "tts" | "tts_premium" | "video_analyze" | "media_long_video" => &[RuntimeDep::Ffmpeg],

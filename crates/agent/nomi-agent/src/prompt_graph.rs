@@ -356,13 +356,7 @@ without killing the process.",
     #[cfg(target_os = "windows")]
     {
         if advertised.contains("Bash") || advertised.contains("exec_command") {
-            s.push_str(
-                "\n - On Windows, the Bash and exec_command tools run commands through Windows PowerShell 5.1 \
-when shell-only work is necessary. They do not use cmd.exe, Unix bash, or pwsh. Do not prefix the command \
-with powershell.exe or pwsh. Write Windows PowerShell 5.1 syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
-`$env:NAME`, and `;` for sequential commands. Do not assume PowerShell 7-only syntax such as `??`, `??=`, `?:`, `&&`, or `||`. \
-If cmd.exe syntax is truly required, wrap it explicitly as `cmd /C \"...\"`.",
-            );
+            s.push_str(windows_shell_guidance());
         }
         if advertised.contains("Computer") {
             s.push_str(
@@ -374,6 +368,26 @@ title and pops a blocking \"Windows cannot find\" dialog that hangs the command.
         }
     }
     s
+}
+
+#[cfg(target_os = "windows")]
+fn windows_shell_guidance() -> &'static str {
+    match nomi_process_runtime::windows_shell_edition() {
+        nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
+            "\n - On Windows, the Bash and exec_command tools run commands through the app-managed \
+PowerShell 7 host when shell-only work is necessary. They do not use cmd.exe, Unix bash, or Windows \
+PowerShell 5.1. Do not prefix the command with powershell.exe or pwsh. Write PowerShell 7 syntax: \
+`Get-ChildItem`, `Get-Content`, `Set-Location`, `$env:NAME`, `&&` / `||` for sequencing, and `??` / \
+`??=` / `?:` when useful. If cmd.exe syntax is truly required, wrap it explicitly as `cmd /C \"...\"`."
+        }
+        nomi_process_runtime::WindowsShellEdition::PowerShell51 => {
+            "\n - On Windows, the Bash and exec_command tools run commands through Windows PowerShell 5.1 \
+when shell-only work is necessary. They do not use cmd.exe, Unix bash, or pwsh. Do not prefix the command \
+with powershell.exe or pwsh. Write Windows PowerShell 5.1 syntax: `Get-ChildItem`, `Get-Content`, `Set-Location`, \
+`$env:NAME`, and `;` for sequential commands. Do not assume PowerShell 7-only syntax such as `??`, `??=`, `?:`, `&&`, or `||`. \
+If cmd.exe syntax is truly required, wrap it explicitly as `cmd /C \"...\"`."
+        }
+    }
 }
 
 #[cfg(test)]
@@ -419,13 +433,20 @@ mod tests {
     }
 
     #[test]
-    fn windows_guidance_states_powershell_51_contract() {
+    fn windows_guidance_states_resolved_shell_contract() {
         let set = AdvertisedToolSet::from_names(["Bash", "exec_command"]);
         let text = tool_usage_guidance(&set, false);
         if cfg!(windows) {
-            assert!(text.contains("Windows PowerShell 5.1"));
             assert!(text.contains("Do not prefix the command"));
-            assert!(text.contains("PowerShell 7-only syntax"));
+            match nomi_process_runtime::windows_shell_edition() {
+                nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
+                    assert!(text.contains("PowerShell 7"));
+                }
+                nomi_process_runtime::WindowsShellEdition::PowerShell51 => {
+                    assert!(text.contains("Windows PowerShell 5.1"));
+                    assert!(text.contains("PowerShell 7-only syntax"));
+                }
+            }
         } else {
             assert!(!text.contains("Windows PowerShell 5.1"));
         }
