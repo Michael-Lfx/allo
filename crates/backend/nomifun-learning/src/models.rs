@@ -1458,7 +1458,8 @@ pub struct GraphBlockedView {
 /// 学习结构读侧投影（`GET /courses/{id}/graph/structure`，wayfinder 票 t1）：
 /// 200 恒答、`structure: null` = 未生成（Missing 合法空状态，生成中态由 WS
 /// structure_* 事件表达）。投影运行时重算、永不落盘；**严格课程内**——只读
-/// 本课 structure_json，不 join 概念登记表。
+/// 本课 structure_json，不 join 概念登记表。j08 起带挂载读侧三态投影
+/// （`mounts: null` = 从未跑过挂载回合）。
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningStructureView {
     pub course_id: LearningCourseId,
@@ -1466,6 +1467,8 @@ pub struct LearningStructureView {
     pub terrain: Option<TerrainView>,
     /// 快照生成时刻（ms）；None = 未生成。
     pub generated_at: Option<i64>,
+    /// 挂载三态投影（j08）：`None` = 挂载表无行（从未评估）。
+    pub mounts: Option<StructureMountsView>,
 }
 
 /// 结构产物的读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /
@@ -1978,6 +1981,77 @@ pub struct XpCalendar {
     pub tz_offset: i32,
     /// Exactly `weeks * 7` day buckets, oldest first, today last.
     pub days: Vec<XpCalendarDay>,
+}
+
+/// 挂载回合摘要（j08）：status = mounted（有待挂并已落盘）/ skipped
+/// （待挂集空——零 LLM 零写）。挂载是导航事实：计数面只有条目统计。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountRoundSummary {
+    /// "mounted" | "skipped".
+    pub status: String,
+    /// 本轮评估的待挂节点数（skipped 时为 0）。
+    pub pending_nodes: usize,
+    /// 本轮挂入块的节点数。
+    pub mounted_nodes: usize,
+    /// 本轮声明结构外的节点数。
+    pub outside_nodes: usize,
+    /// 挂载行当前总条目数（含既有保留）。
+    pub total_entries: usize,
+    /// 回合开始时挂载是否处于失配（结构变过导致全量重评）。
+    pub stale: bool,
+    /// 落盘锚定的结构 hash（FNV-1a 64，有符号整型承载）。
+    pub structure_hash: i64,
+}
+
+/// 节点挂载三态（j08 单源派生）：Mounted（挂入可解析的块）/ Outside
+/// （已评估、声明结构外）/ NotEvaluated（未评估，或条目悬挂降级）。
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeMountStateView {
+    pub node: String,
+    /// "mounted" | "outside" | "not_evaluated".
+    pub state: String,
+}
+
+/// 一条挂载事实的读侧视图：悬挂 slug（块已不在当前结构里）的条目
+/// `dangling = true` 并逐条降级，不使整体 Broken。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountEntryView {
+    pub node: String,
+    pub block: Option<String>,
+    /// 块名（slug 在当前结构可解析时回填；悬挂为 None）。
+    pub block_name: Option<String>,
+    pub reason: String,
+    pub dangling: bool,
+}
+
+/// mount_index 单元：块 slug → 已挂节点清单（只含可解析块）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountIndexEntryView {
+    pub block: String,
+    pub block_name: Option<String>,
+    pub nodes: Vec<String>,
+}
+
+/// 挂载观察（修补输入源之一，纯读派生不打点）：outside-node / empty-block
+/// / overloaded-block（≥5 节点）。观察不构成编辑义务。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountObservationView {
+    pub kind: String,
+    pub detail: String,
+}
+
+/// 挂载读侧投影（挂载行 + 结构快照 + 现存节点的纯函数合成面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureMountsView {
+    /// 结构 hash 失配（挂载后结构又变过）——挂载整体显影为待重评。
+    pub stale: bool,
+    pub entries: Vec<MountEntryView>,
+    pub index: Vec<MountIndexEntryView>,
+    pub states: Vec<NodeMountStateView>,
+    pub observations: Vec<MountObservationView>,
+    pub mounted_count: usize,
+    pub outside_count: usize,
+    pub not_evaluated_count: usize,
 }
 
 /// Memory-health dashboard: one snapshot over the active card pool and the

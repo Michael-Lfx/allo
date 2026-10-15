@@ -1,4 +1,4 @@
-import { Empty, Typography } from '@arco-design/web-react';
+import { Button, Empty, Tag, Typography } from '@arco-design/web-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { LearningStructureView } from '../../types';
@@ -22,9 +22,18 @@ type TabKey = (typeof TABS)[number][0];
  * 结构图 Tab（wayfinder 票 p1 裁决）：思维导图 / 关系图谱 / 学习路线三图 +
  * 矩阵顺带；数据全部来自 `GET graph/structure` 读侧投影（前端不做第二份
  * 真相）；页脚硬标注「投影非权威；层号 = 依赖深度，不是排期」。课程内铁律：
- * 不渲染概念节点、不做块-概念名字匹配。
+ * 不渲染概念节点、不做块-概念名字匹配。j08 起带挂载三态段（读侧 join，
+ * 零第二真相）：三态计数 + stale 显影 + 已挂清单 + 挂载观察 + 挂载按钮。
  */
-export function StructureGraphTab({ view }: { view: LearningStructureView | null }) {
+export function StructureGraphTab({
+  view,
+  onMount,
+  mounting,
+}: {
+  view: LearningStructureView | null;
+  onMount?: () => void;
+  mounting?: boolean;
+}) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>('mindmap');
 
@@ -38,6 +47,7 @@ export function StructureGraphTab({ view }: { view: LearningStructureView | null
     );
   }
   const structure = view.structure;
+  const mounts = view.mounts;
 
   return (
     <div className='flex flex-col gap-8px pb-16px'>
@@ -57,6 +67,63 @@ export function StructureGraphTab({ view }: { view: LearningStructureView | null
           </button>
         ))}
       </div>
+
+      {mounts && (
+        <div className='flex flex-col gap-6px rounded-8px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-10px'>
+          <div className='flex flex-wrap items-center gap-8px'>
+            <Text bold className='text-13px'>
+              {t('learningGraphMountTitle')}
+            </Text>
+            <Tag size='small' color='arcoblue' className='!mx-0'>
+              {t('learningGraphMountCounts', {
+                mounted_count: mounts.mounted_count,
+                outside_count: mounts.outside_count,
+                not_evaluated_count: mounts.not_evaluated_count,
+              })}
+            </Tag>
+            {mounts.stale && (
+              <Tag size='small' color='orangered' className='!mx-0'>
+                {t('learningGraphMountStale')}
+              </Tag>
+            )}
+            <span className='flex-1' />
+            {onMount && (
+              <Button size='mini' loading={mounting} onClick={onMount}>
+                {t('learningGraphMountRun')}
+              </Button>
+            )}
+          </div>
+          {mounts.index.length > 0 && (
+            <div className='flex flex-col gap-2px'>
+              {mounts.index.map((entry) => (
+                <Text key={entry.block} type='secondary' className='text-11px leading-16px'>
+                  {t('learningGraphMountIndexEntry', {
+                    block: entry.block_name ?? entry.block,
+                    count: entry.nodes.length,
+                    nodes: entry.nodes.join('、'),
+                  })}
+                </Text>
+              ))}
+            </div>
+          )}
+          {mounts.observations.length > 0 && (
+            <div className='flex flex-wrap items-center gap-4px'>
+              {mounts.observations.map((observation, index) => (
+                <Tag key={index} size='small' color='gray' className='!mx-0'>
+                  {t(
+                    observation.kind === 'outside-node'
+                      ? 'learningGraphMountObsOutside'
+                      : observation.kind === 'empty-block'
+                        ? 'learningGraphMountObsEmpty'
+                        : 'learningGraphMountObsOverloaded',
+                    { detail: observation.detail }
+                  )}
+                </Tag>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === 'mindmap' && <Mindmap structure={structure} />}
       {tab === 'net' && <RelationNet structure={structure} />}

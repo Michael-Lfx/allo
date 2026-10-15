@@ -226,3 +226,50 @@ est 命名统一（二轮 g1 第 6 项）同批落地：`ng.nodes.minutes` → `
 `ProposedNode.est`、DTO/前端镜像键 `est`；**DB 列 `learning_lessons.estimated_minutes`
 保留旧名**（SQLite 无列注释机制，语义注记住本条与本批 DTO 文档注释：列语义 =
 est，1 est 分钟 = 1 分钟专注学习）。
+
+## 9 挂载事实层（st.mount.*，j08 三轮 g1「结构转活文档·上」）
+
+挂载是**导航事实**：帮助学习者知道「节点在参考地图的哪个主题块里」。它无判定身份
+——不进调度、不进门禁、不承载概念事实（teaches/assumes/tier 只住节点挂接表）。
+挂载与修补（j09，st.ops.*）合起来才是「结构从快照变活文档」的最小闭环。
+
+### 9.1 载体与回合形态
+
+- 挂载表一课一行（`learning_structure_mounts`：`course_id UNIQUE, mounts_json,
+  structure_hash, updated_at`），与 `structure_json` 单字段快照先例同构；回合内单行
+  原子覆盖（merge upsert：本轮替换、未评估保留、孤儿清出），无中间态。
+- **structure_hash = 手写 FNV-1a 64**（勿用语言默认 hash——跨版本稳定）对
+  `structure_json` 列原样字节；读侧 hash 失配 = `mounts_stale`（结构变了挂载即显影）。
+- **触发 = 显式命令**（`POST /courses/{id}/graph/structure/mount`）；单课串行、可取消
+  （j03 注册表，kind = `structure_mount`）。
+- **待挂集** = 现存节点 ∧（未评估 ∪ 失效 slug）；hash 失配 = stale = 全量。
+  **待挂集空 = skipped：零 LLM 零写**。失败整回合重试不降级（RoundRetry ≤3，同指纹
+  早停——j03 骨架复用），违规报告原文注入重试装配。
+- 两个防幻觉/防浪费语义照抄 learnhub：**0 条挂载是合法答案**（全在结构外也合法）、
+  **待挂集空 = skipped**。
+
+### 9.2 产物形态与六条款（validator ↔ 本章互钉）
+
+产物 = 单个 JSON 对象：`{ "mounts": [ { "node", "block", "reason" } ], "note"? }`。
+`node` = 节点标题（逐字照抄待挂集）；`block` = 块 slug（逐字照抄结构参考行）或
+`null`（结构外——已评估、声明不属于任何块）；`reason` = 一句话（主题同一性判据）。
+
+| 条款 | 内容 |
+|---|---|
+| `st.mount.top.keys` | 顶层键只允许 `mounts`、`note`；`mounts` 必为数组。 |
+| `st.mount.entries.required` | 条目键只允许 `node`、`block`、`reason`；node 非空、reason 非空。 |
+| `st.mount.entries.align` | `node` 必须逐字命中待挂集——只评估待挂集节点。 |
+| `st.mount.blocks.resolve` | `block` 非空时必须逐字解析到当前结构 `blocks[].slug`。 |
+| `st.mount.blocks.dedup` | 一个节点只出现一条条目（一个节点只挂一块，或声明一次结构外）。 |
+| `st.mount.no_concept_fields` | 条目不得携带概念字段（teaches/assumes/tier/concepts）——挂载无判定身份。 |
+
+### 9.3 读侧三态投影（单源）
+
+- **Mounted**（挂入可解析块）/ **Outside**（已评估、声明结构外）/
+  **NotEvaluated**（未评估；含悬挂 slug 条目的逐条降级——不使整体 Broken）。
+- `mount_index`：块 slug → 已挂节点清单（只含可解析块）。
+- `mounts_stale`：结构 hash 失配标记（读侧显影，不自动重评）。
+- **挂载观察派生**（修补输入源之一，纯读函数不打点）：结构外单元 + 空块 +
+  超载块（≥5 节点）。观察不构成编辑义务。
+- 挂载行随课程删除（Cascade，纯导航派生面可重建）；findings 留痕表
+  （`learning_structure_findings`，j08 建表 / j09 接生产与消费）随课 KeepHistory。

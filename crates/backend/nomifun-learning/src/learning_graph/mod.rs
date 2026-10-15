@@ -29,6 +29,7 @@ pub mod alias_records;
 pub mod defnear;
 pub mod growth_contract;
 pub mod growth_retry;
+pub mod mounting;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_view;

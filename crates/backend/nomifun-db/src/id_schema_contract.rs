@@ -84,6 +84,8 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_review_log",
     "learning_tags",
     "learning_xp_events",
+    "learning_structure_findings",
+    "learning_structure_mounts",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -913,6 +915,11 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_xp_events", "user_id" => "users", "user_id", false, "idx_learning_xp_events_user_anchor", Cascade),
     historical_text_ref!("learning_xp_events", "course_id" => "learning_courses", "course_id", true, "idx_learning_xp_events_course", KeepHistory),
     historical_text_ref!("learning_xp_events", "node_id" => "learning_lessons", "lesson_id", true, "idx_learning_xp_events_node", KeepHistory),
+    // 挂载事实层（migration 079）：一课一行的导航事实与 findings 留痕——
+    // 课程删除后挂载/留痕是否随删？挂载行随课（Cascade，纯导航派生面可
+    // 重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
+    historical_text_ref!("learning_structure_mounts", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_mounts_course", Cascade),
+    historical_text_ref!("learning_structure_findings", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_findings_course", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
         .with_child_predicate("child.source = 'course'"),
     text_ref!("learning_question_tags", "question_id" => "learning_custom_questions", "custom_question_id", false, "idx_learning_question_tags_custom_question_id", Cascade)

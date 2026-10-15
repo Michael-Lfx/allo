@@ -11,16 +11,23 @@
 use serde_json::Value;
 
 use crate::models::{
-    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, QualityView,
-    SpineGroupView, SpineView, StructureDomainView, StructureScalarsView, StructureView,
+    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, MountEntryView,
+    MountIndexEntryView, MountObservationView, NodeMountStateView, QualityView, SpineGroupView,
+    SpineView, StructureDomainView, StructureMountsView, StructureScalarsView, StructureView,
     TerrainDoorView, TerrainView,
 };
 
 /// 从快照信封构建结构视图。`envelope` 为 None = 结构未生成（Missing 合法
-/// 空状态）：200 恒答，`structure`/`terrain` 均为 None。
+/// 空状态）：200 恒答，`structure`/`terrain` 均为 None。`mount_row` =
+/// (mounts_json, stored_hash)；`current_hash` = 当前 structure_json 字节的
+/// FNV-1a 64——两者比对即 `stale`（结构变过，挂载显影）。`node_titles` =
+/// 现存节点标题（三态分母）。
 pub fn build_structure_view(
     course_id: nomifun_common::LearningCourseId,
     envelope: Option<&Value>,
+    node_titles: &[String],
+    mount_row: Option<(&str, i64)>,
+    current_hash: u64,
 ) -> LearningStructureView {
     let Some(envelope) = envelope else {
         return LearningStructureView {
@@ -28,16 +35,141 @@ pub fn build_structure_view(
             structure: None,
             terrain: None,
             generated_at: None,
+            mounts: None,
         };
     };
     let structure = envelope.get("structure").cloned().unwrap_or(Value::Null);
     let terrain = envelope.get("terrain").cloned().unwrap_or(Value::Null);
     let generated_at = envelope.get("generated_at").and_then(Value::as_i64);
+    let mounts = mount_row.map(|(mounts_json, stored_hash)| {
+        let stored = serde_json::from_str::<Value>(mounts_json)
+            .map(|value| super::mounting::parse_mount_entries(&value))
+            .unwrap_or_default();
+        build_mounts_view(
+            &structure,
+            &stored,
+            node_titles,
+            (stored_hash as u64) != current_hash,
+        )
+    });
     LearningStructureView {
         course_id,
         structure: Some(build_structure(&structure)),
         terrain: build_terrain(&terrain),
         generated_at,
+        mounts,
+    }
+}
+
+/// 挂载读侧三态投影（纯函数）：三态单源（Mounted/Outside/NotEvaluated，
+/// 悬挂 slug 逐条降级为 NotEvaluated 不 Broken）+ mount_index（块 slug →
+/// 已挂节点清单，只含可解析块）+ 挂载观察派生（结构外/空块/超载）。
+pub fn build_mounts_view(
+    structure: &Value,
+    entries: &[super::mounting::MountEntry],
+    node_titles: &[String],
+    stale: bool,
+) -> StructureMountsView {
+    let block_names: std::collections::HashMap<String, String> = structure
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| {
+                    let slug = block.get("slug")?.as_str()?;
+                    let name = block.get("name")?.as_str()?;
+                    Some((slug.to_owned(), name.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let entry_views: Vec<MountEntryView> = entries
+        .iter()
+        .map(|entry| {
+            let block_name = entry
+                .block
+                .as_deref()
+                .and_then(|slug| block_names.get(slug).cloned());
+            let dangling = entry.block.is_some() && block_name.is_none();
+            MountEntryView {
+                node: entry.node.clone(),
+                block: entry.block.clone(),
+                block_name,
+                reason: entry.reason.clone(),
+                dangling,
+            }
+        })
+        .collect();
+    // 三态单源：Mounted = 条目且块可解析；Outside = 条目 block null；
+    // NotEvaluated = 无条目或条目悬挂（降级不 Broken）。
+    let by_node: std::collections::HashMap<&str, &super::mounting::MountEntry> =
+        entries.iter().map(|entry| (entry.node.as_str(), entry)).collect();
+    let mut states = Vec::new();
+    let mut mounted_count = 0usize;
+    let mut outside_count = 0usize;
+    let mut not_evaluated_count = 0usize;
+    for title in node_titles {
+        let state = match by_node.get(title.as_str()) {
+            Some(entry) if entry.block.is_some() => {
+                let resolves = entry
+                    .block
+                    .as_deref()
+                    .is_some_and(|slug| block_names.contains_key(slug));
+                if resolves {
+                    mounted_count += 1;
+                    "mounted"
+                } else {
+                    not_evaluated_count += 1;
+                    "not_evaluated"
+                }
+            }
+            Some(_) => {
+                outside_count += 1;
+                "outside"
+            }
+            None => {
+                not_evaluated_count += 1;
+                "not_evaluated"
+            }
+        };
+        states.push(NodeMountStateView {
+            node: title.clone(),
+            state: state.to_owned(),
+        });
+    }
+    // mount_index：可解析块 → 已挂节点清单（结构顺序）。
+    let mut index = Vec::new();
+    for (slug, name) in &block_names {
+        let nodes: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry.block.as_deref() == Some(slug.as_str()))
+            .map(|entry| entry.node.clone())
+            .collect();
+        if !nodes.is_empty() {
+            index.push(MountIndexEntryView {
+                block: slug.clone(),
+                block_name: Some(name.clone()),
+                nodes,
+            });
+        }
+    }
+    let observations = super::mounting::mount_observations(
+        &block_names.iter().map(|(s, n)| (s.clone(), n.clone())).collect::<Vec<_>>(),
+        entries,
+    )
+    .into_iter()
+    .map(|(kind, detail)| MountObservationView { kind, detail })
+    .collect();
+    StructureMountsView {
+        stale,
+        entries: entry_views,
+        index,
+        states,
+        observations,
+        mounted_count,
+        outside_count,
+        not_evaluated_count,
     }
 }
 
@@ -438,6 +570,9 @@ mod tests {
         build_structure_view(
             nomifun_common::LearningCourseId::new(),
             Some(&sample_envelope()),
+            &[],
+            None,
+            0,
         )
         .structure
         .expect("sample has structure")
@@ -496,7 +631,7 @@ mod tests {
     /// None 信封 = Missing：全 None、200 恒答形状。
     #[test]
     fn missing_envelope_is_a_legal_empty_view() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None);
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), None, &[], None, 0);
         assert!(view.structure.is_none());
         assert!(view.terrain.is_none());
         assert!(view.generated_at.is_none());
@@ -505,14 +640,14 @@ mod tests {
     /// 地形投影：门口列表 + 基础声明回执；空门口 = None（未生成地形）。
     #[test]
     fn terrain_view_carries_doors() {
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()));
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, 0);
         let terrain = view.terrain.expect("sample has terrain");
         assert_eq!(terrain.doors.len(), 1);
         assert_eq!(terrain.doors[0].id, "G1");
         assert_eq!(terrain.learner_basis_assumed, "纯零基础（未声明）");
 
         let doorless = json!({ "version": 1, "structure": {}, "terrain": { "doors": [] } });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless));
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, 0);
         assert!(view.terrain.is_none());
     }
 
@@ -532,7 +667,7 @@ mod tests {
                 ]
             }
         });
-        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope));
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&envelope), &[], None, 0);
         let structure = view.structure.expect("structure present");
         assert!(structure.blocks.iter().all(|block| block.layer == 0), "环冻结在 0 层");
     }
