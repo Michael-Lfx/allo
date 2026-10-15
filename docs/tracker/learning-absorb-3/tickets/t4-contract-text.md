@@ -2,8 +2,8 @@
 id: t4
 title: "契约文本随批：R9 叙述声部、跨课预告废除、门位口径、术语纠偏"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -29,3 +29,25 @@ learnhub 窗口内的四项纯文本契约演进，随二轮 g2/g4 提示词波�
 
 产出：四项文本的最终落点清单（文件 + 条款位置）+ 契约文档版本推进（gd 契约文档 version
 bump），随二轮提示词波实施票执行。
+
+## Resolution
+
+**速览**：四项落点定案，全部随二轮 g2/g4 提示词波实施（无独立机制）。
+
+1. **R9 叙述声部**：落 `prompts/structure`（无——R9 属内容面）→ 正确落点 =
+   图节点正文写作提示词（lesson_content_loop 的 graph 分支）+ 传统课程 `section_body_*`
+   + 评审判据观察面（「开发面结构词入正文 = 违规」观察条）。条款文本照 learnhub R9 原文
+   域中立改写。
+2. **跨课预告废除**：节大纲小结行（`section_outline_system`）+ content 写作面——小结
+   收本课以内；「课程导航归学习安排，不归内容」。
+3. **门位口径（v2.10）**：`prompts/structure/goal-decomposition.md` +
+   `prerequisite-terrain.md`——从零声明课程，门划在学习者真实起步地板，地板以上全进
+   结构（开局贴地、可学可挂），地形收缩为地板以下与自检参考；写作面指导不加机械门。
+   与 g1 挂载的前提关系已记；本项独立于 g1 生效。
+4. **术语纠偏（v2.8）**：`docs/contracts/learning-structure-artifacts.md` 块定义措辞改
+   「主题单元」；全仓 grep 确认无「转正/收敛率」残留（预期零命中，确认即归档）。
+
+**版本推进**：`learning-structure-artifacts.md` status 行增记（v1.x → 本次 bump，四项
+随批注记）；内容面条款（R9/跨课预告）进二轮 g2 授权的内容契约位（若该批建独立契约文档
+则随之，否则进提示词 + 评审判据）。全部为文本层，随二轮 g2/g4 实施票执行，不单独切票。
+
