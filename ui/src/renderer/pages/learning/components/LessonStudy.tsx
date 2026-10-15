@@ -791,7 +791,7 @@ export function LessonBlock({
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={lessonStatusTagColors[current.status]}>{statusLabel(current.status, t)}</Tag>
         <Text type='secondary'>
-          {current.estimated_minutes} {t('learning.minutes')}
+          {current.est} {t('learning.minutes')}
         </Text>
       </div>
       {current.source && (

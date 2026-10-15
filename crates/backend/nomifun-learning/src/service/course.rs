@@ -143,7 +143,7 @@ impl LearningService {
                 .bind(lesson.summary.trim())
                 .bind(lesson.purpose.trim())
                 .bind(lesson_position as i64)
-                .bind(lesson.estimated_minutes)
+                .bind(lesson.est)
                 .bind(content_generated)
                 .bind(source_path)
                 .bind(source_start)
@@ -339,9 +339,7 @@ impl LearningService {
                     summary: lesson_row.try_get("summary").map_err(internal)?,
                     purpose: lesson_row.try_get("purpose").map_err(internal)?,
                     position: lesson_row.try_get("position").map_err(internal)?,
-                    estimated_minutes: lesson_row
-                        .try_get("estimated_minutes")
-                        .map_err(internal)?,
+                    est: lesson_row.try_get("estimated_minutes").map_err(internal)?,
                     generated: content_generated != 0,
                     source,
                     sources,
@@ -471,7 +469,7 @@ impl LearningService {
             summary: row.try_get("summary").map_err(internal)?,
             purpose: row.try_get("purpose").map_err(internal)?,
             position: row.try_get("position").map_err(internal)?,
-            estimated_minutes: row.try_get("estimated_minutes").map_err(internal)?,
+            est: row.try_get("estimated_minutes").map_err(internal)?,
             generated: content_generated != 0,
             source,
             sources,
@@ -757,9 +755,9 @@ pub(crate) fn validate_pack(pack: &CoursePack) -> Result<(), AppError> {
             ));
         }
         for lesson in &module.lessons {
-            if lesson.title.trim().is_empty() || lesson.estimated_minutes <= 0 {
+            if lesson.title.trim().is_empty() || lesson.est <= 0 {
                 return Err(AppError::BadRequest(
-                    "each lesson needs a title and positive estimated_minutes".into(),
+                    "each lesson needs a title and positive est".into(),
                 ));
             }
             // 引用逐条校验（t4 评审补齐的多引用）：任一条 span 非法即拒收。
