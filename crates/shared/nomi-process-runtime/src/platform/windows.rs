@@ -42,7 +42,6 @@ use windows_sys::Win32::{
             QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
         },
         Pipes::CreatePipe,
-        SystemInformation::GetWindowsDirectoryW,
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
             CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess,
@@ -2484,7 +2483,9 @@ struct PreparedCommand {
 
 impl PreparedCommand {
     fn new(request: &NormalizedProcessRequest) -> Result<Self, ProcessError> {
-        let argv = command_argv(&request.command)?;
+        let force_system_51 =
+            !matches!(request.capability.sandbox, SandboxPolicy::UnrestrictedLocalOwner);
+        let argv = command_argv_with_policy(&request.command, force_system_51)?;
         let application = encode_nul_terminated(&argv.program, "program")?;
         let command_line = encode_command_line(&argv.program, &argv.args)?;
         let cwd = encode_nul_terminated(request.cwd.as_os_str(), "working directory").map_err(
@@ -2516,7 +2517,15 @@ struct ShellArgv {
     script_env: Option<(OsString, OsString)>,
 }
 
+#[cfg(test)]
 fn command_argv(spec: &CommandSpec) -> Result<ShellArgv, ProcessError> {
+    command_argv_with_policy(spec, false)
+}
+
+fn command_argv_with_policy(
+    spec: &CommandSpec,
+    force_system_51: bool,
+) -> Result<ShellArgv, ProcessError> {
     match spec {
         CommandSpec::Program { program, args } => Ok(ShellArgv {
             program: program.clone(),
@@ -2533,7 +2542,7 @@ fn command_argv(spec: &CommandSpec) -> Result<ShellArgv, ProcessError> {
                 ));
             }
             Ok(ShellArgv {
-                program: powershell_executable()?,
+                program: powershell_executable(force_system_51)?,
                 args: vec![
                     OsString::from("-NoLogo"),
                     OsString::from("-NoProfile"),
@@ -2557,7 +2566,7 @@ fn command_argv(spec: &CommandSpec) -> Result<ShellArgv, ProcessError> {
             shell: ShellKind::PowerShellLiteral,
             script,
         } => Ok(ShellArgv {
-            program: powershell_executable()?,
+            program: powershell_executable(force_system_51)?,
             args: vec![
                 OsString::from("-NoLogo"),
                 OsString::from("-NoProfile"),
@@ -2580,44 +2589,9 @@ fn command_argv(spec: &CommandSpec) -> Result<ShellArgv, ProcessError> {
     }
 }
 
-fn powershell_executable() -> Result<OsString, ProcessError> {
-    let mut buffer = vec![0_u16; 32_768];
-    // SAFETY: `buffer` is writable for its declared length and the API writes a
-    // NUL-terminated Windows directory path or returns zero on failure.
-    let length = unsafe {
-        GetWindowsDirectoryW(
-            buffer.as_mut_ptr(),
-            u32::try_from(buffer.len()).expect("Windows directory buffer fits in u32"),
-        )
-    };
-    if length == 0 {
-        return Err(spawn_failed(io::Error::last_os_error()));
-    }
-    let length = usize::try_from(length)
-        .map_err(|_| invalid_command("Windows directory length did not fit usize"))?;
-    if length >= buffer.len() {
-        return Err(invalid_command(
-            "Windows directory exceeded the fixed command-resolution buffer",
-        ));
-    }
-    buffer.truncate(length);
-    let executable = std::path::PathBuf::from(OsString::from_wide(&buffer))
-        .join("System32")
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe");
-    if !executable.is_file() {
-        return Err(ProcessError::SpawnFailed {
-            failure: SpawnFailure {
-                code: "powershell_unavailable".to_owned(),
-                message: format!(
-                    "trusted Windows PowerShell executable is unavailable: {}",
-                    executable.display()
-                ),
-            },
-        });
-    }
-    Ok(executable.into_os_string())
+fn powershell_executable(force_system_51: bool) -> Result<OsString, ProcessError> {
+    crate::windows_shell::resolve_windows_powershell_exe_with(force_system_51)
+        .map(|resolved| resolved.path.into_os_string())
 }
 
 // The agent script travels in a private environment variable and the
@@ -2652,6 +2626,8 @@ fn powershell_executable() -> Result<OsString, ProcessError> {
 const POWERSHELL_SCRIPT_ENV: &str = "NOMIFUN_PS_SCRIPT";
 const MAX_POWERSHELL_SCRIPT_UNITS: usize = 32_767;
 const POWERSHELL_WRAPPER: &str = r#"$ErrorActionPreference = 'Continue'
+$PSNativeCommandUseErrorActionPreference = $false
+$PSNativeCommandArgumentPassing = 'Legacy'
 $PSDefaultParameterValues['*:ErrorAction'] = 'Stop'
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -3568,6 +3544,14 @@ mod tests {
         assert!(
             wrapper.contains("PowerShell error:"),
             "catch path must emit a stable error prefix: {wrapper}"
+        );
+        assert!(
+            wrapper.contains("$PSNativeCommandUseErrorActionPreference = $false"),
+            "wrapper must keep native stderr from becoming terminating errors: {wrapper}"
+        );
+        assert!(
+            wrapper.contains("$PSNativeCommandArgumentPassing = 'Legacy'"),
+            "wrapper must pin native argument passing: {wrapper}"
         );
     }
 

@@ -193,15 +193,37 @@ impl BashTool {
     }
 }
 
-#[async_trait]
-impl Tool for BashTool {
-    fn name(&self) -> &str {
-        "Bash"
+#[cfg(windows)]
+fn windows_bash_description() -> &'static str {
+    match nomi_process_runtime::windows_shell_edition() {
+        nomi_process_runtime::WindowsShellEdition::Pwsh7 => WINDOWS_BASH_PS7,
+        nomi_process_runtime::WindowsShellEdition::PowerShell51 => WINDOWS_BASH_PS51,
     }
+}
 
-    fn description(&self) -> &str {
-        if cfg!(windows) {
-            "Executes a PowerShell command and returns its output. The tool is still named Bash for compatibility, but on Windows the command string is executed directly by Windows PowerShell 5.1, not cmd.exe, Unix bash, or pwsh.\n\n\
+#[cfg(windows)]
+const WINDOWS_BASH_PS7: &str = "Executes a PowerShell command and returns its output. The tool is still named Bash for compatibility, but on Windows the command string is executed directly by the app-managed PowerShell 7 host (pwsh), not cmd.exe, Unix bash, or Windows PowerShell 5.1.\n\n\
+             IMPORTANT: Do NOT use Bash when a dedicated tool is available:\n\
+             - File listing/search: use the OS-agnostic Glob tool on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). For the current directory, use Glob with \"*\" for top-level files or \"**/*\" recursively.\n\
+             - Content search: use Grep (not grep or rg)\n\
+             - Read files: use Read (not cat, head, or tail)\n\
+             - Edit files: use Edit (not sed or awk)\n\
+             - Write files: use Write (not echo redirection or cat with heredoc)\n\n\
+             # Instructions\n\
+             - For shell-only work, write PowerShell 7 syntax: Get-ChildItem, Get-Content, Set-Location, $env:NAME, && / || for chaining, and ?? / ??= / ?: when useful. Do not prefix the command with powershell.exe or pwsh; that double-wraps the host and expands variables too early. Run cmd /C \"...\" explicitly only when cmd.exe syntax is required.\n\
+             - Do not use start, Start-Process, or cmd /K. This tool rejects separate Windows consoles and GUI launches; use the Computer launch action instead.\n\
+             - Use absolute paths to avoid working directory confusion.\n\
+             - Validate browser behavior with the Browser tool. Do not emulate DOM, AudioContext, canvas, or other Web APIs in a long inline `node -e` command.\n\
+             - For multiline code, use Write to create a temporary script in the workspace, execute that script, then remove it if appropriate. This avoids PowerShell interpolation, quoting, and command-length failures.\n\
+             - When issuing multiple independent commands, make parallel tool calls instead of chaining them. Chain commands only when later commands depend on earlier ones.\n\
+             - You may specify an optional timeout in milliseconds (default 120000, max 600000).\n\
+             - For installs, dependency downloads, builds, migrations, or other long commands, choose a generous explicit timeout or use exec_command/write_stdin so you can poll instead of killing the command.\n\n\
+             # Git safety\n\
+             - Never force push, reset --hard, or use --no-verify unless explicitly asked.\n\
+             - Prefer creating new commits over amending existing ones.";
+
+#[cfg(windows)]
+const WINDOWS_BASH_PS51: &str = "Executes a PowerShell command and returns its output. The tool is still named Bash for compatibility, but on Windows the command string is executed directly by Windows PowerShell 5.1, not cmd.exe, Unix bash, or pwsh.\n\n\
              IMPORTANT: Do NOT use Bash when a dedicated tool is available:\n\
              - File listing/search: use the OS-agnostic Glob tool on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). For the current directory, use Glob with \"*\" for top-level files or \"**/*\" recursively.\n\
              - Content search: use Grep (not grep or rg)\n\
@@ -219,9 +241,10 @@ impl Tool for BashTool {
              - For installs, dependency downloads, builds, migrations, or other long commands, choose a generous explicit timeout or use exec_command/write_stdin so you can poll instead of killing the command.\n\n\
              # Git safety\n\
              - Never force push, reset --hard, or use --no-verify unless explicitly asked.\n\
-             - Prefer creating new commits over amending existing ones."
-        } else {
-            "Executes a shell command and returns its output.\n\n\
+             - Prefer creating new commits over amending existing ones.";
+
+#[cfg(not(windows))]
+const UNIX_BASH_DESCRIPTION: &str = "Executes a shell command and returns its output.\n\n\
              IMPORTANT: Do NOT use Bash when a dedicated tool is available:\n\
              - File listing/search: use the OS-agnostic Glob tool on every operating system (not shell-specific listing commands such as ls, dir, Get-ChildItem, or find). For the current directory, use Glob with \"*\" for top-level files or \"**/*\" recursively.\n\
              - Content search: use Grep (not grep or rg)\n\
@@ -237,7 +260,22 @@ impl Tool for BashTool {
              - For installs, dependency downloads, builds, migrations, or other long commands, choose a generous explicit timeout or use exec_command/write_stdin so you can poll instead of killing the command.\n\n\
              # Git safety\n\
              - Never force push, reset --hard, or use --no-verify unless explicitly asked.\n\
-             - Prefer creating new commits over amending existing ones."
+             - Prefer creating new commits over amending existing ones.";
+
+#[async_trait]
+impl Tool for BashTool {
+    fn name(&self) -> &str {
+        "Bash"
+    }
+
+    fn description(&self) -> &str {
+        #[cfg(windows)]
+        {
+            windows_bash_description()
+        }
+        #[cfg(not(windows))]
+        {
+            UNIX_BASH_DESCRIPTION
         }
     }
 
@@ -287,6 +325,7 @@ impl Tool for BashTool {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .min(MAX_TIMEOUT_MS);
         tracing::debug!(cwd = %self.cwd.display(), command, timeout_ms, "BashTool executing");
+        crate::windows_shell::ensure_windows_agent_shell().await;
 
         let cancelled = CancellationToken::new();
         let mut cancellation_guard = CancelWorkerOnDrop::new(cancelled.clone());
@@ -301,7 +340,7 @@ impl Tool for BashTool {
             PhaseClock::start(),
         ));
         let result = match worker.await {
-            Ok(result) => result,
+            Ok(result) => crate::windows_shell::prepend_windows_shell_host(result),
             Err(error) => ToolResult {
                 content: format!("Command worker failed: {error}"),
                 is_error: true,
@@ -553,13 +592,21 @@ mod tests {
     }
 
     #[test]
-    fn windows_description_states_powershell_51_contract() {
+    fn windows_description_states_resolved_shell_contract() {
         let tool = tool(std::env::temp_dir());
         let description = tool.description();
         if cfg!(windows) {
-            assert!(description.contains("Windows PowerShell 5.1"));
             assert!(description.contains("Do not prefix the command with powershell.exe"));
-            assert!(description.contains("PowerShell 7-only syntax such as ??"));
+            match nomi_process_runtime::windows_shell_edition() {
+                nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
+                    assert!(description.contains("PowerShell 7"));
+                    assert!(description.contains("&& / ||"));
+                }
+                nomi_process_runtime::WindowsShellEdition::PowerShell51 => {
+                    assert!(description.contains("Windows PowerShell 5.1"));
+                    assert!(description.contains("PowerShell 7-only syntax such as ??"));
+                }
+            }
         } else {
             assert!(!description.contains("Windows PowerShell 5.1"));
         }

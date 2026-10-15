@@ -1,4 +1,5 @@
 use nomi_process_runtime::Transport;
+use nomi_types::tool::ToolResult;
 
 pub(crate) const SHELL_PTY_COLS: u16 = 120;
 pub(crate) const SHELL_PTY_ROWS: u16 = 30;
@@ -198,6 +199,38 @@ fn command_tokens(script: &str) -> Vec<Vec<String>> {
     }
     finish_command(&mut word, &mut command, &mut commands);
     commands
+}
+
+pub(crate) async fn ensure_windows_agent_shell() {
+    // Unit tests compile this crate with `cfg(test)` and must not download the
+    // ~100MB sidecar. Production and integration tests use the real wait path.
+    #[cfg(all(windows, not(test)))]
+    {
+        if nomi_config::dep_is_available(nomi_config::RuntimeDep::Pwsh) {
+            return;
+        }
+        if !nomi_config::auto_ensure_enabled() {
+            return;
+        }
+        let ready = nomi_config::await_tool_deps("Bash", std::sync::Arc::new(|_| {})).await;
+        if !ready && !nomi_config::dep_is_available(nomi_config::RuntimeDep::Pwsh) {
+            let _ = nomi_config::ensure_runtime_dep(nomi_config::RuntimeDep::Pwsh, true).await;
+        }
+    }
+}
+
+pub(crate) fn prepend_windows_shell_host(mut result: ToolResult) -> ToolResult {
+    #[cfg(windows)]
+    {
+        use nomi_process_runtime::WindowsShellEdition;
+        if nomi_process_runtime::windows_shell_edition() == WindowsShellEdition::PowerShell51 {
+            result.content = format!(
+                "Shell host: Windows PowerShell 5.1 (managed pwsh unavailable). Rewrite using ';' and if ($?).\n{}",
+                result.content
+            );
+        }
+    }
+    result
 }
 
 #[cfg(all(test, windows))]

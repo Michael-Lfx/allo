@@ -129,6 +129,9 @@ pub fn default_login_shell() -> String {
         // PTY itself is healthy.  Resolve an absolute executable up front so
         // Store/MSI installations and npm-style PATH entries are handled by
         // the same runtime resolver as explicit terminal commands.
+        if let Ok(resolved) = nomi_process_runtime::resolve_windows_powershell_exe() {
+            return resolved.path.to_string_lossy().into_owned();
+        }
         for candidate in ["pwsh.exe", "powershell.exe"] {
             if let Some(path) = nomifun_runtime::resolve_command_path(candidate) {
                 return path.to_string_lossy().into_owned();
@@ -231,6 +234,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn default_shell_prefers_the_first_available_powershell() {
+        if let Ok(resolved) = nomi_process_runtime::resolve_windows_powershell_exe() {
+            assert_eq!(
+                default_login_shell(),
+                resolved.path.to_string_lossy().into_owned()
+            );
+            return;
+        }
         let expected = ["pwsh.exe", "powershell.exe"]
             .into_iter()
             .find_map(nomifun_runtime::resolve_command_path)

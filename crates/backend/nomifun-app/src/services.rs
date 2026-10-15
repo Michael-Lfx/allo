@@ -2305,6 +2305,12 @@ impl AppServices {
             elapsed_ms = boot.elapsed().as_millis(),
             "startup: AppServices retired-model cleanup done"
         );
+        nomi_config::register_dep_gate_hooks();
+        let mut warmup = vec![nomi_config::RuntimeDep::Ripgrep];
+        if cfg!(windows) {
+            warmup.push(nomi_config::RuntimeDep::Pwsh);
+        }
+        nomi_config::spawn_background_install(warmup);
         // Security hard-cut: older builds persisted live loopback root tokens in
         // this beacon. Scoped child capabilities make discovery without an
         // authoritative session impossible, so remove both the final and
