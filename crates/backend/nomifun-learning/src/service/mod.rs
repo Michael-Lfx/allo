@@ -42,6 +42,7 @@ pub(super) use crate::models::{
     MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
     ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
+    XpCalendar, XpCalendarDay, XpReading,
 };
 pub(super) use crate::scheduler::{
     SchedulerSettings, days_elapsed_between, first_review_due_at, predicted_retrievability,
@@ -115,6 +116,9 @@ pub struct LearningService {
     /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
     /// 读数面）。内存态，仅诊断。
     growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
+    /// companion XP 桥（j05 统一账）：结算落账后的同步授予接缝。缺省
+    /// `None`（测试/CLI/无伙伴花名册）——只落学习账，companion 余额滞后。
+    companion_xp_sink: Arc<RwLock<Option<Arc<dyn CompanionXpSink>>>>,
 }
 
 /// 生长循环的重试读数（learning-smoke grow/loop 输出用；读数面非门禁）。
@@ -144,6 +148,7 @@ impl LearningService {
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
             generation_tasks: Arc::new(GenerationTaskRegistry::new()),
             growth_run_stats: Arc::new(Mutex::new(None)),
+            companion_xp_sink: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -509,6 +514,9 @@ mod memory;
 mod progress;
 mod review;
 mod tags;
+mod xp;
+
+pub use xp::CompanionXpSink;
 
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,

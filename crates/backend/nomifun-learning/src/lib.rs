@@ -7,6 +7,7 @@ mod lesson_draft;
 mod models;
 mod routes;
 mod scheduler;
+mod settle;
 mod service;
 mod state;
 mod tutorial;
@@ -46,12 +47,12 @@ pub use models::{
     LessonView,
     ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
-    VISUAL_OPTIONS,
+    VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
 pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
     visual_menu_text,
 };
 pub use routes::learning_routes;
-pub use service::{GrowthRunStats, LearningService};
+pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
 pub use state::LearningRouterState;

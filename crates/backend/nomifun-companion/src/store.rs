@@ -766,6 +766,23 @@ CREATE TABLE IF NOT EXISTS companion_session_windows (
 );
 CREATE INDEX IF NOT EXISTS idx_csw_companion_day ON companion_session_windows(companion_id, session_day);
 CREATE INDEX IF NOT EXISTS idx_csw_status ON companion_session_windows(companion_id, status, last_activity_at);
+
+-- 学习结算入账桥的去重账（j05 统一账）：每个 learning_xp_events 事件在此
+-- 至多一行；INSERT OR IGNORE 命中新行才把 delta 加进 companion XP——同一
+-- 事件重复授予被事件 id 幂等吸收。事件 id 是学习线主账的键，形状由学习侧
+-- 保证（UUIDv7），这里只当去重键用。
+CREATE TABLE IF NOT EXISTS companion_learning_xp (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  companion_id TEXT NOT NULL CHECK (
+    length(companion_id) = 36
+    AND lower(companion_id) = companion_id
+    AND companion_id GLOB '????????-????-7???-[89ab]???-????????????'
+    AND replace(companion_id, '-', '') NOT GLOB '*[^0-9a-f]*'
+  ),
+  delta INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 "#;
 
 /// External-content FTS5 index over `companion_memories.content` (trigram
@@ -1072,6 +1089,21 @@ const BASELINE_TABLES: &[TableContract] = &[
         ],
         uuidv7_columns: &["session_window_id", "companion_id", "conversation_id"],
         unique_indexes: &[UniqueIndexContract { columns: &["session_window_id"], origin: "u", partial: false }],
+        required_sql_fragments: &[],
+    },
+    TableContract {
+        name: "companion_learning_xp",
+        columns: &[
+            ColumnContract { name: "id", declared_type: "INTEGER", not_null: false, primary_key_position: 1 },
+            ColumnContract { name: "event_id", declared_type: "TEXT", not_null: true, primary_key_position: 0 },
+            ColumnContract { name: "companion_id", declared_type: "TEXT", not_null: true, primary_key_position: 0 },
+            ColumnContract { name: "delta", declared_type: "INTEGER", not_null: true, primary_key_position: 0 },
+            ColumnContract { name: "created_at", declared_type: "INTEGER", not_null: true, primary_key_position: 0 },
+        ],
+        // event_id 是学习线 learning_xp_events 的主账键，形状由学习侧保证，
+        // companion 侧只作去重键——不进 uuidv7 审计。
+        uuidv7_columns: &["companion_id"],
+        unique_indexes: &[UniqueIndexContract { columns: &["event_id"], origin: "u", partial: false }],
         required_sql_fragments: &[],
     },
 ];
@@ -2230,6 +2262,53 @@ impl CompanionStore {
         .await
         .map_err(db_err)?;
         Ok(row.get("xp"))
+    }
+
+    /// 学习结算入账桥（j05 统一账）：幂等授予一笔已落账的学习结算——
+    /// `event_id` 首次出现才把 `delta` 加进 companion XP，重复调用原样返回
+    /// false（同一事件绝不二次入账）。单事务：去重行与 XP 增量同生共死，
+    /// 失败即整体回滚（调用方可安全重试，学习线真相在学习库不受影响）。
+    /// 返回本次是否实际入账。
+    pub async fn grant_learning_xp(
+        &self,
+        companion_id: &str,
+        event_id: &str,
+        delta: i64,
+    ) -> Result<bool, AppError> {
+        validate_companion_id(companion_id, "companion xp companion_id")?;
+        if event_id.trim().is_empty() {
+            return Err(AppError::BadRequest(
+                "companion learning xp event_id must not be empty".into(),
+            ));
+        }
+        let mut transaction = self.pool.begin().await.map_err(db_err)?;
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO companion_learning_xp(event_id, companion_id, delta, created_at) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(event_id)
+        .bind(companion_id)
+        .bind(delta)
+        .bind(now_ms())
+        .execute(&mut *transaction)
+        .await
+        .map_err(db_err)?
+        .rows_affected();
+        if inserted == 0 {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO companion_runtime_state(companion_id, state_key, value) VALUES(?, 'xp', ?)
+             ON CONFLICT(companion_id, state_key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)",
+        )
+        .bind(companion_id)
+        .bind(delta.to_string())
+        .bind(delta)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db_err)?;
+        transaction.commit().await.map_err(db_err)?;
+        Ok(true)
     }
 
     /// Write `(companion_id, key)` only if that row does not exist yet.

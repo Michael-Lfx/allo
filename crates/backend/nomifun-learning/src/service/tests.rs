@@ -1420,19 +1420,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
         (service, user_id)
     }
 
-    async fn set_checkin_goal(service: &LearningService, goal: i64) {
-        sqlx::query(
-            "INSERT INTO client_preferences (key, value, updated_at) VALUES \
-             ('learning.dailyCheckinGoal', ?, ?) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        )
-        .bind(goal.to_string())
-        .bind(now_ms())
-        .execute(service.pool_for_tests())
-        .await
-        .unwrap();
-    }
-
     async fn insert_review_event(service: &LearningService, user_id: &UserId, at: i64) {
         sqlx::query(
             "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
@@ -1446,6 +1433,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
         .await
         .unwrap();
     }
+
+    /// 历史：j05 起打卡按 XP 口径（`checkin_today_locks_on_xp_gauge`），
+    /// `learning.dailyCheckinGoal` 计数口径退役，其设置助手一并移除。
 
     async fn insert_due_custom_question(service: &LearningService, user_id: &UserId) {
         let now = now_ms();
@@ -1625,22 +1615,6 @@ teaching_style: crate::models::TeachingStyle::Standard,
     }
 
     #[tokio::test]
-    async fn checkin_locks_when_goal_reached() {
-        let (service, user_id) = checkin_test_service().await;
-        set_checkin_goal(&service, 5).await;
-        let now = now_ms();
-        for _ in 0..5 {
-            insert_review_event(&service, &user_id, now).await;
-        }
-        let status = service.checkin_today(&user_id).await.unwrap();
-        assert_eq!(status.reviewed_count, 5);
-        assert_eq!(status.goal, 5);
-        assert!(status.completed, "goal reached must complete the day");
-        assert!(status.locked_at.is_some());
-        assert_eq!(checkin_rows(&service, &user_id).await, 1);
-    }
-
-    #[tokio::test]
     async fn checkin_empty_queue_without_review_stays_open() {
         let (service, user_id) = checkin_test_service().await;
         // 收窄后的语义：零复习 + 空队列只是初始状态，绝不锁定“完成”。
@@ -1651,31 +1625,58 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(checkin_rows(&service, &user_id).await, 0);
     }
 
+    /// j05 起锁定的唯一开关是今日 XP 达标；清空队列不再是完成条件
+    /// （打卡计数口径退役）。
     #[tokio::test]
-    async fn checkin_completes_after_reviewing_then_clearing_queue() {
+    async fn checkin_ignores_queue_state_and_counts_only_xp() {
         let (service, user_id) = checkin_test_service().await;
-        // goal = 0: no count target, clearing the queue after at least one
-        // review completes the day.
-        set_checkin_goal(&service, 0).await;
-        let before = service.checkin_today(&user_id).await.unwrap();
-        assert_eq!(before.goal, 0);
-        assert_eq!(before.reviewed_count, 0);
-        assert_eq!(before.due_count, 0);
-        assert!(!before.completed, "an empty queue without review is not a check-in");
-        assert_eq!(checkin_rows(&service, &user_id).await, 0);
-        insert_review_event(&service, &user_id, now_ms()).await;
+        // 队列已清空但没有 XP：不完成。
         let status = service.checkin_today(&user_id).await.unwrap();
-        assert_eq!(status.reviewed_count, 1);
         assert_eq!(status.due_count, 0);
-        assert!(status.completed, "queue cleared after reviewing must complete");
-        assert_eq!(checkin_rows(&service, &user_id).await, 1);
+        assert!(!status.completed, "an empty queue without XP is not a check-in");
+        // 一笔 0 分结算（错答推进）也不完成：净入账仍为 0。
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, '0190f5fe-7c00-7a00-8abc-222222222222', '0190f5fe-7c00-7a00-8abc-333333333333', \
+                     'review-completed', 0, 0, 'partial', 0.0, 'review-course', 'review:smoke:1')",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let status = service.checkin_today(&user_id).await.unwrap();
+        assert_eq!(status.reviewed_count, 0);
+        assert!(!status.completed, "a zero-xp day never completes");
     }
 
     #[tokio::test]
     async fn checkin_stays_locked_after_new_due_cards() {
         let (service, user_id) = checkin_test_service().await;
-        // 先刷一张卡（队列本就为空）→ 清空条件锁定当天。
-        insert_review_event(&service, &user_id, now_ms()).await;
+        // 先把日目标降到 1 并落一笔 XP 结算（j05 XP 口径锁定）。
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) \
+             VALUES ('learning.dailyXpGoal', '1', ?) \
+             ON CONFLICT(key) DO UPDATE SET value = '1', updated_at = excluded.updated_at",
+        )
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, '0190f5fe-7c00-7a00-8abc-222222222222', '0190f5fe-7c00-7a00-8abc-333333333333', \
+                     'node-completed', 12, 2, 'full', NULL, 'lesson-progress', 'node:smoke')",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
         let first = service.checkin_today(&user_id).await.unwrap();
         assert!(first.completed);
         // A card arriving later stays in the queue as extra work but does not
@@ -5432,3 +5433,426 @@ async fn retired_names_do_not_block_minting() {
     assert_eq!(reference_hangs, 1, "the reference lands on the active row");
 }
 
+
+// ---------------------------------------------------------------------------
+// j05：复习事件加固 + XP 结算后端（三轮 t3 + 三轮 t1）
+// ---------------------------------------------------------------------------
+
+/// 教新线结算：完成课时按 est 计价入账，幂等锚吃掉重复完成。
+#[tokio::test]
+async fn xp_node_settlement_is_priced_by_est_and_idempotent() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+    // 练习全对（1/1 通过 → full）：est 10 + bonus 2。
+    let result = service
+        .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    assert!(result.passed);
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let (count, earned, bonus, basis): (i64, i64, i64, String) = sqlx::query_as(
+        "SELECT COUNT(*), earned_xp, xp_bonus, basis FROM learning_xp_events \
+         WHERE kind = 'node-completed'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!((earned, bonus, basis.as_str()), (12, 2, "full"));
+
+    // 重复完成：锚吸收，不重复结算（一次性事实）。
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_xp_events WHERE kind = 'node-completed'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "duplicate completion must not settle twice");
+}
+
+/// 复习线：一次真实推进结算一笔（同卡同学习日一笔）；同日折叠 = 只记作答
+/// 流水，不推进、不落日志、不重复结算。
+#[tokio::test]
+async fn xp_review_settlement_folds_same_day_repeat() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    make_all_due(&service, &user_id).await;
+    let due = service
+        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .await
+        .unwrap();
+    assert_eq!(due.len(), 1);
+    let card = due[0].id.clone();
+
+    // 承认遗忘：推进 + auto-again 落日志，结算一笔 0 分 partial。
+    let result = service
+        .answer_review(&card, &user_id, Value::Null, true, Some(4_200))
+        .await
+        .unwrap();
+    assert!(!result.correct);
+    assert!(result.advanced);
+    let (log_rows, xp_rows, earned): (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM learning_review_log WHERE rating_source != 'synthetic'), \
+           (SELECT COUNT(*) FROM learning_xp_events WHERE kind = 'review-completed'), \
+           (SELECT COALESCE(MAX(earned_xp), -1) FROM learning_xp_events WHERE kind = 'review-completed')",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!((log_rows, xp_rows, earned), (1, 1, 0));
+    // 作答流水行带完整作答锚（j05 补列）。
+    let (elapsed_ms, forgot, response): (Option<i64>, i64, String) = sqlx::query_as(
+        "SELECT elapsed_ms, forgot, response FROM learning_review_events",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!((elapsed_ms, forgot), (Some(4_200), 1));
+    assert_eq!(response, "null");
+
+    // 同学习日重复作答（卡未再到期）：折叠 —— 作答流水照记，调度、日志、
+    // 结算全部不动。
+    let (due_at, stability): (i64, f64) = sqlx::query_as(
+        "SELECT due_at, stability_days FROM learning_review_items",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let folded = service
+        .answer_review(&card, &user_id, Value::Null, true, Some(1_000))
+        .await
+        .unwrap();
+    assert!(!folded.advanced, "same-day repeat must fold");
+    let (due_at_after, stability_after): (i64, f64) = sqlx::query_as(
+        "SELECT due_at, stability_days FROM learning_review_items",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!((due_at_after, stability_after), (due_at, stability), "fold must not move the schedule");
+    let (log_rows, xp_rows, flow_rows): (i64, i64, i64) = sqlx::query_as(
+        "SELECT \
+           (SELECT COUNT(*) FROM learning_review_log WHERE rating_source != 'synthetic'), \
+           (SELECT COUNT(*) FROM learning_xp_events WHERE kind = 'review-completed'), \
+           (SELECT COUNT(*) FROM learning_review_events)",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!((log_rows, xp_rows, flow_rows), (1, 1, 1), "fold adds an answer-flow row only");
+}
+
+/// 复习日志推进前快照四字段：首推为 NULL，真有记忆状态的推进逐字段铸值。
+#[tokio::test]
+async fn review_log_casts_pre_push_snapshot_fields() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    make_all_due(&service, &user_id).await;
+    let card = service
+        .due_reviews(&user_id, 10, &[], true, false, &[])
+        .await
+        .unwrap()[0]
+        .id
+        .clone();
+    // 首推（无记忆状态）：四字段全 NULL、elapsed_days 0 ——「无则落 null
+    // 不省略」。
+    service
+        .answer_review(&card, &user_id, Value::Null, true, None)
+        .await
+        .unwrap();
+    let (elapsed, stability, difficulty, r_pred): (i64, Option<f64>, Option<f64>, Option<f64>) =
+        sqlx::query_as(
+            "SELECT elapsed_days, stability_before, difficulty_before, r_pred \
+             FROM learning_review_log WHERE rating_source != 'synthetic'",
+        )
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+    assert_eq!((elapsed, stability, difficulty, r_pred), (0, None, None, None));
+
+    // 第二次真实推进（重列到期）：四字段逐个从卡片推进前状态铸值。
+    make_all_due(&service, &user_id).await;
+    service
+        .answer_review(&card, &user_id, Value::Null, true, None)
+        .await
+        .unwrap();
+    let (stability, difficulty, r_pred): (Option<f64>, Option<f64>, Option<f64>) = sqlx::query_as(
+        "SELECT stability_before, difficulty_before, r_pred \
+         FROM learning_review_log WHERE rating_source != 'synthetic' \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(stability.is_some_and(|value| value > 0.0), "stability_before casts the pre-push state");
+    assert!(difficulty.is_some_and(|value| (1.0..=10.0).contains(&value)));
+    assert!(r_pred.is_some_and(|value| value > 0.0 && value <= 1.0));
+}
+
+/// 复习线自建题：无课程归属结算（锚 custom 段），错答 0 分不误伤。
+#[tokio::test]
+async fn xp_custom_review_settles_without_course_scope() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let question_id = service
+        .create_custom_question(
+            &user_id,
+            CreateCustomQuestionRequest {
+                kind: ActivityKind::SingleChoice,
+                prompt: "2+2=?".into(),
+                options: vec!["3".into(), "4".into()],
+                answer: json!("4"),
+                explanation: String::new(),
+                distractors: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE learning_custom_questions SET due_at = ? WHERE custom_question_id = ?")
+        .bind(now_ms() - 1_000)
+        .bind(&question_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    // 错答：auto-again 推进 → 结算 0 分 partial（错答不罚负，乱猜判据
+    // n≥4 才生效）。
+    let result = service
+        .answer_custom_review(&question_id, &user_id, json!("3"), false)
+        .await
+        .unwrap();
+    assert!(!result.correct && result.advanced);
+    let (kind, course_id, node_id, anchor, earned): (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT kind, course_id, node_id, anchor, earned_xp FROM learning_xp_events",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(kind, "review-completed");
+    assert_eq!((course_id.as_deref(), node_id.as_deref()), (None, None));
+    assert!(anchor.starts_with("review:custom:"), "custom anchor: {anchor}");
+    assert_eq!(earned, 0);
+}
+
+/// 种卡幂等：重复完成课时 = 已存在跳过，调度原样（不静默重置）。
+#[tokio::test]
+async fn seeding_review_items_is_idempotent() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    make_all_due(&service, &user_id).await;
+    service
+        .answer_review(
+            &service
+                .due_reviews(&user_id, 10, &[], true, false, &[])
+                .await
+                .unwrap()[0]
+                .id
+                .clone(),
+            &user_id,
+            Value::Null,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    let (due_at, review_count): (i64, i64) = sqlx::query_as(
+        "SELECT due_at, review_count FROM learning_review_items",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    // 再次完成：卡片存在 = 跳过，推进状态原样。
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let (due_at_after, review_count_after, count): (i64, i64, i64) = sqlx::query_as(
+        "SELECT due_at, review_count, COUNT(*) FROM learning_review_items",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(count, 1, "no duplicate card");
+    assert_eq!(
+        (due_at_after, review_count_after),
+        (due_at, review_count),
+        "existing card keeps its schedule (no silent reset)"
+    );
+}
+
+/// 读数尺：进度尺分子分母同筛（现存且启用）、两把尺同源互不换算、
+/// 尺永不倒挂（settled ≤ total、remaining ≥ 0、ETA 纯投影）。
+#[tokio::test]
+async fn xp_reading_gauges_never_invert() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(
+        (
+            reading.today_xp,
+            reading.settled_nodes,
+            reading.total_nodes,
+            reading.remaining_est
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(reading.eta_days, None, "no pace signal → null ETA");
+
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+    service
+        .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+
+    let reading = service.xp_reading(&user_id).await.unwrap();
+    assert_eq!(reading.total_nodes, 1);
+    assert_eq!(reading.settled_nodes, 1);
+    assert!(reading.settled_nodes <= reading.total_nodes, "尺永不倒挂");
+    assert_eq!(reading.remaining_est, 0);
+    assert_eq!(reading.eta_days, Some(0), "nothing remains → ETA 0");
+    assert_eq!(reading.today_xp, 12, "est 10 + bonus 2");
+    assert!(!reading.goal_achieved, "default goal 40 > 12");
+
+    // 日历：恒 84 桶含零桶、末桶 = 今日、不过课程筛。
+    let calendar = service.xp_calendar(&user_id, 12).await.unwrap();
+    assert_eq!(calendar.days.len(), 84);
+    assert!(calendar.days.iter().all(|day| day.xp >= 0));
+    assert_eq!(calendar.days.last().unwrap().xp, 12);
+    assert_eq!(calendar.days.first().unwrap().xp, 0);
+}
+
+/// 打卡口径退役：日达标按 XP（dailyXpGoal），锁定快照记 XP 口径。
+#[tokio::test]
+async fn checkin_today_locks_on_xp_gauge() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    let course = service.import_course(valid_pack()).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let activity_id = detail.modules[0].lessons[0].activities[0].id.clone();
+    service
+        .submit_attempt(&activity_id, &user_id, Value::Bool(true), None, None)
+        .await
+        .unwrap();
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+
+    // 缺省目标 40：今日 XP 12 未达标。
+    let status = service.checkin_today(&user_id).await.unwrap();
+    assert_eq!((status.goal, status.reviewed_count), (40, 12));
+    assert!(!status.completed);
+
+    // 目标降到 10：达标并锁定（快照 = XP 口径）。
+    sqlx::query(
+        "INSERT INTO client_preferences (key, value, updated_at) \
+         VALUES ('learning.dailyXpGoal', '10', ?) \
+         ON CONFLICT(key) DO UPDATE SET value = '10', updated_at = excluded.updated_at",
+    )
+    .bind(now_ms())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let status = service.checkin_today(&user_id).await.unwrap();
+    assert_eq!((status.goal, status.reviewed_count), (10, 12));
+    assert!(status.completed);
+    assert!(status.locked_at.is_some());
+}

@@ -99,6 +99,7 @@ impl ClientPrefService {
 
         for (key, value) in req {
             validate_key(&key)?;
+            validate_value(&key, &value)?;
             if SYSTEM_RESERVED_PREFIXES
                 .iter()
                 .any(|prefix| key.starts_with(prefix))
@@ -216,6 +217,22 @@ fn validate_key(key: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Keyed value-range gates for preferences that the backend reads as numbers:
+/// an out-of-range write is rejected up front instead of being silently
+/// clamped (or worse, honored) at read time. Currently only the learning
+/// daily XP goal (j05); add keys as they gain read-side contracts.
+fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), AppError> {
+    if key == "learning.dailyXpGoal" {
+        return match value.as_i64() {
+            Some(goal) if (1..=1000).contains(&goal) => Ok(()),
+            _ => Err(AppError::BadRequest(
+                "learning.dailyXpGoal must be an integer between 1 and 1000".into(),
+            )),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +276,18 @@ mod tests {
     fn validate_key_rejects_too_long() {
         let long_key = "x".repeat(MAX_KEY_LENGTH + 1);
         assert!(validate_key(&long_key).is_err());
+    }
+
+    #[test]
+    fn validate_value_gates_daily_xp_goal_range() {
+        assert!(validate_value("learning.dailyXpGoal", &json!(1)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(40)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(1000)).is_ok());
+        assert!(validate_value("learning.dailyXpGoal", &json!(0)).is_err());
+        assert!(validate_value("learning.dailyXpGoal", &json!(1001)).is_err());
+        assert!(validate_value("learning.dailyXpGoal", &json!("40")).is_err());
+        // 其它键不设值域门。
+        assert!(validate_value("theme", &json!(0)).is_ok());
     }
 
     #[tokio::test]
