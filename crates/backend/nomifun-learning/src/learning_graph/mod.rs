@@ -674,7 +674,7 @@ pub(crate) async fn coach_redraft(
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 minutes 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
         context.render()
     );
     let raw = crate::generation::complete_json_coach(
@@ -710,12 +710,12 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 
 【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
-2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。
+2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
 【不算问题，一律不报】
-- 分钟数长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
+- est 长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     fn node(title: &str, teaches: Vec<ConceptRefInput>, assumes: Vec<ConceptRefInput>) -> ProposedNode {
-        ProposedNode { title: title.to_owned(), purpose: String::new(), minutes: Some(20), difficulty: None, teaches, assumes }
+        ProposedNode { title: title.to_owned(), purpose: String::new(), est: Some(20), difficulty: None, teaches, assumes }
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
@@ -1611,13 +1611,13 @@ mod tests {
     /// 被机械归一（可机械判定的不送模型——真机 round 4 死链的引信），
     /// 回包照常装填；语义违规（est 超范围）仍打回，归一不造值。
     #[test]
-    /// g4：容错 deserializer 已退役——字符串 minutes 与中文档位不再是
+    /// g4：容错 deserializer 已退役——字符串 est 值与中文档位不再是
     /// 「容忍解析」，而是带条款报告的违约（报告进重试装配）。
     #[test]
     fn parse_coach_reply_rejects_legacy_tolerant_shapes_with_clause_report() {
         let raw = r#"{
             "nodes": [
-                { "title": "用配方法解方程", "purpose": "p", "minutes": "15",
+                { "title": "用配方法解方程", "purpose": "p", "est": "15",
                   "teaches": [{"name": "配方法", "tier": "会用"}],
                   "assumes": [{"name": "一元二次方程", "tier": "知道"}] }
             ],
@@ -1626,8 +1626,26 @@ mod tests {
         }"#;
         let error = parse_coach_reply(raw).unwrap_err();
         let message = error.to_string();
-        assert!(message.contains("ng.nodes.minutes"), "{message}");
+        // est 键下的字符串值 = 形状违约（ng.nodes.est）；旧键名 minutes 本身
+        // 已退役，按未知键打回（见 retired_minutes_key_is_an_unknown_key_violation）
+        // ——两者都不再被容错吞掉。
+        assert!(message.contains("ng.nodes.est"), "{message}");
         assert!(message.contains("ng.refs.tier"), "{message}");
+    }
+
+    /// 退役键名：`minutes` 不在节点键白名单，旧习惯回潮按未知键打回。
+    #[test]
+    fn retired_minutes_key_is_an_unknown_key_violation() {
+        let raw = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "minutes": 15,
+                  "teaches": [{"name": "配方法", "tier": "apply"}], "assumes": [] }
+            ],
+            "mints": [],
+            "note": "n"
+        }"#;
+        let error = parse_coach_reply(raw).unwrap_err();
+        assert!(error.to_string().contains("ng.keys"), "{error}");
     }
 
     /// 严格路径的正向：契约合规的回包按结构装填并做 trim 归一。
@@ -1636,7 +1654,7 @@ mod tests {
         let raw = r#"{
             "nodes": [
                 { "title": " 用配方法解方程 ", "purpose": " 从配方经验切入 ",
-                  "minutes": 15, "difficulty": 3,
+                  "est": 15, "difficulty": 3,
                   "teaches": [{"name": " 配方法 ", "tier": "apply"}],
                   "assumes": [{"name": "一元二次方程", "tier": "know"}] }
             ],

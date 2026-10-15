@@ -1,9 +1,9 @@
 ---
 contract: learning-structure-artifacts
-version: "1.0"
-date: 2026-10-12
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）
-sources: [docs/tracker/learning-absorb/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.4]
+version: "1.1"
+date: 2026-10-15
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）
+sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
 # 学习结构产物契约 v1.0
@@ -159,8 +159,12 @@ sources: [docs/tracker/learning-absorb/map.md, docs/adr/0010-endpoint-anchors-an
 | gd.terrain.frontmatter | 四个标量键全非空 |
 | gd.terrain.doors | doors ≥1；键 ⊆ {id, criterion, kind}；id 形态 `G<数字>` 且唯一；criterion 非空且含能力动词（能/可——可验证判据的机械代理）；kind ∈ {hard, self_check}（hard = 无豁免硬前置，self_check = 可自检项） |
 
-地形与结构同为**参考面**产物：不参与判定、不与概念关联；门口以下是假设已会的
-前置，不属于本课程教学单元，由生长循环自己教出来。
+地形与结构同为**参考面**产物：不参与判定、不与概念关联。**门位口径（v2.10）**：门画在
+学习者的**真实起步地板**上——地板 = 基线学习者今天已具备、能直接踩着开始的那条线；
+「教材第一章」「正式入门」都不等于地板。门口以下是假设已会的前置（地板以下），不属于
+本课程教学单元；**地板以上的一切内容全进知识结构**（开局贴地、可学可挂）——结构入门档
+从门口贴地起排，门口与入门档之间不留无主地带。地形由此收缩为**地板以下与临门自检**
+两类判据（`hard` / `self_check`），由生长循环自己教出来的部分照旧归生长。
 
 ## 4 门口对账
 

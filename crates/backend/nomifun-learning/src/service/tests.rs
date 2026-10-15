@@ -3254,9 +3254,9 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     // problems 缺省为空即通过。
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "首批基节点", "minutes": 15,
+            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
-            {"title": "用极限法则求切线", "purpose": "衔接节点", "minutes": 20,
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 20,
              "teaches": [{"name": "求导法则", "tier": "apply"}],
              "assumes": [{"name": "向量基础", "tier": "know"}]}
         ],
@@ -3725,7 +3725,7 @@ async fn growth_auto_triggers_on_lesson_completion() {
     let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
     let batch_json = r#"{
         "nodes": [
-            {"title": "用定义计算极限", "purpose": "后续节点", "minutes": 15,
+            {"title": "用定义计算极限", "purpose": "后续节点", "est": 15,
              "teaches": [{"name": "极限", "tier": "know"}], "assumes": []}
         ],
         "mints": [ { "canonical": "极限", "aliases": [], "definition": "" } ],
@@ -3941,7 +3941,7 @@ async fn lesson_context_carries_the_course_goal() {
         title: title.into(),
         summary: String::new(),
         purpose: "目标一".into(),
-        estimated_minutes: 10,
+        est: 10,
         source: None,
         sources: Vec::new(),
         activities: Vec::new(),
