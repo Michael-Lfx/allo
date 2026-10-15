@@ -18,6 +18,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ipcBridge } from '@/common';
+import { AppMessage as Message } from '@/renderer/components/notifications';
 import { lessonStatusTagColors } from '../model';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
@@ -34,6 +35,7 @@ import type {
   LessonStatus,
 } from '../types';
 import { LessonBlock } from './LessonStudy';
+import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import { StructureGraphTab } from './structure/StructureGraphTab';
@@ -232,12 +234,31 @@ const LearningGraphWorkspace: React.FC<{
             <Tag size='small' color='orangered' className='!mx-0 shrink-0'>
               {t('learning.learningGraphBeta')}
             </Tag>
+            {!detail.course.enabled && <CourseArchivedBadge />}
           </div>
           {graph.goal.trim() !== '' && (
             <Paragraph className='!mb-0 !mt-4px text-t-secondary'>{graph.goal}</Paragraph>
           )}
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
+          {!detail.course.enabled && (
+            <Button
+              size='small'
+              type='primary'
+              onClick={() => {
+                learningApi
+                  .restoreCourse(detail.course.id)
+                  .then(() => {
+                    Message.success(t('learning.courseRestoreDone'));
+                    onRefresh();
+                  })
+                  .catch((actionError) => Message.error(errorMessage(t, actionError)));
+              }}
+            >
+              {t('learning.courseRestore')}
+            </Button>
+          )}
+          <CourseRenameButton course={detail.course} onChanged={onRefresh} size='small' />
           <ContentWidthToggle />
           <LearningModelSelector
             choice={model.choice}
