@@ -5194,3 +5194,241 @@ async fn lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_bas
         primary_excerpt
     );
 }
+
+// ── 别名闭环全量（j04 = 二轮 g3 + 三轮 g2）────────────────────────────────
+
+/// 复用即落池：评审把 mints 提名裁为复用（concept_id 指向种子概念）→ 不铸
+/// 新行，提名名落为该概念的活跃别名记录；引用该名的 teaches 解析到宿主。
+#[tokio::test]
+async fn reuse_ruling_pools_the_name_instead_of_minting() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let host: String = sqlx::query_scalar(
+        "SELECT concept_id FROM learning_concept_registry WHERE canonical = '向量基础'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let batch_json = format!(
+        r#"{{"nodes": [{{"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15, "teaches": [{{"name": "向量代数", "tier": "know"}}], "assumes": []}}], "mints": [{{"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}}], "new_aliases": [], "note": "复用稿"}}"#
+    );
+    let review_json =
+        format!(r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}]}}"#);
+    let completer = SequencedCompleter::new(vec![batch_json, review_json]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    // 不铸新行：登记表仍只有种子 1 条概念。
+    let registry: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+    assert_eq!(registry, 1, "reuse must not mint a new row");
+    // 提名名落池：宿主概念多了活跃别名「向量代数」，带提名定义。
+    let aliases_json: String = sqlx::query_scalar(
+        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    )
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let records = crate::learning_graph::alias_records::parse_alias_records(&aliases_json);
+    assert!(records.iter().any(|record| record.name == "向量代数"
+        && record.status == "active"
+        && record.definition.as_deref() == Some("用向量语言改写既有对象关系")));
+    // 引用落位：节点 teaches 向量代数 → 宿主概念的网边（ref_name 记投影名）。
+    let refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+         JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND lc.concept_id = ? AND lc.role = 'teaches' AND lc.ref_name = '向量代数'",
+    )
+    .bind(&course_id)
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(
+        refs, 1,
+        "the reference hangs off the host concept via the pooled name"
+    );
+}
+
+/// new_aliases 归一化直定宿主：提名定义与既有概念逐字相同 → 门面机械绑定
+///（评审零裁决也放行），别名带提名定义与出处落池。
+#[tokio::test]
+async fn new_alias_with_exact_definition_binds_directly() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let host: String = sqlx::query_scalar(
+        "SELECT concept_id FROM learning_concept_registry WHERE canonical = '向量基础'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE learning_concept_registry SET definition = ? WHERE concept_id = ?")
+        .bind("用有方向的量描述位移与力")
+        .bind(&host)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "换名重述向量", "purpose": "从不同叫法切入", "est": 15,
+             "teaches": [{"name": "向量算术", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [],
+        "new_aliases": [
+            {"name": "向量算术", "definition": "用有方向的量描述位移与力", "source": "教练提名：低龄学习者的日常叫法"}
+        ],
+        "note": "直定稿"
+    }"#;
+    let review_json = r#"{"verdict":"pass"}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let aliases_json: String = sqlx::query_scalar(
+        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    )
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        aliases_json.contains("向量算术") && aliases_json.contains("低龄学习者的日常叫法"),
+        "direct-host alias lands with definition and attestation: {aliases_json}"
+    );
+}
+
+/// 裁决新铸打回指点：new_alias 未被裁复用（评审零裁决、无直定宿主）→
+/// 整批打回，反馈携带改走 mints 的指点；同错两轮 → 早停（不再烧第 3 轮）。
+#[tokio::test]
+async fn new_alias_without_reuse_ruling_returns_the_batch_with_pointer() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "无宿主提名", "purpose": "p", "est": 15,
+             "teaches": [{"name": "新名", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [],
+        "new_aliases": [
+            {"name": "新名", "definition": "登记表里没有的独立定义", "source": "s"}
+        ],
+        "note": "n"
+    }"#;
+    let review_json = r#"{"verdict":"pass"}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "the batch must be returned with the mints pointer"
+    );
+    assert_eq!(
+        completer.call_count(),
+        4,
+        "same fingerprint stops at two attempts (draft/redraft + review per attempt)"
+    );
+    let stats = service.growth_run_stats().expect("stats recorded");
+    assert_eq!(stats.stop_reason, "early_stop");
+}
+
+/// 别名池可见：教练起草装配含【概念别名池】行（正名=别名，带投影定义）。
+#[tokio::test]
+async fn coach_context_carries_the_alias_pool() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    sqlx::query(
+        "UPDATE learning_concept_registry SET aliases_json = ? WHERE canonical = '向量基础'",
+    )
+    .bind(r#"[{"name":"向量语言","definition":"把对象关系改写成有向量的说法","status":"active"}]"#)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let completer = ScriptedCompleter::new(VALID_BATCH, false);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let prompt = completer
+        .last_user
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_default();
+    assert!(prompt.contains("【概念别名池"), "{prompt}");
+    assert!(prompt.contains("向量基础=向量语言"), "{prompt}");
+    assert!(prompt.contains("把对象关系改写成有向量的说法"), "{prompt}");
+}
+
+/// 名池豁免（退役名不占池）：撞退役概念的 canonical 仍可新铸——退役行
+/// 不阻塞，新活跃行接手该名字，引用落在活跃行。
+#[tokio::test]
+async fn retired_names_do_not_block_minting() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    sqlx::query(
+        "INSERT INTO learning_concept_registry \
+         (concept_id, canonical, aliases_json, definition, deprecated, created_at, updated_at) \
+         VALUES ('0190f5fe-7c00-7a00-8abc-333333333333', '向量代数', '[]', '旧定义', 1, 1, 1)",
+    )
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用向量代数重排", "purpose": "p", "est": 15,
+             "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "向量代数", "aliases": [], "definition": "新定义：向量运算的代数规则"}
+        ],
+        "new_aliases": [],
+        "note": "n"
+    }"#;
+    let review_json = r#"{"verdict":"pass"}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let active: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_concept_registry \
+         WHERE canonical = '向量代数' AND deprecated = 0",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(active, 1, "the retired row does not block the fresh mint");
+    let reference_hangs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+         JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+         WHERE reg.canonical = '向量代数' AND reg.deprecated = 0",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(reference_hangs, 1, "the reference lands on the active row");
+}
+

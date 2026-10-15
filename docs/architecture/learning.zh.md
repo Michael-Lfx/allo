@@ -56,6 +56,15 @@
   （零 IO 零 LLM，课程内作用域）支撑前端结构图 Tab。**终点锚与罗盘已整体
   退役**（迁移 071；方向感由结构投影承担）。概念本身登记在全局跨课程的
   `learning_concept_registry`（canonical + 别名联合唯一，生长按需铸名）。
+  **别名闭环（j04 = 二轮 g3 机制 + 三轮 g2 数据形态）**：别名是结构化记录
+  `{name, definition?, attestation?, status}`（退役名不占名池）；铸名门带
+  复用通道——定义归一化直定宿主 + defnear 近邻候选集（trigram/近形/词面
+  补位）+ 概念评审扩权裁决「复用|新铸」（复用指向候选集 concept_id，机械
+  核验禁编造，无新 LLM 调用）；new_aliases 专职通道给既有概念提名新名
+  （必须裁复用否则整批打回指点改走 mints）；登记单点
+  `alias_records::register_alias_tx` 是全仓唯一合法事后加名路径（宿主非
+  废弃/活跃占池/幂等/复活四保证）；**层收缩原则**：登记表只存判定所需的
+  定义与名字事实，教学材料归内容层。
 
 三条生成流的修复循环以更高的推理档位运行（`REPAIR_REASONING_EFFORT`，
 learnhub「修复轮升思考档」的等价物）；生成循环保持 provider 默认档。
