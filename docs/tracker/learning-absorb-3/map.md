@@ -86,7 +86,8 @@
 
 ## Not yet specified
 
-- 三轮 + 二轮合并切票的粒度与顺序（全部裁决已关闭，下一步 = 切实施票）。
+- ~~三轮 + 二轮合并切票~~ **已切**：`../learning-absorb-2/impl/`（j01–j10，依赖序见其
+  README）。
 
 ## Out of scope
 
