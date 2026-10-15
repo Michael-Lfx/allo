@@ -1,6 +1,9 @@
 # Map: 学习模块三轮吸收 learnhub——结构维护战役 / 会话账本线 / #99 产品波（114 提交）
 
 <!-- wayfinder:map -->
+<!-- 状态：已到达目的地（2026-10-14）——全部票关闭，三轮规格齐备；二轮决议仍未实施，
+      两轮合并切票开工。注意：g1/g2/g3/g4 为推荐项默认裁决（用户指示批量推进），票面
+      均标注可复议。 -->
 
 ## Destination
 
@@ -29,6 +32,30 @@
 
 ## Decisions so far
 
+- [课程管理面](tickets/g3-course-management.md)（**推荐项默认裁决，可复议**）：现存且
+  启用口径采纳（enabled 列 + active 集单源，安排面收窄历史面不收）；改名采纳（只动
+  title，墓碑唯一性同步）；**删除语义对齐 learnhub：账本永远保留，deleteReviews 连带
+  删卡选项退役**，强确认 = 逐字输入显示名 + 三条如实后果；概况四读数顺带。
+- [会话体系取舍](tickets/g4-session-system.md)（**推荐判断默认裁决，可复议**）：采
+  (b) 数据面先行——作答流水补 elapsed_ms/response/session 锚/forgot/predicted；会话锚
+  = 学习行为组 ULID（前向兼容将来会话实体）；abandoned 流失信号落标记行；首写为终。
+  会话五命令/统一页/复习中心聚合/维护页作答历史/检测读面**后置**（触发 = 任一进入
+  实施）；检测/quiz 线载体同步后置。
+- [XP 结算落地定案](tickets/t1-xp-settlement.md)：结算事件表落 learning 库（四形态写侧
+  条款照抄 + quiz 恒非负条款先入）+ companion 同步桥（幂等去重、滞后可补偿）；九题型
+  当量表三档起步（1/2/3 标注待校准）；AI 批改轨入账；两把尺/ETA/84 格日历端点；日目标
+  40 住设置；打卡口径退役；乱猜常量集中表；smoke 增 xp 读数面。**检测/quiz 线载体随
+  g4 后置，教新 + 复习两线一次到位。**
+- [长任务真取消定案](tickets/t2-real-cancellation.md)：CancellationToken 全 LLM 调用点
+  前后双检查（select! 真中断，强于 learnhub sync 版）；统一注册表模块（状态机终态幂等/
+  同键拒绝/注册序排序）+ 快照与取消端点（存量端点改造转发）；取消 = 中性终态 envelope；
+  生成开始后才取消 = 竞速落败如实 done；批事务原子落库 = 中断零落库；测试口径移植。
+- [复习事件加固定案](tickets/t3-review-event-hardening.md)：review_log 补推进前快照四
+  字段（永远落盘 null 不省略）；同日折叠 allo 已有语义（CONTEXT.md Review Queue），只补
+  折叠测试钉死；种卡幂等显式化（已存在跳过、异常冲突 fail loud）。
+- [契约文本随批](tickets/t4-contract-text.md)：R9 叙述声部（图节点正文 + 传统节正文 +
+  评审判据）、跨课预告废除（节大纲小结行）、门位口径 v2.10（结构/地形两提示词，独立于
+  g1 生效）、术语纠偏（契约措辞）——全部随二轮 g2/g4 提示词波执行，gd 契约文档 bump。
 - [概念别名结构化升级（修订二轮 g3）+ new_aliases 通道](tickets/g2-alias-records.md)
   （**推荐项默认裁决，可复议**）：aliases_json 元素升为轻量四字段记录
   `{name, definition?, attestation?, status}`（存量字符串迁移回填 active）；**new_aliases
@@ -59,9 +86,7 @@
 
 ## Not yet specified
 
-- 三轮 + 二轮合并切票的粒度与顺序（等 g2–g4 裁决后切）。
-- AI 批改轨题型是否入 XP 账、九题型当量表取值——随 t1。
-- 会话体系若缓，复习中心聚合读数/检测记录读面的挂点——随 g4。
+- 三轮 + 二轮合并切票的粒度与顺序（全部裁决已关闭，下一步 = 切实施票）。
 
 ## Out of scope
 
