@@ -209,7 +209,7 @@ impl LearningService {
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         let rows = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -261,7 +261,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -643,37 +643,9 @@ impl LearningService {
         if exists.is_none() {
             return Err(AppError::NotFound(format!("course {course_id}")));
         }
-        let enrollment_ids: Vec<String> = sqlx::query_scalar(
-            "SELECT enrollment_id FROM learning_enrollments WHERE course_id = ? AND user_id = ?",
-        )
-        .bind(course_id.as_str())
-        .bind(user_id.as_str())
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(internal)?;
-        if delete_reviews {
-            for enrollment_id in &enrollment_ids {
-                for table in [
-                    "learning_review_items",
-                    "learning_lesson_progress",
-                    "learning_attempts",
-                ] {
-                    sqlx::query(&format!("DELETE FROM {table} WHERE enrollment_id = ?"))
-                        .bind(enrollment_id)
-                        .execute(&mut *transaction)
-                        .await
-                        .map_err(internal)?;
-                }
-            }
-            sqlx::query("DELETE FROM learning_enrollments WHERE course_id = ? AND user_id = ?")
-                .bind(course_id.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(internal)?;
-        }
-        // 课程内容（课时/模块/概念网边）无论勾选与否都物理删除——复习保留
-        // 的只是题目数据，不靠课时行续命。孤儿课时曾把新课的入口层向上顶
-        // （全局已教账把幽灵供给当真），这条语义从根上掐掉污染源。
+        // 课程内容（课时/模块/概念网边）物理删除——复习保留的只是题目数据，
+        // 不靠课时行续命。孤儿课时曾把新课的入口层向上顶（全局已教账把幽灵
+        // 供给当真），这条语义从根上掐掉污染源。
         let content_sql = [
             "DELETE FROM learning_lesson_concepts WHERE lesson_id IN (\
                 SELECT l.lesson_id FROM learning_lessons l \
@@ -698,17 +670,6 @@ impl LearningService {
                 .execute(&mut *transaction)
                 .await
                 .map_err(internal)?;
-        }
-        if delete_reviews {
-            // 概念登记表跟勾选走：全删时清掉不再被任何课时引用的概念——
-            // 概念是跨课程共享资产，只收紧无主条目，不误删他课在用的。
-            sqlx::query(
-                "DELETE FROM learning_concept_registry WHERE concept_id NOT IN (\
-                    SELECT DISTINCT concept_id FROM learning_lesson_concepts)",
-            )
-            .execute(&mut *transaction)
-            .await
-            .map_err(internal)?;
         }
         sqlx::query("DELETE FROM learning_course_tags WHERE course_id = ?")
             .bind(course_id.as_str())
