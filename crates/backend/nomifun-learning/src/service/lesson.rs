@@ -869,11 +869,11 @@ impl LearningService {
         .await
         .map_err(internal)?;
         let mut teaches: Vec<String> = Vec::new();
-        let mut assumes: Vec<(String, String, String)> = Vec::new();
-        for (role, canonical, tier, definition) in declares {
+        let mut assumes: Vec<(String, String, String, Option<String>)> = Vec::new();
+        for (role, canonical, tier, definition, ref_name) in declares {
             match role.as_str() {
                 "teaches" => teaches.push(canonical),
-                _ => assumes.push((canonical, tier, definition)),
+                _ => assumes.push((canonical, tier, definition, ref_name)),
             }
         }
 
@@ -978,7 +978,122 @@ impl LearningService {
         .await
         .map_err(internal)?;
 
-        Ok((prerequisite_path, upcoming_nodes, forbidden_concepts, total_nodes.max(0) as usize))
+        // 6) 概念面（j07）：首现闭包 + 引用名 + 别名池。本节点无概念挂接
+        //    （teaches/assumes 双空）时整体缺席。
+        let concept_faces = if teaches.is_empty() && assumes.is_empty() {
+            None
+        } else {
+            // 祖先闭包候选：全图其余节点的 teaches/assumes（现存且启用课程
+            // ——已删墓碑与归档课不参与闭包，archived 不夺首现；并行分支因
+            // 闭包只沿 assumes 链生长而天然不夺）。
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT lc.lesson_id, lc.role, reg.canonical \
+                 FROM learning_lesson_concepts lc \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 JOIN learning_courses c ON c.course_id = m.course_id \
+                 JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+                 WHERE lc.lesson_id <> ? \
+                   AND c.deleted_at IS NULL AND c.enabled = 1",
+            )
+            .bind(lesson_id.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?;
+            let mut candidates: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+            for (node, role, canonical) in rows {
+                let entry = candidates.entry(node).or_default();
+                if role == "teaches" {
+                    entry.0.push(canonical);
+                } else {
+                    entry.1.push(canonical);
+                }
+            }
+            let nodes: Vec<(String, Vec<String>, Vec<String>)> = candidates
+                .into_iter()
+                .map(|(node, (teaches, assumes))| (node, teaches, assumes))
+                .collect();
+            let assume_names: Vec<String> = assumes
+                .iter()
+                .map(|(canonical, _, _, _)| canonical.clone())
+                .collect();
+            let first_seen = first_appearance_set(&teaches, &assume_names, &nodes);
+            let returning: Vec<String> = teaches
+                .iter()
+                .filter(|concept| !first_seen.contains(concept))
+                .cloned()
+                .collect();
+            // 引用名：本节点挂接行里与正名不同的用名（正文以引用名开讲）。
+            let ref_names: Vec<(String, String)> = assumes
+                .iter()
+                .filter_map(|(canonical, _, _, ref_name)| match ref_name {
+                    Some(reference)
+                        if !reference.trim().is_empty() && reference.trim() != canonical =>
+                    {
+                        Some((reference.trim().to_owned(), canonical.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            // 投影词表（R3）：本节点概念（teaches ∪ assumes）的活跃别名。
+            let mut all_concepts: Vec<String> = teaches.clone();
+            all_concepts.extend(assumes.iter().map(|(canonical, _, _, _)| canonical.clone()));
+            let aliases = self.active_aliases_for(&all_concepts).await?;
+            let faces = crate::lesson_draft::GraphConceptFaces {
+                first_seen,
+                returning,
+                ref_names,
+                aliases,
+            };
+            (!faces.is_empty()).then_some(faces)
+        };
+
+        Ok(GraphNodeTopology {
+            prerequisite_path,
+            upcoming_nodes,
+            forbidden_concepts,
+            total_nodes: total_nodes.max(0) as usize,
+            concept_faces,
+        })
+    }
+
+    /// 一组正名概念的活跃别名（R3 投影词表；退役别名不占池）。正名 →
+    /// 别名列表，仅多名概念入表。
+    async fn active_aliases_for(
+        &self,
+        canonicals: &[String],
+    ) -> Result<Vec<(String, Vec<String>)>, AppError> {
+        if canonicals.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT reg.canonical, reg.aliases_json FROM learning_concept_registry reg \
+             WHERE reg.canonical IN (",
+        );
+        let mut separated = query.separated(", ");
+        for canonical in canonicals {
+            separated.push_bind(canonical);
+        }
+        query.push(")");
+        let rows = query.build().fetch_all(&self.pool).await.map_err(internal)?;
+        let mut pool = Vec::new();
+        for row in rows {
+            let canonical: String = row.try_get("canonical").map_err(internal)?;
+            let raw: String = row.try_get("aliases_json").map_err(internal)?;
+            let names: Vec<String> =
+                crate::learning_graph::alias_records::parse_alias_records(&raw)
+                    .iter()
+                    .filter(|record| {
+                        record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                    })
+                    .map(|record| record.name.clone())
+                    .collect();
+            if !names.is_empty() {
+                pool.push((canonical, names));
+            }
+        }
+        pool.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(pool)
     }
 
     /// 单节重写（迁移 051/ADR-0002 的节级操作语义）：只重写一节正文并原
@@ -1072,7 +1187,7 @@ impl LearningService {
                 );
                 let mut context_text =
                     format!("学习目标：{}\n程度声明：{}", goal.trim(), degree_statement.trim());
-                if !prerequisite_path.trim().is_empty() {
+                if !topology.prerequisite_path.trim().is_empty() {
                     context_text.push_str(&format!(
                         "\n\n前置路径（学习者已掌握，不要重复讲授）：\n{}",
                         topology.prerequisite_path
