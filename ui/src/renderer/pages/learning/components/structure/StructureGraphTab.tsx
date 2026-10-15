@@ -29,10 +29,14 @@ export function StructureGraphTab({
   view,
   onMount,
   mounting,
+  onRepair,
+  repairing,
 }: {
   view: LearningStructureView | null;
   onMount?: () => void;
   mounting?: boolean;
+  onRepair?: () => void;
+  repairing?: boolean;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>('mindmap');
@@ -92,7 +96,17 @@ export function StructureGraphTab({
                 {t('learningGraphMountRun')}
               </Button>
             )}
+            {onRepair && (
+              <Button size='mini' loading={repairing} onClick={onRepair}>
+                {t('learningGraphRepairRun')}
+              </Button>
+            )}
           </div>
+          {mounts.stale && (
+            <Text type='warning' className='text-11px leading-16px'>
+              {t('learningGraphRepairStaleBanner')}
+            </Text>
+          )}
           {mounts.index.length > 0 && (
             <div className='flex flex-col gap-2px'>
               {mounts.index.map((entry) => (

@@ -114,9 +114,32 @@ pub static STRUCTURE_MOUNT: PromptSpec = PromptSpec {
     fence_words: FENCE_DEV_FACE,
 };
 
+/// 结构修补 prompt 资产（j09 修补回合）：temperature 0.0 + thinking；输入
+/// 七件（宪章三项 + 结构快照投影 + findings 行 + 挂载观察 + 重试反馈）。
+pub static STRUCTURE_REPAIR: PromptSpec = PromptSpec {
+    id: "structure-repair",
+    template: include_str!("../../prompts/structure/structure-repair.md"),
+    placeholders: &[
+        "goal",
+        "proficiency_statement",
+        "learner_basis",
+        "structure_snapshot",
+        "findings",
+        "mount_observations",
+        "retry_feedback",
+    ],
+    task: "structure-repair",
+    temperature: 0.0,
+    fence_words: FENCE_DEV_FACE,
+};
+
 /// 全部已注册 prompt 资产（完备性与互锁测试的迭代面）。
-pub static REGISTRY: &[&PromptSpec] =
-    &[&GOAL_DECOMPOSITION, &PREREQUISITE_TERRAIN, &STRUCTURE_MOUNT];
+pub static REGISTRY: &[&PromptSpec] = &[
+    &GOAL_DECOMPOSITION,
+    &PREREQUISITE_TERRAIN,
+    &STRUCTURE_MOUNT,
+    &STRUCTURE_REPAIR,
+];
 
 /// 装配失败（模板/注册表/值三方不一致；互锁测试之外的时刻性漂移）。
 #[derive(Debug, thiserror::Error)]
@@ -414,6 +437,27 @@ mod tests {
         ] {
             assert!(mount_body.contains(phrase), "mount prompt missing「{phrase}」");
         }
+        // 修补（j09）：五条款的可执行措辞 + 防凑动作与低风险维护定位。
+        let (_, repair_body) = split_template(STRUCTURE_REPAIR.template).unwrap();
+        for phrase in [
+            "ops",
+            "add_edge",
+            "remove_edge",
+            "flip_edge",
+            "add_block",
+            "split_block",
+            "rename_block",
+            "merge_blocks",
+            "逐字",
+            "reason",
+            "slug",
+            "空数组",
+            "低风险维护",
+            "全量复核",
+            "宁可少改",
+        ] {
+            assert!(repair_body.contains(phrase), "repair prompt missing「{phrase}」");
+        }
     }
 
     /// 金样快照：装配产物逐字节锁定；模板改动 → 金样 diff（人工复核）。
@@ -442,10 +486,20 @@ mod tests {
             ("existing_mounts", "（无——首次挂载）"),
             ("retry_feedback", "(无:首次)"),
         ];
+        let repair_values: &[(&'static str, &str)] = &[
+            ("goal", "能独立完成一元二次方程的求解与检验"),
+            ("proficiency_statement", "达成后能独立解任意一元二次方程并讲解每一步依据"),
+            ("learner_basis", "（未提供——按纯零基础处理）"),
+            ("structure_snapshot", "- 块一（block-01）| 主干一 | 入门\n  边：块二 -[assumes]-> 块一"),
+            ("findings", "（无留痕）"),
+            ("mount_observations", "（无观察）"),
+            ("retry_feedback", "(无:首次)"),
+        ];
         for (spec, values, golden_name) in [
             (&GOAL_DECOMPOSITION, goal_values, "goal-decomposition.md"),
             (&PREREQUISITE_TERRAIN, terrain_values, "prerequisite-terrain.md"),
             (&STRUCTURE_MOUNT, mount_values, "structure-mount.md"),
+            (&STRUCTURE_REPAIR, repair_values, "structure-repair.md"),
         ] {
             let assembled = assemble(spec, values).expect("golden values assemble").text;
             let golden_path = Path::new(env!("CARGO_MANIFEST_DIR"))

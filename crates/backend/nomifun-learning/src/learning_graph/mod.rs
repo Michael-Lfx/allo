@@ -32,6 +32,7 @@ pub mod growth_retry;
 pub mod mounting;
 pub mod structure_contract;
 pub mod structure_gen;
+pub mod structure_ops;
 pub mod structure_view;
 pub mod structure_prompts;
 
@@ -603,17 +604,36 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
+【findings——数据缺陷留痕（不打回，只留痕）】
+- 数据缺陷观察（如：材料里疑似缺某基础概念、结构材料可能过时、命名与材料用法可能有出入）
+  不构成打回硬伤时，写进输出顶层可选 `findings` 数组：`{ "node": "<节点标题或空>",
+  "field": "<字段或空>", "issue": "<缺什么/疑点什么>", "advice": "<一条修补方向>" }`。
+- findings 是线索不是第二真相：与 problems 并行——该打回的仍走 problems；拿不准的
+  观察、全局性疑点放 findings。没有观察就不写这个键。
+
 回复严格 JSON：
-- 通过：{ "verdict": "pass" }（有复用裁决时附带 "reuse" 数组，见【复用裁决】）
-- 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title|difficulty", "issue": "问题是什么，指名具体概念", "advice": "一条可执行的修复提示" } ] }
+- 通过：{ "verdict": "pass" }（有复用裁决时附带 "reuse" 数组，见【复用裁决】；有数据缺陷观察时附带 "findings" 数组）
+- 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title|difficulty", "issue": "问题是什么，指名具体概念", "advice": "一条可执行的修复提示" } ] }（数据缺陷观察同样可附 "findings" 数组）
 问题按严重度降序，至多 8 条；每条都必须是你能从材料确认的硬伤，issue 写清缺的是什么概念；一条硬伤都没有就 pass，绝不为了「显得尽责」凑问题。只输出 JSON，不要任何解释。"#;
 
 /// 评审产出（j04 扩权）：问题条 + 复用裁决。fails-open 降级 = 两者皆空。
+/// j09 findings warn 通道：数据缺陷观察不打回只留痕，与 problems 阻断通道
+/// 并行（调用方落 `learning_structure_findings`，修补回合的输入源）。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReviewOutcome {
     pub problems: Vec<ReviewProblem>,
     /// 复用裁决（形状已验；候选集归属由调用方机械核验）。
     pub reuse: Vec<ReuseRuling>,
+    pub findings: Vec<ReviewFinding>,
+}
+
+/// 一条 findings 观察：留痕是线索不是第二真相。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReviewFinding {
+    pub node: String,
+    pub field: String,
+    pub issue: String,
+    pub advice: String,
 }
 
 /// 一条复用裁决：提名名 → 候选集内的宿主概念。
@@ -701,15 +721,19 @@ pub(crate) async fn concept_review(
         problems: Vec<ReviewProblem>,
         #[serde(default)]
         reuse: Vec<ReuseRuling>,
+        #[serde(default)]
+        findings: Vec<ReviewFinding>,
     }
     match serde_json::from_value::<Verdict>(value) {
         Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
             problems: verdict.problems.into_iter().take(8).collect(),
             reuse: Vec::new(),
+            findings: verdict.findings,
         },
         Ok(verdict) => ReviewOutcome {
             problems: Vec::new(),
             reuse: verdict.reuse,
+            findings: verdict.findings,
         },
         _ => ReviewOutcome::default(),
     }

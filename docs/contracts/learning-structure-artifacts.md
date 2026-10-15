@@ -273,3 +273,45 @@ est，1 est 分钟 = 1 分钟专注学习）。
   超载块（≥5 节点）。观察不构成编辑义务。
 - 挂载行随课程删除（Cascade，纯导航派生面可重建）；findings 留痕表
   （`learning_structure_findings`，j08 建表 / j09 接生产与消费）随课 KeepHistory。
+
+## 10 结构修补（st.ops.*，j09 三轮 g1「结构转活文档·下」）
+
+修补 = 结构的低风险维护编辑：模型只表达意图（七型 ops），纯函数引擎管自洽；应用后
+gd.* 全量重过零放宽。三重护栏 = 全量 validator 门 + 观测审计（修补审计表）+ 出处
+（逐 op 含理由），不建受理门机器。**ops 空 = 「评估过、本轮无修补动作」的合法结论**
+（LLM 已跑、不写盘——防凑动作）。
+
+### 10.1 七型 ops 与级联（引擎职责）
+
+块引用 = 块名逐字（编辑面看现状）；slug 只出现在新块定义且必须新发。
+
+| op | 语义 | 引用面机械自洽（引擎代管，级联注记记数） |
+|---|---|---|
+| add_edge | 加边（type ∈ assumes/composes/contrasts，tier ∈ know/use/teach） | 同三元组已存在 = 拒 |
+| remove_edge | 三元组唯一命中即删 | 不命中或多命中 = 拒回合 |
+| flip_edge | 方向纠正：端点对调，type/tier/note 保持 | — |
+| add_block | 补块发新 slug | — |
+| split_block | 拆块，旧块退场 | 随块边一并退场（需要的关系由加边补回） |
+| rename_block | 只动块名（键闭禁 slug，slug 终身不变） | 引用旧名的边端点跟改 |
+| merge_blocks | 合并，源块退场 | 端点改指新块 + 同三元组去重 + 自环退场 |
+
+### 10.2 五条款
+
+| 条款 | 机械读法 |
+|---|---|
+| `st.ops.shape` | 顶层键 = {ops} 可空；逐型必填字段非空；type/tier 词表。 |
+| `st.ops.endpoints` | 边 ops 两端 ∈ 该 op 时刻的块名集（应用序模拟：前序块 ops 即时进端点域；rename 的 to 是本 op 引入的新名，不算端点引用）。 |
+| `st.ops.reason` | 每条 op 必带非空 reason——从留痕或观察出发，输入里没有依据的编辑不做。 |
+| `st.ops.apply` | 执法在门面：依序应用后结构全量 validator 重过（gd.* 零放宽），任一违规拒整回合。 |
+| `st.ops.no_slug_churn` | rename 键闭禁 slug；add/split/merge 新 slug 不得复用当前（含已退场）slug。 |
+
+### 10.3 修补回合与级联口径
+
+- 触发门槛 = findings 非空 ∪ 挂载观察非空；**皆空 = skipped（零 LLM 零写）**。
+- 装配（宪章三项 + 结构快照投影 + findings 行 + mount_observations + retry_feedback）
+  → RoundRetry ≤3（同指纹早停）→ ops 空 = noop → apply → gd.* 全量重过 → 结构快照
+  原子写 → 修补审计行落 `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由
+  与级联注记）。
+- **级联口径（ADR-0017）**：修补先落 → 挂载本回合不动 → hash 变 = 既有挂载待重评估
+  （mounts_stale）→ 下回合全量重挂。**不建逐 op 跟迁**——挂载无判定身份，误编只伤
+  导航，失效降级本即既定语义。
