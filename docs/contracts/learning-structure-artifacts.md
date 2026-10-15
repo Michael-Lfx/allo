@@ -1,8 +1,8 @@
 ---
 contract: learning-structure-artifacts
-version: "1.1"
+version: "1.2"
 date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
