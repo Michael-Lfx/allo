@@ -717,7 +717,13 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             <div className='min-w-0'>
               <div className='truncate font-500 text-[var(--color-text-1)]'>{row.canonical}</div>
               {row.aliases.length > 0 && (
-                <div className='truncate text-11px text-t-tertiary'>{row.aliases.join('、')}</div>
+                <div className='truncate text-11px text-t-tertiary'>
+                  {row.aliases
+                    .map((alias) =>
+                      alias.definition ? `${alias.name}（${alias.definition}）` : alias.name
+                    )
+                    .join('、')}
+                </div>
               )}
             </div>
           ),

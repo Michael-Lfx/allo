@@ -714,6 +714,13 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
+【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
+- 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）。逐条裁决「复用 | 新铸」：
+- 裁**复用** = 该名字其实是既有概念的另一投影：把它写进输出顶层 `reuse` 数组（`{ "name": "<提名名>", "concept_id": "<候选集内的 concept_id>" }`）；concept_id 只准照抄候选集内的值，编造即违约。复用的概念不铸新行，提名名落为该概念的活跃别名。
+- 裁**新铸** = 提名确实是新概念：不写进 reuse 即可（缺省新铸）。
+- **new_aliases 提名的语义就是「既有概念的新名字」——必须裁复用**；你认为它该是新概念时不要裁决，整批会被打回并指点它改走 mints。
+- 判据：候选集的定义近邻/名字近形只是机械线索；拿不准时按「同一概念用了两个不同名字应复用既有名」（判据 3）与候选定义比对裁决。
+
 【不算问题，一律不报】
 - est 长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
 - 「可以更好」「建议增加」类意见。
@@ -796,10 +803,16 @@ pub(crate) async fn concept_review(
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     batch: &ProposedBatch,
     context: &CoachContext,
-) -> Vec<ReviewProblem> {
+    candidates: &str,
+) -> ReviewOutcome {
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
+    let candidates_block = if candidates.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\n【提名候选集（复用裁决的机械面；concept_id 只准照抄这里的值）】\n{candidates}")
+    };
     let user = format!(
-        "{}\n\n【待审批次】\n{batch_json}",
+        "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
         context.render()
     );
     // JSON 接缝 + thinking ON（g4：全部生成面统一）。
@@ -814,12 +827,13 @@ pub(crate) async fn concept_review(
     .await
     {
         Ok(raw) => raw,
-        Err(_) => return Vec::new(),
+        Err(_) => return ReviewOutcome::default(),
     };
-    // 输出契约（ng.review.*）：verdict 词表 + problems 形状。评审自身不可用
-    // （调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的批次）。
+    // 输出契约（ng.review.*）：verdict 词表 + problems/reuse 形状。评审自身
+    // 不可用（调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的
+    // 批次；reuse 随之丢失 = 退化现状）。
     let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
-        return Vec::new();
+        return ReviewOutcome::default();
     };
     if growth_contract::validate_review(&value)
         .into_iter()
@@ -829,7 +843,7 @@ pub(crate) async fn concept_review(
             raw_head = %raw.chars().take(400).collect::<String>(),
             "concept review reply violated its contract — degrading to PASS"
         );
-        return Vec::new();
+        return ReviewOutcome::default();
     }
     #[derive(Deserialize)]
     struct Verdict {
@@ -837,10 +851,19 @@ pub(crate) async fn concept_review(
         verdict: String,
         #[serde(default)]
         problems: Vec<ReviewProblem>,
+        #[serde(default)]
+        reuse: Vec<ReuseRuling>,
     }
     match serde_json::from_value::<Verdict>(value) {
-        Ok(verdict) if verdict.verdict == "reject" => verdict.problems.into_iter().take(8).collect(),
-        _ => Vec::new(),
+        Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
+            problems: verdict.problems.into_iter().take(8).collect(),
+            reuse: Vec::new(),
+        },
+        Ok(verdict) => ReviewOutcome {
+            problems: Vec::new(),
+            reuse: verdict.reuse,
+        },
+        _ => ReviewOutcome::default(),
     }
 }
 
@@ -1259,7 +1282,7 @@ mod tests {
     }
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
-        ProposedBatch { nodes, mints: Vec::new(), note: String::new() }
+        ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
     }
 
     #[test]
@@ -1463,11 +1486,12 @@ mod tests {
             ],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashSet::new());
+        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
 
         // 依赖既往批次的概念合法：已教账覆盖到所假定档位即放行。
         let batch = ProposedBatch {
+            new_aliases: Vec::new(),
             nodes: vec![node(
                 "用公式法解因式分解题",
                 vec![reference("公式法", ConceptTier::Know)],
@@ -1480,7 +1504,7 @@ mod tests {
         coverage.insert("因式分解".to_owned(), ConceptTier::Apply);
         let mut registry = HashSet::new();
         registry.insert("因式分解".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashSet::new());
+        let errors = validate_batch(&batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
     }
 
@@ -1489,6 +1513,7 @@ mod tests {
         // 同批无先后、必须同时就绪：本批兄弟的 teaches 不构成 assumes 的供给
         // ——即使概念已随批铸名、也被兄弟教到该档位，依赖它的节点必须留到下一批。
         let batch = ProposedBatch {
+            new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
                 node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![reference("因式分解", ConceptTier::Know)]),

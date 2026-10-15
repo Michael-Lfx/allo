@@ -1261,6 +1261,7 @@ impl LearningService {
         let mut last = String::from("(未执行)");
         let mut prev_fingerprint: Option<String> = None;
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
+        let mut batch_rulings: Option<HashMap<String, String>> = None;
         let mut attempts_used = 0usize;
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
@@ -1433,12 +1434,12 @@ impl LearningService {
                 &candidates_text,
             )
             .await;
-            if !problems.is_empty() {
-                let report = crate::learning_graph::format_review_problems(&problems);
+            if !review.problems.is_empty() {
+                let report = crate::learning_graph::format_review_problems(&review.problems);
                 tracing::warn!(
                     course = course_id.as_str(),
                     attempt,
-                    problem_count = problems.len(),
+                    problem_count = review.problems.len(),
                     report = %report,
                     "growth batch rejected by concept review"
                 );

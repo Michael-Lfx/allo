@@ -3626,6 +3626,7 @@ export type I18nKey =
   | 'learning.learningGraphProficiencyPlaceholder'
   | 'learning.learningGraphReadyEmpty'
   | 'learning.learningGraphRecommendedShort'
+  | 'learning.learningGraphRefAs'
   | 'learning.learningGraphRoleAssumes'
   | 'learning.learningGraphRoleTeaches'
   | 'learning.learningGraphSkip'
