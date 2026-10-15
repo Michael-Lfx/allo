@@ -42,6 +42,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_mount(cli, db, provider, model).await,
+        LearningSmokeCommand::Repair {
+            db,
+            provider,
+            model,
+        } => run_repair(cli, db, provider, model).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -1197,6 +1202,134 @@ async fn run_mount(
         second.total_entries == first.total_entries,
         "skipped round must not touch the mount row"
     );
+    println!("OK  course={course_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke repair`（j09）：结构修补冒烟。从零库立一门带结构快照的
+/// 学习图课程并落一条 findings 留痕，跑真实修补回合（skip/noop 照印），
+/// 机械判据：①**盘面复验**——回合后从磁盘重读结构快照，独立跑全量 gd.*
+/// validator（零放宽）②**级联标记**——结构已改（old≠new hash）时挂载必
+/// 须判 stale，否则 EXIT=3。读数面非门禁；无凭据临时库如实失败。
+async fn run_repair(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+
+    // 种子：图课程（结构快照两块）+ 一条 findings 留痕（触发门槛）。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let now = nomifun_common::now_ms();
+    let structure = serde_json::json!({
+        "goal": "修补冒烟目标",
+        "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
+        "blocks": [
+            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "第一块" },
+            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "第二块" }
+        ],
+        "edges": []
+    });
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": structure,
+        "terrain": { "doors": [] },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '修补冒烟', '', 'general', 1, 'learning_graph', '修补冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, source, node, field, issue, advice) \
+         VALUES (?, ?, 'concept-review', '', '', '冒烟留痕：结构缺少一条对照边', '补一条 contrasts 边连接两块')",
+    )
+    .bind(now)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+
+    let model_override = match provider.as_deref().zip(model.as_deref()) {
+        Some((p, m)) => Some((nomifun_common::ProviderId::parse(p)?, m.to_owned())),
+        None => None,
+    };
+    let override_ref =
+        model_override.as_ref().map(|(provider, model)| (provider, model.as_str()));
+
+    println!("[1/2] repair round (real pipeline)…");
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let first = service.run_structure_repair(&owner, &course, override_ref).await?;
+    println!(
+        "repair read-out: status={} applied={} cascade={} mounts_stale={} old={} new={}",
+        first.status,
+        first.applied.len(),
+        first.cascade.len(),
+        first.mounts_stale,
+        first.old_hash,
+        first.new_hash
+    );
+    anyhow::ensure!(
+        first.status == "applied" || first.status == "noop",
+        "first round must run (applied | noop), got {}",
+        first.status
+    );
+
+    println!("[2/2] disk re-read + independent full gd.* validation + cascade marker…");
+    // 盘面复验：从磁盘重读快照信封，独立跑全量 gd.* validator（零放宽）。
+    let disk_raw: String =
+        sqlx::query_scalar("SELECT structure_json FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(&pool)
+            .await?;
+    let envelope: serde_json::Value = serde_json::from_str(&disk_raw)?;
+    let structure = envelope
+        .get("structure")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing structure"))?;
+    let terrain = envelope
+        .get("terrain")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("snapshot envelope missing terrain"))?;
+    let mut violations = nomifun_learning::validate_structure_artifact(&structure);
+    violations.extend(nomifun_learning::reconcile_structure_doors(&structure, &terrain));
+    let red: Vec<_> = violations.iter().filter(|violation| !violation.warning).collect();
+    for violation in &red {
+        eprintln!("CRITERION VIOLATION [{}] {}", violation.code, violation.message);
+    }
+    anyhow::ensure!(red.is_empty(), "disk re-read failed full gd.* validation");
+
+    // 级联标记：结构已改时挂载必须判 stale（读侧 hash 比对单点兜住）。
+    let new_hash = nomifun_learning::learning_graph_hash(disk_raw.as_bytes());
+    if first.old_hash != first.new_hash {
+        let view = service.structure_view(&course).await?;
+        let stale = view.mounts.as_ref().map(|mounts| mounts.stale).unwrap_or(false);
+        anyhow::ensure!(
+            stale,
+            "CASCADE MARKER VIOLATION: structure changed but mounts not stale"
+        );
+        println!("cascade marker: mounts correctly flagged stale");
+    } else if first.status == "applied" {
+        eprintln!("CASCADE MARKER VIOLATION: applied round must change the hash");
+        return Ok(ExitCode::from(3));
+    }
+    let _ = new_hash;
     println!("OK  course={course_id}");
     Ok(ExitCode::SUCCESS)
 }

@@ -86,6 +86,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_xp_events",
     "learning_structure_findings",
     "learning_structure_mounts",
+    "learning_structure_repairs",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -920,6 +921,9 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
     historical_text_ref!("learning_structure_mounts", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_mounts_course", Cascade),
     historical_text_ref!("learning_structure_findings", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_findings_course", KeepHistory),
+    // 修补审计（migration 080）：结构编辑的历史档案——课程删除后审计行
+    // 保留（KeepHistory，出处不追删）。
+    historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
         .with_child_predicate("child.source = 'course'"),
     text_ref!("learning_question_tags", "question_id" => "learning_custom_questions", "custom_question_id", false, "idx_learning_question_tags_custom_question_id", Cascade)

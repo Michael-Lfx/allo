@@ -2054,6 +2054,26 @@ pub struct StructureMountsView {
     pub not_evaluated_count: usize,
 }
 
+/// 修补回合摘要（j09）：status = applied（有 ops 且已落盘）/ noop（ops 空，
+/// LLM 已跑不写盘）/ skipped（findings 与挂载观察皆空——零 LLM 零写）。
+#[derive(Debug, Clone, Serialize)]
+pub struct StructureRepairSummary {
+    /// "applied" | "noop" | "skipped".
+    pub status: String,
+    /// 回合前的结构 hash（FNV-1a 64，有符号整型承载）。
+    pub old_hash: i64,
+    /// 回合后的结构 hash（noop/skipped = old）。
+    pub new_hash: i64,
+    /// 应用的 op 人面标签（依应用序）。
+    pub applied: Vec<String>,
+    /// 级联注记（改名跟改/拆块边退场/并块去重去自环）。
+    pub cascade: Vec<String>,
+    /// 结构已改 = 既有挂载待重评估（本回合不动挂载，下回合全量重挂）。
+    pub mounts_stale: bool,
+    pub noop: bool,
+    pub skipped: bool,
+}
+
 /// Memory-health dashboard: one snapshot over the active card pool and the
 /// review log, in review-day semantics (02:00 rollover).
 #[derive(Debug, Clone, Serialize)]

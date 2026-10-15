@@ -6037,3 +6037,83 @@ async fn structure_mount_round_mounts_then_skips() {
     let mounts = view.mounts.expect("mount row exists");
     assert!(mounts.stale, "hash mismatch must surface as stale");
 }
+
+/// 结构修补回合（j09）：触发门槛（皆空 = skipped 零 LLM 零写）+ findings
+/// 留痕驱动（落一条 findings 后触发面非空）+ 审计行落表。
+#[tokio::test]
+async fn structure_repair_skips_when_no_triggers_and_audits() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id.clone()).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    // 无 completer：skipped 分支根本不触生成通道，任何意外 LLM 调用都会
+    // 报「completer 未配置」——测试因此钉住零 LLM。
+    let now = now_ms();
+    let course_id = LearningCourseId::new().into_string();
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": {
+            "goal": "g",
+            "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+            "blocks": [
+                { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" }
+            ],
+            "edges": []
+        },
+        "terrain": { "doors": [] },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '修补课程', '', 'general', 1, 'learning_graph', 'g', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope).unwrap())
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let course = LearningCourseId::parse(&course_id).unwrap();
+
+    // 皆空：skipped（零 LLM 零写，审计也无行）。
+    let summary = service.run_structure_repair(&user_id, &course, None).await.unwrap();
+    assert_eq!(summary.status, "skipped");
+    assert!(summary.skipped);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_repairs WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(audits, 0, "skipped round leaves no audit row");
+
+    // 落一条 findings 留痕：触发面非空。无 completer 时回合如实报生成通
+    // 道不可用（Conflict）——触发门槛本身已验证。
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, source, node, field, issue, advice) \
+         VALUES (?, ?, 'concept-review', '', '', '测试留痕', '建议')",
+    )
+    .bind(now_ms())
+    .bind(&course_id)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let error = service
+        .run_structure_repair(&user_id, &course, None)
+        .await
+        .unwrap_err();
+    // 无 completer 的诚实失败：组合根未接生成通道（course_completer 缺席）
+    // 或回合面如实报通道不可用——两者都不是条款违约。
+    let message = error.to_string();
+    assert!(
+        message.contains("生成通道不可用") || message.contains("not configured"),
+        "findings present but no completer → honest conflict: {message}"
+    );
+}

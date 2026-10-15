@@ -18,7 +18,7 @@ use crate::models::{
     CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, RateReviewRequest,
-    RepairFigureRequest, RepairFigureResponse, SetTagsRequest, SubmitAttemptRequest,
+    RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
 };
@@ -57,6 +57,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/courses/{id}/graph/structure/mount",
             post(mount_structure),
+        )
+        .route(
+            "/api/learning/courses/{id}/graph/structure/repair",
+            post(repair_structure),
         )
         .route(
             "/api/learning/courses/{id}/graph/structure",
@@ -357,6 +361,43 @@ async fn mount_structure(
             &user.id,
             &course_id,
             model_override.as_ref().map(|(provider, model)| (provider, model.as_str())),
+        )
+        .await?;
+    Ok(Json(ApiResponse::ok(summary)))
+}
+
+/// 结构修补回合（j09）：显式命令触发、单课串行、可取消；同步返回回合摘
+/// 要（单 LLM 调用，秒级）。触发门槛在服务面（findings ∪ 挂载观察皆空 =
+/// skipped）。
+async fn repair_structure(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    request: Option<Json<RegenerateStructureRequest>>,
+) -> Result<Json<ApiResponse<StructureRepairSummary>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    if request
+        .as_ref()
+        .and_then(|Json(request)| request.provider_id.as_ref())
+        .is_some() != request
+        .as_ref()
+        .and_then(|Json(request)| request.model.as_deref())
+        .is_some()
+    {
+        return Err(AppError::BadRequest(
+            "provider_id and model must be provided together".into(),
+        ));
+    }
+    let model_override = request
+        .and_then(|Json(request)| request.provider_id.zip(request.model));
+    let summary = state
+        .service
+        .run_structure_repair(
+            &user.id,
+            &course_id,
+            model_override
+                .as_ref()
+                .map(|(provider, model)| (provider, model.as_str())),
         )
         .await?;
     Ok(Json(ApiResponse::ok(summary)))
