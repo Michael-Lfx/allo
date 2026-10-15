@@ -15,7 +15,7 @@ import SettingsPageWrapper from './components/SettingsPageWrapper';
 const DEFAULT_DESIRED_RETENTION = 0.9;
 const DEFAULT_REVIEW_SESSION_LIMIT = 30;
 const DEFAULT_DIAGNOSTIC_LIMIT = 10;
-const DEFAULT_DAILY_CHECKIN_GOAL = 15;
+const DEFAULT_DAILY_XP_GOAL = 40;
 
 const LearningSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -23,7 +23,7 @@ const LearningSettings: React.FC = () => {
   const [fsrsParameters, setFsrsParameters] = useConfig('learning.fsrsParameters');
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
-  const [dailyCheckinGoal, setDailyCheckinGoal] = useConfig('learning.dailyCheckinGoal');
+  const [dailyXpGoal, setDailyXpGoal] = useConfig('learning.dailyXpGoal');
   // 内容宽度偏好与学习页头部按钮共用同一条读写路径（同一个键、同一套归一化），
   // 避免两个入口写出两种存档形态。
   const { wide: wideContent, setWide: setWideContent } = useWideContentLayout();
@@ -125,16 +125,16 @@ const LearningSettings: React.FC = () => {
               />
             </PreferenceRow>
             <PreferenceRow
-              label={t('learning.settings.dailyCheckinGoal')}
-              description={t('learning.settings.dailyCheckinGoalHint')}
+              label={t('learning.settings.dailyXpGoal')}
+              description={t('learning.settings.dailyXpGoalHint')}
               controlLayout='field'
             >
               <InputNumber
                 className='w-full sm:w-180px'
-                min={0}
-                max={500}
-                value={dailyCheckinGoal ?? DEFAULT_DAILY_CHECKIN_GOAL}
-                onChange={(value) => value != null && void setDailyCheckinGoal(Number(value))}
+                min={1}
+                max={1000}
+                value={dailyXpGoal ?? DEFAULT_DAILY_XP_GOAL}
+                onChange={(value) => value != null && void setDailyXpGoal(Number(value))}
               />
             </PreferenceRow>
             <PreferenceRow
