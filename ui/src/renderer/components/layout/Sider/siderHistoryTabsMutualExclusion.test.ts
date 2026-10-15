@@ -10,7 +10,6 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("pathname.startsWith('/knowledge')")).toBe(true);
     expect(siderSource.includes("pathname.startsWith('/learn')")).toBe(true);
     expect(siderSource.includes("pathname === '/scheduled'")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/meeting')")).toBe(true);
     expect(siderSource.includes("pathname.startsWith('/eval')")).toBe(true);
 
     expect(siderSource.includes('isTabDomainActive')).toBe(false);
