@@ -29,6 +29,7 @@ import type {
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
   MountRoundSummary,
+  StructureRepairSummary,
   XpCalendar,
   XpReading,
 } from './types';
@@ -104,6 +105,17 @@ export const learningApi = {
     httpRequest<MountRoundSummary>(
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/mount`,
+      request
+    ),
+  // 结构修补回合（j09）：按留痕与观察输出七型修补意图；皆空 = skipped，
+  // ops 空 = noop；同步返回回合摘要
+  repairStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<StructureRepairSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/repair`,
       request
     ),
   getCourse: (id: string) =>

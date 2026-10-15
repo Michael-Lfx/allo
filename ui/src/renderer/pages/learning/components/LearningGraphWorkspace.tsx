@@ -127,6 +127,7 @@ const LearningGraphWorkspace: React.FC<{
   const [structureRunning, setStructureRunning] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [mounting, setMounting] = useState(false);
+  const [repairing, setRepairing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -204,6 +205,33 @@ const LearningGraphWorkspace: React.FC<{
       });
     } finally {
       setMounting(false);
+    }
+  }, [detail.course.id, t]);
+
+  // 结构修补回合（j09）：按留痕与观察修补结构；皆空时后端如实 skipped。
+  const repairStructure = useCallback(async () => {
+    setRepairing(true);
+    try {
+      const summary = await learningApi.repairStructure(detail.course.id);
+      if (summary.status === 'noop') {
+        Modal.info({ title: t('learning.learningGraphRepairNoop') });
+      }
+      await new Promise((resolve) => {
+        learningApi
+          .graphStructure(detail.course.id)
+          .then((view) => {
+            setStructure(view);
+            resolve(null);
+          })
+          .catch(() => resolve(null));
+      });
+    } catch (actionError) {
+      Modal.error({
+        title: t('learning.learningGraphRepairFailed'),
+        content: errorMessage(t, actionError),
+      });
+    } finally {
+      setRepairing(false);
     }
   }, [detail.course.id, t]);
 
@@ -494,7 +522,13 @@ const LearningGraphWorkspace: React.FC<{
           <ConceptTable courseId={detail.course.id} />
         </Tabs.TabPane>
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
-          <StructureGraphTab view={structure} onMount={() => void mountStructure()} mounting={mounting} />
+          <StructureGraphTab
+            view={structure}
+            onMount={() => void mountStructure()}
+            mounting={mounting}
+            onRepair={() => void repairStructure()}
+            repairing={repairing}
+          />
         </Tabs.TabPane>
       </Tabs>
       </div>

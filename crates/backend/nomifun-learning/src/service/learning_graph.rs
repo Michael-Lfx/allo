@@ -590,6 +590,389 @@ impl LearningService {
         })
     }
 
+    /// 结构修补回合（j09，结构转活文档·下）：触发门槛 = findings 非空 ∪
+    /// 挂载观察非空（皆空 = skipped 零 LLM 零写）；ops 空 = noop（LLM 已跑
+    /// 不写盘）；ops 应用后 gd.* 全量重过零放宽 → 结构快照原子写 → 修补审
+    /// 计行落表。**级联口径（ADR-0017）**：本回合不动挂载——hash 变即既有
+    /// 挂载待重评估（mounts_stale），下回合全量重挂，不建逐 op 跟迁。
+    pub async fn run_structure_repair(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::StructureRepairSummary, AppError> {
+        use crate::learning_graph::structure_ops;
+        self.require_live_graph_course(course_id).await?;
+        let slot_key = format!("learning-repair-{}", course_id.as_str());
+        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        let mut task = self.begin_generation_task(
+            crate::service::KIND_STRUCTURE_REPAIR,
+            course_id.as_str(),
+            None,
+            "结构修补",
+        )?;
+        let token = task.token();
+        task.set_step("repair", "正在按留痕与观察修补结构…");
+        self.emit_graph_event(
+            course_id,
+            "structure_repair_started",
+            serde_json::json!({ "phase": "started" }),
+        );
+
+        // 结构快照 + 宪章。
+        let course = sqlx::query(
+            "SELECT title, learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let title: String = course.try_get("title").map_err(internal)?;
+        let goal: String = course.try_get("learning_goal").map_err(internal)?;
+        let structure_raw: String = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .filter(|raw: &String| !raw.trim().is_empty())
+        .ok_or_else(|| {
+            AppError::Conflict("课程还没有知识结构快照——先生成结构再修补".into())
+        })?;
+        let envelope: serde_json::Value = serde_json::from_str(&structure_raw).map_err(internal)?;
+        let structure = envelope
+            .get("structure")
+            .cloned()
+            .ok_or_else(|| AppError::Internal("结构快照信封缺 structure".into()))?;
+        let terrain = envelope.get("terrain").cloned().unwrap_or(serde_json::Value::Null);
+        let proficiency = structure
+            .get("proficiency_statement")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let basis = envelope
+            .get("terrain")
+            .and_then(|terrain| terrain.get("learner_basis_assumed"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let old_hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
+
+        // 触发面：findings 行 + 挂载观察。
+        let finding_rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT source, node, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? ORDER BY ts, id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let findings_text = if finding_rows.is_empty() {
+            "（无留痕）".to_owned()
+        } else {
+            finding_rows
+                .iter()
+                .map(|(source, node, field, issue, advice)| {
+                    format!(
+                        "- [{source}] {node}.{field}: {issue}（建议：{advice}）",
+                        node = node.trim(),
+                        field = field.trim()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let blocks_for_obs: Vec<(String, String)> = structure
+            .get("blocks")
+            .and_then(|value| value.as_array())
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| {
+                        let slug = block.get("slug")?.as_str()?.to_owned();
+                        let name = block.get("name")?.as_str()?.to_owned();
+                        Some((slug, name))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mounts_json: Option<String> = sqlx::query_scalar(
+            "SELECT mounts_json FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let has_mount_row = mounts_json.is_some();
+        let mount_entries: Vec<crate::learning_graph::mounting::MountEntry> = mounts_json
+            .map(|raw| {
+                crate::learning_graph::mounting::parse_mount_entries(
+                    &serde_json::from_str::<serde_json::Value>(&raw).unwrap_or(serde_json::Value::Null),
+                )
+            })
+            .unwrap_or_default();
+        // 挂载观察只在挂载回合已跑过时派生（无挂载行的课程没有挂载事实，
+        // 「空块」无从谈起——修补触发门槛不被未挂载课程常驻点燃）。
+        let observations = if has_mount_row {
+            crate::learning_graph::mounting::mount_observations(&blocks_for_obs, &mount_entries)
+        } else {
+            Vec::new()
+        };
+        let observations_text = if observations.is_empty() {
+            "（无观察）".to_owned()
+        } else {
+            observations
+                .iter()
+                .map(|(kind, detail)| format!("- [{kind}] {detail}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 触发门槛：皆空 = skipped（零 LLM 零写）。
+        if finding_rows.is_empty() && observations.is_empty() {
+            task.finish_done("修补跳过：无留痕与观察");
+            self.emit_graph_event(
+                course_id,
+                "structure_repair_completed",
+                serde_json::json!({ "phase": "completed", "outcome": "skipped" }),
+            );
+            return Ok(crate::models::StructureRepairSummary {
+                status: "skipped".into(),
+                old_hash: old_hash as i64,
+                new_hash: old_hash as i64,
+                applied: Vec::new(),
+                cascade: Vec::new(),
+                mounts_stale: false,
+                noop: false,
+                skipped: true,
+            });
+        }
+
+        // 回合输入（七件）。
+        let structure_snapshot = {
+            let mut lines: Vec<String> = blocks_for_obs
+                .iter()
+                .map(|(slug, name)| format!("- {name}（{slug}）"))
+                .collect();
+            if let Some(edges) = structure.get("edges").and_then(|value| value.as_array()) {
+                for edge in edges {
+                    let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                    let target = edge.get("target").and_then(|v| v.as_str()).unwrap_or("");
+                    let edge_type = edge.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let tier = edge.get("tier").and_then(|v| v.as_str()).unwrap_or("");
+                    lines.push(format!("  边：{source} -[{edge_type}/{tier}]-> {target}"));
+                }
+            }
+            lines.join("\n")
+        };
+        let round_input = structure_ops::RepairRoundInput {
+            goal: if goal.trim().is_empty() { &title } else { goal.as_str() },
+            proficiency_statement: &proficiency,
+            learner_basis: &basis,
+            structure_snapshot: &structure_snapshot,
+            findings: &findings_text,
+            mount_observations: &observations_text,
+        };
+
+        let completer = self.course_completer()?;
+        let ops = structure_ops::run_repair_round(
+            completer.as_ref(),
+            model_override,
+            &round_input,
+            &structure,
+            Some(&token),
+        )
+        .await;
+        let ops = match ops {
+            Ok(ops) => ops,
+            Err(error) => {
+                let cancelled = token.is_cancelled()
+                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
+                if cancelled {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_repair_cancelled",
+                        serde_json::json!({ "phase": "cancelled" }),
+                    );
+                } else {
+                    task.finish_failed(error.to_string());
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_repair_failed",
+                        serde_json::json!({ "phase": "failed", "error": error.to_string() }),
+                    );
+                }
+                return Err(error);
+            }
+        };
+        if token.is_cancelled() {
+            task.finish_cancelled();
+            self.emit_graph_event(
+                course_id,
+                "structure_repair_cancelled",
+                serde_json::json!({ "phase": "cancelled" }),
+            );
+            return Err(AppError::Conflict(
+                crate::service::CANCELLED_MESSAGE.to_owned(),
+            ));
+        }
+
+        let noop = ops.is_empty();
+        let (new_structure, cascade) = if noop {
+            (structure.clone(), Vec::new())
+        } else {
+            let mut candidate = structure.clone();
+            let cascade = match structure_ops::apply_ops(&mut candidate, &ops) {
+                Ok(cascade) => cascade,
+                Err(error) => {
+                    let message = format!("修补意图无法应用（结构与审计均未改动）：{error}");
+                    task.finish_failed(message.clone());
+                    return Err(AppError::UnprocessableEntity(message));
+                }
+            };
+            // st.ops.apply：gd.* 全量重过零放宽——任一违规拒整回合。
+            let mut violations = crate::learning_graph::structure_contract::validate_structure(&candidate);
+            violations.extend(crate::learning_graph::structure_contract::reconcile_doors(
+                &candidate,
+                &terrain,
+            ));
+            let red: Vec<_> = violations.iter().filter(|item| !item.warning).collect();
+            if !red.is_empty() {
+                let owned: Vec<crate::learning_graph::structure_contract::ContractViolation> =
+                    red.into_iter().cloned().collect();
+                let report = crate::learning_graph::structure_contract::format_violations(&owned);
+                task.finish_failed(report.clone());
+                return Err(AppError::UnprocessableEntity(format!(
+                    "修补后的结构未通过全量复核（结构与审计均未改动）：\n{report}"
+                )));
+            }
+            (candidate, cascade)
+        };
+        let new_structure_raw = serde_json::to_string(&serde_json::json!({
+            "version": envelope.get("version").cloned().unwrap_or(serde_json::json!(1)),
+            "generated_at": envelope.get("generated_at").cloned().unwrap_or(serde_json::json!(now_ms())),
+            "structure": new_structure,
+            "terrain": terrain,
+        }))
+        .map_err(internal)?;
+        let new_hash = crate::learning_graph::mounting::fnv1a_64(new_structure_raw.as_bytes());
+        if !noop {
+            // 结构快照原子写（唯一权威）+ 修补审计行。
+            sqlx::query("UPDATE learning_courses SET structure_json = ?, updated_at = ? WHERE course_id = ?")
+                .bind(&new_structure_raw)
+                .bind(now_ms())
+                .bind(course_id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(internal)?;
+            let ops_log: Vec<serde_json::Value> = ops
+                .iter()
+                .map(|op| {
+                    serde_json::json!({
+                        "op": op.label(),
+                        "reason": op.reason(),
+                    })
+                })
+                .collect();
+            sqlx::query(
+                "INSERT INTO learning_structure_repairs \
+                 (ts, course_id, old_hash, new_hash, result, ops_json, note) \
+                 VALUES (?, ?, ?, ?, 'applied', ?, ?)",
+            )
+            .bind(now_ms())
+            .bind(course_id.as_str())
+            .bind(old_hash as i64)
+            .bind(new_hash as i64)
+            .bind(serde_json::to_string(&ops_log).map_err(internal)?.as_str())
+            .bind(cascade.join("；"))
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        } else {
+            // noop 也留痕（结论合法：评估过、本轮无修补动作）。
+            sqlx::query(
+                "INSERT INTO learning_structure_repairs \
+                 (ts, course_id, old_hash, new_hash, result, ops_json, note) \
+                 VALUES (?, ?, ?, ?, 'noop', '[]', '')",
+            )
+            .bind(now_ms())
+            .bind(course_id.as_str())
+            .bind(old_hash as i64)
+            .bind(new_hash as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        }
+        let applied: Vec<String> = ops.iter().map(|op| op.label()).collect();
+        let mounts_stale = old_hash != new_hash;
+        task.finish_done(if noop {
+            "修补完成：本轮无修补动作（noop）".to_owned()
+        } else {
+            format!("修补完成：{} 条 op 应用", applied.len())
+        });
+        self.emit_graph_event(
+            course_id,
+            "structure_repair_completed",
+            serde_json::json!({
+                "phase": "completed",
+                "outcome": if noop { "noop" } else { "applied" },
+                "applied": applied.len(),
+            }),
+        );
+        Ok(crate::models::StructureRepairSummary {
+            status: if noop { "noop".into() } else { "applied".into() },
+            old_hash: old_hash as i64,
+            new_hash: new_hash as i64,
+            applied,
+            cascade,
+            mounts_stale,
+            noop,
+            skipped: false,
+        })
+    }
+
+    /// findings warn 通道落表（j09）：逐条追加进
+    /// `learning_structure_findings`（source = concept-review）；坏行（issue
+    /// 空）跳过 warn 不 Broken——留痕是线索不是第二真相。
+    async fn record_review_findings(
+        &self,
+        course_id: &LearningCourseId,
+        findings: &[crate::learning_graph::ReviewFinding],
+    ) {
+        let now = now_ms();
+        for finding in findings {
+            if finding.issue.trim().is_empty() {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    "review finding with empty issue skipped (线索行坏档不落)"
+                );
+                continue;
+            }
+            let result = sqlx::query(
+                "INSERT INTO learning_structure_findings \
+                 (ts, course_id, source, node, field, issue, advice) \
+                 VALUES (?, ?, 'concept-review', ?, ?, ?, ?)",
+            )
+            .bind(now)
+            .bind(course_id.as_str())
+            .bind(finding.node.trim())
+            .bind(finding.field.trim())
+            .bind(finding.issue.trim())
+            .bind(finding.advice.trim())
+            .execute(&self.pool)
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    error = %error,
+                    "review finding insert failed — 留痕不阻断生长"
+                );
+            }
+        }
+    }
+
     /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
     /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
@@ -1063,6 +1446,12 @@ impl LearningService {
                 &candidates_text,
             )
             .await;
+            // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
+            // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
+            // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
+            if !review.findings.is_empty() {
+                self.record_review_findings(course_id, &review.findings).await;
+            }
             if !review.problems.is_empty() {
                 let report = crate::learning_graph::format_review_problems(&review.problems);
                 tracing::warn!(

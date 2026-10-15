@@ -350,6 +350,33 @@ pub fn validate_review(value: &Value) -> Vec<ContractViolation> {
             }
         }
     }
+    // findings warn 通道（j09，可选键）：`findings: [{node?, field?, issue,
+    // advice?}]`——数据缺陷观察，不打回只留痕；issue 非空是唯一硬形状。
+    if let Some(findings) = map.get("findings") {
+        let Some(entries) = findings.as_array() else {
+            violations.push(red("ng.review.findings", "findings 必须是数组"));
+            return violations;
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let at = format!("findings[{index}]");
+            let Some(entry_map) = as_object(entry) else {
+                violations.push(red("ng.review.findings", format!("{at} 不是对象")));
+                continue;
+            };
+            if entry_map
+                .get("issue")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                violations.push(red(
+                    "ng.review.findings",
+                    format!("{at} 的 issue 缺失或为空——留痕是线索，issue 必须说清缺什么"),
+                ));
+            }
+        }
+    }
     if verdict == "pass" {
         return violations;
     }

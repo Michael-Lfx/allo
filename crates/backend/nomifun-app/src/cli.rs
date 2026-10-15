@@ -397,6 +397,20 @@ pub enum LearningSmokeCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// 结构修补冒烟（j09）：留痕驱动回合 + **盘面复验**（磁盘重读独立跑
+    /// 全量 gd.* validator）+ **级联标记**（结构已改时挂载必须判 stale，
+    /// 否则 EXIT=3）；无凭据临时库如实失败。
+    Repair {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
     /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
     Structure {

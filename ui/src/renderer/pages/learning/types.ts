@@ -530,6 +530,21 @@ export interface MountRoundSummary {
   structure_hash: number;
 }
 
+/** 修补回合摘要（POST graph/structure/repair，j09）：applied | noop | skipped */
+export interface StructureRepairSummary {
+  status: 'applied' | 'noop' | 'skipped';
+  old_hash: number;
+  new_hash: number;
+  /** 应用的 op 人面标签（依应用序） */
+  applied: string[];
+  /** 级联注记（改名跟改/拆块边退场/并块去重去自环） */
+  cascade: string[];
+  /** 结构已改 = 既有挂载待重评估 */
+  mounts_stale: boolean;
+  noop: boolean;
+  skipped: boolean;
+}
+
 /** 结构产物读侧视图（预计算面：主干分组 / 块名集 / 矩阵格 / 依赖分层 /
  * 枢纽出入度；层号 = 依赖深度，不是排期） */
 export interface StructureView {
