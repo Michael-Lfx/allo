@@ -151,6 +151,15 @@ struct WaitParams {
     seconds: Option<f64>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct SnapshotParams {
+    /// Optional window id from `list_windows`. When set, snapshot that window
+    /// without raising it. Omit to read the foreground window plus other open
+    /// windows.
+    #[serde(default)]
+    window_id: Option<u64>,
+}
+
 #[tool_router(server_handler)]
 impl ComputerStdioServer {
     async fn run(&self, input: Value) -> CallToolResult {
@@ -159,10 +168,14 @@ impl ComputerStdioServer {
 
     #[tool(
         name = "snapshot",
-        description = "Read the desktop's accessibility tree (foreground window + other open windows) as a hierarchical `desktop → window → controls` tree with numbered [ref] elements and a Set-of-Marks overlay screenshot. Do this FIRST, then act on a control with `click`/`type` and its [ref]. Re-run after any UI change — a [ref] is only valid for the latest snapshot."
+        description = "Read the accessibility tree as a hierarchical `desktop → window → controls` tree with numbered [ref] elements and a Set-of-Marks overlay. Pass optional `window_id` from `list_windows` to snapshot that window without raising it. Do this FIRST, then act on a control with `click`/`type` and its [ref]. Re-run after any UI change — a [ref] is only valid for the latest snapshot."
     )]
-    async fn snapshot(&self) -> CallToolResult {
-        self.run(json!({"action": "observe"})).await
+    async fn snapshot(&self, Parameters(p): Parameters<SnapshotParams>) -> CallToolResult {
+        let mut input = json!({"action": "observe"});
+        if let Some(window_id) = p.window_id {
+            input["window_id"] = json!(window_id);
+        }
+        self.run(input).await
     }
 
     #[tool(

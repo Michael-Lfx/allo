@@ -313,18 +313,16 @@ fn append_unfrozen_tools(
     frozen.extend(extra);
 }
 
-fn tool_result_image_payload(messages: &[Message]) -> (usize, usize) {
-    let mut count = 0usize;
-    let mut bytes = 0usize;
-    for msg in messages {
-        for block in &msg.content {
-            if let ContentBlock::ToolResult { images, .. } = block {
-                count += images.len();
-                bytes += images.iter().map(|image| image.data.len()).sum::<usize>();
-            }
-        }
+fn tool_image_omit_note(retained: usize, removed: usize) -> String {
+    if retained == 0 {
+        format!(
+            "\n({removed} image attachment(s) in this tool result were omitted by the recent-image/provider payload budget in favor of newer screenshots.)"
+        )
+    } else {
+        format!(
+            "\n(Only the first {retained} image attachment(s) in this tool result remain; {removed} later attachment(s) were omitted by the recent-image/provider payload budget.)"
+        )
     }
-    (count, bytes)
 }
 
 /// Durable transcript marker used when an unsent user image is dropped
@@ -626,8 +624,10 @@ pub struct AgentEngine {
     frozen_provider_tools: Option<Vec<nomi_types::tool::ToolDef>>,
     /// Count of messages included in the last actually streamed provider
     /// request. Messages `0..sent_prefix_len` are byte-frozen for prefix
-    /// cache: persist, prune, and image redaction must not rewrite them.
-    /// Reset to 0 after compact / clear; clamped on rewind.
+    /// cache: persist and user-image redaction must not rewrite them.
+    /// Tool-result image prune is newest-first and *may* rewrite this prefix
+    /// (then retracts `sent_prefix_len`) so the latest screenshot wins the
+    /// payload budget. Reset to 0 after compact / clear; clamped on rewind.
     sent_prefix_len: usize,
     /// Tool-result bodies microcompact cleared since the last committed
     /// checkpoint. A failed turn writes these back before truncate. A
@@ -645,6 +645,10 @@ pub struct AgentEngine {
     editable_turn: Option<EditableTurnCheckpoint>,
     /// Optional session observation (explicit, no thread-local).
     observation: Option<Arc<crate::observation::ObservationSession>>,
+    /// Host vision sidecar for tool-result images when the conversation
+    /// model cannot take image input. `None` in CLI/tests that have no
+    /// analyzer; the provider adapter still drops the bytes.
+    tool_image_annotator: Option<Arc<dyn crate::tool_image_annotator::ToolResultImageAnnotator>>,
 }
 
 /// Moves the transcript into the provider request and puts the same `Vec`
@@ -737,6 +741,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn: None,
             observation: None,
+            tool_image_annotator: None,
         }
     }
 
@@ -833,6 +838,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn,
             observation: None,
+            tool_image_annotator: None,
         }
     }
 
@@ -1118,6 +1124,16 @@ impl AgentEngine {
         inbox: Option<Arc<Mutex<std::collections::VecDeque<String>>>>,
     ) {
         self.steering_inbox = inbox;
+    }
+
+    /// Install the host vision sidecar used when the conversation model cannot
+    /// take tool-result images. No-op for vision-capable models; the engine
+    /// checks `compat.supports_image()` before calling it.
+    pub fn set_tool_image_annotator(
+        &mut self,
+        annotator: Option<Arc<dyn crate::tool_image_annotator::ToolResultImageAnnotator>>,
+    ) {
+        self.tool_image_annotator = annotator;
     }
 
     /// Install (or clear) the trusted host resource-notification inbox.
@@ -3486,6 +3502,21 @@ impl AgentEngine {
                 }
             }
 
+            // Text-only conversation models never receive tool images on the
+            // wire. Describe them through the host vision sidecar *after* the
+            // UI has the binary payload, so the next provider turn still has
+            // the latest screenshot as text even when the bytes are dropped.
+            if !self.compat.supports_image()
+                && let Some(annotator) = self.tool_image_annotator.clone()
+            {
+                crate::tool_image_annotator::annotate_tool_result_images(
+                    annotator.as_ref(),
+                    &tool_calls,
+                    &mut outcome.results,
+                )
+                .await;
+            }
+
             efficiency.observe_results(&outcome.results);
             // Round ledger (machine truth only). Runs AFTER the result loop
             // above, not inside it: that loop holds an immutable borrow of
@@ -3817,22 +3848,19 @@ impl AgentEngine {
     }
 
     /// Keep at most `max_recent_images` individual images, additionally bounded
-    /// by the strictest supported provider request limit. The text part of each
-    /// result is preserved.
+    /// by the strictest supported provider request limit. Newest results win:
+    /// walking history from the end, images are kept until the count/byte
+    /// budget is exhausted, then older ones are stripped. The text part of
+    /// each result is preserved.
     ///
-    /// Already-sent messages (`0..sent_prefix_len`) are never rewritten: their
-    /// images occupy budget first, and only unsent results are stripped.
+    /// Already-sent messages may be rewritten when they hold stale screenshots
+    /// that would starve a newer observation. That breaks prefix cache from
+    /// the first rewritten message; `sent_prefix_len` is retracted to match.
     fn prune_old_tool_images(&mut self) {
-        let frozen = self.sent_prefix_len.min(self.messages.len());
-        let (frozen_count, frozen_bytes) = tool_result_image_payload(&self.messages[..frozen]);
-        let mut remaining_count = self
-            .max_recent_images
-            .min(MAX_PROVIDER_REQUEST_IMAGES)
-            .saturating_sub(frozen_count);
-        let mut remaining_data_bytes =
-            MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES.saturating_sub(frozen_bytes);
-        let mut changed = false;
-        for msg in self.messages[frozen..].iter_mut().rev() {
+        let mut remaining_count = self.max_recent_images.min(MAX_PROVIDER_REQUEST_IMAGES);
+        let mut remaining_data_bytes = MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES;
+        let mut first_rewritten: Option<usize> = None;
+        for (idx, msg) in self.messages.iter_mut().enumerate().rev() {
             for block in msg.content.iter_mut().rev() {
                 if let ContentBlock::ToolResult {
                     content, images, ..
@@ -3851,16 +3879,17 @@ impl AgentEngine {
                     let retained = images.len();
                     let removed = original_len - retained;
                     if removed > 0 {
-                        changed = true;
-                        content.push_str(&format!(
-                            "\n(Only the first {retained} image attachment(s) in this tool result remain; {removed} later attachment(s) were omitted by the recent-image/provider payload budget.)"
-                        ));
+                        first_rewritten = Some(idx);
+                        content.push_str(&tool_image_omit_note(retained, removed));
                     }
                 }
             }
         }
-        if changed {
-            clear_provider_round_ids(&mut self.messages[frozen..]);
+        if let Some(from) = first_rewritten {
+            clear_provider_round_ids(&mut self.messages[from..]);
+            if from < self.sent_prefix_len {
+                self.sent_prefix_len = from;
+            }
         }
     }
 

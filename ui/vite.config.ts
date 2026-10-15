@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'path';
+import { viteOptimizeDepDiskNames } from '../scripts/run-dev-vite-deps.mjs';
 import react from '@vitejs/plugin-react';
 import UnoCSS from 'unocss/vite';
 import tailwindcss from '@tailwindcss/vite';
@@ -20,6 +21,50 @@ const codeMirrorPackages = [
 ] as const;
 const rawApiContractVersion = readFileSync(resolve(__dirname, '../ui-api-contract-version.txt'), 'utf8').trim();
 const manifest = createUiBuildManifest(uiPackage.version, rawApiContractVersion);
+
+/**
+ * Tauri's WebView2 caches 404s. A Vite dep re-optimize that deletes shared
+ * chunks (`chunk-XXXX.js?v=hash`) then paints a white screen that HMR cannot
+ * recover from, because the first import failed before the client connected.
+ * Serve missing optimize-deps files as no-store 503 and restart so a reload
+ * sees a rebuilt graph instead of a cached miss.
+ */
+function viteOptimizeDepsRecoveryPlugin(): Plugin {
+  return {
+    name: 'nomifun-vite-optimize-deps-recovery',
+    configureServer(server) {
+      const depsDir = resolve(server.config.root, 'node_modules/.vite/deps');
+      const marker = '/node_modules/.vite/deps/';
+      server.middlewares.use((req, res, next) => {
+        const raw = req.url?.split('?')[0] ?? '';
+        const idx = raw.indexOf(marker);
+        if (idx === -1) {
+          next();
+          return;
+        }
+        const file = decodeURIComponent(raw.slice(idx + marker.length));
+        if (!file || file.includes('..') || file.includes('/') || file.includes('\\')) {
+          next();
+          return;
+        }
+        if (viteOptimizeDepDiskNames(file).some((name) => existsSync(join(depsDir, name)))) {
+          next();
+          return;
+        }
+        // Cold optimize is still writing the graph. Do not wipe/restart —
+        // that races the optimizer and leaves run-dev waiting forever.
+        if (!existsSync(join(depsDir, '_metadata.json'))) {
+          next();
+          return;
+        }
+        res.statusCode = 503;
+        res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end('/* vite optimize deps recovering */\n');
+      });
+    },
+  };
+}
 
 function uiBuildManifestPlugin(): Plugin {
   return {
@@ -123,6 +168,10 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       host: '127.0.0.1',
       proxy,
+      // WebView2 caches 404s of optimized chunks; never let that stick.
+      headers: {
+        'Cache-Control': 'no-store',
+      },
       // Pre-crawl canvas lazy chunks so first-open of text/3D does not
       // discover new deps and trigger a full client reload mid-session.
       warmup: {
@@ -135,6 +184,10 @@ export default defineConfig(({ mode }) => {
       },
     },
     optimizeDeps: {
+      // Hold the first document until the import crawl (including warmup)
+      // finishes, so Tauri does not load a module graph whose shared chunks
+      // are about to be rewritten.
+      holdUntilCrawlEnd: true,
       include: [
         '@tiptap/react',
         '@tiptap/core',
@@ -152,7 +205,14 @@ export default defineConfig(({ mode }) => {
     },
     // Tailwind v4 powers the ported open-ai-canvas (oc/) utility classes + globals.css.
     // UnoCSS remains for the rest of allo UI.
-    plugins: [iconParkPlugin(), react(), tailwindcss(), UnoCSS({ ...unoConfig }), uiBuildManifestPlugin()],
+    plugins: [
+      viteOptimizeDepsRecoveryPlugin(),
+      iconParkPlugin(),
+      react(),
+      tailwindcss(),
+      UnoCSS({ ...unoConfig }),
+      uiBuildManifestPlugin(),
+    ],
     define: {
       __NOMI_BUILD_ID__: JSON.stringify(buildId),
       __NOMI_CODEMIRROR_VERSIONS__: JSON.stringify(codeMirrorRuntimeVersions),

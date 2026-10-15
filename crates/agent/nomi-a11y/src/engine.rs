@@ -162,8 +162,12 @@ pub struct ObserveOpts {
     pub max_depth: usize,
     /// Stop after this many interactable elements (then set `truncated`).
     pub node_budget: usize,
-    /// Restrict to a specific process; `None` = the frontmost app.
+    /// Restrict to a specific process; `None` = the frontmost app / desktop forest.
     pub pid: Option<i32>,
+    /// Platform window id from `list_windows` (HWND on Windows). When set,
+    /// observe that window only, without raising it. Takes precedence over
+    /// `pid` on backends that can address a window by id.
+    pub window_id: Option<u32>,
 }
 
 impl Default for ObserveOpts {
@@ -172,6 +176,7 @@ impl Default for ObserveOpts {
             max_depth: 12,
             node_budget: 120,
             pid: None,
+            window_id: None,
         }
     }
 }
