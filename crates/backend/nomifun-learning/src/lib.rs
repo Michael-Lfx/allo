@@ -24,8 +24,8 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    ExcerptRole, GraphLessonContext, LessonContentAgentEngine, LessonDraftView, LessonExcerpt,
-    LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
+    ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine, LessonDraftView,
+    LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 
 pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure};

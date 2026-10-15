@@ -122,6 +122,78 @@ pub struct GraphLessonContext {
     /// 预渲染：同课程位于本课之后的节点（衔接参照，非依赖关系），让生成
     /// 知道「要为哪些后续学习做衔接」。
     pub upcoming_nodes: String,
+    /// 概念面（j07 读侧投影）：首现/非首现 + 引用名 + 活跃别名池的结构化
+    /// 数据。`None` = 本节点无概念挂接（teaches/assumes 双空），概念面段
+    /// 整体缺席。
+    pub concept_faces: Option<GraphConceptFaces>,
+}
+
+/// 概念面读侧投影（二轮 g2 / j07）：首现判定（祖先闭包不动点，零新存储）
+/// + 引用名开讲（j04 ref_name 落库）+ 投影词表（活跃别名池）。结构化承载
+/// ——提示词渲染与审计观察条（用名一致性/首现引入）共用同一事实源。
+#[derive(Debug, Clone, Default)]
+pub struct GraphConceptFaces {
+    /// 首现概念（正名）：本节点 teaches 中不在祖先闭包已教集合里的——
+    /// 先情境引入再给正式定义。
+    pub first_seen: Vec<String>,
+    /// 非首现概念（正名）：祖先闭包已教过——一两句回收即可，不重新讲授。
+    pub returning: Vec<String>,
+    /// 引用名（节点挂接时模型实际用名）→ 正名；仅列与正名不同的条目。
+    /// 正文以引用名开讲，正名只在首次出现时括注。
+    pub ref_names: Vec<(String, String)>,
+    /// 正名 → 活跃别名（投影词表，R3）：旧叫法正文不使用，必要时括注帮
+    /// 学习者辨认。
+    pub aliases: Vec<(String, Vec<String>)>,
+}
+
+impl GraphConceptFaces {
+    /// 是否携带任何事实（全空 = 概念面段缺席）。
+    pub fn is_empty(&self) -> bool {
+        self.first_seen.is_empty()
+            && self.returning.is_empty()
+            && self.ref_names.is_empty()
+            && self.aliases.is_empty()
+    }
+
+    /// 渲染进节点内容生成上下文的「概念面」段（含 R2/R5 条款——概念面
+    /// 条款只进图节点路径，本渲染即其唯一落点）。
+    pub fn render_text(&self) -> String {
+        let mut lines = vec![
+            "概念面（本节点要教的概念如何登场——只约束本节点 teaches 的概念）：".to_owned(),
+            "- 登场纪律：首现概念先用情境引出再给正式定义；非首现概念一两句话回收即可，不重新讲授。".to_owned(),
+            "- 用名纪律：正文以本节点标注的名字开讲（前置路径标了引用名的用引用名），正名只在首次出现时括注一次；同一概念从头到尾用同一个名字，不混用别名。".to_owned(),
+        ];
+        if !self.first_seen.is_empty() {
+            lines.push(format!("- 首现（先引入再定义）：{}", self.first_seen.join("、")));
+        }
+        if !self.returning.is_empty() {
+            lines.push(format!(
+                "- 非首现（前置已教过，简短回收）：{}",
+                self.returning.join("、")
+            ));
+        }
+        if !self.ref_names.is_empty() {
+            let rows = self
+                .ref_names
+                .iter()
+                .map(|(reference, canonical)| format!("{reference}（正名：{canonical}）"))
+                .collect::<Vec<_>>()
+                .join("；");
+            lines.push(format!("- 引用名（正文用它开讲）：{rows}"));
+        }
+        if !self.aliases.is_empty() {
+            let rows = self
+                .aliases
+                .iter()
+                .map(|(canonical, aliases)| format!("{canonical} 又叫 {}", aliases.join("/")))
+                .collect::<Vec<_>>()
+                .join("；");
+            lines.push(format!(
+                "- 旧叫法（学习者可能在别处见过；正文不使用，必要时括注帮助辨认）：{rows}"
+            ));
+        }
+        lines.join("\n")
+    }
 }
 
 /// The lesson context an engine generates content for: course/module/lesson
@@ -687,7 +759,7 @@ impl LessonDraft {
 /// rules, inlined with position-aware messages, plus draft-specific
 /// warnings. DANGER findings block the finish gate.
 fn audit_findings(
-    _context: &LessonGenerationContext,
+    context: &LessonGenerationContext,
     document: Option<&str>,
     estimated_minutes: i64,
     activities: &[ActivityPack],
@@ -864,6 +936,96 @@ fn audit_findings(
             ));
         }
     }
+
+    // ── 成色观察条（j07，观察面非阻断——写作纪律不机械化，这里只点名让
+    // 修复轮与发布前自查看得见）：概念面（正文用名一致性 / 首现引入）与
+    // R9 叙述声部（正文自称「本课」、开发面结构词不入正文）。
+    let bodies: Vec<(String, &str)> = section_bodies
+        .iter()
+        .map(|(key, (body, _))| (key.clone(), body.as_str()))
+        .chain(document.iter().map(|body| ("document".to_owned(), *body)))
+        .collect();
+    if !bodies.is_empty() {
+        // 概念面观察（仅图节点路径：概念挂接只在图路径存在）。
+        if let Some(faces) = context
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.concept_faces.as_ref())
+        {
+            let joined = bodies
+                .iter()
+                .map(|(_, body)| *body)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (reference, canonical) in &faces.ref_names {
+                let uses_reference = joined.contains(reference.as_str());
+                let uses_canonical = joined.contains(canonical.as_str());
+                if uses_reference && uses_canonical {
+                    findings.push(warning(
+                        "naming_mixed",
+                        format!(
+                            "概念「{canonical}」的正文同时出现引用名「{reference}」与正名——\
+                             同一概念从头到尾用同一个名字（引用名开讲，正名仅首现括注）"
+                        ),
+                    ));
+                } else if !uses_reference && uses_canonical {
+                    findings.push(warning(
+                        "naming_canonical_only",
+                        format!(
+                            "概念「{canonical}」的正文只用了正名，没有用声明的引用名「{reference}」开讲"
+                        ),
+                    ));
+                }
+            }
+            for concept in &faces.first_seen {
+                let mentioned = faces
+                    .ref_names
+                    .iter()
+                    .find(|(_, canonical)| canonical == concept)
+                    .map(|(reference, _)| joined.contains(reference.as_str()))
+                    .unwrap_or_else(|| joined.contains(concept.as_str()));
+                if !mentioned {
+                    findings.push(warning(
+                        "first_seen_unintroduced",
+                        format!(
+                            "首现概念「{concept}」的名字没有出现在任何正文里——\
+                             首现概念应先用情境引出再给正式定义"
+                        ),
+                    ));
+                }
+            }
+        }
+        // R9 叙述声部（两条管线通用）：逐类点名命中节。
+        const NARRATIVE_SELF: &[&str] = &["本课", "这一课", "本课时"];
+        const STRUCTURE_WORDS: &[&str] = &["本节将", "下一节将", "接下来我们将", "如前所述"];
+        for (kind, terms, label) in [
+            (
+                "narrative_self_reference",
+                NARRATIVE_SELF,
+                "正文自称「本课/这一课」（学习者读的是学习材料，不是课程导语）",
+            ),
+            (
+                "narrative_structure_words",
+                STRUCTURE_WORDS,
+                "开发面结构词混入正文（结构导航是大纲的事，不是正文的）",
+            ),
+        ] {
+            let mut hits: Vec<String> = Vec::new();
+            for (key, body) in &bodies {
+                let matched: Vec<&str> = terms
+                    .iter()
+                    .filter(|term| body.contains(**term))
+                    .copied()
+                    .collect();
+                if !matched.is_empty() {
+                    hits.push(format!("{}（{}）", key, matched.join("、")));
+                }
+            }
+            if !hits.is_empty() {
+                findings.push(warning(kind, format!("{label}：{}", hits.join("；"))));
+            }
+        }
+    }
     findings
 }
 
@@ -948,6 +1110,114 @@ mod tests {
         assert!(kinds.contains(&"activities_too_few"));
         assert!(kinds.contains(&"objective_activities_too_few"));
         assert!(draft.audit_report().contains("[danger]"));
+    }
+
+    /// 成色观察条（j07，观察面非阻断）：概念面（用名混用/只用正名/首现
+    /// 未引入）与 R9 叙述声部——warning 级、不阻断发布；传统路径（无概念
+    /// 面）不产生概念面观察。
+    #[test]
+    fn audit_observes_content_discipline_without_blocking() {
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: Some(GraphConceptFaces {
+                first_seen: vec!["Delta".into()],
+                returning: vec![],
+                ref_names: vec![("Delta".into(), "德尔塔".into())],
+                aliases: vec![],
+            }),
+        });
+        let mut draft = LessonDraft::new(ctx);
+        // 正文同时出现引用名与正名（混用）+ 首现名在场 + R9 自称。
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!(
+                "## 描述\n{body}Delta 与德尔塔是同一回事。本课将介绍它的用法。\n## 例子\n{body}\n## 验证\n{body}\n"
+            ),
+        }]);
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_WARNING && f.kind == "naming_mixed"),
+            "mixed naming observed: {:?}",
+            draft.findings
+        );
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "first_seen_unintroduced"),
+            "first-seen name present → no unintroduced observation"
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_WARNING && f.kind == "narrative_self_reference"),
+            "R9 self-reference observed"
+        );
+        // 观察面不阻断：danger 只来自活动下限等既有契约。
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_DANGER && f.kind.contains("narrative"))
+        );
+
+        // 只用正名、不用引用名 → naming_canonical_only；首现名缺席 →
+        // first_seen_unintroduced。
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: Some(GraphConceptFaces {
+                first_seen: vec!["Vega".into()],
+                returning: vec![],
+                ref_names: vec![("Delta".into(), "德尔塔".into())],
+                aliases: vec![],
+            }),
+        });
+        let mut draft = LessonDraft::new(ctx);
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}德尔塔的定义。\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "naming_canonical_only")
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "first_seen_unintroduced")
+        );
+
+        // 传统路径（graph None）：概念面观察缺席，R9 观察仍然生效。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}本课将介绍。\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind.starts_with("naming_"))
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "narrative_self_reference")
+        );
     }
 
     #[test]
