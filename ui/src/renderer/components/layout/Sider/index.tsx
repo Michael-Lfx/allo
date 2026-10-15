@@ -30,7 +30,6 @@ import {
   SiderModelHubEntry,
   SiderRequirementsEntry,
   SiderScheduledEntry,
-  SiderMeetingEntry,
   SiderSectionHeader,
   SiderVideoGenerationGroup,
 } from './SiderNav';
@@ -384,10 +383,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     setOptimisticBar2Module(null);
     navTo('/scheduled');
   };
-  const handleMeetingClick = () => {
-    setOptimisticBar2Module(null);
-    navTo('/meeting');
-  };
   const handleKnowledgeClick = () => {
     setOptimisticBar2Module(null);
     navTo('/knowledge');
@@ -608,14 +603,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 dock={!collapsed}
                 siderTooltipProps={siderTooltipProps}
                 onClick={handleScheduledClick}
-              />
-              <SiderMeetingEntry
-                isMobile={isMobile}
-                isActive={!effectiveBar2Module && pathname.startsWith('/meeting')}
-                collapsed={collapsed}
-                dock={!collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onClick={handleMeetingClick}
               />
               {developerMode === true && (
                 <SiderEvalEntry
