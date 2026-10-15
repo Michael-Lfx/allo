@@ -695,6 +695,106 @@ teaching_style: crate::models::TeachingStyle::Standard,
         }
     }
 
+    /// 按序出稿的 completer（二轮 t1 重试机制测试用）：逐调用消费脚本，
+    /// 末项无限重复（评审回包 = 最后一稿的合法 JSON，problems 缺省为空即
+    /// 通过）。记录每次调用的 user 装配（断言重试反馈带定向指令）。
+    struct SequencedCompleter {
+        replies: std::sync::Mutex<Vec<String>>,
+        calls: AtomicUsize,
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl SequencedCompleter {
+        fn new(replies: Vec<String>) -> Arc<Self> {
+            Arc::new(Self {
+                replies: std::sync::Mutex::new(replies),
+                calls: AtomicUsize::new(0),
+                prompts: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(AtomicOrdering::SeqCst)
+        }
+
+        fn prompt(&self, index: usize) -> Option<String> {
+            self.prompts.lock().unwrap().get(index).cloned()
+        }
+
+        fn record(&self, user: &str) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.prompts.lock().unwrap().push(user.to_owned());
+            let mut replies = self.replies.lock().unwrap();
+            match replies.len() {
+                0 => Err(AppError::Internal("empty script".into())),
+                1 => Ok(replies[0].clone()),
+                _ => Ok(replies.remove(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LearningCompleter for SequencedCompleter {
+        async fn complete(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            _system: &str,
+            user: &str,
+            _max_tokens: u32,
+        ) -> Result<String, AppError> {
+            self.record(user)
+        }
+
+        async fn complete_json_with_thinking(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            _system: &str,
+            user: &str,
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.record(user)
+        }
+    }
+
+    /// LLM 调用进行中触发全局取消（mid-call 真中断测试）：取消先到，
+    /// wrapper 丢弃回包——内层恰被调一次、零落库。
+    struct CancelMidCallCompleter {
+        service: LearningService,
+        calls: AtomicUsize,
+        reply: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LearningCompleter for CancelMidCallCompleter {
+        async fn complete(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            _system: &str,
+            _user: &str,
+            _max_tokens: u32,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.service.cancel_generation();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(self.reply.clone())
+        }
+
+        async fn complete_json_with_thinking(
+            &self,
+            _model_override: Option<(&str, &str)>,
+            _system: &str,
+            _user: &str,
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+        ) -> Result<String, AppError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.service.cancel_generation();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(self.reply.clone())
+        }
+    }
+
     async fn reflection_service_with_completer(
         completer: Arc<ScriptedCompleter>,
     ) -> (LearningService, nomifun_db::SqlitePool, UserId, LearningActivityId) {
@@ -3174,6 +3274,316 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
     .await
     .unwrap();
     assert_eq!(generated, 0, "grown nodes start without content");
+}
+
+// ── 生长/结构循环行为加固（二轮 t1 + 三轮 t2）────────────────────────────
+
+/// 无法解析引用的违规批（每轮结构门同一份 ng.refs.resolvable 报告——同指
+/// 纹早停的脚本）。
+const GHOST_REF_BATCH: &str = r#"{
+    "nodes": [
+        {"title": "幽灵节点", "purpose": "引用未铸名概念", "est": 10,
+         "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []}
+    ],
+    "mints": [],
+    "note": "违约稿"
+}"#;
+
+/// 合法过门批（与 growth_applies 同款；末项重复供评审回包）。
+const VALID_BATCH: &str = r#"{
+    "nodes": [
+        {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+         "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+        {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 20,
+         "teaches": [{"name": "求导法则", "tier": "apply"}],
+         "assumes": [{"name": "向量基础", "tier": "know"}]}
+    ],
+    "mints": [
+        {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
+        {"canonical": "求导法则", "aliases": [], "definition": ""}
+    ],
+    "note": "首批两节点"
+}"#;
+
+async fn wait_for_batch_status(
+    service: &LearningService,
+    course_id: &str,
+    status: &str,
+) -> bool {
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = ?",
+        )
+        .bind(course_id)
+        .bind(status)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+/// 同指纹早停（learnhub 口径：连败两次即停，调用数 2 非 3）：同一份违约
+/// 稿两轮结构门打回，第二轮与第一轮指纹相同 → 立即 exhausted，第 3 轮的
+/// LLM 调用不发生；smoke 读数 stop_reason = early_stop。
+#[tokio::test]
+async fn growth_stops_early_when_the_gate_report_repeats() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = ScriptedCompleter::new(GHOST_REF_BATCH, false);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "growth must fail on the repeating violation"
+    );
+    assert_eq!(
+        completer.calls.load(AtomicOrdering::SeqCst),
+        2,
+        "early stop: two calls, not three"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "early_stop");
+    assert_eq!(stats.attempts_used, 2);
+}
+
+/// 异错烧满预算：每轮违约不同（指纹互异）→ 3 轮全烧，exhausted。
+#[tokio::test]
+async fn growth_burns_the_full_budget_when_violations_differ() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 三种互异违约：未解析引用 / purpose 缺失 / 中文档位。
+    let empty_purpose = r#"{
+        "nodes": [{"title": "缺用途节点", "purpose": "", "est": 10, "teaches": [], "assumes": []}],
+        "mints": [], "note": "n"
+    }"#;
+    let bad_tier = r#"{
+        "nodes": [{"title": "档位节点", "purpose": "p", "est": 10,
+                   "teaches": [{"name": "极限", "tier": "精通"}], "assumes": []}],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "n"
+    }"#;
+    let completer = SequencedCompleter::new(vec![
+        GHOST_REF_BATCH.to_owned(),
+        empty_purpose.to_owned(),
+        bad_tier.to_owned(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "growth must exhaust the budget"
+    );
+    assert_eq!(completer.call_count(), 3, "distinct violations burn the budget");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "exhausted");
+}
+
+/// 容量守卫（重裁出口）：超容稿的 ng.batch.size 整批违规改判定向重装指令
+/// （ng.batch.redraft_capacity），下一轮按拆分形态装箱后过门落库。
+#[tokio::test]
+async fn over_capacity_redraft_gets_the_directed_instruction() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let oversized = {
+        let mut nodes = Vec::new();
+        for index in 0..8 {
+            nodes.push(format!(
+                r#"{{"title": "超容节点{index}", "purpose": "p", "est": 10,
+                    "teaches": [{{"name": "概念{index}", "tier": "know"}}], "assumes": []}}"#
+            ));
+        }
+        let mints: Vec<String> = (0..8)
+            .map(|index| format!(r#"{{"canonical": "概念{index}", "definition": "d"}}"#))
+            .collect();
+        format!(
+            r#"{{"nodes": [{}], "mints": [{}], "note": "超容稿"}}"#,
+            nodes.join(","),
+            mints.join(",")
+        )
+    };
+    let completer = SequencedCompleter::new(vec![
+        GHOST_REF_BATCH.to_owned(),
+        oversized,
+        VALID_BATCH.to_owned(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "the directed redraft lands the trimmed batch");
+    // 第三次调用（第二轮重裁）的重试装配携带专用条款码与拆分指令。
+    let third_prompt = completer.prompt(2).expect("third call prompt recorded");
+    assert!(
+        third_prompt.contains("ng.batch.redraft_capacity"),
+        "the capacity violation is redirected, not just rejected"
+    );
+    assert!(third_prompt.contains("留待后续批次"));
+}
+
+/// 「未点名被改」机械守卫：打回报告只点名甲，重裁改了乙 → guard 失败 →
+/// 原地重试恰一次（不占轮预算）；二次越权计轮，第三轮点修落位。
+#[tokio::test]
+async fn guard_failure_retries_in_place_once_then_counts_the_round() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 违约稿：甲引用幽灵（门报告点名甲），乙丙干净（未点名）。
+    let draft = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "引用未铸名概念", "est": 10,
+             "teaches": [{"name": "幽灵", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [], "note": "违约稿"
+    }"#;
+    // 重裁#1：甲修复、乙被偷偷改动（未点名）→ guard，原地重试。
+    let redraft_editing_unnamed = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "被偷改的用途", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "丙的原用途", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿"
+    }"#;
+    // 重裁#2（原地重试）：乙复原、丙被偷改（守卫文案只点名过乙，丙仍属
+    // 未点名）→ 二次越权，计轮。
+    let redraft_editing_unnamed_again = r#"{
+        "nodes": [
+            {"title": "甲节点", "purpose": "修复后", "est": 10,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "乙节点", "purpose": "乙的原用途", "est": 10, "teaches": [], "assumes": []},
+            {"title": "丙节点", "purpose": "被偷改的用途（第二次）", "est": 10, "teaches": [], "assumes": []}
+        ],
+        "mints": [{"canonical": "极限", "definition": "d"}], "note": "越权稿二"
+    }"#;
+    // 重裁#3：合法批落位（重试反馈的守卫文案点名乙，guard 放行）。
+    let completer = SequencedCompleter::new(vec![
+        draft.to_owned(),
+        redraft_editing_unnamed.to_owned(),
+        redraft_editing_unnamed_again.to_owned(),
+        VALID_BATCH.to_owned(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "the third-round point-fix lands");
+    // 调用数：起草1 + 重裁1 + 原地重试1（乙越权）+ 计轮重裁1（丙越权）+
+    // 第 3 轮重裁1（合法稿 vs 守卫基准触发甲「被移除」的原地重试）+ 评审1
+    // = 6。**3 轮预算内落库**本身即证明原地重试未占轮预算——纯计轮会在
+    // 第 3 轮耗尽后失败（5 调用即断）。
+    assert_eq!(completer.call_count(), 6);
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 3);
+}
+
+/// mid-call 取消（三轮 t2 真中断）：取消在 LLM 调用内触发 → wrapper 丢弃
+/// 回包 → 本批零落库、批行转 failed、任务终态 cancelled、内层恰被调一次。
+#[tokio::test]
+async fn mid_call_cancellation_discards_the_result_and_persists_nothing() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = Arc::new(CancelMidCallCompleter {
+        service: service.clone(),
+        calls: AtomicUsize::new(0),
+        reply: VALID_BATCH.to_owned(),
+    });
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "the cancelled growth fails with its pending batch marked"
+    );
+    // 零落库：种子 2 节点，无新增。
+    let lessons: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(lessons, 2, "the discarded batch persisted nothing");
+    assert_eq!(
+        completer.calls.load(AtomicOrdering::SeqCst),
+        1,
+        "the inner call ran exactly once"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "cancelled");
+    // 任务终态 = cancelled（取消先到，中性终态）。
+    let snapshot = service.generation_task_snapshot();
+    let growth = snapshot
+        .iter()
+        .find(|task| task.kind == crate::service::KIND_GROWTH)
+        .expect("growth task recorded");
+    assert_eq!(growth.state, "cancelled");
+}
+
+/// 结构生成同款早停：同一份违约产物两轮逐条款报告相同 → 第 2 轮即停
+///（第 3 轮调用不发生；结构稿违约后地形稿不调用，调用数 = 2 非 6）。
+#[tokio::test]
+async fn structure_generation_stops_early_on_repeated_violations() {
+    // spines 空 = gd.spines.count 红，永不可修正——每轮同一份逐条款报告。
+    let bad_structure = serde_json::json!({
+        "goal": "目标", "goal_type": "capability",
+        "proficiency_statement": "程度",
+        "domain_type": "理论",
+        "form_reference": "Flowy 学习结构模板 v1",
+        "source_tier": "名录",
+        "generated_by": "test",
+        "disclaimer": "d",
+        "domain": {
+            "core_definition": "c", "includes": ["i1", "i2", "i3"],
+            "excludes": ["e1", "e2", "e3"], "prerequisite_doors": [],
+            "audience": "a", "scenarios": ["s1", "s2"], "granularity": "g"
+        },
+        "spines": [], "blocks": [], "edges": [], "gaps": [], "quality": []
+    });
+    let completer = ScriptedCompleter::new(bad_structure.to_string(), false);
+    let input = crate::learning_graph::structure_gen::StructureInput::new("目标", None, None);
+    let error = crate::learning_graph::structure_gen::generate_structure_artifacts(
+        completer.as_ref(),
+        None,
+        &input,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("均未通过"));
+    // 早停：结构稿每轮违约即打回；每轮耗 2 次调用（结构稿 JSON 合法、
+    // 门口对账在地形稿之后才红）——2 轮 = 4 次调用，第 3 轮的 2 次不发生。
+    assert_eq!(
+        completer.calls.load(AtomicOrdering::SeqCst),
+        4,
+        "structure early stop: two attempts, not three"
+    );
 }
 
 /// 停摆臂（ADR-0010：只留空图一臂）：零节点课程自动触发退出（Ok(false)），

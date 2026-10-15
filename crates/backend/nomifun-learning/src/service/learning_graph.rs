@@ -121,9 +121,11 @@ impl LearningService {
     // ── Structure generation（知识结构生成：双产物契约门 → 快照落列）────
 
     /// 运行知识结构生成：门面双产物过 gd.* 契约门 + 门口对账后，快照信封
-    /// 原子写入 `structure_json`（重跑覆盖）。WS structure_started/completed/
-    /// failed 三事件驱动前端；失败明示原因（含 provider 不支持 json_object），
-    /// 课程保留、快照不动（重试 = 本方法重入）。
+    /// 原子写入 `structure_json`（重跑覆盖）。登记 generation_tasks 长任务
+    /// （token 真取消——循环头检查 + 两次 LLM 调用 select! 竞速 + 快照写前
+    /// 检查，写前取消 = 零快照）；WS structure_started/completed/failed/
+    /// cancelled 四事件驱动前端；失败明示原因（含 provider 不支持
+    /// json_object），课程保留、快照不动（重试 = 本方法重入）。
     pub async fn run_structure_generation(
         &self,
         course_id: &LearningCourseId,
@@ -135,6 +137,14 @@ impl LearningService {
         // 每课程一把 slot 锁：进行中的生成让重复触发报冲突。
         let slot_key = format!("learning-structure-{}", course_id.as_str());
         let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        let mut task = self.begin_generation_task(
+            crate::service::KIND_STRUCTURE,
+            course_id.as_str(),
+            None,
+            "知识结构生成",
+        )?;
+        let token = task.token();
+        task.set_step("structure", "正在生成知识结构与前置地形…");
         self.emit_graph_event(
             course_id,
             "structure_started",
@@ -148,10 +158,27 @@ impl LearningService {
             completer.as_ref(),
             model_override,
             input,
+            Some(&token),
         )
         .await;
         match result {
             Ok(artifacts) => {
+                // 快照写前检查点（三轮 t2）：写前取消 = 零快照（磁盘无半
+                // 成品的 allo 等价语义）。
+                if token.is_cancelled() {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_cancelled",
+                        serde_json::json!({
+                            "phase": "cancelled",
+                            "outcome": "cancelled",
+                        }),
+                    );
+                    return Err(AppError::Conflict(
+                        crate::service::CANCELLED_MESSAGE.to_owned(),
+                    ));
+                }
                 let envelope = crate::learning_graph::structure_gen::snapshot_envelope(
                     &artifacts.structure,
                     &artifacts.terrain,
@@ -186,6 +213,7 @@ impl LearningService {
                     doors,
                     "knowledge structure snapshot stored"
                 );
+                task.finish_done(format!("双产物落列（{blocks} 块 / {doors} 门）"));
                 self.emit_graph_event(
                     course_id,
                     "structure_completed",
@@ -198,14 +226,29 @@ impl LearningService {
                 Ok(())
             }
             Err(error) => {
-                self.emit_graph_event(
-                    course_id,
-                    "structure_failed",
-                    serde_json::json!({
-                        "phase": "failed",
-                        "error": error.to_string(),
-                    }),
-                );
+                let cancelled = token.is_cancelled()
+                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
+                if cancelled {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_cancelled",
+                        serde_json::json!({
+                            "phase": "cancelled",
+                            "outcome": "cancelled",
+                        }),
+                    );
+                } else {
+                    task.finish_failed(error.to_string());
+                    self.emit_graph_event(
+                        course_id,
+                        "structure_failed",
+                        serde_json::json!({
+                            "phase": "failed",
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
                 Err(error)
             }
         }
@@ -394,13 +437,16 @@ impl LearningService {
 
     /// 一轮生长：上下文组装 → 教练起草/重裁 → 结构门 →（打回重裁，≤3 轮）→
     /// AI 概念评审 →（打回同上）→ 事务落库（铸名/节点/概念网/批次）。
-    /// 全程经 generation_registry 暴露状态、可取消；结束发 WS 终态帧。
+    /// 全程登记 generation_tasks 长任务（token 真取消 + 快照可见）；结束发
+    /// WS 终态帧（取消 = 中性 cancelled，不报错误）。
     async fn run_growth(
         &self,
         engine: &crate::learning_graph::GrowthRunner,
     ) -> Result<(), AppError> {
         let course_id = &engine.course_id;
-        let _run = self.begin_growth_run(course_id);
+        let mut task = self.begin_growth_task(course_id).await?;
+        let token = task.token();
+        task.set_step("draft", "教练正在阅读结构参考与花名册，起草本批节点…");
         let model_label = match engine.model_override() {
             Some((provider, model)) => format!("{}/{}", provider.as_str(), model),
             None => "default".to_owned(),
@@ -422,9 +468,10 @@ impl LearningService {
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
         // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
         let pending = self.begin_pending_batch(course_id).await?;
-        let result = self.growth_body(engine, &pending).await;
+        let result = self.growth_body(engine, &pending, token.clone()).await;
         match &result {
             Ok(applied) => {
+                task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
                 // 空手批的 pending 行已在 growth_body 内自清；WS 以
                 // outcome=idle 收尾——前端刷新就绪读数即可，无历史噪音。
                 self.emit_graph_event(
@@ -442,16 +489,32 @@ impl LearningService {
             }
             Err(error) => {
                 // 失败留痕：pending 行转 failed，历史时间线可见可重试。
+                // 取消 = 中性终态（growth_cancelled，phase=cancelled），不
+                // 报错误——中断的本批零落库（事务原子），批行如实转 failed。
+                let cancelled = token.is_cancelled()
+                    || error.to_string().contains(crate::service::CANCELLED_MESSAGE);
                 self.fail_pending_batch(&pending.batch_id).await;
-                let cancelled = self.generation_cancel_requested();
-                self.emit_graph_event(
-                    course_id,
-                    if cancelled { "growth_cancelled" } else { "growth_failed" },
-                    serde_json::json!({
-                        "phase": "failed",
-                        "error": error.to_string(),
-                    }),
-                );
+                if cancelled {
+                    task.finish_cancelled();
+                    self.emit_graph_event(
+                        course_id,
+                        "growth_cancelled",
+                        serde_json::json!({
+                            "phase": "cancelled",
+                            "outcome": "cancelled",
+                        }),
+                    );
+                } else {
+                    task.finish_failed(error.to_string());
+                    self.emit_graph_event(
+                        course_id,
+                        "growth_failed",
+                        serde_json::json!({
+                            "phase": "failed",
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
             }
         }
         result.map(|_| ())
@@ -514,14 +577,27 @@ impl LearningService {
         &self,
         engine: &crate::learning_graph::GrowthRunner,
         pending: &PendingBatch,
+        token: tokio_util::sync::CancellationToken,
     ) -> Result<GrowthApplied, AppError> {
+        use crate::learning_graph::growth_retry::{
+            AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
+            redraft_guard_violation, should_stop_early,
+        };
         let course_id = &engine.course_id;
-        let completer = self.course_completer()?;
+        let inner_completer = self.course_completer()?;
+        // 真取消（三轮 t2）：全部 completer 调用与 token select! 竞速——调用
+        // 前已取消 = 零调用；调用中被取消 = 断 HTTP。批事务原子落库 =
+        // 中断零落库。
+        let cancellation = crate::service::CancellationCompleter::new(
+            inner_completer.as_ref(),
+            token.clone(),
+        );
+        let completer: &dyn LearningCompleter = &cancellation;
         let model_override = engine
             .model_override
             .as_ref()
             .map(|(provider, model)| (provider, model.as_str()));
-        let context = self.build_coach_context(course_id, engine, completer.as_ref()).await?;
+        let context = self.build_coach_context(course_id, engine, inner_completer.as_ref()).await?;
         tracing::info!(
             course = course_id.as_str(),
             prompt_chars = context.render().len(),
@@ -532,45 +608,134 @@ impl LearningService {
         // （ng.*）注入重试装配）：教练起草/重裁 → 形状与语义门/概念评审打回
         // 时把报告喂回重裁再试，直到某一稿同时过门与评审即落库；仅当预算
         // 耗尽才失败。首轮解析失败（无上一稿可点修）直接带报告重新起草。
+        // 重试机制（二轮 t1）：同指纹早停（连败两次即停）+「未点名被改」
+        // 机械守卫（豁免早停、原地重试恰一次不占预算）+ 重裁出口容量定向
+        // 打回；每轮起草/重裁/评审前后有取消检查点（loop 头 + select! 竞速）。
+        let cancel_err = || {
+            AppError::Conflict(crate::service::CANCELLED_MESSAGE.to_owned())
+        };
         let mut previous: Option<crate::learning_graph::ProposedBatch> = None;
         let mut feedback = String::new();
         let mut last = String::from("(未执行)");
+        let mut prev_fingerprint: Option<String> = None;
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
-        for attempt in 1..=GROWTH_MAX_ATTEMPTS {
-            let drafted = match &previous {
-                Some(previous) => crate::learning_graph::coach_redraft(
-                    completer.as_ref(),
-                    model_override,
-                    &context,
-                    previous,
-                    &feedback,
-                )
-                .await
-                .map_err(|error| error.to_string()),
-                None => crate::learning_graph::coach_draft(
-                    completer.as_ref(),
-                    model_override,
-                    &context,
-                    &feedback,
-                )
-                .await
-                .map_err(|error| error.to_string()),
-            };
-            let candidate = match drafted {
-                Ok(candidate) => candidate,
-                Err(report) => {
-                    // 形状违约/传输错误：报告已带条款编号（或原始错误），
-                    // 注入下一轮重新起草。
-                    last = report;
-                    feedback = last.clone();
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        attempt,
-                        report = %feedback,
-                        "coach draft failed — regenerating with feedback"
-                    );
-                    continue;
+        let mut attempts_used = 0usize;
+        let mut stop_reason = "exhausted";
+        'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
+            attempts_used = attempt;
+            if token.is_cancelled() {
+                stop_reason = "cancelled";
+                break 'budget;
+            }
+            let mut in_place_retried = false;
+            // ── 起草/重裁（guard 的原地重试在本 attempt 内恰一次）────────
+            let candidate = 'drafting: loop {
+                if token.is_cancelled() {
+                    // stop_reason 已由外层/本轮置位；无赋值必要。
+                    break 'budget;
                 }
+                let drafted = match previous.as_ref() {
+                    Some(previous) => {
+                        crate::learning_graph::coach_redraft(
+                            completer,
+                            model_override,
+                            &context,
+                            previous,
+                            &feedback,
+                        )
+                        .await
+                        .map_err(|error| AttemptFail::generation(error.to_string()))
+                    }
+                    None => crate::learning_graph::coach_draft(
+                        completer,
+                        model_override,
+                        &context,
+                        &feedback,
+                    )
+                    .await
+                    .map_err(|error| AttemptFail::generation(error.to_string())),
+                };
+                let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
+                    match drafted {
+                        Ok(candidate) => {
+                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比）。
+                            if let Some(prev_ref) = previous.as_ref() {
+                                if let Some(violation) =
+                                    redraft_guard_violation(prev_ref, &candidate, &feedback)
+                                {
+                                    if !in_place_retried {
+                                        // 原地重试恰一次（不占轮预算）：带守
+                                        // 卫原因对最新一稿点修，评审上下文保留。
+                                        in_place_retried = true;
+                                        tracing::warn!(
+                                            course = course_id.as_str(),
+                                            attempt,
+                                            "coach redraft edited unnamed nodes — in-place retry with the guard reason"
+                                        );
+                                        feedback = violation;
+                                        previous = Some(candidate);
+                                        continue 'drafting;
+                                    }
+                                    // 二次越权 = 本 attempt 失败，计轮推进
+                                    //（guard 豁免早停——固定文案 ≠ 同输出）。
+                                    tracing::warn!(
+                                        course = course_id.as_str(),
+                                        attempt,
+                                        "coach redraft violated the point-edit guard twice — attempt consumed"
+                                    );
+                                    Err(AttemptFail::guard(violation))
+                                } else {
+                                    Ok(candidate)
+                                }
+                            } else {
+                                Ok(candidate)
+                            }
+                        }
+                        Err(mut fail) => {
+                            // 容量守卫（重裁出口）：ng.batch.size 整批违规改判
+                            // 定向重装指令（专用条款码），起草轮执法单源不变。
+                            if previous.is_some() && is_batch_size_violation(&fail.report) {
+                                fail.report = redraft_capacity_report(
+                                    previous.as_ref().expect("redraft has previous"),
+                                );
+                            }
+                            Err(fail)
+                        }
+                    };
+                let candidate = match outcome {
+                    Ok(candidate) => candidate,
+                    Err(fail) => {
+                        // 本 attempt 失败收口：早停判据 + 报告回灌。
+                        let guard = fail.guard;
+                        let fingerprint = normalize_report(&fail.report);
+                        if should_stop_early(
+                            attempt,
+                            &fingerprint,
+                            prev_fingerprint.as_deref(),
+                            guard,
+                        ) {
+                            tracing::warn!(
+                                course = course_id.as_str(),
+                                attempt,
+                                "growth failed with the same fingerprint twice — stopping early (retry budget not burned)"
+                            );
+                            stop_reason = "early_stop";
+                            last = fail.report;
+                            break 'budget;
+                        }
+                        prev_fingerprint = if guard { None } else { Some(fingerprint) };
+                        last = fail.report.clone();
+                        feedback = fail.report;
+                        tracing::warn!(
+                            course = course_id.as_str(),
+                            attempt,
+                            report = %feedback,
+                            "coach draft failed — regenerating with feedback"
+                        );
+                        continue 'budget;
+                    }
+                };
+                break 'drafting candidate;
             };
             tracing::info!(
                 course = course_id.as_str(),
@@ -594,13 +759,31 @@ impl LearningService {
                     "stage": "gates",
                     "problems": report,
                 }));
+                // 指纹 = 门报告结构化序列化（字段序稳定即确定性）。
+                let fingerprint = serde_json::to_string(&gates)
+                    .unwrap_or_else(|_| normalize_report(&report));
+                if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        attempt,
+                        "growth rejected by the same gates twice — stopping early"
+                    );
+                    stop_reason = "early_stop";
+                    last = report;
+                    break 'budget;
+                }
+                prev_fingerprint = Some(fingerprint);
                 last = report.clone();
                 feedback = report;
                 previous = Some(candidate);
                 continue;
             }
+            if token.is_cancelled() {
+                stop_reason = "cancelled";
+                return Err(cancel_err());
+            }
             let problems = crate::learning_graph::concept_review(
-                completer.as_ref(),
+                completer,
                 model_override,
                 &candidate,
                 &context,
@@ -619,6 +802,19 @@ impl LearningService {
                     "stage": "concept_review",
                     "problems": report,
                 }));
+                let fingerprint = serde_json::to_string(&problems)
+                    .unwrap_or_else(|_| normalize_report(&report));
+                if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        attempt,
+                        "growth rejected by the same review problems twice — stopping early"
+                    );
+                    stop_reason = "early_stop";
+                    last = report;
+                    break 'budget;
+                }
+                prev_fingerprint = Some(fingerprint);
                 last = report.clone();
                 feedback = report;
                 previous = Some(candidate);
@@ -627,12 +823,18 @@ impl LearningService {
             // 门与评审都过：立即落库，不再对同一稿重复评估（评审非确定，
             // 重复跑可能把已过稿误杀）。
             batch = Some(candidate);
+            stop_reason = "success";
             break;
+        }
+        self.record_growth_stats(attempts_used, stop_reason);
+        if stop_reason == "cancelled" {
+            return Err(cancel_err());
         }
         let Some(batch) = batch else {
             tracing::warn!(
                 course = course_id.as_str(),
                 attempts = GROWTH_MAX_ATTEMPTS,
+                stop_reason,
                 last = %last,
                 "growth failed: retry budget exhausted"
             );
@@ -640,6 +842,10 @@ impl LearningService {
                 "生长批次 {GROWTH_MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）：\n{last}"
             )));
         };
+        // 落库前检查点（写前取消 = 零落库；事务原子兜底同律）。
+        if token.is_cancelled() {
+            return Err(cancel_err());
+        }
         if batch.nodes.is_empty() {
             // 空手批：不落档案（run_growth 删 pending 行），无节点可补
             // ——就绪已满或确实无可长方向。
@@ -654,6 +860,24 @@ impl LearningService {
             });
         }
         self.apply_batch(course_id, engine, pending, &batch).await
+    }
+
+    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据
+    /// 源；读数面非门禁）。内存态，仅诊断。
+    pub(crate) fn record_growth_stats(&self, attempts_used: usize, stop_reason: &str) {
+        if let Ok(mut stats) = self.growth_run_stats.lock() {
+            *stats = Some(GrowthRunStats {
+                attempts_used,
+                stop_reason: stop_reason.to_owned(),
+            });
+        }
+    }
+
+    pub fn growth_run_stats(&self) -> Option<GrowthRunStats> {
+        self.growth_run_stats
+            .lock()
+            .ok()
+            .and_then(|stats| stats.clone())
     }
 
     /// 教练上下文（g3 九块）：结构参考材料与地形门口从本课 structure_json
@@ -1686,37 +1910,27 @@ impl LearningService {
         Ok(rows)
     }
 
-    // ── Status/cancel（与大纲生成流共用注册表，端点不变）──────────────────
+    // ── Status/cancel（generation_tasks 注册表薄封装，端点不变）────────────
 
-    /// 登记一次生成：清零取消旗标并记录主题/开始时刻，返回 RAII 守卫，
-    /// drop 时注销。slot 串行化保证同一 (user, key) 至多一个运行。
-    pub(crate) fn begin_generation(&self, topic: &str) -> GenerationRunGuard<'_> {
-        self.generation_registry
-            .cancel
-            .store(false, AtomicOrdering::Relaxed);
-        *self
-            .generation_registry
-            .run
-            .lock()
-            .expect("generation run lock poisoned") = Some(GenerationRun {
-            topic: topic.to_owned(),
-            started_at: std::time::Instant::now(),
-        });
-        GenerationRunGuard(self)
+    /// 登记一个长任务（三轮 t2 统一注册表）：同键并发拒绝（Conflict），
+    /// 守卫 drop 未收尾按 failed 留痕；token 供任务体接取消检查点。
+    pub(crate) fn begin_generation_task(
+        &self,
+        kind: &'static str,
+        course_key: &str,
+        node_id: Option<&str>,
+        topic: &str,
+    ) -> Result<crate::service::GenerationTaskGuard, AppError> {
+        self.generation_tasks.begin(kind, course_key, node_id, topic)
     }
 
-    /// 生成状态（后台指示条的数据源）：进行中时带主题与已运行秒数。
+    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数。
     pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
-        let run_guard = self
-            .generation_registry
-            .run
-            .lock()
-            .expect("generation run lock poisoned");
-        match run_guard.as_ref() {
-            Some(run) => crate::models::LearningGraphGenerationStatus {
+        match self.generation_tasks.running_newest() {
+            Some((topic, elapsed_secs)) => crate::models::LearningGraphGenerationStatus {
                 running: true,
-                topic: Some(run.topic.clone()),
-                elapsed_secs: Some(run.started_at.elapsed().as_secs()),
+                topic: Some(topic),
+                elapsed_secs: Some(elapsed_secs),
             },
             None => crate::models::LearningGraphGenerationStatus {
                 running: false,
@@ -1726,38 +1940,54 @@ impl LearningService {
         }
     }
 
-    /// 置位取消旗标；返回置位时是否存在进行中的生成。
+    /// 长任务快照（`GET /api/learning/generation-tasks`）。
+    pub fn generation_task_snapshot(&self) -> Vec<crate::service::GenerationTaskView> {
+        self.generation_tasks.snapshot()
+    }
+
+    /// 统一取消（按任务键）：取消胜出 = cancelled 终态；任务已终态（竞速
+    /// 落败）= 如实返回其终态；键不存在 = 404。
+    pub fn cancel_generation_task(&self, key: &str) -> Result<String, AppError> {
+        match self.generation_tasks.cancel(key)? {
+            Some(state) => Ok(state.to_owned()),
+            None => self
+                .generation_tasks
+                .snapshot()
+                .into_iter()
+                .find(|task| task.key == key)
+                .map(|task| task.state)
+                .ok_or_else(|| AppError::NotFound(format!("generation task {key}"))),
+        }
+    }
+
+    /// 置位取消：全部可取消的在跑任务（legacy 全局取消端点的转发面）。
+    /// 返回置位时是否存在可取消的在跑任务。
     pub fn cancel_generation(&self) -> bool {
-        let has_run = self
-            .generation_registry
-            .run
-            .lock()
-            .expect("generation run lock poisoned")
-            .is_some();
-        self.generation_registry
-            .cancel
-            .store(true, AtomicOrdering::Relaxed);
-        has_run
+        self.generation_tasks.cancel_running() > 0
+    }
+
+    /// 大纲流的取消旗标视图（agent 循环经 CancellableProvider 轮询）：
+    /// 最新在跑 outline 任务的 token；无在跑 = 未触发的空令牌。
+    pub fn generation_cancel_flag(&self) -> tokio_util::sync::CancellationToken {
+        self.generation_tasks.running_token(crate::service::KIND_OUTLINE)
     }
 
     pub fn generation_cancel_requested(&self) -> bool {
-        self.generation_registry.cancel.load(AtomicOrdering::Relaxed)
-    }
-
-    pub fn generation_cancel_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.generation_registry.cancel)
+        self.generation_cancel_flag().is_cancelled()
     }
 
     fn generation_running(&self) -> bool {
-        self.generation_registry
-            .run
-            .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(false)
+        self.generation_tasks
+            .snapshot()
+            .iter()
+            .any(|task| task.state == crate::service::STATE_RUNNING)
     }
 
-    /// 生长运行的注册：主题取课程标题前缀，便于前端指示条展示。
-    async fn begin_growth_run(&self, course_id: &LearningCourseId) -> GenerationRunGuard<'_> {
+    /// 生长任务的注册：主题取课程标题前缀，便于前端指示条展示。
+    async fn begin_growth_task(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::service::GenerationTaskGuard, AppError> {
         let title: Option<String> = sqlx::query_scalar(
             "SELECT title FROM learning_courses WHERE course_id = ?",
         )
@@ -1766,10 +1996,15 @@ impl LearningService {
         .await
         .ok()
         .flatten();
-        self.begin_generation(&format!(
-            "学习图生长 · {title}",
-            title = title.unwrap_or_else(|| course_id.as_str().to_owned())
-        ))
+        self.begin_generation_task(
+            crate::service::KIND_GROWTH,
+            course_id.as_str(),
+            None,
+            &format!(
+                "学习图生长 · {title}",
+                title = title.unwrap_or_else(|| course_id.as_str().to_owned())
+            ),
+        )
     }
 
     fn emit_graph_event(&self, course_id: &LearningCourseId, event: &str, mut fields: Value) {

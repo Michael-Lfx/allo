@@ -26,6 +26,7 @@
 //! feeds no gate, holds no content, and never touches the concept web.
 
 pub mod growth_contract;
+pub mod growth_retry;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_view;
