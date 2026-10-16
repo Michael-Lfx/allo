@@ -219,7 +219,7 @@ learnhub 窗口内四项纯文本契约演进的落点对账（三轮 t4）：
 |---|---|---|
 | 门位口径 v2.10 | decomposition-artifacts v2.10 | **本批采纳**：§3 语义段 + `prompts/structure/goal-decomposition.md` / `prerequisite-terrain.md`（金样随批重生成） |
 | 术语纠偏 v2.8 | v2.8「块 = 主题单元」 | **确认归档**：本文档 §2.1 与两份提示词的块定义已是「原子教学主题单元」口径；全仓 grep 无「转正/收敛率」残留（零命中） |
-| R9 叙述声部 | contract v2.6 | **已落地（j07）**：内容面条款落两条管线写作提示词（`NARRATIVE_VOICE_BLOCK` + agent 系统提示词同款）与评审判据观察条（`narrative_self_reference` / `narrative_structure_words`，非阻断）——不进本结构契约 |
+| R9 叙述声部 | contract v2.6 | **已落地（j07，allo 适配反转）**：learnhub 原文要求正文自称「本课/这一课」（其节点 = 独立课程）；allo 课时是课程内学习材料，**反转禁用**自称「本课/这一课/本课时」，开发面结构词（本节将/下一节将/接下来我们将/如前所述）与跨课预告照禁——落两条管线写作提示词（`NARRATIVE_VOICE_BLOCK` + agent 系统提示词同款）与评审判据观察条（`narrative_self_reference` / `narrative_structure_words`，非阻断）——不进本结构契约 |
 | 跨课预告废除 | contract v2.6 | **已落地（j07）**：节大纲小结收本课以内、「接下来/下一课」预告废除——落 `section_outline_system` 规划条款与 content 写作面（R9 声部块内） |
 
 est 命名统一（二轮 g1 第 6 项）同批落地：`ng.nodes.minutes` → `ng.nodes.est`、

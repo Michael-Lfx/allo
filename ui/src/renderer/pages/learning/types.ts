@@ -497,12 +497,18 @@ export interface NodeMountStateView {
   state: 'mounted' | 'outside' | 'not_evaluated';
 }
 
-/** 一条挂载事实（悬挂 slug 的条目 dangling = true，逐条降级不 Broken） */
+/** 一条挂载事实：blocks 数组（空 = 已评估、声明结构外）；悬挂 slug 的引用
+ * 逐条标 dangling = true 降级，不使整体 Broken */
 export interface MountEntryView {
   node: string;
-  block: string | null;
-  block_name: string | null;
+  blocks: MountBlockRefView[];
   reason: string;
+}
+
+/** 单个块引用的解析结果 */
+export interface MountBlockRefView {
+  slug: string;
+  block_name: string | null;
   dangling: boolean;
 }
 
