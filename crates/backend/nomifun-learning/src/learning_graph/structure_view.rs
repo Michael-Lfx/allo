@@ -11,10 +11,10 @@
 use serde_json::Value;
 
 use crate::models::{
-    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, MountEntryView,
-    MountIndexEntryView, MountObservationView, NodeMountStateView, QualityView, SpineGroupView,
-    SpineView, StructureDomainView, StructureMountsView, StructureScalarsView, StructureView,
-    TerrainDoorView, TerrainView,
+    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, MountBlockRefView,
+    MountEntryView, MountIndexEntryView, MountObservationView, NodeMountStateView, QualityView,
+    SpineGroupView, SpineView, StructureDomainView, StructureMountsView, StructureScalarsView,
+    StructureView, TerrainDoorView, TerrainView,
 };
 
 /// 从快照信封构建结构视图。`envelope` 为 None = 结构未生成（Missing 合法
