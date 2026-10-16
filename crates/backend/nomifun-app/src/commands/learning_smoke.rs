@@ -1080,6 +1080,11 @@ async fn run_quiz(
         "escalated node must come first, got {}",
         round.questions[0].node_id
     );
+    anyhow::ensure!(
+        round.questions.len() == k as usize,
+        "no provider: bank-only plan (one question per node), got {}",
+        round.questions.len()
+    );
     let plan_json_started: String =
         sqlx::query_scalar("SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?")
             .bind(&round.round_id)
@@ -1286,6 +1291,20 @@ async fn run_quiz(
         "round row must be completed with earned {} (got {status}/{row_earned})", full_xp * 4
     );
     println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
+
+    // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
+    // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
+    let calibration = service.quiz_calibration(&owner).await?;
+    anyhow::ensure!(
+        calibration.iter().any(|bin| bin.count >= 1),
+        "calibration bins must carry the pushed card's point"
+    );
+    println!(
+        "[4/6] calibration: {} bin(s), top count {} (predicted R vs actual)",
+        calibration.len(),
+        calibration.iter().map(|bin| bin.count).max().unwrap_or(0)
+    );
+    println!("[3/6] settled per node: 4 full (3 xp) + 2 partial (0 xp, never negative); ledger re-read matches");
 
     // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
     // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。

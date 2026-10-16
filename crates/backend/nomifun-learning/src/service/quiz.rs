@@ -18,18 +18,42 @@
 //!
 //! # 链路
 //!
-//! `quiz_start`（due 门 + 选题落回合）→ `quiz_grade`（逐题确定性判分
-//! [`progress::evaluate`]，零 LLM 零落账）→ `quiz_complete`（逐覆盖节点
-//! [`Settlement::settle_quiz`] → 一笔 `quiz-completed` 落
-//! `learning_xp_events` → 回合行落对账与总额）。
+//! `quiz_start`（due 门 + 弱先选题 + 变体生成落回合）→ `quiz_grade`（逐题
+//! 确定性判分 [`progress::evaluate`]，零 LLM 零落账）→ `quiz_complete`（逐
+//! 覆盖节点 [`Settlement::settle_quiz`] → 一笔 `quiz-completed` 落
+//! `learning_xp_events` → 逐题校准点入回合行）→ `quiz_calibration`（跨回合
+//! 分桶读面）。
 //!
-//! # 选题（q2 最小面；弱先排序与变式归 q3）
+//! # 选题：弱先七档（q3；learnhub `plan_quiz` 全序的 allo 适配）
 //!
-//! 覆盖节点 = 触发时刻已结算但未 quiz 的节点（N ≥ K，追加序取**最近的**
-//! `QUIZ_QUESTION_BUDGET` 个——触发量的是新学内容的自动性债务，最新节点
-//! 巩固最浅）；每节点 1 道该节点 objective 题（LRU = 最久未出：作答流水
-//! attempts ∪ 复习作答事件的最近时点，从未出过最先，activity_id 破平）；
-//! 无题可选的节点跳过（如实缩减覆盖面）。
+//! 候选 = 触发时刻已结算未 quiz 的节点（N ≥ K，追加序），排序全档确定性、
+//! 全部账面回放派生零新存储（learnhub 的归因面 allo 未建，escalation 取
+//! 「最近一次真实推进打脸」的账本等价物）：
+//! escalation（最近一次真实推进 rating=1 = 上卷错题优先重出）>
+//! non-retention（节点真保留率升序：`Σ(review−lapse)/Σreview`，无样本不进
+//! 档）> lapses（`Σ lapse_count` 降序）> 低预测 R（节点卡最小 FSRS 预测
+//! 升序，无预测不进档）> untouched（最近触及时点升序——从未触及视作最陈旧
+//! 排最前）> node ULID 兜底。预算 clamp 取弱先序前 `QUIZ_QUESTION_BUDGET`
+//! 个；每节点 1 道该节点 objective 旧题（LRU = 最久未出），无题节点跳过
+//! （如实缩减覆盖面）。
+//!
+//! # 变体（q3；learnhub 变式站同职能，allo 复用课时加题引擎）
+//!
+//! 每覆盖节点在旧题之外生成 1 道同型变式（focus = 旧题考点换皮的提示，
+//! 防复用池 = 该节点既有全部题面），过既有质量门（题型形状 + 新颖性 + 可
+//! 判分）；**生成失败如实跳过**（该节点只出旧题——learnhub「quiz 无
+//! abandon，失败顺延」的回合内化：不阻断回合，不降级旧题）。变式不落
+//! `learning_activities`（课时内容面零污染：课时练习与教新结算的题量口径
+//! 不被检测题改写），判分底随回合行落盘。作答呈现跨节点交错（learnhub 同
+//! 款：同节点题不相邻，确定性槽位轮转）。
+//!
+//! # 校准（q3；learnhub CalibrationPoint 同形）
+//!
+//! complete 时逐题落一个校准点（作答时点该题卡的 FSRS 预测可提取性 vs
+//! 实际对错；变式/无卡 = `None` 不入预测均值）随 `report_json` 落盘——
+//! 零新存储；[`quiz_calibration`] 跨回合回放，按预测 R 五百分点分桶聚合
+//! 实际正确率（与复习侧 `MemoryHealthStats.calibration` 同构，#89 归因
+//! 读面的 quiz 数据源；读数面非门禁）。
 
 use std::collections::HashMap;
 
@@ -41,6 +65,11 @@ use crate::models::{
     QuizRoundReport, QuizRoundView,
 };
 use crate::settle::{Settlement, QUIZ_QUESTION_BUDGET, QUIZ_TRIGGER_SETTLEMENTS};
+
+/// quiz 结算的客观题白名单（与教新线 `settle_node_completed` 同筛：AI 批改
+/// 轨不入 quiz——确定性判分是测量面，AI 批改轨随载体的后续裁决）。
+const QUIZ_OBJECTIVE_KINDS: &str = "('single_choice', 'true_false', 'fill_in_blank', \
+     'multi_choice', 'numeric', 'ordering', 'matching')";
 
 /// 选题快照行（plan_json 元素；kind 是审计面快照，判分与定价都以题源现行
 /// 为准——单源）。`origin`/`variant` 为 q3 增量，serde default 容 q2 时代
