@@ -456,7 +456,7 @@ impl LearningService {
                 mounted_nodes: 0,
                 outside_nodes: existing
                     .iter()
-                    .filter(|entry| entry.block.is_none())
+                    .filter(|entry| entry.blocks.is_empty())
                     .count(),
                 total_entries: existing.len(),
                 stale,
@@ -561,8 +561,8 @@ impl LearningService {
         .execute(&self.pool)
         .await
         .map_err(internal)?;
-        let mounted = evaluated.iter().filter(|entry| entry.block.is_some()).count();
-        let outside = evaluated.iter().filter(|entry| entry.block.is_none()).count();
+        let mounted = evaluated.iter().filter(|entry| !entry.blocks.is_empty()).count();
+        let outside = evaluated.iter().filter(|entry| entry.blocks.is_empty()).count();
         task.finish_done(format!(
             "挂载完成：{}/{} 挂入块，{} 结构外",
             mounted,
@@ -890,21 +890,9 @@ impl LearningService {
             .execute(&self.pool)
             .await
             .map_err(internal)?;
-        } else {
-            // noop 也留痕（结论合法：评估过、本轮无修补动作）。
-            sqlx::query(
-                "INSERT INTO learning_structure_repairs \
-                 (ts, course_id, old_hash, new_hash, result, ops_json, note) \
-                 VALUES (?, ?, ?, ?, 'noop', '[]', '')",
-            )
-            .bind(now_ms())
-            .bind(course_id.as_str())
-            .bind(old_hash as i64)
-            .bind(new_hash as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
         }
+        // noop 不落审计行（learnhub 同款「无修补动作不留档案」——评估过、
+        // 无修补动作是合法结论，但没发生的事不造档案）。
         let applied: Vec<String> = ops.iter().map(|op| op.label()).collect();
         let mounts_stale = old_hash != new_hash;
         task.finish_done(if noop {

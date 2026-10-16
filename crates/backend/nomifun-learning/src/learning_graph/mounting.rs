@@ -33,10 +33,10 @@ pub const ST_MOUNT_NO_CONCEPT_FIELDS: &str = "st.mount.no_concept_fields";
 
 /// 条目顶层键白名单（含模型可选的备注键）。
 pub const MOUNT_TOP_KEYS: &[&str] = &["mounts", "note"];
-/// 挂载条目键白名单：node（节点标题逐字）+ block（块 slug 或 null = 结构
-/// 外）+ reason（一句话）；概念字段（teaches/assumes/tier…）一回来即违反
-/// no_concept_fields。
-pub const MOUNT_ENTRY_KEYS: &[&str] = &["node", "block", "reason"];
+/// 挂载条目键白名单：node（节点标题逐字）+ blocks（块 slug 数组，空 =
+/// 结构外）+ reason（一句话）；概念字段（teaches/assumes/tier…）一回来即
+/// 违反 no_concept_fields。
+pub const MOUNT_ENTRY_KEYS: &[&str] = &["node", "blocks", "reason"];
 /// 超载块阈值（挂载观察：≥5 节点的块建议拆分——观察不构成编辑义务）。
 pub const MOUNT_OVERLOAD_THRESHOLD: usize = 5;
 
@@ -54,19 +54,21 @@ pub fn fnv1a_64(bytes: &[u8]) -> u64 {
 
 // ── 挂载条目 ──────────────────────────────────────────────────────────────
 
-/// 一条挂载事实：`block = None` = 已评估、声明在结构外（Outside）。
+/// 一条挂载事实：`blocks` 为空 = 已评估、声明在结构外（Outside）；非空 =
+/// 挂入的块 slug 清单（一个节点可挂多块——内容跨块；一块可被多个节点挂，
+/// 都没有唯一性限制；单条内 slug 不重复）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountEntry {
     pub node: String,
-    pub block: Option<String>,
+    pub blocks: Vec<String>,
     pub reason: String,
 }
 
 impl MountEntry {
-    pub fn mounted(node: &str, block: &str, reason: &str) -> Self {
+    pub fn mounted(node: &str, blocks: &[&str], reason: &str) -> Self {
         Self {
             node: node.to_owned(),
-            block: Some(block.to_owned()),
+            blocks: blocks.iter().map(|slug| (*slug).to_owned()).collect(),
             reason: reason.to_owned(),
         }
     }
@@ -74,7 +76,7 @@ impl MountEntry {
     pub fn outside(node: &str, reason: &str) -> Self {
         Self {
             node: node.to_owned(),
-            block: None,
+            blocks: Vec::new(),
             reason: reason.to_owned(),
         }
     }
@@ -82,7 +84,7 @@ impl MountEntry {
     pub(crate) fn to_json(&self) -> Value {
         serde_json::json!({
             "node": self.node,
-            "block": self.block,
+            "blocks": self.blocks,
             "reason": self.reason,
         })
     }
@@ -90,7 +92,8 @@ impl MountEntry {
 
 /// 从模型回包/存储列解析条目（宽松形状：坏条目跳过不 Broken——挂载是导
 /// 航辅助面，个别坏行不使整体失效；生成面的严格形态走 validate_mounts）。
-/// 双读：模型回包 = `{mounts: [...]}` 对象，存储列 = 裸数组。
+/// 三读：模型回包 = `{mounts: [...]}` 对象（blocks 数组），存储列 = 裸数组，
+/// 兼容位 = j08 早版单块条目（`block: <slug|null>` → 单元素数组/空）。
 pub fn parse_mount_entries(value: &Value) -> Vec<MountEntry> {
     let items = match value {
         Value::Array(items) => Some(items),
@@ -107,19 +110,28 @@ pub fn parse_mount_entries(value: &Value) -> Vec<MountEntry> {
             if node.is_empty() {
                 return None;
             }
-            let block = item
-                .get("block")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|slug| !slug.is_empty())
-                .map(str::to_owned);
+            let blocks = match item.get("blocks").and_then(Value::as_array) {
+                Some(slugs) => slugs
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|slug| !slug.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                None => match item.get("block") {
+                    Some(Value::String(slug)) if !slug.trim().is_empty() => {
+                        vec![slug.trim().to_owned()]
+                    }
+                    _ => Vec::new(),
+                },
+            };
             let reason = item
                 .get("reason")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .trim()
                 .to_owned();
-            Some(MountEntry { node, block, reason })
+            Some(MountEntry { node, blocks, reason })
         })
         .collect()
 }
@@ -178,7 +190,7 @@ pub fn validate_mounts(
         let Some(object) = item.as_object() else {
             violations.push(red(
                 ST_MOUNT_ENTRIES_REQUIRED,
-                format!("{at} 必须是对象（键：node/block/reason）"),
+                format!("{at} 必须是对象（键：node/blocks/reason）"),
             ));
             continue;
         };
@@ -187,7 +199,7 @@ pub fn validate_mounts(
             if !MOUNT_ENTRY_KEYS.contains(&key.as_str()) {
                 violations.push(red(
                     ST_MOUNT_ENTRIES_REQUIRED,
-                    format!("{at} 携带未知键「{key}」——条目只允许 node/block/reason"),
+                    format!("{at} 携带未知键「{key}」——条目只允许 node/blocks/reason"),
                 ));
             }
         }
@@ -205,11 +217,31 @@ pub fn validate_mounts(
             ));
             continue;
         }
-        let block = object
-            .get("block")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|slug| !slug.is_empty());
+        // st.mount.entries.required：blocks 必为 slug 字符串数组（空数组 =
+        // 结构外，合法）；reason 一句话非空。
+        let blocks: Vec<String> = match object.get("blocks").and_then(Value::as_array) {
+            Some(slugs) => slugs
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|slug| !slug.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            None => {
+                violations.push(red(
+                    ST_MOUNT_ENTRIES_REQUIRED,
+                    format!("{at} 缺 blocks（slug 数组；结构外给空数组）"),
+                ));
+                continue;
+            }
+        };
+        if blocks.len() != object.get("blocks").and_then(Value::as_array).unwrap_or(&Vec::new()).len()
+        {
+            violations.push(red(
+                ST_MOUNT_BLOCKS_RESOLVE,
+                format!("{at} 的 blocks 含空串或非字符串项——slug 逐字照抄结构参考行"),
+            ));
+        }
         let reason_ok = object
             .get("reason")
             .and_then(Value::as_str)
@@ -230,8 +262,8 @@ pub fn validate_mounts(
                 ),
             ));
         }
-        // st.mount.blocks.resolve：block 非空时必须解析到结构块 slug。
-        if let Some(slug) = block {
+        // st.mount.blocks.resolve：每个 slug 逐字解析到结构块。
+        for slug in &blocks {
             if !block_slugs.contains(slug) {
                 violations.push(red(
                     ST_MOUNT_BLOCKS_RESOLVE,
@@ -241,12 +273,22 @@ pub fn validate_mounts(
                 ));
             }
         }
-        // st.mount.blocks.dedup：一个节点只挂一条（重复条目整条点名）。
+        // st.mount.blocks.dedup：一个节点只一条条目（重复条目整条点名）；
+        // 单条内 slug 不重复。
         if !seen_nodes.insert(node.to_owned()) {
             violations.push(red(
                 ST_MOUNT_BLOCKS_DEDUP,
-                format!("节点「{node}」出现多条目——一个节点只挂一块（或声明一次结构外）"),
+                format!("节点「{node}」出现多条目——待挂集每个节点恰一条条目"),
             ));
+        }
+        let mut entry_slugs: HashSet<&str> = HashSet::new();
+        for slug in &blocks {
+            if !entry_slugs.insert(slug.as_str()) {
+                violations.push(red(
+                    ST_MOUNT_BLOCKS_DEDUP,
+                    format!("{at} 的 blocks 内 slug「{slug}」重复"),
+                ));
+            }
         }
         // st.mount.no_concept_fields：条目内嵌对象携带概念字段即违规
         // （挂载是导航事实，无判定身份）。
@@ -259,13 +301,22 @@ pub fn validate_mounts(
             }
         }
     }
+    // st.mount.entries.align（覆盖面）：待挂集每个节点恰一条——缺失同样点名。
+    for title in node_titles {
+        if !seen_nodes.contains(title.as_str()) {
+            violations.push(red(
+                ST_MOUNT_ENTRIES_ALIGN,
+                format!("待挂节点「{title}」没有条目——待挂集每个节点都必须给出决定"),
+            ));
+        }
+    }
     violations
 }
 
 // ── 待挂集与合并 ──────────────────────────────────────────────────────────
 
 /// 待挂集（现存节点全集的纯函数面）：未评估（无条目）∪ 失效 slug（条目
-/// 挂的块在当前结构里不存在——其 node 重新评估）。stale = 结构 hash 失配
+/// 任一挂块在当前结构里不存在——其 node 重新评估）。stale = 结构 hash 失配
 /// 时调用方直接传全量。
 pub fn pending_nodes(
     node_titles: &[String],
@@ -277,9 +328,9 @@ pub fn pending_nodes(
         .iter()
         .filter(|entry| {
             entry
-                .block
-                .as_deref()
-                .is_some_and(|slug| !block_slugs.contains(slug))
+                .blocks
+                .iter()
+                .any(|slug| !block_slugs.contains(slug))
         })
         .map(|entry| entry.node.as_str())
         .collect();
@@ -311,9 +362,9 @@ pub fn merge_mounts(
                 return false; // 孤儿：节点已不存在
             }
             if entry
-                .block
-                .as_deref()
-                .is_some_and(|slug| !block_slugs.contains(slug))
+                .blocks
+                .iter()
+                .any(|slug| !block_slugs.contains(slug))
             {
                 return false; // 孤儿：块 slug 已失效
             }
@@ -337,7 +388,7 @@ pub fn mount_observations(
     entries: &[MountEntry],
 ) -> Vec<(String, String)> {
     let mut observations = Vec::new();
-    for entry in entries.iter().filter(|entry| entry.block.is_none()) {
+    for entry in entries.iter().filter(|entry| entry.blocks.is_empty()) {
         observations.push((
             "outside-node".to_owned(),
             format!("节点「{}」声明在结构外：{}", entry.node, entry.reason),
@@ -347,7 +398,7 @@ pub fn mount_observations(
         let mounted: Vec<&str> = entries
             .iter()
             .filter_map(|entry| {
-                (entry.block.as_deref() == Some(slug.as_str())).then_some(entry.node.as_str())
+                (entry.blocks.iter().any(|s| s == slug)).then_some(entry.node.as_str())
             })
             .collect();
         if mounted.is_empty() {
@@ -522,8 +573,8 @@ mod tests {
     fn well_formed_mounts_pass_all_clauses() {
         let artifact = json!({
             "mounts": [
-                { "node": "节点一", "block": "block-01", "reason": "同讲一个主题" },
-                { "node": "节点二", "block": null, "reason": "纯练习节点，不属于任何块" }
+                { "node": "节点一", "blocks": ["block-01"], "reason": "同讲一个主题" },
+                { "node": "节点二", "blocks": [], "reason": "纯练习节点，不属于任何块" }
             ],
             "note": "两条结构外判断见 reason"
         });
@@ -538,9 +589,9 @@ mod tests {
     fn clause_violations_are_red_and_coded() {
         let artifact = json!({
             "mounts": [
-                { "node": "节点一", "block": "block-99", "reason": "" },
-                { "node": "节点一", "block": "block-01", "reason": "重复节点" },
-                { "node": "不在待挂集", "block": null, "reason": "r", "teaches": [] }
+                { "node": "节点一", "blocks": ["block-99"], "reason": "" },
+                { "node": "节点一", "blocks": ["block-01"], "reason": "重复节点" },
+                { "node": "不在待挂集", "blocks": [], "reason": "r", "teaches": [] }
             ],
             "bogus": 1
         });
@@ -555,12 +606,30 @@ mod tests {
         assert!(violations.iter().any(|item| !item.warning));
     }
 
+    /// 覆盖面（entries.align 的缺失半边）：待挂集里有节点没条目 = 红条。
+    #[test]
+    fn missing_pending_node_is_red() {
+        let artifact = json!({
+            "mounts": [
+                { "node": "节点一", "blocks": ["block-01"], "reason": "r" }
+            ]
+        });
+        let violations =
+            validate_mounts(&artifact, &slugs(&["block-01"]), &titles(&["节点一", "节点二"]));
+        assert!(
+            violations
+                .iter()
+                .any(|item| item.code == ST_MOUNT_ENTRIES_ALIGN && !item.warning),
+            "{violations:?}"
+        );
+    }
+
     #[test]
     fn pending_set_is_unevaluated_plus_dangling() {
         let nodes = vec!["甲".to_owned(), "乙".to_owned(), "丙".to_owned()];
         let existing = vec![
-            MountEntry::mounted("甲", "block-01", "r"),
-            MountEntry::mounted("乙", "block-gone", "r"),
+            MountEntry::mounted("甲", &["block-01"], "r"),
+            MountEntry::mounted("乙", &["block-gone"], "r"),
         ];
         let pending = pending_nodes(&nodes, &existing, &slugs(&["block-01"]));
         // 甲已评估且块仍解析 → 不在待挂；乙的块失效 → 重评；丙未评估 → 待挂。
@@ -570,12 +639,12 @@ mod tests {
     #[test]
     fn merge_replaces_pending_keeps_evaluated_and_drops_orphans() {
         let existing = vec![
-            MountEntry::mounted("甲", "block-01", "旧理由"),
-            MountEntry::mounted("乙", "block-gone", "失效块"),
-            MountEntry::mounted("孤儿", "block-01", "节点已删"),
+            MountEntry::mounted("甲", &["block-01"], "旧理由"),
+            MountEntry::mounted("乙", &["block-gone"], "失效块"),
+            MountEntry::mounted("孤儿", &["block-01"], "节点已删"),
             MountEntry::outside("丙", "声明结构外"),
         ];
-        let evaluated = vec![MountEntry::mounted("甲", "block-02", "本轮改挂")];
+        let evaluated = vec![MountEntry::mounted("甲", &["block-02"], "本轮改挂")];
         let merged = merge_mounts(
             &existing,
             &evaluated,
@@ -588,7 +657,7 @@ mod tests {
             merged,
             vec![
                 MountEntry::outside("丙", "声明结构外"),
-                MountEntry::mounted("甲", "block-02", "本轮改挂"),
+                MountEntry::mounted("甲", &["block-02"], "本轮改挂"),
             ]
         );
     }
@@ -600,11 +669,11 @@ mod tests {
             ("block-02".to_owned(), "块二".to_owned()),
         ];
         let entries = vec![
-            MountEntry::mounted("甲", "block-01", "r"),
-            MountEntry::mounted("乙", "block-01", "r"),
-            MountEntry::mounted("丙", "block-01", "r"),
-            MountEntry::mounted("丁", "block-01", "r"),
-            MountEntry::mounted("戊", "block-01", "r"),
+            MountEntry::mounted("甲", &["block-01"], "r"),
+            MountEntry::mounted("乙", &["block-01"], "r"),
+            MountEntry::mounted("丙", &["block-01"], "r"),
+            MountEntry::mounted("丁", &["block-01"], "r"),
+            MountEntry::mounted("戊", &["block-01"], "r"),
             MountEntry::outside("己", "纯练习"),
         ];
         let observations = mount_observations(&blocks, &entries);
@@ -615,20 +684,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_tolerates_malformed_entries() {
+    fn parse_tolerates_malformed_entries_and_dual_reads_old_shape() {
         let value = json!({
             "mounts": [
-                { "node": "甲", "block": "block-01", "reason": "r" },
+                { "node": "甲", "blocks": ["block-01"], "reason": "r" },
+                { "node": "旧", "block": "block-02", "reason": "旧形状单块" },
+                { "node": "外", "block": null, "reason": "旧形状结构外" },
                 { "block": "block-02" },
-                { "node": "", "block": null, "reason": "r" },
+                { "node": "", "blocks": [], "reason": "r" },
                 "garbage"
             ]
         });
         let entries = parse_mount_entries(&value);
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].blocks, vec!["block-01".to_owned()]);
+        assert_eq!(entries[1].blocks, vec!["block-02".to_owned()], "单块兼容位");
+        assert!(entries[2].blocks.is_empty(), "旧 null = 结构外");
         assert_eq!(entries[0].node, "甲");
     }
-
     /// validator ↔ 契约文档互钉（learnhub 形态）：六条款码必须在契约新章
     /// 出现——改码或改文档先红一方。
     #[test]

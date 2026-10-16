@@ -11,10 +11,10 @@
 use serde_json::Value;
 
 use crate::models::{
-    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, MountEntryView,
-    MountIndexEntryView, MountObservationView, NodeMountStateView, QualityView, SpineGroupView,
-    SpineView, StructureDomainView, StructureMountsView, StructureScalarsView, StructureView,
-    TerrainDoorView, TerrainView,
+    BlockView, EdgeView, GapView, HubView, LearningStructureView, MatrixRowView, MountBlockRefView,
+    MountEntryView, MountIndexEntryView, MountObservationView, NodeMountStateView, QualityView,
+    SpineGroupView, SpineView, StructureDomainView, StructureMountsView, StructureScalarsView,
+    StructureView, TerrainDoorView, TerrainView,
 };
 
 /// 从快照信封构建结构视图。`envelope` 为 None = 结构未生成（Missing 合法
@@ -87,22 +87,28 @@ pub fn build_mounts_view(
     let entry_views: Vec<MountEntryView> = entries
         .iter()
         .map(|entry| {
-            let block_name = entry
-                .block
-                .as_deref()
-                .and_then(|slug| block_names.get(slug).cloned());
-            let dangling = entry.block.is_some() && block_name.is_none();
+            let refs: Vec<MountBlockRefView> = entry
+                .blocks
+                .iter()
+                .map(|slug| {
+                    let block_name = block_names.get(slug).cloned();
+                    MountBlockRefView {
+                        slug: slug.clone(),
+                        dangling: block_name.is_none(),
+                        block_name,
+                    }
+                })
+                .collect();
             MountEntryView {
                 node: entry.node.clone(),
-                block: entry.block.clone(),
-                block_name,
+                blocks: refs,
                 reason: entry.reason.clone(),
-                dangling,
             }
         })
         .collect();
-    // 三态单源：Mounted = 条目且块可解析；Outside = 条目 block null；
-    // NotEvaluated = 无条目或条目悬挂（降级不 Broken）。
+    // 三态单源：Mounted = 条目且至少一个块可解析（悬挂块逐条降级标注，不
+    // Broken）；Outside = 条目 blocks 空（已评估、声明结构外）；
+    // NotEvaluated = 无条目。
     let by_node: std::collections::HashMap<&str, &super::mounting::MountEntry> =
         entries.iter().map(|entry| (entry.node.as_str(), entry)).collect();
     let mut states = Vec::new();
@@ -111,11 +117,11 @@ pub fn build_mounts_view(
     let mut not_evaluated_count = 0usize;
     for title in node_titles {
         let state = match by_node.get(title.as_str()) {
-            Some(entry) if entry.block.is_some() => {
+            Some(entry) if !entry.blocks.is_empty() => {
                 let resolves = entry
-                    .block
-                    .as_deref()
-                    .is_some_and(|slug| block_names.contains_key(slug));
+                    .blocks
+                    .iter()
+                    .any(|slug| block_names.contains_key(slug));
                 if resolves {
                     mounted_count += 1;
                     "mounted"
@@ -138,12 +144,12 @@ pub fn build_mounts_view(
             state: state.to_owned(),
         });
     }
-    // mount_index：可解析块 → 已挂节点清单（结构顺序）。
+    // mount_index：可解析块 → 已挂节点清单（结构顺序；多块节点进多个清单）。
     let mut index = Vec::new();
     for (slug, name) in &block_names {
         let nodes: Vec<String> = entries
             .iter()
-            .filter(|entry| entry.block.as_deref() == Some(slug.as_str()))
+            .filter(|entry| entry.blocks.iter().any(|s| s == slug))
             .map(|entry| entry.node.clone())
             .collect();
         if !nodes.is_empty() {

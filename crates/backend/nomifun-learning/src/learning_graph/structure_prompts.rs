@@ -422,17 +422,19 @@ mod tests {
         ] {
             assert!(terrain_body.contains(phrase), "terrain prompt missing「{phrase}」");
         }
-        // 挂载（j08）：六条款的可执行措辞（validator 执法面——模型先被告知）。
+        // 挂载（j08，j09.1 多块化）：六条款的可执行措辞（validator 执法面
+        // ——模型先被告知）。
         let (_, mount_body) = split_template(STRUCTURE_MOUNT.template).unwrap();
         for phrase in [
             "mounts",
             "node",
-            "block",
+            "blocks",
             "reason",
             "逐字照抄",
-            "null",
+            "空数组",
             "导航事实",
-            "一个节点只出现一次",
+            "恰一条条目",
+            "宁可少挂",
             "note",
         ] {
             assert!(mount_body.contains(phrase), "mount prompt missing「{phrase}」");
