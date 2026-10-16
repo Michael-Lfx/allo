@@ -19,8 +19,8 @@ use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, RateReviewRequest,
-    RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
+    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, QuizProgressView,
+    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
 };

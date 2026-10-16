@@ -46,7 +46,8 @@ pub use models::{
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
     LessonView,
-    ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
+    ModuleView, QuizProgressView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind,
+    SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
     VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
