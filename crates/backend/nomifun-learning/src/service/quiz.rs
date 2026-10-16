@@ -66,11 +66,6 @@ use crate::models::{
 };
 use crate::settle::{Settlement, QUIZ_QUESTION_BUDGET, QUIZ_TRIGGER_SETTLEMENTS};
 
-/// quiz 结算的客观题白名单（与教新线 `settle_node_completed` 同筛：AI 批改
-/// 轨不入 quiz——确定性判分是测量面，AI 批改轨随载体的后续裁决）。
-const QUIZ_OBJECTIVE_KINDS: &str = "('single_choice', 'true_false', 'fill_in_blank', \
-     'multi_choice', 'numeric', 'ordering', 'matching')";
-
 /// 选题快照行（plan_json 元素；kind 是审计面快照，判分与定价都以题源现行
 /// 为准——单源）。`origin`/`variant` 为 q3 增量，serde default 容 q2 时代
 /// 旧档（缺省 = bank 题库旧题）。
