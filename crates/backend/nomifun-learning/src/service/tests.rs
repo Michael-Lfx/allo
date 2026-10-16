@@ -6388,19 +6388,54 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .await;
         assert!(matches!(stray, Err(AppError::BadRequest(_))), "{stray:?}");
 
-        // 全卷作答（4 对 2 错：单题节点 accuracy ∈ {1, 0} → full 3 / partial 0）。
+        // 全卷作答（首尾两题错：单题节点 accuracy ∈ {1, 0} → full 3 / partial 0；
+        // 断言按 activity 定位——计划序是弱先序，不假设种子序）。
+        let wrong: std::collections::HashSet<String> = [activities[0].clone(), activities[5].clone()]
+            .into_iter()
+            .collect();
         let mut answers = HashMap::new();
-        for (index, activity) in activities.iter().enumerate() {
-            answers.insert(activity.clone(), json!(if index < 4 { "B" } else { "A" }));
+        for activity in &activities {
+            let response = if wrong.contains(activity) { "A" } else { "B" };
+            answers.insert(activity.clone(), json!(response));
         }
         let report = service
             .quiz_complete(&user_id, &course, &round.round_id, &answers)
             .await
             .unwrap();
         assert_eq!(report.earned_xp, 12, "4 × full 3 + 2 × partial 0（恒非负）");
-        assert_eq!(report.covered[0].earned_xp, Some(3), "全对节点 = full 1+2");
-        assert_eq!(report.covered[5].earned_xp, Some(0), "全错节点 = partial 0（非负）");
-        assert_eq!(report.covered[0].correct, 1);
+        let activity_of_node = |node: &str| {
+            round
+                .questions
+                .iter()
+                .find(|q| q.node_id.as_str() == node)
+                .map(|q| q.activity_id.as_str())
+                .unwrap()
+        };
+        for entry in &report.covered {
+            let expected = if wrong.contains(
+                round
+                    .questions
+                    .iter()
+                    .find(|q| q.node_id.as_str() == entry.node_id.as_str())
+                    .map(|q| q.activity_id.as_str())
+                    .unwrap(),
+            ) {
+                Some(0)
+            } else {
+                Some(3)
+            };
+            assert_eq!(
+                entry.earned_xp, expected,
+                "节点 {} 的授予档",
+                entry.node_id
+            );
+        }
+        assert_eq!(report.covered.len(), 6);
+        assert_eq!(
+            report.covered.iter().map(|entry| entry.correct).sum::<i64>(),
+            4,
+            "4 节点全对、2 节点全错"
+        );
 
         // 落账盘面：6 笔 quiz-completed、总额 12；回合行 completed。
         let (count, total): (i64, i64) = sqlx::query_as(
@@ -6496,9 +6531,14 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .quiz_complete(&user_id, &course, &round.round_id, &answers)
             .await
             .unwrap_err();
+        // 计划序是弱先序：点名的是任一缺席题即可（缺题拒绝语义）。
+        let message = error.to_string();
         assert!(
-            matches!(error, AppError::BadRequest(ref message) if message.contains(&activities[1])),
-            "缺题拒绝并点名: {error:?}"
+            matches!(error, AppError::BadRequest(_))
+                && activities[1..]
+                    .iter()
+                    .any(|activity| message.contains(activity.as_str())),
+            "缺题拒绝并点名: {message}"
         );
     }
 
@@ -6537,4 +6577,199 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .await
             .unwrap();
         assert_eq!(report.earned_xp, 18, "新回合照常结算（6 × full 3）");
+    }
+
+    // —— q3：弱先排序 / LLM 变体 / 校准 ——
+
+    /// 将某节点的首张卡推成「最近一次真实推进 = 错答」（auto Again =
+    /// escalation 档样本，同时给卡落 stability）。
+    async fn fail_first_card(service: &LearningService, user_id: &UserId, lesson_id: &str) {
+        let item_id: String = sqlx::query_scalar(
+            "SELECT r.review_item_id FROM learning_review_items r \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             WHERE a.lesson_id = ? ORDER BY r.id LIMIT 1",
+        )
+        .bind(lesson_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE learning_review_items SET due_at = ? WHERE review_item_id = ?")
+            .bind(now_ms() - 1_000)
+            .bind(&item_id)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        let answer = service
+            .answer_review(
+                &LearningReviewItemId::parse(&item_id).unwrap(),
+                user_id,
+                json!("A"),
+                false,
+                Some(1_000),
+            )
+            .await
+            .unwrap();
+        assert!(!answer.correct, "错答 → auto Again（escalation 样本）");
+    }
+
+    /// 弱先七档：escalation 节点先出（最近一次真实推进打脸 = 上卷错题优先
+    /// 重出；交错序第 1 槽首位）。
+    #[tokio::test]
+    async fn quiz_weak_first_orders_escalated_node_first() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, _activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        fail_first_card(&service, &user_id, &lessons[3]).await;
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(
+            round.questions[0].node_id.as_str(),
+            lessons[3],
+            "escalation 节点先出"
+        );
+        // 未打脸节点信号全同 → ULID 兜底（确定性）：其余槽按 node ULID 升序。
+        let rest: Vec<&str> = round.questions[1..]
+            .iter()
+            .map(|q| q.node_id.as_str())
+            .collect();
+        let mut sorted = rest.clone();
+        sorted.sort_unstable();
+        assert_eq!(rest, sorted, "同信号节点按 ULID 兜底");
+    }
+
+    /// 变体（q3）：completer 缺席 = 每节点只出旧题（如实跳过）；脚本
+    /// completer 在场 = 每节点 1 变式（同型换皮 + 防复用池），变式判分走
+    /// plan 内判分底、投影同样零判底，complete 连变式一起结算。
+    #[tokio::test]
+    async fn quiz_variants_generate_with_completer_and_skip_honestly_without() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, _activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        // 无 completer：bank-only。
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(round.questions.len(), 6, "无 completer = 每节点只出旧题");
+        let plan_json: String = sqlx::query_scalar(
+            "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&round.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert!(!plan_json.contains(r#""origin":"variant""#), "无 completer 无变式: {plan_json}");
+
+        // 有 completer：每节点 (1 旧题 + 1 变式)。
+        let reply = r#"{"kind":"single_choice","prompt":"Variant probe: which property is unique?","options":["A","B"],"answer":"A","explanation":"variant bottom","distractors":[]}"#;
+        let kb_dir = std::env::temp_dir().join("quiz-variant-test-kb");
+        let knowledge_service = Arc::new(KnowledgeService::new(
+            Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                service.pool_for_tests().clone(),
+            )),
+            &kb_dir,
+            nomifun_knowledge::KnowledgeEventEmitter::new(
+                Arc::new(NoopBroadcaster),
+                Arc::from(user_id.as_str()),
+            ),
+        ));
+        service.set_generation_dependencies(
+            knowledge_service,
+            ScriptedCompleter::new(reply, false),
+        );
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(round.questions.len(), 12, "6 节点 × (1 旧题 + 1 变式)");
+        // 交错：同节点两题不相邻。
+        for pair in round.questions.windows(2) {
+            assert_ne!(
+                pair[0].node_id, pair[1].node_id,
+                "跨节点交错（同节点题不相邻）"
+            );
+        }
+        // 变式投影同样零判底。
+        let view_json = serde_json::to_string(&round).unwrap();
+        assert!(
+            !view_json.contains("explanation") && !view_json.contains("\"answer\""),
+            "变式不泄漏判底: {view_json}"
+        );
+        // 变式判分走 plan 内判分底。
+        let variant_question = round
+            .questions
+            .iter()
+            .find(|q| q.prompt.contains("Variant probe"))
+            .expect("变式在场");
+        let feedback = service
+            .quiz_grade(
+                &user_id,
+                &course,
+                &round.round_id,
+                variant_question.activity_id.as_str(),
+                &json!("A"),
+            )
+            .await
+            .unwrap();
+        assert!(feedback.correct, "变式判对（判分底 = plan 内 config）");
+        // 全卷结算（变式一起计价）：每节点 2 题全对 → full (2+2)/节点 = 12。
+        let mut answers = HashMap::new();
+        for question in &round.questions {
+            let response = if question.prompt.contains("Variant probe") {
+                "A"
+            } else {
+                "B"
+            };
+            answers.insert(question.activity_id.to_string(), json!(response));
+        }
+        let report = service
+            .quiz_complete(&user_id, &course, &round.round_id, &answers)
+            .await
+            .unwrap();
+        assert_eq!(report.earned_xp, 24, "6 节点 × full(2+2)");
+        assert!(
+            report
+                .covered
+                .iter()
+                .all(|node| node.answered == 2 && node.correct == 2),
+            "每节点 2 题全对"
+        );
+    }
+
+    /// 校准（q3）：被真实推进过的卡出题时点带预测 R（Some），未推卡/变式
+    /// 为 None 不入均值；quiz_calibration 分桶聚合（预测均值 vs 实际正确率）。
+    #[tokio::test]
+    async fn quiz_calibration_points_bucket_predictions() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        // 无样本读面：空表（不造假数据）。
+        let bins_before = service.quiz_calibration(&user_id).await.unwrap();
+        assert!(bins_before.is_empty(), "无 completed 回合 = 空校准面");
+        fail_first_card(&service, &user_id, &lessons[0]).await;
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(round.questions[0].node_id.as_str(), lessons[0], "escalation 先出");
+        let mut answers = HashMap::new();
+        for question in &round.questions {
+            answers.insert(question.activity_id.to_string(), json!("B"));
+        }
+        let report = service
+            .quiz_complete(&user_id, &course, &round.round_id, &answers)
+            .await
+            .unwrap();
+        let pushed: Vec<_> = report
+            .covered
+            .iter()
+            .flat_map(|node| &node.questions)
+            .filter(|point| point.predicted_r.is_some())
+            .collect();
+        assert_eq!(pushed.len(), 1, "只有被真实推进过的卡带预测面");
+        assert_eq!(pushed[0].activity_id.as_str(), activities[0]);
+        let bins = service.quiz_calibration(&user_id).await.unwrap();
+        assert_eq!(bins.len(), 1, "单点单桶");
+        assert_eq!(bins[0].count, 1);
+        assert_eq!(bins[0].actual, Some(1.0), "该题答对 → 桶内实际正确率 1.0");
+        assert!(bins[0].predicted > 0.0 && bins[0].predicted <= 1.0);
     }
