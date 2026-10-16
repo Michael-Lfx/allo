@@ -34,6 +34,9 @@ mod permissions_supplemental_tests {
             content: String::new(),
             content_length: 0,
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 

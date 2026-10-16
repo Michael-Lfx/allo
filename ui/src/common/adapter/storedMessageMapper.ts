@@ -91,7 +91,7 @@ const parseStoredSkillLoadContent = (value: unknown): IMessageSkillLoad['content
   if (!isRecord(value)) {
     throw new TypeError('Invalid persisted skill_load content');
   }
-  const { skill_id, name, source, version_hash, content } = value;
+  const { skill_id, name, source, version_hash, content, invocation } = value;
   if (
     typeof skill_id !== 'string' ||
     typeof name !== 'string' ||
@@ -101,7 +101,14 @@ const parseStoredSkillLoadContent = (value: unknown): IMessageSkillLoad['content
   ) {
     throw new TypeError('Invalid persisted skill_load content');
   }
-  return { skill_id, name, source, version_hash, content };
+  return {
+    skill_id,
+    name,
+    source,
+    version_hash,
+    content,
+    ...(invocation === 'force' || invocation === 'model-auto' ? { invocation } : {}),
+  };
 };
 
 const parseStoredMessageContent = (

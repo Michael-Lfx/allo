@@ -109,6 +109,43 @@ pub async fn load_all_skills(
     deduplicate_by_name(deduplicate(all))
 }
 
+/// Merge Flowy catalog skills into the filesystem/MCP set.
+///
+/// Catalog identities win on matching `catalog_id` or short `name`, so the
+/// session-authorized catalog is what the Skill tool exposes.
+pub fn merge_host_catalog_skills(
+    disk: Vec<crate::types::SkillMetadata>,
+    catalog: Vec<crate::types::SkillMetadata>,
+) -> Vec<crate::types::SkillMetadata> {
+    if catalog.is_empty() {
+        return disk;
+    }
+    let mut claimed_names = std::collections::HashSet::new();
+    let mut claimed_ids = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(catalog.len() + disk.len());
+    for skill in catalog {
+        if let Some(id) = skill.catalog_id.as_deref() {
+            claimed_ids.insert(id.to_string());
+        }
+        claimed_names.insert(skill.name.clone());
+        out.push(skill);
+    }
+    for skill in disk {
+        if skill
+            .catalog_id
+            .as_ref()
+            .is_some_and(|id| claimed_ids.contains(id))
+        {
+            continue;
+        }
+        if claimed_names.contains(&skill.name) {
+            continue;
+        }
+        out.push(skill);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Internal: load from skills/ directory (directory-only format)
 // ---------------------------------------------------------------------------

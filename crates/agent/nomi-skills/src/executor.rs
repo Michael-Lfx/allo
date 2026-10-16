@@ -146,6 +146,9 @@ mod tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: skill_root.map(str::to_owned),
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -251,6 +254,9 @@ mod supplemental_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: skill_root.map(str::to_owned),
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -557,6 +563,9 @@ mod phase7_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 

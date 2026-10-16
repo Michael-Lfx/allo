@@ -12,6 +12,7 @@ mod client_preference;
 mod companion_token;
 mod conversation;
 mod conversation_skill_load;
+mod skill_discovery;
 mod conversation_artifact;
 mod cron_job;
 mod customer_service;
@@ -68,6 +69,9 @@ pub use client_preference::ClientPreference;
 pub use companion_token::CompanionApiTokenRow;
 pub use conversation::{ConversationDeliveryNotifyRow, ConversationDeliveryReceiptRow, ConversationRow};
 pub use conversation_skill_load::{ConversationSkillLoad, NewConversationSkillLoad};
+pub use skill_discovery::{
+    ConversationSkillPin, NewSkillSelectionEvent, SkillInvocationOverride, SkillSelectionEvent,
+};
 pub use conversation_artifact::ConversationArtifactRow;
 pub use cron_job::CronJobRow;
 pub use cron_job_run::{CronJobRunRow, CronRunReservationRow};

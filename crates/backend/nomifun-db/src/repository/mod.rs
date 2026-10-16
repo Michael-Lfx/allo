@@ -30,6 +30,7 @@ pub mod preset;
 pub mod remote_agent;
 pub mod requirement;
 mod settings;
+pub mod skill_discovery;
 pub mod skill_tag;
 pub mod ssh_host;
 mod sqlite_acp_session;
@@ -63,6 +64,7 @@ mod sqlite_preset;
 mod sqlite_remote_agent;
 mod sqlite_requirement;
 mod sqlite_settings;
+mod sqlite_skill_discovery;
 mod sqlite_skill_tag;
 mod sqlite_ssh_host;
 mod sqlite_tag_setting;
@@ -131,6 +133,7 @@ pub use requirement::{
     RequirementClaimResolution,
 };
 pub use settings::ISettingsRepository;
+pub use skill_discovery::ISkillDiscoveryRepository;
 pub use skill_tag::ISkillTagRepository;
 pub use sqlite_acp_session::SqliteAcpSessionRepository;
 pub use sqlite_app_server_idempotency::SqliteAppServerIdempotencyRepository;
@@ -163,6 +166,7 @@ pub use sqlite_preset::{SqlitePresetRepository, SqlitePresetStateRepository, Sql
 pub use sqlite_remote_agent::SqliteRemoteAgentRepository;
 pub use sqlite_requirement::SqliteRequirementRepository;
 pub use sqlite_settings::SqliteSettingsRepository;
+pub use sqlite_skill_discovery::SqliteSkillDiscoveryRepository;
 pub use sqlite_skill_tag::SqliteSkillTagRepository;
 pub use sqlite_ssh_host::SqliteSshHostRepository;
 pub use sqlite_tag_setting::SqliteTagSettingRepository;

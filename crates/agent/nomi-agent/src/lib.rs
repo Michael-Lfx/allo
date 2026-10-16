@@ -31,6 +31,7 @@ pub mod prompt_graph;
 pub mod requirement_tools;
 pub mod round;
 pub mod session;
+pub mod skill_search_tool;
 pub mod skill_tool;
 pub mod tool_image_annotator;
 pub mod ssh_backend;

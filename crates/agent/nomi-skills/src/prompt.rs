@@ -2,10 +2,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::types::{SkillMetadata, SkillSource};
 
-// Skill listing gets 1% of the context window (in characters)
-pub const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.01;
+// Skill listing gets 2% of the context window (in characters), matching Codex.
+pub const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.02;
 pub const CHARS_PER_TOKEN: usize = 4;
-pub const DEFAULT_CHAR_BUDGET: usize = 8_000; // Fallback: 1% of 200k × 4
+pub const DEFAULT_CHAR_BUDGET: usize = 16_000; // Fallback: 2% of 200k × 4
 pub const MAX_LISTING_DESC_CHARS: usize = 250;
 
 const MIN_DESC_LENGTH: usize = 20;
@@ -46,9 +46,17 @@ pub fn format_skill_description(skill: &SkillMetadata) -> String {
     }
 }
 
-/// Format a single skill entry for the listing: `- name: description`.
+/// Format a single skill entry for the listing: `- name (id): description`.
 pub fn format_skill_entry(skill: &SkillMetadata) -> String {
-    format!("- {}: {}", skill.name, format_skill_description(skill))
+    match skill.catalog_id.as_deref().filter(|id| !id.is_empty() && *id != skill.name) {
+        Some(id) => format!(
+            "- {} (`{}`): {}",
+            skill.name,
+            id,
+            format_skill_description(skill)
+        ),
+        None => format!("- {}: {}", skill.name, format_skill_description(skill)),
+    }
 }
 
 /// Format all skills within budget, applying three-level degradation.
@@ -210,6 +218,9 @@ mod tests {
             content: String::new(),
             content_length: 0,
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: crate::types::InvocationPolicy::ModelAuto,
+            requires_confirmation: false,
         }
     }
 
@@ -223,13 +234,13 @@ mod tests {
     #[test]
     fn test_get_char_budget_200k_tokens() {
         // 200_000 * 4 * 0.01 = 8_000
-        assert_eq!(get_char_budget(Some(200_000)), 8_000);
+        assert_eq!(get_char_budget(Some(200_000)), 16_000);
     }
 
     #[test]
     fn test_get_char_budget_small_window() {
-        // 100 * 4 * 0.01 = 4
-        assert_eq!(get_char_budget(Some(100)), 4);
+        // 100 * 4 * 0.02 = 8
+        assert_eq!(get_char_budget(Some(100)), 8);
     }
 
     #[test]
@@ -316,6 +327,16 @@ mod tests {
     fn test_format_skill_entry_basic() {
         let skill = make_skill("my-skill", "Does things", None, false, false);
         assert_eq!(format_skill_entry(&skill), "- my-skill: Does things");
+    }
+
+    #[test]
+    fn test_format_skill_entry_includes_catalog_id() {
+        let mut skill = make_skill("officecli", "Office documents", None, true, false);
+        skill.catalog_id = Some("builtin:officecli".to_owned());
+        assert_eq!(
+            format_skill_entry(&skill),
+            "- officecli (`builtin:officecli`): Office documents"
+        );
     }
 
     #[test]

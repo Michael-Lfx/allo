@@ -60,6 +60,9 @@ fn make_skill(name: &str, content: &str) -> SkillMetadata {
         content: content.to_string(),
         content_length: content.len(),
         skill_root: None,
+        catalog_id: None,
+        invocation_policy: Default::default(),
+        requires_confirmation: false,
     }
 }
 

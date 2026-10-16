@@ -46,6 +46,7 @@ pub mod session;
 pub mod runtime_registry;
 pub mod conversation_title_completer;
 pub mod terminal_title_completer;
+pub mod catalog_bridge;
 pub mod types;
 
 // ── Agent-layer re-exports (the seam) ──────────────────────────────────────

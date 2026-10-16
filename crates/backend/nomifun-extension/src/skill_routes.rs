@@ -24,7 +24,7 @@ use nomifun_api_types::{
     SkillMarketSyncResponse, SkillPathsResponse, SkillSourceResponse,
     WritePresetRuleRequest,
 };
-use nomifun_common::AppError;
+use nomifun_common::{now_ms, AppError};
 use nomifun_db::ISkillTagRepository;
 
 use crate::classifier::PresetRuleDispatcher;
@@ -146,6 +146,8 @@ pub struct SkillRouterState {
     pub skill_tag_repo: Arc<dyn ISkillTagRepository>,
     /// Built-in skill tag seed: skill name → (audience_tags, scenario_tags).
     pub builtin_skill_tags: Arc<HashMap<String, (Vec<String>, Vec<String>)>>,
+    /// Optional SQLite store for per-skill model-auto overrides.
+    pub skill_discovery: Option<Arc<dyn nomifun_db::ISkillDiscoveryRepository>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +164,7 @@ pub fn skill_routes(state: SkillRouterState) -> Router {
         .route("/api/skills/catalog", get(list_catalog_skills))
         .route("/api/skills/builtin-auto", get(list_builtin_auto_skills))
         .route("/api/skills/{name}/tags", put(set_skill_tags))
+        .route("/api/skills/invocation", get(list_invocation_overrides).put(set_invocation_override))
         .route("/api/skills/info", post(read_skill_info))
         .route("/api/skills/paths", get(get_skill_paths))
         // Import / export / delete
@@ -403,6 +406,36 @@ async fn set_skill_tags(
         .await
         .map_err(AppError::from)?;
     Ok(Json(ApiResponse::success()))
+}
+
+#[derive(serde::Deserialize)]
+struct SetInvocationOverrideRequest {
+    skill_id: String,
+    allow_model_auto: bool,
+}
+
+async fn list_invocation_overrides(
+    State(state): State<SkillRouterState>,
+) -> Result<Json<ApiResponse<Vec<nomifun_db::SkillInvocationOverride>>>, AppError> {
+    let Some(repo) = state.skill_discovery.as_ref() else {
+        return Ok(Json(ApiResponse::ok(Vec::new())));
+    };
+    Ok(Json(ApiResponse::ok(repo.list_invocation_overrides().await?)))
+}
+
+async fn set_invocation_override(
+    State(state): State<SkillRouterState>,
+    body: Result<Json<SetInvocationOverrideRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<nomifun_db::SkillInvocationOverride>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    SkillId::parse(&req.skill_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+    let Some(repo) = state.skill_discovery.as_ref() else {
+        return Err(AppError::Internal("Skill discovery store is not wired".into()));
+    };
+    let row = repo
+        .set_invocation_override(&req.skill_id, req.allow_model_auto, now_ms())
+        .await?;
+    Ok(Json(ApiResponse::ok(row)))
 }
 
 /// `GET /api/skills/builtin-auto` — list auto-injected built-in skills.
@@ -974,6 +1007,7 @@ mod tests {
             market_package_preset_installer: None,
             skill_tag_repo: std::sync::Arc::new(InMemorySkillTagRepo::default()),
             builtin_skill_tags: std::sync::Arc::new(std::collections::HashMap::new()),
+            skill_discovery: None,
         }
     }
 

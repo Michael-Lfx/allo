@@ -729,6 +729,7 @@ export type IMessageSkillLoad = IMessage<
     source: string;
     version_hash: string;
     content: string;
+    invocation?: 'force' | 'model-auto';
   }
 >;
 
@@ -1387,7 +1388,7 @@ const normalizeAgentStatusContent = (value: unknown): IMessageAgentStatus['conte
 
 const normalizeSkillLoadContent = (value: unknown): IMessageSkillLoad['content'] | undefined => {
   if (!isObject(value)) return undefined;
-  const { skill_id, name, source, version_hash, content } = value;
+  const { skill_id, name, source, version_hash, content, invocation } = value;
   if (
     typeof skill_id !== 'string' ||
     typeof name !== 'string' ||
@@ -1397,7 +1398,14 @@ const normalizeSkillLoadContent = (value: unknown): IMessageSkillLoad['content']
   ) {
     return undefined;
   }
-  return { skill_id, name, source, version_hash, content };
+  return {
+    skill_id,
+    name,
+    source,
+    version_hash,
+    content,
+    ...(invocation === 'force' || invocation === 'model-auto' ? { invocation } : {}),
+  };
 };
 
 /**

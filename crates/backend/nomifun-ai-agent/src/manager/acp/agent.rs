@@ -17,7 +17,9 @@ use crate::protocol::send_error::AgentSendError;
 use crate::persistence::AcpSessionPersistenceBarrier;
 use crate::registry::CatalogSender;
 use crate::session::{ModeId, ModelId, SessionId as DomainSessionId};
-use crate::types::{SendMessageData, inject_loaded_skill_context};
+use crate::types::{
+    SendMessageData, inject_catalog_discovery_context, inject_loaded_skill_context,
+};
 use agent_client_protocol::schema::{
     CancelNotification, SessionId, SessionModelState, SessionNotification, UsageUpdate,
 };
@@ -831,6 +833,7 @@ impl AcpAgentManager {
             transformed
         };
         let content = inject_loaded_skill_context(content, &data.loaded_skill_snapshots);
+        let content = inject_catalog_discovery_context(content, data.catalog_discovery.as_ref());
 
         let data = SendMessageData {
             content,

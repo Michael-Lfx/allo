@@ -22,6 +22,7 @@ import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Me
 import HOC from '@renderer/utils/ui/HOC';
 import React, { useEffect, useMemo, useState } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
+import SessionSkillModeBar from '@/renderer/pages/conversation/components/SessionSkillModeBar';
 import NomiSendBox from './NomiSendBox';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useNomiMessage } from './useNomiMessage';
@@ -144,6 +145,7 @@ const NomiChat: React.FC<{
                   elapsedMs: turnActivity.tokenUsage?.elapsed_ms,
                 }}
               />
+              <SessionSkillModeBar />
               <NomiSendBox
                 conversation_id={conversation_id}
                 modelSelection={modelSelection}

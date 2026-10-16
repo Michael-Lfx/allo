@@ -28,9 +28,12 @@ use nomifun_common::{
 
 use crate::service::ConversationService;
 use nomifun_db::{
-    DbError, IConversationRepository, MessageRowUpdate, SortOrder, TurnArtifactMessageCommit,
+    ConversationSkillLoadCommit, DbError, IConversationRepository, MessageRowUpdate, SortOrder,
+    TurnArtifactMessageCommit,
 };
+use nomifun_db::models::NewConversationSkillLoad;
 use nomifun_db::models::MessageRow;
+use sha2::{Digest, Sha256};
 use nomifun_realtime::UserEventSink;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, Notify, broadcast, mpsc, oneshot};
@@ -5301,7 +5304,10 @@ impl StreamRelay {
         data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
         hidden: bool,
     ) {
-        let _ = self.persist_tool_call_projection(data, hidden, None).await;
+        let persisted = self.persist_tool_call_projection(data, hidden, None).await;
+        if persisted {
+            self.persist_auto_skill_load(data).await;
+        }
     }
 
     async fn persist_tool_call_projection(
@@ -5459,6 +5465,100 @@ impl StreamRelay {
 
     async fn tool_message_id(&self, call_id: &str) -> String {
         self.derived_message_id("tool_call", call_id).await
+    }
+
+    async fn persist_auto_skill_load(
+        &self,
+        data: &nomifun_ai_agent::protocol::events::tool_call::ToolCallEventData,
+    ) {
+        if data.name != "Skill" || data.status != ToolCallStatus::Completed {
+            return;
+        }
+        let skill_id = data
+            .args
+            .get("skill")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                data.input
+                    .as_ref()
+                    .and_then(|value| value.get("skill"))
+                    .and_then(|value| value.as_str())
+            })
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('/');
+        if skill_id.is_empty() {
+            return;
+        }
+        let Some(content) = data.output.as_deref().filter(|text| !text.trim().is_empty()) else {
+            return;
+        };
+        if let Ok(existing) = self.repo.get_skill_loads(self.conv_id()).await
+            && existing.iter().any(|row| row.catalog_key == skill_id)
+        {
+            return;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(content.as_bytes());
+        let version_hash = format!("{:x}", hasher.finalize());
+        let source = skill_id.split(':').next().unwrap_or("runtime").to_owned();
+        let name = skill_id
+            .rsplit(':')
+            .next()
+            .unwrap_or(skill_id)
+            .to_owned();
+        let message_id = MessageId::new().into_string();
+        let created_at = now_ms();
+        let payload = json!({
+            "skill_id": skill_id,
+            "name": name,
+            "source": source,
+            "version_hash": version_hash,
+            "content": content,
+            "invocation": "model-auto",
+        });
+        let commit = ConversationSkillLoadCommit {
+            load_message: MessageRow {
+                id: 0,
+                message_id: message_id.clone(),
+                conversation_id: self.conversation_id.clone(),
+                msg_id: None,
+                r#type: "skill_load".to_owned(),
+                content: payload.to_string(),
+                position: Some("center".to_owned()),
+                status: Some("finish".to_owned()),
+                hidden: false,
+                created_at,
+            },
+            snapshot: NewConversationSkillLoad {
+                conversation_id: self.conversation_id.clone(),
+                message_id: message_id.clone(),
+                catalog_key: skill_id.to_owned(),
+                skill_name: name.clone(),
+                source,
+                version_hash: version_hash.clone(),
+                content: content.to_owned(),
+                created_at,
+            },
+        };
+        if let Err(error) = self
+            .repo
+            .persist_skill_loads_and_user_message(self.conv_id(), None, &[commit])
+            .await
+        {
+            warn!(
+                error = %ErrorChain(&error),
+                skill_id,
+                "failed to persist model-auto skill_load"
+            );
+            return;
+        }
+        self.broadcast_stream_payload(json!({
+            "conversation_id": self.conv_id(),
+            "msg_id": message_id,
+            "type": "skill_load",
+            "data": payload,
+        }));
     }
 
     fn incomplete_tool_reason(event: &AgentStreamEvent) -> Option<&'static str> {

@@ -75,7 +75,11 @@
     "detailLoadFailed": "无法读取该技能文件。",
     "detailLoadFailedHint": "文件可能已移动或暂时无法读取。请刷新技能列表后重试。",
     "tagsSaved": "标签已保存",
-    "tagsSaveFailed": "保存标签失败"
+    "tagsSaveFailed": "保存标签失败",
+    "allowModelAuto": "允许模型自动调用",
+    "allowModelAutoHint": "开启后，模型可对照描述自行加载该技能，不必先用 / 点选。",
+    "invocationSaved": "调用策略已保存",
+    "invocationSaveFailed": "保存调用策略失败"
   },
   "capabilityHub": {
     "navLabel": "能力中心",

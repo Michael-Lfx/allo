@@ -1,4 +1,5 @@
 pub mod context_modifier;
+pub mod dynamic_skill_selector;
 pub mod executor;
 pub mod frontmatter;
 pub mod hooks;

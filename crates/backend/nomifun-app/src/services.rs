@@ -26,7 +26,8 @@ use nomifun_db::{
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
     SqliteOAuthClientRegistrationRepository, SqliteOAuthTokenRepository,
     SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteTerminalRepository, SqliteUserRepository,
+    SqliteSettingsRepository, SqliteSkillDiscoveryRepository, SqliteTerminalRepository,
+    SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
 use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
@@ -3529,6 +3530,9 @@ impl AppServices {
             search_provider,
             extract_coordinator,
             skill_manager: AcpSkillManager::new(skill_paths.clone()),
+            skill_discovery: Some(Arc::new(SqliteSkillDiscoveryRepository::new(
+                database.pool().clone(),
+            ))),
             remote_agent_repo,
             provider_repo,
             provider_model_repo: provider_model_repo.clone(),

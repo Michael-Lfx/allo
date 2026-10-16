@@ -305,3 +305,43 @@ async fn test_load_all_skills_deduplicates() {
     let count = names.iter().filter(|&&n| n == "my-skill").count();
     assert_eq!(count, 1, "skill should appear exactly once after dedup");
 }
+
+fn meta(name: &str, catalog_id: Option<&str>, content: &str) -> crate::types::SkillMetadata {
+    crate::types::SkillMetadata {
+        name: name.to_owned(),
+        display_name: None,
+        description: format!("desc {name}"),
+        has_user_specified_description: true,
+        allowed_tools: Vec::new(),
+        argument_hint: None,
+        argument_names: Vec::new(),
+        when_to_use: None,
+        version: None,
+        model: None,
+        disable_model_invocation: false,
+        user_invocable: true,
+        execution_context: crate::types::ExecutionContext::Inline,
+        agent: None,
+        effort: None,
+        paths: Vec::new(),
+        hooks_raw: None,
+        source: crate::types::SkillSource::User,
+        loaded_from: crate::types::LoadedFrom::Skills,
+        content: content.to_owned(),
+        content_length: content.len(),
+        skill_root: None,
+        catalog_id: catalog_id.map(str::to_owned),
+        invocation_policy: Default::default(),
+        requires_confirmation: false,
+    }
+}
+
+#[test]
+fn merge_host_catalog_skills_prefers_catalog_identity() {
+    let disk = vec![meta("writer", None, "disk writer")];
+    let catalog = vec![meta("writer", Some("builtin:writer"), "catalog writer")];
+    let merged = merge_host_catalog_skills(disk, catalog);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].catalog_id.as_deref(), Some("builtin:writer"));
+    assert_eq!(merged[0].content, "catalog writer");
+}

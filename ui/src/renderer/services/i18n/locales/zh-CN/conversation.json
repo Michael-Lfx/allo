@@ -746,6 +746,11 @@
     "loaded": "已加载技能",
     "selected": "已选择的技能",
     "remove": "移除 {{name}}",
+    "modeBar": "本会话技能",
+    "autoLoaded": "自动",
+    "pin": "钉住",
+    "unpin": "取消钉住",
+    "slashOnly": "仅 / 调用",
     "sources": {
       "builtin": "内置",
       "user": "用户",

@@ -31,8 +31,9 @@ pub struct InjectionConfig<'a> {
 /// - If `native_skill_support && !custom_workspace`: **light mode** — only
 ///   `preset_context` prepended as an `[Assistant Rules]` block (if present).
 ///   The native CLI handles skill discovery via workspace symlinks.
-/// - Else: **heavy mode** — `preset_context` + resolved skills index
-///   injected via `prepare_first_message_with_skills_index`.
+/// - Else: **heavy mode** — `preset_context` + resolved skills plus the
+///   authorized Flowy catalog index, injected via
+///   `prepare_first_message_with_skills_index`.
 pub async fn inject_first_message_prefix(
     content: &str,
     manager: &Arc<AcpSkillManager>,
@@ -45,6 +46,9 @@ pub async fn inject_first_message_prefix(
     let use_native = config.native_skill_support && !config.custom_workspace;
 
     if use_native {
+        // Native CLIs discover workspace skills themselves. Flowy catalog
+        // listing belongs in heavy mode so we do not rewrite a cache-stable
+        // first message or pick up the process CWD's unrelated `.agents/skills`.
         return match config.preset_context {
             Some(ctx) if !ctx.is_empty() => {
                 Ok(format!("[Assistant Rules]\n{ctx}\n[/Assistant Rules]\n\n{content}"))
@@ -53,11 +57,21 @@ pub async fn inject_first_message_prefix(
         };
     }
 
+    let catalog = manager.catalog_index().await;
     let has_context = config.preset_context.is_some_and(|s| !s.is_empty());
-    if skills.is_empty() && !has_context {
+    let mut index = skills;
+    for item in catalog {
+        if !index.iter().any(|existing| existing.name == item.name) {
+            index.push(item);
+        }
+    }
+    if index.len() > 40 {
+        index.truncate(40);
+    }
+    if index.is_empty() && !has_context {
         return Ok(content.to_string());
     }
-    Ok(prepare_first_message_with_skills_index(content, &skills, config.preset_context))
+    Ok(prepare_first_message_with_skills_index(content, &index, config.preset_context))
 }
 
 #[cfg(test)]
@@ -67,8 +81,9 @@ mod tests {
     use tempfile::TempDir;
 
     fn test_mgr(base: &std::path::Path) -> Arc<AcpSkillManager> {
-        let paths = Arc::new(resolve_skill_paths(base, base));
-        AcpSkillManager::new(paths)
+        let mut paths = resolve_skill_paths(base, base);
+        paths.catalog_roots = Default::default();
+        AcpSkillManager::new(Arc::new(paths))
     }
 
     /// Point the embedded corpus at an empty dir so tests don't pick up
@@ -280,5 +295,35 @@ mod tests {
 
         assert!(out.contains("[Assistant Rules]"));
         assert!(out.contains("Custom rule"));
+    }
+
+    #[tokio::test]
+    async fn heavy_mode_merges_unselected_catalog_skills() {
+        let tmp = TempDir::new().unwrap();
+        let writer = tmp.path().join("skills").join("writer");
+        std::fs::create_dir_all(&writer).unwrap();
+        std::fs::write(
+            writer.join("SKILL.md"),
+            "---\nname: writer\ndescription: Draft copy\n---\nBody.",
+        )
+        .unwrap();
+        let _guard = EmptyBuiltinGuard::new(tmp.path());
+        let mgr = test_mgr(tmp.path());
+
+        let out = inject_first_message_prefix(
+            "Hello",
+            &mgr,
+            InjectionConfig {
+                preset_context: None,
+                skills: &[],
+                native_skill_support: false,
+                custom_workspace: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(out.contains("writer"));
+        assert!(out.contains("user:writer") || out.contains("`user:writer`"));
+        assert!(out.ends_with("Hello"));
     }
 }

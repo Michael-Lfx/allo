@@ -94,6 +94,14 @@ pub fn conversation_routes(state: ConversationRouterState) -> Router {
             "/api/conversations/{conversation_id}/approvals/check",
             get(check_approval),
         )
+        .route(
+            "/api/conversations/{conversation_id}/skill-pins",
+            get(list_skill_pins).put(upsert_skill_pin),
+        )
+        .route(
+            "/api/conversations/{conversation_id}/skill-selection-events",
+            get(list_skill_selection_events),
+        )
         .route("/api/conversations/active-count", get(active_runtime_count))
         .route("/api/conversations/clone", post(clone))
         .route("/api/messages/search", get(search_messages))
@@ -272,6 +280,58 @@ async fn reset(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     state.service.reset(&user.id, conversation_id.as_str()).await?;
     Ok(Json(ApiResponse::success()))
+}
+
+#[derive(serde::Deserialize)]
+struct PinSkillRequest {
+    skill_id: String,
+    #[serde(default)]
+    pinned: Option<bool>,
+}
+
+async fn list_skill_pins(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    state.service.get(&user.id, conversation_id.as_str()).await?;
+    let pins = state.service.list_skill_pins(conversation_id.as_str()).await?;
+    Ok(Json(ApiResponse::ok(pins)))
+}
+
+async fn upsert_skill_pin(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+    body: Result<Json<PinSkillRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    state.service.get(&user.id, conversation_id.as_str()).await?;
+    if req.pinned.unwrap_or(true) {
+        state
+            .service
+            .pin_conversation_skill(conversation_id.as_str(), &req.skill_id)
+            .await?;
+    } else {
+        state
+            .service
+            .unpin_conversation_skill(conversation_id.as_str(), &req.skill_id)
+            .await?;
+    }
+    Ok(Json(ApiResponse::success()))
+}
+
+async fn list_skill_selection_events(
+    State(state): State<ConversationRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(conversation_id): Path<ConversationId>,
+) -> Result<Json<ApiResponse<Vec<nomifun_db::SkillSelectionEvent>>>, AppError> {
+    state.service.get(&user.id, conversation_id.as_str()).await?;
+    let events = state
+        .service
+        .list_skill_selection_events(conversation_id.as_str())
+        .await?;
+    Ok(Json(ApiResponse::ok(events)))
 }
 
 async fn set_summon(
