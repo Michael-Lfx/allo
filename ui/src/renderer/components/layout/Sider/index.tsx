@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Ghost, MessageOne, VideoOne } from '@icon-park/react';
+import { Ghost, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
@@ -22,8 +22,8 @@ import { resolveSettingsTogglePath } from '@/renderer/utils/settingsToggle';
 import {
   ConversationSiderActions,
   SiderConversationEntry,
+  SiderModuleRow,
   SiderNewConversationEntry,
-  SiderSearchEntry,
   SiderKnowledgeEntry,
   SiderLearningEntry,
   SiderEvalEntry,
@@ -36,6 +36,7 @@ import {
 import SiderFooter from './SiderFooter';
 import { formatSiderAccountLabel } from './accountLabel';
 import { activeHistoryTabForRoute, historyTabAfterPathChange, isSessionRoutePath, type SiderHistoryTab } from './historyTab';
+import { SIDER_HISTORY_SEARCH_SELECT_EVENT } from './historySearchSelect';
 import styles from './Sider.module.css';
 import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
@@ -222,13 +223,14 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   const handleNewChat = useCallback(() => {
     cleanupSiderTooltips();
     blurActiveElement();
+    handleSelectHistoryTab('workspaces');
     Promise.resolve(navigate('/guid', { state: { resetPreset: true } })).catch((error) => {
       console.error('Navigation failed:', error);
     });
     if (onSessionClick) {
       onSessionClick();
     }
-  }, [navigate, onSessionClick]);
+  }, [handleSelectHistoryTab, navigate, onSessionClick]);
 
   const handleConversationSelect = useCallback(() => {
     handleSelectHistoryTab('workspaces');
@@ -236,6 +238,16 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       onSessionClick();
     }
   }, [handleSelectHistoryTab, onSessionClick]);
+
+  useEffect(() => {
+    const onHistorySearchSelect = () => {
+      handleConversationSelect();
+    };
+    window.addEventListener(SIDER_HISTORY_SEARCH_SELECT_EVENT, onHistorySearchSelect);
+    return () => {
+      window.removeEventListener(SIDER_HISTORY_SEARCH_SELECT_EVENT, onHistorySearchSelect);
+    };
+  }, [handleConversationSelect]);
 
   const compactDisplayPreferences = useMemo(() => {
     if (typeof localStorage !== 'undefined' && localStorage.getItem('nomifun:session-sidebar-display-preferences')) {
@@ -512,21 +524,54 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             data-testid='sider-primary-nav'
             className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
           >
-            {/* 顶层高频操作：新建会话与搜索 */}
-            <div className='flex flex-col gap-4px mb-4px'>
+            {/* 新建任务、视频、桌宠各占一整行，样式与新建任务按钮一致 */}
+            <div className='flex flex-col gap-4px mb-4px' role='tablist'>
               <SiderNewConversationEntry
                 isMobile={isMobile}
                 collapsed={collapsed}
                 siderTooltipProps={siderTooltipProps}
                 onClick={handleNewChat}
               />
-              <SiderSearchEntry
-                isMobile={isMobile}
-                collapsed={collapsed}
-                siderTooltipProps={siderTooltipProps}
-                onConversationSelect={handleConversationSelect}
-                onSessionClick={onSessionClick}
-              />
+              {!collapsed && (
+                <>
+                  <SiderModuleRow
+                    collapsed={false}
+                    active={effectiveBar2Module === 'video'}
+                    label={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
+                    testId='sider-video-module-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={() => handleTabClick('video')}
+                    onPointerEnter={() => prefetchVideoGenerationHome()}
+                    icon={
+                      <VideoOne
+                        theme='outline'
+                        size='16'
+                        fill='currentColor'
+                        className='block leading-none shrink-0'
+                        style={{ lineHeight: 0 }}
+                      />
+                    }
+                  />
+                  <SiderModuleRow
+                    collapsed={false}
+                    active={effectiveBar2Module === 'companions'}
+                    label={t('nomi.shortTitle', { defaultValue: '桌宠' })}
+                    testId='sider-companion-module-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={() => handleTabClick('companions')}
+                    onPointerEnter={() => prefetchNomiPage()}
+                    icon={
+                      <Ghost
+                        theme='outline'
+                        size='16'
+                        fill='currentColor'
+                        className='block leading-none shrink-0'
+                        style={{ lineHeight: 0 }}
+                      />
+                    }
+                  />
+                </>
+              )}
             </div>
 
             {/* 业务功能横向 Dock 栏（展开态下高度仅 34px，容纳 5 个无历史纯功能模块；收起态下恢复纵向一列） */}
@@ -630,112 +675,6 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                 compact
                 hidden
               />
-
-              {/* 三段式会话分类切换器：区分项目、视频创作、桌宠 */}
-              <div className={`w-full my-2px shrink-0 ${styles.historyTabsContainer}`}>
-                <div
-                  role='tablist'
-                  aria-label={t('common.titlebar.sections.workspaces', { defaultValue: '工作区' })}
-                  className='relative flex items-center p-2px rd-8px bg-fill-1 border border-solid border-[var(--color-border-2)]'
-                >
-                  <span
-                    aria-hidden='true'
-                    className='absolute h-26px rd-6px bg-fill-3 text-t-primary shadow-sm transition-transform duration-220 ease-[cubic-bezier(0.25,1,0.5,1)] pointer-events-none'
-                    style={{
-                      width: 'calc((100% - 4px) / 3)',
-                      left: '2px',
-                      top: '2px',
-                      transform: `translateX(${
-                        effectiveBar2Module === 'video' ? '100%' : effectiveBar2Module === 'companions' ? '200%' : '0%'
-                      })`,
-                      opacity: effectiveBar2Module ? 1 : 0,
-                    }}
-                  />
-                  <button
-                    type='button'
-                    role='tab'
-                    title={t('sessionList.projectsTab', { defaultValue: '项目' })}
-                    aria-selected={effectiveBar2Module === 'workspaces'}
-                    onClick={() => handleTabClick('workspaces')}
-                    className={classNames(
-                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
-                      effectiveBar2Module === 'workspaces'
-                        ? 'text-t-primary'
-                        : 'text-t-tertiary hover:text-t-primary'
-                    )}
-                  >
-                    <MessageOne
-                      theme='outline'
-                      size={15}
-                      fill='currentColor'
-                      className={classNames(
-                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
-                        effectiveBar2Module === 'workspaces'
-                          ? 'text-primary-6'
-                          : 'text-t-tertiary group-hover:text-t-primary'
-                      )}
-                      style={{ lineHeight: 0 }}
-                    />
-                    <span className='truncate'>{t('sessionList.projectsTab', { defaultValue: '项目' })}</span>
-                  </button>
-                  <button
-                    type='button'
-                    role='tab'
-                    title={t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}
-                    aria-selected={effectiveBar2Module === 'video'}
-                    onClick={() => handleTabClick('video')}
-                    onPointerEnter={() => prefetchVideoGenerationHome()}
-                    className={classNames(
-                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
-                      effectiveBar2Module === 'video'
-                        ? 'text-t-primary'
-                        : 'text-t-tertiary hover:text-t-primary'
-                    )}
-                  >
-                    <VideoOne
-                      theme='outline'
-                      size={15}
-                      fill='currentColor'
-                      className={classNames(
-                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
-                        effectiveBar2Module === 'video'
-                          ? 'text-primary-6'
-                          : 'text-t-tertiary group-hover:text-t-primary'
-                      )}
-                      style={{ lineHeight: 0 }}
-                    />
-                    <span className='truncate'>{t('videoGeneration.nav.shortTitle', { defaultValue: '视频' })}</span>
-                  </button>
-                  <button
-                    type='button'
-                    role='tab'
-                    title={t('nomi.shortTitle', { defaultValue: '桌宠' })}
-                    aria-selected={effectiveBar2Module === 'companions'}
-                    onClick={() => handleTabClick('companions')}
-                    onPointerEnter={() => prefetchNomiPage()}
-                    className={classNames(
-                      'relative z-1 group flex-1 h-26px px-2px text-12px font-[500] rd-6px flex items-center justify-center gap-4px transition-colors duration-180 cursor-pointer border-none select-none whitespace-nowrap overflow-hidden text-ellipsis bg-transparent',
-                      effectiveBar2Module === 'companions'
-                        ? 'text-t-primary'
-                        : 'text-t-tertiary hover:text-t-primary'
-                    )}
-                  >
-                    <Ghost
-                      theme='outline'
-                      size={15}
-                      fill='currentColor'
-                      className={classNames(
-                        'flowy-sider-tab-icon block leading-none shrink-0 transition-colors duration-180',
-                        effectiveBar2Module === 'companions'
-                          ? 'text-primary-6'
-                          : 'text-t-tertiary group-hover:text-t-primary'
-                      )}
-                      style={{ lineHeight: 0 }}
-                    />
-                    <span className='truncate'>{t('nomi.shortTitle', { defaultValue: '桌宠' })}</span>
-                  </button>
-                </div>
-              </div>
 
               {/* 当处于项目 Tab 时，展示专门的操作工具条（左侧显示「项目/工作路径」，右侧折叠全部 / 添加工作区），在其他两个 tab 下完全隐藏 */}
               <div

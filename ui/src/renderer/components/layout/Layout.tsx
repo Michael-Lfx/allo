@@ -745,7 +745,7 @@ const Layout: React.FC<{
                         aria-expanded={!collapsed}
                         aria-controls='flowy-primary-sider'
                       >
-                        <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
+                        <SidebarToggleIcon collapsed={collapsed} size={15} />
                       </button>
                     )}
                     {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}

@@ -101,6 +101,7 @@
   "search": "Search",
   "tray.showWindow": "Show Flowy",
   "tray.newChat": "New Chat",
+  "sider.newTask": "New task",
   "tray.closeToTray": "Hide to Tray",
   "tray.about": "About Flowy",
   "tray.restart": "Restart App",
@@ -150,8 +151,8 @@
     "minute_short": "m",
     "second_short": "s"
   },
-  "navExpand": "Expand app navigation",
-  "navCollapse": "Hide Sidebar",
+  "navExpand": "Open sidebar",
+  "navCollapse": "Close sidebar",
   "shortcuts": {
     "title": "Keyboard shortcuts",
     "close": "Close",
@@ -160,7 +161,7 @@
     "groupHelp": "Help",
     "historyBack": "Go back",
     "historyForward": "Go forward",
-    "sidebar": "Show or hide the sidebar",
+    "sidebar": "Open or close the sidebar",
     "settings": "Open or close Settings",
     "newConversation": "New conversation",
     "search": "Search conversations",

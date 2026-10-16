@@ -16,6 +16,6 @@ describe('ChatLayout workspace title contract', () => {
     expect(layoutSource.includes('layout?.isMobile')).toBe(true);
     expect(classesSource.includes('CHAT_HEADER_WITH_SUBTITLE_CLASSES')).toBe(true);
     expect(classesSource.includes('getWorkspaceTitleSubtitle')).toBe(true);
-    expect(classesSource.includes('min-h-60px')).toBe(true);
+    expect(classesSource.includes('min-h-44px')).toBe(true);
   });
 });

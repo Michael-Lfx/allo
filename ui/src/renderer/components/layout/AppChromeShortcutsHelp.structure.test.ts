@@ -5,7 +5,6 @@ const helpSource = readFileSync(new URL('./AppChromeShortcutsHelp.tsx', import.m
 const hostSource = readFileSync(new URL('./AppChromeShortcutsHost.tsx', import.meta.url), 'utf8');
 const layoutSource = readFileSync(new URL('./Layout.tsx', import.meta.url), 'utf8');
 const footerSource = readFileSync(new URL('./Sider/SiderFooter.tsx', import.meta.url), 'utf8');
-const searchEntrySource = readFileSync(new URL('./Sider/SiderNav/SiderSearchEntry.tsx', import.meta.url), 'utf8');
 const titlebarSource = readFileSync(new URL('./Titlebar/index.tsx', import.meta.url), 'utf8');
 const systemSource = readFileSync(
   new URL('../settings/SettingsModal/contents/SystemModalContent/index.tsx', import.meta.url),
@@ -42,7 +41,7 @@ describe('app chrome shortcut surfaces', () => {
       true
     );
     expect(footerSource.includes("appChromeShortcutTooltip(settingsTooltipBase, 'settings')")).toBe(true);
-    expect(searchEntrySource.includes("appChromeShortcutTooltip(t('conversation.historySearch.tooltip'), 'search')")).toBe(
+    expect(titlebarSource.includes("appChromeShortcutTooltip(t('conversation.historySearch.tooltip'), 'search')")).toBe(
       true
     );
   });
