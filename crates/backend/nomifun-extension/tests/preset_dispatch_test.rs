@@ -154,6 +154,7 @@ async fn router_with_dispatcher(dispatcher: Arc<FakeDispatcher>) -> axum::Router
             Arc::new(nomifun_db::SqliteSkillTagRepository::new(db.pool().clone()))
         },
         builtin_skill_tags: Arc::new(std::collections::HashMap::new()),
+        skill_discovery: None,
     };
     skill_routes(state)
 }

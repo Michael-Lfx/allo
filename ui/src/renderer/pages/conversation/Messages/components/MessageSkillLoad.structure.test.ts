@@ -10,6 +10,8 @@ describe('Skill load history renderer', () => {
     expect(componentSource.includes('<details')).toBe(true);
     expect(componentSource.includes('{content}')).toBe(true);
     expect(componentSource.includes('version_hash')).toBe(true);
+    expect(componentSource.includes("data-testid='message-skill-load-auto'")).toBe(true);
+    expect(componentSource.includes("data-testid='message-skill-load-pin'")).toBe(true);
   });
 
   test('keeps Skill-only history visible without a blank user transport row', () => {

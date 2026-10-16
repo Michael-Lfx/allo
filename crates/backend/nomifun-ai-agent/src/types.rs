@@ -50,6 +50,9 @@ pub struct SendMessageData {
     /// for this turn. They are plain instruction text, never executable hooks.
     #[serde(default)]
     pub loaded_skill_snapshots: Vec<LoadedSkillSnapshot>,
+    /// Host-ranked catalog hint for this user turn (L1 assist, not full bodies).
+    #[serde(default)]
+    pub catalog_discovery: Option<CatalogDiscoveryHint>,
     /// Turn origin marker (companion/cron/autowork/idmm). `None`/empty = a human
     /// owner is speaking. Same semantics as the collector's `payload_origin`
     /// red line: non-empty origins are NOT human intent and must not be
@@ -71,6 +74,25 @@ pub struct LoadedSkillSnapshot {
     pub location: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CatalogDiscoveryHint {
+    pub ranked_ids: Vec<String>,
+    pub listing_truncated: bool,
+    pub method: String,
+    pub entries: Vec<CatalogDiscoveryEntry>,
+    #[serde(default)]
+    pub applied_to_l1: bool,
+    #[serde(default)]
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CatalogDiscoveryEntry {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+}
+
 const SKILL_POINTER_BODY_LIMIT: usize = 400;
 
 pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapshot]) -> String {
@@ -84,9 +106,9 @@ pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapsho
         .join("\n\n");
     format!(
         "[Loaded Skills]\n\
-         The user explicitly selected these Skills. Follow the pointer below; do not assume the excerpt is the full procedure.\n\
-         Do not call the Skill tool to load or invoke a selected Skill by name;\n\
-         that tool only exposes the runtime-native Skill catalog and may not contain this selection.\n\
+         The user explicitly selected these Skills (force). Follow the pointer below; do not assume the excerpt is the full procedure.\n\
+         Do not call the Skill tool to reload a skill listed here — it is already selected.\n\
+         Other catalog skills that were not selected may still be loaded with the Skill tool when they match the task.\n\
          If a selected Skill refers to a slash command or another Skill, perform the described workflow directly\n\
          instead of using the Skill tool to load that reference.\n\
          Host tools named by a Skill (for example briefing_create) remain available even if they are not in this excerpt.\n\
@@ -97,6 +119,43 @@ pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapsho
          [Current User Request]\n\
          {content}"
     )
+}
+
+pub fn inject_catalog_discovery_context(
+    content: String,
+    hint: Option<&CatalogDiscoveryHint>,
+) -> String {
+    let Some(hint) = hint else {
+        return content;
+    };
+    if !hint.applied_to_l1 || hint.entries.is_empty() {
+        return content;
+    }
+    let mut lines = vec![
+        "[Catalog Skills this turn]".to_owned(),
+        "These catalog skills are the best matches for the current user request.".to_owned(),
+        "If one matches, call the Skill tool with its catalog id before acting.".to_owned(),
+        "Skip any skill already listed under [Loaded Skills].".to_owned(),
+    ];
+    if hint.listing_truncated {
+        lines.push(
+            "The system listing is truncated; prefer this ranked subset, or SkillSearch if available."
+                .to_owned(),
+        );
+    }
+    for entry in &hint.entries {
+        lines.push(format!(
+            "- {} (`{}`): {}",
+            entry.name, entry.skill_id, entry.description
+        ));
+    }
+    if lines.iter().all(|line| !line.starts_with("- ")) {
+        for id in &hint.ranked_ids {
+            lines.push(format!("- `{id}`"));
+        }
+    }
+    lines.push("[/Catalog Skills this turn]".to_owned());
+    format!("{}\n\n{content}", lines.join("\n"))
 }
 
 fn render_skill_pointer(skill: &LoadedSkillSnapshot) -> String {
@@ -548,7 +607,8 @@ mod tests {
         );
 
         assert!(content.contains("[Loaded Skills]"));
-        assert!(content.contains("Do not call the Skill tool to load or invoke a selected Skill"));
+        assert!(content.contains("Do not call the Skill tool to reload a skill listed here"));
+        assert!(content.contains("Other catalog skills that were not selected may still be loaded"));
         assert!(content.contains("perform the described workflow directly"));
         assert!(content.contains("Inspect the PDF before answering."));
         assert!(content.contains("Prefer those tools over reconstructing the workflow"));
@@ -582,6 +642,48 @@ mod tests {
     }
 
     #[test]
+    fn catalog_discovery_is_omitted_while_shadowing() {
+        let hint = CatalogDiscoveryHint {
+            ranked_ids: vec!["builtin:officecli".to_owned()],
+            listing_truncated: true,
+            method: "weighted_lexical_v1".to_owned(),
+            entries: vec![CatalogDiscoveryEntry {
+                skill_id: "builtin:officecli".to_owned(),
+                name: "officecli".to_owned(),
+                description: "Office documents".to_owned(),
+            }],
+            applied_to_l1: false,
+            latency_ms: 2,
+        };
+        assert_eq!(
+            inject_catalog_discovery_context("Write a workbook".to_owned(), Some(&hint)),
+            "Write a workbook"
+        );
+    }
+
+    #[test]
+    fn catalog_discovery_lists_ranked_ids_when_applied() {
+        let hint = CatalogDiscoveryHint {
+            ranked_ids: vec!["builtin:officecli".to_owned()],
+            listing_truncated: true,
+            method: "weighted_lexical_v1".to_owned(),
+            entries: vec![CatalogDiscoveryEntry {
+                skill_id: "builtin:officecli".to_owned(),
+                name: "officecli".to_owned(),
+                description: "Office documents".to_owned(),
+            }],
+            applied_to_l1: true,
+            latency_ms: 3,
+        };
+        let content =
+            inject_catalog_discovery_context("Write a workbook".to_owned(), Some(&hint));
+        assert!(content.contains("[Catalog Skills this turn]"));
+        assert!(content.contains("builtin:officecli"));
+        assert!(content.contains("call the Skill tool"));
+        assert!(content.ends_with("Write a workbook"));
+    }
+
+    #[test]
     fn acp_build_extra_accepts_payload_without_skills() {
         let legacy = r#"{"backend":"claude"}"#;
         let parsed: AcpBuildExtra = serde_json::from_str(legacy).unwrap();
@@ -604,6 +706,7 @@ mod tests {
             files: vec!["/tmp/a.txt".into()],
             inject_skills: vec!["review".into()],
             loaded_skill_snapshots: vec![],
+            catalog_discovery: None,
             origin: None,
         };
         let json = serde_json::to_value(&data).unwrap();
@@ -628,6 +731,7 @@ mod tests {
         assert!(data.loaded_skill_snapshots.is_empty());
         assert!(data.origin.is_none());
         assert!(data.source_message_id.is_none());
+        assert!(data.catalog_discovery.is_none());
     }
 
     #[test]

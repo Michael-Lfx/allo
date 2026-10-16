@@ -212,6 +212,10 @@ pub fn skills_for_profile(profile: TaskProfile, skills: &[SkillMetadata]) -> Vec
             if skill.disable_model_invocation {
                 return false;
             }
+            // Flowy catalog skills are session-authorized in every profile.
+            if skill.catalog_id.is_some() {
+                return true;
+            }
             if !profile.is_coding() {
                 return true;
             }

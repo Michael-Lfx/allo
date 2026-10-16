@@ -47,6 +47,7 @@ tracing.workspace = true
 toml.workspace = true
 tempfile.workspace = true
 nomi-agent.workspace = true
+nomi-skills.workspace = true
 nomi-agent-eval.workspace = true
 nomi-agent-trace.workspace = true
 flowy-web = { workspace = true, optional = true }

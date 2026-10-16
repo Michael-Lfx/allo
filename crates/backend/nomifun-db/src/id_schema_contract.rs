@@ -44,6 +44,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "conversation_execution_links",
     "conversation_mcp_servers",
     "conversation_skill_loads",
+    "conversation_skill_pins",
     "conversations",
     "creation_tasks",
     "cron_job_runs",
@@ -119,6 +120,8 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "requirement_pre_effect_abandon_guards",
     "requirement_tags",
     "requirements",
+    "skill_invocation_overrides",
+    "skill_selection_event",
     "skill_tags",
     "ssh_hosts",
     "system_settings",
@@ -259,6 +262,8 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("conversation_delivery_receipts", "operation_id"),
     ("conversations", "conversation_id"),
     ("conversations", "channel_chat_id"),
+    // Source-qualified Skill catalog key (`builtin:officecli`), not a row FK.
+    ("conversation_skill_pins", "skill_id"),
     ("cron_job_runs", "cron_job_run_id"),
     ("cron_run_reservations", "cron_job_run_id"),
     ("cron_jobs", "cron_job_id"),
@@ -314,6 +319,7 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("oauth_tokens", "principal_id"),
     // Source-qualified Skill catalog key, not a relational business ID.
     ("preset_skill_bindings", "skill_id"),
+    ("skill_invocation_overrides", "skill_id"),
     ("preset_tags", "preset_tag_id"),
     ("presets", "preset_id"),
     ("provider_connections", "connection_id"),
@@ -854,6 +860,8 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("conversation_skill_loads", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_skill_loads_conversation_id", Cascade),
     text_ref!("conversation_skill_loads", "message_id" => "messages", "message_id", false, "idx_conversation_skill_loads_message_id", KeepHistory)
         .with_aggregate_scope("parent.conversation_id = child.conversation_id"),
+    text_ref!("conversation_skill_pins", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_skill_pins_conversation", Cascade),
+    text_ref!("skill_selection_event", "conversation_id" => "conversations", "conversation_id", false, "idx_skill_selection_event_conversation", Cascade),
     text_ref!("conversation_mcp_servers", "conversation_id" => "conversations", "conversation_id", false, "idx_conversation_mcp_servers_conversation_id", Cascade),
     text_ref!("conversation_mcp_servers", "mcp_server_id" => "mcp_servers", "mcp_server_id", false, "idx_conversation_mcp_servers_mcp_server_id", Cascade)
         .with_parent_predicate("parent.deleted_at IS NULL"),

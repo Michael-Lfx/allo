@@ -1090,6 +1090,34 @@ pub(super) async fn build(
     } else {
         None
     };
+    let mut host_catalog_skills = match crate::catalog_bridge::load_host_catalog_skills(
+        deps.skill_manager.paths().as_ref(),
+    )
+    .await
+    {
+        Ok(skills) => skills,
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to load Flowy catalog skills for Nomi");
+            Vec::new()
+        }
+    };
+    if let Some(discovery) = deps.skill_discovery.as_ref() {
+        match discovery.list_invocation_overrides().await {
+            Ok(overrides) => {
+                let mapped: Vec<(String, bool)> = overrides
+                    .into_iter()
+                    .map(|row| (row.skill_id, row.allow_model_auto != 0))
+                    .collect();
+                crate::catalog_bridge::apply_invocation_overrides(
+                    &mut host_catalog_skills,
+                    &mapped,
+                );
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "failed to load skill invocation overrides");
+            }
+        }
+    }
     let host_wiring = NomiHostWiring {
         #[cfg(feature = "browser-use")]
         browser_lane_binding,
@@ -1103,6 +1131,7 @@ pub(super) async fn build(
             .map(|oauth| -> Arc<dyn nomi_mcp::manager::McpOAuthRefresher> {
                 Arc::new(NomiMcpOAuthRefresher::new(oauth.clone()))
             }),
+        host_catalog_skills,
     };
     let agent = NomiAgentManager::new_with_search_provider(
         ctx.conversation_id,

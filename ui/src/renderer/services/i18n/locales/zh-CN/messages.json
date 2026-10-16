@@ -171,7 +171,9 @@
   "skillLoad": {
     "loaded": "已加载 {{name}}",
     "details": "查看已加载的说明",
-    "version": "版本 {{version}}"
+    "version": "版本 {{version}}",
+    "auto": "自动",
+    "pin": "钉住本会话"
   },
   "responseSentSuccessfully": "响应已成功发送",
   "confirmation": {

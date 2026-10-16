@@ -418,6 +418,7 @@ pub struct AgentBootstrap {
     extract_coordinator: ExtractCoordinatorBinding,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
+    host_catalog_skills: Vec<nomi_skills::types::SkillMetadata>,
     goal: Option<crate::goal::runtime::GoalSpec>,
     /// Host composition switch for embedded AgentExecution. CLI
     /// and standalone embeddings default to installing it; backend sessions
@@ -517,6 +518,7 @@ impl AgentBootstrap {
             extract_coordinator: ExtractCoordinatorBinding::LocalDefault,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
+            host_catalog_skills: Vec::new(),
             goal: None,
             install_embedded_agent_execution: true,
             approval_manager: None,
@@ -684,6 +686,12 @@ impl AgentBootstrap {
     /// Add extra directories to scan for skills.
     pub fn extra_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.extra_skill_dirs = dirs;
+        self
+    }
+
+    /// Session-authorized Flowy catalog skills (metadata + body for the Skill tool).
+    pub fn host_catalog_skills(mut self, skills: Vec<nomi_skills::types::SkillMetadata>) -> Self {
+        self.host_catalog_skills = skills;
         self
     }
 
@@ -921,13 +929,17 @@ impl AgentBootstrap {
         };
         let has_mcp = mcp_manager.is_some();
 
-        let skills = nomi_skills::loader::load_all_skills(
+        let disk_skills = nomi_skills::loader::load_all_skills(
             cwd_path,
             &self.extra_skill_dirs,
             false,
             mcp_manager.as_deref(),
         )
         .await;
+        let skills = nomi_skills::loader::merge_host_catalog_skills(
+            disk_skills,
+            std::mem::take(&mut self.host_catalog_skills),
+        );
 
         let agents_snapshot = crate::agents_md::resolve_agents_md(
             cwd_path,
@@ -1040,7 +1052,7 @@ impl AgentBootstrap {
         };
         registry.register(Box::new(
             crate::skill_tool::SkillTool::with_invocation_runner(
-                skills_arc,
+                Arc::clone(&skills_arc),
                 cwd.to_string(),
                 skill_checker,
                 None,
@@ -1048,6 +1060,11 @@ impl AgentBootstrap {
             )
             .with_process_supervisor(Arc::clone(&process_supervisor)),
         ));
+        if crate::skill_search_tool::should_register_skill_search(skills_arc.len()) {
+            registry.register(Box::new(crate::skill_search_tool::SkillSearchTool::new(
+                Arc::clone(&skills_arc),
+            )));
+        }
         if self.install_embedded_agent_execution {
             registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(
                 Arc::clone(&local_invocation_runner),

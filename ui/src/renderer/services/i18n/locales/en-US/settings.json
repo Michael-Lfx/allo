@@ -75,7 +75,11 @@
     "detailLoadFailed": "Could not load this skill file.",
     "detailLoadFailedHint": "The file may have moved or is no longer readable. Refresh the skill list and try again.",
     "tagsSaved": "Tags saved",
-    "tagsSaveFailed": "Failed to save tags"
+    "tagsSaveFailed": "Failed to save tags",
+    "allowModelAuto": "Allow model auto-invoke",
+    "allowModelAutoHint": "When on, the agent may load this skill from its description without a / selection.",
+    "invocationSaved": "Invocation setting saved",
+    "invocationSaveFailed": "Failed to save invocation setting"
   },
   "capabilityHub": {
     "navLabel": "Capability Hub",

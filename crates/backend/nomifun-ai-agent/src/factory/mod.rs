@@ -222,6 +222,8 @@ pub struct AgentFactoryDeps {
     /// built first (see [`delegate::DelegateSinkProviderSlot`]).
     pub delegate_sink_provider: Option<delegate::DelegateSinkProviderSlot>,
     pub skill_manager: Arc<AcpSkillManager>,
+    /// SQLite skill discovery (invocation overrides applied at bootstrap).
+    pub skill_discovery: Option<Arc<dyn nomifun_db::ISkillDiscoveryRepository>>,
     pub remote_agent_repo: Arc<dyn IRemoteAgentRepository>,
     pub provider_repo: Arc<dyn IProviderRepository>,
     /// Authoritative per-model rows (protocol/context-limit overrides for the

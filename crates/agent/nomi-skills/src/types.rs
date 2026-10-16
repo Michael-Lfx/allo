@@ -27,6 +27,12 @@ pub struct FrontmatterData {
     pub user_invocable: Option<BoolOrString>,
     #[serde(rename = "hide-from-slash-command-tool")]
     pub hide_from_model_invocation: Option<BoolOrString>,
+    #[serde(rename = "disable-model-invocation")]
+    pub disable_model_invocation: Option<BoolOrString>,
+    #[serde(rename = "invocation-policy")]
+    pub invocation_policy: Option<String>,
+    #[serde(rename = "catalog-id")]
+    pub catalog_id: Option<String>,
     /// Raw hooks YAML — converted to serde_json::Value in SkillMetadata (Phase 11 will parse fully)
     pub hooks: Option<serde_yaml::Value>,
     // No serde(flatten) + HashMap — known serde_yaml bug with that combination
@@ -64,16 +70,43 @@ pub struct ParsedMarkdown {
 }
 
 /// Skill execution context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionContext {
+    #[default]
     Inline,
     Fork,
 }
 
+/// How a skill may be activated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InvocationPolicy {
+    /// Appear in the L1 catalog; the model may call the Skill tool.
+    #[default]
+    ModelAuto,
+    /// Only the user `/` / chip path may load this skill.
+    SlashOnly,
+}
+
+impl InvocationPolicy {
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("/invoke") | Some("slash-only") | Some("user-only") | Some("@invoke") => {
+                Self::SlashOnly
+            }
+            _ => Self::ModelAuto,
+        }
+    }
+
+    pub fn is_slash_only(self) -> bool {
+        matches!(self, Self::SlashOnly)
+    }
+}
+
 /// Where the skill file originates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SkillSource {
     /// `<config_dir>/nomi/skills/`
+    #[default]
     User,
     /// .nomi/skills/ (project-level)
     Project,
@@ -88,8 +121,9 @@ pub enum SkillSource {
 }
 
 /// How the skill was discovered during loading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoadedFrom {
+    #[default]
     Skills,
     CommandsDeprecated,
     Managed,
@@ -98,7 +132,7 @@ pub enum LoadedFrom {
 }
 
 /// Normalized skill metadata, derived from FrontmatterData.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SkillMetadata {
     pub name: String,
     pub display_name: Option<String>,
@@ -128,4 +162,25 @@ pub struct SkillMetadata {
     pub content_length: usize,
     /// Directory containing the skill file
     pub skill_root: Option<String>,
+    /// Source-qualified Flowy catalog identity (`builtin:officecli`).
+    pub catalog_id: Option<String>,
+    pub invocation_policy: InvocationPolicy,
+    /// True when the skill ships hooks, scripts, or privileged tools.
+    pub requires_confirmation: bool,
+}
+
+/// True when a skill should require a human confirmation before implicit load.
+pub fn skill_requires_confirmation(
+    hooks_raw: &Option<serde_json::Value>,
+    allowed_tools: &[String],
+    has_embedded_shell: bool,
+    skill_root: Option<&str>,
+) -> bool {
+    if hooks_raw.is_some() || !allowed_tools.is_empty() || has_embedded_shell {
+        return true;
+    }
+    let Some(root) = skill_root else {
+        return false;
+    };
+    std::path::Path::new(root).join("scripts").is_dir()
 }

@@ -1,6 +1,6 @@
 use super::types::{
-    BoolOrString, EffortLevel, ExecutionContext, FrontmatterData, LoadedFrom, ParsedMarkdown,
-    SkillMetadata, SkillSource, StringOrNumber, StringOrVec,
+    BoolOrString, EffortLevel, ExecutionContext, FrontmatterData, InvocationPolicy, LoadedFrom,
+    ParsedMarkdown, SkillMetadata, SkillSource, StringOrNumber, StringOrVec,
 };
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,10 @@ pub fn parse_skill_fields(
         .unwrap_or_default();
 
     let user_invocable = parse_bool(&frontmatter.user_invocable, true);
-    let disable_model_invocation = parse_bool(&frontmatter.hide_from_model_invocation, false);
+    let invocation_policy = InvocationPolicy::parse(frontmatter.invocation_policy.as_deref());
+    let disable_model_invocation = parse_bool(&frontmatter.hide_from_model_invocation, false)
+        || parse_bool(&frontmatter.disable_model_invocation, false)
+        || invocation_policy.is_slash_only();
 
     let execution_context = match frontmatter.context.as_deref() {
         Some("fork") => ExecutionContext::Fork,
@@ -67,6 +70,20 @@ pub fn parse_skill_fields(
     let hooks_raw = frontmatter.hooks.as_ref().and_then(yaml_value_to_json);
 
     let content_length = content.len();
+    let catalog_id = frontmatter
+        .catalog_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    let has_embedded_shell =
+        loaded_from != LoadedFrom::Mcp && crate::shell::has_embedded_shell_commands(content);
+    let requires_confirmation = crate::types::skill_requires_confirmation(
+        &hooks_raw,
+        &allowed_tools,
+        has_embedded_shell,
+        skill_root,
+    );
 
     SkillMetadata {
         name: resolved_name.to_owned(),
@@ -91,6 +108,9 @@ pub fn parse_skill_fields(
         content: content.to_owned(),
         content_length,
         skill_root: skill_root.map(str::to_owned),
+        catalog_id,
+        invocation_policy,
+        requires_confirmation,
     }
 }
 

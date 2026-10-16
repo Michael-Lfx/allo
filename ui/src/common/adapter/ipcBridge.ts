@@ -736,6 +736,31 @@ export const conversation = {
       `/api/conversations/${p.conversation_id}/messages/${p.message_id}/knowledge-writeback/retry`,
     (p) => ({ attempt_id: p.attempt_id })
   ),
+  listSkillPins: httpGet<string[], { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/skill-pins`
+  ),
+  setSkillPin: httpPut<
+    void,
+    { conversation_id: ConversationId; skill_id: string; pinned: boolean }
+  >(
+    (p) => `/api/conversations/${p.conversation_id}/skill-pins`,
+    (p) => ({ skill_id: p.skill_id, pinned: p.pinned })
+  ),
+  listSkillSelectionEvents: httpGet<
+    Array<{
+      conversation_id: string;
+      turn: number;
+      query_hash: string;
+      candidate_ids: string;
+      model_loaded_ids: string;
+      method: string;
+      listing_truncated: number;
+      applied_to_l1: number;
+      latency_ms: number;
+      created_at: number;
+    }>,
+    { conversation_id: ConversationId }
+  >((p) => `/api/conversations/${p.conversation_id}/skill-selection-events`),
   activeCount: httpGet<{ count: number }>('/api/conversations/active-count'),
   sendMessage: {
     provider: () => {},
@@ -1664,6 +1689,13 @@ export const fs = {
     (p) => `/api/skills/${encodeURIComponent(p.skill_name)}/tags`,
     (p) => ({ audience_tags: p.audience_tags, scenario_tags: p.scenario_tags })
   ),
+  listSkillInvocation: httpGet<Array<{ skill_id: string; allow_model_auto: number; updated_at: number }>, void>(
+    '/api/skills/invocation'
+  ),
+  setSkillInvocation: httpPut<
+    { skill_id: string; allow_model_auto: number; updated_at: number },
+    { skill_id: string; allow_model_auto: boolean }
+  >('/api/skills/invocation', (p) => ({ skill_id: p.skill_id, allow_model_auto: p.allow_model_auto })),
   getSkillPaths: httpGet<{ user_skills_dir: string; builtin_skills_dir: string }, void>('/api/skills/paths'),
   getCustomExternalPaths: httpGet<Array<{ name: string; path: string }>, void>('/api/skills/external-paths'),
   addCustomExternalPath: httpPost<void, { name: string; path: string }>('/api/skills/external-paths'),

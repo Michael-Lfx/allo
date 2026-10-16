@@ -881,6 +881,10 @@ pub fn build_conversation_state(
     conversation_service.with_goal_repo(Arc::new(nomifun_db::SqliteGoalRepository::new(
         services.database.pool().clone(),
     )));
+    let skill_discovery = Arc::new(nomifun_db::SqliteSkillDiscoveryRepository::new(
+        services.database.pool().clone(),
+    ));
+    conversation_service.with_skill_discovery(skill_discovery.clone());
     // Wire the LLM auto-title completer: a new conversation's first user
     // message is summarized into a short work-content title. The backend CAS
     // writes the cleaned first-message fallback before this completer runs, so
@@ -2514,6 +2518,9 @@ pub async fn build_extension_states(
         market_package_preset_installer: None,
         skill_tag_repo,
         builtin_skill_tags,
+        skill_discovery: Some(Arc::new(nomifun_db::SqliteSkillDiscoveryRepository::new(
+            services.database.pool().clone(),
+        ))),
     };
 
     (ext_state, hub_state, skill_state)
