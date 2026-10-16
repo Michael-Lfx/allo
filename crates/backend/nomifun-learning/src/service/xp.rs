@@ -152,7 +152,7 @@ impl LearningService {
     /// 落账 + 桥的唯一写点：条款先入（违约即错误，绝不写表），INSERT OR
     /// IGNORE 兜幂等锚，净入账非零才过桥（0 值事件只落账不过桥）。桥失败
     /// 只记 warn——学习账不回滚，companion 余额滞后由下次结算自然补偿。
-    async fn record_settlement(
+    pub(super) async fn record_settlement(
         &self,
         user_id: &UserId,
         course_id: &str,
@@ -392,19 +392,31 @@ impl LearningService {
         user_id: &UserId,
         course_id: &str,
     ) -> Result<i64, AppError> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_xp_events e \
+        Ok(self.quiz_settled_nodes(user_id, course_id).await?.len() as i64)
+    }
+
+    /// quiz 触发节点清单（q2 选题输入）：与 [`Self::quiz_settled_count`]
+    /// 同语义，返回**追加序**（先学先测）的节点 id——q2 载体按它出题。
+    pub(super) async fn quiz_settled_nodes(
+        &self,
+        user_id: &UserId,
+        course_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT e.node_id FROM learning_xp_events e \
              WHERE e.user_id = ? AND e.course_id = ? AND e.kind = 'node-completed' \
+               AND e.node_id IS NOT NULL \
                AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
                  WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
-                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid)",
+                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid) \
+             ORDER BY e.rowid",
         )
         .bind(user_id.as_str())
         .bind(course_id)
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        Ok(count.max(0))
+        Ok(rows)
     }
 
     /// 每课程 N/K 读数（`GET /courses/{id}/quiz/progress`；读数面非门禁）。
@@ -433,25 +445,6 @@ impl LearningService {
             trigger_count: QUIZ_TRIGGER_SETTLEMENTS,
             due: settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
         })
-    }
-
-    /// quiz 开测命令骨架（q1 占位，载体随 q2）：due=false = Conflict 附
-    /// N/K；due=true = 501 Not Implemented 占位（q2 接回合载体后替换）。
-    pub async fn quiz_start(
-        &self,
-        user_id: &UserId,
-        course_id: &LearningCourseId,
-    ) -> Result<QuizProgressView, AppError> {
-        let progress = self.quiz_progress(user_id, course_id).await?;
-        if !progress.due {
-            return Err(AppError::Conflict(format!(
-                "quiz not due: {}/{} settlements since last quiz",
-                progress.settled_count, progress.trigger_count
-            )));
-        }
-        Err(AppError::NotImplemented(
-            "quiz round carrier lands with q2".into(),
-        ))
     }
 
 }

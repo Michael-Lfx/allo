@@ -11,13 +11,16 @@ use nomifun_common::{
     UuidV7Error,
 };
 use serde::Deserialize;
+use serde_json::Value;
+use std::collections::HashMap;
 use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, QuizProgressView,
+    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, QuizGradeFeedback,
+    QuizProgressView, QuizRoundReport, QuizRoundView,
     RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
@@ -116,6 +119,14 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(quiz_progress),
         )
         .route("/api/learning/courses/{id}/quiz/start", post(quiz_start))
+        .route(
+            "/api/learning/courses/{id}/quiz/rounds/{round_id}/grade",
+            post(quiz_grade),
+        )
+        .route(
+            "/api/learning/courses/{id}/quiz/rounds/{round_id}/complete",
+            post(quiz_complete),
+        )
         .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
@@ -687,16 +698,63 @@ async fn quiz_progress(
     )))
 }
 
-/// quiz 开测命令（q1 骨架）：due=false = Conflict 附 N/K；due=true =
-/// 501 Not Implemented 占位（回合载体随 q2 接）。
+/// quiz 开测命令（q2 载体落位）：due 门（Conflict 附 N/K）→ 选题 → 回合
+/// 行 → 脱敏题单（判底零字段）。
 async fn quiz_start(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-) -> Result<Json<ApiResponse<QuizProgressView>>, AppError> {
+) -> Result<Json<ApiResponse<QuizRoundView>>, AppError> {
     let id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.quiz_start(&user.id, &id).await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct QuizGradeRequest {
+    /// 题 ULID（须在回合计划内）。
+    activity_id: String,
+    /// 学习者作答（形状随题型，与课时作答同约定）。
+    response: Value,
+}
+
+/// 逐题判分（q2，纯读零落账）：判底（answer/explanation）只随本反馈下发。
+async fn quiz_grade(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, round_id)): Path<(String, String)>,
+    Json(request): Json<QuizGradeRequest>,
+) -> Result<Json<ApiResponse<QuizGradeFeedback>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .quiz_grade(&user.id, &id, &round_id, &request.activity_id, &request.response)
+            .await?,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+struct QuizCompleteRequest {
+    /// 全卷作答：{activity_id: response}（quiz 必作答，缺题拒绝）。
+    answers: HashMap<String, Value>,
+}
+
+/// 全卷结算（q2）：逐覆盖节点 settle_quiz 分级落账（同日折叠不计薪）+
+/// 回合行首写为终。
+async fn quiz_complete(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path((id, round_id)): Path<(String, String)>,
+    Json(request): Json<QuizCompleteRequest>,
+) -> Result<Json<ApiResponse<QuizRoundReport>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .quiz_complete(&user.id, &id, &round_id, &request.answers)
+            .await?,
     )))
 }
 

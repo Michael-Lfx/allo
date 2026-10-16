@@ -1996,6 +1996,76 @@ pub struct QuizProgressView {
     pub due: bool,
 }
 
+/// quiz 回合单题投影（q2，**判底零字段**：无 answer/explanation——解析与
+/// 答案只随 [`QuizGradeFeedback`] 判分后下发；learnhub SessionQuestionView
+/// 同红线）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundQuestionView {
+    /// 题 ULID（grade/complete 的引用键）。
+    pub activity_id: LearningActivityId,
+    pub kind: ActivityKind,
+    pub prompt: String,
+    /// 选择题选项（非选择型为空）。
+    pub options: Vec<String>,
+    /// 匹配题右列候选（打乱后；非匹配型为空）。
+    #[serde(default)]
+    pub matches: Vec<String>,
+    /// 题目所属学习节点（quiz 跨节点会话逐题携带）。
+    pub node_id: LearningLessonId,
+    pub node_name: String,
+}
+
+/// quiz 回合视图（q2 start 出参：情境快照 + 脱敏题单）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundView {
+    /// 回合 ULID（grade/complete 的回合键）。
+    pub round_id: String,
+    pub course_id: LearningCourseId,
+    /// active | completed | abandoned。
+    pub status: String,
+    /// 触发时刻的 N/K 读数（结算后自然清零，读数面非门禁）。
+    pub settled_count: i64,
+    pub trigger_count: i64,
+    /// 题量上限读数（q1 常量集中表）。
+    pub budget: usize,
+    pub questions: Vec<QuizRoundQuestionView>,
+}
+
+/// 单题判分反馈（q2：解析与判底揭示的唯一口；`evaluate` 确定性判分零 LLM，
+/// 纯判分不落账——结算在 complete 全卷面）。learnhub GradeFeedback 同形。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizGradeFeedback {
+    pub activity_id: LearningActivityId,
+    /// correct | incorrect。
+    pub correct: bool,
+    /// 判底揭示（判分已定，揭示不破持答案红线）。
+    pub answer: Value,
+    /// 解析（判分后下发）。
+    pub explanation: String,
+}
+
+/// quiz 回合逐节点对账行（q2）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundNodeReport {
+    pub node_id: LearningLessonId,
+    pub node_name: String,
+    pub answered: i64,
+    pub correct: i64,
+    /// 本节点净入账；`None` = 同日已结算折叠（coverage 保持不重复计薪，
+    /// learnhub quiz_settled_on_day 语义）。
+    pub earned_xp: Option<i64>,
+}
+
+/// quiz 回合结算报告（q2 complete 出参）。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizRoundReport {
+    pub round_id: String,
+    pub course_id: LearningCourseId,
+    /// 全卷净入账（Σ 逐节点；折叠不计薪）。
+    pub earned_xp: i64,
+    pub covered: Vec<QuizRoundNodeReport>,
+}
+
 /// 挂载回合摘要（j08）：status = mounted（有待挂并已落盘）/ skipped
 /// （待挂集空——零 LLM 零写）。挂载是导航事实：计数面只有条目统计。
 #[derive(Debug, Clone, Serialize)]
