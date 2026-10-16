@@ -1814,7 +1814,7 @@ impl LearningService {
 
     /// Every question already present in a lesson, ready for the
     /// single-addition generation prompt's novelty requirement.
-    async fn existing_lesson_questions(
+    pub(super) async fn existing_lesson_questions(
         &self,
         lesson_id: &LearningLessonId,
     ) -> Result<Vec<crate::generation::ExistingLessonQuestion>, AppError> {

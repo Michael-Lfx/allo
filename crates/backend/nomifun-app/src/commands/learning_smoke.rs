@@ -898,20 +898,25 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `learning-smoke quiz`（q2）：quiz 回合全链路冒烟（零 LLM，纯银行旧题）。
-/// 从零临时库种一门 K 节点课程（est 25/节点，各带一道单选），走真实管线
-/// 逐节点结算后开测，机械判据（失败非零退出）：
+/// `learning-smoke quiz`（q2 载体 + q3 质量增量）：quiz 回合全链路冒烟（零
+/// provider 依赖——变式生成无 provider 时如实跳过）。从零临时库种一门 K 节点
+/// 课程（est 25/节点，各带一道单选），走真实管线逐节点结算后开测，机械判据
+/// （失败非零退出）：
 /// ① K−1 结算时 start Conflict（附 N/K）、恰 K 到期；
-/// ② start 投影判底零字段（脱敏红线）；grade 对/错判分并下发判底；
-/// ③ complete 逐节点分级落账——full/partial 各至少一笔、恒非负、账本
-///    总额与回合行对账一致（盘面复验）；
-/// ④ 同日折叠——第二轮（同计划）全折叠零计薪，账本零新增；
-/// ⑤ 首写为终——重复 complete Conflict。
+/// ② 弱先排序——末节点首卡推成错答（escalation 档）后必须先出；无 provider
+///    变式如实跳过（bank-only）；start 投影判底零字段；grade 判分并下发判底；
+/// ③ complete 逐节点分级落账——full/partial 各至少一笔、恒非负、账本总额与
+///    回合行对账一致（盘面复验）；
+/// ④ 校准读面——被真实推进卡的校准点带预测 R，分桶非空；
+/// ⑤ 同日折叠——第二轮（同计划）全折叠零计薪，账本零新增；
+/// ⑥ 首写为终——重复 complete Conflict。
+/// 变式的 LLM 调用落观测档案（ArchivingCompleter；有 provider 时生效）。
 async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     use std::collections::HashMap;
 
     let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
-    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, false).await?;
+    // 变式站的 LLM 调用落观测档案（structure 冒烟同纪律）：挂 ArchivingCompleter。
+    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, true).await?;
     let owner = wiring.owner.clone();
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
@@ -1001,11 +1006,58 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         "K−1 settlements must not be due: {error:?}"
     );
     complete(lesson_ids.last().expect("k ≥ 1")).await?;
-    println!("[1/5] trigger gate: not due at {}/K, due at K", k - 1);
+    println!("[1/6] trigger gate: not due at {}/K, due at K", k - 1);
 
-    // ② 开测脱敏 + 判分面。
+    // ② 弱先：把末节点的首卡推成「最近一次真实推进 = 错答」（escalation 档），
+    // 开测后它必须先出（交错序第 1 槽首位）。无 provider 时变式如实跳过
+    // （每节点只出旧题——learnhub「失败顺延」的回合内化）。
+    let weak_lesson = lesson_ids[(k as usize - 1)].clone();
+    let weak_item: String = sqlx::query_scalar(
+        "SELECT r.review_item_id FROM learning_review_items r \
+         JOIN learning_activities a ON a.activity_id = r.activity_id \
+         WHERE a.lesson_id = ? ORDER BY r.id LIMIT 1",
+    )
+    .bind(&weak_lesson)
+    .fetch_one(&wiring.pool)
+    .await?;
+    sqlx::query("UPDATE learning_review_items SET due_at = ? WHERE review_item_id = ?")
+        .bind(nomifun_common::now_ms() - 1_000)
+        .bind(&weak_item)
+        .execute(&wiring.pool)
+        .await?;
+    let weak_answer = service
+        .answer_review(
+            &nomifun_common::LearningReviewItemId::parse(&weak_item)?,
+            &owner,
+            serde_json::json!("A"),
+            false,
+            Some(1_000),
+        )
+        .await?;
+    anyhow::ensure!(
+        !weak_answer.correct,
+        "wrong answer must grade incorrect (auto Again = escalation sample)"
+    );
     let round = service.quiz_start(&owner, &course).await?;
-    anyhow::ensure!(round.questions.len() == k as usize, "每覆盖节点 1 题");
+    anyhow::ensure!(
+        round.questions[0].node_id.as_str() == weak_lesson,
+        "escalated node must come first, got {}",
+        round.questions[0].node_id
+    );
+    anyhow::ensure!(
+        round.questions.len() == k as usize,
+        "no provider: bank-only plan (one question per node), got {}",
+        round.questions.len()
+    );
+    let plan_json_started: String =
+        sqlx::query_scalar("SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?")
+            .bind(&round.round_id)
+            .fetch_one(&wiring.pool)
+            .await?;
+    anyhow::ensure!(
+        !plan_json_started.contains("\"origin\":\"variant\""),
+        "no provider: variants must be skipped honestly"
+    );
     let view_json = serde_json::to_string(&round)?;
     anyhow::ensure!(
         !view_json.contains("explanation") && !view_json.contains("\"answer\""),
@@ -1024,12 +1076,36 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         graded.correct && graded.answer == serde_json::json!("B"),
         "grade must reveal the judge bottom after grading"
     );
-    println!("[2/5] start sanitized (no answer/explanation), grade reveals on feedback");
+    println!(
+        "[2/6] weak-first (escalated node first), variants skipped honestly without provider, sanitized start"
+    );
 
-    // ③ 全卷作答：前 4 题对（full 3×4 = 12）、后 2 题错（partial 0）。
+    // ③ 全卷作答：弱节点与其前一节点的题答错（partial 0×2）、其余全对
+    //（full 3×4 = 12）。断言按 activity→node 定位（计划序是弱先序）。
+    let node_of_activity = |activity: &str| -> String {
+        round
+            .questions
+            .iter()
+            .find(|q| q.activity_id.as_str() == activity)
+            .map(|q| q.node_id.to_string())
+            .expect("planned activity")
+    };
+    let wrong_activities: Vec<String> = vec![
+        round
+            .questions
+            .iter()
+            .find(|q| q.node_id.as_str() == weak_lesson)
+            .map(|q| q.activity_id.to_string())
+            .expect("weak node planned"),
+        activity_ids[(k as usize - 2)].clone(),
+    ];
     let mut answers = HashMap::new();
-    for (index, activity) in activity_ids.iter().enumerate() {
-        let response = if index < 4 { "B" } else { "A" };
+    for activity in &activity_ids {
+        let response = if wrong_activities.contains(activity) {
+            "A"
+        } else {
+            "B"
+        };
         answers.insert(activity.clone(), serde_json::json!(response));
     }
     let report = service
@@ -1044,10 +1120,22 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         report.covered.iter().all(|node| node.earned_xp.unwrap_or(0) >= 0),
         "quiz settlements are never negative"
     );
-    anyhow::ensure!(
-        report.covered[0].earned_xp == Some(3) && report.covered[5].earned_xp == Some(0),
-        "tier check: full 3 / partial 0 expected"
-    );
+    for entry in &report.covered {
+        let expected = if wrong_activities
+            .iter()
+            .any(|activity| node_of_activity(activity) == entry.node_id.to_string())
+        {
+            Some(0)
+        } else {
+            Some(3)
+        };
+        anyhow::ensure!(
+            entry.earned_xp == expected,
+            "tier check for node {}: expected {expected:?}, got {:?}",
+            entry.node_id,
+            entry.earned_xp
+        );
+    }
     // 盘面复验：账本与回合行从磁盘重读，对账服务面读数（repair 模式）。
     let (events, ledger_total): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
@@ -1069,7 +1157,20 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         status == "completed" && row_earned == 12,
         "round row must be completed with earned 12 (got {status}/{row_earned})"
     );
-    println!("[3/5] settled per node: 4 full (3 xp) + 2 partial (0 xp, never negative); ledger re-read matches");
+    println!("[3/6] settled per node: 4 full (3 xp) + 2 partial (0 xp, never negative); ledger re-read matches");
+
+    // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
+    // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
+    let calibration = service.quiz_calibration(&owner).await?;
+    anyhow::ensure!(
+        calibration.iter().any(|bin| bin.count >= 1),
+        "calibration bins must carry the pushed card's point"
+    );
+    println!(
+        "[4/6] calibration: {} bin(s), top count {} (predicted R vs actual)",
+        calibration.len(),
+        calibration.iter().map(|bin| bin.count).max().unwrap_or(0)
+    );
 
     // ④ 同日折叠：第二轮（同计划直插 active）全对作答 → 全折叠零计薪。
     let plan_json: String = sqlx::query_scalar(
@@ -1123,8 +1224,8 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         matches!(again, nomifun_common::AppError::Conflict(_)),
         "repeat complete must be rejected (first write wins): {again:?}"
     );
-    println!("[4/5] same-day fold (zero double-pay) confirmed");
-    println!("[5/5] first-write-wins: repeat complete rejected");
+    println!("[5/6] same-day fold (zero double-pay) confirmed");
+    println!("[6/6] first-write-wins: repeat complete rejected");
 
     let progress = service.quiz_progress(&owner, &course).await?;
     println!(
