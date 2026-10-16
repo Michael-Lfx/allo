@@ -11,13 +11,12 @@ use std::sync::Arc;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgba, RgbaImage};
-use nomi_process_runtime::hidden_command;
-use tokio::process::Command;
+use nomi_process_runtime::{HiddenCommand, hidden_command};
 
 use crate::error::{VimaxError, VimaxResult};
 
 /// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
-fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
+fn ffmpeg_command(bin: impl AsRef<Path>) -> HiddenCommand {
     hidden_command(bin.as_ref())
 }
 

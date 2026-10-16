@@ -275,14 +275,16 @@ impl PlanProducer for LlmPlanProducer {
                 sink,
             )
             .await?;
-        if let Some(plan) = parse_plan_opt(&raw) {
-            return Ok(plan);
-        }
-        tracing::warn!(raw_len = raw.len(), "planner output invalid; using one-step plan");
-        if let Some(sink) = sink {
-            sink(LeadDeltaKind::Text, PLAN_FALLBACK_NOTICE);
-        }
-        Ok(fallback_plan(goal))
+        let plan = if let Some(plan) = parse_plan_opt(&raw) {
+            plan
+        } else {
+            tracing::warn!(raw_len = raw.len(), "planner output invalid; using one-step plan");
+            if let Some(sink) = sink {
+                sink(LeadDeltaKind::Text, PLAN_FALLBACK_NOTICE);
+            }
+            fallback_plan(goal)
+        };
+        Ok(canonicalize_plan_for_goal(goal, plan))
     }
 
     async fn adjust(
@@ -322,7 +324,7 @@ fn pick_lead(participants: &[ExecutionParticipant]) -> Option<ProviderWithModel>
 
 const PLAN_SYSTEM: &str = r#"You are the lead Agent planning one AgentExecution.
 Return ONLY strict JSON with this shape:
-{"steps":[{"title":"...","spec":"...","profile":null,"kind":"agent","agent_mode":"normal","depends_on":[],"participant_index":0,"assignment_rationale":"...","role":"...","tool_policy":"full","fanout_group":null,"control_policy":null,"failure_policy":"fail_execution"}]}
+{"steps":[{"title":"...","spec":"...","profile":null,"kind":"agent","agent_mode":"normal","depends_on":[],"participant_index":0,"assignment_rationale":"...","role":"...","tool_policy":"files_shell","fanout_group":null,"control_policy":null,"failure_policy":"skip_dependents"}]}
 
 Rules:
 - depends_on contains only zero-based indices of earlier steps; keep the DAG acyclic and minimal.
@@ -332,16 +334,20 @@ Rules:
 - kind=judge is a no-Agent ballot controller. Its control_policy is {"kind":"judge","aggregation":"mean","candidate_count":3} or aggregation=borda. It depends on Agent judges that score candidates.
 - kind=loop is a no-Agent iteration controller. Its control_policy is {"kind":"loop","max_iterations":4,"stop":{"kind":"max_iterations"}}, predicate(done_marker), stable(quiet_rounds), or approved. It has exactly one body dependency.
 - Controller steps have agent_mode=null and participant_index=null. Agent steps have control_policy=null and a participant_index when a particular participant is preferred.
-- Use failure_policy=skip_dependents only for a gate whose failure must prevent unsafe downstream work; otherwise fail_execution.
+- Default failure_policy=skip_dependents so a failed step only skips its dependents; independent work continues. Use fail_execution only for the final deliverable, a synthesis merge, or a safety/destructive gate.
 - Assign cheap/fast participants to simple or bulk work and stronger participants to difficult reasoning. Do not route everything to the strongest model.
 - role is an optional short human-readable description of the work, in the goal's language. It is never a permission value.
-- tool_policy is exactly full, read_only, or read_shell. Use read_only for research/review that needs Read/Grep/Glob/web_search/web_extract without modifying files or running a shell, read_shell for verification/testing that also needs Bash, and full for implementation or any task that must modify files. Controller steps use full. A policy only narrows the caller's inherited authority.
+- tool_policy is exactly full, files_shell, read_only, or read_shell. A policy only narrows the caller's inherited authority.
+- If the spec names a host pipeline (briefing_create, briefing_status, news-briefing, art-motion, nomi_delegate), tool_policy MUST be full. Never give that work read_only — those tools will be missing.
+- If the GOAL is sourced news briefing / 新闻口播 / news+TTS video, return exactly one Agent step with tool_policy=full whose spec tells the worker to call briefing_create and briefing_status. Do not invent a research/write/render/art-motion DAG, and never assign that work read_only. art-motion is only an optional follow-on after briefing produces narration audio.
+- Use files_shell for implementation that only needs files and a shell (Read/Write/Edit/Grep/Glob/DirTree/Bash/web_search). Use read_only for research/review that must not modify files and does not need host pipelines. Use read_shell for verification/testing that also needs Bash. Controller steps use full.
+- Prefer calling an already-available host primitive over rebuilding the same pipeline as extra DAG steps.
 - title is short; spec is the complete instruction.
 - Use advanced patterns only when they materially improve the result.
 "#;
 
 
-const ADJUST_SYSTEM: &str = r#"You are revising an existing AgentExecution from a user instruction. Return ONLY strict JSON: {"steps":[...]}. Each item is either {"type":"keep","step_id":"existing-id"} or {"type":"new","step":<the same typed step object used by planning>,"dependencies":[{"type":"existing","step_id":"..."}|{"type":"new","index":0}]}. Keep completed work that remains useful, omit obsolete work, add only needed work, and keep the resulting graph acyclic. Never invent an existing id. A new Agent step role is an optional short human-readable work description and never grants tools. Set its explicit tool_policy to full, read_only, or read_shell using the same rules as planning."#;
+const ADJUST_SYSTEM: &str = r#"You are revising an existing AgentExecution from a user instruction. Return ONLY strict JSON: {"steps":[...]}. Each item is either {"type":"keep","step_id":"existing-id"} or {"type":"new","step":<the same typed step object used by planning>,"dependencies":[{"type":"existing","step_id":"..."}|{"type":"new","index":0}]}. Keep completed work that remains useful, omit obsolete work, add only needed work, and keep the resulting graph acyclic. Never invent an existing id. A new Agent step role is an optional short human-readable work description and never grants tools. Set its explicit tool_policy to full, files_shell, read_only, or read_shell using the same rules as planning. Specs that name briefing_create, news-briefing, or art-motion must use full. A sourced news briefing / 新闻口播 goal must stay a single full briefing_create step rather than a research DAG. Default failure_policy is skip_dependents except for the final deliverable or a safety gate."#;
 
 type DescriptionMap = HashMap<(String, String), String>;
 
@@ -431,17 +437,80 @@ pub(crate) fn parse_plan_opt(raw: &str) -> Option<PlannedExecution> {
 }
 
 fn fallback_plan(goal: &str) -> PlannedExecution {
+    canonicalize_plan_for_goal(
+        goal,
+        PlannedExecution {
+            steps: vec![PlannedExecutionStep {
+                title: truncate_title(goal),
+                spec: goal.trim().to_owned(),
+                profile: None,
+                kind: ExecutionStepKind::Agent,
+                agent_mode: Some(AgentStepMode::Normal),
+                depends_on: vec![],
+                participant_index: Some(0),
+                assignment_rationale: Some("planner fallback".to_owned()),
+                role: None,
+                tool_policy: AgentToolPolicy::Full,
+                fanout_group: None,
+                control_policy: None,
+                failure_policy: StepFailurePolicy::SkipDependents,
+            }],
+        },
+    )
+}
+
+/// Sourced news/口播 video is a host pipeline, not a generic research DAG.
+/// Collapsing here is defense in depth when a parent still delegated.
+fn canonicalize_plan_for_goal(goal: &str, plan: PlannedExecution) -> PlannedExecution {
+    if !goal_is_news_briefing(goal) {
+        return plan;
+    }
+    if plan.steps.len() == 1 && spec_names_news_briefing(&plan.steps[0].spec) {
+        let mut plan = plan;
+        plan.steps[0].tool_policy = AgentToolPolicy::Full;
+        plan.steps[0].failure_policy = StepFailurePolicy::FailExecution;
+        return plan;
+    }
+    host_pipeline_news_briefing_plan(goal)
+}
+
+fn goal_is_news_briefing(goal: &str) -> bool {
+    let lower = goal.to_lowercase();
+    let news = ["新闻", "资讯", "briefing", "news"]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    let spoken_or_video = ["口播", "配音", "tts", "narrat", "视频", "video"]
+        .iter()
+        .any(|marker| lower.contains(marker));
+    news && spoken_or_video
+}
+
+fn spec_names_news_briefing(spec: &str) -> bool {
+    let lower = spec.to_ascii_lowercase();
+    ["briefing_create", "news-briefing", "news_briefing"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn host_pipeline_news_briefing_plan(goal: &str) -> PlannedExecution {
     PlannedExecution {
         steps: vec![PlannedExecutionStep {
-            title: truncate_title(goal),
-            spec: goal.trim().to_owned(),
+            title: "生成当日新闻口播".to_owned(),
+            spec: format!(
+                "用户目标：{}\n\n\
+                 必须直接调用 `briefing_create`（intent 用用户目标，format_secs 按用户指定否则 90）\
+                 并轮询 `briefing_status` 直到完成。禁止 web_search 自制新闻稿，禁止 nomi_delegate 再拆 DAG，\
+                 禁止用 art-motion 从零复制渲染引擎。若用户还要求艺术动画，等 briefing 产出旁白音频与脚本后再作为画面增强。\
+                 成功后把 briefing 会话与成片路径回报给用户。",
+                goal.trim()
+            ),
             profile: None,
             kind: ExecutionStepKind::Agent,
             agent_mode: Some(AgentStepMode::Normal),
             depends_on: vec![],
             participant_index: Some(0),
-            assignment_rationale: Some("planner fallback".to_owned()),
-            role: None,
+            assignment_rationale: Some("host pipeline: news-briefing".to_owned()),
+            role: Some("news-briefing".to_owned()),
             tool_policy: AgentToolPolicy::Full,
             fanout_group: None,
             control_policy: None,
@@ -591,5 +660,31 @@ mod tests {
         let plan = parse_plan("not json", "ship it");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].agent_mode, Some(AgentStepMode::Normal));
+    }
+
+    #[test]
+    fn news_briefing_goal_collapses_a_research_dag_to_one_full_host_step() {
+        let raw = r#"{"steps":[
+            {"title":"核实新闻","spec":"用 web_search 采集当日新闻","kind":"agent","agent_mode":"normal","depends_on":[],"tool_policy":"read_only","failure_policy":"fail_execution"},
+            {"title":"写口播稿","spec":"写入口播脚本.md","kind":"agent","agent_mode":"normal","depends_on":[0],"tool_policy":"full","failure_policy":"fail_execution"}
+        ]}"#;
+        let parsed = parse_plan_opt(raw).expect("typed plan");
+        let plan = canonicalize_plan_for_goal("做个当日新闻资讯的口播视频吧", parsed);
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].tool_policy, AgentToolPolicy::Full);
+        assert!(plan.steps[0].spec.contains("briefing_create"));
+        assert!(!plan.steps[0].spec.contains("web_search 采集"));
+    }
+
+    #[test]
+    fn ordinary_goals_keep_the_parsed_dag() {
+        let raw = r#"{"steps":[
+            {"title":"A","spec":"do A","kind":"agent","agent_mode":"normal","depends_on":[],"tool_policy":"files_shell"},
+            {"title":"B","spec":"do B","kind":"agent","agent_mode":"normal","depends_on":[0],"tool_policy":"files_shell"}
+        ]}"#;
+        let parsed = parse_plan_opt(raw).expect("typed plan");
+        let plan = canonicalize_plan_for_goal("refactor the parser", parsed);
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].title, "A");
     }
 }

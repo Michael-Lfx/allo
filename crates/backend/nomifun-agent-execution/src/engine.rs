@@ -49,7 +49,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::attempt_runner::AttemptRunner;
-use crate::artifact_contract::validate_required_artifacts;
+use crate::artifact_contract::{merge_workspace_verified_outputs, validate_required_artifacts};
 use crate::conversation_effect::AttemptConversationEffects;
 use crate::domain_mapper;
 use crate::event_publisher::{
@@ -2173,6 +2173,12 @@ impl AgentExecutionEngine {
             .scheduler
             .read_attempt_output_files(owner_id, &conversation_id)
             .await;
+        let output_files = merge_workspace_verified_outputs(
+            detail.execution.work_dir.as_deref().map(std::path::Path::new),
+            &step.spec,
+            output_files,
+            None,
+        );
         validate_required_artifacts(&step.spec, &output_files).map_err(|error| {
             AppError::BadRequest(format!(
                 "Agent conversation output cannot be adopted: {error}"

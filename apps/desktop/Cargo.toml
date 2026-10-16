@@ -32,6 +32,7 @@ nomifun-app = { workspace = true, features = [
 nomifun-common.workspace = true
 nomifun-net.workspace = true
 nomifun-runtime.workspace = true
+nomi-process-runtime.workspace = true
 clap.workspace = true
 iana-time-zone = "0.1"
 reqwest.workspace = true

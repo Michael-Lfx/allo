@@ -13,18 +13,18 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nomi_process_runtime::hidden_std_command;
+use nomi_process_runtime::{HiddenStdCommand, hidden_std_command};
 
 /// Monotonic suffix so concurrent worktrees get distinct dir names without
 /// needing a clock or RNG (both unavailable / nondeterministic).
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Spawn `git` without flashing a console on Windows GUI hosts.
-fn git_command() -> Command {
+fn git_command() -> HiddenStdCommand {
     hidden_std_command("git")
 }
 

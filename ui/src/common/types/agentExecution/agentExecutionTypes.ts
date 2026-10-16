@@ -31,7 +31,7 @@ export type TAgentExecutionStatus =
   | 'cancelled';
 
 export type TExecutionStepKind = 'agent' | 'verify' | 'judge' | 'loop';
-export type TAgentToolPolicy = 'full' | 'read_only' | 'read_shell';
+export type TAgentToolPolicy = 'full' | 'files_shell' | 'read_only' | 'read_shell';
 export type TAgentStepMode = 'normal' | 'synthesis';
 export type TExecutionStepStatus = 'pending' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'skipped' | 'cancelled';
 export type TExecutionAttemptStatus = 'queued' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted';

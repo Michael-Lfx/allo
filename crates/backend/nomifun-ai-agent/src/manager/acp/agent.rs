@@ -1059,10 +1059,17 @@ impl crate::runtime_handle::AgentRuntimeControl for AcpAgentManager {
         if let Ok(mut session) = self.session.try_write() {
             session.record_close_reason(Some(close_reason));
         }
-        if reason == Some(AgentKillReason::UserCancelled) {
+        if matches!(
+            reason,
+            Some(AgentKillReason::UserCancelled) | Some(AgentKillReason::AttemptSettled)
+        ) {
             if let Some(turn) = turn {
-                self.runtime
-                    .emit_finish_for_turn(turn, None, Some(TurnStopReason::Cancelled));
+                let stop = if reason == Some(AgentKillReason::UserCancelled) {
+                    TurnStopReason::Cancelled
+                } else {
+                    TurnStopReason::EndTurn
+                };
+                self.runtime.emit_finish_for_turn(turn, None, Some(stop));
             }
         } else if let Some(turn) = turn {
             self.runtime

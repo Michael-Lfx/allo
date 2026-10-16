@@ -474,6 +474,7 @@ fn historical_skill_snapshots_from_loads(
                 source: load.source.clone(),
                 version_hash: load.version_hash.clone(),
                 content: load.content.clone(),
+                location: None,
             }
         });
     }
@@ -7057,6 +7058,7 @@ impl ConversationService {
                 Arc::clone(&service.runtime_registry),
                 false,
                 true,
+                AgentKillReason::ConversationDeleted,
             );
             // The deletion tombstone's first synchronous boundary is the only
             // lossless capture point. A pre-existing completion owner can make
@@ -11457,6 +11459,7 @@ impl ConversationService {
                             source: skill.source,
                             version_hash: skill.version_hash,
                             content: skill.content,
+                            location: skill.location,
                         })
                         .collect(),
                     origin: origin.clone(),
@@ -14049,6 +14052,7 @@ impl ConversationService {
         runtime_registry: Arc<dyn AgentRuntimeRegistry>,
         publish_completion: bool,
         deletion_owned: bool,
+        kill_reason: AgentKillReason,
     ) -> oneshot::Receiver<Result<(), AppError>> {
         let (result_tx, result_rx) = oneshot::channel();
         let stop_admission = if deletion_owned {
@@ -14103,12 +14107,16 @@ impl ConversationService {
         let kill_reason = if deletion_owned {
             AgentKillReason::ConversationDeleted
         } else {
-            AgentKillReason::UserCancelled
+            kill_reason
         };
-        let durable_reason = if deletion_owned {
-            "Conversation turn was terminated for deletion after runtime exit"
-        } else {
-            "Conversation turn was cancelled after runtime exit"
+        let durable_reason = match kill_reason {
+            AgentKillReason::ConversationDeleted => {
+                "Conversation turn was terminated for deletion after runtime exit"
+            }
+            AgentKillReason::AttemptSettled => {
+                "Agent execution attempt was cleaned up after runtime exit"
+            }
+            _ => "Conversation turn was cancelled after runtime exit",
         };
 
         tokio::spawn(async move {
@@ -14520,6 +14528,10 @@ impl ConversationService {
             Arc::clone(runtime_registry),
             true,
             false,
+            match origin {
+                CancelOrigin::User => AgentKillReason::UserCancelled,
+                CancelOrigin::AgentExecution => AgentKillReason::AttemptSettled,
+            },
         );
         // `spawn_turn_stop_cleanup` synchronously establishes the stronger
         // conversation stop tombstone before returning. Releasing the

@@ -7,11 +7,10 @@ use std::{
 };
 
 use nomi_process_runtime::{
-    CapabilityPolicy, CommandSpec, OutputCursor, OutputSnapshot, OutputStream, PollResult,
-    ProcessOutcome, ProcessOwner, ProcessPolicy, ProcessRequest, ProcessSupervisor, ShellKind,
-    Transport, normalize_request,
+    CapabilityPolicy, CommandSpec, HiddenCommand, OutputCursor, OutputSnapshot, OutputStream,
+    PollResult, ProcessOutcome, ProcessOwner, ProcessPolicy, ProcessRequest, ProcessSupervisor,
+    ShellKind, Transport, normalize_request,
 };
-use tokio::process::Command;
 use uuid::Uuid;
 
 const POWERSHELL_EXE: &str = "powershell.exe";
@@ -218,7 +217,7 @@ pub fn shell_command_args(command_str: &str) -> Vec<String> {
     args
 }
 
-pub fn shell_command_builder(command_str: &str) -> Command {
+pub fn shell_command_builder(command_str: &str) -> HiddenCommand {
     #[cfg(windows)]
     {
         let program = nomi_process_runtime::resolve_windows_powershell_exe()

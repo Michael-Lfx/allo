@@ -12,7 +12,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use nomifun_ai_agent::{
@@ -31,6 +31,8 @@ use nomifun_common::{
 use nomifun_conversation::{AgentExecutionConversationPort, ConversationService};
 use nomifun_db::AgentExecutionTurnAuthority;
 use serde_json::{Value, json};
+
+use crate::artifact_contract::merge_workspace_verified_outputs;
 
 const ARTIFACT_RECEIPT_PAGE_SIZE: u32 = 100;
 // Keep receipt consumption aligned with ArtifactStore::verify_existing_path.
@@ -520,16 +522,29 @@ impl AttemptRunner for ConversationAttemptRunner {
         };
 
         let operation_id = format!("{attempt_creation_key}:initial-turn");
-        self.deliver_turn(
-            owner_id,
-            &conversation.conversation_id,
-            &operation_id,
-            authority,
+        let workspace_path = workspace_dir
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let snapshot_at = SystemTime::now();
+        let mut outcome = self
+            .deliver_turn(
+                owner_id,
+                &conversation.conversation_id,
+                &operation_id,
+                authority,
+                step_spec,
+                "agent_execution",
+                timeout,
+            )
+            .await?;
+        outcome.output_files = merge_workspace_verified_outputs(
+            workspace_path.as_deref(),
             step_spec,
-            "agent_execution",
-            timeout,
-        )
-        .await
+            outcome.output_files,
+            Some(snapshot_at),
+        );
+        Ok(outcome)
     }
 
     async fn continue_with_input(
@@ -654,13 +669,28 @@ fn apply_preset_run_preferences(extra: &mut Value, snapshot: &ResolvedPresetSnap
 fn tool_policy_allowed_tools(policy: AgentToolPolicy) -> Option<Vec<&'static str>> {
     match policy {
         AgentToolPolicy::Full => None,
+        AgentToolPolicy::FilesShell => Some(vec![
+            "Read",
+            "Write",
+            "Edit",
+            "ApplyPatch",
+            "Grep",
+            "Glob",
+            "DirTree",
+            "Bash",
+            "web_search",
+            "web_extract",
+            "Skill",
+            "update_plan",
+        ]),
         AgentToolPolicy::ReadOnly => {
-            Some(vec!["Read", "Grep", "Glob", "web_search", "web_extract"])
+            Some(vec!["Read", "Grep", "Glob", "DirTree", "web_search", "web_extract"])
         }
         AgentToolPolicy::ReadShell => Some(vec![
             "Read",
             "Grep",
             "Glob",
+            "DirTree",
             "web_search",
             "web_extract",
             "Bash",
@@ -1188,11 +1218,21 @@ mod tests {
     fn explicit_tool_policy_is_the_only_runtime_tool_narrowing() {
         assert_eq!(
             tool_policy_allowed_tools(AgentToolPolicy::ReadOnly).unwrap(),
-            ["Read", "Grep", "Glob", "web_search", "web_extract"]
+            ["Read", "Grep", "Glob", "DirTree", "web_search", "web_extract"]
         );
         assert_eq!(
             tool_policy_allowed_tools(AgentToolPolicy::ReadShell).unwrap(),
-            ["Read", "Grep", "Glob", "web_search", "web_extract", "Bash"]
+            ["Read", "Grep", "Glob", "DirTree", "web_search", "web_extract", "Bash"]
+        );
+        assert!(
+            tool_policy_allowed_tools(AgentToolPolicy::FilesShell)
+                .unwrap()
+                .contains(&"Write")
+        );
+        assert!(
+            !tool_policy_allowed_tools(AgentToolPolicy::FilesShell)
+                .unwrap()
+                .contains(&"briefing_create")
         );
         assert!(tool_policy_allowed_tools(AgentToolPolicy::Full).is_none());
     }

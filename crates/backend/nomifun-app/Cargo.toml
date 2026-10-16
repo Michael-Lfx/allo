@@ -345,6 +345,7 @@ nomi-browser = { workspace = true, optional = true }
 # engine. Only the browser-use feature pulls this dependency.
 nomi-browser-engine = { workspace = true, optional = true }
 nomi-config.workspace = true
+nomi-process-runtime.workspace = true
 nomifun-browser-platform = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 nomi-tools = { workspace = true, optional = true }

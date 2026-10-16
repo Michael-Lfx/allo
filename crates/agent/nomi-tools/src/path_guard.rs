@@ -82,6 +82,75 @@ pub fn resolve_against_cwd(file_path: &str, cwd: Option<&Path>) -> String {
     }
 }
 
+/// Resolve a Glob/DirTree root so it cannot wander into the app data tree
+/// (tokens, encryption_key, logs). Relative paths stay in `cwd`. Absolute
+/// paths must land in `cwd` or one of the extra read-only skill trees.
+///
+/// A missing directory that still sits inside the session workspace is
+/// allowed through so Glob/DirTree can report "does not exist" instead of a
+/// sandbox error. The session cwd itself may not exist yet in tests or a
+/// freshly allocated workspace.
+pub fn resolve_explore_path(
+    requested: &str,
+    cwd: &Path,
+    extra_roots: &[PathBuf],
+) -> Result<String, String> {
+    let resolved = PathBuf::from(resolve_against_cwd(requested, Some(cwd)));
+    if explore_contained(&resolved, cwd) {
+        return Ok(resolved.to_string_lossy().into_owned());
+    }
+    for root in extra_roots {
+        if root.is_dir() && is_within_root(&resolved, root) {
+            return Ok(resolved.to_string_lossy().into_owned());
+        }
+    }
+    Err(format!(
+        "Explore path '{}' is outside the session workspace and allowed skill trees. \
+         Stay under '{}' (workspace) or a builtin/user skill directory. Listing the \
+         application data root is not allowed.",
+        resolved.display(),
+        cwd.display()
+    ))
+}
+
+fn explore_contained(path: &Path, root: &Path) -> bool {
+    if is_within_root(path, root) {
+        return true;
+    }
+    // Canonical containment needs an existing root. When the session cwd has
+    // not been created yet, still accept the root itself and its children.
+    if root.exists() {
+        return false;
+    }
+    lexical_is_within(path, root)
+}
+
+fn lexical_is_within(path: &Path, root: &Path) -> bool {
+    let path = normalize_lexical(path);
+    let root = normalize_lexical(root);
+    if cfg!(windows) {
+        let path = path.to_string_lossy().to_ascii_lowercase();
+        let root = root.to_string_lossy().to_ascii_lowercase();
+        Path::new(&path).starts_with(Path::new(&root))
+    } else {
+        path.starts_with(root)
+    }
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                let _ = out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// Format a filesystem read failure for the model and logs.
 ///
 /// The path is quoted so a Windows drive letter (`C:\...`) cannot be glued to
@@ -262,5 +331,50 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains(&format!("'{path}'")), "{msg}");
+    }
+
+    #[test]
+    fn explore_path_stays_in_workspace_or_skill_tree() {
+        let workspace = tempfile::tempdir().unwrap();
+        let skills = tempfile::tempdir().unwrap();
+        fs::write(skills.path().join("SKILL.md"), "x").unwrap();
+        let relative = resolve_explore_path(".", workspace.path(), &[]).unwrap();
+        assert!(is_within_root(Path::new(&relative), workspace.path()));
+
+        let outside = tempfile::tempdir().unwrap();
+        assert!(
+            resolve_explore_path(
+                outside.path().to_str().unwrap(),
+                workspace.path(),
+                &[]
+            )
+            .is_err()
+        );
+        assert!(
+            resolve_explore_path(
+                skills.path().to_str().unwrap(),
+                workspace.path(),
+                &[skills.path().to_path_buf()]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn missing_child_of_an_existing_workspace_is_not_a_sandbox_error() {
+        let workspace = tempfile::tempdir().unwrap();
+        let missing = workspace.path().join("nope");
+        let resolved = resolve_explore_path(missing.to_str().unwrap(), workspace.path(), &[])
+            .expect("missing children stay inside the workspace");
+        assert_eq!(Path::new(&resolved), missing.as_path());
+    }
+
+    #[test]
+    fn missing_workspace_root_itself_is_still_the_session_cwd() {
+        let parent = tempfile::tempdir().unwrap();
+        let cwd = parent.path().join("fresh-workspace");
+        let resolved = resolve_explore_path(cwd.to_str().unwrap(), &cwd, &[])
+            .expect("a not-yet-created session cwd is still in bounds");
+        assert_eq!(Path::new(&resolved), cwd.as_path());
     }
 }

@@ -518,9 +518,17 @@ impl crate::runtime_handle::AgentRuntimeControl for NanobotAgentManager {
         if let Ok(mut state) = self.state.try_write()
             && let Some(runtime_turn) = state.runtime_turn.take()
         {
-            if reason == Some(AgentKillReason::UserCancelled) {
+            if matches!(
+                reason,
+                Some(AgentKillReason::UserCancelled) | Some(AgentKillReason::AttemptSettled)
+            ) {
+                let stop = if reason == Some(AgentKillReason::UserCancelled) {
+                    TurnStopReason::Cancelled
+                } else {
+                    TurnStopReason::EndTurn
+                };
                 self.runtime
-                    .emit_finish_for_turn(runtime_turn, None, Some(TurnStopReason::Cancelled));
+                    .emit_finish_for_turn(runtime_turn, None, Some(stop));
             } else {
                 self.runtime.emit_error_data_for_turn(
                     runtime_turn,

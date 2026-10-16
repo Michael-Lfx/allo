@@ -5,11 +5,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 use nomi_protocol::events::ToolCategory;
 use nomi_types::tool::{JsonSchema, ToolResult};
-use nomi_process_runtime::hidden_command;
+use nomi_process_runtime::{HiddenCommand, hidden_command};
 
 use crate::Tool;
 
@@ -272,13 +271,13 @@ fn enrich_grep_line_with_anchor(line: &str) -> String {
     format!("{}:{}:{}: {}", &line[..c1], line_no, hash, content_trim)
 }
 
-fn apply_default_excludes(cmd: &mut Command) {
+fn apply_default_excludes(cmd: &mut HiddenCommand) {
     for glob in DEFAULT_EXCLUDE_GLOBS {
         cmd.arg("--glob").arg(glob);
     }
 }
 
-fn apply_default_source_globs(cmd: &mut Command) {
+fn apply_default_source_globs(cmd: &mut HiddenCommand) {
     for glob in DEFAULT_SOURCE_GLOBS {
         cmd.arg("--glob").arg(glob);
     }

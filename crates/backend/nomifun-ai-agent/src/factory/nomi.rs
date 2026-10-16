@@ -511,9 +511,10 @@ pub(super) async fn build(
         )
     };
 
-    // 持久委派：未广告的工具名不得出现在系统提示里。嵌入式与 HostFacade 的
-    // `nomi_delegate` 由各自 DESCRIPTION 自描述（HOW 在 schema）。Gateway MCP
-    // 工具的 schema 不由本仓库编写，所以只在 Gateway 部署把合同写进 custom。
+    // 持久委派：未广告的工具名不得出现在系统提示里。Gateway MCP 工具的 schema
+    // 不由本仓库编写，所以 Gateway 部署把合同写进 custom。HostFacade 的 schema
+    // 只接受 planned/goal，但也必须写进 custom——否则模型会把已有的宿主原语
+    // （briefing_create、news-briefing）再拆成 nomi_delegate DAG。
     let delegation_hint = if coding_profile {
         overrides.system_prompt.take()
     } else {
@@ -527,9 +528,18 @@ pub(super) async fn build(
                 ),
                 overrides.delegation_policy,
             ),
-            DelegateDeployment::HostFacade
-            | DelegateDeployment::Embedded
-            | DelegateDeployment::None => overrides.system_prompt.take(),
+            DelegateDeployment::HostFacade => compose_host_delegation_hint(
+                overrides.system_prompt.take(),
+                should_inject_delegation_hint(
+                    true,
+                    overrides.companion,
+                    overrides.channel_platform.is_some(),
+                ),
+                overrides.delegation_policy,
+            ),
+            DelegateDeployment::Embedded | DelegateDeployment::None => {
+                overrides.system_prompt.take()
+            }
         }
     };
     overrides.system_prompt = delegation_hint;
@@ -1618,7 +1628,7 @@ fn append_knowledge_context(
 }
 
 /// Standard persistent-delegation guidance for an ordinary desktop session.
-pub(crate) const DELEGATION_STANDARD_HINT: &str = "遇到可并行的独立工作，或需要成体系拆解的复杂多步目标时，统一使用 `nomi_delegate`：独立工作传 `strategy=parallel` 和 tasks，复杂目标传 `strategy=planned` 和 goal，让规划器生成依赖 DAG。每个受委派的 Agent 都在右侧画布实时显示状态与转录。顶层会话委派会创建一个 Agent Execution；执行中的 Attempt 再委派只会向同一个 Execution 追加 Step，不会创建子执行。拿到 execution_id（以及追加时的 added_step_ids）后立即结束本轮，不要轮询等待或重复创建。全部结束时系统会把持久化最终结果直接作为 assistant 回执写入顶层会话，不会再启动一轮模型汇总；用户主动询问进度时才用 `nomi_execution_get` 读取一次。简单或单步问题直接作答，无需委派。";
+pub(crate) const DELEGATION_STANDARD_HINT: &str = "若本会话已提供宿主原语（`briefing_create` / `briefing_status`）或用户已加载对应 Skill（news-briefing、art-motion），必须直接调用这些工具完成任务。禁止用 `nomi_delegate` 把同一条流水线再拆成 DAG，也禁止用 `web_search` 重做 Skill 已禁止的采集。art-motion 只在 briefing 已经产出旁白音频之后作为画面增强，而不是新闻口播的主路径。\n\n遇到可并行的独立工作，或需要成体系拆解的复杂多步目标时，统一使用 `nomi_delegate`：独立工作传 `strategy=parallel` 和 tasks，复杂目标传 `strategy=planned` 和 goal，让规划器生成依赖 DAG。每个受委派的 Agent 都在右侧画布实时显示状态与转录。顶层会话委派会创建一个 Agent Execution；执行中的 Attempt 再委派只会向同一个 Execution 追加 Step，不会创建子执行。拿到 execution_id（以及追加时的 added_step_ids）后立即结束本轮，不要轮询等待或重复创建。不要宣称任务已经完成或已经开始制作成片——只说明已把目标交给宿主；全部结束时系统会把持久化最终结果直接作为 assistant 回执写入顶层会话，不会再启动一轮模型汇总；用户主动询问进度时才用 `nomi_execution_get` 读取一次。简单或单步问题直接作答，无需委派。";
 
 /// Additional guidance for [`DelegationPolicy::PreferParallel`].
 pub(crate) const DELEGATION_PREFER_PARALLEL_HINT: &str = "本会话偏好并行委派：面对每个请求都先明确评估能否拆成多个互相独立的 Agent 工作，并在确有并行收益时优先使用 `nomi_delegate`。只有任务确实单步可答或无法安全拆分时才直接处理；不要为了形式并行制造重复工作。";
@@ -1705,16 +1715,14 @@ pub(crate) fn compose_delegation_hint(
     })
 }
 
-/// Planned-only Chinese contract for HostFacade. Production sessions do not
-/// inject this: the native host-delegate tool description is the contract.
-/// Kept under `cfg(test)` so the wording cannot silently pick up Gateway verbs.
-#[cfg(test)]
-pub(crate) const HOST_DELEGATE_STANDARD_HINT: &str = "需要成体系拆解的复杂、多步目标时，用 `nomi_delegate(strategy=\"planned\", goal=\"…\")` 把目标交给宿主规划：宿主会基于绑定的 Team 模板生成依赖 DAG，并让成员 Agent 分工执行。这个入口只接受 `goal`——成员、并发上限、规划与重规划策略都由宿主与服务端决定，不要尝试在调用里指定它们。发出调用后立刻结束本轮，不要轮询等待，也不要重复调用；规划与执行结果会由宿主写回本会话。简单或单步问题直接作答，无需委派。";
+/// Planned-only Chinese contract for HostFacade. Production sessions inject this
+/// so the model sees planned-only `nomi_delegate` *and* the host-primitive
+/// routing rule (briefing_create wins over rebuilding a news DAG).
+pub(crate) const HOST_DELEGATE_STANDARD_HINT: &str = "若本会话已提供宿主原语（`briefing_create` / `briefing_status`）或用户已加载对应 Skill（news-briefing、art-motion），必须直接调用这些工具完成任务。禁止用 `nomi_delegate` 把同一条流水线再拆成 DAG，也禁止用 `web_search` 重做 Skill 已禁止的采集。art-motion 只在 briefing 已经产出旁白音频之后作为画面增强，而不是新闻口播的主路径。\n\n需要成体系拆解的复杂、多步目标时，用 `nomi_delegate(strategy=\"planned\", goal=\"…\")` 把目标交给宿主规划：宿主会基于绑定的 Team 模板生成依赖 DAG，并让成员 Agent 分工执行。这个入口只接受 `goal`——成员、并发上限、规划与重规划策略都由宿主与服务端决定，不要尝试在调用里指定它们。发出调用后立刻结束本轮，不要轮询等待，也不要重复调用。不要宣称任务已经完成或已经开始制作成片；只说明已把目标交给宿主，最终结果会由宿主写回本会话。简单或单步问题直接作答，无需委派。";
 
 /// Append the host-facade delegation guidance without replacing preset, persona
 /// or knowledge context. Unavailable surfaces and [`DelegationPolicy::Disabled`]
 /// preserve `base` unchanged (same contract as [`compose_delegation_hint`]).
-#[cfg(test)]
 pub(crate) fn compose_host_delegation_hint(
     base: Option<String>,
     available: bool,
@@ -4126,6 +4134,9 @@ mod tests {
         assert!(s.contains("strategy=parallel"));
         assert!(s.contains("strategy=planned"));
         assert!(s.contains("nomi_execution_get"));
+        assert!(s.contains("briefing_create"));
+        assert!(s.contains("禁止用 `nomi_delegate` 把同一条流水线再拆成 DAG"));
+        assert!(s.contains("不要宣称任务已经完成"));
         assert!(!s.contains(super::DELEGATION_PREFER_PARALLEL_HINT));
     }
 
@@ -4207,6 +4218,8 @@ mod tests {
         assert!(out.starts_with("基础提示"), "preset context must survive");
         assert!(out.contains("nomi_delegate"));
         assert!(out.contains("planned"));
+        assert!(out.contains("briefing_create"));
+        assert!(out.contains("不要宣称任务已经完成"));
         assert!(
             !out.contains("strategy=parallel"),
             "the facade schema rejects parallel: {out}"

@@ -67,10 +67,10 @@ impl ManagedExtractMode {
 // Keep enough room for the cold keyless fallback after both earlier providers have
 // spent their bounded attempts. This is still a single serial query path: no
 // provider receives a duplicate request in the same search.
-const TOTAL_BUDGET: Duration = Duration::from_secs(12);
-const PARALLEL_SLOT_BUDGET: Duration = Duration::from_secs(3);
-const YOU_SLOT_BUDGET: Duration = Duration::from_secs(3);
-const DDG_SLOT_BUDGET: Duration = Duration::from_secs(6);
+const TOTAL_BUDGET: Duration = Duration::from_secs(36);
+const PARALLEL_SLOT_BUDGET: Duration = Duration::from_secs(10);
+const YOU_SLOT_BUDGET: Duration = Duration::from_secs(10);
+const DDG_SLOT_BUDGET: Duration = Duration::from_secs(15);
 /// Fixed cooldown for compatibility failures (`ToolMissing`/`SchemaMismatch`).
 /// These are recoverable after the upstream tool list changes or recovers, so
 /// they must not disable the provider for the rest of the process.
@@ -258,7 +258,6 @@ impl SearchProviderHealth {
                 self.cooldown_until = Some(now + delay);
             }
             SearchAttemptError::Network
-            | SearchAttemptError::Timeout
             | SearchAttemptError::SessionExpired
             | SearchAttemptError::Upstream
             | SearchAttemptError::MalformedResponse => {
@@ -267,6 +266,9 @@ impl SearchProviderHealth {
                 let seconds = 15u64.saturating_mul(1u64 << exponent).min(5 * 60);
                 self.cooldown_until = Some(now + Duration::from_secs(seconds));
             }
+            // A slot-budget miss is not a provider outage. Cooling it down
+            // poisons the rest of the same turn (and the next few queries).
+            SearchAttemptError::Timeout => {}
             SearchAttemptError::InvalidRequest => {}
             SearchAttemptError::QuotaExhausted => {}
             SearchAttemptError::QueueBusy => {}
@@ -1294,6 +1296,17 @@ mod tests {
     }
 
     #[test]
+    fn slot_timeout_does_not_enter_cooldown() {
+        let now = Instant::now();
+        let mut health = SearchProviderHealth::default();
+        health.record_error(SearchProviderId::Parallel, &SearchAttemptError::Timeout, now);
+        health.record_error(SearchProviderId::You, &SearchAttemptError::Timeout, now);
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.cooldown_until, None);
+        assert_eq!(health.availability(now), ProviderAvailability::Ready);
+    }
+
+    #[test]
     fn rate_limit_honors_bounded_retry_after_and_network_backoff_grows() {
         let now = Instant::now();
         let mut health = SearchProviderHealth::default();
@@ -1406,16 +1419,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn cold_remote_timeouts_leave_ddg_fallback_reachable() {
-        assert_eq!(TOTAL_BUDGET, Duration::from_secs(12));
-        assert_eq!(PARALLEL_SLOT_BUDGET, Duration::from_secs(3));
-        assert_eq!(YOU_SLOT_BUDGET, Duration::from_secs(3));
-        assert_eq!(DDG_SLOT_BUDGET, Duration::from_secs(6));
+        assert_eq!(TOTAL_BUDGET, Duration::from_secs(36));
+        assert_eq!(PARALLEL_SLOT_BUDGET, Duration::from_secs(10));
+        assert_eq!(YOU_SLOT_BUDGET, Duration::from_secs(10));
+        assert_eq!(DDG_SLOT_BUDGET, Duration::from_secs(15));
 
         let service = ManagedSearchService::from_adapters(vec![
             (
                 Arc::new(TimedAdapter {
                     id: SearchProviderId::Parallel,
-                    delay: Duration::from_millis(3_100),
+                    delay: Duration::from_millis(10_100),
                     result: Mutex::new(Some(Ok(successful("parallel")))),
                 }),
                 PARALLEL_SLOT_BUDGET,
@@ -1423,7 +1436,7 @@ mod tests {
             (
                 Arc::new(TimedAdapter {
                     id: SearchProviderId::You,
-                    delay: Duration::from_millis(3_100),
+                    delay: Duration::from_millis(10_100),
                     result: Mutex::new(Some(Ok(successful("you")))),
                 }),
                 YOU_SLOT_BUDGET,

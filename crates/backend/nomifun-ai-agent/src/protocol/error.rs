@@ -63,6 +63,9 @@ impl CloseReason {
                 Some(AgentKillReason::KnowledgeBindingChanged) => "Agent killed: knowledge binding changed".to_owned(),
                 Some(AgentKillReason::ConfigurationChanged) => "Agent killed: configuration changed".to_owned(),
                 Some(AgentKillReason::ConversationDeleted) => "Agent killed: conversation deleted".to_owned(),
+                Some(AgentKillReason::AttemptSettled) => {
+                    "Agent execution attempt cleaned up".to_owned()
+                }
                 None => "Agent killed".to_owned(),
             },
             CloseReason::ProcessExited {

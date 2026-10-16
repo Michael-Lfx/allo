@@ -294,6 +294,10 @@ impl ParallelDelegationRequest {
 pub enum AgentToolPolicy {
     #[default]
     Full,
+    /// File tools plus shell: Read/Write/Edit/ApplyPatch/Grep/Glob/DirTree/Bash
+    /// and managed web search. Host pipelines (`briefing_create`, Browser,
+    /// `nomi_delegate`) stay unavailable.
+    FilesShell,
     ReadOnly,
     ReadShell,
 }
@@ -302,6 +306,7 @@ impl AgentToolPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",
+            Self::FilesShell => "files_shell",
             Self::ReadOnly => "read_only",
             Self::ReadShell => "read_shell",
         }
@@ -320,6 +325,7 @@ impl std::str::FromStr for AgentToolPolicy {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "full" => Ok(Self::Full),
+            "files_shell" => Ok(Self::FilesShell),
             "read_only" => Ok(Self::ReadOnly),
             "read_shell" => Ok(Self::ReadShell),
             _ => Err(format!("unknown Agent tool policy '{value}'")),

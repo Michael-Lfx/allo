@@ -18,9 +18,11 @@ mod windows_shell;
 
 pub use capability::{CapabilityPolicy, SandboxPolicy};
 pub use command_builder::{
-    ChildProcessBuilder, ChildProcessCleanup, ManagedChildProcess, apply_hidden_console,
-    apply_hidden_console_std, hidden_command, hidden_std_command, kill_process_tree,
+    ChildProcessBuilder, ChildProcessCleanup, HiddenCommand, HiddenStdCommand,
+    ManagedChildProcess, apply_hidden_console, apply_hidden_console_std, hidden_command,
+    hidden_std_command, install_host_process_lifetime, kill_process_tree,
     merge_process_path, resolve_command_in, resolve_command_path,
+    terminate_host_lifetime_descendants,
 };
 pub use io::{OutputBuffer, OutputObserver};
 pub use outcome::{

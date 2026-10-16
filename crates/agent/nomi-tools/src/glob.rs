@@ -311,11 +311,20 @@ fn stop_hint(outcome: &WalkOutcome) -> String {
 
 pub struct GlobTool {
     cwd: PathBuf,
+    extra_roots: Vec<PathBuf>,
 }
 
 impl GlobTool {
     pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            extra_roots: Vec::new(),
+        }
+    }
+
+    pub fn with_extra_roots(mut self, extra_roots: Vec<PathBuf>) -> Self {
+        self.extra_roots = extra_roots;
+        self
     }
 }
 
@@ -349,7 +358,7 @@ impl Tool for GlobTool {
          - Respects .gitignore, and always skips .git, node_modules, target and __pycache__. Files in ignored \
          directories are not listed; pass `path` explicitly to search inside one.\n\
          - A literal directory prefix in the pattern (\"docs/release/**\") narrows the walk to that directory.\n\
-         - The path parameter defaults to the current working directory.\n\
+         - The path parameter defaults to the current working directory. Absolute paths must stay in the session workspace or a skill tree; the application data root is not searchable.\n\
          - Use this OS-agnostic tool to list files in the current directory or workspace on every operating system: \"*\" lists top-level files and \"**/*\" lists files recursively.\n\
          - Use this tool when you need to find files by name or extension patterns, and prefer it over Bash for directory file listings."
     }
@@ -381,10 +390,13 @@ impl Tool for GlobTool {
         };
 
         let root = input["path"].as_str().unwrap_or(".");
-        let root_path = if Path::new(root).is_relative() {
-            self.cwd.join(root)
-        } else {
-            PathBuf::from(root)
+        let root_path = match crate::path_guard::resolve_explore_path(
+            root,
+            self.cwd.as_path(),
+            &self.extra_roots,
+        ) {
+            Ok(path) => PathBuf::from(path),
+            Err(message) => return error_result(message),
         };
 
         tracing::debug!(cwd = %self.cwd.display(), resolved_root = %root_path.display(), pattern = %pattern, "GlobTool scanning");
@@ -1018,5 +1030,21 @@ mod tests {
         assert_eq!(attr(&trace, "glob.outcome"), Some(AttrValue::Label("capped")));
         assert_eq!(attr(&trace, "glob.matched"), Some(AttrValue::count(n)));
         assert_eq!(attr(&trace, "glob.returned"), Some(AttrValue::count(MAX_RESULTS)));
+    }
+
+    #[tokio::test]
+    async fn rejects_absolute_path_outside_workspace() {
+        let workspace = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        fs::write(other.path().join("secret.txt"), "x").unwrap();
+        let tool = GlobTool::new(workspace.path().to_path_buf());
+        let result = tool
+            .execute(json!({
+                "pattern": "*",
+                "path": other.path().to_string_lossy()
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("outside the session workspace"));
     }
 }

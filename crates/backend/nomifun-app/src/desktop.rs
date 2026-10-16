@@ -694,6 +694,8 @@ impl DesktopServer {
         // a valid subprotocol token — hex, not base64 (base64's `+`/`/`/`=` make
         // `new WebSocket(url, [secret])` throw, which silently killed every desktop
         // WebSocket → no live stream → the companion bubble never echoed).
+        nomi_process_runtime::install_host_process_lifetime();
+
         let secret: Arc<str> = Arc::from(generate_random_hex_secret().as_str());
         let mut config = env.config.clone();
         config.auth_policy = AuthPolicy::TrustLocalToken;
@@ -1085,6 +1087,11 @@ impl DesktopServer {
     }
 
     async fn perform_shutdown(&self) -> anyhow::Result<()> {
+        // Kill unmanaged helper trees (briefing ffmpeg/node, media concat, …)
+        // before waiting on listeners. Job-object kill-on-close still covers
+        // Task Manager / ExitProcess; this is the graceful-quit path.
+        nomi_process_runtime::terminate_host_lifetime_descendants();
+
         // Stop ingress first so no new request can race terminal/browser or
         // database teardown. Each stage runs even when an earlier stage fails;
         // the final error retains every cleanup diagnostic.
