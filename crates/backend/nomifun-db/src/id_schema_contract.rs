@@ -79,6 +79,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_lesson_sections",
     "learning_lessons",
     "learning_modules",
+    "learning_quiz_rounds",
     "learning_review_events",
     "learning_review_items",
     "learning_review_log",
@@ -177,6 +178,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
+    ("learning_quiz_rounds", "round_id"),
     ("learning_review_events", "event_id"),
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
@@ -290,6 +292,9 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
+    // quiz 回合的身份列（migration 081）：回合行的业务主标识，选题/作答/
+    // 结算都在行内 JSON，不被其他表引用——非关系链接。
+    ("learning_quiz_rounds", "round_id"),
     // The card id in a review event is a plain identifier: deleting the card
     // must not wipe the check-in accounting that aggregates these rows.
     ("learning_review_events", "event_id"),
@@ -924,6 +929,11 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 修补审计（migration 080）：结构编辑的历史档案——课程删除后审计行
     // 保留（KeepHistory，出处不追删）。
     historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
+    // quiz 回合（migration 081）：学习者行为历史——用户删除随账（Cascade）；
+    // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
+    // 行为历史不追删）。
+    text_ref!("learning_quiz_rounds", "user_id" => "users", "user_id", false, "idx_learning_quiz_rounds_user", Cascade),
+    historical_text_ref!("learning_quiz_rounds", "course_id" => "learning_courses", "course_id", false, "idx_learning_quiz_rounds_course", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
         .with_child_predicate("child.source = 'course'"),
     text_ref!("learning_question_tags", "question_id" => "learning_custom_questions", "custom_question_id", false, "idx_learning_question_tags_custom_question_id", Cascade)

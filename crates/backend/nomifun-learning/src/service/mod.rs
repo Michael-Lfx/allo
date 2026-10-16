@@ -513,6 +513,7 @@ mod lesson;
 mod lesson_draft;
 mod memory;
 mod progress;
+mod quiz;
 mod review;
 mod tags;
 mod xp;

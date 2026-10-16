@@ -6120,13 +6120,14 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
 
     // —— quiz 触发进度（q1） ——
 
-    /// Seeds one course with `count` lessons (est 25 each), enrolled by
-    /// `user_id`; returns (course_id, lesson_ids).
+    /// Seeds one course with `count` lessons (est 25 each, each carrying one
+    /// single_choice activity answered by "B"), enrolled by `user_id`;
+    /// returns (course_id, lesson_ids, activity_ids).
     async fn seed_quiz_course(
         service: &LearningService,
         user_id: &UserId,
         count: usize,
-    ) -> (String, Vec<String>) {
+    ) -> (String, Vec<String>, Vec<String>) {
         let now = now_ms();
         let course_id = LearningCourseId::new().into_string();
         let module_id = LearningModuleId::new().into_string();
@@ -6152,6 +6153,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         .await
         .unwrap();
         let mut lesson_ids = Vec::new();
+        let mut activity_ids = Vec::new();
         for index in 0..count {
             let lesson_id = LearningLessonId::new().into_string();
             sqlx::query(
@@ -6166,7 +6168,24 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .execute(service.pool_for_tests())
             .await
             .unwrap();
+            let activity_id = LearningActivityId::new().into_string();
+            sqlx::query(
+                "INSERT INTO learning_activities \
+                 (activity_id, lesson_id, kind, prompt, config_json, position) \
+                 VALUES (?, ?, 'single_choice', ?, ?, ?)",
+            )
+            .bind(&activity_id)
+            .bind(&lesson_id)
+            .bind(format!("What is {index} + {index}?"))
+            .bind(
+                r#"{"answer":"B","options":["A","B"],"explanation":"2×n.","distractors":[],"matches":[]}"#,
+            )
+            .bind(index as i64)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
             lesson_ids.push(lesson_id);
+            activity_ids.push(activity_id);
         }
         sqlx::query(
             "INSERT INTO learning_enrollments \
@@ -6181,7 +6200,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         .execute(service.pool_for_tests())
         .await
         .unwrap();
-        (course_id, lesson_ids)
+        (course_id, lesson_ids, activity_ids)
     }
 
     async fn complete_quiz_lesson(service: &LearningService, user_id: &UserId, lesson_id: &str) {
@@ -6200,7 +6219,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     #[tokio::test]
     async fn quiz_trigger_counts_learn_settlements_only() {
         let (service, user_id) = checkin_test_service().await;
-        let (course_id, lessons) = seed_quiz_course(&service, &user_id, 7).await;
+        let (course_id, lessons, _activities) = seed_quiz_course(&service, &user_id, 7).await;
         let course = LearningCourseId::parse(&course_id).unwrap();
 
         // 5 个学新结算：N=5 < K=6 未到期；复习账混入不推进触发进度。
@@ -6256,11 +6275,12 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert!(matches!(missing, Err(AppError::NotFound(_))), "{missing:?}");
     }
 
-    /// 命令面骨架：due=false = Conflict 附 N/K；due=true = 501 占位（q2 接）。
+    /// q2 开测全链路前置：due 门（Conflict 附 N/K）→ 到期后出脱敏回合
+    /// （判底零字段）。
     #[tokio::test]
-    async fn quiz_start_conflicts_before_due_and_is_501_placeholder_when_due() {
+    async fn quiz_start_conflicts_before_due_then_carries_sanitized_round() {
         let (service, user_id) = checkin_test_service().await;
-        let (course_id, lessons) = seed_quiz_course(&service, &user_id, 6).await;
+        let (course_id, lessons, _activities) = seed_quiz_course(&service, &user_id, 6).await;
         let course = LearningCourseId::parse(&course_id).unwrap();
 
         let error = service.quiz_start(&user_id, &course).await.unwrap_err();
@@ -6272,9 +6292,249 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         for lesson in &lessons {
             complete_quiz_lesson(&service, &user_id, lesson).await;
         }
-        let error = service.quiz_start(&user_id, &course).await.unwrap_err();
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_eq!(round.questions.len(), 6, "每覆盖节点 1 题");
+        assert_eq!(round.settled_count, 6);
+        assert_eq!(round.trigger_count, 6);
+        assert_eq!(round.budget, 15);
+        assert_eq!(round.status, "active");
+        // 脱敏红线：投影零判底（answer/explanation 不出场）。
+        let view_json = serde_json::to_string(&round).unwrap();
         assert!(
-            matches!(error, AppError::NotImplemented(_)),
-            "到期 = 501 占位（载体随 q2）: {error:?}"
+            !view_json.contains("explanation"),
+            "start 投影不得携带解析: {view_json}"
         );
+        assert!(
+            !view_json.contains("\"answer\""),
+            "start 投影不得携带判底: {view_json}"
+        );
+    }
+
+    /// 选题 LRU：同节点多题时取「最久未出」（从未作答最先；已作答的后置）。
+    #[tokio::test]
+    async fn quiz_round_selection_is_lru_per_node() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, mut activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        // 首节点加第二道题，并先把首题作出答（LRU 应取从未作答的第二题）。
+        let second = LearningActivityId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, 'single_choice', 'backfill?', \
+                     '{\"answer\":\"B\",\"options\":[\"A\",\"B\"],\"explanation\":\"\",\"distractors\":[],\"matches\":[]}', 1)",
+        )
+        .bind(&second)
+        .bind(&lessons[0])
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        service
+            .submit_attempt(
+                &LearningActivityId::parse(&activities[0]).unwrap(),
+                &user_id,
+                json!("B"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        activities.push(second);
+
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        let first_picked = round
+            .questions
+            .iter()
+            .find(|q| q.node_id.as_str() == lessons[0])
+            .expect("首节点应在覆盖面");
+        assert_ne!(
+            first_picked.activity_id.as_str(),
+            activities[0],
+            "已作答的首题让位（LRU:从未作答最先）"
+        );
+        assert_eq!(round.questions.len(), 6, "每节点仍 1 题");
+    }
+
+    /// 全卷结算：分级落账（full/partial 各至少一笔、恒非负）→ 触发清零 →
+    /// 首写为终（重复 complete Conflict）→ 同日折叠（第二轮全折叠零计薪）。
+    #[tokio::test]
+    async fn quiz_round_complete_settles_tiers_folds_and_is_first_write_wins() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+
+        // 判分面：对 2 题、错 1 题（判底随反馈下发）。
+        let feedback = service
+            .quiz_grade(&user_id, &course, &round.round_id, &activities[0], &json!("B"))
+            .await
+            .unwrap();
+        assert!(feedback.correct, "正确作答判对");
+        assert_eq!(feedback.answer, json!("B"), "判底揭示");
+        let feedback = service
+            .quiz_grade(&user_id, &course, &round.round_id, &activities[1], &json!("A"))
+            .await
+            .unwrap();
+        assert!(!feedback.correct, "错误作答判错");
+        // 计划外题判分拒绝。
+        let stray = service
+            .quiz_grade(&user_id, &course, &round.round_id, "not-in-plan", &json!("B"))
+            .await;
+        assert!(matches!(stray, Err(AppError::BadRequest(_))), "{stray:?}");
+
+        // 全卷作答（4 对 2 错：单题节点 accuracy ∈ {1, 0} → full 3 / partial 0）。
+        let mut answers = HashMap::new();
+        for (index, activity) in activities.iter().enumerate() {
+            answers.insert(activity.clone(), json!(if index < 4 { "B" } else { "A" }));
+        }
+        let report = service
+            .quiz_complete(&user_id, &course, &round.round_id, &answers)
+            .await
+            .unwrap();
+        assert_eq!(report.earned_xp, 12, "4 × full 3 + 2 × partial 0（恒非负）");
+        assert_eq!(report.covered[0].earned_xp, Some(3), "全对节点 = full 1+2");
+        assert_eq!(report.covered[5].earned_xp, Some(0), "全错节点 = partial 0（非负）");
+        assert_eq!(report.covered[0].correct, 1);
+
+        // 落账盘面：6 笔 quiz-completed、总额 12；回合行 completed。
+        let (count, total): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+             WHERE kind = 'quiz-completed'",
+        )
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert_eq!((count, total), (6, 12));
+        let (status, earned): (String, i64) = sqlx::query_as(
+            "SELECT status, earned_xp FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&round.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert_eq!((status.as_str(), earned), ("completed", 12));
+
+        // 触发清零；结算后的判分/结算都拒绝（首写为终）。
+        let progress = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(progress.settled_count, 0, "quiz 结算清零触发进度");
+        let again = service
+            .quiz_complete(&user_id, &course, &round.round_id, &answers)
+            .await
+            .unwrap_err();
+        assert!(matches!(again, AppError::Conflict(_)), "{again:?}");
+        let graded = service
+            .quiz_grade(&user_id, &course, &round.round_id, &activities[0], &json!("B"))
+            .await
+            .unwrap_err();
+        assert!(matches!(graded, AppError::Conflict(_)), "{graded:?}");
+
+        // 同日折叠：直插第二轮（同计划 active），全对作答 → 逐节点全折叠
+        // （coverage 保持、earned 空、账本零新增）。
+        let plan_json: String = sqlx::query_scalar(
+            "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&round.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        let round_2 = generate_id();
+        sqlx::query(
+            "INSERT INTO learning_quiz_rounds \
+             (round_id, user_id, course_id, started_at, status, plan_json) \
+             VALUES (?, ?, ?, ?, 'active', ?)",
+        )
+        .bind(&round_2)
+        .bind(user_id.as_str())
+        .bind(&course_id)
+        .bind(now_ms())
+        .bind(&plan_json)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let mut all_correct = HashMap::new();
+        for activity in &activities {
+            all_correct.insert(activity.clone(), json!("B"));
+        }
+        let folded = service
+            .quiz_complete(&user_id, &course, &round_2, &all_correct)
+            .await
+            .unwrap();
+        assert_eq!(folded.earned_xp, 0, "同日折叠零计薪");
+        assert!(
+            folded.covered.iter().all(|node| node.earned_xp.is_none()),
+            "折叠节点 earned 空（coverage 保持）"
+        );
+        let (count, total): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+             WHERE kind = 'quiz-completed'",
+        )
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert_eq!((count, total), (6, 12), "账本零新增（不重复计薪）");
+    }
+
+    /// 作答必满（quiz 必作答，测量语义）：缺题的 complete 拒绝。
+    #[tokio::test]
+    async fn quiz_complete_requires_every_planned_answer() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        let mut answers = HashMap::new();
+        answers.insert(activities[0].clone(), json!("B"));
+        let error = service
+            .quiz_complete(&user_id, &course, &round.round_id, &answers)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AppError::BadRequest(ref message) if message.contains(&activities[1])),
+            "缺题拒绝并点名: {error:?}"
+        );
+    }
+
+    /// 同课程至多一个 active 回合：重复 start = supersede（旧回合标
+    /// abandoned 且不可再结算），新回合可用（部分唯一索引兜并发）。
+    #[tokio::test]
+    async fn quiz_start_supersedes_active_round() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let first = service.quiz_start(&user_id, &course).await.unwrap();
+        let second = service.quiz_start(&user_id, &course).await.unwrap();
+        assert_ne!(first.round_id, second.round_id, "重开 = 新回合");
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM learning_quiz_rounds WHERE round_id = ?",
+        )
+        .bind(&first.round_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        assert_eq!(status, "abandoned", "被取代回合标 abandoned");
+        let mut answers = HashMap::new();
+        for activity in &activities {
+            answers.insert(activity.clone(), json!("B"));
+        }
+        let error = service
+            .quiz_complete(&user_id, &course, &first.round_id, &answers)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AppError::Conflict(_)), "abandoned 不可结算: {error:?}");
+        let report = service
+            .quiz_complete(&user_id, &course, &second.round_id, &answers)
+            .await
+            .unwrap();
+        assert_eq!(report.earned_xp, 18, "新回合照常结算（6 × full 3）");
     }

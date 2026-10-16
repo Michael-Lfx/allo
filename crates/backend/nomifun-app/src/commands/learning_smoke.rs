@@ -898,25 +898,32 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `learning-smoke quiz`（q1）：quiz 触发面冒烟骨架（零 LLM，读数面非门禁）。
-/// 从零临时库种一门 K 节点课程（est 25/节点），走真实管线逐节点结算（教新线
-/// full），机械判据：①K−1 节点后 due=false ②恰 K 节点后 due=true ③quiz/start
-/// 到期时返回 501 占位（回合载体随 q2 落地，完整判据随 q2 补）。
+/// `learning-smoke quiz`（q2）：quiz 回合全链路冒烟（零 LLM，纯银行旧题）。
+/// 从零临时库种一门 K 节点课程（est 25/节点，各带一道单选），走真实管线
+/// 逐节点结算后开测，机械判据（失败非零退出）：
+/// ① K−1 结算时 start Conflict（附 N/K）、恰 K 到期；
+/// ② start 投影判底零字段（脱敏红线）；grade 对/错判分并下发判底；
+/// ③ complete 逐节点分级落账——full/partial 各至少一笔、恒非负、账本
+///    总额与回合行对账一致（盘面复验）；
+/// ④ 同日折叠——第二轮（同计划）全折叠零计薪，账本零新增；
+/// ⑤ 首写为终——重复 complete Conflict。
 async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
+    use std::collections::HashMap;
+
     let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
     let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, false).await?;
     let owner = wiring.owner.clone();
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
 
-    // 种子课程：一门 K 节点课程（est 25/节点），报名为 owner。
+    // 种子课程：K 节点（est 25），每节点一道单选（answer = "B"），报名 owner。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let module_id = nomifun_common::LearningModuleId::new().into_string();
     let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
     sqlx::query(
         "INSERT INTO learning_courses \
          (course_id, title, description, domain, version, created_at, updated_at) \
-         VALUES (?, 'quiz trigger smoke', '', 'general', 1, ?, ?)",
+         VALUES (?, 'quiz round smoke', '', 'general', 1, ?, ?)",
     )
     .bind(&course_id)
     .bind(now)
@@ -931,7 +938,10 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     .bind(&course_id)
     .execute(&wiring.pool)
     .await?;
+    let config =
+        r#"{"answer":"B","options":["A","B"],"explanation":"smoke","distractors":[],"matches":[]}"#;
     let mut lesson_ids = Vec::new();
+    let mut activity_ids = Vec::new();
     for index in 0..k {
         let lesson_id = nomifun_common::LearningLessonId::new().into_string();
         sqlx::query(
@@ -945,7 +955,20 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         .bind(index)
         .execute(&wiring.pool)
         .await?;
+        let activity_id = nomifun_common::LearningActivityId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, 'single_choice', ?, ?, 0)",
+        )
+        .bind(&activity_id)
+        .bind(&lesson_id)
+        .bind(format!("What is {index} + {index}?"))
+        .bind(config)
+        .execute(&wiring.pool)
+        .await?;
         lesson_ids.push(lesson_id);
+        activity_ids.push(activity_id);
     }
     sqlx::query(
         "INSERT INTO learning_enrollments \
@@ -959,57 +982,157 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     .bind(now)
     .execute(&wiring.pool)
     .await?;
-
     let course = nomifun_common::LearningCourseId::parse(&course_id)?;
-
-    // ① K−1 节点：未到期。
-    for lesson_id in &lesson_ids[..(k as usize - 1)] {
+    let complete = async |lesson_id: &str| -> anyhow::Result<()> {
         let lesson = nomifun_common::LearningLessonId::parse(lesson_id)
-            .expect("just-minted lesson id parses");
-        service
+            .map_err(|e| anyhow::anyhow!("lesson id: {e}"))?;
+        Ok(service
             .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
-            .await?;
+            .await?)
+    };
+
+    // ① 触发门：K−1 未到期（Conflict 附 N/K），恰 K 到期。
+    for lesson_id in &lesson_ids[..(k as usize - 1)] {
+        complete(lesson_id).await?;
     }
-    let before = service.quiz_progress(&owner, &course).await?;
+    let error = service.quiz_start(&owner, &course).await.unwrap_err();
     anyhow::ensure!(
-        !before.due,
-        "N={} must not be due (K={k})",
-        before.settled_count
+        matches!(error, nomifun_common::AppError::Conflict(ref m) if m.contains(&format!("quiz not due: {}/", k - 1))),
+        "K−1 settlements must not be due: {error:?}"
     );
-    println!(
-        "[1/2] after {}/{} settlements: N={} K={} due=false",
-        k - 1,
-        k,
-        before.settled_count,
-        before.trigger_count
-    );
+    complete(lesson_ids.last().expect("k ≥ 1")).await?;
+    println!("[1/5] trigger gate: not due at {}/K, due at K", k - 1);
 
-    // ② 第 K 节点：到期翻转。
-    let last = lesson_ids.last().expect("k ≥ 1");
-    let lesson = nomifun_common::LearningLessonId::parse(last)
-        .expect("just-minted lesson id parses");
-    service
-        .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+    // ② 开测脱敏 + 判分面。
+    let round = service.quiz_start(&owner, &course).await?;
+    anyhow::ensure!(round.questions.len() == k as usize, "每覆盖节点 1 题");
+    let view_json = serde_json::to_string(&round)?;
+    anyhow::ensure!(
+        !view_json.contains("explanation") && !view_json.contains("\"answer\""),
+        "start projection leaked judge fields"
+    );
+    let graded = service
+        .quiz_grade(
+            &owner,
+            &course,
+            &round.round_id,
+            round.questions[0].activity_id.as_str(),
+            &serde_json::json!("B"),
+        )
         .await?;
-    let due = service.quiz_progress(&owner, &course).await?;
-    anyhow::ensure!(due.due, "N={} must be due (K={k})", due.settled_count);
-    println!(
-        "[2/2] after {k}: N={} K={} due=true — progress reading confirmed",
-        due.settled_count, due.trigger_count
+    anyhow::ensure!(
+        graded.correct && graded.answer == serde_json::json!("B"),
+        "grade must reveal the judge bottom after grading"
+    );
+    println!("[2/5] start sanitized (no answer/explanation), grade reveals on feedback");
+
+    // ③ 全卷作答：前 4 题对（full 3×4 = 12）、后 2 题错（partial 0）。
+    let mut answers = HashMap::new();
+    for (index, activity) in activity_ids.iter().enumerate() {
+        let response = if index < 4 { "B" } else { "A" };
+        answers.insert(activity.clone(), serde_json::json!(response));
+    }
+    let report = service
+        .quiz_complete(&owner, &course, &round.round_id, &answers)
+        .await?;
+    anyhow::ensure!(
+        report.earned_xp == 12,
+        "4 full + 2 partial must settle 12, got {}",
+        report.earned_xp
+    );
+    anyhow::ensure!(
+        report.covered.iter().all(|node| node.earned_xp.unwrap_or(0) >= 0),
+        "quiz settlements are never negative"
+    );
+    anyhow::ensure!(
+        report.covered[0].earned_xp == Some(3) && report.covered[5].earned_xp == Some(0),
+        "tier check: full 3 / partial 0 expected"
+    );
+    // 盘面复验：账本与回合行从磁盘重读，对账服务面读数（repair 模式）。
+    let (events, ledger_total): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+         WHERE kind = 'quiz-completed'",
+    )
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        (events, ledger_total) == (k, 12),
+        "ledger re-read must match the report ({events} events, {ledger_total} xp)"
+    );
+    let (status, row_earned): (String, i64) = sqlx::query_as(
+        "SELECT status, earned_xp FROM learning_quiz_rounds WHERE round_id = ?",
+    )
+    .bind(&round.round_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        status == "completed" && row_earned == 12,
+        "round row must be completed with earned 12 (got {status}/{row_earned})"
+    );
+    println!("[3/5] settled per node: 4 full (3 xp) + 2 partial (0 xp, never negative); ledger re-read matches");
+
+    // ④ 同日折叠：第二轮（同计划直插 active）全对作答 → 全折叠零计薪。
+    let plan_json: String = sqlx::query_scalar(
+        "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
+    )
+    .bind(&round.round_id)
+    .fetch_one(&wiring.pool)
+    .await?;
+    let round_2 = nomifun_common::generate_id();
+    sqlx::query(
+        "INSERT INTO learning_quiz_rounds \
+         (round_id, user_id, course_id, started_at, status, plan_json) \
+         VALUES (?, ?, ?, ?, 'active', ?)",
+    )
+    .bind(&round_2)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(nomifun_common::now_ms())
+    .bind(&plan_json)
+    .execute(&wiring.pool)
+    .await?;
+    let mut all_correct = HashMap::new();
+    for activity in &activity_ids {
+        all_correct.insert(activity.clone(), serde_json::json!("B"));
+    }
+    let folded = service
+        .quiz_complete(&owner, &course, &round_2, &all_correct)
+        .await?;
+    anyhow::ensure!(
+        folded.earned_xp == 0
+            && folded.covered.iter().all(|node| node.earned_xp.is_none()),
+        "same-day re-quiz must fold to zero earned with coverage kept"
+    );
+    let (events_after, total_after): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
+         WHERE kind = 'quiz-completed'",
+    )
+    .fetch_one(&wiring.pool)
+    .await?;
+    anyhow::ensure!(
+        (events_after, total_after) == (k, 12),
+        "folded round must not double-pay (got {events_after}/{total_after})"
     );
 
-    // ③ 命令面骨架：到期 = 501 占位（q2 接回合载体）。
-    match service.quiz_start(&owner, &course).await {
-        Err(nomifun_common::AppError::NotImplemented(message)) => {
-            println!("quiz/start: 501 placeholder confirmed ({message})");
-        }
-        Err(error) => anyhow::bail!("quiz/start must return the 501 placeholder when due, got {error}"),
-        Ok(_) => anyhow::bail!("quiz/start must not succeed before the q2 carrier lands"),
-    }
+    // ⑤ 首写为终：重复 complete Conflict。
+    let again = service
+        .quiz_complete(&owner, &course, &round.round_id, &answers)
+        .await
+        .unwrap_err();
+    anyhow::ensure!(
+        matches!(again, nomifun_common::AppError::Conflict(_)),
+        "repeat complete must be rejected (first write wins): {again:?}"
+    );
+    println!("[4/5] same-day fold (zero double-pay) confirmed");
+    println!("[5/5] first-write-wins: repeat complete rejected");
 
+    let progress = service.quiz_progress(&owner, &course).await?;
     println!(
-        "OK  course={course_id}  settled={}/{}  (complete criteria land with q2)",
-        due.settled_count, due.trigger_count
+        "OK  course={course_id}  settled={} earned=12  progress after quiz: {}/{} due={}",
+        report.covered.len(),
+        progress.settled_count,
+        progress.trigger_count,
+        progress.due
     );
     Ok(ExitCode::SUCCESS)
 }
