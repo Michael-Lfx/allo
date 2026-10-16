@@ -119,6 +119,7 @@ export interface Transport {
 - 导出的只是静态配置定义，不含底层运行时执行语义；外部运行时必须自行实现调度。
 - `fp-14`（`pack_format 2`，doc `38`）起包内多两类**按引用**内容：`assets`（插件级 `avatars/` `bin/` `scripts/` 清单，字节走 `client.readImportAsset(snapshotId, path)`）与 `avatar`（包级头像的快照相对路径，仅当它列在 `assets` 里）；SDK 的 `exportAgent` / `exportTeam` / `materializePack` 会把资产一并落盘（`ExportResult.writtenAssets`），物化目录因此是完整的插件根布局。资产面受能力位 `snapshot_assets` 门禁；成员 pack 的 `assets` 恒为空表（快照作用域，读顶层）。
 - `fp-16`（`pack_format 3`，doc `44`）起包内多出市场的**展示元数据**：`tags`（本地化数组）与 `category_id`（裸分类引用）。作用域与 `assets` **相反**——分类是逐包自己的声明，**成员 pack 各带自己的值**；包只带 id，解析成双语名需要消费方持有等价字典（本仓为 `store.categories()`，跨宿主不通用）。同一批字段也上了目录面：`teams.list()` / `skills.list()` 分别带包级声明与市场索引行标签（技能标签在导入时固化，市场其后改动需走一次 `store.update()`）。
+- `fp-17`（doc `47`）起 `ConnectorSummary` 的 `auth_mode` 更名 **`auth_transport`**：该字段由 transport 推导、只描述形状，与「连接器需要什么认证」无关——后者由 `credential.mode` 与 `status` 表达（`34` §6.1，行为修复见 doc `46`）。无方法增删，方法计数不变。
 
 #### 2. 连接器动态凭据与免市场注册 (`register()`)
 - `credentials(id)` / `setCredentials(id, values)`：填入用户专属 API Key / Token。响应中敏感字段一律脱敏，永不返回明文 Secret。

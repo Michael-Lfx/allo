@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-16`，56 WS 核心方法 / 83 双端路由端点）  
+> 状态：现行规范（统一协议 v1，指纹 `fp-17`，56 WS 核心方法 / 83 双端路由端点）  \
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -183,6 +183,10 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
+> 指纹：**`fp-17`**（2026-10-15）把连接器摘要里那个**名不副实**的字段改回原名（doc `47`）：
+> `AppServerConnectorSummary.auth_mode` 更名 `auth_transport`——该字段由 transport 推导，
+> 从来不是「认证方式」；「调用方要为这个连接器做什么」由 `credential.mode` 与 `status`
+> 回答（`34` §6.1，配套修复见 doc `46`）。**无方法增删**，计数仍 `56 / 83`。
 > 指纹：**`fp-16`**（2026-10-13）补齐**分类与标签的最后三个面**（doc `44`）：
 > `AppServerTeamSummary` 增 `tags` / `category_id`（包级展示元数据，`team/list` 与
 > `team/get` 直接读到），`AppServerSkillSummary` 增 `tags`（技能无 `plugin.json`，
