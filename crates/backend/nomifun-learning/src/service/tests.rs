@@ -5898,9 +5898,9 @@ async fn structure_mount_round_mounts_then_skips() {
     let service = LearningService::new(database.pool().clone());
     let artifact = serde_json::json!({
         "mounts": [
-            { "node": "节点一", "block": "block-01", "reason": "同主题" },
-            { "node": "节点二", "block": "block-02", "reason": "进阶同主题" },
-            { "node": "节点三", "block": null, "reason": "纯练习节点" }
+            { "node": "节点一", "blocks": ["block-01"], "reason": "同主题" },
+            { "node": "节点二", "blocks": ["block-02"], "reason": "进阶同主题" },
+            { "node": "节点三", "blocks": [], "reason": "纯练习节点" }
         ],
         "note": "n"
     });

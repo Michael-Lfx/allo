@@ -1537,21 +1537,6 @@ impl LearningService {
         let attempt_id = LearningAttemptId::new();
         let now = now_ms();
         let settings = self.scheduler_settings().await;
-        // 作答时刻的 FSRS 预测（g4 数据面 `predicted` 列）：仅对真有记忆状态
-        // 的卡有意义，与复习日志快照同一铸值口径。
-        let predicted = if snapshot.review_count > 0 {
-            predicted_retrievability(
-                snapshot.stability_days,
-                days_elapsed_between(
-                    snapshot.last_reviewed_at.unwrap_or(now),
-                    now,
-                    settings.tz_offset_minutes,
-                ),
-                &settings,
-            )
-        } else {
-            None
-        };
         let allowed = self
             .push_allowed(
                 ReviewSource::Course,
@@ -1583,14 +1568,16 @@ impl LearningService {
         // Every answered review counts toward the daily check-in, so the
         // event lands in the same transaction as the attempt — but a stale
         // repeat blocked by the gate is not review work, so it does not.
-        // j05 作答流水：行内带完整作答锚（elapsed/response/forgot/predicted；
-        // session 锚待 g4 会话实体，暂 NULL）。
+        // j05 作答流水：行内带完整作答锚（elapsed/response/forgot；session
+        // 锚待 g4 会话实体，暂 NULL）。`predicted` 列预留给**学习者作答前
+        // 的自预测**（learnhub #105 Will/Wont/Unsure，随复习 UI 落地接入）
+        // ——FSRS 预测住复习日志快照 r_pred，不在此重复。
         if allowed {
             sqlx::query(
                 "INSERT INTO learning_review_events \
                  (event_id, user_id, source, item_id, created_at, elapsed_ms, response, \
                   session_id, forgot, predicted) \
-                 VALUES (?, ?, 'course', ?, ?, ?, ?, NULL, ?, ?)",
+                 VALUES (?, ?, 'course', ?, ?, ?, ?, NULL, ?, NULL)",
             )
             .bind(generate_id())
             .bind(user_id.as_str())
@@ -1599,7 +1586,6 @@ impl LearningService {
             .bind(elapsed_ms)
             .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
             .bind(i64::from(forgot))
-            .bind(predicted)
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;

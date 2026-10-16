@@ -2012,15 +2012,22 @@ pub struct NodeMountStateView {
     pub state: String,
 }
 
-/// 一条挂载事实的读侧视图：悬挂 slug（块已不在当前结构里）的条目
-/// `dangling = true` 并逐条降级，不使整体 Broken。
+/// 一条挂载事实的读侧视图：条目携带块引用清单；悬挂 slug（块已不在当前
+/// 结构里）逐条标 `dangling = true` 降级，不使整体 Broken。
 #[derive(Debug, Clone, Serialize)]
 pub struct MountEntryView {
     pub node: String,
-    pub block: Option<String>,
+    /// 挂入的块引用（空 = 已评估、声明结构外）。
+    pub blocks: Vec<MountBlockRefView>,
+    pub reason: String,
+}
+
+/// 单个块引用的解析结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct MountBlockRefView {
+    pub slug: String,
     /// 块名（slug 在当前结构可解析时回填；悬挂为 None）。
     pub block_name: Option<String>,
-    pub reason: String,
     pub dangling: bool,
 }
 
