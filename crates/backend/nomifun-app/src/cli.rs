@@ -360,12 +360,20 @@ pub enum Command {
 }
 
 /// `learning-smoke` 的子命令（s1 四档：structure / json / grow / loop +
-/// j07 的 content 读数面）。
+/// j07 的 content 读数面 + q1 的 quiz 触发面）。
 #[derive(Debug, Clone, Subcommand)]
 pub enum LearningSmokeCommand {
     /// XP 读数面冒烟（j05）：临时库结算几笔（教新 full + 复习线一笔）→
     /// 读数/日历快照打印；读数面非门禁——唯一硬判据是管线真实走通。
     Xp {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// quiz 触发面冒烟骨架（q1）：种一门 K 节点课程（零 LLM）→ 真实管线
+    /// 逐节点结算 → 断言 due 在恰 K 翻转 → 打印 N/K → quiz/start 到期时
+    /// 断言 501 占位；完整判据随 q2。
+    Quiz {
         /// SQLite 库路径（缺省从零临时库）。
         #[arg(long)]
         db: Option<PathBuf>,

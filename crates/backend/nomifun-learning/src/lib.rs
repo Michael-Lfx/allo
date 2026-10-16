@@ -46,7 +46,8 @@ pub use models::{
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
     LessonView,
-    ModuleView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack,
+    ModuleView, QuizProgressView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind,
+    SectionPack,
     SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
     VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
@@ -56,4 +57,8 @@ pub use models::{
 };
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+pub use settle::{
+    QUIZ_EXCELLENT_RATIO, QUIZ_HALF_RATIO, QUIZ_PASS_RATIO, QUIZ_QUESTION_BUDGET,
+    QUIZ_TRIGGER_SETTLEMENTS,
+};
 pub use state::LearningRouterState;

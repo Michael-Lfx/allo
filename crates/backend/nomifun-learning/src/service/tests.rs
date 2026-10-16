@@ -6117,3 +6117,164 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         "findings present but no completer → honest conflict: {message}"
     );
 }
+
+    // —— quiz 触发进度（q1） ——
+
+    /// Seeds one course with `count` lessons (est 25 each), enrolled by
+    /// `user_id`; returns (course_id, lesson_ids).
+    async fn seed_quiz_course(
+        service: &LearningService,
+        user_id: &UserId,
+        count: usize,
+    ) -> (String, Vec<String>) {
+        let now = now_ms();
+        let course_id = LearningCourseId::new().into_string();
+        let module_id = LearningModuleId::new().into_string();
+        let enrollment_id = LearningEnrollmentId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, created_at, updated_at) \
+             VALUES (?, 'quiz trigger course', '', 'general', 1, ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+             VALUES (?, ?, 'Module', '', 0)",
+        )
+        .bind(&module_id)
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let mut lesson_ids = Vec::new();
+        for index in 0..count {
+            let lesson_id = LearningLessonId::new().into_string();
+            sqlx::query(
+                "INSERT INTO learning_lessons \
+                 (lesson_id, module_id, title, summary, position, estimated_minutes) \
+                 VALUES (?, ?, ?, '', ?, 25)",
+            )
+            .bind(&lesson_id)
+            .bind(&module_id)
+            .bind(format!("Lesson {index}"))
+            .bind(index as i64)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+            lesson_ids.push(lesson_id);
+        }
+        sqlx::query(
+            "INSERT INTO learning_enrollments \
+             (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&enrollment_id)
+        .bind(user_id.as_str())
+        .bind(&course_id)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        (course_id, lesson_ids)
+    }
+
+    async fn complete_quiz_lesson(service: &LearningService, user_id: &UserId, lesson_id: &str) {
+        service
+            .update_lesson_progress(
+                &LearningLessonId::parse(lesson_id).unwrap(),
+                user_id,
+                LessonStatus::Completed,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// 触发计数只认学新结算（learnhub `settlements_since_last_quiz` 同语义）：
+    /// 复习账不推进、恰 K 触发、quiz 结算清零重新积累；未知课程 = NotFound。
+    #[tokio::test]
+    async fn quiz_trigger_counts_learn_settlements_only() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons) = seed_quiz_course(&service, &user_id, 7).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+
+        // 5 个学新结算：N=5 < K=6 未到期；复习账混入不推进触发进度。
+        for lesson in &lessons[..5] {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, ?, NULL, 'review-completed', 5, 2, 'full', NULL, 'review-course', 'review:quiz-smoke:1')",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(view.settled_count, 5, "复习账不推进触发进度（只认 node-completed）");
+        assert_eq!(view.trigger_count, 6);
+        assert!(!view.due, "5 < 6 未到期");
+
+        // 第 6 个学新结算 → 恰 K 触发。
+        complete_quiz_lesson(&service, &user_id, &lessons[5]).await;
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(view.settled_count, 6);
+        assert!(view.due, "6 ≥ 6 到期");
+
+        // quiz 结算后计数清零；其后新学新重新积累。
+        sqlx::query(
+            "INSERT INTO learning_xp_events \
+             (event_id, user_id, ts, course_id, node_id, kind, earned_xp, xp_bonus, basis, ratio, origin, anchor) \
+             VALUES (?, ?, ?, ?, ?, 'quiz-completed', 4, 0, 'full', NULL, 'quiz', 'quiz:smoke:1')",
+        )
+        .bind(generate_id())
+        .bind(user_id.as_str())
+        .bind(now_ms())
+        .bind(&course_id)
+        .bind(&lessons[0])
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(view.settled_count, 0, "quiz 结算清零");
+        assert!(!view.due);
+        complete_quiz_lesson(&service, &user_id, &lessons[6]).await;
+        let view = service.quiz_progress(&user_id, &course).await.unwrap();
+        assert_eq!(view.settled_count, 1, "quiz 后重新积累");
+
+        // 未知课程 = NotFound。
+        let missing = service.quiz_progress(&user_id, &LearningCourseId::new()).await;
+        assert!(matches!(missing, Err(AppError::NotFound(_))), "{missing:?}");
+    }
+
+    /// 命令面骨架：due=false = Conflict 附 N/K；due=true = 501 占位（q2 接）。
+    #[tokio::test]
+    async fn quiz_start_conflicts_before_due_and_is_501_placeholder_when_due() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+
+        let error = service.quiz_start(&user_id, &course).await.unwrap_err();
+        assert!(
+            matches!(error, AppError::Conflict(ref message) if message.contains("0/6")),
+            "未到期 = Conflict 附 N/K: {error:?}"
+        );
+
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let error = service.quiz_start(&user_id, &course).await.unwrap_err();
+        assert!(
+            matches!(error, AppError::NotImplemented(_)),
+            "到期 = 501 占位（载体随 q2）: {error:?}"
+        );
+    }

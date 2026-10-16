@@ -32,6 +32,7 @@ use crate::cli::{Cli, LearningSmokeCommand};
 pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Result<ExitCode> {
     match command {
         LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
+        LearningSmokeCommand::Quiz { db } => run_quiz(cli, db).await,
         LearningSmokeCommand::Content {
             db,
             provider,
@@ -893,6 +894,122 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         settled.1,
         settled.2,
         reading.today_xp
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke quiz`（q1）：quiz 触发面冒烟骨架（零 LLM，读数面非门禁）。
+/// 从零临时库种一门 K 节点课程（est 25/节点），走真实管线逐节点结算（教新线
+/// full），机械判据：①K−1 节点后 due=false ②恰 K 节点后 due=true ③quiz/start
+/// 到期时返回 501 占位（回合载体随 q2 落地，完整判据随 q2 补）。
+async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
+    let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
+    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子课程：一门 K 节点课程（est 25/节点），报名为 owner。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let enrollment_id = nomifun_common::LearningEnrollmentId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'quiz trigger smoke', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    let mut lesson_ids = Vec::new();
+    for index in 0..k {
+        let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, position, estimated_minutes) \
+             VALUES (?, ?, ?, '', ?, 25)",
+        )
+        .bind(&lesson_id)
+        .bind(&module_id)
+        .bind(format!("Node {index}"))
+        .bind(index)
+        .execute(&wiring.pool)
+        .await?;
+        lesson_ids.push(lesson_id);
+    }
+    sqlx::query(
+        "INSERT INTO learning_enrollments \
+         (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(&enrollment_id)
+    .bind(owner.as_str())
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+
+    // ① K−1 节点：未到期。
+    for lesson_id in &lesson_ids[..(k as usize - 1)] {
+        let lesson = nomifun_common::LearningLessonId::parse(lesson_id)
+            .expect("just-minted lesson id parses");
+        service
+            .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+            .await?;
+    }
+    let before = service.quiz_progress(&owner, &course).await?;
+    anyhow::ensure!(
+        !before.due,
+        "N={} must not be due (K={k})",
+        before.settled_count
+    );
+    println!(
+        "[1/2] after {}/{} settlements: N={} K={} due=false",
+        k - 1,
+        k,
+        before.settled_count,
+        before.trigger_count
+    );
+
+    // ② 第 K 节点：到期翻转。
+    let last = lesson_ids.last().expect("k ≥ 1");
+    let lesson = nomifun_common::LearningLessonId::parse(last)
+        .expect("just-minted lesson id parses");
+    service
+        .update_lesson_progress(&lesson, &owner, nomifun_learning::LessonStatus::Completed)
+        .await?;
+    let due = service.quiz_progress(&owner, &course).await?;
+    anyhow::ensure!(due.due, "N={} must be due (K={k})", due.settled_count);
+    println!(
+        "[2/2] after {k}: N={} K={} due=true — progress reading confirmed",
+        due.settled_count, due.trigger_count
+    );
+
+    // ③ 命令面骨架：到期 = 501 占位（q2 接回合载体）。
+    match service.quiz_start(&owner, &course).await {
+        Err(nomifun_common::AppError::NotImplemented(message)) => {
+            println!("quiz/start: 501 placeholder confirmed ({message})");
+        }
+        Err(error) => anyhow::bail!("quiz/start must return the 501 placeholder when due, got {error}"),
+        Ok(_) => anyhow::bail!("quiz/start must not succeed before the q2 carrier lands"),
+    }
+
+    println!(
+        "OK  course={course_id}  settled={}/{}  (complete criteria land with q2)",
+        due.settled_count, due.trigger_count
     );
     Ok(ExitCode::SUCCESS)
 }

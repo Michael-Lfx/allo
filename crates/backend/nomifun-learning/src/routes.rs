@@ -17,8 +17,8 @@ use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, RateReviewRequest,
-    RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
+    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, QuizProgressView,
+    RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
 };
@@ -111,6 +111,11 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route("/api/learning/checkins/today", get(checkin_today))
         .route("/api/learning/xp/reading", get(xp_reading))
         .route("/api/learning/xp/calendar", get(xp_calendar))
+        .route(
+            "/api/learning/courses/{id}/quiz/progress",
+            get(quiz_progress),
+        )
+        .route("/api/learning/courses/{id}/quiz/start", post(quiz_start))
         .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
         .route("/api/learning/tags", get(list_tags))
@@ -667,6 +672,31 @@ async fn xp_calendar(
             .service
             .xp_calendar(&user.id, query.weeks.unwrap_or(12))
             .await?,
+    )))
+}
+
+/// quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K。
+async fn quiz_progress(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<QuizProgressView>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_progress(&user.id, &id).await?,
+    )))
+}
+
+/// quiz 开测命令（q1 骨架）：due=false = Conflict 附 N/K；due=true =
+/// 501 Not Implemented 占位（回合载体随 q2 接）。
+async fn quiz_start(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<QuizProgressView>>, AppError> {
+    let id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_start(&user.id, &id).await?,
     )))
 }
 

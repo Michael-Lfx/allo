@@ -1,6 +1,8 @@
 use super::*;
 
-use crate::settle::{validate_settlement, Settlement, DEFAULT_DAILY_XP_GOAL};
+use crate::settle::{
+    validate_settlement, Settlement, DEFAULT_DAILY_XP_GOAL, QUIZ_TRIGGER_SETTLEMENTS,
+};
 
 /// companion 桥接缝（j05，二轮 g1「统一账」）：学习结算落账后把净入账同步
 /// 授予 companion 账户。实现方（组合根）负责事件 id 幂等去重与 companion
@@ -376,6 +378,80 @@ impl LearningService {
             tz_offset: tz_offset_minutes,
             days,
         })
+    }
+
+    /// quiz 触发计数（q1 纯读投影，零新存储）：N = 距该课程**上次
+    /// quiz 结算**之后的 `node-completed` 数（learnhub
+    /// `settlements_since_last_quiz` 同语义——追加序为权威，账本 rowid 序
+    /// 即追加序；复习/quiz 账不推进触发进度，quiz 结算即清零重新积累）。
+    /// 票面 COUNT 差公式（node − quiz）只在「每次积累满 K 必 quiz」的纪律
+    /// 性使用下与本语义一致；quiz 后不满 K 的场景差公式会误报 due，故取
+    /// 参考实码语义。
+    pub(super) async fn quiz_settled_count(
+        &self,
+        user_id: &UserId,
+        course_id: &str,
+    ) -> Result<i64, AppError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_xp_events e \
+             WHERE e.user_id = ? AND e.course_id = ? AND e.kind = 'node-completed' \
+               AND NOT EXISTS (SELECT 1 FROM learning_xp_events q \
+                 WHERE q.user_id = e.user_id AND q.course_id = e.course_id \
+                   AND q.kind = 'quiz-completed' AND q.rowid > e.rowid)",
+        )
+        .bind(user_id.as_str())
+        .bind(course_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(count.max(0))
+    }
+
+    /// 每课程 N/K 读数（`GET /courses/{id}/quiz/progress`；读数面非门禁）。
+    /// 课程不在（未建或已删墓碑）= NotFound。
+    pub async fn quiz_progress(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<QuizProgressView, AppError> {
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM learning_courses \
+             WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("learning course {course_id}")));
+        }
+        let settled_count = self
+            .quiz_settled_count(user_id, course_id.as_str())
+            .await?;
+        Ok(QuizProgressView {
+            settled_count,
+            trigger_count: QUIZ_TRIGGER_SETTLEMENTS,
+            due: settled_count >= QUIZ_TRIGGER_SETTLEMENTS,
+        })
+    }
+
+    /// quiz 开测命令骨架（q1 占位，载体随 q2）：due=false = Conflict 附
+    /// N/K；due=true = 501 Not Implemented 占位（q2 接回合载体后替换）。
+    pub async fn quiz_start(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<QuizProgressView, AppError> {
+        let progress = self.quiz_progress(user_id, course_id).await?;
+        if !progress.due {
+            return Err(AppError::Conflict(format!(
+                "quiz not due: {}/{} settlements since last quiz",
+                progress.settled_count, progress.trigger_count
+            )));
+        }
+        Err(AppError::NotImplemented(
+            "quiz round carrier lands with q2".into(),
+        ))
     }
 
 }

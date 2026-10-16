@@ -1983,6 +1983,19 @@ pub struct XpCalendar {
     pub days: Vec<XpCalendarDay>,
 }
 
+/// quiz 触发进度读数（q1，读数面非门禁）：每课程 N/K——N = 距该课程上次
+/// quiz 结算之后的学新结算数（复习/quiz 账不推进；零存储，账本回放派生），
+/// K = 触发阈值。
+#[derive(Debug, Clone, Serialize)]
+pub struct QuizProgressView {
+    /// 学新结算计数 N（quiz 结算即清零重新积累）。
+    pub settled_count: i64,
+    /// 触发阈值 K（起步值 6，待校准）。
+    pub trigger_count: i64,
+    /// N ≥ K = 到期（测量面读数，非门禁）。
+    pub due: bool,
+}
+
 /// 挂载回合摘要（j08）：status = mounted（有待挂并已落盘）/ skipped
 /// （待挂集空——零 LLM 零写）。挂载是导航事实：计数面只有条目统计。
 #[derive(Debug, Clone, Serialize)]

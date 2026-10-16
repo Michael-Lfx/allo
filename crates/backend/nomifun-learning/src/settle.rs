@@ -18,6 +18,17 @@
 //! 实际正确率 < [`GUESS_SIGNIFICANCE`] × [`GUESS_TEXT_BASELINE`]）= 负分
 //! `−max(基数 ÷ [`GUESS_PENALTY_DIVISOR`], 1)`。起步值全部自标「待校准」
 //! ——learnhub 同款；乱猜判据是报警阈值，可调不改结构。
+//!
+//! # quiz 准确率分级（q1，learnhub `settle_quiz` 移植）
+//!
+//! quiz 是自动性检测（测量非门禁）：基数 = Σ 题型当量（**无
+//! [`REVIEW_MIN_MINUTES`] 下限**——quiz 线与 node/review 阶梯的关键区别，
+//! 单题迷你检测也按当量原样入账）；授予按准确率四档：≥ [`QUIZ_EXCELLENT_RATIO`]
+//! = 足额 + 全对级 bonus / ≥ [`QUIZ_PASS_RATIO`] = 足额 / ≥ [`QUIZ_HALF_RATIO`]
+//! = 半额 / 低于此值 = 四分之一额。**恒非负**——无乱猜通道（惩罚性反馈归
+//! 归因面，条款 j05 先入：quiz 走 [`validate_settlement`] 零放宽）；零题
+//! 拒绝（测量语义：无准确率可分级）。触发面（K 计数）是账本回放派生，
+//! 见 `service::xp`；[`QUIZ_TRIGGER_SETTLEMENTS`] 是起步值待校准。
 
 use crate::models::ActivityKind;
 
@@ -36,6 +47,19 @@ pub const GUESS_TEXT_BASELINE: f64 = 0.25;
 /// 日 XP 目标缺省值（≈ MA 课堂基线）；住应用设置 `learning.dailyXpGoal`，
 /// 写侧拒绝 1..=1000 之外的值。
 pub const DEFAULT_DAILY_XP_GOAL: i64 = 40;
+
+/// quiz 触发阈值（K 起步值待校准；MA 150 XP ≈ est 中位 × 6 同量级）。
+/// 计数面 = 距该课程上次 quiz 结算之后的 `node-completed` 数（复习/quiz
+/// 账不推进），见 `service::xp`。
+pub const QUIZ_TRIGGER_SETTLEMENTS: i64 = 6;
+/// 单场 quiz 题量上限（≈ 题量与成本护栏；贪心装填随 q2 载体）。
+pub const QUIZ_QUESTION_BUDGET: usize = 15;
+/// quiz 优秀档门槛：准确率 ≥ 此值 = 足额 + 全对级 bonus（奖励「干净自动」）。
+pub const QUIZ_EXCELLENT_RATIO: f64 = 0.9;
+/// quiz 达标档门槛：准确率 ≥ 此值 = 足额（不奖不罚）。
+pub const QUIZ_PASS_RATIO: f64 = 0.6;
+/// quiz 衰减档门槛：准确率 ≥ 此值 = 半额；低于此值 = 四分之一额。
+pub const QUIZ_HALF_RATIO: f64 = 0.3;
 
 /// 题型工作量当量（分钟/题，起步值待校准；learnhub 1/2/3 骨架按认知负荷
 /// 分档）：单选/判断 = 1；多选/填空/数值/匹配/排序 = 2（构造完整答案集合
@@ -168,6 +192,62 @@ impl Settlement {
                 ratio: Some(score),
             }
         }
+    }
+
+    /// quiz 线结算（quiz-completed，q1：learnhub `settle_quiz` 移植）：基数
+    /// = Σ 题型当量（**无** [`REVIEW_MIN_MINUTES`] 下限），授予按准确率四档
+    /// 分级（见模块文档；恒非负——无乱猜通道）。`kinds` = 本场 quiz 作答题
+    /// 的题型清单（定价按题型），`answered` = 作答题数，`correct` = 答对数。
+    /// quiz 必作答（测量语义）：零题 / 题单与作答数错配 / 答对数越界 =
+    /// 输入责任 fail loud（错配即错价，不做静默宽容）。
+    pub fn settle_quiz(kinds: &[ActivityKind], correct: i64, answered: i64) -> Result<Self, String> {
+        if answered <= 0 || kinds.is_empty() {
+            return Err("quiz 会话必作答（零题 quiz 无准确率可分级）".into());
+        }
+        if kinds.len() as i64 != answered {
+            return Err(format!(
+                "quiz 结算题单与作答数不符（题单 {} / 作答 {answered}；定价按题型，错配即错价）",
+                kinds.len()
+            ));
+        }
+        if !(0..=answered).contains(&correct) {
+            return Err(format!("quiz 答对数越界（应 0..={answered}）：{correct}"));
+        }
+        // quiz 无下限：worked 原样作基数（与复习线的 max(当量, 3) 相区别）。
+        let worked: i64 = kinds.iter().map(|kind| question_equivalent(*kind)).sum();
+        let accuracy = correct as f64 / answered as f64;
+        // 准确率四档（门槛常量集中，见模块文档）：优秀档足额 + bonus /
+        // 达标档足额 / 衰减档半额 / 低档四分之一额——恒非负。
+        let settlement = if accuracy >= QUIZ_EXCELLENT_RATIO {
+            Self {
+                earned_xp: worked + XP_FULL_BONUS,
+                xp_bonus: XP_FULL_BONUS,
+                basis: SettlementBasis::Full,
+                ratio: None,
+            }
+        } else if accuracy >= QUIZ_PASS_RATIO {
+            Self {
+                earned_xp: worked,
+                xp_bonus: 0,
+                basis: SettlementBasis::Full,
+                ratio: None,
+            }
+        } else if accuracy >= QUIZ_HALF_RATIO {
+            Self {
+                earned_xp: worked / 2,
+                xp_bonus: 0,
+                basis: SettlementBasis::Partial,
+                ratio: Some(accuracy),
+            }
+        } else {
+            Self {
+                earned_xp: worked / 4,
+                xp_bonus: 0,
+                basis: SettlementBasis::Partial,
+                ratio: Some(accuracy),
+            }
+        };
+        Ok(settlement)
     }
 }
 
@@ -424,5 +504,92 @@ mod tests {
         assert_eq!(question_equivalent(ActivityKind::Ordering), 2);
         assert_eq!(question_equivalent(ActivityKind::Reflection), 3);
         assert_eq!(question_equivalent(ActivityKind::OpenQuestion), 3);
+    }
+
+    // —— quiz 准确率分级（q1，learnhub 真值表） ——
+
+    /// quiz 准确率四档真值表（4 单选 = worked 4；门槛 0.9 / 0.6 / 0.3）：
+    /// 1.0 → 4 + 2（full 含 bonus）；0.75 → 4（full 无 bonus）；0.5 → 2
+    /// （partial 半额）；0.25 与 0 → 1（partial 四分之一额，恒非负）。
+    /// 每档输出都过 `validate_settlement("quiz-completed", …)` 零放宽。
+    #[test]
+    fn quiz_ladder_tiers_by_accuracy() {
+        let kinds = [ActivityKind::SingleChoice; 4];
+        let cases: [(i64, i64, i64, SettlementBasis, Option<f64>); 5] = [
+            (4, 6, 2, SettlementBasis::Full, None),
+            (3, 4, 0, SettlementBasis::Full, None),
+            (2, 2, 0, SettlementBasis::Partial, Some(0.5)),
+            (1, 1, 0, SettlementBasis::Partial, Some(0.25)),
+            (0, 1, 0, SettlementBasis::Partial, Some(0.0)),
+        ];
+        for (correct, earned, bonus, basis, ratio) in cases {
+            let settlement = Settlement::settle_quiz(&kinds, correct, 4)
+                .unwrap_or_else(|error| panic!("settle_quiz({correct}/4) failed: {error}"));
+            assert_eq!(
+                settlement,
+                Settlement { earned_xp: earned, xp_bonus: bonus, basis, ratio },
+                "准确率 {correct}/4 的授予档"
+            );
+            validate_settlement("quiz-completed", &settlement)
+                .unwrap_or_else(|error| panic!("quiz settlement must pass the clause: {error}"));
+        }
+    }
+
+    /// quiz 无 3 分钟下限（与复习线的关键区别）：2 单选全对 = worked 2 原样
+    /// 作基数（复习线同型会被下限 3 抬平成 5）。
+    #[test]
+    fn quiz_has_no_minimum_floor_unlike_review() {
+        let settlement = Settlement::settle_quiz(
+            &[ActivityKind::SingleChoice, ActivityKind::SingleChoice],
+            2,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            settlement,
+            Settlement { earned_xp: 4, xp_bonus: 2, basis: SettlementBasis::Full, ratio: None },
+            "worked 2 原样作基数，无 REVIEW_MIN_MINUTES 下限"
+        );
+        validate_settlement("quiz-completed", &settlement).unwrap();
+    }
+
+    /// quiz 无乱猜通道（测量非门禁）：8 单选全错 = 四分之一额 2，恒非负；
+    /// 与教新线的乱猜负分（同结局 −12）专项对照。
+    #[test]
+    fn quiz_never_penalizes_even_all_wrong() {
+        let kinds = [ActivityKind::SingleChoice; 8];
+        let settlement = Settlement::settle_quiz(&kinds, 0, 8).unwrap();
+        assert_eq!(
+            settlement,
+            Settlement { earned_xp: 2, xp_bonus: 0, basis: SettlementBasis::Partial, ratio: Some(0.0) },
+            "worked 8 的四分之一额 = 2，恒非负"
+        );
+        validate_settlement("quiz-completed", &settlement).unwrap();
+    }
+
+    /// 零题拒绝（测量语义：无准确率可分级）+ 题单/作答数错配与答对数越界
+    /// fail loud（错配即错价，不做静默宽容）。
+    #[test]
+    fn quiz_zero_questions_and_mismatches_fail_loud() {
+        assert!(Settlement::settle_quiz(&[], 0, 0).is_err(), "零题拒绝");
+        let kinds = [ActivityKind::SingleChoice, ActivityKind::FillInBlank];
+        assert!(
+            Settlement::settle_quiz(&kinds, 1, 1).is_err(),
+            "题单与作答数错配拒绝"
+        );
+        assert!(
+            Settlement::settle_quiz(&kinds, 3, 2).is_err(),
+            "答对数超过作答数拒绝"
+        );
+    }
+
+    /// quiz 常量集中表起步值钉住（待校准改这里一处）。
+    #[test]
+    fn quiz_constants_starting_values() {
+        assert_eq!(QUIZ_TRIGGER_SETTLEMENTS, 6);
+        assert_eq!(QUIZ_QUESTION_BUDGET, 15);
+        assert!((QUIZ_EXCELLENT_RATIO - 0.9).abs() < f64::EPSILON);
+        assert!((QUIZ_PASS_RATIO - 0.6).abs() < f64::EPSILON);
+        assert!((QUIZ_HALF_RATIO - 0.3).abs() < f64::EPSILON);
     }
 }
