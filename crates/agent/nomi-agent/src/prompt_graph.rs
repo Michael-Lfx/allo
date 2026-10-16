@@ -436,7 +436,8 @@ mod tests {
     fn windows_guidance_states_resolved_shell_contract() {
         let set = AdvertisedToolSet::from_names(["Bash", "exec_command"]);
         let text = tool_usage_guidance(&set, false);
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             assert!(text.contains("Do not prefix the command"));
             match nomi_process_runtime::windows_shell_edition() {
                 nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
@@ -447,7 +448,9 @@ mod tests {
                     assert!(text.contains("PowerShell 7-only syntax"));
                 }
             }
-        } else {
+        }
+        #[cfg(not(windows))]
+        {
             assert!(!text.contains("Windows PowerShell 5.1"));
         }
     }

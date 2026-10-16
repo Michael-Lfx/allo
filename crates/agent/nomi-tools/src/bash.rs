@@ -595,7 +595,8 @@ mod tests {
     fn windows_description_states_resolved_shell_contract() {
         let tool = tool(std::env::temp_dir());
         let description = tool.description();
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             assert!(description.contains("Do not prefix the command with powershell.exe"));
             match nomi_process_runtime::windows_shell_edition() {
                 nomi_process_runtime::WindowsShellEdition::Pwsh7 => {
@@ -607,7 +608,9 @@ mod tests {
                     assert!(description.contains("PowerShell 7-only syntax such as ??"));
                 }
             }
-        } else {
+        }
+        #[cfg(not(windows))]
+        {
             assert!(!description.contains("Windows PowerShell 5.1"));
         }
     }
