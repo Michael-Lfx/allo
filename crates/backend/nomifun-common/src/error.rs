@@ -114,6 +114,12 @@ pub enum AppError {
     #[error("Verification code is invalid")]
     CloudOtpInvalidCode,
 
+    /// The endpoint exists by contract but its backing capability has not
+    /// landed yet (placeholder surface). Distinct from `BadRequest`/`NotFound`
+    /// so clients can tell "not built yet" from "wrong request".
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -177,6 +183,7 @@ impl AppError {
             Self::ManagedFreeModelsDisabled(_) => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::CloudOtpInvalidCode => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
             Self::Timeout(_) => StatusCode::BAD_GATEWAY,
@@ -207,6 +214,7 @@ impl AppError {
             Self::ManagedFreeModelsDisabled(_) => "MANAGED_FREE_MODELS_DISABLED",
             Self::RateLimited => "RATE_LIMITED",
             Self::CloudOtpInvalidCode => "CLOUD_OTP_INVALID_CODE",
+            Self::NotImplemented(_) => "NOT_IMPLEMENTED",
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::BadGateway(_) => "BAD_GATEWAY",
             Self::Timeout(_) => "TIMEOUT",

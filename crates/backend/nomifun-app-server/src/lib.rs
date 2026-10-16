@@ -696,6 +696,7 @@ impl AppServerError {
             | nomifun_common::AppError::WorkspacePathEdgeWhitespaceRuntimeUnsupported(_) => {
                 ("workspace_denied", false)
             }
+            nomifun_common::AppError::NotImplemented(_) => ("not_implemented", false),
         };
         let details = error.error_details();
         let mapped = Self::new(code, error.to_string(), status, retryable);
