@@ -267,6 +267,10 @@ impl ConversationService {
             Arc::clone(runtime_registry),
             true,
             false,
+            match origin {
+                CancelOrigin::User => nomifun_common::AgentKillReason::UserCancelled,
+                CancelOrigin::AgentExecution => nomifun_common::AgentKillReason::AttemptSettled,
+            },
         );
         drop(user_cancel_preflight);
         let stop_result = match tokio::time::timeout(CANCEL_HANDLER_GRACE, result_rx).await {

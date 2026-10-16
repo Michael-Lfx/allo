@@ -459,6 +459,10 @@ mod tests {
             "read_only".parse::<AgentToolPolicy>().unwrap(),
             AgentToolPolicy::ReadOnly
         );
+        assert_eq!(
+            "files_shell".parse::<AgentToolPolicy>().unwrap(),
+            AgentToolPolicy::FilesShell
+        );
         assert!("admin".parse::<AgentToolPolicy>().is_err());
     }
 

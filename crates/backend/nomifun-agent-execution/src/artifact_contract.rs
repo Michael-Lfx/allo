@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 const MAX_ARTIFACT_TERM_DISTANCE: usize = 120;
 
@@ -151,7 +152,7 @@ fn infer_expected_artifacts(step_spec: &str) -> Option<ExpectedArtifactContract>
             .map(|(position, verb)| (position, position + verb.len(), verb))
             .collect::<Vec<_>>();
         for (verb_index, (verb_start, verb_end, verb)) in verbs.iter().copied().enumerate() {
-            if verb_is_nested_capability(clause, verb_start) {
+            if verb_is_nested_capability(clause, verb_start) || verb_is_negated(clause, verb_start) {
                 continue;
             }
             let next_verb = verbs.get(verb_index + 1).map(|(start, _, _)| *start);
@@ -199,10 +200,72 @@ fn infer_expected_artifacts(step_spec: &str) -> Option<ExpectedArtifactContract>
                     },
                 );
             }
+            let path_scan_end = next_verb.unwrap_or(clause.len());
+            if path_scan_end > artifact_search_start {
+                for path in declared_output_paths(&clause[artifact_search_start..path_scan_end]) {
+                    if let Some(matcher) = matcher_from_filename(&path) {
+                        merge_requirement(
+                            &mut requirements,
+                            ArtifactRequirement {
+                                matcher,
+                                minimum_count: 1,
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 
     (!requirements.is_empty()).then_some(ExpectedArtifactContract { requirements })
+}
+
+/// Paths the step spec names as deliverables (`口播脚本.md`, `out/report.pdf`).
+///
+/// These are used to project workspace files into `output_files`. They do not
+/// create an obligation on their own — only an output verb plus a format still
+/// does that — so an environment step that merely mentions `render.py` stays
+/// free of a media contract.
+pub(crate) fn declared_output_paths(spec: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    collect_delimited_paths(spec, '`', &mut paths);
+    collect_delimited_paths(spec, '"', &mut paths);
+    collect_delimited_paths(spec, '\'', &mut paths);
+    paths.retain(|path| looks_like_output_path(path));
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Union conversation receipts with files that actually landed in the step
+/// workspace. Write/Bash are first-class delivery channels; conversation
+/// artifact receipts are not the only evidence.
+pub(crate) fn merge_workspace_verified_outputs(
+    workspace: Option<&Path>,
+    step_spec: &str,
+    existing: Vec<String>,
+    modified_since: Option<SystemTime>,
+) -> Vec<String> {
+    let Some(workspace) = workspace.filter(|path| path.is_dir()) else {
+        return existing;
+    };
+    let declared = declared_output_paths(step_spec);
+    let contract = infer_expected_artifacts(step_spec);
+    let mut unique = existing
+        .into_iter()
+        .filter(|path| !path.trim().is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut remaining = 2_000usize;
+    walk_workspace_outputs(
+        workspace,
+        workspace,
+        &declared,
+        contract.as_ref(),
+        modified_since,
+        &mut unique,
+        &mut remaining,
+    );
+    unique.into_iter().collect()
 }
 
 fn is_packaging_verb(verb: &str) -> bool {
@@ -253,6 +316,25 @@ fn transform_output_start(clause: &str, verb: &str, verb_end: usize) -> Option<u
         .min()
 }
 
+fn verb_is_negated(clause: &str, verb_start: usize) -> bool {
+    let prefix = clause[..verb_start].trim_end();
+    [
+        "不要",
+        "别",
+        "禁止",
+        "无需",
+        "不用",
+        "do not",
+        "don't",
+        "dont",
+        "never",
+        "without",
+        "no need to",
+    ]
+    .iter()
+    .any(|marker| prefix.ends_with(marker) || prefix.ends_with(&format!("{marker} ")))
+}
+
 fn verb_is_nested_capability(clause: &str, verb_start: usize) -> bool {
     let prefix = clause[..verb_start].trim_end();
     if prefix.ends_with("用于") || prefix.ends_with("以便") {
@@ -287,10 +369,11 @@ fn output_artifacts_after(
                 })
                 .map(move |position| (position, position + term.len(), *matcher))
         })
-        .filter(|(start, end, _)| {
+        .filter(|(start, end, matcher)| {
             clause[after..*start].chars().count() <= MAX_ARTIFACT_TERM_DISTANCE
                 && !artifact_is_input_context(&clause[after..*start])
                 && !artifact_is_modifier_context(&clause[*end..])
+                && artifact_term_is_usable(clause, *start, *end, *matcher)
         })
         .collect::<Vec<_>>();
     candidates.sort_unstable_by(|left, right| {
@@ -533,6 +616,9 @@ fn matching_terms<'a>(text: &str, terms: &'a [&'a str]) -> Vec<(usize, &'a str)>
         .flat_map(|term| {
             matching_term_positions(text, term)
                 .into_iter()
+                .filter(|&position| {
+                    !span_is_filename_or_path_component(text, position, position + term.len())
+                })
                 .map(|position| (position, *term))
         })
         .collect::<Vec<_>>();
@@ -563,6 +649,258 @@ fn ascii_word_boundaries_match(text: &str, position: usize, term: &str) -> bool 
 fn is_ascii_word_char(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '_'
 }
+
+fn artifact_term_is_usable(
+    clause: &str,
+    start: usize,
+    end: usize,
+    matcher: ArtifactMatcher,
+) -> bool {
+    let matched = &clause[start..end];
+    // `.md` / `.mp4` inside a path is an explicit format, not a false noun.
+    if matches!(matcher, ArtifactMatcher::Exact(_)) && matched.starts_with('.') {
+        return true;
+    }
+    !span_is_filename_or_path_component(clause, start, end)
+        && !span_is_quoted_compound_name(clause, start, end)
+}
+
+fn span_is_filename_or_path_component(text: &str, start: usize, end: usize) -> bool {
+    let token = enclosing_path_token(text, start, end);
+    token.contains('/') || token.contains('\\') || looks_like_filename(token)
+}
+
+fn enclosing_path_token(text: &str, start: usize, end: usize) -> &str {
+    let bytes = text.as_bytes();
+    let mut lo = start;
+    while lo > 0 {
+        let previous = text[..lo].chars().next_back();
+        if previous.is_some_and(is_path_token_break) {
+            break;
+        }
+        lo -= previous.map(char::len_utf8).unwrap_or(1);
+        if lo > bytes.len() {
+            break;
+        }
+    }
+    let mut hi = end;
+    while hi < text.len() {
+        let next = text[hi..].chars().next();
+        if next.is_some_and(is_path_token_break) {
+            break;
+        }
+        hi += next.map(char::len_utf8).unwrap_or(1);
+    }
+    &text[lo..hi]
+}
+
+fn is_path_token_break(character: char) -> bool {
+    character.is_whitespace()
+        || matches!(
+            character,
+            '`' | '"'
+                | '\''
+                | ','
+                | ';'
+                | '，'
+                | '；'
+                | '('
+                | ')'
+                | '（'
+                | '）'
+                | '['
+                | ']'
+                | '【'
+                | '】'
+                | '<'
+                | '>'
+                | '|'
+                | '。'
+                | '！'
+                | '？'
+                | '!'
+                | '?'
+                | ':'
+                | '：'
+        )
+}
+
+fn looks_like_filename(token: &str) -> bool {
+    let token = token.trim().trim_matches(['`', '"', '\'']);
+    let Some((stem, ext)) = token.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && !ext.is_empty()
+        && ext.len() <= 8
+        && ext
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+}
+
+fn span_is_quoted_compound_name(text: &str, start: usize, end: usize) -> bool {
+    enclosing_quote_inner(text, start, end).is_some_and(|inner| inner.len() > end.saturating_sub(start))
+}
+
+fn enclosing_quote_inner(text: &str, start: usize, end: usize) -> Option<&str> {
+    for quote in ['`', '"', '\''] {
+        let prefix = &text[..start];
+        let Some(open) = prefix.rfind(quote) else {
+            continue;
+        };
+        if prefix[open + quote.len_utf8()..].contains(quote) {
+            continue;
+        }
+        let suffix = &text[end..];
+        let close = suffix.find(quote)?;
+        return Some(&text[open + quote.len_utf8()..end + close]);
+    }
+    None
+}
+
+fn collect_delimited_paths(spec: &str, delimiter: char, paths: &mut Vec<String>) {
+    let mut rest = spec;
+    while let Some(open) = rest.find(delimiter) {
+        rest = &rest[open + delimiter.len_utf8()..];
+        let Some(close) = rest.find(delimiter) else {
+            break;
+        };
+        let inner = rest[..close].trim();
+        if !inner.is_empty() && !inner.contains('\n') {
+            paths.push(inner.to_owned());
+        }
+        rest = &rest[close + delimiter.len_utf8()..];
+    }
+}
+
+fn looks_like_output_path(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && !value.contains('\n') && looks_like_filename(value)
+}
+
+fn matcher_from_filename(path: &str) -> Option<ArtifactMatcher> {
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)?;
+    ARTIFACT_TERMS.iter().find_map(|(term, matcher)| {
+        matches!(matcher, ArtifactMatcher::Exact(expected) if *expected == extension)
+            .then_some(*matcher)
+            .filter(|_| term.starts_with('.'))
+    })
+}
+
+fn walk_workspace_outputs(
+    workspace: &Path,
+    dir: &Path,
+    declared: &[String],
+    contract: Option<&ExpectedArtifactContract>,
+    modified_since: Option<SystemTime>,
+    unique: &mut BTreeSet<String>,
+    remaining: &mut usize,
+) {
+    if *remaining == 0 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        if *remaining == 0 {
+            return;
+        }
+        *remaining = remaining.saturating_sub(1);
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.')
+            || matches!(
+                name.as_ref(),
+                "node_modules" | ".git" | "target" | "dist" | "__pycache__" | ".turbo" | "vendor"
+            )
+        {
+            continue;
+        }
+        let file_type = entry.file_type().ok();
+        if file_type.is_some_and(|kind| kind.is_dir()) {
+            walk_workspace_outputs(
+                workspace,
+                &path,
+                declared,
+                contract,
+                modified_since,
+                unique,
+                remaining,
+            );
+            continue;
+        }
+        if !file_type.is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.len() == 0 || metadata.len() > MAX_WORKSPACE_ARTIFACT_BYTES {
+            continue;
+        }
+        let matches_declared = file_matches_declared(&path, workspace, declared);
+        let matches_recent_contract = contract.is_some_and(|contract| {
+            let recent = modified_since.is_none_or(|since| {
+                metadata
+                    .modified()
+                    .ok()
+                    .is_some_and(|modified| modified + Duration::from_secs(2) >= since)
+            });
+            recent && contract_accepts_path(contract, &path)
+        });
+        if matches_declared || matches_recent_contract {
+            unique.insert(path.to_string_lossy().into_owned());
+        }
+    }
+}
+
+fn file_matches_declared(path: &Path, workspace: &Path, declared: &[String]) -> bool {
+    if declared.is_empty() {
+        return false;
+    }
+    let relative = path
+        .strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    declared.iter().any(|declared| {
+        let normalized = declared.replace('\\', "/");
+        paths_equal_ignore_case(&relative, &normalized)
+            || paths_equal_ignore_case(&file_name, Path::new(&normalized).file_name().map(|name| name.to_string_lossy().into_owned()).as_deref().unwrap_or(normalized.as_str()))
+    })
+}
+
+fn paths_equal_ignore_case(left: &str, right: &str) -> bool {
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn contract_accepts_path(contract: &ExpectedArtifactContract, path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    contract
+        .requirements
+        .iter()
+        .any(|requirement| requirement.matcher.accepts(extension.as_deref()))
+}
+
+const MAX_WORKSPACE_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 fn explicit_count_before(segment: &str) -> Option<usize> {
     let digit_runs = ascii_digit_runs(segment)
@@ -1202,5 +1540,84 @@ mod tests {
             validate_required_artifacts(document_with_images, &files(&["/w/report.docx"]))
                 .is_ok()
         );
+    }
+
+    /// The 2026-10-15 session `01a13f4e` step specs. Filename stems and path
+    /// components must not manufacture media obligations.
+    const ENV_SPEC: &str = "初始化 art-motion 工程与运行环境。复制引擎到工作区，确认 `render.py` 可运行，输出目录使用 `新闻口播视频`。完成 Chromium 冒烟后汇报。";
+    const NEWS_SPEC: &str = "核实采集当日新闻资讯。使用 news-briefing / briefing_create 获取 sourced briefing，禁止 web_search。不要生成视频或音频文件。";
+    const SCRIPT_SPEC: &str = "根据已核实新闻撰写中文口播稿，写入 `口播脚本.md`。";
+
+    #[test]
+    fn session_env_and_news_specs_do_not_require_media_without_receipts() {
+        assert!(
+            validate_required_artifacts(ENV_SPEC, &[]).is_ok(),
+            "render.py and 新闻口播视频 must not invent a video contract"
+        );
+        assert!(
+            validate_required_artifacts(NEWS_SPEC, &[]).is_ok(),
+            "a news gather step must not require media artifacts"
+        );
+        assert!(
+            infer_expected_artifacts(ENV_SPEC).is_none(),
+            "env spec inferred {:?}",
+            infer_expected_artifacts(ENV_SPEC)
+        );
+        assert!(infer_expected_artifacts(NEWS_SPEC).is_none());
+    }
+
+    #[test]
+    fn session_script_spec_requires_markdown_not_video() {
+        assert!(validate_required_artifacts(SCRIPT_SPEC, &[]).is_err());
+        assert!(validate_required_artifacts(SCRIPT_SPEC, &files(&["/w/口播脚本.md"])).is_ok());
+        assert!(validate_required_artifacts(SCRIPT_SPEC, &files(&["/w/talk.mp4"])).is_err());
+        let contract = infer_expected_artifacts(SCRIPT_SPEC).expect("md obligation");
+        assert!(
+            contract
+                .requirements
+                .iter()
+                .all(|requirement| requirement.matcher == ArtifactMatcher::Exact("md")),
+            "script spec inferred {:?}",
+            contract.requirements
+        );
+    }
+
+    #[test]
+    fn filename_stems_are_not_output_verbs() {
+        assert!(validate_required_artifacts("Confirm render.py runs in the workspace.", &[]).is_ok());
+        assert!(
+            validate_required_artifacts("Copy encode.sh into tools/", &[]).is_ok(),
+            "encode in encode.sh must not require an encoded artifact"
+        );
+        assert!(validate_required_artifacts("不要生成视频", &[]).is_ok());
+        assert!(validate_required_artifacts("Do not create a video", &[]).is_ok());
+    }
+
+    #[test]
+    fn workspace_files_satisfy_declared_markdown_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("口播脚本.md");
+        std::fs::write(&script, "# 口播稿\n今日要闻").unwrap();
+        let merged = merge_workspace_verified_outputs(
+            Some(dir.path()),
+            SCRIPT_SPEC,
+            Vec::new(),
+            Some(SystemTime::now()),
+        );
+        assert!(
+            merged.iter().any(|path| Path::new(path).ends_with("口播脚本.md")),
+            "declared workspace markdown must count as a verified output: {merged:?}"
+        );
+        assert!(validate_required_artifacts(SCRIPT_SPEC, &merged).is_ok());
+    }
+
+    #[test]
+    fn declared_output_paths_extract_backticked_files_only() {
+        assert_eq!(
+            declared_output_paths(SCRIPT_SPEC),
+            vec!["口播脚本.md".to_owned()]
+        );
+        assert!(declared_output_paths(ENV_SPEC).contains(&"render.py".to_owned()));
+        assert!(!declared_output_paths(ENV_SPEC).iter().any(|path| path.contains("视频")));
     }
 }

@@ -1,7 +1,6 @@
 //! Sentence-chunked TTS prep + ASR-shaped timing. Anchors are never hand-typed.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -520,7 +519,7 @@ fn narration_dest(working_dir: &Path, source: &Path) -> PathBuf {
     }
 }
 
-fn silent_command(program: &str) -> Command {
+fn silent_command(program: &str) -> nomi_process_runtime::HiddenStdCommand {
     nomi_process_runtime::hidden_std_command(program)
 }
 

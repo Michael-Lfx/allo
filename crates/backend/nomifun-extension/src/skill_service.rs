@@ -932,6 +932,7 @@ pub struct LoadedCatalogSkill {
     pub source: String,
     pub version_hash: String,
     pub content: String,
+    pub location: Option<String>,
 }
 
 /// List all available skills (built-in + user custom), deduplicated.
@@ -1059,6 +1060,16 @@ async fn load_catalog_skills_with_roots(
         };
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
+        let location = match &candidate.location {
+            CatalogSkillLocation::Builtin(relative) => Some(
+                paths
+                    .builtin_skills_dir
+                    .join(relative)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            CatalogSkillLocation::File(path) => Some(path.to_string_lossy().into_owned()),
+        };
         loaded.push(LoadedCatalogSkill {
             skill_id: candidate.skill_id.clone(),
             name: candidate.name.clone(),
@@ -1066,6 +1077,7 @@ async fn load_catalog_skills_with_roots(
             source: candidate.source.as_str().to_owned(),
             version_hash: format!("{:x}", hasher.finalize()),
             content,
+            location,
         });
     }
 

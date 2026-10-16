@@ -8,15 +8,14 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use nomi_config::RuntimeDep;
-use nomi_process_runtime::hidden_command;
+use nomi_process_runtime::{HiddenCommand, hidden_command};
 use nomi_types::ToolError;
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 
 use crate::assets::persist_bytes;
 use crate::progress::report_media_progress;
 
-fn media_command(bin: impl AsRef<Path>) -> Command {
+fn media_command(bin: impl AsRef<Path>) -> HiddenCommand {
     hidden_command(bin.as_ref())
 }
 

@@ -2983,6 +2983,8 @@ fn main() -> std::process::ExitCode {
         return code;
     }
 
+    nomi_process_runtime::install_host_process_lifetime();
+
     configure_loopback_no_proxy();
 
     // Env mutation + runtime init BEFORE Tauri builds its runtime/threads,

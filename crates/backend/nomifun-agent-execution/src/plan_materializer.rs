@@ -6,7 +6,7 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AgentExecutionStepId, AgentStepMode, AgentToolPolicy, AppError, ExecutionStepKind,
-    ExecutionStepStatus, ParticipantAssignmentSource, MAX_AGENT_EXECUTION_STEPS,
+    ExecutionStepStatus, ParticipantAssignmentSource, StepFailurePolicy, MAX_AGENT_EXECUTION_STEPS,
 };
 use nomifun_db::{NewAgentExecutionStep, NewAgentExecutionStepDependency};
 
@@ -30,6 +30,14 @@ pub(crate) fn materialize(
         )));
     }
     validate_dag(&plan.steps)?;
+    let tool_policies: Vec<AgentToolPolicy> = plan
+        .steps
+        .iter()
+        .map(normalized_tool_policy)
+        .collect();
+    let failure_policies: Vec<StepFailurePolicy> = (0..plan.steps.len())
+        .map(|index| normalized_failure_policy(&plan.steps, index))
+        .collect();
     let active_participants: Vec<&ExecutionParticipant> = participants
         .iter()
         .filter(|participant| participant.retired_in_revision.is_none())
@@ -68,7 +76,7 @@ pub(crate) fn materialize(
             title: planned.title.trim().to_owned(),
             spec: planned.spec.trim().to_owned(),
             role: planned.role.map(|value| value.trim().to_owned()),
-            tool_policy: planned.tool_policy,
+            tool_policy: tool_policies[index],
             kind: planned.kind,
             agent_mode: (planned.kind == ExecutionStepKind::Agent)
                 .then(|| planned.agent_mode.unwrap_or(AgentStepMode::Normal)),
@@ -91,7 +99,7 @@ pub(crate) fn materialize(
             assignment_rationale: rationale,
             assignment_source: source,
             assignment_locked: false,
-            failure_policy: planned.failure_policy,
+            failure_policy: failure_policies[index],
             preset_prompt: None,
             graph_x: None,
             graph_y: None,
@@ -101,6 +109,79 @@ pub(crate) fn materialize(
         steps,
         dependencies,
     })
+}
+
+fn normalized_tool_policy(step: &PlannedExecutionStep) -> AgentToolPolicy {
+    if step.kind != ExecutionStepKind::Agent {
+        return AgentToolPolicy::Full;
+    }
+    if spec_requires_host_pipeline(&step.spec) {
+        return AgentToolPolicy::Full;
+    }
+    match step.tool_policy {
+        AgentToolPolicy::Full | AgentToolPolicy::FilesShell => AgentToolPolicy::FilesShell,
+        AgentToolPolicy::ReadShell => AgentToolPolicy::ReadShell,
+        AgentToolPolicy::ReadOnly => AgentToolPolicy::ReadOnly,
+    }
+}
+
+fn spec_requires_host_pipeline(spec: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "briefing_create",
+        "briefing_status",
+        "news-briefing",
+        "news_briefing",
+        "art-motion",
+        "art_motion",
+        "nomi_delegate",
+        "computer_use",
+    ];
+    let lower = spec.to_ascii_lowercase();
+    MARKERS.iter().any(|marker| contains_tool_marker(&lower, marker))
+}
+
+fn contains_tool_marker(haystack: &str, marker: &str) -> bool {
+    haystack.match_indices(marker).any(|(index, _)| {
+        let before = haystack[..index].chars().next_back();
+        let after = haystack[index + marker.len()..].chars().next();
+        !before.is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+            && !after.is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+    })
+}
+
+fn normalized_failure_policy(
+    steps: &[PlannedExecutionStep],
+    index: usize,
+) -> StepFailurePolicy {
+    let step = &steps[index];
+    if spec_is_safety_gate(&step.spec) {
+        return StepFailurePolicy::FailExecution;
+    }
+    let is_sink = !steps.iter().enumerate().any(|(other, candidate)| {
+        other != index && candidate.depends_on.contains(&index)
+    });
+    let is_synthesis = step.agent_mode == Some(AgentStepMode::Synthesis);
+    let is_last = index + 1 == steps.len();
+    if is_sink && (is_synthesis || is_last) {
+        StepFailurePolicy::FailExecution
+    } else {
+        StepFailurePolicy::SkipDependents
+    }
+}
+
+fn spec_is_safety_gate(spec: &str) -> bool {
+    let lower = spec.to_ascii_lowercase();
+    [
+        "safety",
+        "destructive",
+        "irreversible",
+        "生产环境",
+        "不可逆",
+        "安全闸",
+        "安全门",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn route(
@@ -342,5 +423,70 @@ mod tests {
         let narrowed = step("builder", AgentToolPolicy::ReadOnly);
         assert!(validate_step(&narrowed).is_ok());
         assert_eq!(narrowed.tool_policy, AgentToolPolicy::ReadOnly);
+    }
+
+    fn planned(
+        spec: &str,
+        tool_policy: AgentToolPolicy,
+        depends_on: Vec<usize>,
+    ) -> PlannedExecutionStep {
+        PlannedExecutionStep {
+            title: "step".to_owned(),
+            spec: spec.to_owned(),
+            profile: None,
+            kind: ExecutionStepKind::Agent,
+            agent_mode: Some(AgentStepMode::Normal),
+            depends_on,
+            participant_index: Some(0),
+            assignment_rationale: None,
+            role: None,
+            tool_policy,
+            fanout_group: None,
+            control_policy: None,
+            failure_policy: StepFailurePolicy::FailExecution,
+        }
+    }
+
+    #[test]
+    fn host_pipeline_specs_cannot_stay_read_only() {
+        let news = planned(
+            "核实当日新闻。使用 news-briefing / briefing_create，禁止 web_search。",
+            AgentToolPolicy::ReadOnly,
+            vec![],
+        );
+        assert_eq!(normalized_tool_policy(&news), AgentToolPolicy::Full);
+    }
+
+    #[test]
+    fn ordinary_implementation_narrows_full_to_files_shell() {
+        let env = planned(
+            "初始化工程，复制引擎并确认 `render.py` 可运行。",
+            AgentToolPolicy::Full,
+            vec![],
+        );
+        assert_eq!(normalized_tool_policy(&env), AgentToolPolicy::FilesShell);
+        let script = planned("写入 `口播脚本.md`", AgentToolPolicy::Full, vec![0]);
+        assert_eq!(normalized_tool_policy(&script), AgentToolPolicy::FilesShell);
+    }
+
+    #[test]
+    fn middle_steps_skip_dependents_final_sink_fails_execution() {
+        let steps = vec![
+            planned("初始化环境", AgentToolPolicy::Full, vec![]),
+            planned("核实新闻 briefing_create", AgentToolPolicy::Full, vec![]),
+            planned("写入口播稿", AgentToolPolicy::Full, vec![1]),
+        ];
+        assert_eq!(
+            normalized_failure_policy(&steps, 0),
+            StepFailurePolicy::SkipDependents
+        );
+        assert_eq!(
+            normalized_failure_policy(&steps, 1),
+            StepFailurePolicy::SkipDependents
+        );
+        assert_eq!(
+            normalized_failure_policy(&steps, 2),
+            StepFailurePolicy::FailExecution
+        );
     }
 }

@@ -495,6 +495,17 @@ pub struct AgentBootstrap {
     memory_enabled: bool,
 }
 
+/// Read-only trees Glob/DirTree may inspect besides the session workspace.
+/// The application data root itself is intentionally excluded so a listing
+/// cannot surface `encryption_key` / tokens / logs.
+fn local_explore_extra_roots() -> Vec<PathBuf> {
+    let data = nomi_config::config::app_data_dir();
+    ["builtin-skills", "skills", "preset-skills"]
+        .into_iter()
+        .map(|name| data.join(name))
+        .collect()
+}
+
 impl AgentBootstrap {
     pub fn new(config: Config, workspace: impl Into<String>, output: Arc<dyn OutputSink>) -> Self {
         Self {
@@ -827,12 +838,14 @@ impl AgentBootstrap {
             registry.register(Box::new(nomi_tools::grep::GrepTool::new(
                 cwd_path.to_path_buf(),
             )));
-            registry.register(Box::new(nomi_tools::glob::GlobTool::new(
-                cwd_path.to_path_buf(),
-            )));
-            registry.register(Box::new(nomi_tools::dir_tree::DirTreeTool::new(
-                cwd_path.to_path_buf(),
-            )));
+            registry.register(Box::new(
+                nomi_tools::glob::GlobTool::new(cwd_path.to_path_buf())
+                    .with_extra_roots(local_explore_extra_roots()),
+            ));
+            registry.register(Box::new(
+                nomi_tools::dir_tree::DirTreeTool::new(cwd_path.to_path_buf())
+                    .with_extra_roots(local_explore_extra_roots()),
+            ));
 
             // Numeric-session schemas share the same supervisor as Bash. The
             // ProcessStore is only a numeric-id adapter; it owns no OS process.

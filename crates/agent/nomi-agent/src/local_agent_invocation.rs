@@ -890,6 +890,15 @@ impl ToolScope {
                 .iter()
                 .filter(|descriptor| match policy {
                     AgentToolPolicy::Full => true,
+                    AgentToolPolicy::FilesShell => {
+                        descriptor.workspace_effect == WorkspaceEffect::ReadOnly
+                            || matches!(
+                                descriptor.kind,
+                                ChildToolKind::Write
+                                    | ChildToolKind::Edit
+                                    | ChildToolKind::Bash
+                            )
+                    }
                     AgentToolPolicy::ReadOnly => {
                         descriptor.workspace_effect == WorkspaceEffect::ReadOnly
                     }

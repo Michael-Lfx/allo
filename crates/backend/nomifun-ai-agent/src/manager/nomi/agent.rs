@@ -59,6 +59,12 @@ use crate::types::{NomiResolvedConfig, SendMessageData, inject_loaded_skill_cont
 use super::image_attachments::load_image_blocks;
 use super::image_analyze::analyze_image_blocks;
 
+/// Catalog rows sometimes advertise a context-sized "max output" (250000 on a
+/// 1M-window flash model). Agent turns do not need that budget; sending it on
+/// every SSE request inflates tail latency. Modest declared ceilings stay
+/// intact; inflated catalog values are clamped to a turn-sized cap.
+const AGENT_TURN_OUTPUT_CEILING: u32 = 32_768;
+
 fn apply_provider_token_budget(
     config: &mut Config,
     context_limit: Option<u64>,
@@ -68,6 +74,8 @@ fn apply_provider_token_budget(
         context_limit,
         config.compact.context_window,
     );
+    let declared_output_limit =
+        declared_output_limit.map(|limit| limit.min(AGENT_TURN_OUTPUT_CEILING));
     // The capability is authoritative on the desktop path. In particular,
     // None must erase a legacy ~/.nomi/config.toml value rather than revive it.
     config.output_max_tokens =
@@ -4910,6 +4918,16 @@ mod tests {
         assert_eq!(config.compact.output_reserve, 1024);
         assert_eq!(config.compact.autocompact_buffer, 512);
         assert_eq!(config.compact.emergency_buffer, 256);
+    }
+
+    #[test]
+    fn inflated_catalog_output_ceiling_is_clamped_for_agent_turns() {
+        let mut config = make_test_engine_config();
+        config.provider = nomi_config::config::ProviderType::OpenAI;
+
+        apply_provider_token_budget(&mut config, Some(1_000_000), Some(250_000)).unwrap();
+
+        assert_eq!(config.output_max_tokens, Some(AGENT_TURN_OUTPUT_CEILING));
     }
 
     #[test]

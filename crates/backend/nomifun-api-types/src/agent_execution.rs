@@ -520,7 +520,7 @@ fn default_agent_step_kind() -> ExecutionStepKind {
 }
 
 fn default_failure_policy() -> StepFailurePolicy {
-    StepFailurePolicy::FailExecution
+    StepFailurePolicy::SkipDependents
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

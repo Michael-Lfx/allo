@@ -1,5 +1,11 @@
 mod conpty;
 mod handles;
+mod host_lifetime;
+
+pub(crate) use host_lifetime::{
+    install_host_process_lifetime, spawn_host_lifetime_std, spawn_host_lifetime_tokio,
+    terminate_host_lifetime_descendants,
+};
 
 use std::{
     cmp::Ordering,

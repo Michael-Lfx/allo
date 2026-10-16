@@ -17,6 +17,7 @@ pub struct ResolvedSkillSnapshot {
     pub source: String,
     pub version_hash: String,
     pub content: String,
+    pub location: Option<String>,
 }
 
 #[async_trait]
@@ -131,6 +132,7 @@ impl SkillResolver for ExtensionSkillResolver {
                         source: skill.source,
                         version_hash: skill.version_hash,
                         content: skill.content,
+                        location: skill.location,
                     })
                     .collect()
             })
