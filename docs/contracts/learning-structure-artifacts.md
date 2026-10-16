@@ -250,17 +250,20 @@ est，1 est 分钟 = 1 分钟专注学习）。
 
 ### 9.2 产物形态与六条款（validator ↔ 本章互钉）
 
-产物 = 单个 JSON 对象：`{ "mounts": [ { "node", "block", "reason" } ], "note"? }`。
-`node` = 节点标题（逐字照抄待挂集）；`block` = 块 slug（逐字照抄结构参考行）或
-`null`（结构外——已评估、声明不属于任何块）；`reason` = 一句话（主题同一性判据）。
+产物 = 单个 JSON 对象：`{ "mounts": [ { "node", "blocks", "reason" } ], "note"? }`。
+`node` = 节点标题（逐字照抄待挂集）；`blocks` = 块 slug 数组（逐字照抄结构参考行；
+**空数组 = 结构外**——已评估、声明不属于任何块；一个节点可挂多块，一块也可被多个
+节点挂，都没有唯一性限制；单条内 slug 不重复）；`reason` = 一句话（主题同一性判据，
+挂错比挂空更有害——拿不准时宁可少挂）。存储列三读兼容：新形状 blocks 数组、j08 早
+版单块 `block` 键、旧 null。
 
 | 条款 | 内容 |
 |---|---|
 | `st.mount.top.keys` | 顶层键只允许 `mounts`、`note`；`mounts` 必为数组。 |
-| `st.mount.entries.required` | 条目键只允许 `node`、`block`、`reason`；node 非空、reason 非空。 |
-| `st.mount.entries.align` | `node` 必须逐字命中待挂集——只评估待挂集节点。 |
-| `st.mount.blocks.resolve` | `block` 非空时必须逐字解析到当前结构 `blocks[].slug`。 |
-| `st.mount.blocks.dedup` | 一个节点只出现一条条目（一个节点只挂一块，或声明一次结构外）。 |
+| `st.mount.entries.required` | 条目键只允许 `node`、`blocks`、`reason`；node 非空、blocks 为 slug 数组、reason 非空。 |
+| `st.mount.entries.align` | 待挂集每个节点恰一条条目——不缺失、不重复、不出清单。 |
+| `st.mount.blocks.resolve` | `blocks` 内每个 slug 逐字解析到当前结构 `blocks[].slug`。 |
+| `st.mount.blocks.dedup` | 一个节点只出现一条条目；单条内 slug 不重复。 |
 | `st.mount.no_concept_fields` | 条目不得携带概念字段（teaches/assumes/tier/concepts）——挂载无判定身份。 |
 
 ### 9.3 读侧三态投影（单源）
@@ -307,11 +310,13 @@ gd.* 全量重过零放宽。三重护栏 = 全量 validator 门 + 观测审计�
 
 ### 10.3 修补回合与级联口径
 
-- 触发门槛 = findings 非空 ∪ 挂载观察非空；**皆空 = skipped（零 LLM 零写）**。
+- 触发门槛 = findings 非空 ∪ 挂载观察非空（观察只在挂载回合已跑过时派生——未挂载
+  课程没有挂载事实，「空块」无从谈起）；**皆空 = skipped（零 LLM 零写）**。
 - 装配（宪章三项 + 结构快照投影 + findings 行 + mount_observations + retry_feedback）
-  → RoundRetry ≤3（同指纹早停）→ ops 空 = noop → apply → gd.* 全量重过 → 结构快照
-  原子写 → 修补审计行落 `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由
-  与级联注记）。
+  → RoundRetry ≤3（同指纹早停）→ ops 空 = noop（LLM 已跑、不写盘，**不留审计行**——
+  「无修补动作不留档案」）→ apply → gd.* 全量重过 → 结构快照原子写 → 修补审计行落
+  `learning_structure_repairs`（old_hash/new_hash/逐 op 含理由与级联注记；**仅 applied
+  落行**）。
 - **级联口径（ADR-0017）**：修补先落 → 挂载本回合不动 → hash 变 = 既有挂载待重评估
   （mounts_stale）→ 下回合全量重挂。**不建逐 op 跟迁**——挂载无判定身份，误编只伤
   导航，失效降级本即既定语义。

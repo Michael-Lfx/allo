@@ -214,6 +214,11 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
+                     WHERE x.course_id = c.course_id AND x.user_id = ? \
+                       AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
+                    (SELECT COALESCE(SUM(x.earned_xp), 0) FROM learning_xp_events x \
+                     WHERE x.course_id = c.course_id AND x.user_id = ?) AS total_xp, \
                     (SELECT COUNT(*) FROM learning_review_items r \
                      JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
                      WHERE e.user_id = ? AND e.course_id = c.course_id \
@@ -222,6 +227,8 @@ impl LearningService {
              FROM learning_courses c WHERE c.deleted_at IS NULL \
              ORDER BY c.updated_at DESC, c.course_id",
         )
+        .bind(user_id.as_str())
+        .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
         .bind(user_id.as_str())
@@ -259,6 +266,11 @@ impl LearningService {
                      JOIN learning_lessons l ON l.lesson_id = p.lesson_id \
                      JOIN learning_modules m ON m.module_id = l.module_id \
                      WHERE e.user_id = ? AND m.course_id = c.course_id AND p.status = 'completed') AS completed_lessons, \
+                    (SELECT COUNT(DISTINCT x.node_id) FROM learning_xp_events x \
+                     WHERE x.course_id = c.course_id AND x.user_id = ? \
+                       AND x.kind = 'node-completed' AND x.node_id IS NOT NULL) AS settled_nodes, \
+                    (SELECT COALESCE(SUM(x.earned_xp), 0) FROM learning_xp_events x \
+                     WHERE x.course_id = c.course_id AND x.user_id = ?) AS total_xp, \
                     (SELECT COUNT(*) FROM learning_review_items r \
                      JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
                      WHERE e.user_id = ? AND e.course_id = c.course_id \
@@ -267,6 +279,8 @@ impl LearningService {
              FROM learning_courses c \
              WHERE c.course_id = ? AND c.deleted_at IS NULL",
         )
+        .bind(user_value)
+        .bind(user_value)
         .bind(user_value)
         .bind(user_value)
         .bind(user_value)
@@ -886,11 +900,16 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         total_lessons: row.try_get("total_lessons").map_err(internal)?,
         completed_lessons: row.try_get("completed_lessons").map_err(internal)?,
         enabled: row.try_get::<i64, _>("enabled").map_err(internal)? != 0,
-        // 结算口径随 XP 账本（j05）切换；先行 = 完成数。
-        settled_or_completed: row.try_get("completed_lessons").map_err(internal)?,
+        // 进度尺 = 结算口径（j05 账本落地）：结算节点数；账本无记录（存量
+        // 课程/未结算）回退完成数——不因切换口径把卡片进度归零。
+        settled_or_completed: {
+            let settled: i64 = row.try_get("settled_nodes").map_err(internal)?;
+            let completed: i64 = row.try_get("completed_lessons").map_err(internal)?;
+            if settled > 0 { settled } else { completed }
+        },
         due_today: row.try_get("due_today").map_err(internal)?,
-        // XP 账本（j05）落地前恒空。
-        total_xp: None,
+        // XP 账本（j05）已落地：课程累计净 XP（含检测线与乱猜负账）。
+        total_xp: Some(row.try_get("total_xp").map_err(internal)?),
         updated_at: row.try_get("updated_at").map_err(internal)?,
         tags: Vec::new(),
         learning_goal,

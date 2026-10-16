@@ -221,6 +221,8 @@ fn validate_key(key: &str) -> Result<(), AppError> {
 /// an out-of-range write is rejected up front instead of being silently
 /// clamped (or worse, honored) at read time. Currently only the learning
 /// daily XP goal (j05); add keys as they gain read-side contracts.
+/// 单源注记：缺省值 40 与读侧回退住 nomifun-learning `settle.rs`
+/// （`DEFAULT_DAILY_XP_GOAL`）——改缺省或范围时两处同步。
 fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), AppError> {
     if key == "learning.dailyXpGoal" {
         return match value.as_i64() {

@@ -253,7 +253,7 @@ impl LearningService {
         // questions seeded by their completed lesson, so showing a
         // due/scheduled state here would make the counts disagree with the
         // queue.
-        let base = "SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
+        let base = format!("SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
                            e.course_id, c.title AS course_title, \
                            p.status AS lesson_status, \
                            ri.review_item_id, ri.due_at, ri.stability_days, ri.difficulty, \
@@ -268,7 +268,7 @@ impl LearningService {
                       ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
                     LEFT JOIN learning_review_items ri \
                       ON ri.enrollment_id = e.enrollment_id AND ri.activity_id = a.activity_id \
-                    WHERE a.kind IN ('single_choice', 'true_false', 'fill_in_blank', 'multi_choice', 'numeric', 'ordering', 'matching')";
+                    WHERE a.kind IN ({OBJECTIVE_KIND_SQL_LIST})");
         let rows = match course_id {
             Some(course_id) => sqlx::query(&format!("{base} AND e.course_id = ? LIMIT 1000"))
                 .bind(user_id.as_str())

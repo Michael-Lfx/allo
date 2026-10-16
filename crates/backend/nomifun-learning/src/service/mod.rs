@@ -465,20 +465,6 @@ impl Drop for GenerationSlotGuard {
     }
 }
 
-/// RAII deregistration for one registered generation run; dropping it
-/// clears the run entry so every exit path (normal return, failure,
-/// aborted HTTP handler, aborted agent task) leaves no stale entry behind.
-/// See `service::learning_graph::begin_generation`.
-pub(crate) struct GenerationRunGuard<'a>(&'a LearningService);
-
-impl Drop for GenerationRunGuard<'_> {
-    fn drop(&mut self) {
-        // 终态收尾已由 GenerationTaskGuard 的显式 finish 承担；守卫类型
-        // 保留给未迁移的旧调用面（空操作）。
-        let _ = self.0;
-    }
-}
-
 /// Status snapshot of one agent-session course generation: the entry the
 /// session's status tool polls. `course_id`/`title` are filled only when
 /// the generation completed; `error` only when it failed.
@@ -523,7 +509,7 @@ pub use xp::CompanionXpSink;
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
     GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
-    KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, STATE_RUNNING,
+    KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
 };
 
 #[cfg(test)]

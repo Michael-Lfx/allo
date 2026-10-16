@@ -108,3 +108,10 @@ smoke repair（盘面复验 + 级联标记 EXIT=3）。结构故事完整闭环�
    见上）、`cargo check --workspace` 干净、`cargo fmt` 过、typecheck 60 = 存量基线
    （learning 零新增）、check:i18n 过（11393 键）、学习页单测 19 过、smoke repair
    真机跑至 provider 解析（无凭据如实 Conflict 非零退出）。
+
+**Resolution 增补（2026-10-16，对账修复后两处口径更新）：** ① learnhub 实码对账确认
+**noop 不落审计行**（「无修补动作不留档案」）——本票 Resolution 第 7 段「noop 也留
+痕」被 76c2bca8d 反转，契约 §10.3 已注明仅 applied 落行；迁移 080 的 result CHECK 保
+留 'noop' 枚举值不碍事（不再写入）。② predicted 列（复习作答流水）语义对齐 learnhub
+#105：**学习者作答前自预测**（Will/Wont/Unsure，随复习 UI 落地接入），不再写 FSRS
+r_pred（预测住复习日志快照，不重复）。

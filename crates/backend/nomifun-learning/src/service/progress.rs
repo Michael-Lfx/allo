@@ -523,12 +523,11 @@ async fn seed_lesson_review_items(
     now: i64,
     tz_offset_minutes: i32,
 ) -> Result<(), AppError> {
-    let activity_ids: Vec<String> = sqlx::query_scalar(
+    let activity_ids: Vec<String> = sqlx::query_scalar(&format!(
         "SELECT activity_id FROM learning_activities \
-         WHERE lesson_id = ? AND kind IN ('single_choice', 'true_false', 'fill_in_blank', \
-           'multi_choice', 'numeric', 'ordering', 'matching') \
-         ORDER BY position, activity_id",
-    )
+         WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST}) \
+         ORDER BY position, activity_id"
+    ))
     .bind(lesson_id.as_str())
     .fetch_all(&mut **transaction)
     .await

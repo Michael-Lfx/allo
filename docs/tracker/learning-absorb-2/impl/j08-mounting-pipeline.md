@@ -99,3 +99,9 @@ mount_index + 观察派生、结构图 Tab 挂载段、smoke mount（重跑幂�
     触、`cargo check --workspace` 干净、`cargo fmt` 过、typecheck 60 = 存量基线
     （learning 零新增）、check:i18n 过（11389 键）、smoke mount 真机跑至 provider
     解析（无凭据如实 Conflict 非零退出）。
+
+**Resolution 增补（2026-10-16，对账修复 76c2bca8d 后续）：** learnhub 实码对账后条目
+形态从单块（`block: <slug>|null`）改为**多块数组**（`blocks: [<slug>…]`，空 = 结构外；
+learnhub `MountEntry.blocks` 明文无唯一性限制，且引导偏向为「拿不准时宁可少挂——挂
+错比挂空更有害」，已同步翻转提示词）；`entries.align` 补缺失半边（待挂集每节点恰一
+条）。存储三读兼容（新数组 / j08 单块 / null）。契约 §9.2 已同步改写。
