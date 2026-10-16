@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "baidu-netdisk-token": {
+      "type": "sse",
+      "url": "https://mcp-pan.baidu.com/sse?access_token=${BAIDU_NETDISK_ACCESS_TOKEN}"
+    }
+  }
+}

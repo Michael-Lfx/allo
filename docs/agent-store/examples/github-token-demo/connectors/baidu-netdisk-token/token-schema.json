@@ -1,0 +1,22 @@
+{
+  "title": "配置百度网盘 Access Token",
+  "title_en": "Configure Baidu Netdisk Access Token",
+  "description": "请到百度网盘开放平台完成用户鉴权，获取 Access Token。凭证仅存储在本机，不会上传到云端。",
+  "description_en": "Complete user authorization on the Baidu Netdisk open platform to get an Access Token. Credentials are stored locally only.",
+  "docLabel": "如何获取 Access Token？",
+  "docLabel_en": "How to get an Access Token?",
+  "docUrl": "https://pan.baidu.com/union/doc/Wm9sl0i0j",
+  "fields": [
+    {
+      "key": "BAIDU_NETDISK_ACCESS_TOKEN",
+      "label": "百度网盘 Access Token",
+      "label_en": "Baidu Netdisk Access Token",
+      "type": "password",
+      "required": true,
+      "placeholder": "粘贴网盘开放平台的 Access Token",
+      "placeholder_en": "Paste the Access Token from the Netdisk open platform",
+      "description": "用于访问百度网盘远端 MCP 服务（SSE）。令牌会以 access_token 查询参数随请求发出，过期后需重新获取。",
+      "description_en": "Used to reach the Baidu Netdisk remote MCP server (SSE). The token travels as the access_token query parameter and must be renewed after it expires."
+    }
+  ]
+}
