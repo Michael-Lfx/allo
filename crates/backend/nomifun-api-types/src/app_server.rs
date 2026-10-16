@@ -317,8 +317,11 @@ pub struct AppServerConnectorSummary {
     /// Display-only transport summary (URL or launch command). Never a raw
     /// shell command the client may execute.
     pub transport_summary: String,
-    /// `none` | `apikey` | `env` | `oauth` | `cli-login` (derived).
-    pub auth_mode: String,
+    /// `none` | `oauth` — the connector's **transport shape**, derived. A
+    /// display-only guess: what the connector actually needs is
+    /// `credential.mode` (`34` §6.1), and a client must never decide an auth
+    /// affordance from this field.
+    pub auth_transport: String,
     pub enabled: bool,
     pub status: AppServerConnectorStatus,
     /// Marketplace icon URL for a connector installed from a marketplace.

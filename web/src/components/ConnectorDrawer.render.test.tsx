@@ -16,8 +16,8 @@ import type { ConnectorCredential, ConnectorDetail } from "../lib/protocol";
  *   `auth_status.state` and drop `error` on the floor, so the whole failure was
  *   invisible in the Web UI.
  * - the auth affordance follows `credential.mode`, never the transport-derived
- *   `auth_mode` (doc `34` §6.1). A `token` connector is url-shaped, so
- *   `auth_mode` reads `oauth` for it and the drawer used to offer an
+ *   `auth_transport` (doc `34` §6.1). A `token` connector is url-shaped, so
+ *   `auth_transport` reads `oauth` for it and the drawer used to offer an
  *   authorization button that could not work.
  *
  * `ConnectorDrawer` is the prop-driven half (a server render never runs
@@ -54,7 +54,7 @@ const DETAIL: ConnectorDetail = {
   description: "小鹅通",
   kind: "mcp",
   transport_summary: "http  https://agent.xiaoe-tech.com/mcp",
-  auth_mode: "oauth",
+  auth_transport: "oauth",
   enabled: true,
   status: "authorization_required",
   tools: [],
@@ -137,7 +137,7 @@ describe("ConnectorDrawer OAuth failure visibility", () => {
   });
 });
 
-/** A `token` connector: url-shaped, so its transport-derived `auth_mode` is
+/** A `token` connector: url-shaped, so its transport-derived `auth_transport` is
  *  `oauth` — which is exactly the trap. */
 const TOKEN_DETAIL: ConnectorDetail = {
   ...DETAIL,

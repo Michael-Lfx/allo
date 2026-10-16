@@ -807,7 +807,7 @@ export function CatalogView() {
 
   const visibleConnectors = useMemo(() => {
     return (connectors ?? []).filter((connector) => {
-      const text = `${connector.name} ${connector.description ?? ""} ${connector.kind} ${connector.auth_mode}`.toLowerCase();
+      const text = `${connector.name} ${connector.description ?? ""} ${connector.kind} ${connector.auth_transport}`.toLowerCase();
       return text.includes(query.toLowerCase());
     });
   }, [connectors, query]);
@@ -1255,7 +1255,7 @@ export function CatalogView() {
                   </div>
                   <span className={`status-dot ${connectorStateClass(connector.status)}`} aria-hidden="true" />
                 </div>
-                {/* The raw `auth_mode` enum used to sit in this row, and it read
+                {/* The raw `auth_transport` enum used to sit in this row, and it read
                     `oauth` for every url-shaped connector — including the 61 that
                     authenticate with a key (`34` §6.1). */}
                 <Tags tags={[connector.kind, ...(connector.description ? [connector.description] : [])]} />
@@ -1686,7 +1686,7 @@ export function ConnectorDrawer({
   const pending = auth?.state === "authorization_pending";
   const credential = detail.credential ?? null;
   // `34` §6.1: the auth affordance follows `credential.mode`, never the
-  // transport-derived `auth_mode`. The two disagreed on every url-shaped
+  // transport-derived `auth_transport`. The two disagreed on every url-shaped
   // connector, which handed the 61 `token` connectors an OAuth entry point.
   const mode = credential?.mode ?? "none";
   const status = credential

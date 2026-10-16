@@ -234,7 +234,13 @@ use tokio::sync::mpsc;
 /// ships no `plugin.json`, has). No method is added or removed, so the
 /// documented split stays `56 / 83`; the expert pack's own version moves
 /// independently (`pack_format 2 → 3`).
-pub const PROTOCOL_VERSION: &str = "fp-16";
+/// **`fp-17` renames the connector summary's auth field** (doc `47`):
+/// `AppServerConnectorSummary.auth_mode` becomes `auth_transport`, because the
+/// field is derived from the transport and says nothing about what the
+/// connector needs — the declaration answers that through `credential.mode`
+/// (`34` §6.1), and a client must never pick an auth affordance from a shape.
+/// No method is added or removed, so the documented split stays `56 / 83`.
+pub const PROTOCOL_VERSION: &str = "fp-17";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9418,7 +9424,7 @@ mod tests {
             description: None,
             kind: "mcp".into(),
             transport_summary: "stdio".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             enabled,
             status: if enabled {
                 nomifun_api_types::AppServerConnectorStatus::Configured
@@ -12246,12 +12252,26 @@ model = "mimo-v2.5-free"
             description: None,
             kind: "stdio-mcp".into(),
             transport_summary: "npx @playwright/mcp".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
             credential: None,
         }
+    }
+
+    /// `47` TC-S2-001: the wire shape carries `auth_transport` and nothing named
+    /// `auth_mode`. A client that reads the old key must fail loudly at the
+    /// handshake rather than silently decide an auth affordance from a field the
+    /// host no longer sends.
+    #[test]
+    fn connector_summary_serializes_auth_transport_and_not_auth_mode() {
+        let json = serde_json::to_value(sample_connector_summary()).expect("serialize");
+        assert_eq!(json["auth_transport"], "none");
+        assert!(
+            json.get("auth_mode").is_none(),
+            "the renamed field must leave no old key behind: {json}"
+        );
     }
 
     fn sample_model_summary() -> nomifun_api_types::AppServerModelSummary {

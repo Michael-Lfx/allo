@@ -87,8 +87,14 @@
  * catalogs show what the store shows. No method changes, so the documented route
  * split stays `56 / 83`; the expert pack's own version moves independently
  * (`pack_format 2 → 3`, same doc).
+ * **`fp-17` renames the connector summary's auth field** (doc `47`):
+ * `ConnectorSummary.auth_mode` becomes `auth_transport`. The field is derived
+ * from the transport and says nothing about what the connector needs — the
+ * declaration answers that through `credential.mode` (`34` §6.1), and a client
+ * must never pick an auth affordance from a shape. No method changes, so the
+ * documented route split stays `56 / 83`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-16";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-17";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -981,7 +987,8 @@ export interface ConnectorSummary {
   description?: string | null;
   kind: string;
   transport_summary: string;
-  auth_mode: string;
+  /** Transport shape only (`none` | `oauth`); the auth affordance comes from `credential.mode`. */
+  auth_transport: string;
   enabled: boolean;
   status: ConnectorStatus;
   /**

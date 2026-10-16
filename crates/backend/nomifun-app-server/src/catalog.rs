@@ -1401,7 +1401,7 @@ mod tests {
             description: None,
             kind: "stdio-mcp".into(),
             transport_summary: "npx @playwright/mcp".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             credential: None,
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
