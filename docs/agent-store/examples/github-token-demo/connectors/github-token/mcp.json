@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "github-token-demo": {
+    "github-token": {
       "type": "streamableHttp",
       "timeout": 600,
       "url": "https://api.githubcopilot.com/mcp/",

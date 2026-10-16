@@ -1289,6 +1289,7 @@ fn build_mcp_connector_components(
             config.get("env").and_then(|value| value.as_object()),
             &bindings,
             builder,
+            "mcp.json",
         );
         let transport = match (&url, &command) {
             (Some(url), _) => {
@@ -1388,6 +1389,15 @@ fn build_mcp_connector_components(
     }
 }
 
+/// Build `connector` components for the **plugin-level** MCP declaration: the
+/// `mcpServers` object of a plugin/expert `plugin.json`, or a sibling
+/// `.mcp.json` (02 §5).
+///
+/// The transport is persisted **structured**, exactly like the marketplace
+/// `mcp.json` path: the human-readable summary alone drops a remote server's
+/// headers and a stdio server's argv/env, and registration — which prefers the
+/// structured field — would then create a server that can never authenticate
+/// (a headerless URL) or never start (`node` with no script).
 fn build_connector_components(
     value: serde_json::Value,
     source_rel: &str,
@@ -1402,6 +1412,11 @@ fn build_connector_components(
         builder.error("MCP 配置格式无法识别（缺少 mcpServers 对象）".into());
         return;
     };
+    // No `token-schema.json` here, so nothing is declared: a `${NAME}` in a
+    // header is still rewritten to `${secret:NAME}` (with a warning) rather than
+    // sent literally, and an undeclared credential-shaped env value becomes a
+    // reference instead of landing in the snapshot (17 §6).
+    let bindings = Bindings::from_declaration(None);
     for (name, config) in servers {
         let url = config
             .get("url")
@@ -1415,6 +1430,42 @@ fn build_connector_components(
         let transport_summary = url
             .clone()
             .unwrap_or_else(|| command.clone().unwrap_or_else(|| name.clone()));
+        let args: Vec<String> = config
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env = rewrite_secret_env(
+            config.get("env").and_then(|value| value.as_object()),
+            &bindings,
+            builder,
+            source_rel,
+        );
+        let mut headers = merged_headers(config);
+        for (_name, value) in headers.iter_mut() {
+            if let Some(text) = value.as_str() {
+                *value = serde_json::Value::String(bindings.rewrite(text, builder));
+            }
+        }
+        let transport = match (&url, &command) {
+            (Some(url), _) => json!({
+                "type": declared_url_transport_type(config),
+                "url": bindings.rewrite(url, builder),
+                "headers": headers,
+            }),
+            (None, Some(command)) => json!({
+                "type": "stdio",
+                "command": command,
+                "args": args,
+                "env": env,
+            }),
+            (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
+        };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
@@ -1427,6 +1478,7 @@ fn build_connector_components(
                 "version": builder.version,
                 "name": name,
                 "kind": kind,
+                "transport": transport,
                 "transport_summary": transport_summary,
                 "auth_mode": "oauth",
                 "tool_filter": format!("connector__{name}__<tool>"),
@@ -1918,6 +1970,10 @@ fn rewrite_secret_env(
     env: Option<&serde_json::Map<String, serde_json::Value>>,
     bindings: &Bindings,
     builder: &mut ComponentBuilder,
+    // Where the env came from, for the warning text: `mcp.json` for a
+    // marketplace connector, the plugin manifest path for a plugin-level
+    // `mcpServers` declaration.
+    source_rel: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
     let Some(env) = env else {
@@ -1939,12 +1995,12 @@ fn rewrite_secret_env(
                 } else if bindings.secret.contains(key) {
                     if text.trim().is_empty() {
                         builder.warn(format!(
-                            "mcp.json env[{key}] 未提供值（空字符串），改为 {reference} 引用，\
+                            "{source_rel} env[{key}] 未提供值（空字符串），改为 {reference} 引用，\
                              由用户填写（34 §5.4）"
                         ));
                     } else if !text.contains("${") {
                         builder.warn(format!(
-                            "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                            "{source_rel} env[{key}] 的值未导入（改为 {reference} 引用），\
                              由用户经安全存储提供（17 §6）"
                         ));
                     }
@@ -1957,7 +2013,7 @@ fn rewrite_secret_env(
                     serde_json::Value::String(bindings.rewrite(text, builder))
                 } else if looks_sensitive_key(key) && !text.trim().is_empty() {
                     builder.warn(format!(
-                        "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                        "{source_rel} env[{key}] 的值未导入（改为 {reference} 引用），\
                          由用户经安全存储提供（17 §6）"
                     ));
                     serde_json::Value::String(reference)
@@ -2296,5 +2352,88 @@ mod tests {
         assert_eq!(rewrite("${}").0, "${}");
         assert_eq!(rewrite("${secret:}").0, "${secret:}");
         assert_eq!(rewrite("${unterminated").0, "${unterminated");
+    }
+
+    /// A plugin/expert `plugin.json` declaring `mcpServers` used to register the
+    /// server from the display summary alone, which dropped a remote server's
+    /// headers and a stdio server's argv/env: the row came out as a headerless
+    /// URL or a bare `node`, so it could never authenticate or start.
+    #[test]
+    fn plugin_level_mcp_declaration_keeps_the_structured_transport() {
+        let mut builder = ComponentBuilder::new("1.0.0".into());
+        let meta = crate::models::SnapshotMeta {
+            plugin_id: "wb-team".into(),
+            name: "team".into(),
+            declared_version: "1.0.0".into(),
+            resolved_revision: None,
+            source_kind: SourceKind::CodeBuddyPlugin,
+            source_uri: "internal".into(),
+        };
+        build_connector_components(
+            json!({
+                "mcpServers": {
+                    "remote": {
+                        "type": "sse",
+                        "url": "https://mcp.example.com/sse",
+                        "headers": { "Authorization": "Bearer ${PAT}", "X-Client": "allo" },
+                    },
+                    "local": {
+                        "command": "node",
+                        "args": ["server.js", "--flag", "two words"],
+                        "env": { "API_KEY": "literal-value", "NODE_ENV": "production" },
+                    },
+                }
+            }),
+            "plugin.json",
+            &meta,
+            &mut builder,
+        );
+
+        let by_name = |name: &str| {
+            builder
+                .components
+                .iter()
+                .find(|component| component.name == name)
+                .unwrap_or_else(|| panic!("{name} must produce a connector component"))
+                .payload
+                .clone()
+        };
+
+        let remote = by_name("remote");
+        assert_eq!(remote["transport"]["type"], "sse");
+        assert_eq!(remote["transport"]["url"], "https://mcp.example.com/sse");
+        assert_eq!(
+            remote["transport"]["headers"]["Authorization"],
+            "Bearer ${secret:PAT}",
+            "an undeclared placeholder must not be sent literally"
+        );
+        assert_eq!(
+            remote["transport"]["headers"]["X-Client"], "allo",
+            "a constant header is part of the request and must survive"
+        );
+
+        let local = by_name("local");
+        assert_eq!(local["transport"]["command"], "node");
+        assert_eq!(
+            local["transport"]["args"],
+            json!(["server.js", "--flag", "two words"]),
+            "argv is what makes a stdio server start"
+        );
+        assert_eq!(
+            local["transport"]["env"]["API_KEY"], "secret:API_KEY",
+            "a literal credential value must never reach the snapshot (17 §6)"
+        );
+        assert_eq!(
+            local["transport"]["env"]["NODE_ENV"], "production",
+            "an ordinary env value is the connector's own setting and stays"
+        );
+        assert!(
+            builder
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("plugin.json") && warning.contains("API_KEY")),
+            "the redaction must say where it came from: {:?}",
+            builder.warnings
+        );
     }
 }
