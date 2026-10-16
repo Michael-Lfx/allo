@@ -70,6 +70,16 @@
   transform: scale(0.92) translateZ(0);
 }
 
+.shortcutBadge {
+  opacity: 0;
+  transition: opacity var(--flowy-motion-fast) var(--flowy-ease-enter);
+}
+
+.newChatTrigger:hover .shortcutBadge,
+.newChatTrigger:focus-visible .shortcutBadge {
+  opacity: 1;
+}
+
 .newChatTrigger:active .newChatIcon {
   transform: scale(0.84) translateZ(0);
 }
@@ -91,6 +101,10 @@
   .newChatTrigger:hover .newChatIcon,
   .newChatTrigger:active .newChatIcon {
     transform: translateZ(0);
+  }
+
+  .shortcutBadge {
+    transition: none;
   }
 }
 
@@ -178,20 +192,6 @@
   }
 
   .scrollArea :global(.flowy-workpath-header-two-line .flowy-workpath-secondary) {
-    display: none;
-  }
-}
-
-/* History tab labels share fixed thirds with a 15px icon; "Projects" needs the
-   full text budget before icons fit, so drop icons below the width where the
-   longest locale label still fits beside them. */
-.historyTabsContainer {
-  container-name: flowy-sider-tabs;
-  container-type: inline-size;
-}
-
-@container flowy-sider-tabs (max-width: 216px) {
-  :global(.flowy-sider-tab-icon) {
     display: none;
   }
 }

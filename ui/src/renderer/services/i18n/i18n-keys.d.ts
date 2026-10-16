@@ -1139,6 +1139,7 @@ export type I18nKey =
   | 'common.shortcuts.view'
   | 'common.shortcuts.viewDesc'
   | 'common.show'
+  | 'common.sider.newTask'
   | 'common.siderSection.automation'
   | 'common.siderSection.common'
   | 'common.siderSection.config'

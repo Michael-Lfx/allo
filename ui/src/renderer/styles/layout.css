@@ -79,12 +79,6 @@
   transition: none;
 }
 
-.sidebar-toggle-icon__caret {
-  transform-box: fill-box;
-  transform-origin: center;
-  transition: transform var(--flowy-motion-base) var(--flowy-ease-move);
-}
-
 .flowy-workpath-drawer-header {
   transition: background-color var(--flowy-motion-fast) var(--flowy-ease-enter);
 }
@@ -430,7 +424,6 @@
   .settings-sider__item-label,
   .chat-history__placeholder,
   .chat-history__section,
-  .sidebar-toggle-icon__caret,
   .session-overflow-button,
   .flowy-disclosure-content > * {
     transition: none;

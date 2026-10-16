@@ -61,16 +61,21 @@ const ChatTitleEditor: React.FC<ChatTitleEditorProps> = ({
     >
       <div
         data-chat-title-label
-        className={classNames(styles.surface, 'group flex min-w-0 flex-1 items-center rounded-8px')}
+        className={classNames(
+          styles.surface,
+          editingTitle && styles.surfaceEditing,
+          'group flex min-w-0 w-fit max-w-full items-center rounded-8px'
+        )}
       >
         {leading && <div className='shrink-0 flex items-center pl-8px'>{leading}</div>}
-        <div className='min-w-0 flex-1 flex flex-col justify-center px-8px py-5px'>
+        <div className='min-w-0 flex-1 flex flex-col justify-center px-8px'>
           {editingTitle && canRenameTitle ? (
             <input
               autoFocus
               value={titleDraft}
               disabled={renameLoading}
               className={styles.renameInput}
+              style={{ width: `min(100%, ${Math.max(titleDraft.length, 1)}em)` }}
               maxLength={120}
               aria-label={t('conversation.history.renamePlaceholder')}
               onChange={(event) => setTitleDraft(event.target.value)}

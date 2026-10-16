@@ -101,6 +101,7 @@
   "search": "搜索",
   "tray.showWindow": "显示 Flowy",
   "tray.newChat": "新建对话",
+  "sider.newTask": "新建任务",
   "tray.closeToTray": "隐藏到托盘",
   "tray.about": "关于 Flowy",
   "tray.restart": "重启应用",
@@ -150,8 +151,8 @@
     "minute_short": "分",
     "second_short": "秒"
   },
-  "navExpand": "展开应用导航",
-  "navCollapse": "隐藏侧边栏",
+  "navExpand": "打开侧栏",
+  "navCollapse": "关闭侧栏",
   "shortcuts": {
     "title": "快捷键",
     "close": "关闭",
@@ -160,7 +161,7 @@
     "groupHelp": "帮助",
     "historyBack": "后退",
     "historyForward": "前进",
-    "sidebar": "展开 / 收起侧栏",
+    "sidebar": "打开 / 关闭侧栏",
     "settings": "打开 / 关闭设置",
     "newConversation": "新建对话",
     "search": "搜索会话",

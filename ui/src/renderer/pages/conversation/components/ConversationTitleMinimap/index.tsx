@@ -1,8 +1,8 @@
 
 
 import { Empty, Input, Spin } from '@arco-design/web-react';
-import { IconSearch } from '@arco-design/web-react/icon';
 import classNames from 'classnames';
+import ChromeSearchIcon from '@renderer/components/layout/ChromeSearchIcon';
 import React, { useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -102,7 +102,7 @@ const ConversationTitleMinimap: React.FC<ConversationTitleMinimapProps> = ({
             onBlur={handleSearchInputBlur}
             onCompositionStartCapture={handleSearchInputCompositionStart}
             onCompositionEndCapture={handleSearchInputCompositionEnd}
-            prefix={<IconSearch className='text-14px text-t-secondary' />}
+            prefix={<ChromeSearchIcon size={14} />}
             placeholder={isSearchMode ? '' : t('conversation.minimap.searchHint')}
           />
           {countNode}
@@ -248,12 +248,7 @@ const ConversationTitleMinimap: React.FC<ConversationTitleMinimapProps> = ({
             }
           }}
         >
-          <IconSearch
-            className={classNames(
-              'text-15px',
-              visible && 'text-[rgb(var(--primary-6))]'
-            )}
-          />
+          <ChromeSearchIcon size={18} />
         </span>
       )}
       {visible &&

@@ -1,16 +1,17 @@
 .surface {
-  border: 1px solid transparent;
+  border: 0;
   background: transparent;
-  transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease;
+  transition: background-color 180ms ease, color 180ms ease;
 }
 
-.surface:hover,
-.surface:focus-within {
+.surface:hover {
   background: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  border-color: color-mix(in srgb, var(--text-primary) 16%, transparent);
+}
+
+.surfaceEditing,
+.surfaceEditing:hover,
+.surfaceEditing:focus-within {
+  background: transparent;
 }
 
 .title,
@@ -38,9 +39,9 @@
 
 .renameInput:focus,
 .renameInput:focus-visible {
-  outline: none;
-  border: 0;
-  box-shadow: none;
+  outline: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
 .surface:hover .title,

@@ -89,7 +89,7 @@ const PendingConversationOverlay: React.FC = () => {
             <div className='shrink-0 flex items-center pl-8px'>
               <img src={appLogo} alt='Flowy' className='block h-16px w-16px object-contain' />
             </div>
-            <div className='min-w-0 flex-1 flex flex-col justify-center px-8px py-5px'>
+            <div className='min-w-0 flex-1 flex flex-col justify-center px-8px'>
               <span className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-16px font-bold text-t-primary'>
                 {displayTitle || ' '}
               </span>
