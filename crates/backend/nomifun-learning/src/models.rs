@@ -2044,7 +2044,7 @@ pub struct QuizGradeFeedback {
     pub explanation: String,
 }
 
-/// quiz 回合逐节点对账行（q2）。
+/// quiz 回合逐节点对账行（q2；q3 扩逐题校准点）。
 #[derive(Debug, Clone, Serialize)]
 pub struct QuizRoundNodeReport {
     pub node_id: LearningLessonId,
@@ -2054,6 +2054,20 @@ pub struct QuizRoundNodeReport {
     /// 本节点净入账；`None` = 同日已结算折叠（coverage 保持不重复计薪，
     /// learnhub quiz_settled_on_day 语义）。
     pub earned_xp: Option<i64>,
+    /// 逐题校准点（q3：出题时刻的预测 R vs 实际对错；`serde(default)` 容
+    /// q2 时代旧档无此字段）。
+    #[serde(default)]
+    pub questions: Vec<QuizCalibrationPoint>,
+}
+
+/// 单题校准点（q3，喂校准读面的数据源；learnhub CalibrationPoint 同形——
+/// 无预测面不入预测均值）。
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+pub struct QuizCalibrationPoint {
+    pub activity_id: LearningActivityId,
+    pub correct: bool,
+    /// 作答时点该题卡的 FSRS 预测可提取性；无卡（变体/未建卡）= `None`。
+    pub predicted_r: Option<f64>,
 }
 
 /// quiz 回合结算报告（q2 complete 出参）。

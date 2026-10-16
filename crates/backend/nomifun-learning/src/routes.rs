@@ -19,8 +19,8 @@ use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
     CreateCustomQuestionRequest, CreateLessonActivityRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
-    GenerateLessonRequest, LearningGraphGenerationStatus, MountRoundSummary, QuizGradeFeedback,
-    QuizProgressView, QuizRoundReport, QuizRoundView,
+    GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
+    QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
     RateReviewRequest, RepairFigureRequest, RepairFigureResponse, SetTagsRequest, StructureRepairSummary, SubmitAttemptRequest,
     UpdateLessonProgressRequest, UpdateLessonSectionBodyRequest, UpdateQuestionRequest,
     XpCalendar, XpReading,
@@ -126,6 +126,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
         .route(
             "/api/learning/courses/{id}/quiz/rounds/{round_id}/complete",
             post(quiz_complete),
+        )
+        .route(
+            "/api/learning/quiz/calibration",
+            get(quiz_calibration),
         )
         .route("/api/learning/stats/calendar", get(calendar_stats))
         .route("/api/learning/stats/memory", get(memory_stats))
@@ -755,6 +759,17 @@ async fn quiz_complete(
             .service
             .quiz_complete(&user.id, &id, &round_id, &request.answers)
             .await?,
+    )))
+}
+
+/// quiz 校准读面（q3，读数面非门禁）：该用户全部 completed 回合的校准点
+/// 按预测 R 五百分点分桶聚合实际正确率（与记忆健康的复习侧校准同构）。
+async fn quiz_calibration(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<ApiResponse<Vec<MemoryCalibrationBin>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.quiz_calibration(&user.id).await?,
     )))
 }
 
