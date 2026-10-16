@@ -152,6 +152,7 @@ flowchart TD
 | [`45-mcp-oauth-client-id-landscape.zh.md`](file:///c:/workspace/allo/docs/agent-store/45-mcp-oauth-client-id-landscape.zh.md) | MCP 授权形态与静态 client_id 现状（DCR / 预注册 / 厂商约束 / 无标准 OAuth 四分档、10 家真实端点能力矩阵、`auth_mode` 同名两层语义与 UI 假保护、D1~D5 决策、TC-AS-MCP-001~009） | 📋 现状梳理（待决策） |
 | [`46-connector-auth-affordance-fix.zh.md`](file:///c:/workspace/allo/docs/agent-store/46-connector-auth-affordance-fix.zh.md) | 授权入口假保护修复：授权入口改由 `credential.mode` 决定、transport 猜测收敛到 `credential_mode()` 单一猜测点、`auth_status` 缺席语义、wire 零变更不升指纹、TC-FIX-001~007 | ✅ PR-1 已实施（2026-10-15；含 mock 改造与单测，1 项既有失败已登记） |
 | [`47-connector-auth-mode-field-semantics.zh.md`](file:///c:/workspace/allo/docs/agent-store/47-connector-auth-mode-field-semantics.zh.md) | 第二阶段：协议 `auth_mode` 改名 `auth_transport`（形状归形状、声明归 `credential.mode`），`fp-16` → `fp-17`、12 层落点矩阵、不双写靠指纹强制两端同步、TC-S2-001~008 | ✅ 已实施（2026-10-15；指纹门禁与跨仓站点已同步） |
+| [`48-allo-connector-market-token-auth.zh.md`](file:///c:/workspace/allo/docs/agent-store/48-allo-connector-market-token-auth.zh.md) | 方案 C：allo 自有连接器市场源（token 型授权）——自有市场布局与 `market/add` 接入、`mcp.json` + `token-schema.json` 契约草案、凭据链路时序、header 口径先验证后发布闸门、D1~D6 决策、TC-C1~C8 验收、R1~R6 风险登记 | 🔧 部分实现（2026-10-16；两条条目 GitHub/百度网盘已落地，落点分别为 header 与 SSE 查询参数，均从 zip 源实测安装、未填即 fail-closed；托管形态改为 zip + ModelScope，真实端点接受性待真 token） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
