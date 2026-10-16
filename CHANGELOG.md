@@ -5,6 +5,7 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- The connector summary's `auth_mode` field is renamed to `auth_transport`, because it is derived from the transport and says nothing about what a connector needs: what a caller must do about a connector's credentials is answered by `credential.mode`, and the status projection (`authorization_required` / `configured`) now follows that declaration instead of the transport shape, so a connector whose entry declares platform-held credentials no longer grows an authorization button that can only fail during discovery. Protocol fingerprint `fp-16` → `fp-17`; no method was added or removed, so the wire method count is unchanged and clients and hosts must upgrade together.
 - Short-drama shots no longer stretch silent actions to the video model's minimum clip length. A silent action plays at its natural ~2 seconds, silent shots pack by their content, and a held final frame on a shot with no spoken line is trimmed at the film join. Spoken lines are timed as before, and every request still stays within the selected model's clip window.
 - Storyboard and screenwriter prompts no longer ask for leftover seconds to be filled with extra shots, and the performance micro-beat applies to emotional turns only, so routine actions no longer read as slow.
 - A storyboard row whose action and speech exceed the clip window is split instead of dropping leftover lines, and unquoted SFX/BGM prose is no longer priced as speech.
