@@ -5,12 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- The connector summary's `auth_mode` field is renamed to `auth_transport`, because it is derived from the transport and says nothing about what a connector needs: what a caller must do about a connector's credentials is answered by `credential.mode`, and the status projection (`authorization_required` / `configured`) now follows that declaration instead of the transport shape, so a connector whose entry declares platform-held credentials no longer grows an authorization button that can only fail during discovery. Protocol fingerprint `fp-16` → `fp-17`; no method was added or removed, so the wire method count is unchanged and clients and hosts must upgrade together.
-- Short-drama shots no longer stretch silent actions to the video model's minimum clip length. A silent action plays at its natural ~2 seconds, silent shots pack by their content, and a held final frame on a shot with no spoken line is trimmed at the film join. Spoken lines are timed as before, and every request still stays within the selected model's clip window.
-- Storyboard and screenwriter prompts no longer ask for leftover seconds to be filled with extra shots, and the performance micro-beat applies to emotional turns only, so routine actions no longer read as slow.
-- A storyboard row whose action and speech exceed the clip window is split instead of dropping leftover lines, and unquoted SFX/BGM prose is no longer priced as speech.
-- Environment plates follow the screenplay's scene headings (built after the script exists), so a scene no longer borrows another location's set from overlapping words.
-- While one shot is rendering, other shots keep their node layout movable; switching shots only loads the current take's video, and a layout-only save is no longer rejected as "generating".
+## v1.6.3 - 2026-10-16
+
+- Session-directory skills can load automatically, and OpenAI `tool_calls` pairing is fixed.
+- Canvas uploads images independently and video nodes can `@` connected stills. Windows downloads a private PowerShell 7 sidecar at startup so the agent uses pwsh 7.
+- Short-drama shots no longer stretch silent actions to the model's minimum clip length; over-window rows split instead of dropping lines; environment plates follow scene headings; and other shots stay movable while one is rendering.
+- Connector summaries rename `auth_mode` to `auth_transport` and follow `credential.mode` for the authorize button (`fp-16` → `fp-17`). Sidebar and session titlebar chrome is tighter, and the home Meetings entry is hidden.
 
 ## 0.1.0-beta.11 - 2026-10-14
 
