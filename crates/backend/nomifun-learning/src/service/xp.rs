@@ -59,11 +59,10 @@ impl LearningService {
         .await
         .map_err(internal)?;
         // 客观题总数只看课时；作答数按报名口径（无报名 = 零作答）。
-        let total_questions: i64 = sqlx::query_scalar(
+        let total_questions: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_activities \
-             WHERE lesson_id = ? AND kind IN ('single_choice', 'true_false', \
-               'fill_in_blank', 'multi_choice', 'numeric', 'ordering', 'matching')",
-        )
+             WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST})"
+        ))
         .bind(lesson_id.as_str())
         .fetch_one(&self.pool)
         .await

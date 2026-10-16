@@ -31,6 +31,12 @@ pub(crate) const KIND_STRUCTURE_REPAIR: &str = "structure_repair";
 pub(crate) const KIND_OUTLINE: &str = "outline";
 pub(crate) const KIND_LESSON: &str = "lesson";
 
+/// 客观题型 SQL 白名单（单源；挂载种子/教新结算/quiz 选题/题目列表同筛——
+/// AI 批改轨不入客观题面）。嵌进 `kind IN (…)` 使用。
+pub(crate) const OBJECTIVE_KIND_SQL_LIST: &str =
+    "'single_choice', 'true_false', 'fill_in_blank', 'multi_choice', 'numeric', \
+     'ordering', 'matching'";
+
 /// 任务状态（终态首写即定）。
 pub(crate) const STATE_RUNNING: &str = "running";
 pub(crate) const STATE_DONE: &str = "done";
