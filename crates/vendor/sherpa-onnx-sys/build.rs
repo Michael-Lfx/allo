@@ -63,6 +63,7 @@ fn try_main() -> Result<(), DynError> {
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_PACK");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
+    println!("cargo:rerun-if-env-changed=SHERPA_ONNX_BASE_URL");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     if env::var_os("DOCS_RS").is_some() {
@@ -167,17 +168,54 @@ fn download_prebuilt_libs(
             copy_file_atomically(&local_archive_path, &archive_path)?;
         } else {
             let version = env!("CARGO_PKG_VERSION");
-            let url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
-            eprintln!("Downloading sherpa-onnx libs from {url}");
+            let official_url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
+            let mut urls = Vec::new();
+            if let Ok(custom_base) = env::var("SHERPA_ONNX_BASE_URL") {
+                let custom_base = custom_base.trim_end_matches('/');
+                urls.push(format!("{custom_base}/v{version}/{archive_name}"));
+            }
+            urls.push(official_url.clone());
+            urls.push(format!("https://ghproxy.net/{official_url}"));
+            urls.push(format!("https://mirror.ghproxy.com/{official_url}"));
 
-            let response = ureq::builder()
+            let client = ureq::builder()
                 .try_proxy_from_env(true)
-                .build()
-                .get(&url)
-                .call()
-                .map_err(|e| format!("Failed to download sherpa-onnx archive from {url}: {e}"))?;
-            let mut reader = response.into_reader();
-            write_reader_atomically(&mut reader, &archive_path)?;
+                .timeout_connect(std::time::Duration::from_secs(10))
+                .build();
+
+            let mut last_err = None;
+            let mut downloaded = false;
+
+            for url in &urls {
+                eprintln!("Downloading sherpa-onnx libs from {url}");
+                match client.get(url).call() {
+                    Ok(response) => {
+                        let mut reader = response.into_reader();
+                        match write_reader_atomically(&mut reader, &archive_path) {
+                            Ok(()) => {
+                                downloaded = true;
+                                break;
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: failed writing stream from {url}: {e}");
+                                let _ = fs::remove_file(temp_path_for(&archive_path));
+                                let _ = fs::remove_file(&archive_path);
+                                last_err = Some(format!("Failed to write stream from {url}: {e}"));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to download from {url}: {e}");
+                        last_err = Some(format!("Failed to download sherpa-onnx archive from {url}: {e}"));
+                    }
+                }
+            }
+
+            if !downloaded {
+                return Err(last_err
+                    .unwrap_or_else(|| "No download URLs available for sherpa-onnx".to_string())
+                    .into());
+            }
         }
     }
 

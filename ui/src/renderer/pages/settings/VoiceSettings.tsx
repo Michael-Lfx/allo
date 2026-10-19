@@ -6,9 +6,22 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Switch } from '@arco-design/web-react';
+import { Button, Message, Switch, Select } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Info } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
+import { subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
+import VoiceConversation from '@renderer/pages/voiceSession/VoiceConversation';
+import VoiceTaskStatus from '@renderer/pages/voiceSession/VoiceTaskStatus';
+import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
+import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
+import { getVoiceDialogueSettings, saveVoiceDialogueModel, type VoiceDialogueSettings } from '@common/adapter/voiceCompanion';
+import { useModelsForTask } from '@renderer/hooks/agent/useModelsForTask';
+import { useModelSelectorProviderLabel } from '@renderer/hooks/agent/useModelSelectorProviderLabel';
+import { voiceModelOptions } from './voiceModelOptions';
+import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
+import VoiceExecutionSettingsSection from './VoiceExecutionSettings';
+import VoiceTargetSettingsSection from './VoiceTargetSettings';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
   SettingsList,
@@ -81,7 +94,6 @@ export interface VoiceModelProgressEvent {
 /** 200ms throttle window per ui-motion.zh.md §3 */
 const SSE_PROGRESS_THROTTLE_MS = 200;
 
-const VOICE_ENABLED_STORAGE_KEY = 'nomifun:voice:enabled';
 
 export interface VoiceDeviceStatus {
   mic_available: boolean;
@@ -237,10 +249,34 @@ const VoiceSettings: React.FC = () => {
   const [downloadDetail, setDownloadDetail] = useState<DownloadingDetail | null>(null);
   const [verifyDetail, setVerifyDetail] = useState<VerifyingDetail | null>(null);
   const [failedDetail, setFailedDetail] = useState<FailedDetail | null>(null);
-  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(() => {
-    if (typeof window === 'undefined' || !window.localStorage) return false;
-    return window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY) === 'true';
-  });
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceSnapshot | null>(null);
+  const {groups:chatGroups,isLoading:modelCatalogLoading}=useModelsForTask('chat');
+  const providerLabel=useModelSelectorProviderLabel();
+  const [dialogueSettings,setDialogueSettings]=useState<VoiceDialogueSettings|null>(null);
+  const [dialogueSaving,setDialogueSaving]=useState(false);
+  const [dialogueConfigError,setDialogueConfigError]=useState(false);
+  const [dialogueRefresh,setDialogueRefresh]=useState(0);
+  const dialogueOptions=voiceModelOptions(chatGroups);
+  const dialogueValue=dialogueSettings?.dialogue_model ? JSON.stringify([dialogueSettings.dialogue_model.provider_id,dialogueSettings.dialogue_model.model]) : 'default';
+  const staleDialogue=Boolean(dialogueSettings?.dialogue_model && !dialogueOptions.some((option)=>JSON.stringify([option.provider_id,option.model])===dialogueValue));
+  useEffect(()=>{
+    let disposed=false;
+    void getVoiceDialogueSettings().then((config)=>{if(!disposed){setDialogueSettings(config);setDialogueConfigError(false);}}).catch(()=>{if(!disposed)setDialogueConfigError(true);});
+    return ()=>{disposed=true;};
+  },[dialogueRefresh]);
+  const selectDialogue=async(value:string)=>{
+    setDialogueSaving(true);
+    try {
+      const choice=value==='default'?null:JSON.parse(value) as [string,string];
+      const updated=await saveVoiceDialogueModel(choice?{provider_id:choice[0],model:choice[1]}:null);
+      setDialogueSettings(updated);setDialogueConfigError(false);
+    } catch {setDialogueConfigError(true);}
+    finally {setDialogueSaving(false);}
+  };
+  const [voiceSyncError, setVoiceSyncError] = useState<string | null>(null);
+  const [voiceStatusRefresh, setVoiceStatusRefresh] = useState(0);
+  const [waking, setWaking] = useState(false);
   const [isTogglingCompanion, setIsTogglingCompanion] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -255,16 +291,8 @@ const VoiceSettings: React.FC = () => {
   const activeStreamRef = useRef<MediaStream | null>(null);
 
   // Live Dashboard & Acoustic Monitor state
-  const [audioLevel, setAudioLevel] = useState<number>(0);
-  const [kwsLiveStatus, setKwsLiveStatus] = useState<KwsLiveStatus>('listening');
+  const [kwsLiveStatus, setKwsLiveStatus] = useState<KwsLiveStatus>('idle');
   const [dashboardLogs, setDashboardLogs] = useState<DashboardLogEntry[]>([]);
-  const companionAbortControllerRef = useRef<AbortController | null>(null);
-  const speechSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const monitorAudioContextRef = useRef<AudioContext | null>(null);
-  const monitorStreamRef = useRef<MediaStream | null>(null);
-  const monitorProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const monitorDummyGainRef = useRef<GainNode | null>(null);
-  const monitorAnimFrameRef = useRef<number | null>(null);
 
   // Motion reduction and ready micro-motion states per ui-motion.zh.md §2 & §3
   const [reducedMotion, setReducedMotion] = useState(() => prefersReducedMotion());
@@ -312,30 +340,6 @@ const VoiceSettings: React.FC = () => {
       if (asrTimerRef.current) {
         clearTimeout(asrTimerRef.current);
       }
-      if (speechSilenceTimerRef.current) {
-        clearTimeout(speechSilenceTimerRef.current);
-      }
-      if (companionAbortControllerRef.current) {
-        companionAbortControllerRef.current.abort();
-      }
-      if (monitorAnimFrameRef.current) {
-        cancelAnimationFrame(monitorAnimFrameRef.current);
-      }
-      if (monitorProcessorRef.current) {
-        monitorProcessorRef.current.disconnect();
-        monitorProcessorRef.current.onaudioprocess = null;
-        monitorProcessorRef.current = null;
-      }
-      if (monitorDummyGainRef.current) {
-        monitorDummyGainRef.current.disconnect();
-        monitorDummyGainRef.current = null;
-      }
-      if (monitorAudioContextRef.current) {
-        monitorAudioContextRef.current.close().catch(() => {});
-      }
-      if (monitorStreamRef.current) {
-        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
       if (activeStreamRef.current) {
         activeStreamRef.current.getTracks().forEach((track) => track.stop());
         activeStreamRef.current = null;
@@ -343,504 +347,30 @@ const VoiceSettings: React.FC = () => {
     };
   }, []);
 
-  // Live audio level & speech activity monitor for KWS dashboard
+  // Observe the host-owned session; opening settings never acquires the microphone.
   useEffect(() => {
-    if (!voiceEnabled || modelStatus !== 'Ready') {
-      if (monitorAnimFrameRef.current) {
-        cancelAnimationFrame(monitorAnimFrameRef.current);
-        monitorAnimFrameRef.current = null;
-      }
-      if (monitorProcessorRef.current) {
-        monitorProcessorRef.current.disconnect();
-        monitorProcessorRef.current.onaudioprocess = null;
-        monitorProcessorRef.current = null;
-      }
-      if (monitorDummyGainRef.current) {
-        monitorDummyGainRef.current.disconnect();
-        monitorDummyGainRef.current = null;
-      }
-      if (monitorAudioContextRef.current) {
-        monitorAudioContextRef.current.close().catch(() => {});
-        monitorAudioContextRef.current = null;
-      }
-      if (monitorStreamRef.current) {
-        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
-        monitorStreamRef.current = null;
-      }
-      if (speechSilenceTimerRef.current) {
-        clearTimeout(speechSilenceTimerRef.current);
-        speechSilenceTimerRef.current = null;
-      }
-      setAudioLevel(0);
-      setKwsLiveStatus('listening');
-      return;
-    }
-
-    let isSubscribed = true;
-    const nowTimeStr = () => new Date().toTimeString().slice(0, 8);
-
-    setDashboardLogs((prev) => [
-      {
-        id: `${Date.now()}-init`,
-        time: nowTimeStr(),
-        text: t('voice.dashboard.logStarted', { pid: 'daemon' }),
-        type: 'info',
-      },
-      {
-        id: `${Date.now()}-kws`,
-        time: nowTimeStr(),
-        text: t('voice.dashboard.logEngineReady'),
-        type: 'info',
-      },
-      ...prev.slice(0, 8),
-    ]);
-
-    async function startAudioMonitor() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (!isSubscribed) {
-          stream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        monitorStreamRef.current = stream;
-
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const ctx = new AudioCtx();
-        monitorAudioContextRef.current = ctx;
-
-        const source = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 256;
-        source.connect(analyser);
-
-        const actualSampleRate = ctx.sampleRate || 16000;
-        const processor = ctx.createScriptProcessor(4096, 1, 1);
-        monitorProcessorRef.current = processor;
-
-        const dummyGain = ctx.createGain();
-        dummyGain.gain.value = 0;
-        monitorDummyGainRef.current = dummyGain;
-
-        source.connect(processor);
-        processor.connect(dummyGain);
-        dummyGain.connect(ctx.destination);
-
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-        setDashboardLogs((prev) => [
-          {
-            id: `${Date.now()}-mic`,
-            time: nowTimeStr(),
-            text: t('voice.dashboard.logMicActive'),
-            type: 'info',
-          },
-          ...prev.slice(0, 10),
-        ]);
-
-        let speechChunks: Float32Array[] = [];
-        const preRollChunks: Float32Array[] = [];
-        let isSpeaking = false;
-        let isTranscribing = false;
-        let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-
-        const dispatchTranscription = () => {
-          isSpeaking = false;
-          if (isTranscribing) {
-            speechChunks = [];
-            return;
-          }
-          const chunksToTranscribe = speechChunks;
-          speechChunks = [];
-          const totalSamples = chunksToTranscribe.reduce((acc, c) => acc + c.length, 0);
-          if (totalSamples < actualSampleRate * 0.35) {
-            setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
-            return;
-          }
-
-          isTranscribing = true;
-          const merged = new Float32Array(totalSamples);
-          let offset = 0;
-          for (const c of chunksToTranscribe) {
-            merged.set(c, offset);
-            offset += c.length;
-          }
-
-          const wavBuffer = encodeWavPcm(merged, actualSampleRate);
-          const blob = new Blob([wavBuffer], { type: 'audio/wav' });
-          const reader = new FileReader();
-          reader.onloadend = async () => {
-            const audioBase64 = (reader.result as string) || '';
-            if (!audioBase64 || !isSubscribed) {
-              isTranscribing = false;
-              return;
-            }
-
-            try {
-              const response = await fetch(`${getBaseUrl()}/api/voice/diagnostics/asr-test`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  ...buildBackendAuthHeaders('POST'),
-                },
-                body: JSON.stringify({
-                  audio_base64: audioBase64,
-                  sample_rate: actualSampleRate,
-                }),
-              });
-
-              if (!isSubscribed) return;
-
-              if (response.ok) {
-                const data = (await response.json()) as VoiceAsrTestResult;
-                const text = data.text ? data.text.trim() : '';
-                if (text) {
-                  const matched = Boolean(data.wake_matched) || isWakePhraseMatch(text);
-                  if (matched) {
-                    setKwsLiveStatus('wake_hit');
-                    setDashboardLogs((logPrev) => [
-                      {
-                        id: `${Date.now()}-wake`,
-                        time: nowTimeStr(),
-                        text: t('voice.dashboard.logWakeHitCascade', { text }),
-                        type: 'wake',
-                      },
-                      ...logPrev.slice(0, 30),
-                    ]);
-
-                    // Trigger wake in background companion daemon
-                    void fetch(`${getBaseUrl()}/api/voice/companion/wake`, {
-                      method: 'POST',
-                      headers: {
-                        'Content-Type': 'application/json',
-                        ...buildBackendAuthHeaders('POST'),
-                      },
-                      body: JSON.stringify({ keyword: text }),
-                    }).catch(() => {});
-                  } else {
-                    setKwsLiveStatus('listening');
-                    setDashboardLogs((logPrev) => [
-                      {
-                        id: `${Date.now()}-asr`,
-                        time: nowTimeStr(),
-                        text: t('voice.dashboard.logWakeMiss', { text }),
-                        type: 'voice',
-                      },
-                      ...logPrev.slice(0, 30),
-                    ]);
-                  }
-                } else {
-                  setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
-                }
-              } else {
-                setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
-              }
-            } catch {
-              setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'listening'));
-            } finally {
-              isTranscribing = false;
-            }
-          };
-          reader.readAsDataURL(blob);
-        };
-
-        processor.onaudioprocess = (e) => {
-          if (!isSubscribed) return;
-          const input = e.inputBuffer.getChannelData(0);
-          const chunkCopy = new Float32Array(input);
-
-          let sumSq = 0;
-          for (let i = 0; i < input.length; i++) {
-            sumSq += input[i] * input[i];
-          }
-          const rms = Math.sqrt(sumSq / input.length);
-          const isFrameSpeech = rms > 0.015;
-
-          if (isFrameSpeech) {
-            if (!isSpeaking) {
-              isSpeaking = true;
-              speechChunks = [...preRollChunks, chunkCopy];
-              setKwsLiveStatus((prev) => (prev === 'wake_hit' ? prev : 'speech'));
-              setDashboardLogs((logPrev) => [
-                {
-                  id: `${Date.now()}-vad`,
-                  time: nowTimeStr(),
-                  text: t('voice.dashboard.logVoiceDetected'),
-                  type: 'voice',
-                },
-                ...logPrev.slice(0, 30),
-              ]);
-            } else {
-              speechChunks.push(chunkCopy);
-            }
-            if (silenceTimer) {
-              clearTimeout(silenceTimer);
-              silenceTimer = null;
-            }
-            const currentTotalSamples = speechChunks.reduce((acc, c) => acc + c.length, 0);
-            if (currentTotalSamples >= actualSampleRate * 4) {
-              dispatchTranscription();
-            }
-          } else {
-            if (!isSpeaking) {
-              preRollChunks.push(chunkCopy);
-              if (preRollChunks.length > 2) {
-                preRollChunks.shift();
-              }
-            } else {
-              speechChunks.push(chunkCopy);
-              if (!silenceTimer) {
-                silenceTimer = setTimeout(() => {
-                  silenceTimer = null;
-                  dispatchTranscription();
-                }, 650);
-              }
-            }
-          }
-        };
-
-        const updateMeter = () => {
-          if (!isSubscribed) return;
-          analyser.getByteFrequencyData(dataArray);
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            sum += dataArray[i];
-          }
-          const avg = sum / dataArray.length;
-          const normalized = Math.min(100, Math.round((avg / 128) * 100));
-          setAudioLevel(normalized);
-
-          monitorAnimFrameRef.current = requestAnimationFrame(updateMeter);
-        };
-
-        monitorAnimFrameRef.current = requestAnimationFrame(updateMeter);
-      } catch (err) {
-        console.warn('Microphone audio level monitor unavailable:', err);
-      }
-    }
-
-    void startAudioMonitor();
-
-    return () => {
-      isSubscribed = false;
-      if (monitorAnimFrameRef.current) {
-        cancelAnimationFrame(monitorAnimFrameRef.current);
-        monitorAnimFrameRef.current = null;
-      }
-      if (monitorProcessorRef.current) {
-        monitorProcessorRef.current.disconnect();
-        monitorProcessorRef.current.onaudioprocess = null;
-        monitorProcessorRef.current = null;
-      }
-      if (monitorDummyGainRef.current) {
-        monitorDummyGainRef.current.disconnect();
-        monitorDummyGainRef.current = null;
-      }
-      if (monitorAudioContextRef.current) {
-        monitorAudioContextRef.current.close().catch(() => {});
-        monitorAudioContextRef.current = null;
-      }
-      if (monitorStreamRef.current) {
-        monitorStreamRef.current.getTracks().forEach((track) => track.stop());
-        monitorStreamRef.current = null;
-      }
-      if (speechSilenceTimerRef.current) {
-        clearTimeout(speechSilenceTimerRef.current);
-        speechSilenceTimerRef.current = null;
-      }
-    };
-  }, [voiceEnabled, modelStatus, t]);
-
-  // Subscribe to /api/voice/companion/events SSE stream for real-time daemon observability
-  useEffect(() => {
-    if (!voiceEnabled || modelStatus !== 'Ready') {
-      if (companionAbortControllerRef.current) {
-        companionAbortControllerRef.current.abort();
-        companionAbortControllerRef.current = null;
-      }
-      setKwsLiveStatus('idle');
-      return;
-    }
-
-    let isSubscribed = true;
-    const controller = new AbortController();
-    companionAbortControllerRef.current = controller;
-    const nowTimeStr = () => new Date().toTimeString().slice(0, 8);
-
-    const connectCompanionEvents = async () => {
-      while (isSubscribed) {
-        try {
-          const response = await fetch(`${getBaseUrl()}/api/voice/companion/events`, {
-            headers: {
-              Accept: 'text/event-stream',
-              ...buildBackendAuthHeaders('GET'),
-            },
-            signal: controller.signal,
-          });
-
-          if (!response.ok || !response.body) {
-            await new Promise((r) => setTimeout(r, 2000));
-            continue;
-          }
-
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-
-          while (isSubscribed) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed.startsWith('data:')) {
-                const jsonStr = trimmed.slice(5).trim();
-                if (jsonStr) {
-                  try {
-                    const event = JSON.parse(jsonStr) as {
-                      type: string;
-                      payload?: {
-                        keyword?: string;
-                        text?: string;
-                        intent?: string;
-                        reply?: string;
-                        timeout_secs?: number;
-                      };
-                    };
-                    if (!isSubscribed) return;
-
-                    switch (event.type) {
-                      case 'WakeHit': {
-                        const kw = event.payload?.keyword || 'Hey Flowy';
-                        setKwsLiveStatus('wake_hit');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-wake`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logWakeHitCompanion', { keyword: kw }),
-                            type: 'wake',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'Listening': {
-                        setKwsLiveStatus('listening');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-listen`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.statusListeningDesc'),
-                            type: 'info',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'SpeechRecognized': {
-                        const txt = event.payload?.text || '';
-                        setKwsLiveStatus('deciding');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-asr`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logUserSaid', { text: txt }),
-                            type: 'voice',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'IntentDecided': {
-                        const intent = event.payload?.intent || 'Chat';
-                        setKwsLiveStatus('speaking');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-intent`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logIntentDecided', { intent }),
-                            type: 'info',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'TtsSpeaking': {
-                        const text = event.payload?.text || '';
-                        setKwsLiveStatus('speaking');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-tts`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logTtsSpeaking', { text }),
-                            type: 'voice',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'FollowUpWindow': {
-                        const secs = event.payload?.timeout_secs || 4;
-                        setKwsLiveStatus('follow_up');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-followup`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logFollowUpWindow', { seconds: secs }),
-                            type: 'info',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                      case 'Idle': {
-                        setKwsLiveStatus('idle');
-                        setDashboardLogs((prev) => [
-                          {
-                            id: `${Date.now()}-idle`,
-                            time: nowTimeStr(),
-                            text: t('voice.dashboard.logIdle'),
-                            type: 'info',
-                          },
-                          ...prev.slice(0, 30),
-                        ]);
-                        break;
-                      }
-                    }
-                  } catch {
-                    // Ignore heartbeat parse failures
-                  }
-                }
-              }
-            }
-          }
-        } catch {
-          if (!isSubscribed) break;
-          await new Promise((r) => setTimeout(r, 2000));
-        }
-      }
-    };
-
-    void connectCompanionEvents();
-
-    const handleBeforeUnload = () => {
-      isSubscribed = false;
-      controller.abort();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      isSubscribed = false;
-      controller.abort();
-    };
-  }, [voiceEnabled, modelStatus, t]);
-
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    let previousSnapshot: VoiceSnapshot | null = null;
+    void subscribeVoiceSession((snapshot) => {
+      if (disposed) return;
+      setVoiceEnabled(snapshot.enabled);
+      setVoiceSnapshot(snapshot);
+      const phase = snapshot.phase;
+      setKwsLiveStatus(phase === 'speaking' ? 'speaking' : phase === 'follow_up' || phase === 'text_follow_up' ? 'follow_up' : phase === 'deciding' || phase === 'transcribing' || phase === 'synthesizing' ? 'deciding' : phase === 'listening' ? 'listening' : 'idle');
+      const entries: string[] = [];
+      if (previousSnapshot?.phase !== phase) entries.push(t(`voice.session.phase.${phase}`));
+      if (snapshot.user_text && (previousSnapshot?.turn_id !== snapshot.turn_id || previousSnapshot.user_text !== snapshot.user_text)) entries.push(t('voice.dashboard.logUserSaid', { text: snapshot.user_text }));
+      if (snapshot.understood_request && previousSnapshot?.understood_request !== snapshot.understood_request) entries.push(`${t('voice.session.understoodRequest')}: ${snapshot.understood_request}`);
+      if (snapshot.assistant_text && previousSnapshot?.assistant_text !== snapshot.assistant_text) entries.push(`${t('voice.session.assistantText')}: ${snapshot.assistant_text}`);
+      if (snapshot.error && previousSnapshot?.error?.code !== snapshot.error.code) entries.push(t(voiceErrorKey(snapshot.error.code)));
+      previousSnapshot = snapshot;
+      if (entries.length) setDashboardLogs((previous) => [...entries.reverse().map((text, index) => ({ id: `${snapshot.instance_id}-${snapshot.seq}-${index}`, time: new Date().toTimeString().slice(0, 8), text, type: 'info' as const })), ...previous].slice(0, 30));
+    }, false, (code) => { if (!disposed) setVoiceSyncError(code); }).then((off) => { if (disposed) off(); else unsubscribe = off; }).catch(() => {
+      if (!disposed) { setKwsLiveStatus('idle'); setVoiceSyncError('voice_snapshot_unavailable'); }
+    });
+    return () => { disposed = true; unsubscribe?.(); };
+  }, [t, voiceStatusRefresh]);
   // Apply SSE state update with 200ms throttle for continuous downloading progress events
   const applyStateUpdate = useCallback((stateWire: ModelInstallStateWire, immediate = false) => {
     const isProgress = stateWire.status === 'Downloading';
@@ -963,7 +493,7 @@ const VoiceSettings: React.FC = () => {
       });
       if (response.ok) {
         const data = (await response.json()) as { running?: boolean; autostart?: boolean };
-        setVoiceEnabled(Boolean(data.running));
+        setVoiceEnabled(Boolean(data.autostart));
       }
     } catch {
       // Best-effort
@@ -1081,10 +611,7 @@ const VoiceSettings: React.FC = () => {
       if (response.ok) {
         const data = (await response.json()) as { success: boolean; running: boolean; error?: string };
         if (data.success) {
-          setVoiceEnabled(data.running);
-          if (typeof window !== 'undefined' && window.localStorage) {
-            window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(data.running));
-          }
+          setVoiceEnabled(checked);
         } else if (data.error) {
           Message.error(data.error);
         }
@@ -1096,8 +623,9 @@ const VoiceSettings: React.FC = () => {
       Message.error(e instanceof Error ? e.message : t('voice.errors.unknownError'));
     } finally {
       setIsTogglingCompanion(false);
+      void fetchCompanionStatus();
     }
-  }, [t]);
+  }, [t, fetchCompanionStatus]);
 
   const fetchDeviceStatus = useCallback(async () => {
     setMicChecking(true);
@@ -1256,6 +784,12 @@ const VoiceSettings: React.FC = () => {
     modelStatus === 'VerifyingSha256';
 
   // Dynamic row label and description per status
+  const serviceAvailability = voiceServiceAvailability(voiceSnapshot, voiceEnabled, voiceSyncError);
+  const serviceDescription = serviceAvailability === 'syncFailed' && voiceSyncError === 'voice_status_forbidden'
+    ? t('voice.service.authSyncFailedDesc')
+    : serviceAvailability === 'syncFailed' && voiceSyncError === 'voice_status_api_missing'
+      ? t('voice.service.apiMissingDesc')
+      : t(`voice.service.${serviceAvailability}Desc`);
   let rowLabel = t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
 
@@ -1275,10 +809,8 @@ const VoiceSettings: React.FC = () => {
     rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
-    rowLabel = t('voice.status.ready');
-    rowDescription = voiceEnabled
-      ? t('voice.phases.readyDesc')
-      : t('voice.phases.standbyDesc');
+    rowLabel = t(`voice.service.${serviceAvailability}`);
+    rowDescription = serviceDescription;
   } else if (modelStatus === 'Failed') {
     rowLabel = t('voice.status.failed');
     rowDescription = (
@@ -1383,7 +915,9 @@ const VoiceSettings: React.FC = () => {
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
                           <Switch
+                            aria-label={t('voice.service.enableIntent')}
                             checked={voiceEnabled}
+                            disabled={!voiceEnabled && (!voiceSnapshot || Boolean(voiceSyncError))}
                             loading={isTogglingCompanion}
                             onChange={handleToggleVoiceEnabled}
                           />
@@ -1462,6 +996,15 @@ const VoiceSettings: React.FC = () => {
             description={t('voice.diagnostics.sectionDesc')}
           >
             <SettingsList>
+              <SettingsRow
+                label={t('voice.session.tryWake')}
+                description={serviceAvailability === 'ready' ? t('voice.session.tryWakeDescription') : serviceDescription}
+                controlLayout='actions'
+                control={<Button size='small' loading={waking} disabled={serviceAvailability !== 'ready' || asrRunning} onClick={() => {
+                  setWaking(true);
+                  void wakeVoiceSession().catch(() => Message.error(t('voice.session.unavailable'))).finally(() => setWaking(false));
+                }}>{t('voice.session.tryWake')}</Button>}
+              />
               <div className='min-h-68px flex items-center'>
                 <div className='w-full'>
                   <SettingsRow
@@ -1533,14 +1076,36 @@ const VoiceSettings: React.FC = () => {
           </SettingsSection>
         )}
 
+        <VoiceTargetSettingsSection />
+        <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
+        <VoiceExecutionSettingsSection connected={voiceSnapshot?.connection === 'connected'} models={dialogueOptions.map((option) => {
+          const provider=chatGroups.find((group)=>group.provider.id===option.provider_id)?.provider;
+          return {...option,label:`${provider?providerLabel(provider):option.provider_id} · ${option.model}`};
+        })}/>
+        <VoiceTaskDiagnostics snapshot={voiceSnapshot} />
+            <VoiceTaskStatus task={voiceSnapshot?.task} errorCode={voiceSnapshot?.task_error_code} instanceId={voiceSnapshot?.instance_id} confirmation={voiceSnapshot?.confirmation} />
+
+        <SettingsSection title={t('voice.dialogue.title')} description={t('voice.dialogue.description')}>
+          <SettingsList><SettingsRow label={t('voice.dialogue.model')} description={dialogueConfigError ? t('voice.dialogue.failed') : dialogueSettings?.available ? t('voice.dialogue.selected',{model:dialogueSettings.effective_model?.model}) : t('voice.dialogue.unavailable')} controlLayout='field' control={
+            <div className='flex flex-col gap-2'>
+              <Select aria-label={t('voice.dialogue.model')} value={dialogueSettings?dialogueValue:undefined} placeholder={t('voice.dialogue.model')} disabled={!dialogueSettings||modelCatalogLoading||dialogueSaving} loading={dialogueSaving} onChange={(value:string)=>{void selectDialogue(value);}}>
+                <Select.Option value='default'>{t('voice.dialogue.default')}</Select.Option>
+                {staleDialogue && <Select.Option value={dialogueValue} disabled>{t('voice.dialogue.stale',{model:dialogueSettings?.dialogue_model?.model})}</Select.Option>}
+                {dialogueOptions.map((option)=>{const provider=chatGroups.find((group)=>group.provider.id===option.provider_id)?.provider;return <Select.Option key={JSON.stringify([option.provider_id,option.model])} value={JSON.stringify([option.provider_id,option.model])}>{provider?providerLabel(provider):option.provider_id} · {option.model}</Select.Option>;})}
+              </Select>
+              {dialogueConfigError && <Button size='small' onClick={()=>setDialogueRefresh((n)=>n+1)}>{t('voice.service.retrySync')}</Button>}
+            </div>
+          } /></SettingsList>
+        </SettingsSection>
+
         {modelStatus === 'Ready' && voiceEnabled && (
           <SettingsSection
             title={t('voice.dashboard.sectionTitle')}
             description={t('voice.dashboard.sectionDesc')}
           >
-            <div className='flex flex-col gap-4 rounded-8px border border-solid border-border-base bg-fill-1 p-5 transition-colors'>
+            <div className='flex flex-col gap-4 rounded-8px border border-solid border-[var(--border-base)] bg-fill-1 p-5 transition-colors'>
               {/* Top Status & Live Badge Header */}
-              <div className='flex flex-wrap items-center justify-between gap-4 border-b border-b-solid border-border-base pb-4'>
+              <div className='flex flex-wrap items-center justify-between gap-4 border-b border-b-solid border-[var(--border-base)] pb-4'>
                 <div className='flex items-center gap-3'>
                   {/* Status Indicator Beacon */}
                   <div className='relative flex items-center justify-center'>
@@ -1570,53 +1135,26 @@ const VoiceSettings: React.FC = () => {
 
                   <div>
                     <div className='text-14px font-medium text-t-primary'>
-                      {kwsLiveStatus === 'wake_hit'
-                        ? t('voice.dashboard.statusWakeHit')
-                        : kwsLiveStatus === 'speech'
-                          ? t('voice.dashboard.statusSpeech')
-                          : kwsLiveStatus === 'deciding'
-                            ? t('voice.dashboard.statusDeciding')
-                            : kwsLiveStatus === 'speaking'
-                              ? t('voice.dashboard.statusSpeaking')
-                              : kwsLiveStatus === 'follow_up'
-                                ? t('voice.dashboard.statusFollowUp')
-                                : t('voice.dashboard.statusListening')}
+                      {serviceAvailability === 'ready' && voiceSnapshot ? t(`voice.session.phase.${voiceSnapshot.phase}`) : t(`voice.service.${serviceAvailability}`)}
                     </div>
                     <div className='text-12px text-t-secondary'>
-                      {kwsLiveStatus === 'wake_hit'
-                        ? t('voice.dashboard.statusWakeHitDesc')
-                        : kwsLiveStatus === 'speech'
-                          ? t('voice.dashboard.statusSpeechDesc')
-                          : kwsLiveStatus === 'deciding'
-                            ? t('voice.dashboard.statusDecidingDesc')
-                            : kwsLiveStatus === 'speaking'
-                              ? t('voice.dashboard.statusSpeakingDesc')
-                              : kwsLiveStatus === 'follow_up'
-                                ? t('voice.dashboard.statusFollowUpDesc')
-                                : t('voice.dashboard.statusListeningDesc')}
+                      {serviceDescription}
                     </div>
                   </div>
                 </div>
 
-                {/* Audio Level Meter */}
-                <div className='w-240px flex flex-col gap-1'>
-                  <div className='flex items-center justify-between text-11px text-t-tertiary'>
-                    <span>{t('voice.dashboard.volumeLevel')}</span>
-                    <span className='font-variant-numeric tabular-nums'>{audioLevel}%</span>
-                  </div>
-                  <div className='h-6px w-full overflow-hidden rounded-full bg-fill-3'>
-                    <div
-                      className={`h-full rounded-full transition-all duration-100 ${
-                        audioLevel > 50 ? 'bg-warning-6' : 'bg-primary-6'
-                      }`}
-                      style={{ width: `${Math.min(100, audioLevel)}%` }}
-                    />
-                  </div>
-                </div>
+                {(voiceSyncError || !voiceSnapshot) && <Button size='small' onClick={() => setVoiceStatusRefresh((value) => value + 1)}>{t('voice.service.retrySync')}</Button>}
               </div>
 
+              <VoiceAudioStatus snapshot={voiceSnapshot} />
+              <section className='flex flex-col gap-2' aria-label={t('voice.dashboard.conversationTitle')}>
+                <h3 className='m-0 text-14px font-medium text-t-primary'>{t('voice.dashboard.conversationTitle')}</h3>
+                <div className='max-h-360px overflow-y-auto rounded-6px bg-fill-2 p-3 text-14px'>
+                  <VoiceConversation snapshot={voiceSnapshot} />
+                </div>
+              </section>
               {/* Active Keywords & Pronunciation Tip Card */}
-              <div className='rounded-6px border border-solid border-primary-2 bg-primary-1/30 p-3.5 text-12px'>
+              <div className='rounded-6px border border-solid border-primary-2 bg-fill-2 p-3.5 text-12px'>
                 <div className='flex items-center gap-2 font-medium text-primary-7'>
                   <Info theme='filled' size='14' />
                   <span>{t('voice.dashboard.tipTitle')}</span>
@@ -1624,7 +1162,7 @@ const VoiceSettings: React.FC = () => {
                 <div className='mt-1 text-t-secondary leading-relaxed'>
                   {t('voice.dashboard.tipContent')}
                 </div>
-                <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-primary-2/40 text-11px text-t-tertiary'>
+                <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-[var(--border-base)] text-11px text-t-tertiary'>
                   <span className='font-medium text-t-secondary'>{t('voice.dashboard.activeKeywordsTitle')}:</span>
                   <span>{t('voice.dashboard.activeKeywordsList')}</span>
                 </div>

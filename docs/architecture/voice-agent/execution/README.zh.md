@@ -1,4 +1,24 @@
+> **2026-10-19 任务闭环优化（待实施）**：[配置、真实任务、路由与稳定性串行 Plan（O0–O6）](runtime-dispatch-closure-plan-2026-10-19.zh.md)。基于实测缺执行配置、格式错误及首响应超时；先验真实文件任务，再验天气搜索。本轮仅整理计划，自动、真实服务、设备与 Owner 分别签核。历史正文保留。
+
 # AI Mate 语音方案执行计划总纲 (Execution Plan Overview)
+
+> **2026-10-16 最新待实施交接**：[快速前台与后台 runtime 串行执行 Plan（S0–S9）](voice-fast-front-runtime-execution-plan.zh.md)。保留快速语音层，默认独立语音会话、宠物可选绑定，用户会话与专属执行会话关联；明确原文落盘、作用域/权限、超时、取消、通知回执与旧记录兼容。当前仅完成计划，未授权本轮实施；以下历史多 Agent/波次及旧 B/Q 方案不覆盖该串行计划。
+
+> **2026-10-16 实战避坑经验**：[语音伴侣实战避坑与经验总结](voice-agent-pitfalls-and-lessons.zh.md)，详述 Sys Crate 依赖下载容灾、Edge TTS 429 退避降级、Windows GUI 进程独占锁与产物寻址倒挂等核心系统级陷阱与长效防御方案。
+
+> **2026-10-16 实测交接入口**：[T0–T5 Owner 脚本与 AC 对照](T5-owner-handoff.zh.md)。代码/自动证据、联合产物及真人安装签核分开记录；没有 Owner 结果时不得标记产品验收通过。
+
+> **2026-10-16 实施契约**：[语音伴侣与本机 runtime API](voice-runtime-api-contract.zh.md)，明确模块职责、身份、公开/私有接口及审批权威。具体完成状态仍以串行实施记录与 Owner 签核为准。
+
+> **2026-10-15 已授权串行实施**：用户随后明确要求实施 T0–T5，当前从 T0 验证基线推进。[实施记录](T0-T5-implementation-progress.zh.md)分别保留失败/通过、环境阻断、生产产物及 Owner 状态；未通过当前片自动门禁前不进入下一片。下方“本轮仅整理文档”为先前阶段记录，不覆盖本次实施授权。
+
+> **2026-10-15 后续方案入口**：[纵向闭环与 runtime 接口方案](runtime-vertical-contract-plan.zh.md)。用户要求先整理、不盲目实施；当前本轮仅整理文档。后续顺序为 T0 基线 → T1 真实只读任务全流程 → T2 控制与恢复 → T3 实际工具确认 → T4 离屏体验 → T5 安装交接；新增 API 为拟实施契约，原验收与历史正文保留。
+
+> **2026-10-15实施接续**：[R1–R3生命周期与提醒](R1-R3-feedback-progress.zh.md)、[R4声音设置与诊断](R4-feedback-settings-progress.zh.md)。原“尚未实施”和多Agent方案为历史；当前按已授权完整目标串行推进，设备/runtime/安装及Owner出口未完成。
+
+> 同日原VC-11接续：[V3真实请求三轮短上下文](V3-short-context-progress.zh.md)，含生产worker失败/通过证据与当前剩余声学门禁。
+
+> **当前桌面产品入口（2026-10-14）**：[V0–V8串行计划](vertical-execution-plan.zh.md)与新增[v0.2声音反馈R计划](R-auditory-feedback-plan.zh.md)。用户明确串行验收，不派发并行Agent；以下多Agent波次正文保留作历史，不覆盖当前用户指令。R计划尚未实施。
 
 > **状态**：🧭 执行层文档 · 面向多 Agent 并行执行
 > **上游权威**：架构基线 [../interaction.zh.md](../interaction.zh.md)（定义 WHAT / WHY / 验收指标）+ 子规范 [../model-management.zh.md](../model-management.zh.md)、[../ui-motion.zh.md](../ui-motion.zh.md)。本文档只定义 HOW / 顺序 / 分工，**绝不重新定义或稀释任何验收指标**。
@@ -129,3 +149,9 @@ flowchart LR
 - 构建目录：`build.noindex/`，稳态约 28G 属设计内；全量清理前先关 Cursor（EBUSY 锁）。
 - 桌面 Web 验证入口：`bun run dev:web`（auth 关闭、仅 localhost），bsk 直接访问即可；全新 dev 数据目录需真实云端登录或 `seed:dev` 初始化。
 - 前端门禁：用户可见文案必须 zh-CN / en-US 双字典对称，过 `bun run check:i18n` 与 `bun run check:theme`。
+
+- [2026-10-16 审查修复与交接](review-repair-2026-10-16.zh.md)：9 项生产调用链、持久化、会话绑定、控制、进度和播放回执修复，以及独立的自动证据与 Owner 验收。
+
+- [语音低延迟串行执行 Plan（2026-10-19）](low-latency-execution-plan-2026-10-19.zh.md)：关闭推理、阶段计时、受控流式分句、停止/追问边界及开发产物交接。
+
+- [低延迟优化实测交接与后续签核（2026-10-19）](low-latency-owner-handoff-2026-10-19.zh.md)

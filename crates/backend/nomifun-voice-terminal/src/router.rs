@@ -2,9 +2,9 @@
 //!
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md §3.5.
 
-use async_trait::async_trait;
-use crate::contract::{validate_voice_decision, VoiceDecision, VOICE_DECISION_SCHEMA};
+use crate::contract::{VOICE_DECISION_SCHEMA, VoiceDecision};
 use crate::driver::{RouteError, VoiceRouter};
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -36,9 +36,14 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
         input: &str,
         _task_status: Option<&str>,
     ) -> Result<VoiceDecision, RouteError> {
-        if input.contains("任务") || input.contains("执行") || input.contains("整理") || input.contains("备份") {
+        if input.contains("任务")
+            || input.contains("执行")
+            || input.contains("整理")
+            || input.contains("备份")
+        {
             Ok(VoiceDecision {
                 intent_type: crate::contract::IntentType::AgentTask,
+                understood_request: None,
                 task_control_action: None,
                 reply_tts: None,
                 spoken_ack: Some("收到，正在处理任务。".into()),
@@ -48,15 +53,24 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
         } else if input.contains("取消") || input.contains("停止") {
             Ok(VoiceDecision {
                 intent_type: crate::contract::IntentType::TaskControl,
+                understood_request: None,
                 task_control_action: Some(crate::contract::TaskControlAction::CancelTask),
                 reply_tts: None,
                 spoken_ack: None,
                 task_goal: None,
                 requires_confirmation: None,
             })
-        } else if input.contains("进度") || input.contains("状态") {
+        } else if input.contains("进度")
+            || input.contains("状态")
+            || input.contains("重听")
+            || input.contains("再播一遍")
+            || input.contains("再说一遍")
+            || input.contains("刚才说了什么")
+            || input.contains("再读一遍")
+        {
             Ok(VoiceDecision {
                 intent_type: crate::contract::IntentType::TaskControl,
+                understood_request: None,
                 task_control_action: Some(crate::contract::TaskControlAction::QueryStatus),
                 reply_tts: None,
                 spoken_ack: None,
@@ -66,6 +80,7 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
         } else {
             Ok(VoiceDecision {
                 intent_type: crate::contract::IntentType::Chat,
+                understood_request: None,
                 task_control_action: None,
                 reply_tts: Some("好的，请问有什么可以帮助您的？".into()),
                 spoken_ack: None,
@@ -81,6 +96,7 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
 /// and live HTTP completions endpoint connection (supporting Flowy Cloud, DashScope, and OpenAI-compatible gateways).
 #[derive(Clone)]
 pub struct OpenAiCompatibleVoiceRouter {
+    completion: Option<std::sync::Arc<dyn crate::completion::VoiceCompletionClient>>,
     history: Vec<ChatMessage>,
     endpoint: Option<String>,
     api_key: Option<String>,
@@ -95,6 +111,41 @@ pub struct OpenAiCompatibleVoiceRouter {
 pub type QwenVoiceRouter = OpenAiCompatibleVoiceRouter;
 
 impl OpenAiCompatibleVoiceRouter {
+    async fn route_request(&self,scope:&nomifun_api_types::voice::VoiceDialogueRequest,input:&str,task_status:Option<&str>,context:&[ChatMessage],sentences:Option<tokio::sync::mpsc::Sender<nomifun_api_types::voice::VoiceDialogueSentence>>)->(Result<VoiceDecision,RouteError>,Option<String>) {
+        let Some(client) = &self.completion else {
+            return self.route_with_context(input, task_status, context).await;
+        };
+        let mut router = self.clone();
+        router.history.clear();
+        for pair in context.chunks_exact(2).rev().take(3).rev() {
+            router.append_turn(&pair[0].content, &pair[1].content);
+        }
+        let mut request = scope.clone();
+        request.prompt = format!("对话上下文：\n{}\n{}",router.history.iter()
+            .map(|m|format!("{}: {}",m.role,m.content)).collect::<Vec<_>>().join("\n"),router.build_prompt(input,task_status));
+        let result=match sentences {Some(sender)=>client.complete_stream(&request,sender).await,None=>client.complete(&request).await};
+        match result {
+            Ok(content) => (self.parse_and_validate(&content),Some(content)),
+            Err(RouteError::Record{code,content}) => (Err(RouteError::Record{code,content:content.clone()}),Some(content)),
+            Err(error) => (Err(error),None),
+        }
+    }
+
+    pub fn with_completion(
+        completion: std::sync::Arc<dyn crate::completion::VoiceCompletionClient>,
+    ) -> Self {
+        Self {
+            completion: Some(completion),
+            history: Vec::new(),
+            endpoint: None,
+            api_key: None,
+            model: String::new(),
+            extra_headers: Vec::new(),
+            http_client: reqwest::Client::new(),
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            fallback: None,
+        }
+    }
     pub fn new() -> Self {
         Self::from_env()
     }
@@ -130,6 +181,7 @@ impl OpenAiCompatibleVoiceRouter {
         Self {
             history: Vec::new(),
             endpoint: Some(completions_url),
+            completion: None,
             api_key: Some(token.clone()),
             model: model.into(),
             extra_headers: vec![("token".to_string(), token)],
@@ -152,7 +204,12 @@ impl OpenAiCompatibleVoiceRouter {
         Self {
             history: Vec::new(),
             endpoint: Some(endpoint.into()),
-            api_key: if key.trim().is_empty() { None } else { Some(key) },
+            completion: None,
+            api_key: if key.trim().is_empty() {
+                None
+            } else {
+                Some(key)
+            },
             model: model.into(),
             extra_headers: Vec::new(),
             http_client: reqwest::Client::builder()
@@ -171,17 +228,39 @@ impl OpenAiCompatibleVoiceRouter {
     /// 4. Generic completions endpoint: `AI_MATE_LLM_ENDPOINT`
     /// 5. Offline fallback
     pub fn from_env() -> Self {
+        if let Ok(endpoint) = std::env::var("AI_MATE_DIALOGUE_ENDPOINT") {
+            let credential = std::env::var("AI_MATE_CONTROL_TOKEN").unwrap_or_default();
+            if let Ok(client) = crate::completion::HostDialogueClient::new(endpoint, credential) {
+                return Self::with_completion(std::sync::Arc::new(client));
+            }
+            // Host-managed mode must not fall back to guessing another model.
+            return Self {
+                completion: None,
+                history: Vec::new(),
+                endpoint: None,
+                api_key: None,
+                model: String::new(),
+                extra_headers: Vec::new(),
+                http_client: reqwest::Client::new(),
+                #[cfg(any(test, feature = "voice-skeleton"))]
+                fallback: None,
+            };
+        }
         let model = std::env::var("AI_MATE_LLM_MODEL")
             .or_else(|_| std::env::var("DASHSCOPE_MODEL"))
             .or_else(|_| std::env::var("FLOWY_LLM_MODEL"))
             .unwrap_or_else(|_| "qwen3.8-flash".to_string());
 
         // 1. Priority 1: Flowy Cloud user token
-        if let Ok(token) = std::env::var("NOMIFUN_SERVER_TOKEN").or_else(|_| std::env::var("FLOWY_SERVER_TOKEN")) {
+        if let Ok(token) =
+            std::env::var("NOMIFUN_SERVER_TOKEN").or_else(|_| std::env::var("FLOWY_SERVER_TOKEN"))
+        {
             if !token.trim().is_empty() {
                 let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
                     .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
-                    .unwrap_or_else(|_| "https://server.flowyaipc.com/claw/v1/chat/completions".to_string());
+                    .unwrap_or_else(|_| {
+                        "https://server.flowyaipc.com/claw/v1/chat/completions".to_string()
+                    });
                 return Self::from_flowy_cloud(endpoint, token, model);
             }
         }
@@ -191,7 +270,10 @@ impl OpenAiCompatibleVoiceRouter {
             if !key.trim().is_empty() {
                 let endpoint = std::env::var("DASHSCOPE_COMPLETIONS_URL")
                     .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
-                    .unwrap_or_else(|_| "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions".to_string());
+                    .unwrap_or_else(|_| {
+                        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+                            .to_string()
+                    });
                 return Self::from_custom_endpoint(endpoint, key, model);
             }
         }
@@ -220,7 +302,9 @@ impl OpenAiCompatibleVoiceRouter {
         if let Some(token) = try_detect_local_flowy_token() {
             let endpoint = std::env::var("FLOWY_COMPLETIONS_URL")
                 .or_else(|_| std::env::var("AI_MATE_LLM_ENDPOINT"))
-                .unwrap_or_else(|_| "https://server.flowyaipc.com/claw/v1/chat/completions".to_string());
+                .unwrap_or_else(|_| {
+                    "https://server.flowyaipc.com/claw/v1/chat/completions".to_string()
+                });
             tracing::info!("Auto-detected Flowy Cloud user token from local session store");
             return Self::from_flowy_cloud(endpoint, token, model);
         }
@@ -229,6 +313,7 @@ impl OpenAiCompatibleVoiceRouter {
         Self {
             history: Vec::new(),
             endpoint: None,
+            completion: None,
             api_key: None,
             model,
             extra_headers: Vec::new(),
@@ -253,7 +338,11 @@ impl OpenAiCompatibleVoiceRouter {
         self.endpoint.is_some()
     }
 
-    pub fn with_endpoint(mut self, endpoint: impl Into<String>, api_key: impl Into<String>) -> Self {
+    pub fn with_endpoint(
+        mut self,
+        endpoint: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
         self.endpoint = Some(endpoint.into());
         let k = api_key.into();
         self.api_key = if k.trim().is_empty() { None } else { Some(k) };
@@ -312,35 +401,62 @@ impl OpenAiCompatibleVoiceRouter {
             字段说明与约束：\n\
             - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" 之一。\n\
             - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。\n\
+            - 对可理解的输入，必须同时提供 understood_request：用一句自然语言忠实整理用户的问题或需求，保留关键对象和条件，不补造地点、日期或未说出的事实。reply_tts 直接回答该需求，不要求用户再确认；同一次输出同时返回理解和回答。\n\
             - 当 intent_type 为 \"agent_task\" 时，必须提供 task_goal (规整的目标描述) 和 spoken_ack (接单口语回执，<=25字)，requires_confirmation 标明是否涉及高危或破坏性操作。\n\
             - 当 intent_type 为 \"task_control\" 时，必须提供 task_control_action (\"query_status\" 或 \"cancel_task\")。\n\
             - 当用户输入无关噪音或无意义内容时，intent_type 为 \"ignore\"。\n\
             {}\n\
             最新语音输入: \"{}\"",
-            VOICE_DECISION_SCHEMA,
-            task_status_str,
-            user_input
+            VOICE_DECISION_SCHEMA, task_status_str, user_input
         )
     }
 
     /// Parses raw model JSON response and validates against C3 VoiceDecisionContract JSON Schema.
     pub fn parse_and_validate(&self, raw_str: &str) -> Result<VoiceDecision, RouteError> {
-        let trimmed = raw_str.trim();
-        let cleaned = if let Some(stripped) = trimmed.strip_prefix("```json") {
-            stripped.trim().strip_suffix("```").unwrap_or(stripped).trim()
-        } else if let Some(stripped) = trimmed.strip_prefix("```") {
-            stripped.trim().strip_suffix("```").unwrap_or(stripped).trim()
-        } else {
-            trimmed
-        };
+        nomifun_api_types::voice::parse_voice_decision(raw_str).map_err(RouteError::Generation)
+    }
 
-        let value: serde_json::Value = serde_json::from_str(cleaned)
-            .map_err(|e| RouteError::Generation(format!("Invalid JSON: {e}")))?;
-
-        validate_voice_decision(&value).map_err(RouteError::Validation)?;
-
-        serde_json::from_value(value)
-            .map_err(|e| RouteError::Generation(format!("Deserialization error: {e}")))
+    async fn request_model_text(
+        &self,
+        endpoint: &str,
+        input: &str,
+        task_status: Option<&str>,
+    ) -> Result<String, RouteError> {
+        let mut messages: Vec<_> = self
+            .history
+            .iter()
+            .map(|msg| serde_json::json!({ "role": msg.role, "content": msg.content }))
+            .collect();
+        messages.push(
+            serde_json::json!({ "role": "user", "content": self.build_prompt(input, task_status) }),
+        );
+        let body =
+            serde_json::json!({ "model": self.model, "messages": messages, "temperature": 0.0 });
+        let mut request = self.http_client.post(endpoint).json(&body);
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        for (name, value) in &self.extra_headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|err| RouteError::Network(err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(RouteError::Generation(format!(
+                "HTTP status {}",
+                response.status()
+            )));
+        }
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|err| RouteError::Generation(err.to_string()))?;
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| RouteError::Generation("Missing message content in response".into()))
     }
 }
 
@@ -350,8 +466,52 @@ impl Default for QwenVoiceRouter {
     }
 }
 
+#[cfg(test)]
+mod reply_contract_tests {
+    use super::*;
+    #[test]
+    fn chat_without_an_actual_reply_is_rejected() {
+        let router = QwenVoiceRouter::from_custom_endpoint("http://127.0.0.1:1", "", "fixture");
+        assert!(
+            router
+                .parse_and_validate(r#"{"intent_type":"chat","reply_tts":""}"#)
+                .is_err()
+        );
+        assert!(
+            router
+                .parse_and_validate(r#"{"intent_type":"chat"}"#)
+                .is_err()
+        );
+    }
+}
+
 #[async_trait]
 impl VoiceRouter for QwenVoiceRouter {
+    async fn route_scoped(
+        &self, scope: &nomifun_api_types::voice::VoiceDialogueRequest,
+        input: &str, task_status: Option<&str>, context: &[ChatMessage],
+    ) -> (Result<VoiceDecision, RouteError>, Option<String>) {
+        self.route_request(scope,input,task_status,context,None).await
+    }
+    async fn route_scoped_stream(&self,scope:&nomifun_api_types::voice::VoiceDialogueRequest,input:&str,task_status:Option<&str>,context:&[ChatMessage],sentences:tokio::sync::mpsc::Sender<nomifun_api_types::voice::VoiceDialogueSentence>)->(Result<VoiceDecision,RouteError>,Option<String>) {
+        self.route_request(scope,input,task_status,context,Some(sentences)).await
+    }
+    async fn route_with_context(
+        &self,
+        input: &str,
+        task_status: Option<&str>,
+        context: &[ChatMessage],
+    ) -> (Result<VoiceDecision, RouteError>, Option<String>) {
+        let mut request = self.clone();
+        request.history.clear();
+        for pair in context.chunks_exact(2).rev().take(3).rev() {
+            request.append_turn(&pair[0].content, &pair[1].content);
+        }
+        request.route_with_output(input, task_status).await
+    }
+    fn is_configured(&self) -> bool {
+        self.completion.is_some() || self.endpoint.is_some()
+    }
     async fn route(&self, input: &str) -> Result<VoiceDecision, RouteError> {
         self.route_with_status(input, None).await
     }
@@ -361,55 +521,50 @@ impl VoiceRouter for QwenVoiceRouter {
         input: &str,
         task_status: Option<&str>,
     ) -> Result<VoiceDecision, RouteError> {
+        self.route_with_output(input, task_status).await.0
+    }
+
+    async fn route_with_output(
+        &self,
+        input: &str,
+        task_status: Option<&str>,
+    ) -> (Result<VoiceDecision, RouteError>, Option<String>) {
+        if let Some(client) = &self.completion {
+            let prompt = if self.history.is_empty() {
+                self.build_prompt(input, task_status)
+            } else {
+                format!(
+                    "对话上下文：\n{}\n{}",
+                    self.history
+                        .iter()
+                        .map(|m| format!("{}: {}", m.role, m.content))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    self.build_prompt(input, task_status)
+                )
+            };
+            return match client.complete(&nomifun_api_types::voice::VoiceDialogueRequest::new(prompt)).await {
+                Ok(content) => (self.parse_and_validate(&content), Some(content)),
+                Err(error) => (Err(error), None),
+            };
+        }
         if let Some(endpoint) = &self.endpoint {
-            let prompt = self.build_prompt(input, task_status);
-            let mut messages = Vec::new();
-            for msg in &self.history {
-                messages.push(serde_json::json!({
-                    "role": msg.role,
-                    "content": msg.content,
-                }));
+            match self.request_model_text(endpoint, input, task_status).await {
+                Ok(content) => (self.parse_and_validate(&content), Some(content)),
+                Err(error) => (Err(error), None),
             }
-            messages.push(serde_json::json!({
-                "role": "user",
-                "content": prompt,
-            }));
-
-            let body = serde_json::json!({
-                "model": self.model,
-                "messages": messages,
-                "temperature": 0.0,
-            });
-
-            let mut req = self.http_client.post(endpoint).json(&body);
-            if let Some(key) = &self.api_key {
-                if !key.trim().is_empty() {
-                    req = req.bearer_auth(key);
-                }
-            }
-            for (h_name, h_val) in &self.extra_headers {
-                req = req.header(h_name, h_val);
-            }
-
-            let resp = req.send().await.map_err(|e| RouteError::Network(e.to_string()))?;
-            let status = resp.status();
-            if !status.is_success() {
-                return Err(RouteError::Generation(format!("HTTP status {status}")));
-            }
-
-            let json: serde_json::Value = resp.json().await.map_err(|e| RouteError::Generation(e.to_string()))?;
-            let content = json["choices"][0]["message"]["content"]
-                .as_str()
-                .ok_or_else(|| RouteError::Generation("Missing message content in response".into()))?;
-
-            self.parse_and_validate(content)
         } else {
             #[cfg(any(test, feature = "voice-skeleton"))]
             if let Some(fallback) = &self.fallback {
-                return fallback.route_with_status(input, task_status).await;
+                return (fallback.route_with_status(input, task_status).await, None);
             }
 
-            Err(RouteError::Generation("No LLM endpoint configured".to_string()))
+            (
+                Err(RouteError::Generation(
+                    "No LLM endpoint configured".to_string(),
+                )),
+                None,
+            )
         }
     }
 }
@@ -430,7 +585,11 @@ pub fn try_detect_local_flowy_token() -> Option<String> {
             if let Ok(raw) = std::fs::read_to_string(&token_path) {
                 // 1. Plaintext JSON
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    if let Some(tok) = val.get("server").and_then(|s| s.get("access_token")).and_then(|t| t.as_str()) {
+                    if let Some(tok) = val
+                        .get("server")
+                        .and_then(|s| s.get("access_token"))
+                        .and_then(|t| t.as_str())
+                    {
                         if !tok.trim().is_empty() {
                             return Some(tok.trim().to_string());
                         }
@@ -445,10 +604,14 @@ pub fn try_detect_local_flowy_token() -> Option<String> {
                 // 2. Encrypted envelope with companion .key file
                 let key_path = token_path.with_extension("key");
                 let key_opt = if let Ok(env_key) = std::env::var("NOMIFUN_TOKEN_STORE_KEY_B64") {
-                    base64::engine::general_purpose::STANDARD.decode(env_key.trim()).ok()
+                    base64::engine::general_purpose::STANDARD
+                        .decode(env_key.trim())
+                        .ok()
                 } else if key_path.exists() {
                     if let Ok(key_raw) = std::fs::read_to_string(&key_path) {
-                        base64::engine::general_purpose::STANDARD.decode(key_raw.trim()).ok()
+                        base64::engine::general_purpose::STANDARD
+                            .decode(key_raw.trim())
+                            .ok()
                     } else {
                         None
                     }
@@ -469,10 +632,19 @@ pub fn try_detect_local_flowy_token() -> Option<String> {
                                 ) {
                                     let mut combined = nonce_bytes;
                                     combined.extend_from_slice(&cipher_bytes);
-                                    let combined_b64 = base64::engine::general_purpose::STANDARD.encode(combined);
-                                    if let Ok(plain) = nomifun_common::decrypt_string(&combined_b64, &key_bytes) {
-                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&plain) {
-                                            if let Some(tok) = val.get("server").and_then(|s| s.get("access_token")).and_then(|t| t.as_str()) {
+                                    let combined_b64 =
+                                        base64::engine::general_purpose::STANDARD.encode(combined);
+                                    if let Ok(plain) =
+                                        nomifun_common::decrypt_string(&combined_b64, &key_bytes)
+                                    {
+                                        if let Ok(val) =
+                                            serde_json::from_str::<serde_json::Value>(&plain)
+                                        {
+                                            if let Some(tok) = val
+                                                .get("server")
+                                                .and_then(|s| s.get("access_token"))
+                                                .and_then(|t| t.as_str())
+                                            {
                                                 if !tok.trim().is_empty() {
                                                     return Some(tok.trim().to_string());
                                                 }
@@ -519,8 +691,9 @@ mod tests {
         );
         assert_eq!(router.model(), "qwen3.8-flash");
         assert!(router.is_cloud_connected());
-        assert_eq!(router.extra_headers, vec![("token".to_string(), "fake-flowy-jwt-token".to_string())]);
+        assert_eq!(
+            router.extra_headers,
+            vec![("token".to_string(), "fake-flowy-jwt-token".to_string())]
+        );
     }
 }
-
-

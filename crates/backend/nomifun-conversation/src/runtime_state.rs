@@ -924,25 +924,45 @@ impl ConversationRuntimeStateService {
         self: &Arc<Self>,
         conversation_id: &str,
     ) -> Result<Option<ConversationStopGuard>, AppError> {
-        self.begin_conversation_stop_inner(conversation_id, false)
+        self.begin_conversation_stop_inner(conversation_id, false, None)
+    }
+
+    pub fn begin_public_turn_stop(self:&Arc<Self>,conversation_id:&str,user_id:&str,operation_id:&str) -> Result<Option<ConversationStopGuard>,AppError> {
+        self.begin_conversation_stop_inner(conversation_id,false,Some((user_id,operation_id)))
+    }
+
+    pub fn with_public_turn_scope<T>(&self,conversation_id:&str,user_id:&str,operation_id:&str,action:impl FnOnce()->Result<T,AppError>)->Result<T,AppError> {
+        let _linearization=self.cleanup_linearization.lock().map_err(|_|AppError::Internal("cleanup linearization lock poisoned".into()))?;
+        let turns=self.active_turns.lock().map_err(|_|AppError::Internal("conversation runtime state lock poisoned".into()))?;
+        if !turns.get(conversation_id).is_some_and(|turn|turn.public_cancellable && !turn.cancellation.is_cancelled()
+            && turn.owner_user_id.as_deref()==Some(user_id) && turn.persistent_operation_id.as_deref()==Some(operation_id))
+        {return Err(AppError::Conflict("voice_task_message_scope_changed".into()));}
+        action()
     }
 
     pub fn begin_conversation_stop_for_deletion(
         self: &Arc<Self>,
         conversation_id: &str,
     ) -> Result<Option<ConversationStopGuard>, AppError> {
-        self.begin_conversation_stop_inner(conversation_id, true)
+        self.begin_conversation_stop_inner(conversation_id, true, None)
     }
 
     fn begin_conversation_stop_inner(
         self: &Arc<Self>,
         conversation_id: &str,
         deletion_owned: bool,
+        expected_public_turn:Option<(&str,&str)>,
     ) -> Result<Option<ConversationStopGuard>, AppError> {
         let _linearization = self
             .cleanup_linearization
             .lock()
             .map_err(|_| AppError::Internal("cleanup linearization lock poisoned".into()))?;
+        if let Some((user_id,operation_id))=expected_public_turn {
+            let turns=self.active_turns.lock().map_err(|_|AppError::Internal("conversation runtime state lock poisoned".into()))?;
+            if !turns.get(conversation_id).is_some_and(|turn|turn.public_cancellable
+                && turn.owner_user_id.as_deref()==Some(user_id) && turn.persistent_operation_id.as_deref()==Some(operation_id))
+            {return Err(AppError::Conflict("voice_task_message_scope_changed".into()));}
+        }
         let deletion_tombstones = self.deletion_tombstones.lock().map_err(|_| {
             AppError::Internal("conversation deletion admission lock poisoned".into())
         })?;
@@ -2109,6 +2129,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn exact_public_turn_stop_cannot_fence_a_newer_message_or_another_owner() {
+        let state=Arc::new(ConversationRuntimeStateService::default());
+        let acquire=|message:&str,operation:&str|state.try_acquire_turn_with_wire_context_at_epoch_and_owner_with_persistent_generation("voice-conversation",Some(format!("wire-{message}")),TurnWireContext::default(),None,Some("owner".into()),true,None,Some((1,operation.into()))).unwrap();
+        let first=acquire("message-first","operation-first");drop(first);
+        let current=acquire("message-current","operation-current");
+        assert!(state.with_public_turn_scope("voice-conversation","owner","operation-first",||Ok(())).is_err());
+        assert!(state.with_public_turn_scope("voice-conversation","another-owner","operation-current",||Ok(())).is_err());
+        assert_eq!(state.with_public_turn_scope("voice-conversation","owner","operation-current",||Ok("current approval")).unwrap(),"current approval");
+        assert!(state.begin_public_turn_stop("voice-conversation","owner","operation-first").is_err(),"an old voice task cannot fence the newer conversation message");
+        assert!(state.begin_public_turn_stop("voice-conversation","another-owner","operation-current").is_err());
+        assert!(state.begin_public_turn_stop("voice-conversation","owner","message-current").is_err(),"the user message identity is not the runtime operation identity");
+        assert!(state.begin_public_turn_stop("voice-conversation","owner","wire-message-current").is_err(),"wire turn and durable operation identities remain distinct");
+        let fence=state.begin_public_turn_stop("voice-conversation","owner","operation-current").unwrap().unwrap();
+        drop(current);
+        assert!(state.try_acquire_turn("voice-conversation").is_err(),"the exact stop must keep later admission fenced until cleanup");
+        drop(fence);
+        assert!(state.try_acquire_turn("voice-conversation").is_ok());
+    }
 
     #[test]
     fn turn_handle_rejects_second_active_turn() {

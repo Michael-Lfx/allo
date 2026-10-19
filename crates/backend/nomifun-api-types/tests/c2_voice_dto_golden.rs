@@ -67,6 +67,7 @@ fn test_c2_02_install_request_golden() {
     let req = VoiceModelInstallRequest {
         prefer_mirror: Some("modelscope".to_string()),
         models_dir: Some(PathBuf::from("/var/lib/ai-mate/models")),
+        force: None,
     };
 
     let expected_json = json!({
@@ -176,4 +177,34 @@ fn test_c2_05_delete_request_and_response_golden() {
     let deserialized: VoiceModelDeleteResponse =
         serde_json::from_value(expected_resp_json).expect("deserialize delete response");
     assert_eq!(deserialized, resp);
+}
+
+
+#[test]
+fn shared_decision_parser_accepts_fenced_json_and_rejects_invalid_wire_fields() {
+    use nomifun_api_types::voice::{parse_voice_decision,VoiceIntentType};
+    let raw="```json\n{\"intent_type\":\"agent_task\",\"task_goal\":\"读取工作区文件\",\"requires_confirmation\":false}\n```";
+    let decision=parse_voice_decision(raw).unwrap();
+    assert_eq!(decision.intent_type,VoiceIntentType::AgentTask);
+    assert_eq!(decision.task_goal.as_deref(),Some("读取工作区文件"));
+    for raw in [r#"{"intent_type":"unknown"}"#,r#"{"intent_type":"chat"}"#,r#"{"intent_type":"chat","reply_tts":null}"#,r#"{"intent_type":"chat","reply_tts":"hello","requires_confirmation":"false"}"#,r#"{"intent_type":"agent_task","task_goal":123}"#,r#"{"intent_type":"ignore","understood_request":""}"#] {
+        assert!(parse_voice_decision(raw).is_err(),"invalid shared decision: {raw}");
+    }
+}
+
+#[test]
+fn a_validated_chat_sentence_is_available_before_final_output_and_cannot_turn_into_a_task() {
+    use nomifun_api_types::voice::VoiceDecisionStream;
+    let mut stream=VoiceDecisionStream::default();
+    assert!(stream.push(r#"{"intent_type":"chat","understood_request":"问候","reply_tts":"你好。""#).unwrap().is_empty());
+    let first=stream.push("}\n").unwrap();
+    assert_eq!(first.len(),1);assert_eq!(first[0].text,"你好。");
+    let next=stream.push("{\"reply_delta\":\"我在听。\"}\n").unwrap();
+    assert_eq!(next[0].text,"我在听。");
+    assert_eq!(stream.finish().unwrap().reply_tts.as_deref(),Some("你好。我在听。"));
+    let mut task=VoiceDecisionStream::default();
+    assert!(task.push("{\"intent_type\":\"agent_task\",\"task_goal\":\"读取文件\",\"spoken_ack\":\"已经接单\"}\n").unwrap().is_empty());
+    assert!(task.push("{\"reply_delta\":\"已经执行\"}\n").is_err());
+    let mut invalid=VoiceDecisionStream::default();
+    assert!(invalid.push("{\"intent_type\":\"chat\",\"reply_tts\":null}\n").is_err());
 }

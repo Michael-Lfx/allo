@@ -7,7 +7,7 @@ use ai_mate::config::Config;
 use ai_mate::net_preboot::{detect_ethernet_status, import_usb_setup};
 use ai_mate::oobe::OobeManager;
 use ai_mate::provision::check_and_auto_download;
-use ai_mate::server::{build_router_full, DEFAULT_SERVER_ADDR};
+use ai_mate::server::{DEFAULT_SERVER_ADDR, build_router_full};
 use ai_mate::voice::VoiceCompanionRuntime;
 use ai_mate::watchdog::{
     get_recommended_heartbeat_interval, notify_ready, start_watchdog_heartbeat,
@@ -57,7 +57,9 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn std::error::Error>> {
                     "      --host <ADDR>        Address to bind server to (default: {})",
                     DEFAULT_SERVER_ADDR
                 );
-                println!("      --bypass-pairing     Bypass OOBE pairing (development/single-node)");
+                println!(
+                    "      --bypass-pairing     Bypass OOBE pairing (development/single-node)"
+                );
                 println!("  -h, --help               Print help information");
                 std::process::exit(0);
             }
@@ -76,7 +78,7 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_ansi(false).init();
     info!("Starting Flowy AI Mate Voice Companion Daemon...");
 
     let cli = parse_cli_args()?;
@@ -99,9 +101,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(path = %path.display(), "Loading configuration from CLI argument");
         Config::load_from_file(path)?
     } else {
-        Config::load().unwrap_or_default()
+        Config::load()?
     };
     info!(models_dir = %config.models.models_dir.display(), "Configuration loaded");
+    let addr = cli.host.as_deref().unwrap_or(DEFAULT_SERVER_ADDR);
+    if config.control_token.is_some() && !addr.parse::<std::net::SocketAddr>()?.ip().is_loopback() {
+        return Err("supervised voice control must bind a loopback address".into());
+    }
 
     // 4. Initialize voice model manager & OOBE manager
     let model_manager = Arc::new(ModelManager::new(&config.models.models_dir));
@@ -126,31 +132,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(vocal = %vocal_announcement, require_pairing, "OOBE status initialized");
 
     // 5. Assemble and start end-to-end Voice Companion Pipeline (Capture + Playback + FSM Driver + Router)
-    let (voice_runtime, mut playback_rx) =
+    let feedback = std::env::var("AI_MATE_FEEDBACK_CONFIG")
+        .ok()
+        .map(|raw| serde_json::from_str::<nomifun_api_types::voice::VoiceFeedbackConfig>(&raw))
+        .transpose()?;
+    if let Some(config) = feedback {
+        config.validate()?;
+    }
+    let voice_runtime =
         VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone());
+    if let Some(config) = feedback {
+        voice_runtime.update_feedback(config.into())?;
+    }
     let voice_runtime = Arc::new(voice_runtime);
-
-    // Open physical speaker device for system-wide vocal feedback (Earcon + Edge-TTS)
-    let speaker = match nomifun_audio::open_default_speaker() {
-        Ok(s) => Some(Arc::new(s)),
-        Err(err) => {
-            tracing::warn!(error = %err, "Failed to open physical speaker device; running with degraded silent sink");
-            None
-        }
-    };
-
-    // Route playback output frames to physical speaker sink, supporting instant barge-in flush
-    let _playback_worker = tokio::spawn(async move {
-        while let Some(frame) = playback_rx.recv().await {
-            if let Some(ref spk) = speaker {
-                if frame.is_empty() {
-                    let _ = spk.flush().await;
-                } else {
-                    let _ = spk.write_frame(frame).await;
-                }
-            }
-        }
-    });
 
     // Start voice watchdog and background FSM worker
     let _voice_worker = voice_runtime.start_worker();
@@ -160,7 +154,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     check_and_auto_download(&config, &model_manager).await;
 
     // 7. Bind server address and launch HTTP daemon
-    let addr = cli.host.as_deref().unwrap_or(DEFAULT_SERVER_ADDR);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("Flowy AI Mate daemon listening on {}", addr);
 

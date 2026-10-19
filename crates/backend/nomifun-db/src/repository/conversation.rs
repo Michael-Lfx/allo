@@ -68,6 +68,18 @@ pub struct ConversationMessageProjection {
     pub message: MessageRow,
 }
 
+/// Result of atomically projecting a dialogue pair (user message and assistant message)
+/// into a Conversation under a stable operation identity.
+#[derive(Debug, Clone)]
+pub struct ConversationPairProjection {
+    /// `true` only for the transaction which inserted the durable messages.
+    pub inserted: bool,
+    /// The canonical persisted user message row if provided.
+    pub user_message: Option<MessageRow>,
+    /// The canonical persisted assistant message row.
+    pub assistant_message: MessageRow,
+}
+
 /// One immutable Skill snapshot together with the `skill_load` message that
 /// projects it into the visible transcript.
 ///
@@ -839,6 +851,26 @@ pub trait IConversationRepository: Send + Sync {
     ) -> Result<ConversationMessageProjection, DbError> {
         Err(DbError::Init(
             "atomic Conversation message projection is not supported".to_owned(),
+        ))
+    }
+
+    /// Atomically inserts a dialogue pair (user speech and assistant reply) and completes
+    /// its idempotency receipt in a single transaction.
+    #[allow(clippy::too_many_arguments)]
+    async fn project_dialogue_pair_idempotent(
+        &self,
+        _user_id: &str,
+        _conversation_id: &str,
+        _operation_id: &str,
+        _kind: &str,
+        _request_payload: &str,
+        _user_message: Option<&MessageRow>,
+        _assistant_message: &MessageRow,
+        _now: i64,
+        _expected_admission_epoch: i64,
+    ) -> Result<ConversationPairProjection, DbError> {
+        Err(DbError::Init(
+            "atomic Conversation dialogue pair projection is not supported".to_owned(),
         ))
     }
 

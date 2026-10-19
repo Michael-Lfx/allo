@@ -13,7 +13,7 @@ use std::sync::{
 use async_trait::async_trait;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use tracing::error;
+use tracing::{error, info};
 
 use crate::capture::{AudioCaptureSource, CaptureReadResult};
 use crate::voice_pipeline::{PipelineConfig, VoiceCapturePipeline};
@@ -145,6 +145,7 @@ impl MicSource {
                     prod_thread.signal_device_error(format!("start mic stream '{name}': {e}"));
                     return;
                 }
+                info!(device = %name, device_sample_rate = device_sr, channels, output_sample_rate = target_sample_rate, sample_format = ?sample_format, "voice_microphone_stream_started");
 
                 while !stop_thread.load(Ordering::Relaxed) && !prod_thread.is_closed() {
                     std::thread::sleep(std::time::Duration::from_millis(50));

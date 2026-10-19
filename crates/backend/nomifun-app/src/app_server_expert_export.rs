@@ -33,7 +33,7 @@ use nomifun_api_types::{
 };
 use nomifun_app_server::agent_store::ExpertExportPolicy;
 use nomifun_app_server::{
-    ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES, SkillFileBytes, SkillFileError,
+    ExpertPackError, ExpertPackProvider, MAX_EXPERT_PACK_BYTES,
     SnapshotAssetProvider,
 };
 use nomifun_common::AppError;
@@ -1220,6 +1220,8 @@ mod tests {
     // ---------------------------------------------------------------
     // Plugin-level assets (doc `38`)
     // ---------------------------------------------------------------
+
+    use nomifun_app_server::{SkillFileBytes, SkillFileError};
 
     /// Deterministic fake of the snapshot-asset seam. Serves a fixed inventory
     /// (sorted, as the production provider guarantees) so the adapter's policy

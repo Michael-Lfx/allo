@@ -4,8 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["voice-skeleton"]
+default = []
 voice-skeleton = []
+
+[[test]]
+name = "vt_0"
+required-features = ["voice-skeleton"]
 
 [dependencies]
 nomifun-common.workspace = true
@@ -24,6 +28,10 @@ tokio-tungstenite.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
 base64.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

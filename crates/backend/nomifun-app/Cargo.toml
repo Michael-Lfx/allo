@@ -21,6 +21,10 @@ name = "delivery_notify_integration"
 path = "tests/delivery_notify_integration.rs"
 
 [[test]]
+name = "voice_dialogue_integration"
+path = "tests/voice_dialogue_integration.rs"
+
+[[test]]
 name = "webui_lan_smoke"
 path = "tests/webui_lan_smoke.rs"
 
@@ -371,6 +375,7 @@ windows-sys = { workspace = true, features = [
 junction = "1"
 
 [dev-dependencies]
+ai-mate = { path = "../../../apps/ai-mate", features = ["voice-skeleton"] }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 nomifun-api-types.workspace = true
 nomifun-realtime.workspace = true

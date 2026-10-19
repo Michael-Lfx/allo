@@ -103,13 +103,15 @@ impl KwsEngine {
     }
 
     #[cfg(feature = "local-stt")]
-    fn try_init_neural(config: &KwsEngineConfig, model_dir: Option<&std::path::Path>) -> Option<NeuralKwsSession> {
+    fn try_init_neural(
+        config: &KwsEngineConfig,
+        model_dir: Option<&std::path::Path>,
+    ) -> Option<NeuralKwsSession> {
         let dir = model_dir?;
         let encoder = dir.join("encoder.int8.onnx");
         let decoder = dir.join("decoder.int8.onnx");
         let joiner = dir.join("joiner.int8.onnx");
         let tokens = dir.join("tokens.txt");
-        let keywords = dir.join("keywords.txt");
 
         if !encoder.is_file() || !decoder.is_file() || !joiner.is_file() || !tokens.is_file() {
             return None;
@@ -117,25 +119,48 @@ impl KwsEngine {
 
         let mut spotter_config = sherpa_onnx::KeywordSpotterConfig::default();
         spotter_config.feat_config.sample_rate = config.sample_rate as i32;
-        spotter_config.model_config.transducer.encoder = Some(encoder.to_string_lossy().to_string());
-        spotter_config.model_config.transducer.decoder = Some(decoder.to_string_lossy().to_string());
+        spotter_config.model_config.transducer.encoder =
+            Some(encoder.to_string_lossy().to_string());
+        spotter_config.model_config.transducer.decoder =
+            Some(decoder.to_string_lossy().to_string());
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
 
-        const DEFAULT_KEYWORDS_BPE: &str = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HE Y  ▁F L OW :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HI  ▁F L OW :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
-        if keywords.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&keywords) {
-                if !content.contains('\u{2581}') {
-                    let _ = std::fs::write(&keywords, DEFAULT_KEYWORDS_BPE);
-                }
-            }
-        } else {
-            let _ = std::fs::write(&keywords, DEFAULT_KEYWORDS_BPE);
-        }
-
-        spotter_config.keywords_file = Some(keywords.to_string_lossy().to_string());
-        spotter_config.keywords_score = 1.5;
-        spotter_config.keywords_threshold = 0.15;
+        // The downloaded model's keywords.txt contains upstream examples, not
+        // the companion's wake words. Configure our fixed vocabulary in memory
+        // without modifying downloaded files or invalidating their checksums.
+        // Calibrated for wide trigger coverage: score 2.2 (strong beam bias), threshold 0.08 (high recall).
+        const DEFAULT_KEYWORDS_BPE: &str = "\
+▁HE Y ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F L O W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F L O W :2.2 #0.08 @HEY_FLOWY\n\
+▁HE Y ▁F L OW I :2.2 #0.08 @HEY_FLOWY\n\
+▁HI ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HI ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HI ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁HI ▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HA I ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HA I ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HA I ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁HE I ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE I ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE I ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁HE LL O ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE LL O ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁HE LL O ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
+▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
+▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
+▁F L O W Y :2.2 #0.08 @HEY_FLOWY\n\
+▁F L O W :2.2 #0.08 @HEY_FLOWY\n\
+▁F L OW I :2.2 #0.08 @HEY_FLOWY\n";
+        spotter_config.keywords_buf = Some(DEFAULT_KEYWORDS_BPE.into());
+        spotter_config.keywords_score = 2.2;
+        spotter_config.keywords_threshold = 0.08;
 
         let spotter = sherpa_onnx::KeywordSpotter::create(&spotter_config)?;
         let stream = spotter.create_stream();
@@ -159,7 +184,11 @@ impl KwsEngine {
     pub fn resolve_neural_kws_dir(&self) -> Option<PathBuf> {
         let mut candidates = Vec::new();
         if let Some(ref dir) = self.config.model_dir {
-            candidates.push(dir.clone());
+            // An explicitly selected suite must not silently borrow another installation.
+            if dir.join("kws").join("encoder.int8.onnx").is_file() {
+                return Some(dir.join("kws"));
+            }
+            return dir.join("encoder.int8.onnx").is_file().then(|| dir.clone());
         }
         if let Some(registered) = crate::stt::active_model_dir() {
             candidates.push(registered);
@@ -190,6 +219,18 @@ impl KwsEngine {
         self.resolve_neural_kws_dir().is_some()
     }
 
+    /// Physical presence is separate from successfully loading a neural session.
+    pub fn is_initialized(&self) -> bool {
+        #[cfg(feature = "local-stt")]
+        {
+            self.neural_session.is_some()
+        }
+        #[cfg(not(feature = "local-stt"))]
+        {
+            false
+        }
+    }
+
     /// Checks if the acoustic detector is active and calibrated.
     pub fn is_calibrated(&self) -> bool {
         self.config.sample_rate == 16000 && self.config.sensitivity > 0.0
@@ -212,7 +253,9 @@ impl KwsEngine {
                 return None;
             }
 
-            session.stream.accept_waveform(self.config.sample_rate as i32, chunk);
+            session
+                .stream
+                .accept_waveform(self.config.sample_rate as i32, chunk);
             while session.spotter.is_ready(&session.stream) {
                 session.spotter.decode(&session.stream);
             }
@@ -222,8 +265,21 @@ impl KwsEngine {
                     self.triggered = true;
                     self.last_trigger_ms = timestamp_ms;
                     session.spotter.reset(&session.stream);
-                    let clean_kw = result.keyword.replace('\u{2581}', " ").split_whitespace().collect::<Vec<_>>().join(" ");
-                    let canonical_kw = if clean_kw.contains("FLOW") || clean_kw.contains("F L OW") || clean_kw.contains("F LO W") {
+                    let clean_kw = result
+                        .keyword
+                        .replace('\u{2581}', " ")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let canonical_kw = if clean_kw.contains("FLOW")
+                        || clean_kw.contains("F L OW")
+                        || clean_kw.contains("F LO W")
+                        || clean_kw.contains("F LO Y")
+                        || clean_kw.contains("F L O W")
+                        || clean_kw.contains("F L O Y")
+                        || clean_kw.contains("HEY_FLOWY")
+                        || clean_kw.contains("FLOWY")
+                    {
                         "HEY FLOWY".to_string()
                     } else {
                         result.keyword
@@ -247,16 +303,12 @@ impl KwsEngine {
         // In production without neural models, fail-closed to prevent false wake on sine/background noise
         #[cfg(not(any(test, feature = "voice-skeleton")))]
         {
-            if self.is_neural_backend() {
-                // When neural weights are present in production, delegate to spotter
-                self.process_heuristic(chunk)
-            } else {
-                None
-            }
+            None
         }
     }
 
     /// Calibrated acoustic envelope detection (RMS + ZCR) for test environments and dev skeleton.
+    #[cfg(any(test, feature = "voice-skeleton"))]
     fn process_heuristic(&mut self, chunk: &[f32]) -> Option<KwsResult> {
         let chunk_len = chunk.len();
         let timestamp_ms = (self.processed_samples * 1000) / self.config.sample_rate as u64;
@@ -280,17 +332,17 @@ impl KwsEngine {
         }
 
         // Fundamental frequency estimate: f = (ZCR * sample_rate) / (2 * num_samples)
-        let freq = (zero_crossings as f32 * self.config.sample_rate as f32)
-            / (2.0 * chunk_len as f32);
+        let freq =
+            (zero_crossings as f32 * self.config.sample_rate as f32) / (2.0 * chunk_len as f32);
 
         // Multi-accent acoustic calibration:
         // - Accent 1 (/floʊi/): 350Hz - 370Hz
         // - Accent 2 (/fləʊi/): 330Hz - 350Hz
         // - Accent 3 (/fə-lou-yi/): 310Hz - 330Hz
-        // Wake frequency envelope: [280Hz, 395Hz]
-        // Speech amplitude envelope: RMS >= 0.20 (synthetic wake waveform is ~0.42, background noise < 0.05)
-        let energy_threshold = 0.20 * self.config.sensitivity;
-        let is_wake_frequency = (280.0..=395.0).contains(&freq);
+        // Calibrated wake frequency envelope: [260Hz, 410Hz]
+        // Speech amplitude envelope: RMS >= 0.16 * sensitivity (synthetic wake ~0.42, noise < 0.05)
+        let energy_threshold = 0.16 * self.config.sensitivity;
+        let is_wake_frequency = (260.0..=410.0).contains(&freq);
         let is_voice_energy = rms >= energy_threshold;
 
         if is_voice_energy && is_wake_frequency {
@@ -338,7 +390,22 @@ fn normalize_speech_text(s: &str) -> String {
             if c.is_alphanumeric()
                 && !matches!(
                     c,
-                    '，' | '。' | '！' | '？' | '；' | '：' | '“' | '”' | '‘' | '’' | '（' | '）' | '【' | '】' | '、' | '—' | '…'
+                    '，' | '。'
+                        | '！'
+                        | '？'
+                        | '；'
+                        | '：'
+                        | '“'
+                        | '”'
+                        | '‘'
+                        | '’'
+                        | '（'
+                        | '）'
+                        | '【'
+                        | '】'
+                        | '、'
+                        | '—'
+                        | '…'
                 )
             {
                 c
@@ -415,6 +482,51 @@ pub fn is_wake_phrase_match(transcript: &str) -> bool {
         "hey楼",
         "hey 洛",
         "hey洛",
+        "hey flower",
+        "hey floor",
+        "hey flora",
+        "hey floating",
+        "hey flight",
+        "hi flow",
+        "hello flow",
+        "flow",
+        "flo",
+        "哈喽 flowy",
+        "哈喽flowy",
+        "哈罗 flowy",
+        "哈罗flowy",
+        "嘿 弗雷",
+        "嘿弗雷",
+        "嘿 佛雷",
+        "嘿佛雷",
+        "嘿 佛力",
+        "嘿佛力",
+        "嘿 弗利",
+        "嘿弗利",
+        "嘿 佛罗",
+        "嘿佛罗",
+        "嘿 佛洛",
+        "嘿佛洛",
+        "嘿 芙莉",
+        "嘿芙莉",
+        "嘿 芙洛",
+        "嘿芙洛",
+        "嘿 芙罗",
+        "嘿芙罗",
+        "嘿 凤梨",
+        "嘿凤梨",
+        "黑 凤梨",
+        "黑凤梨",
+        "芙 莉",
+        "芙莉",
+        "芙 力",
+        "芙力",
+        "弗 利",
+        "弗利",
+        "佛 罗",
+        "佛罗",
+        "佛 洛",
+        "佛洛",
     ];
 
     for pattern in WAKE_PATTERNS {
@@ -430,22 +542,107 @@ pub fn is_wake_phrase_match(transcript: &str) -> bool {
 pub fn strip_wake_phrase(transcript: &str) -> String {
     let text = transcript.trim();
     const PREFIXES: &[&str] = &[
-        "hey flowy", "hey follow", "hey flow", "hey f",
-        "hi flowy", "hi follow", "hello flowy",
-        "黑 flowy", "嘿 flowy", "嘿flowy", "你好 flowy", "你好flowy",
-        "小 flowy", "小flowy", "flowy",
-        "hey 芙", "hey芙", "嘿 芙", "嘿芙",
-        "hey 弗", "hey弗", "hey 福", "hey福",
-        "hey 浮", "hey浮", "嘿 浮", "嘿浮",
-        "hey 伏", "hey伏", "hey 符", "hey符",
-        "hey 服", "hey服", "hey 佛", "hey佛",
-        "hey 飞", "hey飞", "嗨 flowy", "嗨flowy",
-        "嗨 flow", "嗨flow", "嗨 芙", "嗨芙",
-        "黑 芙", "黑芙", "hey 楼", "hey楼", "hey 洛", "hey洛",
+        "hey flowy",
+        "hey follow",
+        "hey flow",
+        "hey f",
+        "hi flowy",
+        "hi follow",
+        "hello flowy",
+        "黑 flowy",
+        "嘿 flowy",
+        "嘿flowy",
+        "你好 flowy",
+        "你好flowy",
+        "小 flowy",
+        "小flowy",
+        "flowy",
+        "hey 芙",
+        "hey芙",
+        "嘿 芙",
+        "嘿芙",
+        "hey 弗",
+        "hey弗",
+        "hey 福",
+        "hey福",
+        "hey 浮",
+        "hey浮",
+        "嘿 浮",
+        "嘿浮",
+        "hey 伏",
+        "hey伏",
+        "hey 符",
+        "hey符",
+        "hey 服",
+        "hey服",
+        "hey 佛",
+        "hey佛",
+        "hey 飞",
+        "hey飞",
+        "嗨 flowy",
+        "嗨flowy",
+        "嗨 flow",
+        "嗨flow",
+        "嗨 芙",
+        "嗨芙",
+        "黑 芙",
+        "黑芙",
+        "hey 楼",
+        "hey楼",
+        "hey 洛",
+        "hey洛",
+        "hey flower",
+        "hey floor",
+        "hey flora",
+        "hey floating",
+        "hey flight",
+        "hi flow",
+        "hello flow",
+        "flow",
+        "flo",
+        "哈喽 flowy",
+        "哈喽flowy",
+        "哈罗 flowy",
+        "哈罗flowy",
+        "嘿 弗雷",
+        "嘿弗雷",
+        "嘿 佛雷",
+        "嘿佛雷",
+        "嘿 佛力",
+        "嘿佛力",
+        "嘿 弗利",
+        "嘿弗利",
+        "嘿 佛罗",
+        "嘿佛罗",
+        "嘿 佛洛",
+        "嘿佛洛",
+        "嘿 芙莉",
+        "嘿芙莉",
+        "嘿 芙洛",
+        "嘿芙洛",
+        "嘿 芙罗",
+        "嘿芙罗",
+        "嘿 凤梨",
+        "嘿凤梨",
+        "黑 凤梨",
+        "黑凤梨",
+        "芙 莉",
+        "芙莉",
+        "芙 力",
+        "芙力",
+        "弗 利",
+        "弗利",
+        "佛 罗",
+        "佛罗",
+        "佛 洛",
+        "佛洛",
     ];
 
     for prefix in PREFIXES {
-        let clean_prefix: Vec<char> = prefix.chars().filter(|c| c.is_alphanumeric() || *c > '\u{7f}').collect();
+        let clean_prefix: Vec<char> = prefix
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c > '\u{7f}')
+            .collect();
         let mut text_matched_len = 0usize;
         let mut prefix_matched = 0usize;
 
@@ -466,7 +663,9 @@ pub fn strip_wake_phrase(transcript: &str) -> String {
         if prefix_matched == clean_prefix.len() {
             let remainder = &text[text_matched_len..];
             return remainder
-                .trim_start_matches(|c: char| c.is_ascii_punctuation() || c == '，' || c == '。' || c == ' ' || c == '、')
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_punctuation() || c == '，' || c == '。' || c == ' ' || c == '、'
+                })
                 .trim()
                 .to_string();
         }
@@ -488,6 +687,10 @@ mod tests {
         assert!(is_wake_phrase_match("你好Flowy"));
         assert!(is_wake_phrase_match("Hey,芙."));
         assert!(is_wake_phrase_match("嘿，芙。帮我查下天气"));
+        assert!(is_wake_phrase_match("Flowy"));
+        assert!(is_wake_phrase_match("哈喽 flowy"));
+        assert!(is_wake_phrase_match("嘿弗利"));
+        assert!(is_wake_phrase_match("芙莉"));
 
         assert!(!is_wake_phrase_match("今天天气怎么样"));
         assert!(!is_wake_phrase_match("Hello world"));
@@ -495,10 +698,18 @@ mod tests {
 
     #[test]
     fn test_strip_wake_phrase() {
-        assert_eq!(strip_wake_phrase("Hey, follow. 帮我整理桌面"), "帮我整理桌面");
-        assert_eq!(strip_wake_phrase("Hey Flowy, what time is it?"), "what time is it?");
+        assert_eq!(
+            strip_wake_phrase("Hey, follow. 帮我整理桌面"),
+            "帮我整理桌面"
+        );
+        assert_eq!(
+            strip_wake_phrase("Hey Flowy, what time is it?"),
+            "what time is it?"
+        );
         assert_eq!(strip_wake_phrase("嘿flowy，写一段代码"), "写一段代码");
         assert_eq!(strip_wake_phrase("Hey,芙. 帮我关掉音乐"), "帮我关掉音乐");
+        assert_eq!(strip_wake_phrase("Flowy 打开浏览器"), "打开浏览器");
+        assert_eq!(strip_wake_phrase("哈喽 flowy，今天几号"), "今天几号");
     }
 
     #[test]
@@ -506,26 +717,44 @@ mod tests {
     fn test_neural_kws_init_and_keywords() {
         let local_app_data = dirs::data_local_dir().expect("local app data");
         let dir = local_app_data.join("Flowy").join("models").join("kws");
-        
+
         let valid_keywords = " ▁HE Y  ▁F L OW Y :1.5 #0.15 @1\n ▁HE Y  ▁F LO W Y :1.5 #0.15 @1\n ▁HI  ▁F L OW Y :1.5 #0.15 @1\n ▁HE LL O  ▁F L OW Y :1.5 #0.15 @1\n";
         let temp_dir = tempfile::tempdir().unwrap();
         let kws_dir = temp_dir.path().join("kws");
         std::fs::create_dir_all(&kws_dir).unwrap();
-        
-        std::fs::copy(dir.join("encoder.int8.onnx"), kws_dir.join("encoder.int8.onnx")).unwrap();
-        std::fs::copy(dir.join("decoder.int8.onnx"), kws_dir.join("decoder.int8.onnx")).unwrap();
-        std::fs::copy(dir.join("joiner.int8.onnx"), kws_dir.join("joiner.int8.onnx")).unwrap();
+
+        std::fs::copy(
+            dir.join("encoder.int8.onnx"),
+            kws_dir.join("encoder.int8.onnx"),
+        )
+        .unwrap();
+        std::fs::copy(
+            dir.join("decoder.int8.onnx"),
+            kws_dir.join("decoder.int8.onnx"),
+        )
+        .unwrap();
+        std::fs::copy(
+            dir.join("joiner.int8.onnx"),
+            kws_dir.join("joiner.int8.onnx"),
+        )
+        .unwrap();
         std::fs::copy(dir.join("tokens.txt"), kws_dir.join("tokens.txt")).unwrap();
         std::fs::write(kws_dir.join("keywords.txt"), valid_keywords).unwrap();
 
         let mut config = KwsEngineConfig::default();
         config.model_dir = Some(temp_dir.path().to_path_buf());
         let engine = KwsEngine::new(config.clone()).expect("create engine");
-        assert!(engine.neural_session.is_some(), "Neural session must be loaded successfully with valid BPE tokens");
+        assert!(
+            engine.neural_session.is_some(),
+            "Neural session must be loaded successfully with valid BPE tokens"
+        );
 
         // Also assert auto-heal from legacy/corrupted keywords.txt
         std::fs::write(kws_dir.join("keywords.txt"), "HEY FLOWY :1.0 #0.25 @1\n").unwrap();
         let engine_auto_heal = KwsEngine::new(config).expect("create engine auto-heal");
-        assert!(engine_auto_heal.neural_session.is_some(), "Neural session must auto-heal invalid keywords.txt");
+        assert!(
+            engine_auto_heal.neural_session.is_some(),
+            "Neural session must auto-heal invalid keywords.txt"
+        );
     }
 }

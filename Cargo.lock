@@ -229,6 +229,7 @@ dependencies = [
 name = "ai-mate"
 version = "1.6.1"
 dependencies = [
+ "async-trait",
  "axum",
  "chrono",
  "futures-util",
@@ -7045,6 +7046,7 @@ dependencies = [
 name = "nomifun-app"
 version = "1.6.1"
 dependencies = [
+ "ai-mate",
  "anyhow",
  "async-trait",
  "axum",
@@ -8304,14 +8306,18 @@ version = "1.6.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "futures-util",
  "jsonschema",
  "nomifun-api-types",
  "nomifun-audio",
  "nomifun-common",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "symphonia",
  "thiserror 2.0.19",
  "tokio",

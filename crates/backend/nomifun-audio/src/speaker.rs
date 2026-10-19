@@ -5,11 +5,11 @@
 //! Provides zero-lock, low-latency audio output for Earcon sound effects and
 //! streamed TTS voice playback through the default system audio output device.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use tracing::{error, info, warn};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use tracing::{error, info};
 
 use crate::pcm_util::resample_mono;
 
@@ -21,6 +21,7 @@ pub struct SpeakerAudioSink {
     target_sample_rate: u32,
     _stop: Arc<AtomicBool>,
     _thread: Option<std::thread::JoinHandle<()>>,
+    ready: Arc<AtomicBool>,
 }
 
 impl Drop for SpeakerAudioSink {
@@ -32,20 +33,13 @@ impl Drop for SpeakerAudioSink {
 impl SpeakerAudioSink {
     /// Attempts to open the system default output device.
     ///
-    /// If no physical audio device is present (e.g. headless CI container),
-    /// falls back to a silent memory buffer sink without failing.
+    /// Returns an error when the physical stream cannot actually start.
     pub fn open_default() -> Result<Self, String> {
         let host = cpal::default_host();
         let device = match host.default_output_device() {
             Some(dev) => dev,
             None => {
-                warn!("No default audio output device available; using mock silent speaker sink");
-                return Ok(Self {
-                    queue: Arc::new(Mutex::new(VecDeque::new())),
-                    target_sample_rate: 48_000,
-                    _stop: Arc::new(AtomicBool::new(false)),
-                    _thread: None,
-                });
+                return Err("no_default_output_device".into());
             }
         };
 
@@ -61,7 +55,17 @@ impl SpeakerAudioSink {
         let sample_rate = config.sample_rate.0;
         let channels = config.channels as usize;
 
-        let queue = Arc::new(Mutex::new(VecDeque::with_capacity(sample_rate as usize * channels)));
+        let queue = Arc::new(Mutex::new(VecDeque::with_capacity(
+            sample_rate as usize * channels,
+        )));
+        let ready = Arc::new(AtomicBool::new(false));
+        let thread_ready = ready.clone();
+        let error_ready = ready.clone();
+        let on_error = move |err: cpal::StreamError| {
+            error_ready.store(false, Ordering::Release);
+            error!("cpal speaker output stream error: {err}");
+        };
+        let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
         let queue_cb = Arc::clone(&queue);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_clone = Arc::clone(&stop);
@@ -84,7 +88,7 @@ impl SpeakerAudioSink {
                                     }
                                 }
                             },
-                            |err| error!("cpal speaker output stream error: {err}"),
+                            on_error,
                             None,
                         )
                     }
@@ -102,7 +106,7 @@ impl SpeakerAudioSink {
                                     }
                                 }
                             },
-                            |err| error!("cpal speaker output stream error: {err}"),
+                            on_error,
                             None,
                         )
                     }
@@ -120,12 +124,12 @@ impl SpeakerAudioSink {
                                     }
                                 }
                             },
-                            |err| error!("cpal speaker output stream error: {err}"),
+                            on_error,
                             None,
                         )
                     }
                     other => {
-                        warn!(?other, "Unsupported audio sample format; falling back to silent buffer sink");
+                        let _ = init_tx.send(Err(format!("unsupported_output_format: {other:?}")));
                         return;
                     }
                 };
@@ -133,27 +137,40 @@ impl SpeakerAudioSink {
                 let stream = match stream_res {
                     Ok(s) => s,
                     Err(err) => {
-                        warn!(error = %err, "Failed to build cpal output stream; continuing with memory sink");
+                        let _ = init_tx.send(Err(format!("speaker_stream_build_failed: {err}")));
                         return;
                     }
                 };
 
                 if let Err(e) = stream.play() {
-                    warn!(error = %e, "Failed to start speaker stream; continuing in degraded mode");
+                    let _ = init_tx.send(Err(format!("speaker_stream_start_failed: {e}")));
+                    return;
                 }
+                thread_ready.store(true, Ordering::Release);
+                let _ = init_tx.send(Ok(()));
                 info!(device = %device_name_clone, sample_rate, channels, "Speaker audio sink initialized successfully");
 
                 while !stop_clone.load(Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             })
-            .ok();
+            .map_err(|err| format!("speaker_thread_failed: {err}"))?;
+
+        if let Err(error) = init_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .map_err(|err| err.to_string())
+            .and_then(|result| result)
+        {
+            stop.store(true, Ordering::Relaxed);
+            return Err(error);
+        }
 
         Ok(Self {
             queue,
             target_sample_rate: sample_rate,
             _stop: stop,
-            _thread: join,
+            _thread: Some(join),
+            ready,
         })
     }
 
@@ -162,6 +179,9 @@ impl SpeakerAudioSink {
     /// Automatically detects RIFF WAVE headers or raw PCM and resamples to
     /// the physical device's native hardware rate.
     pub async fn write_frame(&self, frame: Vec<u8>) -> Result<(), String> {
+        if !self.is_ready() {
+            return Err("speaker_unavailable".into());
+        }
         if frame.is_empty() {
             return Ok(());
         }
@@ -193,6 +213,10 @@ impl SpeakerAudioSink {
     /// Returns the number of unplayed audio samples currently buffered.
     pub fn buffered_samples(&self) -> usize {
         self.queue.lock().unwrap().len()
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
     }
 }
 
@@ -229,6 +253,7 @@ mod tests {
             target_sample_rate: 16_000,
             _stop: Arc::new(AtomicBool::new(false)),
             _thread: None,
+            ready: Arc::new(AtomicBool::new(true)),
         };
 
         assert_eq!(sink.buffered_samples(), 0);
@@ -247,7 +272,10 @@ mod tests {
     fn test_parse_audio_frame_wav() {
         let wav = crate::EarconKind::Wake.as_wav_bytes();
         let (samples, sr) = parse_audio_frame_to_pcm(wav);
-        assert!(!samples.is_empty(), "Wake earcon samples should not be empty");
+        assert!(
+            !samples.is_empty(),
+            "Wake earcon samples should not be empty"
+        );
         assert!(sr > 0, "Sample rate must be positive");
     }
 }

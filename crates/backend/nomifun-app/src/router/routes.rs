@@ -812,10 +812,26 @@ pub fn create_router_with_all_state(
         .unwrap_or_else(|_| services.data_dir.join("models"));
     nomifun_audio::register_active_model_dir(voice_models_dir.clone());
     let voice_models_manager = Arc::new(nomifun_voice_models::ModelManager::new(voice_models_dir.clone()));
-    let voice_companion_manager = Arc::new(crate::voice_companion_manager::VoiceCompanionProcessManager::new(
+    let voice_dialogue = Arc::new(crate::voice_dialogue::ProviderVoiceDialogue{
+        provider_repo:services.provider_repo.clone(),provider_model_repo:services.provider_model_repo.clone(),encryption_key:services.encryption_key,workspace:services.work_dir.clone(),
+    });
+    let voice_companion_mgr_builder = crate::voice_companion_manager::VoiceCompanionProcessManager::new(
         voice_models_manager.clone(),
         &services.data_dir,
-    ));
+    )
+    .with_companion_service(services.companion_service.clone())
+    .with_dialogue(voice_dialogue.clone());
+
+    let voice_runtime:Arc<dyn crate::voice_tasks::VoiceTaskRuntime>=Arc::new(crate::voice_task_runtime::ConversationVoiceRuntime {
+        conversation:app_server_conversation.service.clone(),registry:services.agent_runtime_registry.clone(),models:voice_dialogue,
+        presets:Some(states.preset.service.clone()),
+    });
+    let dialogue_recorder=Arc::new(crate::voice_companion_manager::ConversationVoiceDialogueRecorder::new(
+        Arc::new(app_server_conversation.service.clone()),services.authoritative_user_id.to_string(),&services.data_dir,
+    ).with_companion_service(services.companion_service.clone()).with_target_config(voice_companion_mgr_builder.target_selection())
+        .with_active_window_candidate(voice_companion_mgr_builder.active_window_candidate()).with_execution_runtime(voice_runtime.clone()));
+    let voice_companion_manager=Arc::new(voice_companion_mgr_builder.with_recorder(dialogue_recorder)
+        .with_tasks(services.authoritative_user_id.to_string(),voice_runtime));
     crate::voice_companion_manager::VoiceCompanionProcessManager::register_global(
         voice_companion_manager.clone(),
     );

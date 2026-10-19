@@ -1199,6 +1199,10 @@ impl NomiAgentManager {
             .map_err(|e| AppError::Internal(format!("Agent bootstrap failed: {e}")))?;
 
         let mut engine = result.engine;
+        if let Some(root) = &config_extra.voice_workspace {
+            let policy=crate::voice_tool_policy::VoiceInvocationPolicy::new(root.clone()).map_err(AppError::BadRequest)?;
+            engine.registry_mut().set_invocation_policy(Arc::new(policy));
+        }
         // Catalog / user-selected reasoning depth for OpenAI-compatible Flowy
         // chat models. Must land before the first turn so every LlmRequest
         // carries `reasoning_effort` when the catalog advertises levels.
@@ -1441,7 +1445,7 @@ impl NomiAgentManager {
         // resumed session the factory already migrated, and for None (no token).
         engine.stamp_owner_token(config_extra.owner_token.clone());
 
-        let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone());
+        let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone()).with_approval_manager(approval_manager.clone());
         engine.set_approval_manager(approval_manager.clone());
         engine.set_protocol_writer(Arc::new(protocol_sink));
         let mut slash_commands: Vec<SlashCommandItem> = engine
@@ -2996,7 +3000,24 @@ impl NomiAgentManager {
         Ok(delivery)
     }
 
-    pub fn confirm(&self, _msg_id: &str, call_id: &str, data: Value, always_allow: bool) -> Result<(), AppError> {
+    pub fn confirm(&self, msg_id: &str, call_id: &str, data: Value, always_allow: bool) -> Result<(), AppError> {
+        if !self.approval_manager.has_pending(call_id) {
+            return Err(AppError::Conflict("tool_approval_no_longer_pending".into()));
+        }
+        if self.approval_manager.is_scoped(call_id) {
+            if always_allow { return Err(AppError::BadRequest("voice_approval_must_be_once".into())); }
+            let approved=match data.get("value").and_then(Value::as_str) {
+                Some("proceed_once") => true,
+                Some("cancel") => false,
+                _ => return Err(AppError::BadRequest("voice_approval_value_invalid".into())),
+            };
+            let approval_id=data.get("approval_id").and_then(Value::as_str).ok_or_else(||AppError::BadRequest("voice_approval_scope_required".into()))?;
+            if !self.approval_manager.resolve_scoped_once(msg_id,call_id,approval_id,approved) {
+                return Err(AppError::Conflict("voice_approval_scope_or_expiry_changed".into()));
+            }
+            if let Ok(mut confirmations)=self.confirmations.write() {confirmations.retain(|confirmation| confirmation.call_id!=call_id);}
+            return Ok(());
+        }
         if let Ok(mut confs) = self.confirmations.write() {
             confs.retain(|c| c.call_id != call_id);
         }
@@ -3033,6 +3054,12 @@ impl NomiAgentManager {
 
     pub fn get_confirmations(&self) -> Vec<Confirmation> {
         self.confirmations.read().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    pub fn pending_voice_confirmations(&self) -> Vec<nomifun_api_types::voice::VoiceToolConfirmation> {
+        self.approval_manager.pending_scoped_approvals().into_iter().map(|scope| nomifun_api_types::voice::VoiceToolConfirmation {
+            approval_id:scope.approval_id,msg_id:scope.msg_id,call_id:scope.call_id,tool_name:scope.tool_name,arguments:scope.arguments,expires_at_ms:scope.expires_at_ms,
+        }).collect()
     }
 
     pub fn check_approval(&self, action: &str, _command_type: Option<&str>) -> bool {
@@ -4266,6 +4293,7 @@ mod tests {
             image_analysis_model: None,
             session_directory: std::env::temp_dir().join("nomi-test-sessions"),
             session_mode: None,
+            voice_workspace: None,
             extra_mcp_servers: std::collections::HashMap::new(),
             loopback_capability_leases: Default::default(),
             bedrock_config: None,

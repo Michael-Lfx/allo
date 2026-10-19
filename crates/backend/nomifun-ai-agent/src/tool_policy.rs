@@ -560,6 +560,18 @@ fn split_command_segments(cmd: &str) -> Vec<String> {
 }
 
 fn split_words(s: &str) -> Vec<String> {
+    split_words_with_closure(s).0
+}
+
+/// Only literal single commands are supported by the voice execution boundary.
+/// Reuse the policy tokenizer; reject expansion, chaining and ambiguous syntax.
+pub(crate) fn split_literal_command(s: &str) -> Option<Vec<String>> {
+    if s.chars().any(|ch| matches!(ch, '$' | '`' | ';' | '|' | '&' | '<' | '>' | '\n' | '\r' | '(' | ')' | '{' | '}' | '[' | ']' | '*' | '?' | '\0')) || s.contains("\\\"") || s.contains("\\'") {return None;}
+    let (words,closed)=split_words_with_closure(s);
+    (closed && !words.is_empty()).then_some(words)
+}
+
+fn split_words_with_closure(s: &str) -> (Vec<String>, bool) {
     let mut words = Vec::new();
     let mut current = String::new();
     let mut in_single = false;
@@ -582,7 +594,7 @@ fn split_words(s: &str) -> Vec<String> {
     if !current.is_empty() {
         words.push(current);
     }
-    words
+    (words, !in_single && !in_double)
 }
 
 fn clean_executable_name(raw: &str) -> String {

@@ -3588,6 +3588,47 @@ async fn make_sqlite_projection_service() -> (
 const PROJECTION_OWNER: &str = SQLITE_TEST_OWNER;
 
 #[tokio::test]
+async fn voice_creation_stamps_an_immutable_workspace_and_reuses_the_creation_identity() {
+    let (service, _, repository, database) = make_sqlite_projection_service().await;
+    nomifun_db::sqlx::query("INSERT INTO providers (provider_id, platform, name, base_url, api_key_encrypted, enabled, created_at, updated_at) VALUES (?, 'openai', 'voice test', 'https://example.invalid', 'test-only', 1, 1, 1)")
+        .bind(PROVIDER_ID_1).execute(database.pool()).await.unwrap();
+    nomifun_db::sqlx::query("INSERT INTO provider_models (provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at) VALUES (?, 'configured', 1, 0, '[\"chat\"]', '[]', '{}', 'inferred', 1, 1)")
+        .bind(PROVIDER_ID_1).execute(database.pool()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let request = || {
+        serde_json::from_value::<CreateConversationRequest>(json!({
+            "type": "nomi",
+            "model": {"provider_id": PROVIDER_ID_1, "model": "configured"},
+            "delegation_policy": "automatic",
+            "extra": {"workspace": workspace.path(), "session_mode": "yolo"}
+        }))
+        .unwrap()
+    };
+    let first = service
+        .create_voice_idempotent(PROJECTION_OWNER, request(), "voice-create:test-command", workspace.path().to_str().unwrap(), None)
+        .await
+        .unwrap();
+    let replay = service
+        .create_voice_idempotent(PROJECTION_OWNER, request(), "voice-create:test-command", workspace.path().to_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(first.conversation_id, replay.conversation_id);
+    assert_eq!(first.delegation_policy, DelegationPolicy::Disabled);
+    let row = repository.get(&first.conversation_id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["voice_task_workspace"], nomifun_common::paths::canonicalize_simplified(workspace.path()).unwrap().to_string_lossy().as_ref());
+    assert_eq!(extra["session_mode"], "default");
+    let options = service.build_runtime_options(&row).unwrap();
+    assert_eq!(options.extra["voice_task_workspace"], extra["voice_task_workspace"]);
+    let mut forged = request();
+    forged.extra["voice_task_workspace"] = json!(workspace.path());
+    assert!(matches!(service.create(PROJECTION_OWNER, forged).await, Err(AppError::BadRequest(_))));
+    let patch: UpdateConversationRequest = serde_json::from_value(json!({"extra": {"voice_task_workspace": null}})).unwrap();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    assert!(matches!(service.update(PROJECTION_OWNER, &first.conversation_id, patch, &runtime_registry).await, Err(AppError::BadRequest(_))));
+}
+
+#[tokio::test]
 async fn assistant_projection_is_one_durable_row_and_rebroadcasts_stable_final_content() {
     let (service, broadcaster, repository, _database) = make_sqlite_projection_service().await;
     let conversation = service

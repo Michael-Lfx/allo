@@ -142,6 +142,7 @@ fn test_roundtrip_toml() {
             prefer_mirror: PreferMirror::ModelScope,
         },
         cloud: Default::default(),
+        control_token: None,
     };
 
     let serialized = toml::to_string_pretty(&original).expect("serialization must succeed");

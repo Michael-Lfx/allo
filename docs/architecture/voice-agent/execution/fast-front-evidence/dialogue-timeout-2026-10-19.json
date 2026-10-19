@@ -1,0 +1,101 @@
+{
+  "captured_at": "2026-10-19T01:24:40.750Z",
+  "timezone": "Asia/Hong_Kong",
+  "daemon_log": "D:/tmp/flowy-dev/logs/voice/ai-mate-1792372649372.log",
+  "host_log": "D:/tmp/flowy-dev/logs/2026-10-19.nomicore.log",
+  "model": "AIPC-qwen3.8-flash",
+  "replay_verdict": "REPRODUCED",
+  "asr_completed": 3,
+  "successful_model_rounds": 1,
+  "model_timeout_rounds": 2,
+  "successful_tts_rounds": 1,
+  "rounds": [
+    {
+      "raw_text": "你好啊。",
+      "session_id": "01a151bc-f4b7-7a40-ac5f-8d29b17c13fd",
+      "turn_id": "01a151bd-0519-7630-b710-9e307fc48bc1",
+      "prompt_chars": 1717,
+      "has_model_output": true,
+      "projected": true
+    },
+    {
+      "raw_text": "有点慢呢。",
+      "session_id": "01a151bc-f4b7-7a40-ac5f-8d29b17c13fd",
+      "turn_id": "01a151bd-414f-7dd3-bd54-50fd10e27621",
+      "prompt_chars": 1748,
+      "has_model_output": false,
+      "projected": false
+    },
+    {
+      "raw_text": "为什么这么慢？",
+      "session_id": "01a151bd-c28c-7ef1-86c2-81802809a103",
+      "turn_id": "01a151bd-d004-7ee3-83b2-1941b2a907f6",
+      "prompt_chars": 1720,
+      "has_model_output": false,
+      "projected": false
+    }
+  ],
+  "events": [
+    {
+      "line": 33,
+      "text": "2026-10-19T01:18:24.537740Z  INFO ai_mate::voice: voice_asr_started session_id=Some(\"01a151bc-f4b7-7a40-ac5f-8d29b17c13fd\") turn_id=Some(\"01a151bd-0519-7630-b710-9e307fc48bc1\") samples=68160 sample_rate=16000"
+    },
+    {
+      "line": 34,
+      "text": "2026-10-19T01:18:24.668229Z  INFO ai_mate::voice: voice_asr_finished elapsed_ms=130 text_chars=4"
+    },
+    {
+      "line": 38,
+      "text": "2026-10-19T01:18:32.240239Z  INFO ai_mate::voice: voice_model_finished elapsed_ms=7501 ok=true"
+    },
+    {
+      "line": 45,
+      "text": "2026-10-19T01:18:36.920324Z  INFO ai_mate::voice: voice_playback_finished elapsed_ms=4679 ok=true"
+    },
+    {
+      "line": 49,
+      "text": "2026-10-19T01:18:39.951965Z  INFO ai_mate::voice: voice_asr_started session_id=Some(\"01a151bc-f4b7-7a40-ac5f-8d29b17c13fd\") turn_id=Some(\"01a151bd-414f-7dd3-bd54-50fd10e27621\") samples=37440 sample_rate=16000"
+    },
+    {
+      "line": 50,
+      "text": "2026-10-19T01:18:40.046066Z  INFO ai_mate::voice: voice_asr_finished elapsed_ms=94 text_chars=5"
+    },
+    {
+      "line": 55,
+      "text": "2026-10-19T01:18:48.131199Z  INFO ai_mate::voice: voice_model_finished elapsed_ms=8024 ok=false"
+    },
+    {
+      "line": 56,
+      "text": "2026-10-19T01:18:48.131334Z  WARN ai_mate::voice: voice_model_failed code=\"model_timeout\""
+    },
+    {
+      "line": 69,
+      "text": "2026-10-19T01:19:16.484580Z  INFO ai_mate::voice: voice_asr_started session_id=Some(\"01a151bd-c28c-7ef1-86c2-81802809a103\") turn_id=Some(\"01a151bd-d004-7ee3-83b2-1941b2a907f6\") samples=55360 sample_rate=16000"
+    },
+    {
+      "line": 70,
+      "text": "2026-10-19T01:19:16.605353Z  INFO ai_mate::voice: voice_asr_finished elapsed_ms=120 text_chars=7"
+    },
+    {
+      "line": 75,
+      "text": "2026-10-19T01:19:24.697199Z  INFO ai_mate::voice: voice_model_finished elapsed_ms=8026 ok=false"
+    },
+    {
+      "line": 76,
+      "text": "2026-10-19T01:19:24.697313Z  WARN ai_mate::voice: voice_model_failed code=\"model_timeout\""
+    }
+  ],
+  "confirmed": [
+    "All three utterances reached ASR and the selected model",
+    "The third utterance had a new acoustic session",
+    "Later calls returned model_timeout after approximately 8 seconds",
+    "No second/third model output was saved"
+  ],
+  "not_proven": [
+    "Cloud queue latency versus network versus reasoning latency",
+    "Reasoning actually enabled in the wire request",
+    "Real model service can meet the 8 second budget consistently"
+  ],
+  "business_code_changed": false,
+  "provider_calls_issued_by_agent": 0
+}

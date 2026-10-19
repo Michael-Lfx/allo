@@ -173,14 +173,29 @@ pub struct CloudConfig {
 }
 
 /// Top-level AI Mate companion configuration schema.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AiMateConfig {
+    /// Supervisor-only credential; never persisted in the public TOML schema.
+    #[serde(skip)]
+    pub control_token: Option<String>,
     /// Model asset management configuration section (`[models]`).
     #[serde(default)]
     pub models: ModelsConfig,
     /// Cloud provider and decision routing section (`[cloud]`).
     #[serde(default)]
     pub cloud: CloudConfig,
+}
+
+impl fmt::Debug for AiMateConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AiMateConfig")
+            .field("models", &self.models)
+            .field("cloud_endpoint", &self.cloud.endpoint)
+            .field("cloud_model", &self.cloud.model)
+            .field("has_control_token", &self.control_token.is_some())
+            .field("has_cloud_token", &self.cloud.token.is_some())
+            .finish()
+    }
 }
 
 /// Type alias for convenient usage.
@@ -230,13 +245,15 @@ impl AiMateConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
+        self.control_token = get_env("AI_MATE_CONTROL_TOKEN").filter(|value| !value.is_empty());
         if let Some(val) = get_env(ENV_AI_MATE_MODEL_DIR) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.models.models_dir = PathBuf::from(trimmed);
             }
         }
-        if let Some(val) = get_env("NOMIFUN_SERVER_TOKEN").or_else(|| get_env("FLOWY_SERVER_TOKEN")) {
+        if let Some(val) = get_env("NOMIFUN_SERVER_TOKEN").or_else(|| get_env("FLOWY_SERVER_TOKEN"))
+        {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.cloud.token = Some(trimmed.to_string());

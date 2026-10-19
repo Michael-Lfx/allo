@@ -28,6 +28,25 @@ pub struct ApplyPatchTool {
     coding_boundary: bool,
 }
 
+/// Resolve the paths from the same parser used by execution, including rename
+/// destinations. Host invocation restrictions must inspect all affected files.
+pub fn affected_paths(input: &Value) -> Result<Vec<String>, String> {
+    let freeform = input.get("patch").and_then(Value::as_str).or_else(|| input.get("input").and_then(Value::as_str)).filter(|patch| !patch.trim().is_empty());
+    if let Some(patch) = freeform {
+        let parsed=nomi_coding::parse_freeform_patch(patch).map_err(|error| error.to_string())?;
+        let mut paths=Vec::new();
+        for operation in parsed.files {
+            match operation {
+                nomi_coding::PatchFileOp::Add {path,..} | nomi_coding::PatchFileOp::Delete {path} => paths.push(path),
+                nomi_coding::PatchFileOp::Update {path,move_to,..} => {paths.push(path);if let Some(target)=move_to {paths.push(target);}}
+            }
+        }
+        return Ok(paths);
+    }
+    let files=input.get("files").and_then(Value::as_array).filter(|files| !files.is_empty()).ok_or("patch_files_missing")?;
+    files.iter().map(|file|file.get("file_path").and_then(Value::as_str).map(str::to_owned).ok_or_else(||"patch_path_missing".into())).collect()
+}
+
 fn err(msg: impl Into<String>) -> ToolResult {
     ToolResult {
         content: msg.into(),

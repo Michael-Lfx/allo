@@ -6,6 +6,11 @@ edition.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+# Explicit replay fixtures; never enabled by the production binary's defaults.
+voice-skeleton = ["nomifun-voice-terminal/voice-skeleton"]
+
 [[bin]]
 name = "ai-mate"
 path = "src/main.rs"
@@ -31,6 +36,7 @@ chrono.workspace = true
 sysinfo.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile.workspace = true
 tower = { workspace = true }
 http-body-util = { workspace = true }

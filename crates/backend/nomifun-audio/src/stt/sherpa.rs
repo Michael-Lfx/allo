@@ -131,6 +131,7 @@ fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
         if is_valid_asr_dir(p) {
             return Some(p.to_path_buf());
         }
+        return None;
     }
     if let Some(reg) = active_model_dir() {
         let asr_sub = reg.join("asr");
@@ -284,7 +285,7 @@ mod tests {
     fn try_load_none_when_unset() {
         // Ensure we don't accidentally pick up a real env or installed model in test:
         // if no env and no installed model, assert Ok(None); if models exist locally, assert Ok(_).
-        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() && resolve_asr_model_dir().is_none() {
+        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() && resolve_model_dir(None).is_none() {
             assert!(matches!(try_load_sherpa(None), Ok(None)));
         } else {
             assert!(try_load_sherpa(None).is_ok());

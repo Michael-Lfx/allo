@@ -1,4 +1,5 @@
 import React, { Suspense, useEffect, useLayoutEffect } from 'react';
+import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
@@ -59,6 +60,7 @@ const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const CompletionToastPage = React.lazy(() => import('@renderer/pages/completionToast'));
 const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCaptions'));
+const VoiceSessionPage = React.lazy(() => import('@renderer/pages/voiceSession'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
@@ -128,6 +130,7 @@ const withRouteFallback = (
 ) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
 
 const SessionShellRoute: React.FC = () => {
+  useVoiceContext();
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
@@ -320,6 +323,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
         <Route path='/completion-toast' element={withRouteFallback(CompletionToastPage, { fullscreen: true })} />
         <Route path='/meeting-captions' element={withRouteFallback(MeetingCaptionsPage, { fullscreen: true })} />
+        <Route path='/voice-session' element={withRouteFallback(VoiceSessionPage, { fullscreen: true })} />
         {/* Isolated UI catalog — public so the first-cut preview works without login. */}
         <Route path='/test/beautiful-ui' element={withRouteFallback(BeautifulUiPreviewPage, { fullscreen: true })} />
         <Route path='/test/color-lab' element={withRouteFallback(ColorLabPage, { fullscreen: true })} />

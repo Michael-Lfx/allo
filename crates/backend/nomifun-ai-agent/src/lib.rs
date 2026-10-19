@@ -48,6 +48,8 @@ pub mod conversation_title_completer;
 pub mod terminal_title_completer;
 pub mod types;
 pub mod tool_policy;
+mod voice_tool_policy;
+pub use voice_tool_policy::voice_confirmation_summary;
 pub use tool_policy::*;
 
 // ── Agent-layer re-exports (the seam) ──────────────────────────────────────
@@ -123,7 +125,7 @@ pub use extraction_scanner::start_session_extraction_scanner;
 pub use manager::acp::PoiPrefetchHook;
 pub use manager::nomi::agent::goal_slash_commands;
 pub use factory::provider_config::{
-    one_shot_completion, resolve_provider_config, streaming_completion,
+    one_shot_completion, resolve_provider_config, streaming_completion, streaming_completion_no_thinking,
     streaming_completion_text_or_reasoning, user_message, DeltaKind,
 };
 pub use one_shot::{OneShotDeps, OneShotTool, OneShotTurnRequest, one_shot_handler, run_one_shot_turn};

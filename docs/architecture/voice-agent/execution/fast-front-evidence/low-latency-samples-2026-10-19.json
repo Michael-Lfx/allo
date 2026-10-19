@@ -1,0 +1,90 @@
+{
+  "at": "2026-10-19T02:33:05.785Z",
+  "platform": "win32",
+  "arch": "x64",
+  "cpu": "Intel(R) Core(TM) Ultra 9 285H",
+  "boundary": "production capture worker; fake ASR fixed text; real configured provider; real Edge synthesis; validated WAV to virtual sink; no physical device; feedback off",
+  "network": "current local network; independent RTT not measured",
+  "baseline": [
+    {
+      "sample": 0,
+      "scenario": "first",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 5786,
+      "from_utterance_ready_first_sink_ms": 9105,
+      "feed_to_done_ms": 10414,
+      "frames": 1,
+      "error": null
+    },
+    {
+      "sample": 1,
+      "scenario": "follow_up",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 2260,
+      "from_utterance_ready_first_sink_ms": 4980,
+      "feed_to_done_ms": 6286,
+      "frames": 1,
+      "error": null
+    },
+    {
+      "sample": 2,
+      "scenario": "rewake",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 463,
+      "from_utterance_ready_first_sink_ms": 3297,
+      "feed_to_done_ms": 4612,
+      "frames": 1,
+      "error": null
+    }
+  ],
+  "short_first_sentence": [
+    {
+      "sample": 0,
+      "scenario": "first",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 4620,
+      "from_utterance_ready_first_sink_ms": 7337,
+      "feed_to_done_ms": 8659,
+      "frames": 1,
+      "segment_chars": [
+        16
+      ],
+      "error": null
+    },
+    {
+      "sample": 1,
+      "scenario": "follow_up",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 1779,
+      "from_utterance_ready_first_sink_ms": 5250,
+      "feed_to_done_ms": 6547,
+      "frames": 1,
+      "segment_chars": [
+        16
+      ],
+      "error": null
+    },
+    {
+      "sample": 2,
+      "scenario": "rewake",
+      "model": "AIPC-qwen3.8-flash",
+      "from_utterance_ready_first_sentence_ms": 635,
+      "from_utterance_ready_first_sink_ms": 3356,
+      "feed_to_done_ms": 4645,
+      "frames": 1,
+      "segment_chars": [
+        16
+      ],
+      "error": null
+    }
+  ],
+  "slo": {
+    "p95_target_ms": 5000,
+    "attained": false,
+    "reason": "3 samples per revision; first two final samples exceed 5000ms; no hard cloud timing guarantee"
+  },
+  "raw_logs": [
+    "target/voice-review/latency-L4-cloud-worker.log",
+    "target/voice-review/latency-L4-cloud-worker-short-first.log"
+  ]
+}

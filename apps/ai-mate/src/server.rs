@@ -8,17 +8,17 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::get;
-use axum::Router;
 use nomifun_voice_models::ModelManager;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::config::Config;
-use crate::oobe::{oobe_routes, OobeManager};
+use crate::oobe::{OobeManager, oobe_routes};
 
 /// Default listen address for the companion daemon service (restricted to localhost by default).
 pub const DEFAULT_SERVER_ADDR: &str = "127.0.0.1:8080";
@@ -86,6 +86,7 @@ impl Default for IpRateLimiter {
 
 #[derive(Clone)]
 pub struct ServerState {
+    pub control_token: Option<String>,
     pub oobe: OobeManager,
     pub rate_limiter: IpRateLimiter,
     pub voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
@@ -105,7 +106,10 @@ fn get_client_ip(req: &Request) -> String {
             return s.trim().to_string();
         }
     }
-    if let Some(connect_info) = req.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+    if let Some(connect_info) = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+    {
         return connect_info.0.ip().to_string();
     }
     "127.0.0.1".to_string()
@@ -120,6 +124,22 @@ async fn pairing_guard_middleware(
 ) -> Response {
     let path = req.uri().path();
     let method = req.method();
+    if path.starts_with("/api/voice")
+        && let Some(token) = &state.control_token
+    {
+        if req
+            .headers()
+            .get("x-ai-mate-control-token")
+            .and_then(|value| value.to_str().ok())
+            != Some(token.as_str())
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"success": false, "error": "control_authorization_required"})),
+            )
+                .into_response();
+        }
+    }
 
     // Rate limit /api/oobe/verify: max 5 requests per 60s per client IP
     if path == "/api/oobe/verify" && method == axum::http::Method::POST {
@@ -164,7 +184,11 @@ async fn pairing_guard_middleware(
 
     // All management and mutation endpoints (e.g. POST install, DELETE models) require pairing
     if !state.oobe.is_paired().await {
-        return (StatusCode::FORBIDDEN, "Pairing required to access management APIs").into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            "Pairing required to access management APIs",
+        )
+            .into_response();
     }
 
     next.run(req).await
@@ -177,16 +201,46 @@ pub async fn voice_events_handler(
     State(state): State<ServerState>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
     let rx_opt = state.voice_event_tx.as_ref().map(|tx| tx.subscribe());
-    let stream = futures_util::stream::unfold(rx_opt, |mut rx_opt| async move {
-        if let Some(ref mut rx) = rx_opt {
-            while let Ok(event) = rx.recv().await {
+    let snapshot = if let Some(runtime) = &state.voice_runtime {
+        Some(crate::voice::VoiceCompanionEvent::Snapshot {
+            snapshot: runtime.snapshot(),
+        })
+    } else {
+        None
+    };
+    let runtime = state.voice_runtime.clone();
+    let stream = futures_util::stream::unfold(
+        (rx_opt, snapshot, runtime),
+        |(mut rx_opt, snapshot, runtime)| async move {
+            if let Some(event) = snapshot {
                 let data = serde_json::to_string(&event).unwrap_or_default();
-                return Some((Ok(Event::default().data(data)), rx_opt));
+                return Some((Ok(Event::default().data(data)), (rx_opt, None, runtime)));
             }
-        }
-        tokio::time::sleep(Duration::from_secs(15)).await;
-        Some((Ok(Event::default().comment("heartbeat")), rx_opt))
-    });
+            if let Some(ref mut rx) = rx_opt {
+                loop {
+                    let event = match rx.recv().await {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            match &runtime {
+                                Some(runtime) => crate::voice::VoiceCompanionEvent::Snapshot {
+                                    snapshot: runtime.snapshot(),
+                                },
+                                None => return None,
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    };
+                    let data = serde_json::to_string(&event).unwrap_or_default();
+                    return Some((Ok(Event::default().data(data)), (rx_opt, None, runtime)));
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            Some((
+                Ok(Event::default().comment("heartbeat")),
+                (rx_opt, None, runtime),
+            ))
+        },
+    );
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
@@ -202,14 +256,126 @@ pub async fn voice_wake_handler(
 ) -> impl IntoResponse {
     let kw = payload.keyword.unwrap_or_else(|| "Hey Flowy".to_string());
     if let Some(ref rt) = state.voice_runtime {
-        rt.handle_wake_keyword(&kw).await;
-        (StatusCode::OK, Json(json!({"success": true, "keyword": kw}))).into_response()
+        match rt.handle_wake_keyword(&kw).await {
+            Ok(()) => (
+                StatusCode::OK,
+                Json(json!({"success": true, "keyword": kw})),
+            )
+                .into_response(),
+            Err(error) => {
+                let status = match error {
+                    crate::voice::VoiceWakeError::PairingRequired => StatusCode::FORBIDDEN,
+                    crate::voice::VoiceWakeError::Busy => StatusCode::CONFLICT,
+                    _ => StatusCode::SERVICE_UNAVAILABLE,
+                };
+                (
+                    status,
+                    Json(json!({"success": false, "error": error.to_string()})),
+                )
+                    .into_response()
+            }
+        }
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"success": false, "error": "Voice runtime not available"})),
         )
             .into_response()
+    }
+}
+
+async fn voice_snapshot_handler(State(state): State<ServerState>) -> Response {
+    if let Some(runtime) = &state.voice_runtime {
+        Json(runtime.snapshot()).into_response()
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
+}
+
+async fn voice_notification_handler(State(state):State<ServerState>,axum::extract::Path(attempt):axum::extract::Path<String>)->Response {
+    match state.voice_runtime {
+        Some(runtime)=>match runtime.notification_status(&attempt).await {
+            Some(receipt)=>Json(receipt).into_response(),None=>StatusCode::NOT_FOUND.into_response(),
+        },None=>StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+async fn voice_task_result_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<nomifun_api_types::voice::VoiceTaskResultAnnouncement>,
+) -> Response {
+    let Some(runtime)=state.voice_runtime else {return StatusCode::SERVICE_UNAVAILABLE.into_response();};
+    let attempt=request.attempt_id.clone().unwrap_or_else(||request.command_id.clone());
+    let owned=runtime.clone();
+    // A disconnected HTTP caller must not abandon an already admitted playback.
+    match tokio::spawn(async move {owned.announce_task_result(request).await}).await {
+        Ok(Ok(()))=>match runtime.notification_status(&attempt).await {
+            Some(receipt)=>Json(receipt).into_response(),None=>StatusCode::NOT_FOUND.into_response(),
+        },
+        Ok(Err(code))=>(StatusCode::CONFLICT,Json(json!({"code":code}))).into_response(),
+        Err(_)=>StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+async fn voice_confirmation_handler(
+    State(state):State<ServerState>,
+    Json(request):Json<nomifun_api_types::voice::VoiceToolConfirmationPrompt>,
+)->Response {
+    let Some(runtime)=state.voice_runtime else{return StatusCode::SERVICE_UNAVAILABLE.into_response();};
+    match tokio::spawn(async move{runtime.request_tool_confirmation(request).await}).await {
+        Ok(Ok(reply))=>Json(reply).into_response(),
+        Ok(Err(code))=>(StatusCode::CONFLICT,Json(json!({"code":code}))).into_response(),
+        Err(_)=>StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+async fn voice_stop_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<nomifun_api_types::voice::VoiceSessionControlRequest>,
+) -> Response {
+    if let Some(runtime) = &state.voice_runtime {
+        match runtime.stop_session(&request).await {
+            Ok(()) => Json(json!({"success": true})).into_response(),
+            Err(_) => (
+                StatusCode::CONFLICT,
+                Json(json!({"success": false, "error": "session_scope_changed"})),
+            )
+                .into_response(),
+        }
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
+}
+
+async fn voice_feedback_handler(State(state): State<ServerState>) -> Response {
+    match &state.voice_runtime {
+        Some(runtime) => Json(runtime.feedback()).into_response(),
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+async fn voice_update_feedback_handler(
+    State(state): State<ServerState>,
+    Json(patch): Json<nomifun_api_types::voice::VoiceFeedbackPatch>,
+) -> Response {
+    match &state.voice_runtime {
+        Some(runtime) => match runtime.update_feedback(patch) {
+            Ok(()) => Json(runtime.feedback()).into_response(),
+            Err(code) => (StatusCode::BAD_REQUEST, Json(json!({"code":code}))).into_response(),
+        },
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+async fn voice_preview_feedback_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<nomifun_api_types::voice::VoiceFeedbackPreviewRequest>,
+) -> Response {
+    match &state.voice_runtime {
+        Some(runtime) => match runtime.preview_feedback(request.kind).await {
+            Ok(()) => Json(json!({"success":true})).into_response(),
+            Err(code) => (StatusCode::CONFLICT, Json(json!({"code":code}))).into_response(),
+        },
+        None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 
@@ -229,19 +395,34 @@ pub fn build_router_with_oobe(
 
 /// Construct the Axum HTTP router with all services and companion event streaming.
 pub fn build_router_full(
-    _config: &Config,
+    config: &Config,
     manager: Arc<ModelManager>,
     oobe: OobeManager,
     voice_event_tx: Option<tokio::sync::broadcast::Sender<crate::voice::VoiceCompanionEvent>>,
     voice_runtime: Option<Arc<crate::voice::VoiceCompanionRuntime>>,
 ) -> Router {
     let state = ServerState {
+        control_token: config.control_token.clone(),
         oobe: oobe.clone(),
         rate_limiter: IpRateLimiter::default(),
         voice_event_tx,
         voice_runtime,
     };
     let events_router = Router::new()
+        .route(
+            "/api/voice/feedback",
+            get(voice_feedback_handler).post(voice_update_feedback_handler),
+        )
+        .route(
+            "/api/voice/feedback/preview",
+            axum::routing::post(voice_preview_feedback_handler),
+        )
+        .route("/api/voice/snapshot", get(voice_snapshot_handler))
+        .route("/api/voice/notifications/{attempt_id}", axum::routing::get(voice_notification_handler))
+        .route("/api/voice/task-progress", axum::routing::post(voice_task_result_handler))
+        .route("/api/voice/task-result", axum::routing::post(voice_task_result_handler))
+        .route("/api/voice/confirmation",axum::routing::post(voice_confirmation_handler))
+        .route("/api/voice/stop", axum::routing::post(voice_stop_handler))
         .route("/api/voice/events", get(voice_events_handler))
         .route("/api/voice/wake", axum::routing::post(voice_wake_handler))
         .with_state(state.clone());

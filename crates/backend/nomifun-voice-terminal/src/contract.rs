@@ -2,8 +2,8 @@
 //!
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md (§3.5, §3.6)
 
-use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 // ============================================================================
 // C3: Voice Decision Contract & JSON Schema
@@ -29,6 +29,11 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
       "type": "string",
       "description": "当 intent_type 为 chat 时的直接口语回答 (≤60字)"
     },
+    "understood_request": {
+      "type": "string",
+      "minLength": 1,
+      "description": "向用户展示的需求理解，忠实整理 ASR 输入，不补造未说出的事实"
+    },
     "spoken_ack": {
       "type": "string",
       "description": "当 intent_type 为 agent_task 时的先行接单回执 (≤25字)"
@@ -45,39 +50,7 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
   "required": ["intent_type"]
 }"#;
 
-/// Intent category output by qwen3.5-flash single-pass atomic routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntentType {
-    Ignore,
-    Chat,
-    AgentTask,
-    TaskControl,
-}
-
-/// Task control sub-action when intent_type is task_control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskControlAction {
-    QueryStatus,
-    CancelTask,
-}
-
-/// Structured decision response payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VoiceDecision {
-    pub intent_type: IntentType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_control_action: Option<TaskControlAction>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reply_tts: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spoken_ack: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_goal: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub requires_confirmation: Option<bool>,
-}
+pub use nomifun_api_types::voice::{VoiceIntentType as IntentType,VoiceTaskControlAction as TaskControlAction,VoiceDecision};
 
 static COMPILED_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
     let schema_json: serde_json::Value = serde_json::from_str(VOICE_DECISION_SCHEMA)
@@ -186,45 +159,125 @@ pub struct IllegalTransitionError {
 /// Contains all 20 canonical state transitions defined in interaction.zh.md §3.6.
 pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = &[
     // 1. Idle -> Listening on wake word
-    (AcousticState::Idle, AcousticEvent::WakeHit, AcousticState::Listening),
+    (
+        AcousticState::Idle,
+        AcousticEvent::WakeHit,
+        AcousticState::Listening,
+    ),
     // 2. Listening -> Deciding on speech end
-    (AcousticState::Listening, AcousticEvent::SpeechEnd, AcousticState::Deciding),
+    (
+        AcousticState::Listening,
+        AcousticEvent::SpeechEnd,
+        AcousticState::Deciding,
+    ),
     // 3. Listening -> Idle on 6s silence timeout
-    (AcousticState::Listening, AcousticEvent::ListenTimeout, AcousticState::Idle),
+    (
+        AcousticState::Listening,
+        AcousticEvent::ListenTimeout,
+        AcousticState::Idle,
+    ),
     // 4. Deciding -> Idle on intent == ignore
-    (AcousticState::Deciding, AcousticEvent::IntentIgnore, AcousticState::Idle),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::IntentIgnore,
+        AcousticState::Idle,
+    ),
     // 5. Deciding -> SpeakingFast on intent == chat
-    (AcousticState::Deciding, AcousticEvent::IntentChat, AcousticState::SpeakingFast),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::IntentChat,
+        AcousticState::SpeakingFast,
+    ),
     // 6. Deciding -> SpeakingControl on intent == task_control
-    (AcousticState::Deciding, AcousticEvent::IntentTaskControl, AcousticState::SpeakingControl),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::IntentTaskControl,
+        AcousticState::SpeakingControl,
+    ),
     // 7. Deciding -> AwaitingConfirmation on routing confirmation needed
-    (AcousticState::Deciding, AcousticEvent::ConfirmationRequired, AcousticState::AwaitingConfirmation),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::ConfirmationRequired,
+        AcousticState::AwaitingConfirmation,
+    ),
     // 8. Deciding -> DispatchingTask on intent == agent_task
-    (AcousticState::Deciding, AcousticEvent::IntentAgentTask, AcousticState::DispatchingTask),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::IntentAgentTask,
+        AcousticState::DispatchingTask,
+    ),
     // 9. AwaitingConfirmation -> ListeningConfirm when prompt finishes
-    (AcousticState::AwaitingConfirmation, AcousticEvent::PromptDone, AcousticState::ListeningConfirm),
+    (
+        AcousticState::AwaitingConfirmation,
+        AcousticEvent::PromptDone,
+        AcousticState::ListeningConfirm,
+    ),
     // 10. ListeningConfirm -> DispatchingTask on confirm accepted
-    (AcousticState::ListeningConfirm, AcousticEvent::ConfirmAccepted, AcousticState::DispatchingTask),
+    (
+        AcousticState::ListeningConfirm,
+        AcousticEvent::ConfirmAccepted,
+        AcousticState::DispatchingTask,
+    ),
     // 11. ListeningConfirm -> Idle on user cancel
-    (AcousticState::ListeningConfirm, AcousticEvent::ConfirmRejected, AcousticState::Idle),
+    (
+        AcousticState::ListeningConfirm,
+        AcousticEvent::ConfirmRejected,
+        AcousticState::Idle,
+    ),
     // 12. ListeningConfirm -> Idle on 8s confirm timeout
-    (AcousticState::ListeningConfirm, AcousticEvent::ConfirmTimeout, AcousticState::Idle),
+    (
+        AcousticState::ListeningConfirm,
+        AcousticEvent::ConfirmTimeout,
+        AcousticState::Idle,
+    ),
     // 13. DispatchingTask -> Idle on task accepted & ack done
-    (AcousticState::DispatchingTask, AcousticEvent::TaskAccepted, AcousticState::Idle),
+    (
+        AcousticState::DispatchingTask,
+        AcousticEvent::TaskAccepted,
+        AcousticState::Idle,
+    ),
     // 14. Idle -> SpeakingSummary on async task completion notice
-    (AcousticState::Idle, AcousticEvent::TaskSummaryReady, AcousticState::SpeakingSummary),
+    (
+        AcousticState::Idle,
+        AcousticEvent::TaskSummaryReady,
+        AcousticState::SpeakingSummary,
+    ),
     // 15. Idle -> AwaitingConfirmation on execution-time tool policy intercept
-    (AcousticState::Idle, AcousticEvent::ToolPolicyIntercept, AcousticState::AwaitingConfirmation),
+    (
+        AcousticState::Idle,
+        AcousticEvent::ToolPolicyIntercept,
+        AcousticState::AwaitingConfirmation,
+    ),
     // 16. SpeakingFast -> FollowUpListening when chat playback completes
-    (AcousticState::SpeakingFast, AcousticEvent::PlaybackDone, AcousticState::FollowUpListening),
+    (
+        AcousticState::SpeakingFast,
+        AcousticEvent::PlaybackDone,
+        AcousticState::FollowUpListening,
+    ),
     // 17. SpeakingControl -> FollowUpListening when control playback completes
-    (AcousticState::SpeakingControl, AcousticEvent::PlaybackDone, AcousticState::FollowUpListening),
+    (
+        AcousticState::SpeakingControl,
+        AcousticEvent::PlaybackDone,
+        AcousticState::FollowUpListening,
+    ),
     // 18. SpeakingSummary -> FollowUpListening when summary playback completes
-    (AcousticState::SpeakingSummary, AcousticEvent::PlaybackDone, AcousticState::FollowUpListening),
+    (
+        AcousticState::SpeakingSummary,
+        AcousticEvent::PlaybackDone,
+        AcousticState::FollowUpListening,
+    ),
     // 19. FollowUpListening -> Deciding on follow-up speech within 4s
-    (AcousticState::FollowUpListening, AcousticEvent::FollowUpSpeech, AcousticState::Deciding),
+    (
+        AcousticState::FollowUpListening,
+        AcousticEvent::FollowUpSpeech,
+        AcousticState::Deciding,
+    ),
     // 20. FollowUpListening -> Idle on 4s follow-up timeout
-    (AcousticState::FollowUpListening, AcousticEvent::FollowUpTimeout, AcousticState::Idle),
+    (
+        AcousticState::FollowUpListening,
+        AcousticEvent::FollowUpTimeout,
+        AcousticState::Idle,
+    ),
 ];
 
 /// Looks up the next state in the declarative transition table.
