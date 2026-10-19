@@ -3,7 +3,7 @@ id: t3
 title: "reuse 裁决校验放宽到登记表全量——候选集子集不再误杀正确裁决"
 type: task
 status: open
-assignee:
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
