@@ -82,6 +82,15 @@ ADR-0012 新增 + CONTEXT.md 挂载/维护回合两词条 + 契约 v1.2 版本�
      `structure_repair_skips_when_no_triggers_and_audits`）；
    - **全绿 EXIT=0 矩阵的前置条件 = 配置任一已启用 provider**（`--db` 指开发库或
      临时库内配置），观测面档案抽查同轮完成（`<data-dir>/observation/learning-smoke/`）。
+
+   **Resolution 增补（2026-10-19，首次带凭据真机对账后的勘误）**：本段「真机
+   冒烟全套」当时的实际状态 = LLM 档（mount/repair/content/structure/grow/
+   loop/json）走通至 provider 解析处**如实非零失败**，仅 xp 全绿——§4 末行
+   「全绿 EXIT=0 矩阵」的前置条件当时未满足，真实全绿于 2026-10-16 首次带
+   凭据（Flowy Cloud + AIPC-deepseek-v4.1-flash）达成，并同期暴露/修复两处
+   真机缺陷（结构生成 16384 token 帽截断——目录上限死管道改消费；门口编号
+   提示词 `[G1]` 括号残留）与一处已知未修（`learning-smoke repair` 种子结构
+   性不可赢，详见 q 波后审计记录）。
 5. **领域词表终检**：CONTEXT.md j 波词条链（道与术/概念不可学完/概念投影——j01；
    est 与 XP 走 DTO 注释与量纲宣言词条住学习架构文档——挂载/维护回合——本票）与实
    现一致； Avoid 行无漂移。
