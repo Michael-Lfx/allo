@@ -687,12 +687,12 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
 2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
-3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 从候选集照抄），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象不在候选集内、你给不出 concept_id 时才打回，并在 issue 里点名疑似宿主。
+3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
 - 【提名候选集】为每条铸名（mints 的 canonical）与别名提名（new_aliases）列出登记表近邻候选（含 concept_id 与入选理由）。逐条裁决「复用 | 新铸」：
-- 裁**复用** = 该名字其实是既有概念的另一投影：把它写进输出顶层 `reuse` 数组（`{ "name": "<提名名>", "concept_id": "<候选集内的 concept_id>" }`）；concept_id 只准照抄候选集内的值，编造即违约。复用的概念不铸新行，提名名落为该概念的活跃别名。
+- 裁**复用** = 该名字其实是既有概念的另一投影：把它写进输出顶层 `reuse` 数组（`{ "name": "<提名名>", "concept_id": "<登记表概念 id>" }`）；concept_id 必须是评审材料里出现过的真实 id——优先本提名的候选，相关提名候选里指向同一概念的值同样可用；编造即违约。复用的概念不铸新行，提名名落为该概念的活跃别名。
 - 裁**新铸** = 提名确实是新概念：不写进 reuse 即可（缺省新铸）。
 - **new_aliases 提名的语义就是「既有概念的新名字」——必须裁复用**；你认为它该是新概念时不要裁决，整批会被打回并指点它改走 mints。
 - 判据：候选集的定义近邻/名字近形只是机械线索；拿不准时按「同一概念用了两个不同名字应复用既有名」（判据 3）与候选定义比对裁决。
@@ -735,7 +735,7 @@ pub(crate) struct ReviewFinding {
     pub advice: String,
 }
 
-/// 一条复用裁决：提名名 → 候选集内的宿主概念。
+/// 一条复用裁决：提名名 → 登记表中的宿主概念（候选集归属只作日志注记）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ReuseRuling {
     pub name: String,
@@ -759,6 +759,9 @@ pub struct NominationPlan {
 pub struct GateOutcome {
     pub errors: Vec<GateError>,
     pub nominations: Vec<NominationPlan>,
+    /// 登记表现存概念 id 全集（评审复用裁决的事实边界：候选集只是可见面，
+    /// 裁决宿主只要求在这里存在）。
+    pub registry_concept_ids: HashSet<String>,
 }
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,
@@ -776,7 +779,7 @@ pub(crate) async fn concept_review(
     let candidates_block = if candidates.trim().is_empty() {
         String::new()
     } else {
-        format!("\n\n【提名候选集（复用裁决的机械面；concept_id 只准照抄这里的值）】\n{candidates}")
+        format!("\n\n【提名候选集（复用裁决的机械面；concept_id 用材料里出现过的真实登记表 id）】\n{candidates}")
     };
     let user = format!(
         "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
