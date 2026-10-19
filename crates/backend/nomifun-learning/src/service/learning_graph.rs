@@ -1272,7 +1272,7 @@ impl LearningService {
             }
             let mut in_place_retried = false;
             // ── 起草/重裁（guard 的原地重试在本 attempt 内恰一次）────────
-            let candidate = 'drafting: loop {
+            let mut candidate = 'drafting: loop {
                 if token.is_cancelled() {
                     // stop_reason 已由外层/本轮置位；无赋值必要。
                     break 'budget;
@@ -1388,7 +1388,7 @@ impl LearningService {
                 batch_json = %serde_json::to_string(&candidate).unwrap_or_default(),
                 "coach proposed growth batch"
             );
-            let outcome = self.gate_batch(course_id, &candidate).await?;
+            let mut outcome = self.gate_batch(course_id, &mut candidate).await?;
             if !outcome.errors.is_empty() {
                 let report = crate::learning_graph::format_gate_report(&outcome.errors);
                 tracing::warn!(
@@ -1905,11 +1905,12 @@ impl LearningService {
     }
 
     /// 结构门所需的全部事实（全局已教账按 canonical 名折叠）+ 提名候选集
-    /// 装配（j04 复用通道：defnear 机械面）。
+    /// 装配（j04 复用通道：defnear 机械面）。近形归一（ng.refs.nearform）会
+    /// 就地改写批内引用名——因此拿 `&mut`。
     async fn gate_batch(
         &self,
         course_id: &LearningCourseId,
-        batch: &crate::learning_graph::ProposedBatch,
+        batch: &mut crate::learning_graph::ProposedBatch,
     ) -> Result<crate::learning_graph::GateOutcome, AppError> {
         // 已教账（名字 → 最高档）：全部**存活**课程的 teaches（孤儿课时不算
         // 供给，口径与 taught_ledger 一致）。
@@ -1967,13 +1968,72 @@ impl LearningService {
         .into_iter()
         .collect();
 
-        let mut errors = crate::learning_graph::validate_batch(
+        let (mut errors, nearform_warns) = crate::learning_graph::validate_batch(
             batch,
             &coverage,
             &registry_names,
             &name_owner,
             &existing_titles,
         );
+        for warn in &nearform_warns {
+            tracing::warn!(
+                course = course_id.as_str(),
+                kind = warn.kind,
+                "{}",
+                warn.message
+            );
+        }
+
+        // 同批互不供给的机械剪枝（learnhub 约束过滤纯代码同旨——可机械判定
+        // 的不送模型）：节点 assumes 引用了「本课程内未教过、但本批兄弟正在
+        // teach」的概念时，评审必打回且修法只有移出本批；与其烧一轮点修重
+        // 裁，本批直接摘除该节点留痕，它的需求下一批自然再长。注意口径是
+        // **课程内**已教：全局账（跨课程）只供覆盖律，不供本课教学序。
+        if errors.is_empty() {
+            let course_taught: HashSet<String> = sqlx::query_as(
+                "SELECT reg.canonical FROM learning_lesson_concepts lc \
+                 JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
+                 JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+                 JOIN learning_modules m ON m.module_id = l.module_id \
+                 WHERE m.course_id = ? AND lc.role = 'teaches'",
+            )
+            .bind(course_id.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(|(canonical,): (String,)| canonical.trim().to_lowercase())
+            .collect();
+            let sibling_teaches: HashSet<String> = batch
+                .nodes
+                .iter()
+                .flat_map(|node| node.teaches.iter())
+                .map(|concept| concept.name.trim().to_lowercase())
+                .collect();
+            let before = batch.nodes.len();
+            batch.nodes.retain(|node| {
+                let sibling_dependent = node.assumes.iter().any(|assumption| {
+                    let key = assumption.name.trim().to_lowercase();
+                    !course_taught.contains(&key) && sibling_teaches.contains(&key)
+                });
+                if sibling_dependent {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        node = %node.title,
+                        "pruned node assuming same-batch teaches（同批互不供给；移出本批，下一批再长）"
+                    );
+                }
+                !sibling_dependent
+            });
+            if batch.nodes.len() < before {
+                tracing::warn!(
+                    course = course_id.as_str(),
+                    pruned = before - batch.nodes.len(),
+                    remaining = batch.nodes.len(),
+                    "growth batch pruned for same-batch dependencies"
+                );
+            }
+        }
 
         // 提名候选集装配（j04 复用通道的机械面）：每条 mints canonical 与
         // new_aliases 提名各装配一份；定义归一化直定宿主在此定案（不送裁
