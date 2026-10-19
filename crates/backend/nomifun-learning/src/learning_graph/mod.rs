@@ -413,7 +413,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 铸名≠供给：mints 只是把名字登记进概念表。本批节点可以 teach 新铸概念（这是铸名的唯一用途），但任何节点都不得 assume 只有本批（兄弟 teaches 或本批铸名）才供给的概念——同批无先后、必须同时就绪，那种依赖整批打回。
 - 缺前提的正路是分层长：节点内容用到的概念既往批次没教过，本批就先长教它的铺垫节点（铸名写进该节点的 teaches），把依赖它的节点留到下一批——而不是削掉前提、空泛化内容，或把依赖链塞进同一批。
 【第一批（花名册为空时）】
-- 已教账为空：第一批全是入口节点——每条 assumes 只能留空或假定课程外常识，逐节点按【起点纪律】校验；需要前提的概念留到下一批，本批先长教它的铺垫节点。一步一层，宁可少长一层。
+- 本课尚无节点：第一批全是入口节点——每条 assumes 只能假定基线学习者已会的东西：课程外通用常识，或已教概念账里已有的概念（账跨课程，学习者在其他课程学的同样算会）；两者皆无的前提概念留到下一批，本批先长教它的铺垫节点。逐节点按【起点纪律】校验。一步一层，宁可少长一层。
 - 首批特则：首批节点以单一概念或单一最小操作为度（比常规批的「1 个核心概念至多 2 个」更紧）——入口层是地基，一格一格铺，不求进度。
 【行为信号】
 - 行为摘要给出近窗正确率趋势、卡点节点与真实保留率：生长方向优先回应卡点——在卡点节点附近补铺垫或对比节点，而不是无视它继续铺新域。
@@ -500,14 +500,19 @@ impl CoachContext {
             ));
         }
         // 首批凝练纪律（g3：删 6 条规则长文，收缩为结构材料摊开 + 门口参考 +
-        // 两条纪律 + 空账本机械地板）。
+        // 两条纪律 + 空账本机械地板）。已教账非空时（老学习者开新课）机械地板
+        // 让位给跨课程口径：账内概念可进 assumes（就绪判定本就跨课程计数）。
         if self.roster.is_empty() {
-            text.push_str(
+            let ledger_line = if self.taught_summary.is_empty() {
+                "- 已教概念账为空 ⇒ 本批 assumes 必须全空（机械地板：空账不供给任何概念）。\n"
+            } else {
+                "- 已教概念账是跨课程全局账（学习者在其他课程学会的也在里面，非空是常态）：本批 assumes 可假定账内已有概念；账内没有的才需要本批铺垫。\n"
+            };
+            text.push_str(&format!(
                 "\n【首批纪律（花名册为空）】\n\
                  - 入口从结构参考的入门档起步，逐格往下问「基线学习者今天拿起什么就能开始」；「简单、基础、入门、教材第一章」都不等于零基础可起步。\n\
                  - 动作句 + 单一行为单元；用到的东西要么本节点教它、要么是常识——简单≠常识。\n\
-                 - 已教账为空 ⇒ 本批 assumes 必须全空（机械地板：空账不供给任何概念）。\n",
-            );
+                 {}", ledger_line));
         }
         // 块 4：当前就绪。
         text.push_str(&format!(
@@ -515,15 +520,25 @@ impl CoachContext {
             ready = self.ready_count
         ));
         // 块 5：花名册。
-        text.push_str(&format!("\n【花名册】\n{}\n", if self.roster.is_empty() { "（课程还是空的——本批是第一批：全是入口节点，各自自带引入所教概念（teaches + 铸名），assumes 必须全空）" } else { &self.roster }));
-        // 块 6：已教概念账。
+        let roster_note = if self.roster.is_empty() {
+            if self.taught_summary.is_empty() {
+                "（课程还是空的——本批是第一批：全是入口节点，各自自带引入所教概念（teaches + 铸名），assumes 必须全空）"
+            } else {
+                "（本课还是空的——本批是本课第一批。已教概念账是跨课程全局账：账内已有概念可进 assumes，账内没有的由本批节点自带引入（teaches + 铸名））"
+            }
+        } else {
+            &self.roster
+        };
+        text.push_str(&format!("\n【花名册】\n{}\n", roster_note));
+        // 块 6：已教概念账（跨课程全局口径显式声明——评审/教练不再把
+        // 「账非空 × 花名册为空」读成材料矛盾）。
         text.push_str(&format!(
-            "\n【已教概念账】\n{}\n",
+            "\n【已教概念账（跨课程全局：含学习者在其他课程所学）】\n{}\n",
             if self.taught_summary.is_empty() { "（空——本批节点不得依赖本批产出的概念：assumes 只能留空或假定课程外常识，需要前提的概念留到下一批）" } else { &self.taught_summary }
         ));
-        // 块 7：覆盖读数（纯展示）。
+        // 块 7：覆盖读数（纯展示；本课程存量口径，与全局账数字无关）。
         if !self.coverage_gauge.is_empty() {
-            text.push_str(&format!("\n【覆盖读数（纯展示，不构成本批依据）】\n{}\n", self.coverage_gauge));
+            text.push_str(&format!("\n【覆盖读数（本课程存量口径；纯展示，不构成本批依据）】\n{}\n", self.coverage_gauge));
         }
         // 块 8：行为摘要。
         if !self.behavior_digest.is_empty() {
@@ -666,6 +681,7 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 
 【先读材料，再下结论】
 - 本批节点同批落地、没有学习先后，因此批内互不依赖：节点只许依赖既往批次已教的概念，学习者可能从本批任意节点起步。凡以「批内先后顺序」为由的问题一律不成立——同批无顺序，但同批也无互相依赖。
+- 口径分层：【已教概念账】是跨课程全局账——学习者在其他课程学会的概念也在里面；【花名册】与【覆盖读数】是本课程口径。账非空而花名册为空是常态（老学习者开新课），不是材料矛盾，不要报；账内概念可以合法地被首批 assumes 引用。
 - 事实以材料为准：【已教概念账】【花名册】与待批 JSON 里的 mints 是全部事实源——名单里有的就是有，没有的才是没有；不要凭印象断言「某概念没人教过」。
 
 【判据——逐节点核对四条】
@@ -683,6 +699,7 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 
 【不算问题，一律不报】
 - est 长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
+- 重教/复访已教概念：同一概念再次 teaches 完全合法（螺旋加深、换角度变式——概念不可学完）；已教账里有该概念不构成问题，除非同一角度同一深度的重复（标题与既有节点完全相同——结构门已拦）。
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
@@ -1739,6 +1756,20 @@ mod tests {
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
         assert!(rendered.contains("首批纪律"), "{rendered}");
         assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
+
+        // 老学习者开新课：账非空 × 花名册为空是常态——首批纪律换跨课程口径，
+        // 机械地板让位，账标注全局来源（评审/教练不再读成材料矛盾）。
+        let veteran = CoachContext {
+            roster: String::new(),
+            taught_summary: "二的幂@会用、按位权展开@会用".into(),
+            coverage_gauge: "已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无".into(),
+            ..Default::default()
+        };
+        let rendered = veteran.render();
+        assert!(rendered.contains("跨课程全局"), "{rendered}");
+        assert!(!rendered.contains("assumes 必须全空"), "ledger non-empty: no mechanical floor: {rendered}");
+        assert!(rendered.contains("本批 assumes 可假定账内已有概念"), "{rendered}");
+        assert!(rendered.contains("本课程存量口径"), "{rendered}");
 
         let doorless = CoachContext { roster: String::new(), ..Default::default() };
         let rendered = doorless.render();
