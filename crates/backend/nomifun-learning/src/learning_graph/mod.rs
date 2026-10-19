@@ -711,7 +711,7 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
 2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
-3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
+3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 从候选集照抄），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象不在候选集内、你给不出 concept_id 时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
@@ -1499,11 +1499,11 @@ mod tests {
             ],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
 
         // 依赖既往批次的概念合法：已教账覆盖到所假定档位即放行。
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![node(
                 "用公式法解因式分解题",
@@ -1517,15 +1517,98 @@ mod tests {
         coverage.insert("因式分解".to_owned(), ConceptTier::Apply);
         let mut registry = HashSet::new();
         registry.insert("因式分解".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn validate_batch_resolves_unique_near_form_ref_with_warn() {
+        // 字级名漂移（flash 真机实录：「十进位置值」vs 账内「十进制位值」，
+        // 距离 2）不烧整批：唯一近形宿主侧归一（learnhub「系统会核对它属于
+        // 哪个既有概念」），warn 留痕、引用就地改写。
+        let mut batch = batch_of(vec![node(
+            "按位权展开把数写成加法式",
+            vec![reference("十进位置值", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("十进制位值".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("十进制位值".to_owned(), "十进制位值".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert_eq!(warns[0].kind, "ng.refs.nearform");
+        assert_eq!(batch.nodes[0].teaches[0].name, "十进制位值");
+
+        // 包含式近形：「幂」唯一命中「二的幂」。
+        let mut batch = batch_of(vec![node(
+            "用 2 的幂拆数",
+            vec![reference("幂", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("二的幂".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("二的幂".to_owned(), "二的幂".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(warns.len(), 1);
+        assert_eq!(batch.nodes[0].teaches[0].name, "二的幂");
+    }
+
+    #[test]
+    fn validate_batch_rejects_ambiguous_near_form_with_candidates() {
+        // 多个近形宿主（「按位展开」同时近形「按位权展开」「按位展开法」）
+        // 不能替模型猜：红条打回，消息列候选名。
+        let mut batch = batch_of(vec![node(
+            "按位展开说意义",
+            vec![reference("按位展开", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("按位权展开".to_owned());
+        registry.insert("按位展开法".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("按位权展开".to_owned(), "按位权展开".to_owned());
+        name_owner.insert("按位展开法".to_owned(), "按位展开法".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert_eq!(warns.len(), 0);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, "ng.refs.resolvable");
+        assert!(errors[0].message.contains("按位权展开"), "{:?}", errors[0]);
+        assert!(errors[0].message.contains("按位展开法"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn validate_batch_keeps_short_name_drift_red() {
+        // 两字短名一字差常常是两个真概念（「数位」/「数值」）：归一权留给
+        // 模型/评审，不自动归一。
+        let mut batch = batch_of(vec![node(
+            "认读数位",
+            vec![reference("数位", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("数值".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("数值".to_owned(), "数值".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert_eq!(warns.len(), 0);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, "ng.refs.resolvable");
+        assert_eq!(batch.nodes[0].teaches[0].name, "数位");
     }
 
     #[test]
     fn validate_batch_rejects_intra_batch_dependency() {
         // 同批无先后、必须同时就绪：本批兄弟的 teaches 不构成 assumes 的供给
         // ——即使概念已随批铸名、也被兄弟教到该档位，依赖它的节点必须留到下一批。
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),

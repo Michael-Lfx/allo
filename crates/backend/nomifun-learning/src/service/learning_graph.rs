@@ -1272,7 +1272,7 @@ impl LearningService {
             }
             let mut in_place_retried = false;
             // ── 起草/重裁（guard 的原地重试在本 attempt 内恰一次）────────
-            let candidate = 'drafting: loop {
+            let mut candidate = 'drafting: loop {
                 if token.is_cancelled() {
                     // stop_reason 已由外层/本轮置位；无赋值必要。
                     break 'budget;
