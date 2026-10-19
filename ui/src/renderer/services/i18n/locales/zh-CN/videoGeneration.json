@@ -44,6 +44,7 @@
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
     "untitled": "未命名任务",
+    "briefingKind": "资讯口播",
     "importProject": "导入工程",
     "importDesktopOnly": "导入工程仅桌面端可用。",
     "importOk": "工程已导入",
@@ -1196,7 +1197,9 @@
       "rendering": "渲染中",
       "finalizing": "完成中"
     },
-    "progress": "进度: {{percent}}%"
+    "progress": "进度: {{percent}}%",
+    "fullscreen": "最大化",
+    "exitFullscreen": "退出最大化"
   },
   "briefing": {
     "format": "时长",

@@ -20,6 +20,7 @@ import {
   Error,
   LoadingOne,
   FullScreen,
+  OffScreen,
   PlayOne,
   PauseOne,
   VolumeMute,
@@ -43,6 +44,12 @@ import {
 import { ipcBridge } from '@/common';
 import { rememberVideoGenerationTask } from './routeMemory';
 import { describeClipFailure, formatClipOperationError, type ClipFailureView } from './clipFailure';
+import {
+  exitElementFullscreen,
+  isElementFullscreen,
+  requestElementFullscreen,
+  subscribeFullscreenChange,
+} from './clipPlayerFullscreen';
 import styles from './ClipResultPage.module.css';
 
 type ClipStatusErrorKey =
@@ -154,6 +161,7 @@ const ClipResultPage: React.FC = () => {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [useCssFullscreen, setUseCssFullscreen] = useState(false);
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [currentTime, setCurrentTime] = useState(0);
@@ -170,7 +178,8 @@ const ClipResultPage: React.FC = () => {
 
   const pollAttemptsRef = useRef(0);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<HTMLDivElement>(null);
+  const cssFullscreenRef = useRef(false);
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchTask = useCallback(async () => {
@@ -479,12 +488,20 @@ const ClipResultPage: React.FC = () => {
   }, [isPlaying]);
 
   const handleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
+    const player = playerRef.current;
+    if (!player) return;
     if (isFullscreen) {
-      document.exitFullscreen?.();
-    } else {
-      void containerRef.current.requestFullscreen?.();
+      void exitElementFullscreen();
+      cssFullscreenRef.current = false;
+      setUseCssFullscreen(false);
+      setIsFullscreen(false);
+      return;
     }
+    void requestElementFullscreen(player).then((native) => {
+      cssFullscreenRef.current = !native;
+      setUseCssFullscreen(!native);
+      setIsFullscreen(true);
+    });
   }, [isFullscreen]);
 
   const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -513,13 +530,32 @@ const ClipResultPage: React.FC = () => {
   }, [isPlaying]);
 
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () =>
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    return subscribeFullscreenChange(() => {
+      const native = isElementFullscreen(playerRef.current);
+      if (native) {
+        cssFullscreenRef.current = false;
+        setUseCssFullscreen(false);
+        setIsFullscreen(true);
+        return;
+      }
+      if (!cssFullscreenRef.current) {
+        setIsFullscreen(false);
+      }
+    });
   }, []);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      void exitElementFullscreen();
+      cssFullscreenRef.current = false;
+      setUseCssFullscreen(false);
+      setIsFullscreen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isFullscreen]);
 
   const isRunning = task?.status === 'queued' || task?.status === 'running';
   const isSucceeded = task?.status === 'succeeded';
@@ -532,7 +568,6 @@ const ClipResultPage: React.FC = () => {
 
   return (
     <div
-      ref={containerRef}
       className={`${styles.page} page`}
       onMouseMove={isSucceeded ? handleMouseMove : undefined}
       onMouseLeave={isSucceeded ? () => setShowControls(false) : undefined}
@@ -613,13 +648,16 @@ const ClipResultPage: React.FC = () => {
               {/* Video Player or Generating Placeholder */}
               {isSucceeded && videoUrl ? (
                 <div
+                  ref={playerRef}
                   className={`${styles.videoContainer} ${
                     isFullscreen ? styles.videoFullscreen : ''
-                  }`}
+                  } ${useCssFullscreen ? styles.videoCssFullscreen : ''}`}
                   style={
-                    videoAspect
-                      ? { aspectRatio: `${videoAspect}` }
-                      : undefined
+                    isFullscreen
+                      ? undefined
+                      : videoAspect
+                        ? { aspectRatio: `${videoAspect}` }
+                        : undefined
                   }
                 >
                   <video
@@ -728,11 +766,37 @@ const ClipResultPage: React.FC = () => {
                       {/* Right controls */}
                       <div className={styles.controlsRight}>
                         <button
+                          type='button'
                           className={styles.controlBtn}
-                          onClick={handleFullscreen}
-                          aria-label='全屏'
+                          data-testid='clip-player-fullscreen'
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleFullscreen();
+                          }}
+                          aria-label={
+                            isFullscreen
+                              ? t('videoGeneration.clip.exitFullscreen', {
+                                  defaultValue: '退出最大化',
+                                })
+                              : t('videoGeneration.clip.fullscreen', {
+                                  defaultValue: '最大化',
+                                })
+                          }
+                          title={
+                            isFullscreen
+                              ? t('videoGeneration.clip.exitFullscreen', {
+                                  defaultValue: '退出最大化',
+                                })
+                              : t('videoGeneration.clip.fullscreen', {
+                                  defaultValue: '最大化',
+                                })
+                          }
                         >
-                          <FullScreen theme='outline' size={18} />
+                          {isFullscreen ? (
+                            <OffScreen theme='outline' size={18} />
+                          ) : (
+                            <FullScreen theme='outline' size={18} />
+                          )}
                         </button>
                       </div>
                     </div>
