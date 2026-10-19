@@ -30,6 +30,12 @@ use nomifun_learning::{LearningCompleter, LearningService};
 use crate::cli::{Cli, LearningSmokeCommand};
 
 pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Result<ExitCode> {
+    // 冒烟是唯一的无头真机面：门级剪枝/归一/落库失败只走 tracing。不初始化
+    // 订阅者，CLI 进程里这些留痕全部丢失（审计纪律要求可见）。
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .try_init();
     match command {
         LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
         LearningSmokeCommand::Quiz { db } => run_quiz(cli, db).await,
@@ -413,7 +419,7 @@ async fn run_json(
 
 /// `learning-smoke grow` / `loop`：生长冒烟（loop = 结构生成先行）。
 /// s1 判据（失败非零退出）：
-/// - 首批 assumes 全空（空登记表机械地板）；
+/// - 首批 assumes 全空（仅空登记表机械地板；账非空时由就绪即发布判据验覆盖）；
 /// - 每批「就绪即发布」——批内节点的每条 assumes 都被**既往供给**（更早
 ///   批次或其他课程的 teaches）以不低于所假定档位覆盖（同批不算）；
 /// - 铸名不撞：登记表 canonical ∪ 别名全局唯一；
@@ -641,7 +647,7 @@ async fn batch_summary(
     Ok((node_ids.len(), seq))
 }
 
-/// 批次机械判据审计（s1）：首批 assumes 全空 + 就绪即发布（既往供给覆盖）
+/// 批次机械判据审计（s1）：首批 assumes 地板（空账全空/非空账验覆盖） + 就绪即发布（既往供给覆盖）
 /// + 铸名全局唯一。
 async fn audit_batch(
     pool: &nomifun_db::sqlx::SqlitePool,
@@ -673,11 +679,26 @@ async fn audit_batch(
             batch_assumes.push((lesson_id.clone(), concept_id, tier));
         }
     }
+    // 首批机械地板（s1）：仅当登记表/已教账为空（缺省临时库从零合龙）时，
+    // 首批 assumes 必须全空。`--db` 指开发库时账是跨课程全局账、非空是常态
+    // ——账内概念可被首批合法引用，其覆盖性由下面的「就绪即发布」判据验证
+    // （该判据本就含其他课程的 teaches）。
     if seq == 1 && !batch_assumes.is_empty() {
-        violations.push(format!(
-            "首批 assumes 必须全空（空登记表机械地板），发现 {} 条 assume 引用",
-            batch_assumes.len()
-        ));
+        let taught_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+             JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
+             WHERE lc.role = 'teaches'",
+        )
+        .fetch_one(pool)
+        .await?;
+        if taught_rows == 0 {
+            violations.push(format!(
+                "首批 assumes 必须全空（空登记表机械地板），发现 {} 条 assume 引用",
+                batch_assumes.len()
+            ));
+        }
     }
 
     // 就绪即发布：本批节点的每条 assumes 必须被「既往供给」（本课程更早批次
