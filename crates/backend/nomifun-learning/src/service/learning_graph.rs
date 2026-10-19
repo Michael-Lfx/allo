@@ -1446,27 +1446,49 @@ impl LearningService {
             // 剔除——落库侧 j04 机械通道会把该 mint 转为宿主活跃别名，无需折
             // 返模型。此处不改写 candidate：红裁路径的 previous/点修守卫基线
             // 必须保持模型自己的输出。
+            //
+            // 裁决核验的事实边界是**登记表全量**（t3）：候选集只是评审的可见
+            // 面之一，正确宿主常常在近邻子集之外（真机 run-1792395614887）。
+            // 候选集归属降级为日志注记；反伪造边界不变——concept_id 必须真实
+            // 存在且未退役（即 register_alias_tx 可接受的宿主）。
             let mut rulings: HashMap<String, String> = HashMap::new();
             for ruling in &review.reuse {
                 let key = ruling.name.trim().to_lowercase();
-                let valid = outcome
+                let Some(plan) = outcome
                     .nominations
                     .iter()
                     .find(|plan| plan.name.to_lowercase() == key)
-                    .is_some_and(|plan| {
-                        plan.candidates
-                            .iter()
-                            .any(|candidate| candidate.concept_id == ruling.concept_id)
-                    });
-                if valid {
-                    rulings.insert(key, ruling.concept_id.clone());
-                } else {
+                else {
                     tracing::warn!(
                         course = course_id.as_str(),
                         name = %ruling.name,
-                        "review reuse ruling dropped — name not in this batch or concept_id outside the candidate set"
+                        "review reuse ruling dropped — name not in this batch"
+                    );
+                    continue;
+                };
+                let concept_id = ruling.concept_id.trim();
+                if !outcome.registry_concept_ids.contains(concept_id) {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        name = %ruling.name,
+                        concept_id,
+                        "review reuse ruling dropped — concept_id is not an active registry concept"
+                    );
+                    continue;
+                }
+                if !plan
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.concept_id == concept_id)
+                {
+                    tracing::info!(
+                        course = course_id.as_str(),
+                        name = %ruling.name,
+                        concept_id,
+                        "review reuse ruling host outside the nomination candidate set — accepted (registry-valid)"
                     );
                 }
+                rulings.insert(key, concept_id.to_owned());
             }
             if !rulings.is_empty() && !review.problems.is_empty() {
                 let resolved_mask: Vec<bool> = review
@@ -2119,6 +2141,10 @@ impl LearningService {
         Ok(crate::learning_graph::GateOutcome {
             errors,
             nominations,
+            registry_concept_ids: registry_entries
+                .iter()
+                .map(|entry| entry.concept_id.clone())
+                .collect(),
         })
     }
 

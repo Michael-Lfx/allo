@@ -5260,6 +5260,98 @@ async fn reuse_ruling_pools_the_name_instead_of_minting() {
     );
 }
 
+/// 裁决宿主只需在登记表中存在：评审从候选面之外（如相关提名的候选）挑中
+/// 的登记表概念不再被误杀——候选集归属降级为日志注记，落库仍走宿主活跃
+/// 别名（真机 run-1792395614887 的「霍纳法案」型误杀）。
+#[tokio::test]
+async fn reuse_ruling_accepts_registry_host_outside_the_candidate_set() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let now = now_ms();
+    // 宿主「线性组合」与提名名「向量代数」无词面共享；登记表另有三条共享
+    // 「向量」二元组的条目占满词面 top-k 补位——宿主必在候选集之外。
+    let host = nomifun_common::LearningConceptId::new().into_string();
+    for (concept_id, canonical) in [
+        (nomifun_common::LearningConceptId::new().into_string(), "平面向量"),
+        (nomifun_common::LearningConceptId::new().into_string(), "空间向量"),
+        (nomifun_common::LearningConceptId::new().into_string(), "矩阵"),
+        (host.clone(), "线性组合"),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, ?, '[]', '', ?, ?)",
+        )
+        .bind(&concept_id)
+        .bind(canonical)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+    }
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用向量语言重看组合", "purpose": "从座位调换切入", "est": 15,
+             "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}
+        ],
+        "new_aliases": [],
+        "note": "候选集外复用稿"
+    }"#;
+    let review_json =
+        format!(r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}]}}"#);
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    // 不铸新行：提名名落为登记表宿主的活跃别名，引用挂到宿主概念。
+    let minted: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_concept_registry WHERE canonical = '向量代数'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(
+        minted, 0,
+        "an out-of-candidates registry host must still be reused, not minted"
+    );
+    let aliases_json: String = sqlx::query_scalar(
+        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    )
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let records = crate::learning_graph::alias_records::parse_alias_records(&aliases_json);
+    assert!(
+        records.iter().any(|record| record.name == "向量代数"
+            && record.status == "active"
+            && record.definition.as_deref() == Some("用向量语言改写既有对象关系")),
+        "the ruling host pools the nominated name as an active alias: {aliases_json}"
+    );
+    let refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+         JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND lc.concept_id = ? AND lc.role = 'teaches' \
+           AND lc.ref_name = '向量代数'",
+    )
+    .bind(&course_id)
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(refs, 1, "the node teaches edge hangs off the ruled host");
+}
+
 /// new_aliases 归一化直定宿主：提名定义与既有概念逐字相同 → 门面机械绑定
 ///（评审零裁决也放行），别名带提名定义与出处落池。
 #[tokio::test]
