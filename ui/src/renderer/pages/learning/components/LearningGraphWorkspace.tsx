@@ -184,20 +184,20 @@ const LearningGraphWorkspace: React.FC<{
     }
   }, [detail.course.id, model.choice, t]);
 
+  // 结构投影重取（回合命令完成后的刷新面）；失败静默保留旧投影。
+  const refetchStructure = useCallback(async () => {
+    await learningApi
+      .graphStructure(detail.course.id)
+      .then((view) => setStructure(view))
+      .catch(() => undefined);
+  }, [detail.course.id]);
+
   // 结构挂载回合（j08）：同步命令，完成后重取投影（挂载三态段随之刷新）。
   const mountStructure = useCallback(async () => {
     setMounting(true);
     try {
       await learningApi.mountStructure(detail.course.id);
-      await new Promise((resolve) => {
-        learningApi
-          .graphStructure(detail.course.id)
-          .then((view) => {
-            setStructure(view);
-            resolve(null);
-          })
-          .catch(() => resolve(null));
-      });
+      await refetchStructure();
     } catch (actionError) {
       Modal.error({
         title: t('learning.learningGraphMountFailed'),
@@ -206,7 +206,7 @@ const LearningGraphWorkspace: React.FC<{
     } finally {
       setMounting(false);
     }
-  }, [detail.course.id, t]);
+  }, [detail.course.id, refetchStructure, t]);
 
   // 结构修补回合（j09）：按留痕与观察修补结构；皆空时后端如实 skipped。
   const repairStructure = useCallback(async () => {
@@ -216,15 +216,7 @@ const LearningGraphWorkspace: React.FC<{
       if (summary.status === 'noop') {
         Modal.info({ title: t('learning.learningGraphRepairNoop') });
       }
-      await new Promise((resolve) => {
-        learningApi
-          .graphStructure(detail.course.id)
-          .then((view) => {
-            setStructure(view);
-            resolve(null);
-          })
-          .catch(() => resolve(null));
-      });
+      await refetchStructure();
     } catch (actionError) {
       Modal.error({
         title: t('learning.learningGraphRepairFailed'),
@@ -233,7 +225,7 @@ const LearningGraphWorkspace: React.FC<{
     } finally {
       setRepairing(false);
     }
-  }, [detail.course.id, t]);
+  }, [detail.course.id, refetchStructure, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
