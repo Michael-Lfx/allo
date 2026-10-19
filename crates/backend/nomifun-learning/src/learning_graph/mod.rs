@@ -809,7 +809,11 @@ pub(crate) async fn concept_review(
     match serde_json::from_value::<Verdict>(value) {
         Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
             problems: verdict.problems.into_iter().take(8).collect(),
-            reuse: Vec::new(),
+            // reject 也可能附 reuse（模型把近义铸名裁进 reuse、把其余硬伤放进
+            // problems——2026-10-19 真机实录）。裁决由调用方先行消化：能被裁
+            // 决覆盖的问题剔除，剩余才打回；这里丢弃 reuse 会把模型的正确裁
+            // 决白白烧进重裁循环。
+            reuse: verdict.reuse,
             findings: verdict.findings,
         },
         Ok(verdict) => ReviewOutcome {
@@ -1366,6 +1370,62 @@ mod tests {
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].kind, "ng.refs.resolvable");
         assert_eq!(batch.nodes[0].teaches[0].name, "数位");
+    }
+
+    #[tokio::test]
+    async fn concept_review_keeps_reuse_rulings_on_reject() {
+        // 真机实录（run-1792385060145 call 3）：模型把近义铸名裁进 reuse、
+        // 其余硬伤放 problems、verdict=reject——旧解析在 reject 分支丢弃
+        // reuse，模型的正确裁决被烧进重裁循环。reject 必须保留 reuse，由
+        // 服务层先消化裁决（能被裁决覆盖的问题剔除）再谈打回。
+        struct Fixed(std::sync::Mutex<std::vec::IntoIter<String>>);
+        #[async_trait::async_trait]
+        impl LearningCompleter for Fixed {
+            async fn complete(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+            ) -> Result<String, nomifun_common::AppError> {
+                unreachable!("review only uses the json seam")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Option<f32>,
+            ) -> Result<String, nomifun_common::AppError> {
+                let mut replies = self.0.lock().unwrap();
+                replies.next().ok_or_else(|| nomifun_common::AppError::Internal("script exhausted".into()))
+            }
+        }
+        let reply = serde_json::json!({
+            "verdict": "reject",
+            "problems": [
+                { "node": "从 0 到 15 逐个写出二进制数", "field": "teaches",
+                  "issue": "铸名「二进制数」与已教概念「二进制数字」内涵重叠",
+                  "advice": "把「二进制数」移入 reuse" },
+                { "node": "反复除以 2", "field": "difficulty",
+                  "issue": "内容量超过 difficulty 3 的负载", "advice": "拆分或上调" }
+            ],
+            "reuse": [ { "name": "二进制数", "concept_id": "01a1442d-2338-7a40-a4bd-fe50a0a64a83" } ]
+        });
+        let completer = Fixed(std::sync::Mutex::new(vec![
+            serde_json::to_string(&reply).unwrap(),
+        ].into_iter()));
+        let batch = batch_of(vec![node(
+            "从 0 到 15 逐个写出二进制数",
+            vec![reference("二进制数", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let review = concept_review(&completer, None, &batch, &CoachContext::default(), "").await;
+        assert_eq!(review.problems.len(), 2, "{review:?}");
+        assert_eq!(review.reuse.len(), 1, "{review:?}");
+        assert_eq!(review.reuse[0].name, "二进制数");
+        assert_eq!(review.reuse[0].concept_id, "01a1442d-2338-7a40-a4bd-fe50a0a64a83");
     }
 
     #[test]
