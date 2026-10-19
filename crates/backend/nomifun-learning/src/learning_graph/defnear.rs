@@ -100,6 +100,42 @@ pub fn name_near_form(a: &str, b: &str) -> bool {
     a.contains(&b) || b.contains(&a)
 }
 
+/// 归一化后的字符 Levenshtein 距离（逐 char DP；双方都过 [`normalize`]）。
+pub fn char_edit_distance(a: &str, b: &str) -> usize {
+    let (a, b) = (normalize(a), normalize(b));
+    let (a, b) = (a.chars().collect::<Vec<_>>(), b.chars().collect::<Vec<_>>());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let substitute = prev[j] + usize::from(ca != cb);
+            let insert = cur[j] + 1;
+            let delete = prev[j + 1] + 1;
+            cur.push(substitute.min(insert).min(delete));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// 受限编辑近形（生长引用归一的候选谓词，比 [`name_near_form`] 宽一档）：
+/// 距离 ≤1 且短边 ≥3 字符，或距离 2 且短边 ≥5 字符——「十进位置值」/「十进制
+/// 位值」（距离 2）入，两字短名（「数位」/「数值」）不入：短名一字差常常是
+/// 两个真概念，归一权必须留给评审门。
+pub fn bounded_edit_close(a: &str, b: &str) -> bool {
+    let distance = char_edit_distance(a, b);
+    if distance == 0 {
+        return false;
+    }
+    let (a, b) = (normalize(a), normalize(b));
+    let shortest = a.chars().count().min(b.chars().count());
+    match distance {
+        1 => shortest >= 3,
+        2 => shortest >= 5,
+        _ => false,
+    }
+}
+
 /// 词面共享分（二元组交集计数；词面补位的排序键）。
 fn word_face_score(a: &str, b: &str) -> usize {
     let bigrams = |text: &str| -> Vec<String> {

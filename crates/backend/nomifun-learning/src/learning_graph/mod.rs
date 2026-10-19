@@ -176,19 +176,24 @@ pub type ConceptCoverage = HashMap<String, ConceptTier>;
 /// - 铸名不撞登记表（含**活跃**别名，大小写折叠；退役名不占池——g2/g3
 ///   口径；撞名消息带宿主指引）；
 /// - 概念引用可解析：teaches/assumes 的名字必须是登记表现有概念（含别名）
-///   或本批铸名；
+///   或本批铸名；**唯一近形自动归一**（learnhub「系统会核对它属于哪个既有
+///   概念」的宿主侧对应，g3 近形机器同源）： containment / 受限编辑距离
+///   命中唯一宿主时就地改写并落 warn 留痕（`ng.refs.nearform`），歧义或
+///   无匹配才红条打回（歧义消息列候选名）——字级名漂移不该烧掉整批；
 /// - **就绪即发布**：每条 assumes 必须被全局已教账（既往批次已落库的
 ///   teaches）以不低于所假定档位覆盖——同批兄弟的 teaches 与本批铸名不构成
 ///   供给：同批节点没有学习先后、必须同时就绪，谁也不依赖谁。不满足的节点
 ///   不存在「入库后锁定」，直接打回；
 /// - 课程内节点标题唯一。
+///
+/// 返回（红条,近形归一 warn）：红条非空 = 整批拒收；warn 仅留痕，批照常落库。
 pub fn validate_batch(
-    batch: &ProposedBatch,
+    batch: &mut ProposedBatch,
     coverage: &ConceptCoverage,
     registry_names: &HashSet<String>,
     name_owner: &HashMap<String, String>,
     existing_titles: &HashSet<String>,
-) -> Vec<GateError> {
+) -> (Vec<GateError>, Vec<GateError>) {
     let collision_message = |name: &str| match name_owner.get(name) {
         Some(owner) => format!(
             "铸名「{name}」与概念登记表现有名字冲突——该名字已属概念「{owner}」，直接引用即可，不要重复铸名"
@@ -196,6 +201,52 @@ pub fn validate_batch(
         None => format!("铸名「{name}」与概念登记表现有名字冲突"),
     };
     let mut errors = Vec::new();
+    
+    // 近形归一解域（自有所有权，避免与节点改写的可变借用交叠）：
+    // （小写名, 原样名, 宿主 canonical）。new_alias 提名不进近形解域——宿主
+    // 评审未裁，只准精确引用（既有口径）。
+    let mut universe: Vec<(String, String, String)> = Vec::new();
+    for (lower, owner) in name_owner {
+        universe.push((lower.clone(), owner.clone(), owner.clone()));
+    }
+    for mint in &batch.mints {
+        let canonical = mint.canonical.trim();
+        if canonical.is_empty() {
+            continue;
+        }
+        universe.push((canonical.to_lowercase(), canonical.to_owned(), canonical.to_owned()));
+        for alias in &mint.aliases {
+            let alias = alias.trim();
+            if !alias.is_empty() {
+                universe.push((alias.to_lowercase(), alias.to_owned(), canonical.to_owned()));
+            }
+        }
+    }
+
+    // 标题重复的机械摘除（第三个非打回处置）：重提课程已有标题 = 重教已满
+    // 足的节点（同批不重教；螺旋重现合法但「标题不得完全相同」——提示词自
+    // 律），批内撞车 = 同一角度同深度写了两遍。两者都摘除后出现的那一个、
+    // 留痕照常落库，不烧重裁轮。
+    let mut seen_titles: HashSet<String> = existing_titles.clone();
+    let mut warns: Vec<GateError> = Vec::new();
+    let mut kept_nodes: Vec<ProposedNode> = Vec::with_capacity(batch.nodes.len());
+    for node in batch.nodes.drain(..) {
+        let key = node.title.trim().to_lowercase();
+        let course_duplicate = existing_titles.contains(&key);
+        if seen_titles.insert(key.clone()) {
+            kept_nodes.push(node);
+        } else {
+            warns.push(GateError {
+                kind: "ng.title.pruned",
+                message: format!(
+                    "节点标题「{}」与{}重复，已从本批摘除——重提已满足的节点不重复落库；螺旋重现合法但请换角度并改标题",
+                    node.title.trim(),
+                    if course_duplicate { "课程已有节点" } else { "本批在先节点" }
+                ),
+            });
+        }
+    }
+    batch.nodes = kept_nodes;
 
     // 批内铸名预备账：canonical → 该概念在本批可引用的名字集合（批内唯一性
     // 已由形状契约保证）。new_aliases 提名（j04）同入可解析域——同批提名
@@ -228,27 +279,58 @@ pub fn validate_batch(
         mint_names.insert(nomination.name.trim().to_lowercase());
     }
 
-    for node in &batch.nodes {
-        let title = node.title.trim();
-        let key = title.to_lowercase();
-        if existing_titles.contains(&key) {
-            errors.push(GateError {
-                kind: "ng.title.duplicate",
-                message: format!("节点标题与课程已有节点重复：{title}"),
-            });
-        }
+    for node in &mut batch.nodes {
+        let title = node.title.trim().to_owned();
 
-        for concept in node.teaches.iter().chain(node.assumes.iter()) {
-            let name = concept.name.trim();
+        for concept in node.teaches.iter_mut().chain(node.assumes.iter_mut()) {
+            let name = concept.name.trim().to_owned();
             let key = name.to_lowercase();
             let resolvable = registry_names.contains(&key) || mint_names.contains(&key);
-            if !resolvable {
-                errors.push(GateError {
+            if resolvable {
+                continue;
+            }
+            // 近形归一（learnhub「系统会核对它属于哪个既有概念」）：唯一宿主
+            // 就地改写 + warn 留痕；歧义红条带候选名，无匹配红条维持原口径。
+            let mut hosts: Vec<(String, String)> = Vec::new();
+            for (lower, original, owner) in &universe {
+                let close = defnear::normalize(&name) == defnear::normalize(lower)
+                    || defnear::name_near_form(&name, original)
+                    || defnear::bounded_edit_close(&name, original);
+                if close && !hosts.iter().any(|(host, _)| host == owner) {
+                    hosts.push((owner.clone(), original.clone()));
+                }
+            }
+            match hosts.len() {
+                1 => {
+                    let (host, _) = &hosts[0];
+                    warns.push(GateError {
+                        kind: "ng.refs.nearform",
+                        message: format!(
+                            "节点 {title} 引用的「{name}」不在概念登记表，已按唯一近形归一到「{host}」——后续批次请照抄「{host}」"
+                        ),
+                    });
+                    concept.name = host.clone();
+                }
+                0 => errors.push(GateError {
                     kind: "ng.refs.resolvable",
                     message: format!(
                         "节点 {title} 引用的概念「{name}」既不在概念登记表，也未随本批铸名——先铸名或改用登记表中的名字"
                     ),
-                });
+                }),
+                _ => {
+                    let candidates = hosts
+                        .iter()
+                        .take(3)
+                        .map(|(host, _)| format!("「{host}」"))
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    errors.push(GateError {
+                        kind: "ng.refs.resolvable",
+                        message: format!(
+                            "节点 {title} 引用的概念「{name}」既不在概念登记表，也未随本批铸名；有多个近形候选无法自动判定：{candidates}——请逐字照抄其中一个，或先铸名"
+                        ),
+                    });
+                }
             }
         }
 
@@ -269,7 +351,7 @@ pub fn validate_batch(
         }
     }
 
-    errors
+    (errors, warns)
 }
 /// 档位的中文显示名（提示词与门消息共用这一份，i18n 另有对应键）。
 pub fn tier_zh(tier: ConceptTier) -> &'static str {
@@ -589,7 +671,7 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 【判据——逐节点核对四条】
 1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
 2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
-3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名），打回。
+3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 从候选集照抄），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象不在候选集内、你给不出 concept_id 时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
 【复用裁决（j04：每条提名必裁，机械面已备好候选集）】
@@ -1169,7 +1251,7 @@ mod tests {
     fn validate_batch_passes_entry_nodes_without_intra_batch_dependencies() {
         // 入口批：节点各自自带引入所教概念（teaches + 铸名），assumes 全空
         // ——同批无学习先后，谁也不依赖谁，全部同时就绪。
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
@@ -1181,11 +1263,11 @@ mod tests {
             ],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
 
         // 依赖既往批次的概念合法：已教账覆盖到所假定档位即放行。
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![node(
                 "用公式法解因式分解题",
@@ -1199,15 +1281,98 @@ mod tests {
         coverage.insert("因式分解".to_owned(), ConceptTier::Apply);
         let mut registry = HashSet::new();
         registry.insert("因式分解".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
         assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn validate_batch_resolves_unique_near_form_ref_with_warn() {
+        // 字级名漂移（flash 真机实录：「十进位置值」vs 账内「十进制位值」，
+        // 距离 2）不烧整批：唯一近形宿主侧归一（learnhub「系统会核对它属于
+        // 哪个既有概念」），warn 留痕、引用就地改写。
+        let mut batch = batch_of(vec![node(
+            "按位权展开把数写成加法式",
+            vec![reference("十进位置值", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("十进制位值".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("十进制位值".to_owned(), "十进制位值".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(warns.len(), 1, "{warns:?}");
+        assert_eq!(warns[0].kind, "ng.refs.nearform");
+        assert_eq!(batch.nodes[0].teaches[0].name, "十进制位值");
+
+        // 包含式近形：「幂」唯一命中「二的幂」。
+        let mut batch = batch_of(vec![node(
+            "用 2 的幂拆数",
+            vec![reference("幂", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("二的幂".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("二的幂".to_owned(), "二的幂".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(warns.len(), 1);
+        assert_eq!(batch.nodes[0].teaches[0].name, "二的幂");
+    }
+
+    #[test]
+    fn validate_batch_rejects_ambiguous_near_form_with_candidates() {
+        // 多个近形宿主（「按位展开」同时近形「按位权展开」「按位展开法」）
+        // 不能替模型猜：红条打回，消息列候选名。
+        let mut batch = batch_of(vec![node(
+            "按位展开说意义",
+            vec![reference("按位展开", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("按位权展开".to_owned());
+        registry.insert("按位展开法".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("按位权展开".to_owned(), "按位权展开".to_owned());
+        name_owner.insert("按位展开法".to_owned(), "按位展开法".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert_eq!(warns.len(), 0);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, "ng.refs.resolvable");
+        assert!(errors[0].message.contains("按位权展开"), "{:?}", errors[0]);
+        assert!(errors[0].message.contains("按位展开法"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn validate_batch_keeps_short_name_drift_red() {
+        // 两字短名一字差常常是两个真概念（「数位」/「数值」）：归一权留给
+        // 模型/评审，不自动归一。
+        let mut batch = batch_of(vec![node(
+            "认读数位",
+            vec![reference("数位", ConceptTier::Apply)],
+            vec![],
+        )]);
+        let mut registry = HashSet::new();
+        registry.insert("数值".to_owned());
+        let mut name_owner = HashMap::new();
+        name_owner.insert("数值".to_owned(), "数值".to_owned());
+        let (errors, warns) =
+            validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &name_owner, &HashSet::new());
+        assert_eq!(warns.len(), 0);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].kind, "ng.refs.resolvable");
+        assert_eq!(batch.nodes[0].teaches[0].name, "数位");
     }
 
     #[test]
     fn validate_batch_rejects_intra_batch_dependency() {
         // 同批无先后、必须同时就绪：本批兄弟的 teaches 不构成 assumes 的供给
         // ——即使概念已随批铸名、也被兄弟教到该档位，依赖它的节点必须留到下一批。
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![
                 node("用提公因式法化简多项式", vec![reference("因式分解", ConceptTier::Know)], vec![]),
@@ -1219,7 +1384,7 @@ mod tests {
             ],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &HashSet::new(), &HashMap::new(), &HashSet::new());
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].kind, "ng.assumes.uncovered");
     }
@@ -1230,7 +1395,7 @@ mod tests {
         // gate bounces the whole batch (no locked state may ever publish).
         // 该概念已在登记表（生产不变量：coverage 内的概念必然已登记），
         // 唯一打回理由就是假定未被覆盖。
-        let batch = batch_of(vec![node(
+        let mut batch = batch_of(vec![node(
             "应用勾股定理解题",
             vec![],
             vec![reference("勾股定理", ConceptTier::Apply)],
@@ -1239,7 +1404,7 @@ mod tests {
         coverage.insert("勾股定理".to_owned(), ConceptTier::Know);
         let mut registry = HashSet::new();
         registry.insert("勾股定理".to_owned());
-        let errors = validate_batch(&batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &coverage, &registry, &HashMap::new(), &HashSet::new());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, "ng.assumes.uncovered");
     }
@@ -1247,17 +1412,26 @@ mod tests {
     #[test]
     fn validate_batch_enforces_course_internal_title_uniqueness() {
         // 批量上限属形状契约（growth_contract）；这里只测需要 DB 事实的
-        // 课程内标题唯一。
+        // 标题重复的机械摘除。
         let mut existing = HashSet::new();
         existing.insert("已有节点".to_owned());
-        let errors = validate_batch(
-            &batch_of(vec![node("已有节点", vec![], vec![])]),
+        let mut batch = batch_of(vec![
+            node("已有节点", vec![], vec![]),
+            node("新节点", vec![], vec![]),
+            node("新节点", vec![], vec![]),
+        ]);
+        let (errors, warns) = validate_batch(
+            &mut batch,
             &ConceptCoverage::new(),
-            &HashSet::new(),            &HashMap::new(),
-
+            &HashSet::new(),
+            &HashMap::new(),
             &existing,
         );
-        assert!(errors.iter().any(|error| error.kind == "ng.title.duplicate"));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(warns.len(), 2, "{warns:?}");
+        assert!(warns.iter().all(|warn| warn.kind == "ng.title.pruned"));
+        assert_eq!(batch.nodes.len(), 1);
+        assert_eq!(batch.nodes[0].title, "新节点");
 
         // 形状契约（细单测在本模块 growth_contract）：同一批 8 个节点。
         let nodes: Vec<serde_json::Value> = (0..8)
@@ -1275,13 +1449,13 @@ mod tests {
     fn validate_batch_rejects_unresolved_concepts_and_mint_collisions() {
         let mut registry = HashSet::new();
         registry.insert("既有概念".to_owned());
-        let batch = ProposedBatch {
+        let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![node("新节点", vec![reference("既有概念", ConceptTier::Know)], vec![reference("幽灵概念", ConceptTier::Know)])],
             mints: vec![ConceptMint { canonical: "既有概念".into(), aliases: vec![], definition: String::new() }],
             note: String::new(),
         };
-        let errors = validate_batch(&batch, &ConceptCoverage::new(), &registry, &HashMap::new(), &HashSet::new());
+        let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &HashMap::new(), &HashSet::new());
         assert!(errors.iter().any(|error| error.kind == "ng.mints.collision"));
         assert!(errors.iter().any(|error| error.kind == "ng.refs.resolvable"));
     }
