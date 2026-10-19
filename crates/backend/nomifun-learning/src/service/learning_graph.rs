@@ -1440,6 +1440,59 @@ impl LearningService {
             if !review.findings.is_empty() {
                 self.record_review_findings(course_id, &review.findings).await;
             }
+            // ── 复用裁决先行（j04 + 2026-10-19 真机发现）：模型在 reject 里
+            // 也会附 reuse（近义铸名的正确出路）。裁决先于 problems 处置：能
+            // 被裁决覆盖的问题（mint 重叠类，issue 里带「提名名」）从报告中
+            // 剔除——落库侧 j04 机械通道会把该 mint 转为宿主活跃别名，无需折
+            // 返模型。此处不改写 candidate：红裁路径的 previous/点修守卫基线
+            // 必须保持模型自己的输出。
+            let mut rulings: HashMap<String, String> = HashMap::new();
+            for ruling in &review.reuse {
+                let key = ruling.name.trim().to_lowercase();
+                let valid = outcome
+                    .nominations
+                    .iter()
+                    .find(|plan| plan.name.to_lowercase() == key)
+                    .is_some_and(|plan| {
+                        plan.candidates
+                            .iter()
+                            .any(|candidate| candidate.concept_id == ruling.concept_id)
+                    });
+                if valid {
+                    rulings.insert(key, ruling.concept_id.clone());
+                } else {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        name = %ruling.name,
+                        "review reuse ruling dropped — name not in this batch or concept_id outside the candidate set"
+                    );
+                }
+            }
+            if !rulings.is_empty() && !review.problems.is_empty() {
+                let resolved_mask: Vec<bool> = review
+                    .problems
+                    .iter()
+                    .map(|problem| {
+                        matches!(problem.field.as_str(), "teaches" | "mints")
+                            && rulings.keys().any(|key| problem.issue.contains(&format!("「{key}」")))
+                    })
+                    .collect();
+                let resolved_count = resolved_mask.iter().filter(|resolved| **resolved).count();
+                if resolved_count > 0 {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        resolved = resolved_count,
+                        "review problems resolved by reuse rulings — dropped from the report"
+                    );
+                    let mut kept = Vec::with_capacity(review.problems.len());
+                    for (problem, resolved) in review.problems.drain(..).zip(resolved_mask) {
+                        if !resolved {
+                            kept.push(problem);
+                        }
+                    }
+                    review.problems = kept;
+                }
+            }
             if !review.problems.is_empty() {
                 let report = crate::learning_graph::format_review_problems(&review.problems);
                 tracing::warn!(
