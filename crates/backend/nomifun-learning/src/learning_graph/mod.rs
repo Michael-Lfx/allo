@@ -723,6 +723,7 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 
 【不算问题，一律不报】
 - est 长短、每批节点数量与措辞偏好、教学法优化建议——这些是教练职权（拆分建议写在难度诚实条的 advice 里，不单独报）。
+- 重教/复访已教概念：同一概念再次 teaches 完全合法（螺旋加深、换角度变式——概念不可学完）；已教账里有该概念不构成问题，除非同一角度同一深度的重复（标题与既有节点完全相同——结构门已拦）。
 - 「可以更好」「建议增加」类意见。
 - 你从材料确认不了的：宁放勿错。
 
@@ -2091,6 +2092,20 @@ mod tests {
         assert!(rendered.contains("能用配方法解形如 x²=p 的方程"), "{rendered}");
         assert!(rendered.contains("首批纪律"), "{rendered}");
         assert!(rendered.contains("assumes 必须全空"), "empty-ledger mechanical floor: {rendered}");
+
+        // 老学习者开新课：账非空 × 花名册为空是常态——首批纪律换跨课程口径，
+        // 机械地板让位，账标注全局来源（评审/教练不再读成材料矛盾）。
+        let veteran = CoachContext {
+            roster: String::new(),
+            taught_summary: "二的幂@会用、按位权展开@会用".into(),
+            coverage_gauge: "已学达标 0 / 已跳过 0 / 未达标 0；概念档位足迹：无".into(),
+            ..Default::default()
+        };
+        let rendered = veteran.render();
+        assert!(rendered.contains("跨课程全局"), "{rendered}");
+        assert!(!rendered.contains("assumes 必须全空"), "ledger non-empty: no mechanical floor: {rendered}");
+        assert!(rendered.contains("本批 assumes 可假定账内已有概念"), "{rendered}");
+        assert!(rendered.contains("本课程存量口径"), "{rendered}");
 
         let doorless = CoachContext { roster: String::new(), ..Default::default() };
         let rendered = doorless.render();
