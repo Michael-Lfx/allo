@@ -49,6 +49,7 @@ import { videoCanvasProjectPath } from '../videoCanvas/routes';
 import {
   briefingWorkspacePath,
   createBriefing,
+  deleteBriefing,
   listBriefingSessions,
   runBriefing,
 } from './briefing/api';
@@ -94,6 +95,7 @@ type ListTab = 'recent' | 'tvShow';
 const TvShowPanel = lazy(() => import('./components/TvShowPanel'));
 const SessionCard = lazy(() => import('./components/SessionCard'));
 const GenerationTaskCard = lazy(() => import('./components/GenerationTaskCard'));
+const BriefingCard = lazy(() => import('./components/BriefingCard'));
 const CanvasProjectCard = lazy(() =>
   import('./home/CanvasProjectGallery').then((mod) => ({ default: mod.CanvasProjectCard }))
 );
@@ -927,6 +929,37 @@ const VideoGenerationListPage: React.FC = () => {
     void handleDeleteTaskRef.current(task);
   }, []);
 
+  const handleDeleteBriefing = useCallback(
+    async (session: BriefingSessionSummary) => {
+      if (deletingId) return;
+      setDeletingId(session.id);
+      try {
+        await deleteBriefing(session.id);
+        clearVideoGenerationSessionMemory(session.id);
+        setBriefingSessions((prev) => prev.filter((item) => item.id !== session.id));
+        message.success(t('videoGeneration.actions.deleteOk', { defaultValue: '已删除任务' }));
+      } catch (e) {
+        message.error(
+          `${t('videoGeneration.actions.deleteFailed', { defaultValue: '删除失败' })}: ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [deletingId, message, t]
+  );
+
+  const handleDeleteBriefingRef = useRef<(session: BriefingSessionSummary) => void>(() => {});
+  useEffect(() => {
+    handleDeleteBriefingRef.current = handleDeleteBriefing;
+  }, [handleDeleteBriefing]);
+
+  const onDeleteBriefing = useCallback((session: BriefingSessionSummary) => {
+    void handleDeleteBriefingRef.current(session);
+  }, []);
+
   const handleImportProject = useCallback(async () => {
     if (importing || creating) return;
     if (!isDesktopShell()) {
@@ -1242,31 +1275,15 @@ const VideoGenerationListPage: React.FC = () => {
                           );
                         }
                         return (
-                          <button
+                          <BriefingCard
                             key={`briefing:${row.id}`}
-                            type='button'
-                            className='flex flex-col gap-8px rd-14px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] px-16px py-16px text-left relative overflow-hidden transition-colors hover:border-[color-mix(in_srgb,rgb(var(--primary-6))_40%,transparent)] cursor-pointer'
+                            briefing={row.briefing}
+                            onOpen={openBriefing}
+                            onDelete={onDeleteBriefing}
+                            deleting={deletingId === row.id}
+                            opening={openingBriefingId === row.id}
                             disabled={anyOpening && openingBriefingId !== row.id}
-                            onPointerEnter={() => prefetchVideoBriefing()}
-                            onClick={() => openBriefing(row.briefing)}
-                          >
-                            {openingBriefingId === row.id ? (
-                              <div className='absolute inset-0 bg-[var(--color-bg-1)]/60 backdrop-blur-xs flex items-center justify-center z-10'>
-                                <Spin size={18} />
-                              </div>
-                            ) : null}
-                            <strong className='text-14px text-[var(--color-text-1)]'>
-                              {row.briefing.title ||
-                                t('videoGeneration.list.untitled', { defaultValue: '未命名任务' })}
-                            </strong>
-                            <span className='text-12px text-[var(--color-text-3)]'>
-                              {t('videoGeneration.list.briefingKind', {
-                                defaultValue: '资讯播报',
-                              })}
-                              {' · '}
-                              {row.briefing.status} · {row.briefing.stage}
-                            </span>
-                          </button>
+                          />
                         );
                       })}
                     </div>

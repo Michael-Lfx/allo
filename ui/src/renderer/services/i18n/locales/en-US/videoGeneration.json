@@ -44,6 +44,7 @@
     "retry": "Retry",
     "filterEmpty": "No matching sessions",
     "untitled": "Untitled session",
+    "briefingKind": "Spoken briefing",
     "importProject": "Import project",
     "importDesktopOnly": "Importing a project is only available in the desktop app.",
     "importOk": "Project imported",
@@ -1196,7 +1197,9 @@
       "rendering": "Rendering",
       "finalizing": "Finalizing"
     },
-    "progress": "Progress: {{percent}}%"
+    "progress": "Progress: {{percent}}%",
+    "fullscreen": "Maximize",
+    "exitFullscreen": "Exit maximize"
   },
   "briefing": {
     "format": "Length",
