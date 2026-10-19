@@ -30,7 +30,7 @@ use nomifun_learning::LearningCompleter;
 
 use crate::factory::provider_config::{
     one_shot_completion_json_text_or_reasoning, one_shot_completion_no_thinking_text_or_reasoning,
-    one_shot_completion_text_or_reasoning, resolve_provider_config, user_message,
+    one_shot_completion_text_or_reasoning, resolve_provider_config_with_output_limit, user_message,
 };
 use crate::knowledge_completer::resolve_default_model;
 
@@ -67,8 +67,8 @@ impl LiveLearningCompleter {
         &self,
         provider_id: &str,
         model: &str,
-    ) -> Result<nomi_config::config::Config, AppError> {
-        resolve_provider_config(
+    ) -> Result<(nomi_config::config::Config, Option<u32>), AppError> {
+        resolve_provider_config_with_output_limit(
             &self.provider_repo,
             &self.provider_model_repo,
             &self.encryption_key,
@@ -77,6 +77,19 @@ impl LiveLearningCompleter {
             &self.workspace,
         )
         .await
+    }
+
+    /// The effective output ceiling for a generation call. The caller budgets
+    /// (nomifun-learning's COACH/STRUCTURE/… constants) are fallbacks for
+    /// models with no declared ceiling; when the catalog or the model row
+    /// declares one, that number IS the model's maximum output and must win —
+    /// reasoning tokens share the budget with the artifact, and a capped
+    /// constant below thinking + artifact deterministically truncates
+    /// (observed 2026-10-16: AIPC-deepseek-v4.1-flash hit MaxTokens on all 3
+    /// structure rounds under 16384 while the catalog declares 384000;
+    /// learnhub's pipeline, which sends no cap, completes the same artifact).
+    fn effective_max_tokens(max_tokens: u32, output_limit: Option<u32>) -> u32 {
+        output_limit.unwrap_or(max_tokens)
     }
 }
 
@@ -100,15 +113,8 @@ impl LearningCompleter for LiveLearningCompleter {
                     )
                 })?,
         };
-        let cfg = resolve_provider_config(
-            &self.provider_repo,
-            &self.provider_model_repo,
-            &self.encryption_key,
-            &provider_id,
-            &model,
-            &self.workspace,
-        )
-        .await?;
+        let (cfg, output_limit) = self.config_for(&provider_id, &model).await?;
+        let max_tokens = Self::effective_max_tokens(max_tokens, output_limit);
         one_shot_completion_no_thinking_text_or_reasoning(
             &cfg,
             system,
@@ -146,15 +152,8 @@ impl LearningCompleter for LiveLearningCompleter {
                     )
                 })?,
         };
-        let cfg = resolve_provider_config(
-            &self.provider_repo,
-            &self.provider_model_repo,
-            &self.encryption_key,
-            &provider_id,
-            &model,
-            &self.workspace,
-        )
-        .await?;
+        let (cfg, output_limit) = self.config_for(&provider_id, &model).await?;
+        let max_tokens = Self::effective_max_tokens(max_tokens, output_limit);
         // Transient provider blips (nginx 502 between us and the model) arrive
         // in ~2s and would otherwise kill a whole growth batch instantly — the
         // 2026-09-29 fresh-course run died that way on its first coach call.
@@ -195,7 +194,8 @@ impl LearningCompleter for LiveLearningCompleter {
         temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let (provider_id, model) = self.resolve_model(model_override).await?;
-        let cfg = self.config_for(&provider_id, &model).await?;
+        let (cfg, output_limit) = self.config_for(&provider_id, &model).await?;
+        let max_tokens = Self::effective_max_tokens(max_tokens, output_limit);
         one_shot_completion_json_text_or_reasoning(
             &cfg,
             system,
@@ -221,7 +221,8 @@ impl LearningCompleter for LiveLearningCompleter {
         temperature: Option<f32>,
     ) -> Result<String, AppError> {
         let (provider_id, model) = self.resolve_model(model_override).await?;
-        let cfg = self.config_for(&provider_id, &model).await?;
+        let (cfg, output_limit) = self.config_for(&provider_id, &model).await?;
+        let max_tokens = Self::effective_max_tokens(max_tokens, output_limit);
         let mut attempt = 1;
         loop {
             match one_shot_completion_json_text_or_reasoning(
