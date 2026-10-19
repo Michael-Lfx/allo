@@ -268,15 +268,7 @@ const LearningGraphWorkspace: React.FC<{
       if (summary.status === 'noop') {
         Modal.info({ title: t('learning.learningGraphRepairNoop') });
       }
-      await new Promise((resolve) => {
-        learningApi
-          .graphStructure(detail.course.id)
-          .then((view) => {
-            setStructure(view);
-            resolve(null);
-          })
-          .catch(() => resolve(null));
-      });
+      await refetchStructure();
     } catch (actionError) {
       Modal.error({
         title: t('learning.learningGraphRepairFailed'),
@@ -285,7 +277,7 @@ const LearningGraphWorkspace: React.FC<{
     } finally {
       setRepairing(false);
     }
-  }, [detail.course.id, t]);
+  }, [detail.course.id, refetchStructure, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
