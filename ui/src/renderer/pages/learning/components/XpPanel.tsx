@@ -9,10 +9,11 @@ const { Text } = Typography;
 /** XP 日历窗口（周数）；恒 weeks×7 桶、末桶 = 今日 */
 const XP_CALENDAR_WEEKS = 12;
 
-/** 日净 XP → 单元格底色：四级正向色阶；负账如实出桶（danger 染色）；
- *  零桶显式在场但 UI 留空（ faint 底、不填 0）。全部语义令牌，双主题自适配。 */
+/** 日净 XP → 单元格底色：四级正向色阶；负账如实出桶（实色 danger 底 +
+ *  白字——透明混色在浅色主题下对比度不足）；零桶显式在场但 UI 留空
+ *  （faint 底、不填 0）。全部语义令牌，双主题自适配。 */
 function xpCellClass(xp: number): string {
-  if (xp < 0) return 'bg-[color-mix(in_srgb,rgb(var(--danger-6))_40%,transparent)]';
+  if (xp < 0) return 'bg-danger-6';
   if (xp <= 0) return 'bg-[var(--color-fill-1)]';
   if (xp < 10) return 'bg-[color-mix(in_srgb,rgb(var(--primary-6))_24%,transparent)]';
   if (xp < 25) return 'bg-[color-mix(in_srgb,rgb(var(--primary-6))_48%,transparent)]';
@@ -20,7 +21,8 @@ function xpCellClass(xp: number): string {
   return 'bg-primary-6';
 }
 
-/** 深色热力格上文字转白保证可读（与色阶阈值一致） */
+/** 深色热力格上文字转白保证可读（与色阶阈值一致）。负账格用实色 danger 底
+ *  （非透明混色）——白字在明暗两主题下都成立，不随背景变浅失效。 */
 function xpCellOnDark(xp: number): boolean {
   return xp < 0 || xp >= 45;
 }
@@ -244,7 +246,7 @@ export function XpPanel({
               <span className='ml-1 inline-block h-10px w-10px rounded-2px bg-primary-6' />
             </span>
             <span className='flex items-center gap-4px'>
-              <span className='inline-block h-10px w-10px rounded-2px bg-[color-mix(in_srgb,rgb(var(--danger-6))_40%,transparent)]' />
+              <span className='inline-block h-10px w-10px rounded-2px bg-danger-6' />
               {t('learning.xpLegendNegative')}
             </span>
           </div>
