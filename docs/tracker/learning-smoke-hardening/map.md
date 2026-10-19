@@ -26,10 +26,30 @@
 - （待裁）深批次批目标是否 7→5（learnhub 同为 1–5 档）：真机 round 3 复测
   后裁决，不预裁。
 
+## Decisions so far
+
+- （待裁）深批次批目标是否 7→5（learnhub 同为 1–5 档）：真机 round 3 复测
+  后裁决，不预裁。
+
+## 实施票已切（tickets/，依赖序见各票 blocked_by）
+
+- [t1](tickets/t1-repair-smoke-seed.md) repair 冒烟种子结构性不可赢（两修
+  法待票面裁决）；
+- [t2](tickets/t2-richness-parity.md) 产出丰富度追平 learnhub（正文篇幅 /
+  题目 evidence / 铸名出处，三条款独立可拆）；
+- [t3](tickets/t3-reuse-ruling-registry-validation.md) reuse 裁决校验放宽
+  到登记表全量（小改，首选快赢）；
+- [t4](tickets/t4-review-advice-mechanical-alias.md) 评审建议机械转化
+  （advice 指向别名的问题由代码执行，不折返模型）；
+- [t5](tickets/t5-quiz-smoke-provider-tier.md) quiz 冒烟 provider 档（带凭
+  据的全链变体验证；DoD 含域文档补 quiz 档记载）；
+- [t6](tickets/t6-structure-stage-consistency.md) 结构 stage 标注一致性
+  （提示词条款 + warn 级 validator，或接受生长补偿——票面裁决）。
+
 ## Not yet specified
 
-- 冒烟九档在 docs/architecture/learning.zh.md 冒烟节缺 `quiz` 档记载（q 波
-  遗漏），顺手补齐时一并核对九档判据描述。
+- 深批次批目标：7 vs learnhub 1–5 档——round 3+ 再失败 2–3 次后按数据
+  裁决，不预裁（2026-10-19 用户裁决选 b 时搁置；已记于 Decisions）。
 
 ## Out of scope
 
