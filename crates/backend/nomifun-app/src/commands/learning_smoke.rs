@@ -38,7 +38,9 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
         .try_init();
     match command {
         LearningSmokeCommand::Xp { db } => run_xp(cli, db).await,
-        LearningSmokeCommand::Quiz { db } => run_quiz(cli, db).await,
+        LearningSmokeCommand::Quiz { db, provider, model } => {
+            run_quiz(cli, db, provider, model).await
+        }
         LearningSmokeCommand::Content {
             db,
             provider,
@@ -932,12 +934,25 @@ async fn run_xp(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
 /// ⑤ 同日折叠——第二轮（同计划）全折叠零计薪，账本零新增；
 /// ⑥ 首写为终——重复 complete Conflict。
 /// 变式的 LLM 调用落观测档案（ArchivingCompleter；有 provider 时生效）。
-async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
+async fn run_quiz(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
     use std::collections::HashMap;
 
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
     let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
     // 变式站的 LLM 调用落观测档案（structure 冒烟同纪律）：挂 ArchivingCompleter。
-    let (wiring, _archiving, _live) = wire(cli, db.as_deref(), None, None, true).await?;
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    // 双环境判据（t5）：显式 provider 或指向带凭据库（--db）= 变式在场要求；
+    // 零凭据临时库 = 变式诚实跳过路径。在场与否以 plan 实况为准（凭据在
+    // 调用时解析），要求在场而一条都没生成 = 硬失败。
+    let require_variants = provider.is_some() || db.is_some();
     let owner = wiring.owner.clone();
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
@@ -1065,20 +1080,67 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         "escalated node must come first, got {}",
         round.questions[0].node_id
     );
-    anyhow::ensure!(
-        round.questions.len() == k as usize,
-        "no provider: bank-only plan (one question per node), got {}",
-        round.questions.len()
-    );
     let plan_json_started: String =
         sqlx::query_scalar("SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?")
             .bind(&round.round_id)
             .fetch_one(&wiring.pool)
             .await?;
-    anyhow::ensure!(
-        !plan_json_started.contains("\"origin\":\"variant\""),
-        "no provider: variants must be skipped honestly"
-    );
+    // 双环境分支（t5）：在场与否以 plan 实况为准——凭据在调用时解析，冒烟
+    // 不预判。在场 = 每节点 bank + 恰一变式（题数 > bank 题数）；不在场且
+    // 要求在场（--provider 或 --db 指带凭据库）= 硬失败；不在场且零凭据
+    // 临时库 = 变式诚实跳过路径（q2/q3 判据原样）。
+    let plan_items: Vec<serde_json::Value> = serde_json::from_str(&plan_json_started)?;
+    let is_variant =
+        |item: &serde_json::Value| item.get("origin").and_then(|v| v.as_str()) == Some("variant");
+    let variant_count = plan_items.iter().filter(|item| is_variant(item)).count();
+    let variants_present = variant_count > 0;
+    // 每条计划项的判分底：bank 题 = 种子 config（answer "B"）；变式题 =
+    // payload.config_json 的 answer（判底随计划行内下发，不回库）。
+    let item_answer = |item: &serde_json::Value| -> serde_json::Value {
+        if is_variant(item) {
+            let config: serde_json::Value = serde_json::from_str(
+                item.pointer("/variant/config_json")
+                    .and_then(|v| v.as_str())
+                    .expect("variant payload carries config_json"),
+            )
+            .expect("variant config_json parses");
+            config.get("answer").cloned().expect("variant config carries answer")
+        } else {
+            serde_json::json!("B")
+        }
+    };
+    if variants_present {
+        let mut per_node: HashMap<&str, usize> = HashMap::new();
+        for item in &plan_items {
+            *per_node
+                .entry(item.get("node").and_then(|v| v.as_str()).unwrap_or_default())
+                .or_default() += 1;
+        }
+        anyhow::ensure!(
+            per_node.len() == k as usize && per_node.values().all(|count| *count == 2),
+            "variants present: every node must carry bank + one variant ({variant_count} variants over {} nodes)",
+            per_node.len()
+        );
+        anyhow::ensure!(
+            round.questions.len() == 2 * k as usize,
+            "variants present: per-node question count must exceed bank stock, got {}",
+            round.questions.len()
+        );
+    } else {
+        anyhow::ensure!(
+            !require_variants,
+            "credentials expected (explicit --provider/--model or --db) but no quiz variant was generated"
+        );
+        anyhow::ensure!(
+            round.questions.len() == k as usize,
+            "no provider: bank-only plan (one question per node), got {}",
+            round.questions.len()
+        );
+        anyhow::ensure!(
+            !plan_json_started.contains("\"origin\":\"variant\""),
+            "no provider: variants must be skipped honestly"
+        );
+    }
     let view_json = serde_json::to_string(&round)?;
     anyhow::ensure!(
         !view_json.contains("explanation") && !view_json.contains("\"answer\""),
@@ -1097,37 +1159,77 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         graded.correct && graded.answer == serde_json::json!("B"),
         "grade must reveal the judge bottom after grading"
     );
+    if variants_present {
+        // 变式判底随 grade 下发：变式题判分输入来自 plan 内 payload，答对
+        // 揭示的 answer 与 payload 一致（判分已定，揭示不破持答案红线）。
+        let variant_item = plan_items
+            .iter()
+            .find(|item| is_variant(item))
+            .expect("variant item present");
+        let variant_activity = variant_item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("variant activity id")
+            .to_owned();
+        let expected = item_answer(variant_item);
+        let graded_variant = service
+            .quiz_grade(&owner, &course, &round.round_id, &variant_activity, &expected)
+            .await?;
+        anyhow::ensure!(
+            graded_variant.correct && graded_variant.answer == expected,
+            "variant judge bottom must flow through grade: {:?}",
+            graded_variant
+        );
+    }
     println!(
-        "[2/6] weak-first (escalated node first), variants skipped honestly without provider, sanitized start"
+        "[2/6] weak-first (escalated node first), {} sanitized start",
+        if variants_present {
+            format!("{variant_count} variants planned (bank + variant per node),")
+        } else {
+            "variants skipped honestly without provider,".to_owned()
+        }
     );
 
     // ③ 全卷作答：弱节点与其前一节点的题答错（partial 0×2）、其余全对
-    //（full 3×4 = 12）。断言按 activity→node 定位（计划序是弱先序）。
-    let node_of_activity = |activity: &str| -> String {
+    //（full 3×4 = 12）。变式在场时答满全计划（bank + 变式都作答——quiz 必
+    // 作答是测量语义）；错误节点的变式答一个非正确项。断言按 node 定位
+    //（计划序是弱先序）。
+    let wrong_nodes: Vec<String> = vec![
+        weak_lesson.clone(),
         round
             .questions
             .iter()
-            .find(|q| q.activity_id.as_str() == activity)
+            .find(|q| q.activity_id.as_str() == activity_ids[(k as usize - 2)])
             .map(|q| q.node_id.to_string())
-            .expect("planned activity")
-    };
-    let wrong_activities: Vec<String> = vec![
-        round
-            .questions
-            .iter()
-            .find(|q| q.node_id.as_str() == weak_lesson)
-            .map(|q| q.activity_id.to_string())
-            .expect("weak node planned"),
-        activity_ids[(k as usize - 2)].clone(),
+            .expect("second wrong node planned"),
     ];
     let mut answers = HashMap::new();
-    for activity in &activity_ids {
-        let response = if wrong_activities.contains(activity) {
-            "A"
+    for item in &plan_items {
+        let activity = item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("plan activity id");
+        let node = item.get("node").and_then(|v| v.as_str()).expect("plan node");
+        let correct_answer = item_answer(item);
+        let response = if wrong_nodes.iter().any(|wrong| wrong == node) {
+            if is_variant(item) {
+                item.pointer("/variant/options")
+                    .and_then(|v| v.as_array())
+                    .and_then(|options| {
+                        options
+                            .iter()
+                            .map(|option| option.as_str().unwrap_or_default())
+                            .find(|option| serde_json::json!(*option) != correct_answer)
+                            .map(|option| serde_json::json!(option))
+                    })
+                    .unwrap_or_else(|| serde_json::json!("__wrong__"))
+            } else {
+                serde_json::json!("A")
+            }
         } else {
-            "B"
+            correct_answer
         };
-        answers.insert(activity.clone(), serde_json::json!(response));
+        answers.insert(activity.to_owned(), response);
     }
     let report = service
         .quiz_complete(&owner, &course, &round.round_id, &answers)
@@ -1142,10 +1244,7 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
         "quiz settlements are never negative"
     );
     for entry in &report.covered {
-        let expected = if wrong_activities
-            .iter()
-            .any(|activity| node_of_activity(activity) == entry.node_id.to_string())
-        {
+        let expected = if wrong_nodes.iter().any(|wrong| *wrong == entry.node_id.to_string()) {
             Some(0)
         } else {
             Some(3)
@@ -1194,6 +1293,8 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     );
 
     // ④ 同日折叠：第二轮（同计划直插 active）全对作答 → 全折叠零计薪。
+    // 复用同一 plan_json（变式在场时含变式判分底）→ 折叠结算全程零 LLM
+    // （变式不重铸：判底随计划行流转，不回库不重生成）。
     let plan_json: String = sqlx::query_scalar(
         "SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?",
     )
@@ -1214,8 +1315,12 @@ async fn run_quiz(cli: &Cli, db: Option<PathBuf>) -> Result<ExitCode> {
     .execute(&wiring.pool)
     .await?;
     let mut all_correct = HashMap::new();
-    for activity in &activity_ids {
-        all_correct.insert(activity.clone(), serde_json::json!("B"));
+    for item in &plan_items {
+        let activity = item
+            .get("activity")
+            .and_then(|v| v.as_str())
+            .expect("plan activity id");
+        all_correct.insert(activity.to_owned(), item_answer(item));
     }
     let folded = service
         .quiz_complete(&owner, &course, &round_2, &all_correct)
@@ -1588,23 +1693,84 @@ async fn run_repair(
     let service = wiring.service.clone();
     let pool = wiring.pool.clone();
 
-    // 种子：图课程（结构快照两块）+ 一条 findings 留痕（触发门槛）。
+    // 种子：全量合法 gd.* 盘面（t1 修法 1——对齐 structure_contract 金样形状：
+    // 6 主干 × 42 块、八标量键齐、gaps/quality 齐、门口 G1 地形对账）+ 一条
+    // findings 留痕（触发门槛）。旧的最小种子（2 块、零 frontmatter）从两条
+    // 路都是死路：非空 ops 应用后全量复核必拒、noop 盘面原样复验必拒——种
+    // 子合法化后 applied（修补 op 应用后仍合法）与 noop（盘面没动）都可行。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let now = nomifun_common::now_ms();
+    let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+    let stages = ["入门", "进阶", "高级"];
+    let mut blocks = Vec::new();
+    for (spine_index, spine) in spine_names.iter().enumerate() {
+        for block_index in 0..7 {
+            let ordinal = spine_index * 7 + block_index;
+            blocks.push(serde_json::json!({
+                "name": format!("块{ordinal:02}"),
+                "slug": format!("block-{ordinal:02}"),
+                "spine": spine,
+                "stage": stages[ordinal % stages.len()],
+                "note": format!("第 {ordinal} 个主题的一句话描述"),
+            }));
+        }
+    }
     let structure = serde_json::json!({
         "goal": "修补冒烟目标",
-        "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
-        "blocks": [
-            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "第一块" },
-            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "第二块" }
+        "goal_type": "capability",
+        "proficiency_statement": "达成后能独立复述本结构的修补判据",
+        "domain_type": "理论",
+        "form_reference": "Flowy 学习结构模板 v1",
+        "source_tier": "名录",
+        "generated_by": "learning-smoke-seed",
+        "disclaimer": "冒烟种子为静态合法盘面，仅供修补回合验证",
+        "domain": {
+            "core_definition": "修补冒烟的合法结构基线",
+            "includes": ["结构判据", "修补操作", "留痕通道"],
+            "excludes": ["真实课程内容", "学习者数据", "生产库"],
+            "prerequisite_doors": ["G1"],
+            "audience": "冒烟操作者",
+            "scenarios": ["修补回合验证", "盘面复验"],
+            "granularity": "每块一个可独立教学的主题",
+        },
+        "spines": spine_names.iter().map(|spine| serde_json::json!({
+            "name": spine,
+            "definition": format!("{spine}的一句话定义"),
+            "key_points": ["要点一"],
+            "instance": format!("达标{spine}时能独立完成一次复述"),
+        })).collect::<Vec<_>>(),
+        "blocks": blocks,
+        "edges": [
+            { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" },
+            { "source": "块08", "target": "块09", "type": "composes", "tier": "use", "note": "组装" },
+            { "source": "块15", "target": "块16", "type": "contrasts", "tier": "know", "note": "对照" },
         ],
-        "edges": []
+        "gaps": [
+            { "item": "应用情境覆盖不足", "direction": "补情境块" },
+            { "item": "图像法未展开", "direction": "补图像判读" },
+            { "item": "近似解法缺位", "direction": "补估算策略" },
+        ],
+        "quality": [
+            { "check": "主干数在 6–12 档", "status": "met" },
+            { "check": "块名一物一名", "status": "met" },
+            { "check": "边端点全部可解析", "status": "met" },
+            { "check": "无顺序承诺", "status": "met" },
+            { "check": "盲区已标注", "status": "met" },
+        ],
     });
     let envelope = serde_json::json!({
         "version": 1,
         "generated_at": now,
         "structure": structure,
-        "terrain": { "doors": [] },
+        "terrain": {
+            "goal": "修补冒烟目标",
+            "learner_basis_assumed": "已具备结构判据的基线认识",
+            "generated_by": "learning-smoke-seed",
+            "disclaimer": "冒烟种子地形，仅供门口对账",
+            "doors": [
+                { "id": "G1", "criterion": "能读懂结构快照的块与边", "kind": "hard" },
+            ],
+        },
     });
     sqlx::query(
         "INSERT INTO learning_courses \
