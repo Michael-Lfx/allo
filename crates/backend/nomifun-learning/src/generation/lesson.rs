@@ -841,7 +841,7 @@ Hard constraints:
 - Do NOT set up practice inside the body — questions live in the question bank. Do not write a section-ending quiz.
 - Connect naturally to the previous section's body when one is given: never repeat what it already said, never restate its conclusion in the opening.
 - Write in the dominant language of the source material, grounded in the cited excerpt or the course brief — never invent facts outside them.
-- Length by type (the section task states your exact tier-based prose budget; formulas, figures and tables NEVER count toward it): concept/example carry their prose budget plus the declared visualization(s); demo is led by its visualization with caption prose at the same budget; summary is a tight recap checklist; practice stays within {PRACTICE_BODY_TARGET_CHARS} characters of capability goal and answering guidance."#
+- Length by type — THE BUDGET IS THE FLOOR OF A FULLY-WORKED SECTION, NOT A CEILING: the section task states your exact tier-based prose budget (formulas, figures and tables NEVER count toward it); land at 100%-150% of that budget by developing every point the section task names — a worked mini-example for concept sections, a fully carried computation for example sections, stepwise annotated manipulation for demo sections. Expand by teaching more of the named points, never by restating them. concept/example carry their prose budget plus the declared visualization(s); demo is led by its visualization with caption prose at the same budget; summary is a tight recap checklist; practice stays within {PRACTICE_BODY_TARGET_CHARS} characters of capability goal and answering guidance."#
     )
 }
 

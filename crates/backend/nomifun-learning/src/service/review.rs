@@ -551,7 +551,7 @@ impl LearningService {
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str())
             .map_err(|message| AppError::BadRequest(message))?;
-        let (prompt, config) = validate_question_payload(
+        let (prompt, mut config) = validate_question_payload(
             kind,
             &request.prompt,
             &request.options,
@@ -559,6 +559,16 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
+        // 手工编辑面没有 evidence 字段：保留原回引（t2 证据不随编辑抹除）。
+        config.evidence = sqlx::query_scalar::<_, String>(
+            "SELECT config_json FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .and_then(|config_json| serde_json::from_str::<StoredActivityConfig>(&config_json).ok())
+        .and_then(|stored| stored.evidence);
         sqlx::query("UPDATE learning_activities SET prompt = ?, config_json = ? WHERE activity_id = ?")
             .bind(prompt)
             .bind(serde_json::to_string(&config).map_err(internal)?)

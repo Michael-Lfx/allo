@@ -87,6 +87,7 @@ You are given the finished section bodies, the section manifest and its complexi
       "options": ["A", "B", "C"],
       "answer": "A",
       "explanation": "why, grounded in the source",
+      "evidence": "verbatim quote (<=120 chars) from the section body or cited excerpt that anchors this question",
       "section_key": "s2"
     },
     {
@@ -94,6 +95,7 @@ You are given the finished section bodies, the section manifest and its complexi
       "prompt": "sentence with a ___ blank",
       "answer": ["accepted answer"],
       "explanation": "why, grounded in the source",
+      "evidence": "verbatim quote (<=120 chars) anchoring this question",
       "distractors": ["near-synonym trap"],
       "section_key": "s1"
     }
@@ -119,7 +121,8 @@ Rules:
 - Difficulty ramps with "difficulty": open with 1-2 discrimination questions (difficulty 1), then application (difficulty 2), and close with a synthesis or a deliberate common-mistake trap (difficulty 3).
 - Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
 - ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other).
-- Every explanation states WHY the answer is right AND why the tempting wrong options are wrong; for geometry/function/data questions the explanation may include one ```svg block.
+- Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
+- Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it.
 - Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the section bodies and the cited excerpt.
@@ -141,6 +144,7 @@ Reply with ONLY one JSON object matching this shape:
   "options": ["A", "B"],
   "answer": "A",
   "explanation": "why, grounded in the source",
+  "evidence": "verbatim quote (<=120 chars) from the lesson document or excerpt anchoring this question",
   "distractors": []
 }
 Rules:
@@ -149,6 +153,8 @@ Rules:
 - true_false answer must be a JSON boolean.
 - fill_in_blank prompt contains exactly one "___" blank; answer is a JSON array of 1-3 equivalent accepted answers; provide near-synonym distractors in "distractors" to force fine discrimination.
 - reflection answer must be null and asks the learner to explain or apply an idea from the document.
+- Every OBJECTIVE kind carries "evidence": a verbatim quote of at most 120 characters copied word-for-word from the lesson document or cited excerpt that anchors the question.
+- The explanation walks every option of a choice question (why right / why wrong), not just the correct one.
 - null is allowed ONLY for a reflection answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the lesson document and its cited excerpt; never invent facts outside them.
 - Output JSON only, without Markdown fences or commentary."#;

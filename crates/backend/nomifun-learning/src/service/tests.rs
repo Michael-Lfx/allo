@@ -144,6 +144,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
+                    evidence: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -338,6 +339,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             distractors: Vec::new(),
             tol: None,
             difficulty: None,
+        evidence: None,
         };
         let (score, _) = evaluate(ActivityKind::TrueFalse, &config, &Value::Bool(false)).unwrap();
         assert_eq!(score, 0.0);
@@ -498,6 +500,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             distractors: Vec::new(),
             tol: None,
             section_key: None,
+        evidence: None,
         };
         let pack = CoursePack {
             title: "Shared Concepts".into(),
@@ -622,6 +625,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
+                    evidence: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -1044,6 +1048,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         distractors: vec!["length".into()],
                         tol: None,
                         section_key: None,
+                    evidence: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -1199,6 +1204,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             distractors: Vec::new(),
                             tol: None,
                             section_key: None,
+                        evidence: None,
                         },
                         ActivityPack {
                             difficulty: None,
@@ -1210,6 +1216,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                             distractors: vec!["length".into()],
                             tol: None,
                             section_key: None,
+                        evidence: None,
                         },
                     ],
                     sections: Vec::new(),
@@ -2101,6 +2108,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                         distractors: Vec::new(),
                         tol: None,
                         section_key: None,
+                    evidence: None,
                     }],
                     sections: Vec::new(),
                 }],
@@ -2354,6 +2362,7 @@ fn review_log_test_pack() -> CoursePack {
                     distractors: Vec::new(),
                     tol: None,
                     section_key: None,
+                evidence: None,
                 }],
                 sections: Vec::new(),
             }],
@@ -6905,6 +6914,49 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let mut sorted = rest.clone();
         sorted.sort_unstable();
         assert_eq!(rest, sorted, "同信号节点按 ULID 兜底");
+    }
+
+    /// 证据回引（t2）：config_json 带证据的题，判底揭示随 grade 下发
+    /// evidence；开考投影不漏（判分已定才揭示）。旧行无列读侧容缺。
+    #[tokio::test]
+    async fn quiz_grade_reveals_the_config_evidence() {
+        let (service, user_id) = checkin_test_service().await;
+        let (course_id, lessons, activities) = seed_quiz_course(&service, &user_id, 6).await;
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        sqlx::query("UPDATE learning_activities SET config_json = ? WHERE activity_id = ?")
+            .bind(
+                r#"{"answer":"B","options":["A","B"],"explanation":"2×n.","distractors":[],"matches":[],"evidence":"原文：两个相同加数相加等于该数的两倍。"}"#,
+            )
+            .bind(&activities[0])
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        for lesson in &lessons {
+            complete_quiz_lesson(&service, &user_id, lesson).await;
+        }
+        let round = service.quiz_start(&user_id, &course).await.unwrap();
+        // 开考投影零判底：answer/explanation/evidence 都不下发。
+        let view_json = serde_json::to_string(&round).unwrap();
+        assert!(
+            !view_json.contains("evidence") && !view_json.contains("explanation"),
+            "start projection must stay sanitized: leaked keys"
+        );
+        let graded = service
+            .quiz_grade(&user_id, &course, &round.round_id, &activities[0], &serde_json::json!("B"))
+            .await
+            .unwrap();
+        assert_eq!(
+            graded.evidence.as_deref(),
+            Some("原文：两个相同加数相加等于该数的两倍。"),
+            "grade must reveal the config evidence: {:?}",
+            graded
+        );
+        // 无证据的题：读侧容缺（None），不误伤旧行。
+        let graded_bare = service
+            .quiz_grade(&user_id, &course, &round.round_id, &activities[1], &serde_json::json!("B"))
+            .await
+            .unwrap();
+        assert_eq!(graded_bare.evidence, None, "old rows default to no evidence");
     }
 
     /// 变体（q3）：completer 缺席 = 每节点只出旧题（如实跳过）；脚本
