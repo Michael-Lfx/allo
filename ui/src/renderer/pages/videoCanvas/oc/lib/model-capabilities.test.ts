@@ -130,15 +130,31 @@ describe("video model reference capabilities", () => {
         expect(profile.video?.references.maxVideos).toBeGreaterThan(0);
         expect(profile.video?.operations).toContain("extend");
     });
+
+    test("Seedance and Wan 3.0 keep promptMaxChars at 0", () => {
+        const seedance = modelCapabilityConfigFor(configFor("flowy::doubao-seedance-2-0"), "flowy::doubao-seedance-2-0");
+        const wan = modelCapabilityConfigFor(configFor("flowy::wan3.0-video"), "flowy::wan3.0-video");
+        const h3 = modelCapabilityConfigFor(configFor("flowy::MiniMax-H3"), "flowy::MiniMax-H3");
+        expect(seedance.video?.references.promptMaxChars).toBe(0);
+        expect(wan.video?.references.promptMaxChars).toBe(0);
+        expect(h3.video?.references.promptMaxChars).toBe(7000);
+    });
 });
 
 describe("video prompt length and capability-gated booleans", () => {
-    test("rejects video prompts over the Seedance character limit", () => {
-        const model = "flowy::doubao-seedance-2-0";
-        const error = modelPromptLengthError(configFor(model), model, "video", "画".repeat(1001));
-        expect(error).toContain("1000");
-        expect(error).toContain("1001");
-        expect(modelPromptLengthError(configFor(model), model, "video", "画".repeat(1000))).toBe("");
+    test("does not invent a hard prompt cap when the vendor only advises length", () => {
+        const seedance = "flowy::doubao-seedance-2-0";
+        const wan = "flowy::wan3.0-video";
+        expect(modelPromptLengthError(configFor(seedance), seedance, "video", "画".repeat(1001))).toBe("");
+        expect(modelPromptLengthError(configFor(wan), wan, "video", "画".repeat(2001))).toBe("");
+    });
+
+    test("rejects MiniMax-H3 prompts over the official 7000-character hard limit", () => {
+        const model = "flowy::MiniMax-H3";
+        const error = modelPromptLengthError(configFor(model), model, "video", "画".repeat(7001));
+        expect(error).toContain("7000");
+        expect(error).toContain("7001");
+        expect(modelPromptLengthError(configFor(model), model, "video", "画".repeat(7000))).toBe("");
     });
 
     test("forces audio and watermark off when the model does not support them", () => {

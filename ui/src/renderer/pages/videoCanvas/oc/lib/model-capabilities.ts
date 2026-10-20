@@ -32,6 +32,10 @@ export type ModelCapabilityConfig = {
 
 export type VideoCapabilityConfig = {
     references: {
+        /**
+         * Vendor hard-reject cap. `0` means the API does not reject over-length
+         * prompts, so the product must not invent a hard limit either.
+         */
         promptMaxChars: number;
         maxImages: number;
         maxImageBytes: number;
@@ -168,7 +172,7 @@ function isGptImageModel(model: string) {
 
 function basicVideoRefs(overrides: Partial<VideoCapabilityConfig["references"]> = {}): VideoCapabilityConfig["references"] {
     return {
-        promptMaxChars: 1000,
+        promptMaxChars: 0,
         maxImages: 9,
         maxImageBytes: 30 * 1024 * 1024,
         maxVideos: 3,
@@ -184,6 +188,7 @@ function basicVideoRefs(overrides: Partial<VideoCapabilityConfig["references"]> 
 function minimaxH3VideoCapability(): VideoCapabilityConfig {
     return {
         references: {
+            // MiniMax-H3 official API rejects prompts over 7000 characters.
             promptMaxChars: 7000,
             maxImages: 9,
             maxImageBytes: 30 * 1024 * 1024,
@@ -215,7 +220,7 @@ function minimaxH3VideoCapability(): VideoCapabilityConfig {
 function wan3VideoCapability(): VideoCapabilityConfig {
     return {
         references: {
-            promptMaxChars: 2000,
+            promptMaxChars: 0,
             maxImages: 9,
             maxImageBytes: 30 * 1024 * 1024,
             maxVideos: 3,
@@ -247,7 +252,7 @@ function seedanceVideoCapability(model: string): VideoCapabilityConfig {
     const caps = videoModelCapabilities(model);
     return {
         references: {
-            promptMaxChars: 1000,
+            promptMaxChars: 0,
             maxImages: SEEDANCE_REFERENCE_LIMITS.images,
             maxImageBytes: SEEDANCE_REFERENCE_LIMITS.imageMaxBytes,
             maxVideos: SEEDANCE_REFERENCE_LIMITS.videos,
@@ -440,6 +445,8 @@ function mergeVideoCapabilityConfig(stored: ModelCapabilityConfig | undefined, p
             references: {
                 ...fallbackRefs,
                 ...refs,
+                // Catalog used to persist Seedance-style 1000 as a hard block.
+                promptMaxChars: fallbackRefs.promptMaxChars,
                 maxVideos: refs.maxVideos > 0 ? refs.maxVideos : fallbackRefs.maxVideos,
                 maxAudios: refs.maxAudios > 0 ? refs.maxAudios : fallbackRefs.maxAudios,
                 maxVideoBytes: refs.maxVideoBytes > 0 ? refs.maxVideoBytes : fallbackRefs.maxVideoBytes,
@@ -808,10 +815,15 @@ export function canvasModelSpecPatch(
     return {};
 }
 
+/** `0` when the vendor does not hard-reject over-length prompts. */
+export function videoPromptHardMaxChars(maxChars: number | undefined): number {
+    return maxChars && maxChars > 0 ? maxChars : 0;
+}
+
 export function modelPromptLengthError(config: CapabilityLookupConfig, model: string, capability: "text" | "image" | "video", prompt: string) {
     if (capability !== "video") return "";
-    const maxChars = modelCapabilityConfigFor(config, model).video?.references.promptMaxChars;
-    if (!maxChars || maxChars <= 0) return "";
+    const maxChars = videoPromptHardMaxChars(modelCapabilityConfigFor(config, model).video?.references.promptMaxChars);
+    if (!maxChars) return "";
     const actualChars = Array.from(prompt).length;
     if (actualChars <= maxChars) return "";
     return canvasT(
