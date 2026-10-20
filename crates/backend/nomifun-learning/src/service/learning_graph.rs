@@ -1490,13 +1490,74 @@ impl LearningService {
                 }
                 rulings.insert(key, concept_id.to_owned());
             }
+            // ── 评审建议机械转化（t4）：advice 指向「裁为别名/复用」且宿主可
+            // 机械解析的 teaches/mints 问题，由代码直接执行——合成 reuse 裁决
+            // （复用 j04 落池通道：不铸新行、落宿主活跃别名、引用随裁决改
+            // 写），问题从报告剔除，不折返模型。真机实录（run-1792403482606
+            // call 3）这类问题每次打回烧一轮重裁预算（点修越权高发段）。解析
+            // 面从窄（见 advice_alias 模块），解析失败的问题照常打回。转化不
+            // 进点修守卫基线（不改写 candidate；记录进批次 note 留痕）。
+            let mut advice_converted: Vec<(String, String, String)> = Vec::new();
+            {
+                let nomination_names: HashSet<String> = outcome
+                    .nominations
+                    .iter()
+                    .map(|plan| plan.name.trim().to_lowercase())
+                    .collect();
+                let parsed = crate::learning_graph::advice_alias::advice_reuse_conversions(
+                    &review.problems,
+                    &nomination_names,
+                    &outcome.registry_name_hosts,
+                    &outcome.registry_concept_ids,
+                );
+                let mut dropped: Vec<usize> = Vec::new();
+                for (index, name, host_id) in parsed {
+                    if rulings.contains_key(&name) {
+                        // 评审显式裁决优先；advice 只是补位。
+                        continue;
+                    }
+                    let canonical = outcome
+                        .registry_name_hosts
+                        .values()
+                        .find_map(|(id, canonical)| (id == &host_id).then_some(canonical.clone()))
+                        .unwrap_or_else(|| host_id.clone());
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        name = %name,
+                        host = %canonical,
+                        concept_id = %host_id,
+                        "review advice mechanically converted to a reuse ruling — problem dropped"
+                    );
+                    advice_converted.push((name.clone(), canonical, host_id.clone()));
+                    rulings.insert(name, host_id);
+                    dropped.push(index);
+                }
+                if !dropped.is_empty() {
+                    let mut kept = Vec::with_capacity(review.problems.len());
+                    for (index, problem) in review.problems.drain(..).enumerate() {
+                        if !dropped.contains(&index) {
+                            kept.push(problem);
+                        }
+                    }
+                    review.problems = kept;
+                }
+            }
+            // 撞池机械复用（gate 面已吸收红条）：裁决合入——机械事实优先于
+            // 评审/advice 裁决（撞池名落别的宿主会在落池时 Conflict）。
+            for (name, host_id) in &outcome.auto_reusals {
+                rulings.insert(name.clone(), host_id.clone());
+            }
             if !rulings.is_empty() && !review.problems.is_empty() {
                 let resolved_mask: Vec<bool> = review
                     .problems
                     .iter()
                     .map(|problem| {
                         matches!(problem.field.as_str(), "teaches" | "mints")
-                            && rulings.keys().any(|key| problem.issue.contains(&format!("「{key}」")))
+                            && rulings.keys().any(|key| {
+                                // 「」/『』两种书名习惯都认（真机实录混用）。
+                                problem.issue.contains(&format!("「{key}」"))
+                                    || problem.issue.contains(&format!("『{key}』"))
+                            })
                     })
                     .collect();
                 let resolved_count = resolved_mask.iter().filter(|resolved| **resolved).count();
