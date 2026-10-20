@@ -46,13 +46,13 @@ use crate::completer::LearningCompleter;
 
 /// 就绪节点的补货目标：每次生长把就绪存量补到这个数（learnhub 的「7」——
 /// 门与提示词同源的唯一数字，ADR-0009）。
-pub(crate) const READY_TARGET: usize = 7;
+pub(crate) const READY_TARGET: usize = 5;
 
 /// 自动触发的水位线：节点完成时检查，就绪存量低于该值才触发生长。
 pub(crate) const READY_TRIGGER: usize = 3;
 
 /// 单批新增节点上限（提示词与门同源，超过整批拒收）。
-pub(crate) const MAX_BATCH_NODES: usize = 7;
+pub(crate) const MAX_BATCH_NODES: usize = 5;
 
 // ── Tiers ──────────────────────────────────────────────────────────────────
 
@@ -126,6 +126,11 @@ pub struct ConceptMint {
     pub aliases: Vec<String>,
     #[serde(default)]
     pub definition: String,
+    /// 铸名的 attestation 出处（t8：「教练提名：……」——谁在哪个语境铸的
+    /// 名；纯簿记不进门禁，缺省合法。不做书目引用——无教材数据源，写了
+    /// 必是编造）。
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// new_aliases 通道（三轮 g2）：给**既有**概念提名新名的专职入口——
@@ -344,7 +349,7 @@ pub fn validate_batch(
                     message: format!(
                         "节点 {title} 假定「{name}」到「{assumed}」档位，但既往批次没有节点把它教到该档位——{hint}",
                         name = assumption.name.trim(),
-                        assumed = tier_zh(assumption.tier),
+                        assumed = assumption.tier.as_str(),
                         hint = "同批兄弟的 teaches 与本批铸名不算供给（同批无先后、必须同时就绪）：把本节点留到下一批，本批可先长教该概念的铺垫节点",
                     ),
                 });
@@ -379,7 +384,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
       "assumes": [ { "name": "概念名（必须已被既往批次教到该档位；本批兄弟不算）", "tier": "know" } ]
     }
   ],
-  "mints": [ { "canonical": "新概念名（只登记名字，铸名≠教）", "aliases": ["别名"], "definition": "一句话定义" } ],
+  "mints": [ { "canonical": "新概念名（只登记名字，铸名≠教）", "aliases": ["别名"], "definition": "一句话定义", "source": "铸名出处（可省）：谁在哪个语境铸的名，如「教练提名：低位加法竖式的位权解释」——不是书目引用，禁止编造教材出处" } ],
   "new_aliases": [ { "name": "既有概念的新名字", "definition": "该名字下的意义（投影角度定义）", "source": "提名出处（哪个角度需要它）" } ],
   "note": "一句话批注：本批为什么长这些节点"
 }
@@ -420,9 +425,9 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 行为摘要给出近窗正确率趋势、卡点节点与真实保留率：生长方向优先回应卡点——在卡点节点附近补铺垫或对比节点，而不是无视它继续铺新域。
 - 但不要为单个卡点堆同质节点：一次至多一个针对性的回应节点。
 【数量契约】
-- 本次生长：把就绪节点补到 7 个。当前就绪 X 个、缺口 7-X 个，则本批新增节点 ≤ 7-X 个且至多 7 个；缺口为 0 时输出空 nodes。
-- 批容量红线：一批（含打回后的修订稿）绝不超过 7 个节点——修订稿超限时宁可将这批拆小重交，不得超限。
-- 缺口就是本批的铺开面，通常铺得满：入口层天然是宽的——目标之下往往有比预期更多的底层方向，每个方向的最底层台阶各摆一个入口节点，直到铺满 7 个；真穷尽了互不依赖的独立方向才允许少长，并在 note 里逐一点名已铺的方向（举证不是偷懒）。例：目标「独立做出一款小游戏」，入口层可以同时铺编程语言、平面绘图、关卡设计、操作手感、叙事节奏、音效、发布渠道——底层方向常常比预想还多。
+- 本次生长：把就绪节点补到 {READY_TARGET} 个。当前就绪 X 个、缺口 {READY_TARGET}-X 个，则本批新增节点 ≤ {READY_TARGET}-X 个且至多 {MAX_BATCH_NODES} 个；缺口为 0 时输出空 nodes。
+- 批容量红线：一批（含打回后的修订稿）绝不超过 {MAX_BATCH_NODES} 个节点——修订稿超限时宁可将这批拆小重交，不得超限。
+- 缺口就是本批的铺开面，通常铺得满：入口层天然是宽的——目标之下往往有比预期更多的底层方向，每个方向的最底层台阶各摆一个入口节点，直到铺满 {READY_TARGET} 个；真穷尽了互不依赖的独立方向才允许少长，并在 note 里逐一点名已铺的方向（举证不是偷懒）。例：目标「独立做出一款小游戏」，入口层可以同时铺编程语言、平面绘图、关卡设计、操作手感、叙事节奏、音效、发布渠道——底层方向常常比预想还多。
 【提交前自查】输出前逐条核对，任何一条不满足就先改再输出：
 1. 每个 teaches/assumes 的名字都能在登记表、已教账或本批 mints 里找到；
 2. 每条 assumes 的概念都已由既往批次教到了不低于所假定档位（本批兄弟的 teaches 与本批铸名不算数）；
@@ -433,6 +438,15 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 7. 每个节点的 difficulty 都按标尺如实申报（形式化/证明类不得压档）。
 【输出】
 - 只输出 JSON，不要 Markdown 代码块，不要任何解释。note 与 purpose 用中文。"#;
+
+/// [`COACH_SYSTEM`] 的装配面（t7）：数量契约段的 `{READY_TARGET}`/
+/// `{MAX_BATCH_NODES}` 占位符以常量单源注入——改批容量只改常量，提示词
+/// 不再手写数字。
+pub(crate) fn coach_system() -> String {
+    COACH_SYSTEM
+        .replace("{READY_TARGET}", &READY_TARGET.to_string())
+        .replace("{MAX_BATCH_NODES}", &MAX_BATCH_NODES.to_string())
+}
 
 /// Everything the coach needs, rendered once into the opening user message.
 /// 字段序不是渲染序——渲染按 g3 裁定的 9 块注意力序（见 [`CoachContext::render`]）。
@@ -517,7 +531,7 @@ impl CoachContext {
         }
         // 块 4：当前就绪。
         text.push_str(&format!(
-            "\n【当前就绪】{ready} 个（目标 7 个，缺口 {gap} 个）\n",
+            "\n【当前就绪】{ready} 个（目标 {READY_TARGET} 个，缺口 {gap} 个）\n",
             ready = self.ready_count
         ));
         // 块 5：花名册。
@@ -560,7 +574,7 @@ impl CoachContext {
 /// back as retry feedback. Values are TRIMMED into the canonical struct only
 /// after the shape contract passes.
 pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
-    let value = crate::generation::parse_json_object::<serde_json::Value>(raw).map_err(|error| {
+    let mut value = crate::generation::parse_json_object::<serde_json::Value>(raw).map_err(|error| {
         tracing::warn!(
             error = %error,
             raw_len = raw.len(),
@@ -569,6 +583,15 @@ pub(crate) fn parse_coach_reply(raw: &str) -> Result<ProposedBatch, AppError> {
         );
         AppError::UnprocessableEntity(format!("- [ng.parse] 教练回包不是单个 JSON 对象：{error}"))
     })?;
+    // 机械归一（t7）：中文档位/est 字符串在契约核验前重写（可机械判定的
+    // 不送模型——真机 round 4 死链的引信）；词表/范围门照旧。
+    let rewrites = growth_contract::normalize_proposal(&mut value);
+    if rewrites > 0 {
+        tracing::warn!(
+            rewrites,
+            "coach reply mechanically normalized before the shape contract (中文档位/est 字符串)"
+        );
+    }
     let violations: Vec<structure_contract::ContractViolation> =
         growth_contract::validate_proposal(&value)
             .into_iter()
@@ -625,7 +648,7 @@ pub(crate) async fn coach_draft(
     let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
-        COACH_SYSTEM,
+        &coach_system(),
         &user,
         crate::generation::COACH_MAX_TOKENS,
         None,
@@ -657,7 +680,7 @@ pub(crate) async fn coach_redraft(
     let raw = crate::generation::complete_json_coach(
         completer,
         model_override,
-        COACH_SYSTEM,
+        &coach_system(),
         &user,
         crate::generation::COACH_MAX_TOKENS,
         None,
@@ -1208,7 +1231,7 @@ pub fn render_coverage_gauge(reading: &CoverageReading) -> String {
         let items = reading
             .tier_footprint
             .iter()
-            .map(|(tier, count)| format!("{} {}", tier_zh(*tier), count))
+            .map(|(tier, count)| format!("{} {}", tier.as_str(), count))
             .collect::<Vec<_>>()
             .join(" / ");
         format!(
@@ -1290,8 +1313,8 @@ mod tests {
                 node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![]),
             ],
             mints: vec![
-                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
-                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
+                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new(), source: None },
+                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new(), source: None },
             ],
             note: String::new(),
         };
@@ -1306,7 +1329,7 @@ mod tests {
                 vec![reference("公式法", ConceptTier::Know)],
                 vec![reference("因式分解", ConceptTier::Apply)],
             )],
-            mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() }],
+            mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new(), source: None }],
             note: String::new(),
         };
         let mut coverage = ConceptCoverage::new();
@@ -1467,8 +1490,8 @@ mod tests {
                 node("用公式法解因式分解题", vec![reference("公式法", ConceptTier::Know)], vec![reference("因式分解", ConceptTier::Know)]),
             ],
             mints: vec![
-                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new() },
-                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() },
+                ConceptMint { canonical: "因式分解".into(), aliases: vec!["因式拆解".into()], definition: String::new(), source: None },
+                ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new(), source: None },
             ],
             note: String::new(),
         };
@@ -1540,7 +1563,7 @@ mod tests {
         let mut batch = ProposedBatch {
             new_aliases: Vec::new(),
             nodes: vec![node("新节点", vec![reference("既有概念", ConceptTier::Know)], vec![reference("幽灵概念", ConceptTier::Know)])],
-            mints: vec![ConceptMint { canonical: "既有概念".into(), aliases: vec![], definition: String::new() }],
+            mints: vec![ConceptMint { canonical: "既有概念".into(), aliases: vec![], definition: String::new(), source: None }],
             note: String::new(),
         };
         let (errors, warns) = validate_batch(&mut batch, &ConceptCoverage::new(), &registry, &HashMap::new(), &HashSet::new());
@@ -1580,11 +1603,11 @@ mod tests {
         );
     }
 
+    /// t7 反转：中文档位（知道/会用/能教）与 est 字符串数字在契约核验前
+    /// 被机械归一（可机械判定的不送模型——真机 round 4 死链的引信），
+    /// 回包照常装填；语义违规（est 超范围）仍打回，归一不造值。
     #[test]
-    /// g4：容错 deserializer 已退役——字符串 est 值与中文档位不再是
-    /// 「容忍解析」，而是带条款报告的违约（报告进重试装配）。
-    #[test]
-    fn parse_coach_reply_rejects_legacy_tolerant_shapes_with_clause_report() {
+    fn parse_coach_reply_normalizes_chinese_tiers_and_string_est() {
         let raw = r#"{
             "nodes": [
                 { "title": "用配方法解方程", "purpose": "p", "est": "15",
@@ -1594,13 +1617,38 @@ mod tests {
             "mints": [],
             "note": "n"
         }"#;
-        let error = parse_coach_reply(raw).unwrap_err();
-        let message = error.to_string();
-        // est 键下的字符串值 = 形状违约（ng.nodes.est）；旧键名 minutes 本身
-        // 已退役，按未知键打回（见 retired_minutes_key_is_an_unknown_key_violation）
-        // ——两者都不再被容错吞掉。
-        assert!(message.contains("ng.nodes.est"), "{message}");
-        assert!(message.contains("ng.refs.tier"), "{message}");
+        let batch = parse_coach_reply(raw).unwrap();
+        assert_eq!(batch.nodes[0].est, Some(15), "string est digits normalize");
+        assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
+        assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
+        // 语义违规不受归一庇护：est "0" 解析为 0 后仍被范围门打回。
+        let out_of_range = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "est": "0",
+                  "teaches": [{"name": "配方法", "tier": "会用"}], "assumes": [] }
+            ],
+            "mints": [],
+            "note": "n"
+        }"#;
+        let error = parse_coach_reply(out_of_range).unwrap_err();
+        assert!(
+            error.to_string().contains("ng.nodes.est"),
+            "range gate still fires after normalization: {error}"
+        );
+        // 未知档位词（非中英词表）仍打回——归一只认可机械判定的映射。
+        let unknown_tier = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "est": 15,
+                  "teaches": [{"name": "配方法", "tier": "熟练"}], "assumes": [] }
+            ],
+            "mints": [],
+            "note": "n"
+        }"#;
+        let error = parse_coach_reply(unknown_tier).unwrap_err();
+        assert!(
+            error.to_string().contains("ng.refs.tier"),
+            "unknown tier words stay red: {error}"
+        );
     }
 
     /// 退役键名：`minutes` 不在节点键白名单，旧习惯回潮按未知键打回。
@@ -1728,8 +1776,9 @@ mod tests {
         assert!(text.contains("存量 12：已学达标 4、已跳过 2、未达标 6"), "{text}");
         assert!(text.contains("未达标：「节点0」"), "{text}");
         assert!(text.contains("等 2 个"), "10 个只列 8 个: {text}");
-        assert!(text.contains("会用 5"), "{text}");
-        assert!(text.contains("知道 3"), "{text}");
+        // t7：教练面档位词表改英文。
+        assert!(text.contains("apply 5"), "{text}");
+        assert!(text.contains("know 3"), "{text}");
 
         let cleared = render_coverage_gauge(&CoverageReading {
             total: 5,
@@ -1746,8 +1795,11 @@ mod tests {
     fn coach_context_renders_the_gap_contract() {
         let context = CoachContext { ready_count: 2, ..Default::default() };
         let rendered = context.render();
-        assert!(rendered.contains("缺口 5 个"), "{rendered}");
-        assert!(rendered.contains("把就绪节点补到 7 个") == false, "the number contract lives in the system prompt");
+        // t7：就绪目标 7→5（缺口 = 5 − 2 = 3）；数量契约细节仍只住系统提示词。
+        assert!(rendered.contains("缺口 3 个"), "{rendered}");
+        assert!(rendered.contains("把就绪节点补到 5 个") == false, "the number contract lives in the system prompt");
+        assert!(coach_system().contains("把就绪节点补到 5 个"));
+        assert!(coach_system().contains("至多 5 个"));
     }
 
     /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；

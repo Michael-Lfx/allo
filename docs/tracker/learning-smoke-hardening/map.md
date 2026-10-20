@@ -74,9 +74,20 @@
 
 ## Not yet specified
 
-- 深批次批目标：7 vs learnhub 1–5 档——数据已齐（上 Notes：round 4 失败
-  集中在重裁循环，与批量正相关），批目标/水位线是产品行为，归产品波裁
-  决；本波不动（Out of scope 口径不变）。
+- 深批次批目标：7 vs learnhub 1–5 档——**已裁（2026-10-20 grill 轮）**：
+  `MAX_BATCH_NODES` 与 `READY_TARGET` 双 7→5，归 t7 落地（用户明裁，推荐
+  队列深度产品行为变更用户认可，整体测试兜底）。
+- 铸名 source 出处——**已裁（2026-10-20）**：本波落地（t8），attestation
+  口径，迁移 082。
+
+## 增补票（2026-10-20 第二轮裁决）
+
+- [t7](tickets/t7-tier-normalization-and-batch-five.md) 中文档位/est 字符串
+  解析归一 + 教练面英文词表 + 批容量与就绪线双 5——grow 收官票；
+- [t8](tickets/t8-mint-source-attestation.md) 铸名 source 落地（t2 条款 3
+  补完，attestation 口径）。
+
+收官后开草稿 PR（单分支单大 PR，四波导览描述）。
 
 ## Out of scope
 

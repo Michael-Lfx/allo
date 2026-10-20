@@ -5537,6 +5537,54 @@ async fn mint_colliding_with_registry_name_is_mechanically_reused() {
     );
 }
 
+/// 铸名 source 出处（t8，attestation 口径）：mint 带 source → registry 行
+/// 落 source 列；缺省合法（NULL），门禁不因缺 source 打回。
+#[tokio::test]
+async fn mint_source_attestation_lands_on_the_registry_row() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用位权解释低位加法竖式", "purpose": "从数位对齐切入", "est": 15,
+             "teaches": [{"name": "位权进位解释", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "位权进位解释", "aliases": [], "definition": "用位权说明进位为什么向左",
+             "source": "教练提名：低位加法竖式的位权解释"}
+        ],
+        "new_aliases": [],
+        "note": "出处稿"
+    }"#;
+    let review_json = r#"{"verdict":"pass"}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let (source,): (Option<String>,) = sqlx::query_as(
+        "SELECT source FROM learning_concept_registry WHERE canonical = '位权进位解释'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(
+        source.as_deref(),
+        Some("教练提名：低位加法竖式的位权解释"),
+        "the mint attestation lands on the registry row"
+    );
+    // 缺省合法：种子概念的 source 为 NULL（迁移加列，旧行默认）。
+    let (seed_source,): (Option<String>,) = sqlx::query_as(
+        "SELECT source FROM learning_concept_registry WHERE canonical = '向量基础'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(seed_source, None, "source stays nullable bookkeeping");
+}
+
 /// new_aliases 归一化直定宿主：提名定义与既有概念逐字相同 → 门面机械绑定
 ///（评审零裁决也放行），别名带提名定义与出处落池。
 #[tokio::test]

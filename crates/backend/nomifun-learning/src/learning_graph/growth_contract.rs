@@ -19,7 +19,7 @@ pub const BATCH_KEYS: &[&str] = &["nodes", "mints", "new_aliases", "note"];
 /// 节点键白名单（缺省可选键见各条款）。
 pub const NODE_KEYS: &[&str] = &["title", "purpose", "est", "difficulty", "teaches", "assumes"];
 /// 铸名键白名单。
-pub const MINT_KEYS: &[&str] = &["canonical", "aliases", "definition"];
+pub const MINT_KEYS: &[&str] = &["canonical", "aliases", "definition", "source"];
 /// new_aliases 提名键白名单（三轮 g2：三字段全必填）。
 pub const NEW_ALIAS_KEYS: &[&str] = &["name", "definition", "source"];
 /// 节点标题长度上限（字符）。
@@ -50,6 +50,63 @@ fn as_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
 
 fn array_at<'a>(value: &'a Value, key: &str) -> Option<&'a Vec<Value>> {
     value.get(key).and_then(Value::as_array)
+}
+
+/// 机械归一面（t7）：教练稿里**可机械判定**的旧形状在契约核验前就地重写
+/// ——① 中文档位（知道/会用/能教，我们自己的材料面教出去的，真机 round 4
+/// 确定性死链的引信）→ know/apply/teach（英文大小写折叠同收）；② est 字
+/// 符串数字 → 整数。范围/词表核验照旧（「0」这类语义违规仍打回——归一不
+/// 造值）。返回重写条数（调用方 warn 留痕）。与 t4 同律：可机械判定的不
+/// 送模型。
+pub fn normalize_proposal(value: &mut Value) -> usize {
+    let Some(nodes) = value.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut rewrites = 0usize;
+    for node in nodes {
+        for field in ["teaches", "assumes"] {
+            let Some(references) = node.get_mut(field).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for reference in references {
+                let Some(tier) = reference.get("tier").and_then(Value::as_str) else {
+                    continue;
+                };
+                let key = tier.trim();
+                let mapped = match key {
+                    "知道" => Some("know"),
+                    "会用" => Some("apply"),
+                    "能教" => Some("teach"),
+                    _ => match key.to_lowercase().as_str() {
+                        "know" if key != "know" => Some("know"),
+                        "apply" if key != "apply" => Some("apply"),
+                        "teach" if key != "teach" => Some("teach"),
+                        _ => None,
+                    },
+                };
+                if let Some(mapped) = mapped
+                    && reference
+                        .as_object_mut()
+                        .is_some_and(|map| map.insert("tier".into(), Value::String(mapped.into())).is_some())
+                {
+                    rewrites += 1;
+                }
+            }
+        }
+        let est_is_string = node
+            .get("est")
+            .is_some_and(|est| est.as_str().is_some_and(|text| text.trim().parse::<u16>().is_ok()));
+        if est_is_string
+            && let Some(text) = node.get("est").and_then(Value::as_str)
+            && let Ok(parsed) = text.trim().parse::<u16>()
+            && node
+                .as_object_mut()
+                .is_some_and(|map| map.insert("est".into(), Value::Number(parsed.into())).is_some())
+        {
+            rewrites += 1;
+        }
+    }
+    rewrites
 }
 
 /// 生长批**形状契约**（ng.*，无 DB 事实）：顶层键、节点形状/词表/量级、批内
