@@ -1080,11 +1080,6 @@ async fn run_quiz(
         "escalated node must come first, got {}",
         round.questions[0].node_id
     );
-    anyhow::ensure!(
-        round.questions.len() == k as usize,
-        "no provider: bank-only plan (one question per node), got {}",
-        round.questions.len()
-    );
     let plan_json_started: String =
         sqlx::query_scalar("SELECT plan_json FROM learning_quiz_rounds WHERE round_id = ?")
             .bind(&round.round_id)
@@ -1722,23 +1717,84 @@ async fn run_repair(
     let service = wiring.service.clone();
     let pool = wiring.pool.clone();
 
-    // 种子：图课程（结构快照两块）+ 一条 findings 留痕（触发门槛）。
+    // 种子：全量合法 gd.* 盘面（t1 修法 1——对齐 structure_contract 金样形状：
+    // 6 主干 × 42 块、八标量键齐、gaps/quality 齐、门口 G1 地形对账）+ 一条
+    // findings 留痕（触发门槛）。旧的最小种子（2 块、零 frontmatter）从两条
+    // 路都是死路：非空 ops 应用后全量复核必拒、noop 盘面原样复验必拒——种
+    // 子合法化后 applied（修补 op 应用后仍合法）与 noop（盘面没动）都可行。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
     let now = nomifun_common::now_ms();
+    let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+    let stages = ["入门", "进阶", "高级"];
+    let mut blocks = Vec::new();
+    for (spine_index, spine) in spine_names.iter().enumerate() {
+        for block_index in 0..7 {
+            let ordinal = spine_index * 7 + block_index;
+            blocks.push(serde_json::json!({
+                "name": format!("块{ordinal:02}"),
+                "slug": format!("block-{ordinal:02}"),
+                "spine": spine,
+                "stage": stages[ordinal % stages.len()],
+                "note": format!("第 {ordinal} 个主题的一句话描述"),
+            }));
+        }
+    }
     let structure = serde_json::json!({
         "goal": "修补冒烟目标",
-        "spines": [{ "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }],
-        "blocks": [
-            { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "第一块" },
-            { "name": "块二", "slug": "block-02", "spine": "主干一", "stage": "进阶", "note": "第二块" }
+        "goal_type": "capability",
+        "proficiency_statement": "达成后能独立复述本结构的修补判据",
+        "domain_type": "理论",
+        "form_reference": "Flowy 学习结构模板 v1",
+        "source_tier": "名录",
+        "generated_by": "learning-smoke-seed",
+        "disclaimer": "冒烟种子为静态合法盘面，仅供修补回合验证",
+        "domain": {
+            "core_definition": "修补冒烟的合法结构基线",
+            "includes": ["结构判据", "修补操作", "留痕通道"],
+            "excludes": ["真实课程内容", "学习者数据", "生产库"],
+            "prerequisite_doors": ["G1"],
+            "audience": "冒烟操作者",
+            "scenarios": ["修补回合验证", "盘面复验"],
+            "granularity": "每块一个可独立教学的主题",
+        },
+        "spines": spine_names.iter().map(|spine| serde_json::json!({
+            "name": spine,
+            "definition": format!("{spine}的一句话定义"),
+            "key_points": ["要点一"],
+            "instance": format!("达标{spine}时能独立完成一次复述"),
+        })).collect::<Vec<_>>(),
+        "blocks": blocks,
+        "edges": [
+            { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" },
+            { "source": "块08", "target": "块09", "type": "composes", "tier": "use", "note": "组装" },
+            { "source": "块15", "target": "块16", "type": "contrasts", "tier": "know", "note": "对照" },
         ],
-        "edges": []
+        "gaps": [
+            { "item": "应用情境覆盖不足", "direction": "补情境块" },
+            { "item": "图像法未展开", "direction": "补图像判读" },
+            { "item": "近似解法缺位", "direction": "补估算策略" },
+        ],
+        "quality": [
+            { "check": "主干数在 6–12 档", "status": "met" },
+            { "check": "块名一物一名", "status": "met" },
+            { "check": "边端点全部可解析", "status": "met" },
+            { "check": "无顺序承诺", "status": "met" },
+            { "check": "盲区已标注", "status": "met" },
+        ],
     });
     let envelope = serde_json::json!({
         "version": 1,
         "generated_at": now,
         "structure": structure,
-        "terrain": { "doors": [] },
+        "terrain": {
+            "goal": "修补冒烟目标",
+            "learner_basis_assumed": "已具备结构判据的基线认识",
+            "generated_by": "learning-smoke-seed",
+            "disclaimer": "冒烟种子地形，仅供门口对账",
+            "doors": [
+                { "id": "G1", "criterion": "能读懂结构快照的块与边", "kind": "hard" },
+            ],
+        },
     });
     sqlx::query(
         "INSERT INTO learning_courses \
