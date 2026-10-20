@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.4 - 2026-10-20
+
+- Storyboard canvas no longer shows a cut badge. Video prompts are truncated only after a vendor hard-rejects them, not by a local character cap.
+- News briefings can be deleted, and the instant-film player maximize control works again.
+- Token connectors in the Agent Store are renamed to avoid colliding with official entries, keep structured MCP transport on import, and carry entry avatars.
+
 ## v1.6.3 - 2026-10-16
 
 - Session-directory skills can load automatically, and OpenAI `tool_calls` pairing is fixed.
