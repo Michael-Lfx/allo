@@ -2408,13 +2408,15 @@ impl LearningService {
                     .map_err(internal)?;
                     sqlx::query(
                         "INSERT INTO learning_concept_registry \
-                         (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
-                         VALUES (?, ?, ?, ?, ?, ?)",
+                         (concept_id, canonical, aliases_json, definition, source, created_at, updated_at) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?)",
                     )
                     .bind(&concept_id)
                     .bind(mint.canonical.trim())
                     .bind(aliases)
                     .bind(mint.definition.trim())
+                    // attestation 出处（t8）：纯簿记，缺省 NULL。
+                    .bind(mint.source.as_deref().map(str::trim).filter(|s| !s.is_empty()))
                     .bind(now)
                     .bind(now)
                     .execute(&mut *transaction)
@@ -3310,8 +3312,10 @@ impl LearningService {
             let mut parts: Vec<String> = Vec::new();
             if let Some(concepts) = concepts.get(candidate.lesson_id.as_str()) {
                 for (canonical, tier, role) in concepts {
+                    // 档位词表用英文（t7：教练面单源词表——花名册是模型
+                    // 照抄档位的主要源头）。
                     let tier = crate::learning_graph::ConceptTier::try_from_str(tier)
-                        .map(crate::learning_graph::tier_zh)
+                        .map(|tier| tier.as_str())
                         .unwrap_or("?");
                     parts.push(format!("{role}:{canonical}@{tier}"));
                 }
@@ -3346,7 +3350,8 @@ impl LearningService {
         items.sort();
         Ok(items
             .into_iter()
-            .map(|(canonical, tier)| format!("{canonical}@{}", crate::learning_graph::tier_zh(tier)))
+            // 档位词表用英文（t7：已教账是模型照抄中文档位的根因源头）。
+            .map(|(canonical, tier)| format!("{canonical}@{}", tier.as_str()))
             .collect::<Vec<_>>()
             .join("、"))
     }
