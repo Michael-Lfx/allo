@@ -1515,7 +1515,7 @@ mod tests {
                 vec![reference("公式法", ConceptTier::Know)],
                 vec![reference("因式分解", ConceptTier::Apply)],
             )],
-            mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new() }],
+            mints: vec![ConceptMint { canonical: "公式法".into(), aliases: vec![], definition: String::new(), source: None }],
             note: String::new(),
         };
         let mut coverage = ConceptCoverage::new();
@@ -1793,10 +1793,7 @@ mod tests {
     /// 被机械归一（可机械判定的不送模型——真机 round 4 死链的引信），
     /// 回包照常装填；语义违规（est 超范围）仍打回，归一不造值。
     #[test]
-    /// g4：容错 deserializer 已退役——字符串 est 值与中文档位不再是
-    /// 「容忍解析」，而是带条款报告的违约（报告进重试装配）。
-    #[test]
-    fn parse_coach_reply_rejects_legacy_tolerant_shapes_with_clause_report() {
+    fn parse_coach_reply_normalizes_chinese_tiers_and_string_est() {
         let raw = r#"{
             "nodes": [
                 { "title": "用配方法解方程", "purpose": "p", "est": "15",
@@ -1806,13 +1803,38 @@ mod tests {
             "mints": [],
             "note": "n"
         }"#;
-        let error = parse_coach_reply(raw).unwrap_err();
-        let message = error.to_string();
-        // est 键下的字符串值 = 形状违约（ng.nodes.est）；旧键名 minutes 本身
-        // 已退役，按未知键打回（见 retired_minutes_key_is_an_unknown_key_violation）
-        // ——两者都不再被容错吞掉。
-        assert!(message.contains("ng.nodes.est"), "{message}");
-        assert!(message.contains("ng.refs.tier"), "{message}");
+        let batch = parse_coach_reply(raw).unwrap();
+        assert_eq!(batch.nodes[0].est, Some(15), "string est digits normalize");
+        assert_eq!(batch.nodes[0].teaches[0].tier, ConceptTier::Apply);
+        assert_eq!(batch.nodes[0].assumes[0].tier, ConceptTier::Know);
+        // 语义违规不受归一庇护：est "0" 解析为 0 后仍被范围门打回。
+        let out_of_range = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "est": "0",
+                  "teaches": [{"name": "配方法", "tier": "会用"}], "assumes": [] }
+            ],
+            "mints": [],
+            "note": "n"
+        }"#;
+        let error = parse_coach_reply(out_of_range).unwrap_err();
+        assert!(
+            error.to_string().contains("ng.nodes.est"),
+            "range gate still fires after normalization: {error}"
+        );
+        // 未知档位词（非中英词表）仍打回——归一只认可机械判定的映射。
+        let unknown_tier = r#"{
+            "nodes": [
+                { "title": "用配方法解方程", "purpose": "p", "est": 15,
+                  "teaches": [{"name": "配方法", "tier": "熟练"}], "assumes": [] }
+            ],
+            "mints": [],
+            "note": "n"
+        }"#;
+        let error = parse_coach_reply(unknown_tier).unwrap_err();
+        assert!(
+            error.to_string().contains("ng.refs.tier"),
+            "unknown tier words stay red: {error}"
+        );
     }
 
     /// 退役键名：`minutes` 不在节点键白名单，旧习惯回潮按未知键打回。
