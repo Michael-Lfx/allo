@@ -1,9 +1,9 @@
 # Map: 学习冒烟加固——首次带凭据真机暴露缺陷的收尾波
 
 <!-- wayfinder:map -->
-<!-- 状态：收尾（t1–t6 全关，2026-10-20 结案波；剩余项见 Notes 与 Not yet
-      specified）。源起：2026-10-16/19 首次带凭据跑 `nomicore learning-smoke`
-      全套（八档 EXIT=0）暴露的真机缺陷与产出质量差距，本 effort 收尾。 -->
+<!-- 状态：收官（t1–t9 全关，2026-10-20；九档冒烟矩阵全绿，见 Notes）。源起：2026-10-16/19
+      首次带凭据跑 `nomicore learning-smoke` 全套（八档 EXIT=0）暴露的
+      真机缺陷与产出质量差距，本 effort 收尾。 -->
 
 ## Destination
 
@@ -83,9 +83,18 @@
 ## 增补票（2026-10-20 第二轮裁决）
 
 - [t7](tickets/t7-tier-normalization-and-batch-five.md) 中文档位/est 字符串
-  解析归一 + 教练面英文词表 + 批容量与就绪线双 5——grow 收官票；
+  解析归一 + 教练面英文词表 + 批容量与就绪线双 5——**已关**
+  （`db4832b49`）；
 - [t8](tickets/t8-mint-source-attestation.md) 铸名 source 落地（t2 条款 3
-  补完，attestation 口径）。
+  补完，attestation 口径）——**已关**（`db4832b49`，迁移 082）；
+- [t9](tickets/t9-review-node-removal-advice.md) 评审「移出本批」建议机械
+  执行——**已关**（`b7c4ff7f2`）。
+
+**收官回执（2026-10-20，flash）**：干净库（带凭据副本清空 learning 面）
+连续两跑 `grow --batches 4` EXIT=0（19/16 节点，t9 摘除实战救场一次）；
+loop 档 `--rounds 2` EXIT=0。**九档矩阵全绿**：structure / grow / loop /
+repair / quiz（双环境）/ content / xp / json。Destination 达成——残余仅
+「语义类打回的 flash 点修纪律」概率性复发（候选后手见 t9 票面，产品波）。
 
 收官后开草稿 PR（单分支单大 PR，四波导览描述）。
 
