@@ -1,4 +1,4 @@
-//! 迁移 076（`learning_courses.enabled`）的契约：课程级「现存且启用」口径
+//! 迁移 068 学习域合并基线的 enabled 段（`learning_courses.enabled`）的契约：课程级「现存且启用」口径
 //! （三轮 g3）——列默认 1（存量课程全部回填为启用，缺席列 = 启用的兼容
 //! 语义），归档/恢复只翻转该列（数据零删零改）。
 
@@ -52,9 +52,10 @@ async fn existing_rows_default_to_enabled() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 75).await;
+    // 067 是学习域合并基线之前的最后一个版本；068 一次性落 enabled 列与回填。
+    migrate_range(&pool, 0, 67).await;
     insert_course(&pool).await;
-    migrate_range(&pool, 75, 76).await;
+    migrate_range(&pool, 67, i64::MAX).await;
     let enabled: i64 = sqlx::query_scalar("SELECT enabled FROM learning_courses WHERE course_id = ?")
         .bind(COURSE_ID)
         .fetch_one(&pool)

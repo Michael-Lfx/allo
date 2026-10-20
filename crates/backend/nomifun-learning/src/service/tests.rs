@@ -1305,7 +1305,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     #[tokio::test]
     async fn custom_questions_persist_config_and_join_the_review_queue() {
         // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038
-        // 的三题型宽口径 CHECK（迁移 066 重建必须保留）。
+        // 的三题型宽口径 CHECK（迁移 068 重建必须保留）。
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await

@@ -1,6 +1,11 @@
+//! 学习域合并基线（068）的迁移契约：原 068–084 十七段学习迁移按序合并为一个
+//! 版本。分段升级路径没有真实用户库承载（分支内演进，未随正式版本发布），所以
+//! 这里不再逐段推进中间世界，而是从 065 世界的旧学习表出发，一次合并迁移后
+//! 断言最终世界：旧图课程退役、概念网重建、终点锚退役、批行状态机就位。
+
 use nomifun_db::sqlx::{self, SqlitePool};
 
-/// 066 之前的全部学习域迁移（按序），拼出与生产一致的旧世界基线。
+/// 合并迁移之前的全部学习域迁移（按序），拼出与生产一致的旧世界基线。
 const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/015_learning_engine.sql"),
     include_str!("../migrations/029_learning_custom_questions.sql"),
@@ -18,12 +23,7 @@ const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/052_learning_review_log.sql"),
     include_str!("../migrations/053_learning_section_degraded.sql"),
 ];
-const M066: &str = include_str!("../migrations/066_retire_graph_dag_and_concepts.sql");
-const M067: &str = include_str!("../migrations/067_concept_web_growth.sql");
-const M068: &str = include_str!("../migrations/068_growth_batch_status.sql");
-const M069: &str = include_str!("../migrations/069_learning_course_soft_delete.sql");
-const M070: &str = include_str!("../migrations/070_learning_lesson_difficulty.sql");
-const M071: &str = include_str!("../migrations/071_retire_endpoints_compass_structure_snapshot.sql");
+const M068: &str = include_str!("../migrations/068_learning_domain_rebuild.sql");
 
 const GRAPH_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const TRAD_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
@@ -40,7 +40,7 @@ const CUSTOM_QUESTION: &str = "0190f5fe-7c00-7a00-8abc-01234567890c";
 const REVIEW_ITEM: &str = "0190f5fe-7c00-7a00-8abc-01234567890d";
 
 /// 建 015 + 048 的旧世界：一门图课程（含全套派生数据）与一门传统课程
-/// （含概念体系与自建题），供 066/067 做破坏性清理与新建表验证。
+/// （含概念体系与自建题），供合并迁移做破坏性清理与新建表验证。
 async fn setup_legacy_world() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
     for migration in LEGACY_MIGRATIONS {
@@ -199,10 +199,15 @@ async fn setup_legacy_world() -> SqlitePool {
     pool
 }
 
-#[tokio::test]
-async fn migration_066_removes_graph_world_and_concept_tables() {
+async fn migrated_pool() -> SqlitePool {
     let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
+    sqlx::query(M068).execute(&pool).await.unwrap();
+    pool
+}
+
+#[tokio::test]
+async fn migration_068_removes_graph_world_and_concept_tables() {
+    let pool = migrated_pool().await;
 
     // 图课程全套派生数据清零。
     for table in [
@@ -229,14 +234,15 @@ async fn migration_066_removes_graph_world_and_concept_tables() {
             _ => format!("SELECT COUNT(*) FROM {table}"),
         };
         let count: i64 = sqlx::query_scalar(&sql).fetch_one(&pool).await.unwrap();
-        assert_eq!(count, 0, "{table} must be empty after 066");
+        assert_eq!(count, 0, "{table} must be empty after 068");
     }
 
-    // 先修边表与概念体系五表消失。
+    // 旧 per-course 概念体系退役；learning_lesson_concepts 由概念网重建，
+    // 不在 DROP 名单里。
     let dropped: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN \
          ('learning_graph_prerequisites', 'learning_concepts', 'learning_concept_prerequisites', \
-          'learning_lesson_concepts', 'learning_activity_concepts', 'learning_mastery_states')",
+          'learning_activity_concepts', 'learning_mastery_states')",
     )
     .fetch_all(&pool)
     .await
@@ -281,11 +287,8 @@ async fn migration_066_removes_graph_world_and_concept_tables() {
 }
 
 #[tokio::test]
-async fn migration_067_creates_concept_web_tables() {
-    let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
-    sqlx::query(M067).execute(&pool).await.unwrap();
-    sqlx::query(M068).execute(&pool).await.unwrap();
+async fn migration_068_builds_concept_web_tables() {
+    let pool = migrated_pool().await;
 
     // 登记表：canonical 必填。
     sqlx::query(
@@ -353,56 +356,11 @@ async fn migration_067_creates_concept_web_tables() {
     assert!(non_array.is_err(), "node_ids_json must be an array");
 }
 
-/// 071（ADR-0010）：终点锚与罗盘整体退役——终点行、标记课时与进度行清空、
-/// 表 DROP、compass 列 DROP；structure_json 快照列落地（NULL = 未生成，
-/// CHECK 只收 JSON 对象）。
+/// 合并迁移的终点锚退役段（ADR-0010）：终点表与 compass 列不再落地，
+/// structure_json 快照列存在（NULL = 未生成，CHECK 只收 JSON 对象）。
 #[tokio::test]
-async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() {
-    let pool = setup_legacy_world().await;
-    // 066–070 先导到 067 世界（终点表存在），存量数据就位后再跑 071。
-    for migration in [M066, M067, M068, M069, M070] {
-        sqlx::query(migration).execute(&pool).await.unwrap();
-    }
-
-    // 067 世界的存量终点：一条终点行 + 标记课时 + 其进度行。
-    sqlx::query(
-        "INSERT INTO learning_lessons (lesson_id, module_id, title, position, estimated_minutes) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678912', ?, '终点', 99, 1)",
-    )
-    .bind(MODULE_TRAD)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_course_endpoints \
-         (endpoint_id, course_id, lesson_id, title, goal_note, declared_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678913', ?, '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 '独立交易', '能独立完成一笔交易', 1000)",
-    )
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_enrollments (enrollment_id, user_id, course_id, enrolled_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', ?, ?, 1000, 1000)",
-    )
-    .bind(USER_ID)
-    .bind(TRAD_COURSE)
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO learning_lesson_progress \
-         (enrollment_id, lesson_id, status, started_at, updated_at) \
-         VALUES ('0190f5fe-7c00-7a00-8abc-012345678917', '0190f5fe-7c00-7a00-8abc-012345678912', \
-                 'in_progress', 1000, 1000)",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    sqlx::query(M071).execute(&pool).await.unwrap();
+async fn migration_068_retires_endpoints_compass_and_lands_structure_snapshot() {
+    let pool = migrated_pool().await;
 
     let endpoints_table: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'learning_course_endpoints'",
@@ -410,23 +368,7 @@ async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() 
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(endpoints_table, 0, "the endpoint table must be dropped");
-
-    let marker_lesson: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lessons WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_lesson, 0, "the endpoint marker lesson row must go with its table");
-
-    let marker_progress: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM learning_lesson_progress WHERE lesson_id = '0190f5fe-7c00-7a00-8abc-012345678912'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(marker_progress, 0, "marker-lesson progress rows must not outlive the marker");
+    assert_eq!(endpoints_table, 0, "the endpoint table must not survive 068");
 
     let compass_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('learning_courses') \
@@ -470,10 +412,9 @@ async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() 
 
 #[tokio::test]
 async fn migration_068_adds_batch_status_lifecycle() {
-    let pool = setup_legacy_world().await;
-    sqlx::query(M066).execute(&pool).await.unwrap();
-    sqlx::query(M067).execute(&pool).await.unwrap();
-    // 068 之前的批行：无 status 列（067 的默认），068 后应取 'applied'。
+    let pool = migrated_pool().await;
+
+    // 缺省落 applied（历史批行口径）。
     sqlx::query(
         "INSERT INTO learning_growth_batches (batch_id, course_id, seq, node_ids_json, created_at)          VALUES ('0190f5fe-7c00-7a00-8abc-01234567891b', ?, 1, '[\"x\"]', 1000)",
     )
@@ -481,7 +422,6 @@ async fn migration_068_adds_batch_status_lifecycle() {
     .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(M068).execute(&pool).await.unwrap();
 
     let applied: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM learning_growth_batches WHERE status = 'applied'",
@@ -489,7 +429,7 @@ async fn migration_068_adds_batch_status_lifecycle() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(applied, 1, "pre-existing rows default to applied");
+    assert_eq!(applied, 1, "rows without explicit status default to applied");
 
     // pending 行合法（生长开始即落）。
     sqlx::query(
