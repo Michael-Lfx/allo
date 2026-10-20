@@ -2,8 +2,8 @@
 id: t2
 title: "产出丰富度追平 learnhub——正文篇幅 / 题目 evidence / 铸名出处"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -32,4 +32,31 @@ part_of: map.md
 
 ## Resolution
 
-（结案时追加）
+**速览**：条款 1、2 落地（commits `f0f1a07cc` + evidence 硬门增补）；条款
+3 裁决缓行（迁移属高风险区，见下）。读数复测达标。
+
+- **条款 1（正文篇幅）**：节正文提示词的篇幅纪律重写为「THE BUDGET IS
+  THE FLOOR OF A FULLY-WORKED SECTION, NOT A CEILING」——档位预算
+  （低 150/中 250/高 400 字）是展开度下限锚，落点 100%–150%，展开方式
+  = 把节任务点名的每个要点教透（概念节配 worked mini-example、例题节算
+  全程、演示节逐步注解），禁止复述式注水；>2000 硬拦与质检门下限不动。
+  **复测读数**（flash 真机 content 档）：正文 3218 字/节 5——旧基线约
+  1000–1400 纯文字的 2–3 倍，单篇全文档折算回到 learnhub 均值
+  （13.6KB）分位。
+- **条款 2（evidence + 逐选项辨析）**：`ActivityPack`/`StoredActivityConfig`
+  增 `evidence`（≤120 字逐字回引，serde default 容旧行）；两个出题提示词
+  （LESSON_SYSTEM / LESSON_ACTIVITY_SYSTEM）补形状与规则；choice 题解析
+  必须「walk EVERY option」逐选项点名。落库三处（生成/导入/变式）透传，
+  手工编辑保留原值；判底读侧 = `QuizGradeFeedback.evidence` 随 grade 下发
+  （开考投影仍零判底，单测钉住）——前端展示随 quiz UI（g4 载体）落地。
+  **实施中发现 flash 对「可选」条款遵循率 0/4（真机 content 复测）**，升
+  级为主生成面硬门（缺/空 evidence 拒绝重试，`evidence_missing` +
+  validate_lesson_activities 执法；lesson_draft 审计面加 `evidence_missing`
+  warn 兜历史行）；变式/无正文语境容缺（判分底仍可携）。
+- **条款 3（铸名 source）缓行裁决**：registry source 列是 append-only 迁
+  移，AGENTS.md 高风险区要求先询 owner；且 learnhub 口径「出处是簿记不是
+  判定」——不进门禁，缓行无门禁损失。建议随产品波与 t2 丰富度复测一起
+  裁（届时 mint 的 source 语义对齐 new_aliases 的 attestation 口径：
+  「教练提名：…」而非书目引用）。
+- **验证**：`cargo test -p nomifun-learning` 全绿（提示词面断言 + evidence
+  硬门正反样 + 脚本金样补 evidence）；content 档真机 EXIT=0。
