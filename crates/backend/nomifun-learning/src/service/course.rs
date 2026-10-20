@@ -163,6 +163,12 @@ impl LearningService {
                         tol: activity.tol,
                         matches: super::lesson::matching_candidates(activity),
                         difficulty: activity.difficulty,
+                        evidence: activity
+                            .evidence
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|evidence| !evidence.is_empty())
+                            .map(str::to_owned),
                     };
                     sqlx::query(
                         "INSERT INTO learning_activities \

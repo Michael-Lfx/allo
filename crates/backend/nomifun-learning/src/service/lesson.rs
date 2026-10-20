@@ -1552,6 +1552,12 @@ impl LearningService {
                 tol: activity.tol,
                 matches: matching_candidates(activity),
                 difficulty: activity.difficulty,
+                evidence: activity
+                    .evidence
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|evidence| !evidence.is_empty())
+                    .map(str::to_owned),
             };
             // 「general」是提示词对跨节综合题的约定写法，落库归一为 NULL。
             let section_key = activity
@@ -2088,11 +2094,13 @@ pub(super) fn validate_question_payload(
         tol: None,
         section_key: None,
         difficulty: None,
+        evidence: None,
     };
     pack.validate_shape((2, 5), false)
         .map_err(AppError::BadRequest)?;
     // fill_in_blank keeps its distractor rule through validate_shape; the
     // numeric tol is learner-authored so it rides in the config as given.
+    // 手工编辑面没有 evidence 字段：保留原值（t2 证据回引不随编辑抹除）。
     let matches = matching_candidates(&pack);
     let config = StoredActivityConfig {
         options: pack.options,
@@ -2102,6 +2110,7 @@ pub(super) fn validate_question_payload(
         tol: pack.tol,
         matches,
         difficulty: pack.difficulty,
+        evidence: None,
     };
     Ok((prompt.to_string(), config))
 }

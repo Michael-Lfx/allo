@@ -941,6 +941,11 @@ pub struct ActivityPack {
     /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱），出题阶段声明。
     #[serde(default)]
     pub difficulty: Option<u8>,
+    /// 题干证据回引（t2）：objective 题从来源节正文/引用摘录里逐字摘的
+    /// 一小段（≤120 字），判底展示随 grade 下发。None = 未提供（读侧容缺
+    /// ——flash 遵循是概率性的，不做硬门）。
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2042,6 +2047,9 @@ pub struct QuizGradeFeedback {
     pub answer: Value,
     /// 解析（判分后下发）。
     pub explanation: String,
+    /// 题干证据回引（t2 判底展示面；题源未提供则 None）。
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 /// quiz 回合逐节点对账行（q2；q3 扩逐题校准点）。
@@ -2449,6 +2457,10 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub difficulty: Option<u8>,
+    /// 题干证据回引（t2，判底展示面）：出题阶段从来源正文/摘录逐字摘的
+    /// 一小段。旧行缺列，读侧默认 None。
+    #[serde(default)]
+    pub evidence: Option<String>,
 }
 
 #[cfg(test)]

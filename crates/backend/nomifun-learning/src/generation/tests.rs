@@ -2,8 +2,8 @@
     use super::completer::complete_with_timeout;
     use super::lesson::{
         build_activities_prompt, build_section_rewrite_prompt, enforce_grounding_budget,
-        render_grounding_fragments, validate_lesson_document, GROUNDING_PRIMARY_MAX_BYTES,
-        GROUNDING_SUPPLEMENT_MAX_BYTES, GROUNDING_TOTAL_MAX_BYTES,
+        render_grounding_fragments, section_body_system, validate_lesson_document,
+        GROUNDING_PRIMARY_MAX_BYTES, GROUNDING_SUPPLEMENT_MAX_BYTES, GROUNDING_TOTAL_MAX_BYTES,
     };
     use super::parser::{strip_code_fences, strip_markdown_fences};
     use super::*;
@@ -60,6 +60,21 @@
         // JSON — the old "smaller" instruction caused thin summaries.
         assert!(!BLUEPRINT_SYSTEM.contains("smaller"));
         assert!(!LESSON_SYSTEM.contains("smaller"));
+    }
+
+    /// t2 丰富度条款在提示词面：objective 题必带证据回引；choice 题解析逐
+    /// 选项辨析；节正文篇幅纪律 = 档位预算是展开下限不是上限。
+    #[test]
+    fn richness_clauses_are_present_in_generation_prompts() {
+        assert!(LESSON_SYSTEM.contains("\"evidence\""));
+        assert!(LESSON_SYSTEM.contains("walk EVERY option"));
+        assert!(LESSON_ACTIVITY_SYSTEM.contains("\"evidence\""));
+        assert!(LESSON_ACTIVITY_SYSTEM.contains("verbatim quote"));
+        let standard = section_body_system(crate::models::TeachingStyle::Standard);
+        assert!(
+            standard.contains("THE BUDGET IS THE FLOOR OF A FULLY-WORKED SECTION, NOT A CEILING"),
+            "prose budget must be framed as an expansion floor"
+        );
     }
 
     #[test]
@@ -328,6 +343,7 @@
                 tol: None,
                 section_key: None,
                         difficulty: None,
+evidence: None,
 },
             ActivityPack {
                 kind: ActivityKind::TrueFalse,
@@ -339,6 +355,7 @@
                 tol: None,
                 section_key: None,
                         difficulty: None,
+evidence: None,
 },
         ];
         let reflection = |prompt: &str| ActivityPack {
@@ -351,6 +368,7 @@
             tol: None,
             section_key: None,
                 difficulty: None,
+evidence: None,
 };
 
         // Up to three AI-graded questions pass (validate_shape gate each).
@@ -393,6 +411,7 @@
             tol: None,
             section_key: None,
                 difficulty: None,
+evidence: None,
 };
         assert!(base.validate_shape((3, 5), true).is_ok());
 
