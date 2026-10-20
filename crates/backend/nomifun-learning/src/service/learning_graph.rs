@@ -1547,6 +1547,45 @@ impl LearningService {
             for (name, host_id) in &outcome.auto_reusals {
                 rulings.insert(name.clone(), host_id.clone());
             }
+            // ── 评审「移出本批」建议机械执行（t9）：同批内容依赖类问题的
+            // 唯一正路是摘节点（评审判据 2 明文；gate 只能看 assumes 按名
+            // 引用，看不见内容级依赖）。advice 含「移出本批」且 node 精确
+            // 匹配批内标题 → 摘除留痕，问题剔除；否则照常打回。真机实录
+            // （run-1792473152116 call 3）：这类 reject 走重裁必触发点修越
+            // 权烧光预算——「移出本批」是逐字可执行的动作，不折返模型。
+            let mut removed_nodes: Vec<String> = Vec::new();
+            if review.problems.iter().any(|problem| problem.advice.contains("移出本批")) {
+                let mut kept_nodes = Vec::with_capacity(candidate.nodes.len());
+                for node in candidate.nodes.drain(..) {
+                    let remove = review.problems.iter().any(|problem| {
+                        problem.advice.contains("移出本批")
+                            && !problem.node.trim().is_empty()
+                            && problem.node.trim() == node.title.trim()
+                    });
+                    if remove {
+                        removed_nodes.push(node.title.trim().to_owned());
+                    } else {
+                        kept_nodes.push(node);
+                    }
+                }
+                candidate.nodes = kept_nodes;
+                if !removed_nodes.is_empty() {
+                    let mut kept_problems = Vec::with_capacity(review.problems.len());
+                    for problem in review.problems.drain(..) {
+                        let resolved = problem.advice.contains("移出本批")
+                            && removed_nodes.iter().any(|title| title == problem.node.trim());
+                        if !resolved {
+                            kept_problems.push(problem);
+                        }
+                    }
+                    review.problems = kept_problems;
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        nodes = ?removed_nodes,
+                        "review node-removal advice executed mechanically — nodes dropped from the batch"
+                    );
+                }
+            }
             if !rulings.is_empty() && !review.problems.is_empty() {
                 let resolved_mask: Vec<bool> = review
                     .problems
