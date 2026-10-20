@@ -1,4 +1,4 @@
-//! 迁移 081（quiz 回合记录表，q2）的契约：终态三态形状 CHECK（active 零
+//! 迁移 068 学习域合并基线的 quiz 段（q2）的契约：终态三态形状 CHECK（active 零
 //! 结算面 / completed 必带作答对账与总额 / abandoned 只留情境）、round_id/
 //! user_id/course_id 的 UUIDv7 形状地板、同课程至多一个 active 回合的部分
 //! 唯一索引（supersede 流的并发地板）。

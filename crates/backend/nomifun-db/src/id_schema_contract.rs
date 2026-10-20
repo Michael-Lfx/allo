@@ -297,14 +297,14 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
-    // quiz 回合的身份列（migration 081）：回合行的业务主标识，选题/作答/
+    // quiz 回合的身份列（migration 068 的 quiz 段）：回合行的业务主标识，选题/作答/
     // 结算都在行内 JSON，不被其他表引用——非关系链接。
     ("learning_quiz_rounds", "round_id"),
     // The card id in a review event is a plain identifier: deleting the card
     // must not wipe the check-in accounting that aggregates these rows.
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
-    // 学习行为组锚（g4 数据面前置列，migration 078）：会话实体缺位时恒
+    // 学习行为组锚（g4 数据面前置列，migration 068 的 XP 段）：会话实体缺位时恒
     // NULL，将来升会话即 session ULID——不是对现存表的引用。
     ("learning_review_events", "session_id"),
     ("learning_review_items", "review_item_id"),
@@ -923,21 +923,21 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_course_jobs", "course_id" => "learning_courses", "course_id", true, "idx_learning_course_jobs_course_id", KeepHistory),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),
-    // XP 结算账本（migration 078）：追加只增的回放真相——课程/课时被删
+    // XP 结算账本（migration 068 的 XP 段）：追加只增的回放真相——课程/课时被删
     // （墓碑式）后历史事件必须原样保留，两链接都是历史面（KeepHistory +
     // 容忍缺失父行）；自建题复习事件两列同空。
     text_ref!("learning_xp_events", "user_id" => "users", "user_id", false, "idx_learning_xp_events_user_anchor", Cascade),
     historical_text_ref!("learning_xp_events", "course_id" => "learning_courses", "course_id", true, "idx_learning_xp_events_course", KeepHistory),
     historical_text_ref!("learning_xp_events", "node_id" => "learning_lessons", "lesson_id", true, "idx_learning_xp_events_node", KeepHistory),
-    // 挂载事实层（migration 079）：一课一行的导航事实与 findings 留痕——
+    // 挂载事实层（migration 068 的挂载段）：一课一行的导航事实与 findings 留痕——
     // 课程删除后挂载/留痕是否随删？挂载行随课（Cascade，纯导航派生面可
     // 重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
     historical_text_ref!("learning_structure_mounts", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_mounts_course", Cascade),
     historical_text_ref!("learning_structure_findings", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_findings_course", KeepHistory),
-    // 修补审计（migration 080）：结构编辑的历史档案——课程删除后审计行
+    // 修补审计（migration 068 的修补段）：结构编辑的历史档案——课程删除后审计行
     // 保留（KeepHistory，出处不追删）。
     historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
-    // quiz 回合（migration 081）：学习者行为历史——用户删除随账（Cascade）；
+    // quiz 回合（migration 068 的 quiz 段）：学习者行为历史——用户删除随账（Cascade）；
     // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
     // 行为历史不追删）。
     text_ref!("learning_quiz_rounds", "user_id" => "users", "user_id", false, "idx_learning_quiz_rounds_user", Cascade),
@@ -1122,7 +1122,7 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM cs_agents, json_each(cs_agents.knowledge_base_ids) item" =>
         "knowledge_bases", "knowledge_base_id", "idx_cs_agents_knowledge_base_ids_json", KeepHistory, AllowMissingHistoricalParent
     ),
-    // Course source-library list (migration 073): the same story as the
+    // Course source-library list (migration 068 的源库列表段): the same story as the
     // customer-service mount list — the first element is the primary source
     // (mirrored by the legacy single column `source_kb_id`, which keeps its
     // own SetNull entry above), and a deleted base stops contributing: the

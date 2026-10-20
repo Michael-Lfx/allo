@@ -132,14 +132,16 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
     // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
     // 学习侧:050 课时分节:+learning_lesson_sections;052 复习日志:
-    // +learning_review_log;066 退役 DAG 图与 per-course 概念体系:-5;067
+    // +learning_review_log;068 退役 DAG 图与 per-course 概念体系:-5;069
     // 概念网生长:+learning_concept_registry/+learning_growth_batches;
-    // 071 终点锚退役:-learning_course_endpoints;078 XP 结算账本:
-    // +learning_xp_events;079 挂载事实层:+learning_structure_mounts/
-    // +learning_structure_findings;080 修补审计:+learning_structure_repairs;
-    // 081 quiz 回合:+learning_quiz_rounds。
-    // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 119);
+    // 073 终点锚退役:-learning_course_endpoints;080 XP 结算账本:
+    // +learning_xp_events;081 挂载事实层:+learning_structure_mounts/
+    // +learning_structure_findings;082 修补审计:+learning_structure_repairs;
+    // 083 quiz 回合:+learning_quiz_rounds。
+    // Agent Store 侧:`058` / `059` / `061` 共 4 张；主分支 066/067 的
+    // Skill 选择与固定三表：+conversation_skill_pins/+skill_invocation_overrides/
+    // +skill_selection_event。
+    assert_eq!(tables.len(), 122);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -1430,7 +1432,7 @@ async fn idmm_logical_targets_store_named_bare_uuidv7_ids() {
 
 /// 多知识库（t4 评审修复）：`learning_courses.source_kb_ids` 的 JSON 列表引用
 /// 必须登记进契约（cs_agents.knowledge_base_ids 先例）——登记条目要求列上有
-/// 具名索引（迁移 074），删除索引 = 契约失守；已删库的 id 允许留在历史行里
+/// 具名索引（迁移 068 的具名索引段），删除索引 = 契约失守；已删库的 id 允许留在历史行里
 /// （KeepHistory：读侧过滤），既不是启动报错、也不被修复流程删课。
 #[tokio::test]
 async fn learning_course_source_kb_ids_is_registered_as_a_json_list_link() {

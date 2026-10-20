@@ -1,4 +1,4 @@
-//! 迁移 072（`learning_courses.samples_meta_json`）的契约：采样披露是
+//! 迁移 068 学习域合并基线的 samples_meta_json 段（`learning_courses.samples_meta_json`）的契约：采样披露是
 //! `samples_json` 的伴随结构，独立列；旧行 NULL（旧快照继续按旧形状读），
 //! 新行必须是 JSON 对象。
 

@@ -175,7 +175,7 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
 ## 5 存储与快照信封
 
 - 落点：`learning_courses.structure_json`（TEXT NULL，CHECK 只收 JSON 对象；
-  迁移 071 引入）。**NULL = 结构未生成**（词汇表 Missing：合法空状态，读侧
+  迁移 068 引入）。**NULL = 结构未生成**（词汇表 Missing：合法空状态，读侧
   200 恒答，不走错误路径；生成中状态由 WS structure_* 事件表达）。
 - 信封（快照 = 一个 JSON 对象，两产物 + 元数据，单 UPDATE 原子写入）：
 

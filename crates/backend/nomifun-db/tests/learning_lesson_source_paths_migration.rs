@@ -1,4 +1,4 @@
-//! 迁移 075（`learning_lessons.source_paths_json`）的契约：多引用（t4 评审
+//! 迁移 068 学习域合并基线的 source_paths 段（`learning_lessons.source_paths_json`）的契约：多引用（t4 评审
 //! 补齐）的课时来源列表是 `source_path`/`source_start`/`source_end` 三列的
 //! 伴随列（首个 = 主来源 = 三列的兼容位），老行由三列回填成单元素数组；
 //! 三列保留不动（读侧对空列表回退三列）。
@@ -38,7 +38,7 @@ async fn migrate_range(pool: &SqlitePool, from: i64, to: i64) {
     }
 }
 
-/// 老行回填：075 之后 `source_paths_json` = `[{"path":…}]`（三列的单来源
+/// 老行回填：合并基线之后 `source_paths_json` = `[{"path":…}]`（三列的单来源
 /// 形状）；无来源的旧行得到空数组（描述流/旧课程行为不变）。
 #[tokio::test]
 async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
@@ -47,7 +47,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 74).await;
+    migrate_range(&pool, 0, 67).await;
     sqlx::query(
         "INSERT INTO learning_courses (course_id, title, description, domain, version, created_at, updated_at) \
          VALUES (?, '老课程', '', 'general', 1, 1000, 1000)",
@@ -86,7 +86,7 @@ async fn migration_backfills_legacy_single_source_into_a_one_element_list() {
         position += 1;
     }
 
-    migrate_range(&pool, 74, i64::MAX).await;
+    migrate_range(&pool, 67, i64::MAX).await;
 
     let backfilled: String =
         sqlx::query_scalar("SELECT source_paths_json FROM learning_lessons WHERE lesson_id = ?")

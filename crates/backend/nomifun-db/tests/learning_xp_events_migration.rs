@@ -1,4 +1,4 @@
-//! 迁移 078（XP 结算账本 + 复习作答流水补列）的契约（三轮 t1/t3，j05）：
+//! 迁移 068 学习域合并基线的 XP 段（结算账本 + 复习作答流水补列）的契约（三轮 t1/t3，j05）：
 //! `learning_xp_events` 四形态写侧条款的数据库地板（full 非负 / partial 必带
 //! ratio / trimmed 恰 0 / guess-penalty 必为负 / quiz 恒非负 / bonus 仅 full）
 //! 与幂等锚 UNIQUE(user_id, anchor)；`learning_review_events` 补

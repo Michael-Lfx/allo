@@ -60,7 +60,7 @@
   评审必打回且修法只有移出本批），门直接摘除该节点留痕，其余照常落库，不烧
   模型轮次。每批落 `learning_growth_batches` 出生档案。读侧投影 `structure_view` 纯函数
   （零 IO 零 LLM，课程内作用域）支撑前端结构图 Tab。**终点锚与罗盘已整体
-  退役**（迁移 071；方向感由结构投影承担）。概念本身登记在全局跨课程的
+  退役**（迁移 068；方向感由结构投影承担）。概念本身登记在全局跨课程的
   `learning_concept_registry`（canonical + 别名联合唯一，生长按需铸名）。
   **别名闭环（j04 = 二轮 g3 机制 + 三轮 g2 数据形态）**：别名是结构化记录
   `{name, definition?, attestation?, status}`（退役名不占名池）；铸名门带
@@ -159,19 +159,16 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 `052_learning_review_log.sql`（逐次复习日志 `learning_review_log` +
 `learning_attempts.elapsed_ms`）、`053_learning_section_degraded.sql`
 （节降级兜底标记落库，ADR-0008）、
-`066_retire_graph_dag_and_concepts.sql`（**退役**：旧 DAG 图课程数据与
-per-course 概念体系五表全部删除，ADR-0009）、
-`067_concept_web_growth.sql`（概念登记表 / 概念网边
-`learning_lesson_concepts(role,tier)` / 生长批次）、`068` 批行状态机、
-`069` 课程软删墓碑、`070` 课时难度列、
-`071_retire_endpoints_compass_structure_snapshot.sql`（**退役**：终点表 + 标记
-课时行 + `compass_md`/`compass_updated_at` 列删除；新增
-`learning_courses.structure_json` 结构快照列，ADR-0010）、
-`076_learning_course_enabled.sql`（现存且启用口径）、
-`077_concept_alias_records.sql`（别名结构化记录 + 概念网边 ref_name）、
-`078_learning_xp_events.sql`（XP 结算账本 + 复习作答流水补列）、
-`079_learning_structure_mounts.sql`（挂载事实层 + findings 留痕，ADR-0012）、
-`080_learning_structure_repairs.sql`（修补审计表，ADR-0012）。
+`068_learning_domain_rebuild.sql`（**学习域合并基线**：原 068–084 十七段学习
+迁移按序合并为一个版本；分段链未随正式版本发布、没有真实用户库承载。含：
+旧 DAG 图课程数据与 per-course 概念体系五表退役，ADR-0009；概念登记表 /
+概念网边 `learning_lesson_concepts(role,tier)` / 生长批次与批行状态机；
+终点表 + 标记课时行 + `compass_md`/`compass_updated_at` 列退役、新增
+`learning_courses.structure_json` 结构快照列，ADR-0010；课程软删墓碑 /
+课时难度 / `samples_meta_json` / `source_kb_ids` / `source_paths_json` /
+`enabled` 等课程与课时列演进；别名结构化记录 + 概念网边 ref_name；
+XP 结算账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表，
+ADR-0012；quiz 回合记录表）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/状态/取消/删除/标签/注册/诊断）、
