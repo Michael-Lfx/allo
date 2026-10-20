@@ -5585,6 +5585,114 @@ async fn mint_source_attestation_lands_on_the_registry_row() {
     assert_eq!(seed_source, None, "source stays nullable bookkeeping");
 }
 
+/// 评审「移出本批」建议机械执行（t9）：同批内容依赖类问题摘节点留痕，
+/// 不折返模型（真机 run-1792473152116：走重裁必触发点修越权）。
+#[tokio::test]
+async fn review_removal_advice_drops_the_node_instead_of_redrafting() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "est": 15,
+             "teaches": [{"name": "位权读数", "tier": "know"}], "assumes": []},
+            {"title": "验证两种展开的同一数值", "purpose": "从对照切入", "est": 15,
+             "teaches": [{"name": "展开对照", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "位权读数", "aliases": [], "definition": "按位权读数"},
+            {"canonical": "展开对照", "aliases": [], "definition": "两种展开互证"}
+        ],
+        "new_aliases": [],
+        "note": "摘除稿"
+    }"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"验证两种展开的同一数值","field":"assumes","issue":"内容实际依赖同批兄弟教出的概念，同批无先后。","advice":"把该节点移出本批，放到前提已入账之后的批次。"}]}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    // 摘除落库：只剩未摘节点；留痕进批次 note。
+    let titles: Vec<String> = sqlx::query_scalar(
+        "SELECT l.title FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_all(service.pool_for_tests())
+    .await
+    .unwrap();
+    // 种子课已有 节点A/节点B 两行，摘除后本批只落 1 个新节点。
+    assert_eq!(titles.len(), 3, "seed 2 + one surviving node: {titles:?}");
+    assert!(
+        titles.iter().any(|t| t == "用位权展开读出二进制数"),
+        "the surviving node lands: {titles:?}"
+    );
+    assert!(
+        !titles.iter().any(|t| t == "验证两种展开的同一数值"),
+        "the flagged node is removed from the batch: {titles:?}"
+    );
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        note.contains("评审摘除「验证两种展开的同一数值」（移出本批）"),
+        "the removal must be recorded in the batch note: {note}"
+    );
+}
+
+/// 窄面：advice 无「移出本批」信号或 node 不匹配批内标题 → 照常打回
+/// （同指纹两轮早停）。
+#[tokio::test]
+async fn removal_advice_without_exact_match_stays_a_rejection() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用位权展开读出二进制数", "purpose": "从数位对齐切入", "est": 15,
+             "teaches": [{"name": "位权读数", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "位权读数", "aliases": [], "definition": "按位权读数"}
+        ],
+        "new_aliases": [],
+        "note": "不匹配稿"
+    }"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"不存在的节点标题","field":"assumes","issue":"内容依赖同批概念。","advice":"把该节点移出本批。"}]}"#;
+    let completer = SequencedCompleter::new(vec![
+        batch_json.to_owned(),
+        review_json.to_owned(),
+        batch_json.to_owned(),
+        review_json.to_owned(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let stats = service.growth_run_stats().expect("stats recorded");
+    assert_eq!(
+        stats.stop_reason, "early_stop",
+        "unmatched removal advice must stay a rejection: {stats:?}"
+    );
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 0, "nothing lands");
+}
+
 /// new_aliases 归一化直定宿主：提名定义与既有概念逐字相同 → 门面机械绑定
 ///（评审零裁决也放行），别名带提名定义与出处落池。
 #[tokio::test]
