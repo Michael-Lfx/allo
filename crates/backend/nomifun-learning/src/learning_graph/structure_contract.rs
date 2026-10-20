@@ -371,6 +371,9 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
     let mut block_names: Vec<String> = Vec::new();
     let mut slugs: Vec<String> = Vec::new();
     let mut per_spine: HashMap<String, usize> = HashMap::new();
+    // 块名 → stage 档位序（t6 gd.stages.ordering 的判读面；stage 无效的红条
+    // 另发，这里只收合法档）。
+    let mut block_stage: HashMap<String, usize> = HashMap::new();
     for (index, block) in blocks.iter().enumerate() {
         let at = format!("blocks[{index}]");
         let Some(block_map) = block.as_object() else {
@@ -422,6 +425,8 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
                 "gd.blocks.fields",
                 format!("块「{name}」的 stage 必须是 {} 之一，得到「{stage}」", STAGES.join("/")),
             ));
+        } else {
+            block_stage.insert(name.to_owned(), STAGES.iter().position(|candidate| candidate == &stage).unwrap_or(0));
         }
         let spine_ref = block_map.get("spine").and_then(Value::as_str).unwrap_or_default().trim();
         if spine_ref.is_empty() {
@@ -521,6 +526,24 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
             ));
         } else {
             seen_triples.push(triple);
+        }
+        // gd.stages.ordering（t6，warn 级）：assumes 边的 target（前置）块
+        // stage 不得高于 source（需求方）块——入门块依赖进阶/高级块与「入门
+        // 档贴地起排」的门位口径冲突（2026-10-19 生长节点专家审计：位权概
+        // 念案）。档位错位是质量问题不是结构非法：warn 只留痕（修补回合/
+        // 评审的输入面），不触发重试。
+        if edge_type == "assumes"
+            && let (Some(source_stage), Some(target_stage)) =
+                (block_stage.get(source), block_stage.get(target))
+            && target_stage > source_stage
+        {
+            violations.push(ContractViolation::warn(
+                "gd.stages.ordering",
+                format!(
+                    "assumes 边「{source}」({}) 的前置「{target}」({}) 档位更高——入门档不贴门口起排；升 source 档或把前置拆成低档块",
+                    STAGES[*source_stage], STAGES[*target_stage],
+                ),
+            ));
         }
     }
 
@@ -1083,6 +1106,58 @@ mod tests {
         let terrain = golden_terrain();
         assert!(validate_terrain(&terrain).is_empty(), "{:?}", validate_terrain(&terrain));
         assert!(reconcile_doors(&structure, &terrain).is_empty());
+    }
+
+    /// t6：入门块 assumes 进阶块 = 档位倒挂，warn 级 gd.stages.ordering 留
+    /// 痕（不红——档位错位是质量问题不是结构非法；2026-10-19 审计位权概
+    /// 念案）。反向（进阶依赖入门）与升档后同向不告警。
+    #[test]
+    fn gd_stages_ordering_warns_on_inverted_assumes_only() {
+        let mut inverted = golden_structure();
+        {
+            let blocks = inverted.get_mut("blocks").unwrap().as_array_mut().unwrap();
+            blocks[0]["stage"] = json!("入门");
+            blocks[1]["stage"] = json!("进阶");
+            let edges = inverted.get_mut("edges").unwrap().as_array_mut().unwrap();
+            edges[0] = json!({ "source": "块00", "target": "块01", "type": "assumes", "tier": "know", "note": "倒挂" });
+        }
+        let violations = validate_structure(&inverted);
+        assert!(
+            violations.iter().any(|violation| violation.code == "gd.stages.ordering" && violation.warning),
+            "{violations:?}"
+        );
+        assert!(
+            violations.iter().all(|violation| violation.warning),
+            "stage 倒挂只 warn 不红：{violations:?}"
+        );
+        // 反向（进阶依赖入门）合法；同档不告警；composes/contrasts 不受档位约束。
+        let mut aligned = golden_structure();
+        {
+            let blocks = aligned.get_mut("blocks").unwrap().as_array_mut().unwrap();
+            blocks[0]["stage"] = json!("入门");
+            blocks[1]["stage"] = json!("进阶");
+            let edges = aligned.get_mut("edges").unwrap().as_array_mut().unwrap();
+            edges[0] = json!({ "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "同向" });
+        }
+        assert!(validate_structure(&aligned).is_empty(), "{:?}", validate_structure(&aligned));
+        let mut same_stage = golden_structure();
+        {
+            let blocks = same_stage.get_mut("blocks").unwrap().as_array_mut().unwrap();
+            blocks[0]["stage"] = json!("入门");
+            blocks[1]["stage"] = json!("入门");
+            let edges = same_stage.get_mut("edges").unwrap().as_array_mut().unwrap();
+            edges[0] = json!({ "source": "块00", "target": "块01", "type": "assumes", "tier": "know", "note": "同档" });
+        }
+        assert!(validate_structure(&same_stage).is_empty(), "{:?}", validate_structure(&same_stage));
+        let mut composes = golden_structure();
+        {
+            let blocks = composes.get_mut("blocks").unwrap().as_array_mut().unwrap();
+            blocks[0]["stage"] = json!("入门");
+            blocks[1]["stage"] = json!("高级");
+            let edges = composes.get_mut("edges").unwrap().as_array_mut().unwrap();
+            edges[0] = json!({ "source": "块00", "target": "块01", "type": "composes", "tier": "use", "note": "组装不限档" });
+        }
+        assert!(validate_structure(&composes).is_empty(), "{:?}", validate_structure(&composes));
     }
 
     #[test]
