@@ -407,6 +407,7 @@ impl LearningService {
             correct: score >= 1.0,
             answer: config.answer,
             explanation,
+            evidence: config.evidence,
         })
     }
 
@@ -809,6 +810,12 @@ impl LearningService {
                     tol: None,
                     matches: Vec::new(),
                     difficulty: None,
+                    evidence: pack
+                        .evidence
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|evidence| !evidence.is_empty())
+                        .map(str::to_owned),
                 };
                 let config_json = serde_json::to_string(&config).ok()?;
                 tracing::info!(target: "nomifun_learning", node = %node,
