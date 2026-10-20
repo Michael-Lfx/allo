@@ -2,8 +2,8 @@
 id: t1
 title: "repair 冒烟种子结构性不可赢——种子与判据二选一改"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -38,4 +38,20 @@ gaps/quality」的 op——从该种子出发：
 
 ## Resolution
 
-（结案时追加）
+**速览**：修法 1（种子换全量合法盘面），commit `931932de4`。修法 2 票面
+自评「不彻底」，弃。
+
+- **种子**：对齐 `structure_contract` 金样形状——6 主干 × 42 块（入门/
+  进阶/高级轮转，含 assumes/composes/contrasts 三边各一）、八标量键齐、
+  domain 七键齐（门口 G1）、gaps ×3 / quality 五条规范措辞、terrain 带
+  G1 门口对账（旧种子 `doors: []` 会在门口对账上翻红）。findings 留痕照
+  旧（触发修补回合）。
+- **两路均可赢**：noop（盘面没动，全量 gd.* 复验过）与 applied（修补 op
+  应用后仍合法）——旧种子的两条死路（ops 应用后复核必拒 / noop 复验必
+  拒）消除。
+- **同步项**：`learning.zh.md` 冒烟节 repair 判据改为「种子是全量合法盘
+  面，两路均可赢」；j09 Resolution 增补勘误回链、j10 增补回链均落。
+- **真机验收**：2026-10-20 dev 库（flash）`learning-smoke repair` **首次
+  EXIT=0**——`status=applied applied=1`、盘面复验全量 gd.* 零红、级联标
+  记 mounts_stale=true 判 stale 正确。历史：2026-10-16 首次带凭据即
+  EXIT=1（`修补后的结构未通过全量复核`），结构性不可赢确认。
