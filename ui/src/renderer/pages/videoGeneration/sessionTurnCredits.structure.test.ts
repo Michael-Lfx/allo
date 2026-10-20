@@ -75,6 +75,8 @@ describe('video generation session video credits', () => {
     expect(inspector.includes("defaultValue: '恢复编译'")).toBe(false);
     expect(infinite.includes('shotCanvasStage')).toBe(true);
     expect(infinite.includes('shot-canvas-fullscreen')).toBe(true);
+    expect(board.includes('shotGraphMediaChip')).toBe(false);
+    expect(board.includes('shotPackedBadge')).toBe(true);
     expect(infinite.includes('shotBoundMentionReferences')).toBe(true);
     expect(inspector.includes('nodeMentionsToSeedancePrompt')).toBe(true);
     expect(inspector.includes('imageModel')).toBe(true);

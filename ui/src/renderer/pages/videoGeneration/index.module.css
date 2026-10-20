@@ -1727,20 +1727,6 @@
   line-height: 1.4;
 }
 
-.shotGraphMediaChip {
-  position: absolute;
-  left: 10px;
-  top: 10px;
-  z-index: 2;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.5);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-}
-
 .sessionCollapsedRail {
   display: flex;
   flex-shrink: 0;
