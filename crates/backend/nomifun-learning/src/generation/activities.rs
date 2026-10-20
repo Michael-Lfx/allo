@@ -40,6 +40,17 @@ pub(super) async fn generate_lesson_activities(
     Err(last_error)
 }
 
+/// objective 题的证据回引硬门（t2）：主生成面（正文在手）缺 evidence = 违约
+/// 拒绝重试——flash 对「可选」条款遵循率实测为 0，条款必须可执法。
+pub(crate) fn evidence_missing(activity: &ActivityPack) -> bool {
+    activity.kind.is_objective()
+        && activity
+            .evidence
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+}
+
 
 /// One question already present in the lesson, listed in the generation
 /// prompt so the model produces something novel instead of a paraphrase.
@@ -244,6 +255,12 @@ pub(super) fn validate_lesson_activities(activities: &[ActivityPack]) -> Result<
     for activity in activities {
         if activity.prompt.trim().is_empty() {
             return Err("activity prompt is empty".into());
+        }
+        if evidence_missing(activity) {
+            return Err(format!(
+                "objective activity \"{}\" is missing its \"evidence\" — a verbatim quote (<=120 chars) from the section body or excerpt; add it to every objective question",
+                activity.prompt.trim()
+            ));
         }
         activity.validate_shape((3, 5), true)?;
     }
