@@ -115,3 +115,10 @@ smoke repair（盘面复验 + 级联标记 EXIT=3）。结构故事完整闭环�
 留 'noop' 枚举值不碍事（不再写入）。② predicted 列（复习作答流水）语义对齐 learnhub
 #105：**学习者作答前自预测**（Will/Wont/Unsure，随复习 UI 落地接入），不再写 FSRS
 r_pred（预测住复习日志快照，不重复）。
+
+**Resolution 增补（2026-10-20，smoke repair 种子勘误回链）：** 本票 smoke 落地的种
+子（2 块最小结构）对修补回合的两条出路都是结构性不可赢——非空 ops 应用后全量 gd.*
+复核必拒、noop 盘面原样复验必拒（七型 ops 里没有补 frontmatter/主干的 op）。已于
+smoke-hardening t1 修法 1 修复：种子换全量合法盘面（6 主干 × 42 块、八标量键齐、
+门口 G1 地形对账），noop 与 applied 均可赢；判据描述同步 `learning.zh.md` 冒烟节。
+见 `docs/tracker/learning-smoke-hardening/tickets/t1-repair-smoke-seed.md`。
