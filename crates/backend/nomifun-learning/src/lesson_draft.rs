@@ -896,6 +896,20 @@ fn audit_findings(
             format!("lesson has {} activities; the design guidance is 3-5", activities.len()),
         ));
     }
+    // 证据回引（t2）：objective 题缺 evidence 留痕（生成面已硬门拒重试，
+    // 这里兜住历史行与旁路写入——修补回合输入面）。
+    let missing_evidence = activities
+        .iter()
+        .filter(|activity| crate::generation::evidence_missing(activity))
+        .count();
+    if missing_evidence > 0 {
+        findings.push(warning(
+            "evidence_missing",
+            format!(
+                "{missing_evidence} objective question(s) carry no evidence quote — the grade-time reveal shows nothing beneath the explanation"
+            ),
+        ));
+    }
     if reflections > 1 {
         findings.push(warning(
             "reflections_multiple",
