@@ -5352,6 +5352,182 @@ async fn reuse_ruling_accepts_registry_host_outside_the_candidate_set() {
     assert_eq!(refs, 1, "the node teaches edge hangs off the ruled host");
 }
 
+/// 评审建议机械转化（t4）：reject 里 advice 指名「裁为复用」且宿主可登记表
+/// 解析的问题 → 代码合成 reuse 裁决执行（真机 run-1792403482606 call 3 形
+/// 态），问题剔除不折返模型；落库不铸新行、提名落宿主活跃别名、note 留痕。
+#[tokio::test]
+async fn review_advice_mechanically_converts_to_reuse() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let host: String = sqlx::query_scalar(
+        "SELECT concept_id FROM learning_concept_registry WHERE canonical = '向量基础'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15,
+             "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}
+        ],
+        "new_aliases": [],
+        "note": "建议转化稿"
+    }"#;
+    let review_json = format!(
+        r#"{{"verdict":"reject","problems":[{{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与登记表既有概念「向量基础」内涵重叠——应复用既有名，不新铸。","advice":"把「向量代数」裁为复用「向量基础」的别名，不另铸新行。"}}]}}"#
+    );
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    let registry: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+    assert_eq!(registry, 1, "advice conversion must not mint a new row");
+    let aliases_json: String = sqlx::query_scalar(
+        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    )
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        aliases_json.contains("向量代数") && aliases_json.contains("用向量语言改写既有对象关系"),
+        "the advised host pools the nominated name: {aliases_json}"
+    );
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        note.contains("评审建议机械转化「向量代数」→复用「向量基础」"),
+        "conversion must be recorded in the batch note: {note}"
+    );
+}
+
+/// 解析失败（宿主不可登记表解析）的 advice 照常打回：同指纹两轮早停，
+/// 不做机械转化。
+#[tokio::test]
+async fn unparseable_advice_stays_a_rejection() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15,
+             "teaches": [{"name": "向量代数", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}
+        ],
+        "new_aliases": [],
+        "note": "不可解析稿"
+    }"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与某个不在登记表里的概念「向量算术语言」内涵重叠——应复用。","advice":"把「向量代数」裁为复用「向量算术语言」的别名。"}]}"#;
+    let completer = SequencedCompleter::new(vec![
+        batch_json.to_owned(),
+        review_json.to_owned(),
+        batch_json.to_owned(),
+        review_json.to_owned(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    let kicked = service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    assert!(kicked, "manual growth kicks");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let stats = service.growth_run_stats().expect("stats recorded");
+    assert_eq!(
+        stats.stop_reason, "early_stop",
+        "unparseable advice must stay a rejection: {stats:?}"
+    );
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 0, "the batch must not land");
+}
+
+/// 铸名撞登记表现有名 → 门面机械复用（run-1792402566347 实录的红条死
+/// 路）：ng.mints.collision 被吸收为 auto-ruling，不铸新行、引用落宿主。
+#[tokio::test]
+async fn mint_colliding_with_registry_name_is_mechanically_reused() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let host: String = sqlx::query_scalar(
+        "SELECT concept_id FROM learning_concept_registry WHERE canonical = '向量基础'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "重新走一遍向量基础", "purpose": "从零起步切入", "est": 15,
+             "teaches": [{"name": "向量基础", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "向量基础", "aliases": [], "definition": "有方向的量"}
+        ],
+        "new_aliases": [],
+        "note": "撞池稿"
+    }"#;
+    let review_json = r#"{"verdict":"pass"}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    let registry: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+    assert_eq!(registry, 1, "a colliding canonical must not mint a new row");
+    let refs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lesson_concepts lc \
+         JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
+         JOIN learning_modules m ON m.module_id = l.module_id \
+         WHERE m.course_id = ? AND lc.concept_id = ? AND lc.role = 'teaches' \
+           AND lc.ref_name = '向量基础'",
+    )
+    .bind(&course_id)
+    .bind(&host)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(refs, 1, "the teaches edge lands on the owning host");
+    let note: String = sqlx::query_scalar(
+        "SELECT note FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        note.contains("撞池机械复用「向量基础」"),
+        "the absorbed collision must be recorded in the batch note: {note}"
+    );
+}
+
 /// new_aliases 归一化直定宿主：提名定义与既有概念逐字相同 → 门面机械绑定
 ///（评审零裁决也放行），别名带提名定义与出处落池。
 #[tokio::test]

@@ -25,6 +25,7 @@
 //! contract) lives in [`structure_contract`] and stays reference-only: it
 //! feeds no gate, holds no content, and never touches the concept web.
 
+pub mod advice_alias;
 pub mod alias_records;
 pub mod defnear;
 pub mod growth_contract;
@@ -762,6 +763,13 @@ pub struct GateOutcome {
     /// 登记表现存概念 id 全集（评审复用裁决的事实边界：候选集只是可见面，
     /// 裁决宿主只要求在这里存在）。
     pub registry_concept_ids: HashSet<String>,
+    /// 登记表活跃名（小写）→ (concept_id, canonical)：advice 机械转化
+    /// （t4）的宿主解析面。歧义名（多名撞库）不在此册。
+    pub registry_name_hosts: HashMap<String, (String, String)>,
+    /// 铸名撞登记表现有名的机械复用（t4 扩展）：提名名（小写）→ 宿主
+    /// concept_id。撞池下复用是唯一不重命名的合法出路，直接走 j04 落池，
+    /// 对应 `ng.mints.collision` 红条已被门面吸收。
+    pub auto_reusals: HashMap<String, String>,
 }
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,

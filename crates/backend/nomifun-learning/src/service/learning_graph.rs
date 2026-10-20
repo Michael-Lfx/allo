@@ -1490,13 +1490,74 @@ impl LearningService {
                 }
                 rulings.insert(key, concept_id.to_owned());
             }
+            // ── 评审建议机械转化（t4）：advice 指向「裁为别名/复用」且宿主可
+            // 机械解析的 teaches/mints 问题，由代码直接执行——合成 reuse 裁决
+            // （复用 j04 落池通道：不铸新行、落宿主活跃别名、引用随裁决改
+            // 写），问题从报告剔除，不折返模型。真机实录（run-1792403482606
+            // call 3）这类问题每次打回烧一轮重裁预算（点修越权高发段）。解析
+            // 面从窄（见 advice_alias 模块），解析失败的问题照常打回。转化不
+            // 进点修守卫基线（不改写 candidate；记录进批次 note 留痕）。
+            let mut advice_converted: Vec<(String, String, String)> = Vec::new();
+            {
+                let nomination_names: HashSet<String> = outcome
+                    .nominations
+                    .iter()
+                    .map(|plan| plan.name.trim().to_lowercase())
+                    .collect();
+                let parsed = crate::learning_graph::advice_alias::advice_reuse_conversions(
+                    &review.problems,
+                    &nomination_names,
+                    &outcome.registry_name_hosts,
+                    &outcome.registry_concept_ids,
+                );
+                let mut dropped: Vec<usize> = Vec::new();
+                for (index, name, host_id) in parsed {
+                    if rulings.contains_key(&name) {
+                        // 评审显式裁决优先；advice 只是补位。
+                        continue;
+                    }
+                    let canonical = outcome
+                        .registry_name_hosts
+                        .values()
+                        .find_map(|(id, canonical)| (id == &host_id).then_some(canonical.clone()))
+                        .unwrap_or_else(|| host_id.clone());
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        name = %name,
+                        host = %canonical,
+                        concept_id = %host_id,
+                        "review advice mechanically converted to a reuse ruling — problem dropped"
+                    );
+                    advice_converted.push((name.clone(), canonical, host_id.clone()));
+                    rulings.insert(name, host_id);
+                    dropped.push(index);
+                }
+                if !dropped.is_empty() {
+                    let mut kept = Vec::with_capacity(review.problems.len());
+                    for (index, problem) in review.problems.drain(..).enumerate() {
+                        if !dropped.contains(&index) {
+                            kept.push(problem);
+                        }
+                    }
+                    review.problems = kept;
+                }
+            }
+            // 撞池机械复用（gate 面已吸收红条）：裁决合入——机械事实优先于
+            // 评审/advice 裁决（撞池名落别的宿主会在落池时 Conflict）。
+            for (name, host_id) in &outcome.auto_reusals {
+                rulings.insert(name.clone(), host_id.clone());
+            }
             if !rulings.is_empty() && !review.problems.is_empty() {
                 let resolved_mask: Vec<bool> = review
                     .problems
                     .iter()
                     .map(|problem| {
                         matches!(problem.field.as_str(), "teaches" | "mints")
-                            && rulings.keys().any(|key| problem.issue.contains(&format!("「{key}」")))
+                            && rulings.keys().any(|key| {
+                                // 「」/『』两种书名习惯都认（真机实录混用）。
+                                problem.issue.contains(&format!("「{key}」"))
+                                    || problem.issue.contains(&format!("『{key}』"))
+                            })
                     })
                     .collect();
                 let resolved_count = resolved_mask.iter().filter(|resolved| **resolved).count();
@@ -1589,7 +1650,23 @@ impl LearningService {
                 continue;
             }
             // 门与评审都过：立即落库，不再对同一稿重复评估（评审非确定，
-            // 重复跑可能把已过稿误杀）。
+            // 重复跑可能把已过稿误杀）。机械转化留痕进批次 note（t4：转化面
+            // 数据随行；note 不在点修守卫比对面）。
+            if !advice_converted.is_empty() || !outcome.auto_reusals.is_empty() {
+                let mut traces = Vec::new();
+                for (name, canonical, _) in &advice_converted {
+                    traces.push(format!("评审建议机械转化「{name}」→复用「{canonical}」"));
+                }
+                for name in outcome.auto_reusals.keys() {
+                    traces.push(format!("撞池机械复用「{name}」"));
+                }
+                if !candidate.note.trim().is_empty() {
+                    candidate.note.push('；');
+                }
+                candidate
+                    .note
+                    .push_str(&format!("机械复用留痕：{}", traces.join("、")));
+            }
             batch = Some(candidate);
             batch_rulings = Some(rulings);
             stop_reason = "success";
@@ -2008,6 +2085,32 @@ impl LearningService {
             }
         }
 
+        // advice 机械转化的宿主解析面（t4）：活跃名 → (concept_id, canonical)。
+        // 撞库歧义名不参与机械解析（活跃池按单点登记应唯一，防御性收窄）。
+        let mut ambiguous_names: HashSet<String> = HashSet::new();
+        let mut registry_name_hosts: HashMap<String, (String, String)> = HashMap::new();
+        for entry in &registry_entries {
+            let canonical = entry.canonical.trim().to_owned();
+            let mut names: Vec<&str> = vec![entry.canonical.as_str()];
+            names.extend(entry.active_aliases.iter().map(String::as_str));
+            for name in names {
+                let key = name.trim().to_lowercase();
+                match registry_name_hosts.get(&key) {
+                    Some((existing_id, _)) if existing_id != &entry.concept_id => {
+                        ambiguous_names.insert(key);
+                    }
+                    Some(_) => {}
+                    None => {
+                        registry_name_hosts
+                            .insert(key, (entry.concept_id.clone(), canonical.clone()));
+                    }
+                }
+            }
+        }
+        for key in &ambiguous_names {
+            registry_name_hosts.remove(key);
+        }
+
         // 课程已有节点标题（批内标题与课程内唯一）。
         let existing_titles: HashSet<String> = sqlx::query_scalar(
             "SELECT lower(l.title) FROM learning_lessons l \
@@ -2034,6 +2137,45 @@ impl LearningService {
                 "{}",
                 warn.message
             );
+        }
+
+        // 铸名撞登记表现有名 → 机械复用（t4 扩展；run-1792402566347 实录：
+        // 撞名红条打回后模型只会重提同名，烧光重裁预算）。名字唯一池下
+        // 「直接引用即可」与「复用落别名」同旨——后者是机械可判定的，不送
+        // 模型；对应 ng.mints.collision 红条在此吸收。窄条件：canonical 撞
+        // 池且未入池别名不撞**别的**概念（否则落池 Conflict，照常红条打回）。
+        let mut auto_reusals: HashMap<String, String> = HashMap::new();
+        let mut auto_reusal_names: Vec<String> = Vec::new();
+        for mint in &batch.mints {
+            let canonical = mint.canonical.trim();
+            let key = canonical.to_lowercase();
+            let Some((host_id, _)) = registry_name_hosts.get(&key) else {
+                continue;
+            };
+            let alias_conflict = mint.aliases.iter().any(|alias| {
+                registry_name_hosts
+                    .get(&alias.trim().to_lowercase())
+                    .is_some_and(|(owner, _)| owner != host_id)
+            });
+            if alias_conflict {
+                continue;
+            }
+            tracing::warn!(
+                course = course_id.as_str(),
+                name = canonical,
+                concept_id = %host_id,
+                "mint canonical already owned by the registry — mechanically reused (j04 pooling), collision error absorbed"
+            );
+            auto_reusal_names.push(canonical.to_owned());
+            auto_reusals.insert(key, host_id.clone());
+        }
+        if !auto_reusal_names.is_empty() {
+            errors.retain(|error| {
+                !(error.kind == "ng.mints.collision"
+                    && auto_reusal_names
+                        .iter()
+                        .any(|name| error.message.contains(&format!("「{name}」"))))
+            });
         }
 
         // 同批互不供给的机械剪枝（learnhub 约束过滤纯代码同旨——可机械判定
@@ -2145,6 +2287,8 @@ impl LearningService {
                 .iter()
                 .map(|entry| entry.concept_id.clone())
                 .collect(),
+            registry_name_hosts,
+            auto_reusals,
         })
     }
 
