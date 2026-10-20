@@ -2,8 +2,8 @@
 id: t4
 title: "评审建议机械转化——advice 指向「裁为别名」的问题由代码执行"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: map.md
 ---
@@ -32,4 +32,29 @@ Y；该问题从报告剔除，剩余问题才回模型。解析面从窄：只�
 
 ## Resolution
 
-（结案时追加）
+**速览**：全项落地（commit `2d8859436`），并按六次真机实录补了一处票面
+外的同旨扩展（铸名撞池机械复用）。
+
+- **advice 机械转化**：新模块 `learning_graph/advice_alias.rs`（纯函数 +
+  6 单测）。窄解析面：field ∈ {teaches, mints} + 「复用/别名」信号词 +
+  恰一个本批提名名（「」/『』引号段，按去重后不同名计——issue/advice 常
+  各自重复点名同一对象）+ 恰一个宿主（登记表可唯一解析的引号名，或文本
+  内登记表在册的 concept_id 字面量 8-4-4-4-12）。解析成功 → 合成 reuse
+  裁决进 j04 落池通道，问题从报告剔除；失败照常打回。评审显式裁决优先于
+  advice 补位。
+- **撞池机械复用（票面外扩展，run-1792402566347 实录）**：mint canonical
+  撞登记表现有名时，`gate_batch` 直接吸收对应 `ng.mints.collision` 红条并
+  合入 auto-ruling（名字唯一池下复用是唯一不重命名的合法出路，模型只会
+  重提同名烧光预算）。窄条件：未入池别名不撞**别的**概念（否则落池
+  Conflict，照常红条）。auto-ruling 覆盖评审/advice 裁决（撞池名落别的宿
+  主必然 Conflict）。
+- **三条设计裁决**全按票面：宿主判定 = 登记表名解析（与 t3 口径一致）；
+  转化不进点修守卫基线（不改写 candidate）；留痕 = tracing warn + 批次
+  note（「评审建议机械转化 X→复用 Y」「撞池机械复用 X」——note 不在守卫
+  比对面）。顺带把「裁决已消化问题」的掩码扩到『』引号风格（真机混用）。
+- **单测**：服务层红绿 ×3——advice 可解析（reject 单轮即落库、不铸新行、
+  别名带定义、note 留痕）；advice 不可解析（宿主不在登记表）照常打回同指
+  纹早停；撞池 canonical 机械复用（红条吸收、引用落宿主、note 留痕）。
+  全量 `cargo test -p nomifun-learning` 全绿。
+- **真机**：结案波 grow 真机回执见 t3 票面增补（round 2-4 的近义铸名/
+  撞名重裁循环正是本票靶点）。
