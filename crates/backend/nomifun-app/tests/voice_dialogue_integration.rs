@@ -513,3 +513,181 @@ async fn a_post_generation_projection_failure_returns_text_and_retry_never_calls
     assert_eq!(completer.calls.load(std::sync::atomic::Ordering::SeqCst),1);
     assert_eq!(service.list_messages(USER_ID,&binding.conversation_id,Default::default()).await.unwrap().items.len(),0);
 }
+
+#[tokio::test]
+async fn fallback_execution_resolves_valid_workspace_without_separate_voice_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+
+    // 1. Without any existing project conversation or voice_companion.json config, fallback_execution resolves default voice workspace
+    let fallback = recorder.fallback_execution().await.unwrap().expect("fallback execution must resolve default voice workspace");
+    let path = std::path::Path::new(&fallback.workspace);
+    assert!(path.is_absolute());
+    assert!(path.is_dir());
+
+    // 2. An unselected project conversation must NOT be borrowed as the fallback workspace
+    let project_dir = tempfile::tempdir().unwrap();
+    let create_req = serde_json::from_value::<CreateConversationRequest>(serde_json::json!({
+        "type": "nomi",
+        "name": "用户主要项目",
+        "extra": { "workspace": project_dir.path().to_string_lossy() }
+    })).unwrap();
+    let _project_conv = service.create(USER_ID, create_req).await.unwrap();
+
+    let project_fallback = recorder.fallback_execution().await.unwrap().expect("fallback must resolve default voice workspace");
+    assert_eq!(
+        project_fallback.workspace,
+        fallback.workspace
+    );
+
+    // 3. Freezing a session without explicit binding or voice_companion.json uses default voice workspace
+    let frozen = recorder.freeze_session("fallback-session").await.unwrap().unwrap();
+    assert_eq!(
+        frozen.workspace.as_deref(),
+        Some(fallback.workspace.as_str())
+    );
+}
+
+#[tokio::test]
+async fn review_standalone_binding_must_not_borrow_an_unselected_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let home = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    let home_workspace = service
+        .get(USER_ID, &home)
+        .await
+        .unwrap()
+        .extra["workspace"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let unrelated = tempfile::tempdir().unwrap();
+    service
+        .create(
+            USER_ID,
+            serde_json::from_value::<CreateConversationRequest>(serde_json::json!({
+                "type": "nomi",
+                "name": "unselected confidential project",
+                "extra": { "workspace": unrelated.path().to_string_lossy() }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
+    let binding = recorder.freeze_session("review-home").await.unwrap().unwrap();
+    assert_eq!(binding.conversation_id, home);
+    assert_eq!(
+        binding.workspace.as_deref(),
+        Some(home_workspace.as_str()),
+        "standalone voice binding must not acquire an unrelated project's workspace"
+    );
+}
+
+#[tokio::test]
+async fn review_handoff_must_preserve_the_prior_user_city() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
+    let first = VoiceDialogueRequest::scoped("review-context", "review-city", "我在深圳");
+    let conversation = match recorder.preflight(&first).await.unwrap() {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!(),
+    };
+    recorder
+        .record_pair(
+            &conversation,
+            &first,
+            r#"{"intent_type":"chat","understood_request":"用户明确城市为深圳","reply_tts":"知道了，你在深圳。"}"#,
+        )
+        .await
+        .unwrap();
+    let next = VoiceDialogueRequest::scoped("review-context", "review-weather", "今天天气怎么样？");
+    recorder.preflight(&next).await.unwrap();
+    recorder
+        .record_pair(
+            &conversation,
+            &next,
+            r#"{"intent_type":"agent_task","understood_request":"用户询问今日天气","task_goal":"查询今天的天气","spoken_ack":"查询天气"}"#,
+        )
+        .await
+        .unwrap();
+    let command = nomifun_api_types::voice::VoiceTaskCommand {
+        command_id: "review-weather-command".into(),
+        session_id: "review-context".into(),
+        turn_id: "review-weather".into(),
+        goal: "查询今天的天气".into(),
+        record_id: next.voice_record_id.clone(),
+        binding_id: next.binding_id.clone(),
+    };
+    let handoff = recorder
+        .task_configuration(&command)
+        .await
+        .unwrap()
+        .unwrap()
+        .handoff_content
+        .unwrap();
+    assert!(
+        handoff.contains("深圳"),
+        "known prior fact was dropped from runtime handoff: {handoff}"
+    );
+}
+
+#[test]
+fn review_spoken_summary_must_not_drop_the_actual_backup_failure() {
+    let raw = "目录扫描已完成，已检查全部文件并统计文件数量和大小以及当前磁盘空间使用情况并生成了详细目录结构和待处理文件清单用于下一步执行，但是备份失败没有复制任何文件且目标目录仍然为空，请勿删除原始文件以免丢失数据。";
+    let summary = nomifun_app::voice_companion_manager::extract_spoken_summary(
+        raw,
+        nomifun_api_types::voice::VoiceTaskStatus::Completed,
+    );
+    assert!(
+        summary.contains("备份失败") || summary.contains("没有复制"),
+        "spoken summary lost the actual failure: {summary}"
+    );
+}
+
+#[tokio::test]
+async fn review_missing_frozen_execution_cannot_bypass_the_cleared_conversation_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    let request = VoiceDialogueRequest::scoped("review-cleared", "review-cleared-turn", "读取文件");
+    let conversation = match recorder.preflight(&request).await.unwrap() {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!(),
+    };
+    recorder
+        .record_pair(
+            &conversation,
+            &request,
+            r#"{"intent_type":"agent_task","task_goal":"读取文件","spoken_ack":"读取文件"}"#,
+        )
+        .await
+        .unwrap();
+    // A missing frozen execution is a valid persisted state when production prepare_configuration fails.
+    let journal = dir.path().join("voice").join(format!("dialogue-{USER_ID}.json"));
+    let mut records: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    for record in records.as_array_mut().unwrap() {
+        record["execution"] = serde_json::Value::Null;
+    }
+    std::fs::write(&journal, serde_json::to_vec(&records).unwrap()).unwrap();
+    service
+        .conversation_repo()
+        .clear_terminal_conversation_messages(USER_ID, &conversation, nomifun_common::now_ms())
+        .await
+        .unwrap();
+    let command = nomifun_api_types::voice::VoiceTaskCommand {
+        command_id: "review-cleared-command".into(),
+        session_id: "review-cleared".into(),
+        turn_id: "review-cleared-turn".into(),
+        goal: "读取文件".into(),
+        record_id: request.voice_record_id.clone(),
+        binding_id: request.binding_id.clone(),
+    };
+    let result = recorder.task_configuration(&command).await;
+    assert!(
+        result.is_err(),
+        "cleared conversation with no frozen execution must be rejected, not Ok(None) that admits mutable fallback config"
+    );
+}

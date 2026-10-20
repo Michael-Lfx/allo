@@ -88,11 +88,13 @@ pub struct VoiceModelRef {
     pub model: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceExecutionConfig {
     pub workspace: String,
     pub model: Option<VoiceModelRef>,
     pub preset_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,7 +351,6 @@ impl VoiceDecisionStream {
                 self.decision=Some(decision);
             } else {
                 #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
                 struct Continuation {reply_delta:String}
                 let continuation:Continuation=serde_json::from_value(value).map_err(|_|"model_response_invalid")?;
                 let decision=self.decision.as_mut().unwrap();
@@ -364,7 +365,9 @@ impl VoiceDecisionStream {
         Ok(ready)
     }
     pub fn finish(self)->Result<VoiceDecision, &'static str> {
-        if !self.buffer.trim().is_empty() {return Err("model_response_invalid");}
+        let remainder = self.buffer.trim();
+        let stripped = remainder.strip_prefix("```json").or_else(|| remainder.strip_prefix("```")).map(|s| s.strip_suffix("```").unwrap_or(s).trim()).unwrap_or(remainder);
+        if !stripped.is_empty() {return Err("model_response_invalid");}
         self.decision.ok_or("model_response_invalid")
     }
 }

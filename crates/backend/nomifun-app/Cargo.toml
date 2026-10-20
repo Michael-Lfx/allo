@@ -332,6 +332,7 @@ git2.workspace = true
 rmcp = { version = "3.5", features = ["server", "transport-io", "schemars"] }
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 # Network-interface enumeration for desktop LAN-IP detection (WebUI remote access).
 if-addrs = "0.13"

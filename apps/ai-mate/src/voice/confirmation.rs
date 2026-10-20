@@ -61,23 +61,107 @@ impl VoiceCompanionRuntime {
         self.playback.speak_text_with_started(self.tts.as_ref(),&request.text,"",||{}).await?;
         let mut driver=self.driver.lock().await;
         if self.playback.generation_id()!=generation || driver.current_state()!=AcousticState::AwaitingConfirmation{return Ok(false);}
-        let remaining=request.expires_at_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).min(8000);
-        if remaining<=0{return Ok(false);}
-        let (tx,rx)=tokio::sync::oneshot::channel();
-        let deadline_ms=chrono::Utc::now().timestamp_millis()+remaining;
-        {
-            let mut pending=self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());
-            let Some(pending)=pending.as_mut().filter(|pending|pending.approval_id==request.approval_id)else{return Ok(false);};
-            pending.deadline_ms=deadline_ms;pending.response=Some(tx);
-        }
+        let total_remaining=request.expires_at_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).min(8000);
+        if total_remaining<=0{return Ok(false);}
+        let deadline_ms=chrono::Utc::now().timestamp_millis()+total_remaining;
         driver.handle_event(AcousticEvent::PromptDone).map_err(|_|AudioSinkError::Write("confirmation_scope_changed".into()))?;
-        driver.limit_confirmation_window(Duration::from_millis(remaining as u64));
-        let _=self.event_tx.send(VoiceCompanionEvent::ConfirmationListening {deadline_ms});
+        driver.limit_confirmation_window(Duration::from_millis(total_remaining as u64));
         drop(driver);
-        let answer=tokio::time::timeout(Duration::from_millis(remaining as u64),rx).await.ok().and_then(Result::ok).flatten();
-        if self.playback.generation_id()!=generation || chrono::Utc::now().timestamp_millis()>=deadline_ms{return Ok(false);}
-        let answer=answer.unwrap_or_default();
-        let clean=answer.trim().trim_end_matches(['。','！','!','.']).to_lowercase();
-        Ok(matches!(clean.as_str(),"确认"|"同意"|"确认执行"|"confirm"|"yes"|"approve"))
+
+        let mut round = 0;
+        loop {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let remaining = deadline_ms.saturating_sub(now_ms);
+            if remaining <= 0 || self.playback.generation_id() != generation {
+                return Ok(false);
+            }
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            {
+                let mut pending = self.pending_confirmation.lock().unwrap_or_else(|error| error.into_inner());
+                let Some(pending) = pending.as_mut().filter(|pending| pending.approval_id == request.approval_id) else {
+                    return Ok(false);
+                };
+                pending.deadline_ms = deadline_ms;
+                pending.response = Some(tx);
+            }
+            let _ = self.event_tx.send(VoiceCompanionEvent::ConfirmationListening { deadline_ms });
+
+            let answer = tokio::time::timeout(Duration::from_millis(remaining as u64), rx).await.ok().and_then(Result::ok).flatten();
+            if self.playback.generation_id() != generation || chrono::Utc::now().timestamp_millis() >= deadline_ms {
+                return Ok(false);
+            }
+
+            let answer = answer.unwrap_or_default();
+            match evaluate_confirmation_text(&answer) {
+                ConfirmationDecision::Approved => return Ok(true),
+                ConfirmationDecision::Denied => return Ok(false),
+                ConfirmationDecision::Ambiguous => {
+                    round += 1;
+                    let remaining_after = deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis());
+                    if round < 2 && remaining_after > 2500 {
+                        let _ = self.playback.speak_text_with_started(self.tts.as_ref(), "没听清，请说可以执行或不要执行", "", || {}).await;
+                        continue;
+                    }
+                    return Ok(false);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfirmationDecision {
+    Approved,
+    Denied,
+    Ambiguous,
+}
+
+pub fn evaluate_confirmation_text(answer: &str) -> ConfirmationDecision {
+    let clean = answer.trim().trim_end_matches(['。', '！', '!', '.', '？', '?', '，', ',']).to_lowercase();
+    if clean.is_empty() {
+        return ConfirmationDecision::Ambiguous;
+    }
+    // Negation has highest priority!
+    const DENIAL_KEYWORDS: &[&str] = &[
+        "不同意", "不要执行", "不要", "先别", "别执行", "别删", "别写", "别动",
+        "取消", "不行", "拒绝", "不确认", "不许可", "否", "no", "cancel", "deny", "stop"
+    ];
+    if DENIAL_KEYWORDS.iter().any(|k| clean.contains(k)) {
+        return ConfirmationDecision::Denied;
+    }
+    // Consent keywords
+    const CONSENT_KEYWORDS: &[&str] = &[
+        "确认", "同意", "确认执行", "可以执行", "执行吧", "允许", "好", "好的",
+        "可以", "行", "执行", "准许", "confirm", "yes", "approve", "ok", "proceed"
+    ];
+    if CONSENT_KEYWORDS.iter().any(|k| clean.contains(k)) {
+        return ConfirmationDecision::Approved;
+    }
+    ConfirmationDecision::Ambiguous
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_confirmation_decision_semantics() {
+        assert_eq!(evaluate_confirmation_text("可以执行"), ConfirmationDecision::Approved);
+        assert_eq!(evaluate_confirmation_text("好的"), ConfirmationDecision::Approved);
+        assert_eq!(evaluate_confirmation_text("允许"), ConfirmationDecision::Approved);
+        assert_eq!(evaluate_confirmation_text("确认执行。"), ConfirmationDecision::Approved);
+        assert_eq!(evaluate_confirmation_text("yes!"), ConfirmationDecision::Approved);
+
+        // Negation has priority
+        assert_eq!(evaluate_confirmation_text("不同意"), ConfirmationDecision::Denied);
+        assert_eq!(evaluate_confirmation_text("先别执行"), ConfirmationDecision::Denied);
+        assert_eq!(evaluate_confirmation_text("不要"), ConfirmationDecision::Denied);
+        assert_eq!(evaluate_confirmation_text("取消"), ConfirmationDecision::Denied);
+
+        // Ambiguous / noise / misrecognized
+        assert_eq!(evaluate_confirmation_text("确aren"), ConfirmationDecision::Ambiguous);
+        assert_eq!(evaluate_confirmation_text("今天天气怎么样"), ConfirmationDecision::Ambiguous);
+        assert_eq!(evaluate_confirmation_text(""), ConfirmationDecision::Ambiguous);
     }
 }

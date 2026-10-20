@@ -11,18 +11,68 @@ pub fn voice_confirmation_summary(tool:&str,input:&Value)->Option<String> {
         "Write"|"Edit"=>format!("{}文件 {}",if tool=="Write"{"写入"}else{"修改"},input.get("file_path").or_else(||input.get("path"))?.as_str()?),
         "ApplyPatch"=>format!("修改或删除文件 {}",patch_invocation_paths(input).ok()?.join("，")),
         "Bash"|"exec_command"=>format!("执行命令 {}",input.get("command").or_else(||input.get("cmd"))?.as_str()?),
-        _=>return None,
+        "WebSearch"|"web_search"=> {
+            if let Some(q) = input.get("query").or_else(|| input.get("q")).and_then(Value::as_str) {
+                format!("搜索网络「{q}」")
+            } else if let Some(desc) = input.get("description").and_then(Value::as_str) {
+                let query = desc
+                    .strip_prefix("web_search '")
+                    .and_then(|s| s.strip_suffix('\''))
+                    .unwrap_or(desc);
+                format!("搜索网络「{query}」")
+            } else {
+                "搜索网络".into()
+            }
+        },
+        "WebFetch"|"web_fetch"=> {
+            if let Some(url) = input.get("url").and_then(Value::as_str) {
+                format!("访问网页 {url}")
+            } else if let Some(desc) = input.get("description").and_then(Value::as_str) {
+                desc.to_string()
+            } else {
+                "访问网页".into()
+            }
+        },
+        _ => {
+            if let Some(desc) = input.get("description").and_then(Value::as_str) {
+                if !desc.trim().is_empty() {
+                    desc.to_string()
+                } else {
+                    return None;
+                }
+            } else {
+                return None;
+            }
+        }
     };
     (summary.chars().count()<=240).then_some(summary)
 }
 
-pub(crate) struct VoiceInvocationPolicy { root: PathBuf, table: ToolPolicyTable }
+pub(crate) struct VoiceInvocationPolicy {
+    root: PathBuf,
+    table: ToolPolicyTable,
+    auto_approve: bool,
+}
 impl VoiceInvocationPolicy {
-    pub fn new(root: PathBuf) -> Result<Self,String> {
-        let root=root.canonicalize().map_err(|_|"voice_workspace_unavailable")?;
-        if !root.is_dir() {return Err("voice_workspace_unavailable".into());}
-        let table=ToolPolicyTable {sandbox_root:root.clone(),..Default::default()};
-        Ok(Self {root,table})
+    #[allow(dead_code)]
+    pub fn new(root: PathBuf) -> Result<Self, String> {
+        Self::with_auto_approve(root, false)
+    }
+
+    pub fn with_auto_approve(root: PathBuf, auto_approve: bool) -> Result<Self, String> {
+        let root = root.canonicalize().map_err(|_| "voice_workspace_unavailable")?;
+        if !root.is_dir() {
+            return Err("voice_workspace_unavailable".into());
+        }
+        let table = ToolPolicyTable {
+            sandbox_root: root.clone(),
+            ..Default::default()
+        };
+        Ok(Self {
+            root,
+            table,
+            auto_approve,
+        })
     }
     fn deny(code:&str)->InvocationDecision {InvocationDecision::Deny(code.into())}
     fn confirmation(reason:&str)->InvocationDecision {InvocationDecision::RequireApproval {reason:reason.into(),timeout:Duration::from_secs(45)}}
@@ -71,14 +121,30 @@ impl ToolInvocationPolicy for VoiceInvocationPolicy {
                         if !self.within(pattern,&base) {return Self::deny("voice_workspace_escape");}
                     }
                 }
-                if matches!(name,"Write"|"Edit") {Self::confirmation("voice_file_change")}else{InvocationDecision::Allow}
+                if matches!(name, "Write" | "Edit") {
+                    if self.auto_approve {
+                        InvocationDecision::Allow
+                    } else {
+                        Self::confirmation("voice_file_change")
+                    }
+                } else {
+                    InvocationDecision::Allow
+                }
             }
             "ApplyPatch" => {
-                let Ok(paths)=patch_invocation_paths(input) else{return Self::deny("voice_patch_invalid");};
-                if paths.is_empty() || paths.iter().any(|path|!self.within(path,&self.root)) {return Self::deny("voice_workspace_escape");}
-                Self::confirmation("voice_file_change")
+                let Ok(paths) = patch_invocation_paths(input) else {
+                    return Self::deny("voice_patch_invalid");
+                };
+                if paths.is_empty() || paths.iter().any(|path| !self.within(path, &self.root)) {
+                    return Self::deny("voice_workspace_escape");
+                }
+                if self.auto_approve {
+                    InvocationDecision::Allow
+                } else {
+                    Self::confirmation("voice_file_change")
+                }
             }
-            "ToolSearch"|"update_plan"|"WebSearch"|"WebFetch"|"web_search"|"web_fetch" => InvocationDecision::Allow,
+            "ToolSearch"|"update_plan"|"WebSearch"|"WebFetch"|"web_search"|"web_fetch"|"web_extract"|"WebExtract" => InvocationDecision::Allow,
             _ => Self::deny("voice_tool_unsupported"),
         }
     }
@@ -99,6 +165,18 @@ mod tests {
         assert!(summary.contains("first.txt")&&summary.contains("second.txt"));
         assert!(voice_confirmation_summary("Write",&json!({"file_path":"x".repeat(241),"content":"text"})).is_none());
         assert!(voice_confirmation_summary("unknown",&json!({})).is_none());
+
+        // Web search with query
+        let ws = voice_confirmation_summary("web_search", &json!({"query": "杭州明天天气"})).unwrap();
+        assert_eq!(ws, "搜索网络「杭州明天天气」");
+
+        // Web search with description fallback
+        let ws_desc = voice_confirmation_summary("web_search", &json!({"description": "web_search '杭州明天天气'"})).unwrap();
+        assert_eq!(ws_desc, "搜索网络「杭州明天天气」");
+
+        // General tool with description
+        let general = voice_confirmation_summary("mcp_custom_tool", &json!({"description": "获取用户订单列表"})).unwrap();
+        assert_eq!(general, "获取用户订单列表");
     }
 
     #[test]
@@ -201,5 +279,47 @@ mod tests {
         let (result,_)=tokio::join!(nomi_agent::tool_execution::execute_tool_calls_with_approval(&registry,&calls,&authority,&manager,&writer,"actual-message",true,&allowed,None,Default::default(),false,Default::default()),late);
         assert_eq!(std::fs::read_to_string(path).unwrap(),"keep");
         assert!(matches!(&result.unwrap().results[0],ContentBlock::ToolResult {is_error:true,..}));
+    }
+
+    #[test]
+    fn test_web_extract_and_yolo_mode_behavior() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        // 1. Default policy: web_extract is allowed without approval
+        let default_policy = VoiceInvocationPolicy::new(dir.path().to_path_buf()).unwrap();
+        assert!(matches!(
+            default_policy.evaluate("web_extract", &json!({"url": "https://example.com"})),
+            InvocationDecision::Allow
+        ));
+        assert!(matches!(
+            default_policy.evaluate("WebExtract", &json!({"url": "https://example.com"})),
+            InvocationDecision::Allow
+        ));
+
+        // 2. YOLO mode: in-workspace writes evaluate to Allow
+        let yolo_policy = VoiceInvocationPolicy::with_auto_approve(dir.path().to_path_buf(), true).unwrap();
+        assert!(matches!(
+            yolo_policy.evaluate("Write", &json!({"file_path": "inside.txt"})),
+            InvocationDecision::Allow
+        ));
+        assert!(matches!(
+            yolo_policy.evaluate("Edit", &json!({"file_path": "inside.txt"})),
+            InvocationDecision::Allow
+        ));
+
+        // 3. YOLO mode must STILL strictly block workspace escape and dangerous commands
+        assert!(matches!(
+            yolo_policy.evaluate("Write", &json!({"file_path": outside.path().join("outside.txt")})),
+            InvocationDecision::Deny(_)
+        ));
+        assert!(matches!(
+            yolo_policy.evaluate("Bash", &json!({"command": "rm -rf /"})),
+            InvocationDecision::Deny(_)
+        ));
+        assert!(matches!(
+            yolo_policy.evaluate("mcp__unknown__delete", &json!({})),
+            InvocationDecision::Deny(_)
+        ));
     }
 }

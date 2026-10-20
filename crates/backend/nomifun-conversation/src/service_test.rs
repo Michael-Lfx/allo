@@ -3617,9 +3617,32 @@ async fn voice_creation_stamps_an_immutable_workspace_and_reuses_the_creation_id
     let row = repository.get(&first.conversation_id).await.unwrap().unwrap();
     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
     assert_eq!(extra["voice_task_workspace"], nomifun_common::paths::canonicalize_simplified(workspace.path()).unwrap().to_string_lossy().as_ref());
-    assert_eq!(extra["session_mode"], "default");
+    assert_eq!(extra["session_mode"], "yolo");
     let options = service.build_runtime_options(&row).unwrap();
     assert_eq!(options.extra["voice_task_workspace"], extra["voice_task_workspace"]);
+    assert_eq!(options.extra["session_mode"], "yolo");
+    for (mode, expected) in [
+        ("default", "default"),
+        ("auto_edit", "auto_edit"),
+        ("unsupported-mode", "default"),
+    ] {
+        let mut candidate = request();
+        candidate.extra["session_mode"] = json!(mode);
+        let created = service
+            .create_voice_idempotent(
+                PROJECTION_OWNER,
+                candidate,
+                &format!("voice-create:mode:{mode}"),
+                workspace.path().to_str().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.delegation_policy, DelegationPolicy::Disabled);
+        let row = repository.get(&created.conversation_id).await.unwrap().unwrap();
+        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+        assert_eq!(extra["session_mode"], expected, "mode: {mode}");
+    }
     let mut forged = request();
     forged.extra["voice_task_workspace"] = json!(workspace.path());
     assert!(matches!(service.create(PROJECTION_OWNER, forged).await, Err(AppError::BadRequest(_))));

@@ -50,6 +50,31 @@ impl VoiceRouter for HeuristicFallbackVoiceRouter {
                 task_goal: Some(input.into()),
                 requires_confirmation: Some(false),
             })
+        } else if input.contains("天气") {
+            let has_city = ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "武汉", "西安", "重庆", "苏州", "天津"]
+                .iter()
+                .any(|city| input.contains(city));
+            if has_city {
+                Ok(VoiceDecision {
+                    intent_type: crate::contract::IntentType::AgentTask,
+                    understood_request: Some(format!("查询{input}")),
+                    task_control_action: None,
+                    reply_tts: None,
+                    spoken_ack: Some("收到，正在查询天气。".into()),
+                    task_goal: Some(input.into()),
+                    requires_confirmation: Some(false),
+                })
+            } else {
+                Ok(VoiceDecision {
+                    intent_type: crate::contract::IntentType::Chat,
+                    understood_request: Some("询问天气".into()),
+                    task_control_action: None,
+                    reply_tts: Some("请问你想查询哪个城市的天气？".into()),
+                    spoken_ack: None,
+                    task_goal: None,
+                    requires_confirmation: None,
+                })
+            }
         } else if input.contains("取消") || input.contains("停止") {
             Ok(VoiceDecision {
                 intent_type: crate::contract::IntentType::TaskControl,
@@ -400,7 +425,9 @@ impl OpenAiCompatibleVoiceRouter {
             ```\n\
             字段说明与约束：\n\
             - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" 之一。\n\
-            - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。\n\
+            - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。用于闲聊短答、日常问候、知识常识或追问澄清。\n\
+            - 涉及实时天气（且指定了具体城市或位置）、文件读写查找、桌面或系统操作、代码执行、多步业务等需要工具的能力，必须归为 \"agent_task\"，委派给软件会话执行。严禁在没有工具的情况下编造实时数据（如假天气、假文件内容）。\n\
+            - 如果用户询问天气但未指明城市（如“今天天气怎么样”），应归为 \"chat\"，并在 reply_tts 中一句话友好追问（例如“请问你想查询哪个城市的天气？”）。\n\
             - 对可理解的输入，必须同时提供 understood_request：用一句自然语言忠实整理用户的问题或需求，保留关键对象和条件，不补造地点、日期或未说出的事实。reply_tts 直接回答该需求，不要求用户再确认；同一次输出同时返回理解和回答。\n\
             - 当 intent_type 为 \"agent_task\" 时，必须提供 task_goal (规整的目标描述) 和 spoken_ack (接单口语回执，<=25字)，requires_confirmation 标明是否涉及高危或破坏性操作。\n\
             - 当 intent_type 为 \"task_control\" 时，必须提供 task_control_action (\"query_status\" 或 \"cancel_task\")。\n\
@@ -695,5 +722,17 @@ mod tests {
             router.extra_headers,
             vec![("token".to_string(), "fake-flowy-jwt-token".to_string())]
         );
+    }
+
+    #[tokio::test]
+    async fn test_weather_without_city_clarifies_in_chat() {
+        let fallback = HeuristicFallbackVoiceRouter::new();
+        let decision = fallback.route_with_status("今天天气怎么样？", None).await.unwrap();
+        assert_eq!(decision.intent_type, crate::contract::IntentType::Chat);
+        assert_eq!(decision.reply_tts.as_deref(), Some("请问你想查询哪个城市的天气？"));
+
+        let decision_with_city = fallback.route_with_status("查询杭州今天的天气", None).await.unwrap();
+        assert_eq!(decision_with_city.intent_type, crate::contract::IntentType::AgentTask);
+        assert_eq!(decision_with_city.spoken_ack.as_deref(), Some("收到，正在查询天气。"));
     }
 }

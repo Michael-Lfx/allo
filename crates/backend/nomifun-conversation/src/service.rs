@@ -5687,7 +5687,13 @@ impl ConversationService {
             if !canonical.is_dir() {return Err(AppError::BadRequest("voice_workspace_invalid".into()));}
             req.extra["voice_task_workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
             req.extra["workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
-            req.extra["session_mode"]=serde_json::Value::String("default".into());
+            let mode = req
+                .extra
+                .get("session_mode")
+                .and_then(serde_json::Value::as_str)
+                .filter(|m| matches!(*m, "default" | "auto_edit" | "yolo"))
+                .unwrap_or("default");
+            req.extra["session_mode"] = serde_json::Value::String(mode.into());
             req.delegation_policy=DelegationPolicy::Disabled;
         }
         let authority = self.execution_authority(user_id);

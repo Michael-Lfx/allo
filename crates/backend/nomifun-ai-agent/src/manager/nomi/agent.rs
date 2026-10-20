@@ -1200,8 +1200,11 @@ impl NomiAgentManager {
 
         let mut engine = result.engine;
         if let Some(root) = &config_extra.voice_workspace {
-            let policy=crate::voice_tool_policy::VoiceInvocationPolicy::new(root.clone()).map_err(AppError::BadRequest)?;
+            let auto_approve = config_extra.session_mode.as_deref() == Some("yolo");
+            let policy = crate::voice_tool_policy::VoiceInvocationPolicy::with_auto_approve(root.clone(), auto_approve)
+                .map_err(AppError::BadRequest)?;
             engine.registry_mut().set_invocation_policy(Arc::new(policy));
+            engine.allow_named_tools(&["web_search", "web_extract"]);
         }
         // Catalog / user-selected reasoning depth for OpenAI-compatible Flowy
         // chat models. Must land before the first turn so every LlmRequest
@@ -3057,9 +3060,33 @@ impl NomiAgentManager {
     }
 
     pub fn pending_voice_confirmations(&self) -> Vec<nomifun_api_types::voice::VoiceToolConfirmation> {
-        self.approval_manager.pending_scoped_approvals().into_iter().map(|scope| nomifun_api_types::voice::VoiceToolConfirmation {
+        let mut approvals: Vec<nomifun_api_types::voice::VoiceToolConfirmation> = self.approval_manager.pending_scoped_approvals().into_iter().map(|scope| nomifun_api_types::voice::VoiceToolConfirmation {
             approval_id:scope.approval_id,msg_id:scope.msg_id,call_id:scope.call_id,tool_name:scope.tool_name,arguments:scope.arguments,expires_at_ms:scope.expires_at_ms,
-        }).collect()
+        }).collect();
+        if approvals.is_empty() {
+            if let Ok(confirmations) = self.confirmations.read() {
+                for c in confirmations.iter() {
+                    if !self.approval_manager.has_pending(&c.call_id) {
+                        continue;
+                    }
+                    let tool_name = c.action.clone().or_else(|| c.title.clone()).unwrap_or_else(|| "tool".into());
+                    let mut args = serde_json::Map::new();
+                    args.insert("description".into(), serde_json::Value::String(c.description.clone()));
+                    if let Some(cmd) = &c.command_type {
+                        args.insert("command_type".into(), serde_json::Value::String(cmd.clone()));
+                    }
+                    approvals.push(nomifun_api_types::voice::VoiceToolConfirmation {
+                        approval_id: c.id.clone(),
+                        msg_id: c.id.clone(),
+                        call_id: c.call_id.clone(),
+                        tool_name,
+                        arguments: serde_json::Value::Object(args),
+                        expires_at_ms: nomifun_common::now_ms() + 60_000,
+                    });
+                }
+            }
+        }
+        approvals
     }
 
     pub fn check_approval(&self, action: &str, _command_type: Option<&str>) -> bool {
@@ -7215,6 +7242,50 @@ mod tests {
             .await
             .unwrap();
         assert!(agent.get_confirmations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nomi_agent_pending_voice_confirmations_projects_unscoped_and_resolves() {
+        let agent = NomiAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None, None, None, None, Vec::new(), None, None, Vec::new(), None)
+            .await
+            .unwrap();
+
+        // Initially empty
+        assert!(agent.pending_voice_confirmations().is_empty());
+
+        // Simulate an unscoped approval request (like web_search)
+        let (rx, _token) = agent.approval_manager.request_approval_with_token("call-ws-1", &ToolCategory::Info);
+        assert!(agent.approval_manager.has_pending("call-ws-1"));
+
+        // Push confirmation to agent.confirmations
+        let confirmation = Confirmation {
+            id: "conf-ws-1".into(),
+            call_id: "call-ws-1".into(),
+            title: Some("Read wants to use: web_search".into()),
+            action: Some("web_search".into()),
+            description: "web_search '杭州天气'".into(),
+            command_type: Some("Read".into()),
+            options: Vec::new(),
+            screenshot: None,
+        };
+        agent.confirmations.write().unwrap().push(confirmation);
+
+        // pending_voice_confirmations should now project it!
+        let pending = agent.pending_voice_confirmations();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].call_id, "call-ws-1");
+        assert_eq!(pending[0].tool_name, "web_search");
+
+        // Confirm it via voice decision: proceed_once
+        agent.confirm("conf-ws-1", "call-ws-1", serde_json::json!({"value": "proceed_once"}), false).unwrap();
+
+        // Approval manager should receive Approved
+        let approval_result = rx.await.unwrap();
+        assert!(matches!(approval_result, ToolApprovalResult::Approved));
+
+        // confirmations and pending_voice_confirmations should now be empty
+        assert!(agent.get_confirmations().is_empty());
+        assert!(agent.pending_voice_confirmations().is_empty());
     }
 
     #[tokio::test]

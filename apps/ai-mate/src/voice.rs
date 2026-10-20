@@ -58,6 +58,7 @@ pub enum VoiceWakeError {
 #[derive(Clone, Debug)]
 struct AnnouncementRecord {
     command_id: String,
+    notification_id: String,
     attempt_id: String,
     scope: nomifun_api_types::voice::VoiceSessionControlRequest,
     text: String,
@@ -279,15 +280,29 @@ impl VoiceCompanionRuntime {
 
     pub async fn announce_task_result(&self, request: nomifun_api_types::voice::VoiceTaskResultAnnouncement) -> Result<(), &'static str> {
         if request.text.trim().is_empty() || request.text.len()>16_384 || request.command_id.is_empty() || request.command_id.len()>128 {return Err("task_result_invalid");}
-        let attempt = request.attempt_id.clone().unwrap_or_else(|| request.command_id.clone());
+        let notification_id = request.notification_id.clone().unwrap_or_else(|| request.command_id.clone());
+        let attempt = request.attempt_id.clone().unwrap_or_else(|| notification_id.clone());
         let mut announced = self.announced_tasks.lock().await;
-        if let Some(existing) = announced.iter().find(|r| r.attempt_id == attempt || r.command_id == request.command_id) {
+
+        // 1. Exact attempt deduplication
+        if let Some(existing) = announced.iter().find(|r| r.attempt_id == attempt) {
             if existing.scope == request.scope && existing.text == request.text {
                 return Ok(());
             } else {
                 return Err("task_result_conflict");
             }
         }
+
+        // 2. Logical notification checks
+        if let Some(existing) = announced.iter().find(|r| r.notification_id == notification_id) {
+            if existing.text != request.text {
+                return Err("task_result_conflict");
+            }
+            if existing.status == "started" {
+                return Err("voice_busy");
+            }
+        }
+
         let mut driver = self.driver.lock().await;
         let snapshot = self.snapshot();
         if !request.scope.matches(&snapshot) {return Err("task_scope_changed");}
@@ -297,6 +312,7 @@ impl VoiceCompanionRuntime {
         let generation = self.playback.generation_id();
         announced.push_back(AnnouncementRecord {
             command_id: request.command_id.clone(),
+            notification_id: notification_id.clone(),
             attempt_id: attempt.clone(),
             scope: request.scope.clone(),
             text: request.text.clone(),
@@ -313,9 +329,10 @@ impl VoiceCompanionRuntime {
         });
         drop(driver);
         drop(announced);
+        voice_feedback::play(&self.playback, &self.event_tx, VoiceCueKind::Recognized, generation).await;
         let play_result = Self::play_response(&request.text,&self.driver,&self.playback,&self.event_tx,&self.tts,generation).await;
         let mut announced = self.announced_tasks.lock().await;
-        if let Some(record) = announced.iter_mut().find(|r| r.attempt_id == attempt || r.command_id == attempt) {
+        if let Some(record) = announced.iter_mut().find(|r| r.attempt_id == attempt) {
             match play_result {
                 Ok(()) => {
                     record.status = "played".into();
@@ -334,7 +351,8 @@ impl VoiceCompanionRuntime {
         let announced = self.announced_tasks.lock().await;
         announced
             .iter()
-            .find(|r| r.attempt_id == attempt || r.command_id == attempt)
+            .rev()
+            .find(|r| r.attempt_id == attempt || r.notification_id == attempt || r.command_id == attempt)
             .map(|r| nomifun_api_types::voice::VoicePlaybackReceipt {
                 attempt_id: r.attempt_id.clone(),
                 status: r.status.clone(),
@@ -1172,6 +1190,7 @@ impl VoiceCompanionRuntime {
                         Ok(delivery) if delivery.task.command_id != command.command_id
                             || delivery.task.session_id != command.session_id
                             || delivery.task.acoustic_turn_id != command.turn_id => Some("task_receipt_scope_changed".into()),
+                        Ok(delivery) if delivery.task.status == VoiceTaskStatus::Failed => Some(delivery.task.error_code.unwrap_or_else(||"task_failed".into())),
                         Ok(delivery) if delivery.freshly_accepted && delivery.task.status == VoiceTaskStatus::Accepted
                             && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
                             let text = "任务已接单，正在执行。";
@@ -1183,8 +1202,8 @@ impl VoiceCompanionRuntime {
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
                         }
-                        Ok(delivery) if matches!(delivery.task.status,VoiceTaskStatus::Delivering|VoiceTaskStatus::Unknown) => Some("task_delivery_unknown".into()),
-                        Ok(delivery) if delivery.task.status == VoiceTaskStatus::Failed => Some(delivery.task.error_code.unwrap_or_else(||"task_failed".into())),
+                        Ok(delivery) if delivery.task.conversation_id.is_none() || delivery.task.message_id.is_none()
+                            || matches!(delivery.task.status, VoiceTaskStatus::Delivering | VoiceTaskStatus::Unknown) => Some("task_delivery_unknown".into()),
                         Ok(_) => None,
                         Err(code) => Some(code),
                     };
@@ -1926,5 +1945,366 @@ mod tests {
         assert!(!handle.is_finished());
 
         handle.abort();
+    }
+
+    struct MockSpeech(Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for MockSpeech {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).unwrap();
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_progress_must_not_block_final_result_of_same_task() {
+        use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceSessionPhase};
+        use nomifun_voice_terminal::playback::TestAudioSink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(calls.clone())),
+        ));
+        runtime
+            .update_feedback(
+                serde_json::from_value(serde_json::json!({
+                    "mode": "off",
+                    "volume": 0,
+                    "speak_replies": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let worker = runtime.start_worker();
+        let notice = |rt: &VoiceCompanionRuntime, kind: &str, text: &str| {
+            let snapshot = rt.snapshot();
+            VoiceTaskResultAnnouncement {
+                scope: VoiceSessionControlRequest {
+                    instance_id: snapshot.instance_id,
+                    session_id: snapshot.session_id,
+                    turn_id: snapshot.turn_id,
+                },
+                command_id: "task-001".into(),
+                notification_id: Some(format!("{kind}:task-001")),
+                attempt_id: Some(format!("{kind}:task-001:1")),
+                goal: None,
+                text: text.into(),
+            }
+        };
+
+        // 1. Progress announcement accepted
+        runtime.announce_task_result(notice(&runtime, "progress", "正在调用搜索工具。")).await.unwrap();
+
+        // Wait until idle
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::Idle {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // 2. Final result announcement for same command_id must succeed and not be blocked as conflict
+        let result = runtime.announce_task_result(notice(&runtime, "result", "这是最终搜索结果。")).await;
+        worker.abort();
+
+        assert_eq!(result, Ok(()), "different notification_id for the same command_id must succeed");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // 3. Status query by attempt_id, notification_id, command_id
+        assert!(runtime.notification_status("result:task-001:1").await.is_some());
+        assert!(runtime.notification_status("result:task-001").await.is_some());
+        assert!(runtime.notification_status("task-001").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_replay_must_create_a_receipt_and_play_again() {
+        use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceSessionPhase};
+        use nomifun_voice_terminal::playback::TestAudioSink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(calls.clone())),
+        ));
+        runtime
+            .update_feedback(
+                serde_json::from_value(serde_json::json!({
+                    "mode": "off",
+                    "volume": 0,
+                    "speak_replies": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let worker = runtime.start_worker();
+        let notice = |rt: &VoiceCompanionRuntime, kind: &str, text: &str| {
+            let snapshot = rt.snapshot();
+            VoiceTaskResultAnnouncement {
+                scope: VoiceSessionControlRequest {
+                    instance_id: snapshot.instance_id,
+                    session_id: snapshot.session_id,
+                    turn_id: snapshot.turn_id,
+                },
+                command_id: "same-task".into(),
+                notification_id: Some(format!("{kind}:same-task")),
+                attempt_id: Some(format!("{kind}:same-task:1")),
+                goal: None,
+                text: text.into(),
+            }
+        };
+
+        let first = notice(&runtime, "result", "这是最终结果。");
+        runtime.announce_task_result(first).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::Idle {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut replay = notice(&runtime, "result", "这是最终结果。");
+        replay.attempt_id = Some("result:same-task:2".into());
+        runtime.announce_task_result(replay).await.unwrap();
+        worker.abort();
+
+        assert!(
+            runtime.notification_status("result:same-task:2").await.is_some(),
+            "accepted explicit replay must have its own attempt receipt"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_changed_payload_of_same_logical_notification_must_conflict() {
+        use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest};
+        use nomifun_voice_terminal::playback::TestAudioSink;
+        use std::sync::atomic::AtomicUsize;
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(calls)),
+        ));
+        runtime
+            .update_feedback(
+                serde_json::from_value(serde_json::json!({
+                    "mode": "off",
+                    "volume": 0,
+                    "speak_replies": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let notice = |rt: &VoiceCompanionRuntime, kind: &str, text: &str| {
+            let snapshot = rt.snapshot();
+            VoiceTaskResultAnnouncement {
+                scope: VoiceSessionControlRequest {
+                    instance_id: snapshot.instance_id,
+                    session_id: snapshot.session_id,
+                    turn_id: snapshot.turn_id,
+                },
+                command_id: "same-task".into(),
+                notification_id: Some(format!("{kind}:same-task")),
+                attempt_id: Some(format!("{kind}:same-task:1")),
+                goal: None,
+                text: text.into(),
+            }
+        };
+
+        runtime.announce_task_result(notice(&runtime, "result", "原始结果。")).await.unwrap();
+        let mut changed = notice(&runtime, "result", "不同的新结果。");
+        changed.attempt_id = Some("changed-attempt".into());
+        assert_eq!(runtime.announce_task_result(changed).await, Err("task_result_conflict"));
+    }
+
+    struct FailingTts;
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for FailingTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            Err(nomifun_voice_terminal::tts::TtsError::Synthesis("mock_network_down".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_task_result_plays_chime_and_opens_four_second_follow_up_window() {
+        use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceCueKind};
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(calls.clone())),
+        ));
+        runtime
+            .update_feedback(
+                serde_json::from_value(serde_json::json!({
+                    "mode": "light",
+                    "volume": 80,
+                    "speak_replies": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let mut rx = runtime.event_sender().subscribe();
+        let snapshot = runtime.snapshot();
+        let notice = VoiceTaskResultAnnouncement {
+            scope: VoiceSessionControlRequest {
+                instance_id: snapshot.instance_id,
+                session_id: snapshot.session_id,
+                turn_id: snapshot.turn_id,
+            },
+            command_id: "cmd-step5".into(),
+            notification_id: Some("notif-step5".into()),
+            attempt_id: Some("attempt-step5:1".into()),
+            goal: Some("查询北京天气".into()),
+            text: "北京今天晴，气温 15 到 25 度。".into(),
+        };
+
+        let result = runtime.announce_task_result(notice).await;
+        assert_eq!(result, Ok(()));
+
+        let mut saw_chime = false;
+        let mut saw_followup_window = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                VoiceCompanionEvent::Feedback { diagnostic } if diagnostic.kind == VoiceCueKind::Recognized => {
+                    saw_chime = true;
+                }
+                VoiceCompanionEvent::FollowUpWindow { timeout_secs } => {
+                    assert_eq!(timeout_secs, 4, "follow-up window must strictly be 4 seconds");
+                    saw_followup_window = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_chime, "task completion chime (Recognized) must play before speaking result");
+        assert!(saw_followup_window, "follow-up window of 4 seconds must be announced");
+    }
+
+    #[tokio::test]
+    async fn test_task_result_tts_failure_plays_error_cue_fallback() {
+        use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceCueKind};
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(FailingTts),
+        ));
+        runtime
+            .update_feedback(
+                serde_json::from_value(serde_json::json!({
+                    "mode": "light",
+                    "volume": 80,
+                    "speak_replies": true,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let mut rx = runtime.event_sender().subscribe();
+        let snapshot = runtime.snapshot();
+        let notice = VoiceTaskResultAnnouncement {
+            scope: VoiceSessionControlRequest {
+                instance_id: snapshot.instance_id,
+                session_id: snapshot.session_id,
+                turn_id: snapshot.turn_id,
+            },
+            command_id: "cmd-tts-fail".into(),
+            notification_id: Some("notif-tts-fail".into()),
+            attempt_id: Some("attempt-tts-fail:1".into()),
+            goal: Some("测试TTS失败".into()),
+            text: "这是一条无法合成的语音消息。".into(),
+        };
+
+        let result = runtime.announce_task_result(notice).await;
+        assert_eq!(result, Ok(()));
+
+        let mut saw_error_cue = false;
+        let mut saw_error_event = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                VoiceCompanionEvent::Feedback { diagnostic } if diagnostic.kind == VoiceCueKind::Error => {
+                    saw_error_cue = true;
+                }
+                VoiceCompanionEvent::Error { stage, code } => {
+                    assert_eq!(stage, "playback");
+                    assert_eq!(code, "tts_failed");
+                    saw_error_event = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_error_event, "error event must be emitted on TTS synthesis failure");
+        assert!(saw_error_cue, "hardcoded local error cue must play on TTS failure");
     }
 }

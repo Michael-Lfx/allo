@@ -278,7 +278,9 @@ struct DialogueRecord {
     output: Option<String>,
     projected: bool,
     #[serde(default)]
-    command_id:Option<String>,
+    command_id: Option<String>,
+    #[serde(default)]
+    requested_at: Option<String>,
 }
 
 impl ConversationVoiceDialogueRecorder {
@@ -299,26 +301,52 @@ impl ConversationVoiceDialogueRecorder {
             nomifun_common::AppError::NotFound(_)=>VoiceDialogueRecorderError::BindingInvalid("target_deleted".into()),
             _=>VoiceDialogueRecorderError::WriteFailed(e.to_string()),
         })?;
+        let session_mode = conv
+            .extra
+            .get("session_mode")
+            .and_then(|v| v.as_str())
+            .filter(|m| matches!(*m, "default" | "auto_edit" | "yolo"))
+            .map(str::to_owned);
         if conv.extra.get("is_default_voice").and_then(|v|v.as_bool())!=Some(true)
             && let Some(workspace)=conv.extra.get("workspace").and_then(|v|v.as_str()).filter(|s|!s.is_empty()) {
             let model=conv.model.as_ref().and_then(|model|serde_json::to_value(model).ok()).and_then(|value|serde_json::from_value::<VoiceModelRef>(value).ok());
-            return Ok(Some(VoiceExecutionConfig{workspace:workspace.into(),model,preset_id:conv.preset_id}));
+            return Ok(Some(VoiceExecutionConfig{workspace:workspace.into(),model,preset_id:conv.preset_id,session_mode}));
         }
         let config_path=self.journal_path.parent().and_then(Path::parent).unwrap().join("config").join("voice_companion.json");
-        match std::fs::read(config_path) {
+        let explicit = match std::fs::read(config_path) {
             Ok(bytes)=> {
                 let root:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
                 serde_json::from_value(root.get("execution").cloned().unwrap_or(serde_json::Value::Null))
-                    .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))
+                    .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
             },
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),
-            Err(e)=>Err(VoiceDialogueRecorderError::WriteFailed(e.to_string())),
+            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>None,
+            Err(e)=>return Err(VoiceDialogueRecorderError::WriteFailed(e.to_string())),
+        };
+        if let Some(config) = explicit {
+            return Ok(Some(config));
         }
+        // Fallback: This conversation's own bound/managed workspace
+        if let Some(workspace) = conv.extra.get("workspace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            let path = Path::new(workspace);
+            if path.is_absolute() && path.is_dir() {
+                let model = conv.model.as_ref().and_then(|m| serde_json::to_value(m).ok()).and_then(|v| serde_json::from_value::<VoiceModelRef>(v).ok());
+                return Ok(Some(VoiceExecutionConfig { workspace: workspace.into(), model, preset_id: conv.preset_id, session_mode }));
+            }
+        }
+        Ok(None)
     }
 }
 
 #[async_trait::async_trait]
 impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
+    async fn fallback_execution(&self) -> Result<Option<nomifun_api_types::voice::VoiceExecutionConfig>, String> {
+        let home = self.conversation_service.ensure_default_voice_conversation(&self.user_id).await
+            .map_err(|e| e.to_string())?;
+        self.frozen_execution(&home).await.map_err(|e| match e {
+            VoiceDialogueRecorderError::BindingInvalid(msg) | VoiceDialogueRecorderError::WriteFailed(msg) => msg,
+            _ => "execution_unconfigured".into(),
+        })
+    }
     async fn freeze_session(&self,session:&str)->Result<Option<nomifun_api_types::voice::VoiceBindingSnapshot>,VoiceDialogueRecorderError> {
         let _guard=self.journal_lock.lock().await;
         let mut records=self.read_records()?;
@@ -340,7 +368,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 (config,_) => (config,None),
             };
             let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&id).await.map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
-            records.push(DialogueRecord {request:VoiceDialogueRequest {session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id,admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None});
+            records.push(DialogueRecord {request:VoiceDialogueRequest {session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id,admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None});
             self.save_records(&records)?;
         }
         let binding=records.iter().find(|r|r.request.session_id.as_deref()==Some(session)).unwrap();
@@ -380,7 +408,19 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         if records.iter().find(|r|r.request.session_id==request.session_id).is_some_and(|r|r.admission_epoch!=epoch) {
             return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
         }
-        records.push(DialogueRecord {request:request.clone(),conversation_id:conversation_id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None});
+        let requested_at = Some(chrono::Local::now().to_rfc3339());
+        records.push(DialogueRecord {
+            request: request.clone(),
+            conversation_id: conversation_id.clone(),
+            admission_epoch: epoch,
+            execution,
+            frozen_preset,
+            source_workspace,
+            output: None,
+            projected: false,
+            command_id: None,
+            requested_at,
+        });
         // The original ASR, frozen target/config and generation claim precede the model side effect.
         self.save_records(&records)?;
         Ok(VoiceDialoguePreflight::Ready{conversation_id})
@@ -431,20 +471,98 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         if decision.intent_type!=nomifun_api_types::voice::VoiceIntentType::AgentTask || decision.task_goal.as_deref()!=Some(command.goal.as_str()) || !record.projected {
             return Err("task_command_conflict".into());
         }
-        let Some(config)=&record.execution else {return Ok(None);};
+        let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&record.conversation_id).await.map_err(|_|"binding_invalid")?;
+        if epoch.epoch!=record.admission_epoch || epoch.active_operation_id.is_some() {return Err("binding_invalid".into());}
+        let config=record.execution.as_ref().ok_or("binding_invalid")?;
         if let Some(source)=&record.source_workspace {
             let canonical=nomifun_common::paths::canonicalize_simplified(Path::new(source)).map_err(|_|"binding_invalid")?;
             if !nomifun_common::paths::paths_equivalent(&canonical, Path::new(&config.workspace)) {return Err("binding_invalid".into());}
         }
-        let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&record.conversation_id).await.map_err(|_|"binding_invalid")?;
-        if epoch.epoch!=record.admission_epoch || epoch.active_operation_id.is_some() {return Err("binding_invalid".into());}
         if record.command_id.is_none() {
             if let Some(target) = records.iter_mut().find(|r| r.request.voice_record_id.as_ref() == Some(&expected_record_id)) {
                 target.command_id = Some(command.command_id.clone());
                 self.save_records(&records).map_err(|_| "voice_projection_write_failed")?;
             }
         }
-        Ok(Some(crate::voice_dialogue::FrozenVoiceExecution {config:config.clone(),preset:record.frozen_preset.clone()}))
+
+        // Collect prior turn context from the same session
+        let mut prior_context = Vec::new();
+        let tasks_journal_path = self.journal_path.parent().map(|p| p.join(format!("tasks-{}.json", self.user_id)));
+        let mut prior_task_results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(tpath) = tasks_journal_path {
+            if let Ok(bytes) = std::fs::read(&tpath) {
+                if let Ok(ledger) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(recs) = ledger.get("records").and_then(|r| r.as_array()) {
+                        for rec in recs {
+                            let cmd_id = rec.get("command").and_then(|c| c.get("command_id")).and_then(|s| s.as_str());
+                            let res_text = rec.get("task").and_then(|t| t.get("result_text")).and_then(|s| s.as_str());
+                            if let (Some(cid), Some(rt)) = (cmd_id, res_text) {
+                                if !rt.trim().is_empty() {
+                                    prior_task_results.insert(cid.to_string(), rt.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for r in &records {
+            if r.request.session_id == record.request.session_id
+                && r.request.voice_record_id != record.request.voice_record_id
+            {
+                let mut turn_summary = Vec::new();
+                if let Some(text) = r.request.raw_user_text.as_deref().filter(|s| !s.trim().is_empty()) {
+                    turn_summary.push(format!("用户曾说“{}”", text));
+                }
+                if let Some(out) = &r.output {
+                    if let Ok(dec) = nomifun_api_types::voice::parse_voice_decision(out) {
+                        if let Some(und) = dec.understood_request.filter(|s| !s.trim().is_empty()) {
+                            turn_summary.push(format!("需求“{}”", und));
+                        }
+                        if let Some(reply) = dec.reply_tts.filter(|s| !s.trim().is_empty()) {
+                            turn_summary.push(format!("曾回答“{}”", reply));
+                        }
+                    }
+                }
+                if let Some(cid) = r.command_id.as_deref() {
+                    if let Some(res) = prior_task_results.get(cid) {
+                        let trimmed_res = if res.chars().count() > 300 {
+                            let end: String = res.chars().take(300).collect();
+                            format!("{}...（略）", end)
+                        } else {
+                            res.clone()
+                        };
+                        turn_summary.push(format!("前序结果“{}”", trimmed_res));
+                    }
+                }
+                if !turn_summary.is_empty() {
+                    prior_context.push(turn_summary.join("，"));
+                }
+            }
+        }
+
+        let raw_user_text = record.request.raw_user_text.as_deref().unwrap_or("");
+        let understanding = decision.understood_request.as_deref().unwrap_or("");
+        let goal = &command.goal;
+        let request_time = record.requested_at.as_deref().unwrap_or("");
+        let context_section = if !prior_context.is_empty() {
+            format!("前轮上下文：{}\n", prior_context.join("；"))
+        } else {
+            String::new()
+        };
+        let handoff_content = if !raw_user_text.trim().is_empty() {
+            Some(format!(
+                "来源：语音委派\n用户原文：{raw_user_text}\n理解需求：{understanding}\n{context_section}任务目标：{goal}\n请求时点：{request_time}\n执行要求：使用当前会话可用工具如实完成任务，不要编造未经验证的数据；遵守确认流程；完成或需要补充时先给出简短结论。"
+            ))
+        } else {
+            None
+        };
+        Ok(Some(crate::voice_dialogue::FrozenVoiceExecution {
+            config: config.clone(),
+            preset: record.frozen_preset.clone(),
+            handoff_content,
+        }))
     }
 }
 
@@ -678,7 +796,17 @@ impl VoiceCompanionProcessManager {
             Ok(requested) => (requested,None),
             Err(code) => (None,Some(code)),
         };
-        let resolution = match (read_error, &requested, &self.tasks) {
+        let fallback = if requested.is_none() && read_error.is_none() {
+            if let Some(recorder) = &self.dialogue_recorder {
+                recorder.fallback_execution().await.ok().flatten()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let candidate = requested.as_ref().or(fallback.as_ref());
+        let resolution = match (read_error, candidate, &self.tasks) {
             (Some(code), _, _) => Err(code),
             (None, None, _) => Err("execution_unconfigured".into()),
             (None, Some(_), None) => Err("runtime_unavailable".into()),
@@ -867,12 +995,15 @@ impl VoiceCompanionProcessManager {
         let source = match self.refresh_daemon_snapshot().await {Ok(source) => source,Err(_) => return Ok(())};
         if source.phase!=VoiceSessionPhase::Idle || source.ended_reason==Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio|audio.speech_detected) {return Ok(());}
-        let text = task.result_text.as_deref().filter(|text|!text.trim().is_empty())
-            .unwrap_or(if task.status==VoiceTaskStatus::Completed {"任务已完成，请查看任务详情。"} else {"任务未完成，请查看任务详情。"});
-        let mut text: String = text.chars().take(220).collect();
-        if text.chars().count() < task.result_text.as_deref().unwrap_or_default().chars().count() {text.push_str("。完整结果请查看任务详情。");}
-        let spoken_goal:String=goal.chars().take(80).collect();
-        let text=format!("任务「{spoken_goal}」的结果：{text}");
+        let full_text = task.result_text.as_deref().filter(|text|!text.trim().is_empty())
+            .unwrap_or(if task.status==VoiceTaskStatus::Completed {"任务已完成，详情请查看会话。"} else {"任务未完成，详情请查看会话。"});
+        let summary = extract_spoken_summary(full_text, task.status);
+        let spoken_goal: String = goal.chars().take(25).collect();
+        let text = if !spoken_goal.trim().is_empty() {
+            format!("任务「{spoken_goal}」的结果：{summary}")
+        } else {
+            summary
+        };
         // Claim durably before dispatch: a lost response or host restart must
         // not replay a result as a new announcement. Text remains in the task.
         if !tasks.claim_announcement(&task.command_id,true).await? {return Ok(());}
@@ -1007,8 +1138,21 @@ impl VoiceCompanionProcessManager {
             || !snapshot.enabled || snapshot.connection != VoiceConnectionState::Connected
             || self.revoked_sessions.read().unwrap_or_else(|error|error.into_inner()).contains(&request.command.session_id)
         { return Err("task_scope_changed".into()); }
-        let frozen=if let Some(recorder)=&self.dialogue_recorder {Some(recorder.task_configuration(&request.command).await?.ok_or("execution_unconfigured")?)}else{None};
-        let config=match &frozen {Some(frozen)=>frozen.config.clone(),None=>self.requested_execution()?.ok_or("execution_unconfigured")?};
+        let frozen = if let Some(recorder) = &self.dialogue_recorder {
+            Some(recorder.task_configuration(&request.command).await?.ok_or("binding_invalid")?)
+        } else {
+            None
+        };
+        let config = match &frozen {
+            Some(frozen) => frozen.config.clone(),
+            None => match self.requested_execution()? {
+                Some(config) => config,
+                None => match &self.dialogue_recorder {
+                    Some(rec) => rec.fallback_execution().await?.ok_or("execution_unconfigured")?,
+                    None => return Err("execution_unconfigured".into()),
+                },
+            },
+        };
         // Admission belongs to the host: dropping a voice request cannot cancel
         // an accepted task or abandon its durable delivery record.
         let manager = self.clone();
@@ -1017,8 +1161,9 @@ impl VoiceCompanionProcessManager {
         let session_id = request.command.session_id.clone();
         let turn_id = request.command.turn_id.clone();
         let tasks_ref = tasks.clone();
+        let handoff = frozen.as_ref().and_then(|f| f.handoff_content.clone());
         let handle = tokio::spawn(async move {
-            match tasks.submit_frozen(request.command, config, frozen.map(|f|f.preset)).await {
+            match tasks.submit_frozen_with_handoff(request.command, config, frozen.map(|f|f.preset), handoff).await {
                 Ok(delivery) => { manager.project_task(delivery.task.clone()); Ok(delivery) },
                 Err(code) => {
                     if matches!(code.as_str(), "task_creation_unknown" | "task_delivery_unknown") {
@@ -1838,6 +1983,276 @@ async fn private_task_control(
     match manager.control_task(request_scope,request.action).await {
         Ok(task) => axum::Json(task).into_response(),Err(code) => task_api_error(code),
     }
+}
+
+/// Extracts a concise, high-signal spoken summary (50-80 chars) suitable for TTS playback.
+///
+/// Preserves:
+/// - Explicit conclusion sentences (e.g. "已完成", "成功", "未找到", "失败");
+/// - Vital parameters (temperatures, numbers, dates, locations, units);
+/// - Negations ("不", "未", "无", "失败", "没有", "无法") - never drops or inverts polarity;
+/// - Strips markdown noise, code blocks, and stage directions.
+pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
+    let text = strip_markdown_and_noise(raw);
+    let text = text.trim();
+    if text.is_empty() {
+        return match status {
+            VoiceTaskStatus::Completed => "任务已完成，详情请在会话中查看。".into(),
+            _ => "任务未完成，详情请在会话中查看。".into(),
+        };
+    }
+    // If it's already concise enough (under 80 chars), speak as is.
+    if text.chars().count() <= 80 {
+        return text.to_string();
+    }
+
+    let has_failure = is_negation_or_failure(text) || status == VoiceTaskStatus::Failed;
+    const MAX_TARGET_CHARS: usize = 65;
+
+    let sentences = split_sentences(text);
+    if sentences.is_empty() {
+        let truncated: String = text.chars().take(MAX_TARGET_CHARS).collect();
+        let res = format!("{truncated}，详情请在会话中查看。");
+        if has_failure && !is_negation_or_failure(&res) {
+            return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+        }
+        return res;
+    }
+
+    // Score sentences:
+    // Conclusive words, parameters, negation words
+    let mut scored: Vec<(usize, i32, &str)> = Vec::new();
+    for (idx, &s) in sentences.iter().enumerate() {
+        let mut score = 0;
+        // Prioritize early sentences
+        if idx == 0 {
+            score += 15;
+        } else if idx == 1 {
+            score += 8;
+        }
+        // Conclusive keywords
+        if contains_any(s, &["已完成", "成功", "完成", "查询到", "查到", "结果为", "总计", "共计", "天气为", "温度为", "状态为"]) {
+            score += 30;
+        } else if contains_any(s, &["天气", "温度", "状态", "结果"]) {
+            score += 15;
+        }
+        // Negation keywords - critical! Never drop negation
+        if is_negation_or_failure(s) {
+            score += 60;
+        }
+        // Parameter signals: digits and units
+        if s.chars().any(|c| c.is_ascii_digit()) {
+            score += 15;
+        }
+        if contains_any(s, &["℃", "度", "元", "个", "条", "次", "点", "分", "%", "米", "日", "号"]) {
+            score += 15;
+        }
+        scored.push((idx, score, s));
+    }
+
+    // Sort by score descending to find best candidates
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut selected_indices = Vec::new();
+    let mut accumulated_chars = 0;
+
+    for (idx, _, s) in &scored {
+        let s_chars = s.chars().count();
+        if accumulated_chars + s_chars <= MAX_TARGET_CHARS {
+            selected_indices.push(*idx);
+            accumulated_chars += s_chars;
+        } else if selected_indices.is_empty() {
+            // Even the single best sentence is longer than MAX_TARGET_CHARS.
+            let clauses = split_clauses(s);
+            let mut scored_clauses: Vec<(usize, i32, &str)> = Vec::new();
+            for (c_idx, &c) in clauses.iter().enumerate() {
+                let mut c_score = 0;
+                if c_idx == 0 {
+                    c_score += 15;
+                }
+                if is_negation_or_failure(c) {
+                    c_score += 60;
+                }
+                if contains_any(c, &["已完成", "成功", "完成", "查询到", "查到", "结果为", "但是", "但"]) {
+                    c_score += 30;
+                }
+                if c.chars().any(|ch| ch.is_ascii_digit()) {
+                    c_score += 15;
+                }
+                scored_clauses.push((c_idx, c_score, c));
+            }
+            scored_clauses.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let mut selected_clause_indices = Vec::new();
+            let mut acc_clause_chars = 0;
+            for (c_idx, _, c) in &scored_clauses {
+                let c_len = c.chars().count();
+                if acc_clause_chars + c_len <= MAX_TARGET_CHARS {
+                    selected_clause_indices.push(*c_idx);
+                    acc_clause_chars += c_len;
+                }
+            }
+
+            if selected_clause_indices.is_empty() {
+                let target_clause = if has_failure {
+                    clauses.iter().find(|&&c| is_negation_or_failure(c)).unwrap_or(&clauses[0])
+                } else {
+                    &clauses[0]
+                };
+                let first_part: String = target_clause.chars().take(MAX_TARGET_CHARS).collect();
+                let trimmed = first_part.trim_end_matches(['，', ',']);
+                let res = format!("{trimmed}，详情请在会话中查看。");
+                if has_failure && !is_negation_or_failure(&res) {
+                    return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+                }
+                return res;
+            }
+
+            selected_clause_indices.sort_unstable(); // keep chronological order
+            let mut clause_summary = String::new();
+            for &c_idx in &selected_clause_indices {
+                let c = clauses[c_idx].trim();
+                if !c.is_empty() {
+                    if !clause_summary.is_empty() && !clause_summary.ends_with(['，', ',']) {
+                        clause_summary.push('，');
+                    }
+                    clause_summary.push_str(c);
+                }
+            }
+            let trimmed = clause_summary.trim_end_matches(['，', ',']);
+            let res = format!("{trimmed}，详情请在会话中查看。");
+            if has_failure && !is_negation_or_failure(&res) {
+                return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+            }
+            return res;
+        }
+    }
+
+    selected_indices.sort_unstable(); // keep chronological order
+    let mut summary = String::new();
+    for &idx in &selected_indices {
+        let s = sentences[idx].trim();
+        if !s.is_empty() {
+            if !summary.is_empty() && !summary.ends_with(['。', '！', '!', '？', '?', '；', ';', '，', ',']) {
+                summary.push('，');
+            }
+            summary.push_str(s);
+        }
+    }
+
+    let summary = summary.trim_end_matches(['。', '！', '!', '？', '?', '；', ';', '，', ',']);
+    let result = if summary.chars().count() < text.chars().count() {
+        format!("{summary}，详情请在会话中查看。")
+    } else {
+        summary.to_string()
+    };
+    if has_failure && !is_negation_or_failure(&result) {
+        return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+    }
+    result
+}
+
+fn is_negation_or_failure(text: &str) -> bool {
+    contains_any(
+        text,
+        &[
+            "未找到", "失败", "无法", "未完成", "未成功", "未能", "没有", "不存在",
+            "无数据", "错误", "未查到", "不成功", "不能", "未复制", "仍然为空", "异常",
+        ],
+    ) || (text.contains('未') && !text.contains("未来"))
+        || (text.contains('无') && !text.contains("无论"))
+        || (text.contains('不') && !text.contains("不但") && !text.contains("不仅"))
+}
+
+fn contains_any(text: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|k| text.contains(k))
+}
+
+fn split_sentences(text: &str) -> Vec<&str> {
+    text.split(|c| matches!(c, '。' | '！' | '!' | '？' | '?' | '\n' | '；' | ';'))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn split_clauses(text: &str) -> Vec<&str> {
+    text.split(|c| matches!(c, '，' | ',' | '、'))
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn strip_markdown_and_noise(raw: &str) -> String {
+    let stage_cleared = nomifun_common::stage_direction::strip_stage_directions(raw);
+    let mut result = String::with_capacity(stage_cleared.len());
+    let mut in_code_block = false;
+
+    for line in stage_cleared.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if in_code_block {
+            continue;
+        }
+        if trimmed.len() >= 3 && trimmed.chars().all(|c| c == '-' || c == '*' || c == '=') {
+            continue;
+        }
+        let mut line_str = trimmed;
+        while line_str.starts_with('#') {
+            line_str = line_str.trim_start_matches('#').trim_start();
+        }
+        if line_str.starts_with('>') {
+            line_str = line_str.trim_start_matches('>').trim_start();
+        }
+        if line_str.starts_with("- ") || line_str.starts_with("* ") {
+            line_str = line_str[2..].trim_start();
+        } else if let Some(rest) = line_str.strip_prefix(|c: char| c.is_ascii_digit()) {
+            if let Some(rest2) = rest.strip_prefix(". ") {
+                line_str = rest2.trim_start();
+            }
+        }
+        if line_str.is_empty() {
+            continue;
+        }
+
+        let cleaned_line = clean_inline_markdown(line_str);
+        if !result.is_empty() {
+            result.push(' ');
+        }
+        result.push_str(&cleaned_line);
+    }
+    result
+}
+
+fn clean_inline_markdown(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' || c == '*' || c == '_' || c == '~' {
+            i += 1;
+            continue;
+        }
+        if c == '[' {
+            if let Some(close_bracket) = chars[i..].iter().position(|&x| x == ']') {
+                let text_end = i + close_bracket;
+                if text_end + 1 < chars.len() && chars[text_end + 1] == '(' {
+                    if let Some(close_paren) = chars[text_end + 1..].iter().position(|&x| x == ')') {
+                        let link_text: String = chars[i + 1..text_end].iter().collect();
+                        out.push_str(&link_text);
+                        i = text_end + 1 + close_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axum::Router {
@@ -3148,6 +3563,7 @@ mod tests {
             workspace: dir.path().to_str().unwrap().into(),
             model: Some(VoiceModelRef { provider_id: "test".into(), model: "test".into() }),
             preset_id: None,
+            session_mode: None,
         };
         let tasks = manager.tasks.as_ref().unwrap();
         tasks.submit(cmd, cfg).await.unwrap();
@@ -3180,5 +3596,57 @@ mod tests {
         let resp=app.clone().oneshot(request(&manager.snapshot().instance_id,"replay-one")).await.unwrap();assert_eq!(resp.status(),axum::http::StatusCode::SERVICE_UNAVAILABLE);
         let again=app.oneshot(request(&manager.snapshot().instance_id,"replay-one")).await.unwrap();assert_eq!(again.status(),axum::http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(tasks.notification_for("cmd-replay-test").unwrap().unwrap().status,"failed","offline replay cannot claim acceptance or change playback history");
+    }
+
+    #[test]
+    fn test_spoken_summary_concise_text_preserved() {
+        let text = "北京今天晴，气温 15 到 25 度，北风 2 级。";
+        let summary = extract_spoken_summary(text, VoiceTaskStatus::Completed);
+        assert_eq!(summary, text);
+        assert!(summary.chars().count() <= 80);
+    }
+
+    #[test]
+    fn test_spoken_summary_extracts_conclusion_and_parameters_from_long_markdown() {
+        let raw = r#"### 任务执行报告
+本次任务已经执行完成。
+经过全网检索，查询到北京今天天气为晴天，气温 15℃ 至 26℃，空气质量优良。
+```json
+{"city": "Beijing", "temp": "15-26C", "air": "good"}
+```
+详细的天气趋势和未来一周预测已保存在会话上下文，用户可随时在界面滚动查看。"#;
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        assert!(summary.contains("完成") || summary.contains("查询到"));
+        assert!(summary.contains("北京") || summary.contains("天气"));
+        assert!(summary.contains("15") && summary.contains("26"));
+        assert!(!summary.contains("```"));
+        assert!(!summary.contains("###"));
+        assert!(summary.chars().count() <= 80, "spoken summary must be <= 80 chars, got: {}", summary.chars().count());
+        assert!(summary.ends_with("，详情请在会话中查看。") || summary.ends_with("。"));
+    }
+
+    #[test]
+    fn test_spoken_summary_strictly_preserves_negation() {
+        let raw = "任务执行失败：未能找到您指定的备份目录，请检查路径是否正确，或者重新指定要备份的文件夹。详细错误日志已经写入系统控制台。";
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Failed);
+        assert!(summary.contains("失败"), "summary must retain negation/failure marker");
+        assert!(summary.contains("未能") || summary.contains("未"), "summary must retain negation marker");
+        assert!(summary.chars().count() <= 80);
+    }
+
+    #[test]
+    fn test_spoken_summary_handles_empty_fallback() {
+        let summary_done = extract_spoken_summary("", VoiceTaskStatus::Completed);
+        assert_eq!(summary_done, "任务已完成，详情请在会话中查看。");
+        let summary_failed = extract_spoken_summary("   ", VoiceTaskStatus::Failed);
+        assert_eq!(summary_failed, "任务未完成，详情请在会话中查看。");
+    }
+
+    #[test]
+    fn test_spoken_summary_must_not_drop_actual_backup_failure() {
+        let raw = "目录扫描已完成，已检查全部文件并统计文件数量和大小以及当前磁盘空间使用情况并生成了详细目录结构和待处理文件清单用于下一步执行，但是备份失败没有复制任何文件且目标目录仍然为空，请勿删除原始文件以免丢失数据。";
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        assert!(summary.contains("备份失败") || summary.contains("没有复制"), "spoken summary lost the actual failure: {summary}");
+        assert!(summary.chars().count() <= 80, "summary must be <= 80 chars, got: {}", summary.chars().count());
     }
 }

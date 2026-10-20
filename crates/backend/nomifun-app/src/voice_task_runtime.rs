@@ -67,15 +67,19 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
     }
 
     async fn prepare_configuration(&self, config:&VoiceExecutionConfig) -> Result<(VoiceExecutionConfig,Option<nomifun_api_types::ResolvedPresetSnapshot>),String> {
-        validate_workspace(config)?;
         let mut effective = config.clone();
+        if effective.model.is_none() && effective.preset_id.as_deref().is_none_or(|id| id.trim().is_empty()) {
+            let default_model = self.models.resolve_model(None).await.map_err(|_| "task_execution_model_unconfigured")?;
+            effective.model = Some(default_model);
+        }
+        validate_workspace(&effective)?;
         let mut preset_snapshot=None;
-        effective.workspace = nomifun_common::paths::canonicalize_simplified(Path::new(&config.workspace)).map_err(|_| "task_workspace_invalid")?.to_string_lossy().into_owned();
-        if let Some(preset_id) = &config.preset_id {
+        effective.workspace = nomifun_common::paths::canonicalize_simplified(Path::new(&effective.workspace)).map_err(|_| "task_workspace_invalid")?.to_string_lossy().into_owned();
+        if let Some(preset_id) = &effective.preset_id {
             let presets = self.presets.as_ref().ok_or("task_preset_unavailable")?;
             let overrides = nomifun_api_types::PresetOverrides {
-                provider_id: config.model.as_ref().map(|model| model.provider_id.clone()),
-                model: config.model.as_ref().map(|model| model.model.clone()),
+                provider_id: effective.model.as_ref().map(|model| model.provider_id.clone()),
+                model: effective.model.as_ref().map(|model| model.model.clone()),
                 ..Default::default()
             };
             let resolved = presets.resolve(preset_id, nomifun_api_types::PresetTarget::Conversation, None, overrides)
@@ -98,10 +102,11 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         }
         validate_workspace(config).map_err(TaskMutationError::Rejected)?;
         let canonical=nomifun_common::paths::canonicalize_simplified(Path::new(&config.workspace)).map_err(|_| TaskMutationError::Rejected("task_workspace_invalid".into()))?;
+        let mode = config.session_mode.as_deref().unwrap_or("default");
         let request:CreateConversationRequest=serde_json::from_value(serde_json::json!({
-            "type":"nomi", "name":null, "model":config.model,
+            "type":"nomi", "name":"语音任务", "model":config.model,
             "delegation_policy":"disabled",
-            "extra":{"workspace":canonical.to_string_lossy(),"session_mode":"default"}
+            "extra":{"workspace":canonical.to_string_lossy(),"session_mode":mode}
         })).map_err(|_| TaskMutationError::Rejected("task_execution_config_invalid".into()))?;
         let created=self.conversation.create_voice_idempotent(owner,request,creation_key,&config.workspace,preset.cloned()).await.map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
         Ok(created.conversation_id)
@@ -381,7 +386,7 @@ mod tests {
                 "name":"voice frozen preset", "instructions":"Use the original instruction.","targets":["conversation"]
             })).unwrap()).await.unwrap();
             let runtime=ConversationVoiceRuntime {conversation:state.service,registry:services.agent_runtime_registry.clone(),models,presets:Some(presets.clone())};
-            let config=VoiceExecutionConfig {workspace:workspace.to_string_lossy().into(),model:Some(VoiceModelRef {provider_id,model:"voice-runtime-fixture".into()}),preset_id:Some(preset.preset_id.clone())};
+            let config=VoiceExecutionConfig {workspace:workspace.to_string_lossy().into(),model:Some(VoiceModelRef {provider_id,model:"voice-runtime-fixture".into()}),preset_id:Some(preset.preset_id.clone()),session_mode:None};
             let (effective,snapshot)=runtime.prepare_configuration(&config).await.unwrap();
             presets.update(&preset.preset_id,nomifun_api_types::UpdatePresetRequest {instructions:Some("A later catalog edit must not change this command.".into()),..Default::default()}).await.unwrap();
             let id=runtime.create(&services.authoritative_user_id,&effective,snapshot.as_ref(),"voice-create:frozen").await.unwrap();
@@ -396,7 +401,7 @@ mod tests {
             conversation: state.service.clone(), registry: services.agent_runtime_registry.clone(), models:models.clone(), presets:None,
         });
         let command = VoiceTaskCommand {command_id:"read-command".into(),session_id:"acoustic-session".into(),turn_id:"acoustic-turn".into(),goal:goal.clone(),record_id:None,binding_id:None};
-        let config = VoiceExecutionConfig {workspace:workspace.to_string_lossy().into(),model:Some(VoiceModelRef {provider_id,model:"voice-runtime-fixture".into()}),preset_id:None};
+        let config = VoiceExecutionConfig {workspace:workspace.to_string_lossy().into(),model:Some(VoiceModelRef {provider_id,model:"voice-runtime-fixture".into()}),preset_id:None,session_mode:None};
         let config_dir = services.data_dir.join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("voice_companion.json"), serde_json::to_vec(&serde_json::json!({"execution":config,"autostart":true})).unwrap()).unwrap();
@@ -728,7 +733,7 @@ mod tests {
     #[test]
     fn execution_requires_an_explicit_existing_workspace_and_model_or_preset() {
         let dir=tempfile::tempdir().unwrap();
-        let mut config=VoiceExecutionConfig {workspace:dir.path().to_string_lossy().into(),model:None,preset_id:None};
+        let mut config=VoiceExecutionConfig {workspace:dir.path().to_string_lossy().into(),model:None,preset_id:None,session_mode:None};
         assert_eq!(validate_workspace(&config).unwrap_err(),"task_execution_model_unconfigured");
         config.preset_id=Some("configured-preset".into());assert!(validate_workspace(&config).is_ok());
         config.workspace="relative-workspace".into();assert_eq!(validate_workspace(&config).unwrap_err(),"task_workspace_invalid");

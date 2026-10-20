@@ -237,8 +237,10 @@ pub(super) async fn build(
         if root.canonicalize().ok() != std::path::Path::new(&ctx.workspace).canonicalize().ok() {
             return Err(AppError::BadRequest("voice_workspace_changed".into()));
         }
-        overrides.delegation_policy=DelegationPolicy::Disabled;
-        overrides.session_mode=Some("default".into());
+        overrides.delegation_policy = DelegationPolicy::Disabled;
+        if overrides.session_mode.is_none() {
+            overrides.session_mode = Some("default".into());
+        }
     }
     let is_instance_owner = authority.controls_host();
     if is_app_server_chat {

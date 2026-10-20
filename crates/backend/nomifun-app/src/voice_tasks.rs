@@ -74,6 +74,8 @@ pub(crate) struct DeliveryRecord {
     pub cancel_requested: bool,
     #[serde(default)]
     pub last_receipt_at_ms: Option<i64>,
+    #[serde(default)]
+    pub handoff_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +97,15 @@ pub(crate) struct VoiceTaskService {
     timeout_ms: i64,
     operation: Mutex<()>,
     progress: std::sync::Mutex<std::collections::HashMap<String,TaskProgressObserver>>,
+}
+
+fn is_explicit_goal_failure(text: &str) -> bool {
+    const FAILURE_INDICATORS: &[&str] = &[
+        "未能获取", "未能查询", "无法获取", "无法查询", "未能找到", "查询失败",
+        "获取失败", "调用失败", "未成功", "未能成功", "抱歉，未能", "抱歉，无法",
+        "未能为您", "无法为您", "未能完成", "很抱歉，未能", "很抱歉，无法",
+    ];
+    FAILURE_INDICATORS.iter().any(|k| text.contains(k))
 }
 
 impl VoiceTaskService {
@@ -333,8 +344,22 @@ impl VoiceTaskService {
         }
         record.task.message_id = Some(receipt.message_id);
         if let Some(turn) = receipt.runtime_turn_id { record.task.runtime_turn_id = Some(turn); }
+        let effective_ok = match receipt.result_ok {
+            Some(true) => {
+                if let Some(text) = &receipt.result_text {
+                    if is_explicit_goal_failure(text) {
+                        Some(false)
+                    } else {
+                        Some(true)
+                    }
+                } else {
+                    Some(true)
+                }
+            }
+            other => other,
+        };
         if receipt.completed {
-            record.task.status = match receipt.result_ok {
+            record.task.status = match effective_ok {
                 Some(true) => VoiceTaskStatus::Completed,
                 Some(false) => VoiceTaskStatus::Failed,
                 None => VoiceTaskStatus::Unknown,
@@ -342,10 +367,12 @@ impl VoiceTaskService {
         } else if record.task.status != VoiceTaskStatus::Cancelling {
             record.task.status = VoiceTaskStatus::Accepted;
         }
-        record.task.result_ok = receipt.result_ok;
+        record.task.result_ok = effective_ok;
         record.task.result_text = receipt.result_text;
-        record.task.error_code = if receipt.completed && receipt.result_ok.is_none() {
+        record.task.error_code = if receipt.completed && effective_ok.is_none() {
             Some("task_result_unverified".into())
+        } else if receipt.completed && effective_ok == Some(false) && receipt.error_code.is_none() {
+            Some("goal_unfulfilled".into())
         } else {
             receipt.error_code
         };
@@ -423,7 +450,18 @@ impl VoiceTaskService {
     pub async fn submit(&self, command: VoiceTaskCommand, config: VoiceExecutionConfig) -> Result<VoiceTaskDelivery, String> {
         self.submit_frozen(command,config,None).await
     }
+    #[allow(dead_code)]
     pub async fn submit_frozen(&self, command:VoiceTaskCommand, config:VoiceExecutionConfig,expected_preset:Option<Option<ResolvedPresetSnapshot>>)->Result<VoiceTaskDelivery,String> {
+        self.submit_frozen_with_handoff(command, config, expected_preset, None).await
+    }
+
+    pub async fn submit_frozen_with_handoff(
+        &self,
+        command: VoiceTaskCommand,
+        config: VoiceExecutionConfig,
+        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
+        handoff_content: Option<String>,
+    ) -> Result<VoiceTaskDelivery, String> {
         let _guard = self.operation.lock().await;
         if let Some(previous)=self.read_command(&command.command_id)? {
             if previous.command!=command {return Err("task_command_conflict".into());}
@@ -441,6 +479,25 @@ impl VoiceTaskService {
         let config=prepared;
         let now_ms = nomifun_common::now_ms();
         let deadline_ms = now_ms + self.timeout_ms;
+        let mut continuous_creation_key = None;
+        if let Some(ledger) = self.read_ledger()? {
+            for saved in ledger.records.iter().rev() {
+                if saved.command.session_id == command.session_id {
+                    let last_interaction = saved.last_receipt_at_ms
+                        .or(saved.last_observed_at_ms)
+                        .or(saved.send_started_at_ms)
+                        .unwrap_or(0);
+                    let idle = now_ms.saturating_sub(last_interaction);
+                    if idle < DEFAULT_VOICE_TASK_TIMEOUT_MS && saved.config == config && saved.task.conversation_id.is_some() {
+                        continuous_creation_key = Some(saved.creation_key.clone());
+                    }
+                    break;
+                }
+            }
+        }
+        let creation_key = continuous_creation_key.unwrap_or_else(|| {
+            format!("voice-create:{}:{}", command.session_id, now_ms)
+        });
         let mut record = DeliveryRecord {
             announcement_claimed:false,
             notification_id: None,
@@ -449,7 +506,7 @@ impl VoiceTaskService {
             notification_status: None,
             replay_ids: Vec::new(),
             owner: self.owner.clone(),
-            creation_key: format!("voice-create:{}",command.command_id),
+            creation_key,
             send_key: format!("voice-send:{}",command.command_id),
             task: VoiceTaskSnapshot { command_id:command.command_id.clone(), session_id:command.session_id.clone(), acoustic_turn_id:command.turn_id.clone(), conversation_id:None,message_id:None,runtime_turn_id:None,status:VoiceTaskStatus::Delivering,result_ok:None,result_text:None,error_code:None },
             command, config, preset_snapshot,
@@ -458,6 +515,7 @@ impl VoiceTaskService {
             last_observed_at_ms: Some(now_ms),
             cancel_requested: false,
             last_receipt_at_ms: None,
+            handoff_content,
         };
         // This is the required pre-side-effect boundary. Failure cannot create or send.
         self.save(&record)?;
@@ -472,7 +530,8 @@ impl VoiceTaskService {
         record.task.conversation_id=Some(conversation.clone());
         self.save(&record)?;
         let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
-        let sending=tokio::time::timeout(remaining,self.runtime.send(&self.owner,&conversation,&record.send_key,&record.command.goal)).await
+        let message_to_send = record.handoff_content.as_deref().unwrap_or(&record.command.goal);
+        let sending=tokio::time::timeout(remaining,self.runtime.send(&self.owner,&conversation,&record.send_key,message_to_send)).await
             .unwrap_or_else(|_|{record.cancel_requested=true;Err(TaskMutationError::Uncertain("task_deadline_exceeded".into()))});
         let receipt = match sending {
             Ok(receipt) => receipt,
@@ -582,7 +641,8 @@ mod tests {
             Ok(self.keys.lock().unwrap().iter().any(|saved|saved==key).then(||"dedicated-conversation".into()))
         }
         async fn send(&self, owner:&str, conversation:&str, key:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
-            assert_eq!((owner,conversation,goal),("owner","dedicated-conversation","inspect workspace"));
+            assert_eq!((owner,conversation),("owner","dedicated-conversation"));
+            assert!(goal == "inspect workspace" || goal.starts_with("来源：语音委派"), "unexpected goal/handoff: {goal}");
             let mut saved:DeliveryLedger=serde_json::from_slice(&std::fs::read(self.state_path.lock().unwrap().as_ref().unwrap()).unwrap()).unwrap();
             let saved=saved.records.pop().unwrap();
             assert_eq!(saved.task.conversation_id.as_deref(),Some(conversation));
@@ -606,7 +666,7 @@ mod tests {
             self.cancelled.fetch_add(1,Ordering::SeqCst); Ok(())
         }
     }
-    fn config() -> VoiceExecutionConfig { VoiceExecutionConfig {workspace:"configured-workspace".into(),model:None,preset_id:Some("preset".into())} }
+    fn config() -> VoiceExecutionConfig { VoiceExecutionConfig {workspace:"configured-workspace".into(),model:None,preset_id:Some("preset".into()),session_mode:None} }
     fn command() -> VoiceTaskCommand { VoiceTaskCommand {command_id:"command-a".into(),session_id:"acoustic-session".into(),turn_id:"acoustic-turn".into(),goal:"inspect workspace".into(),record_id:None,binding_id:None} }
     fn service(path:PathBuf,runtime:Arc<Runtime>) -> VoiceTaskService {
         *runtime.state_path.lock().unwrap()=Some(path.clone());
@@ -626,7 +686,10 @@ mod tests {
         *runtime.receipt.lock().unwrap()=Some(receipt(true));
         let done=restarted.status().await.unwrap().unwrap();assert_eq!(done.status,VoiceTaskStatus::Completed);assert_eq!(done.result_text.as_deref(),Some("actual result"));
         assert_eq!(runtime.created.load(Ordering::SeqCst),1);assert_eq!(runtime.sent.load(Ordering::SeqCst),1);
-        assert_eq!(*runtime.keys.lock().unwrap(),["voice-create:command-a","voice-send:command-a"]);
+        let keys = runtime.keys.lock().unwrap().clone();
+        assert_eq!(keys.len(), 2);
+        assert!(keys[0].starts_with("voice-create:acoustic-session:"));
+        assert_eq!(keys[1], "voice-send:command-a");
     }
 
     #[tokio::test]
@@ -1060,6 +1123,99 @@ mod tests {
             "task_approval_changed",
             "completed task cannot accept tool approvals"
         );
+    }
+
+    #[tokio::test]
+    async fn handoff_content_is_forwarded_and_persisted_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let path = dir.path().join("task.json");
+        let tasks = service(path.clone(), runtime.clone());
+        let handoff = "来源：语音委派\n用户原文：查下北京天气\n任务目标：inspect workspace";
+        let delivery = tasks
+            .submit_frozen_with_handoff(command(), config(), None, Some(handoff.to_string()))
+            .await
+            .unwrap();
+        assert!(delivery.freshly_accepted);
+        let restored = service(path, runtime.clone());
+        let record = restored.read_command("command-a").unwrap().unwrap();
+        assert_eq!(record.handoff_content.as_deref(), Some(handoff));
+    }
+
+    #[tokio::test]
+    async fn continuous_session_reuses_creation_key_within_idle_window_and_rotates_after_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let path = dir.path().join("task.json");
+        let tasks = service(path.clone(), runtime.clone());
+
+        let mut cmd1 = command();
+        cmd1.command_id = "cmd-turn-1".into();
+        cmd1.session_id = "continuous-sess".into();
+        tasks.submit(cmd1.clone(), config()).await.unwrap();
+        *runtime.receipt.lock().unwrap() = Some(receipt(true));
+        tasks.status().await.unwrap();
+
+        let keys_after_1 = runtime.keys.lock().unwrap().clone();
+        assert_eq!(keys_after_1.len(), 2);
+        let creation_key_1 = keys_after_1[0].clone();
+        assert!(creation_key_1.starts_with("voice-create:continuous-sess:"));
+
+        // 2nd turn in same session within 30 min reuses creation_key
+        let mut cmd2 = command();
+        cmd2.command_id = "cmd-turn-2".into();
+        cmd2.session_id = "continuous-sess".into();
+        tasks.submit(cmd2.clone(), config()).await.unwrap();
+        *runtime.receipt.lock().unwrap() = Some(receipt(true));
+        tasks.status().await.unwrap();
+
+        let keys_after_2 = runtime.keys.lock().unwrap().clone();
+        assert_eq!(keys_after_2.len(), 4);
+        assert_eq!(keys_after_2[2], creation_key_1, "must reuse continuous creation key");
+        assert_eq!(keys_after_2[3], "voice-send:cmd-turn-2");
+
+        // Simulate 31 minutes idle on the latest record
+        let mut ledger = tasks.read_ledger().unwrap().unwrap();
+        for rec in &mut ledger.records {
+            let expired = rec.last_observed_at_ms.unwrap_or(0) - (31 * 60 * 1000);
+            rec.last_receipt_at_ms = Some(expired);
+            rec.last_observed_at_ms = Some(expired);
+            rec.send_started_at_ms = Some(expired);
+        }
+        std::fs::write(&tasks.path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+
+        // 3rd turn after 31 min idle must rotate to a new creation_key (new epoch)
+        let mut cmd3 = command();
+        cmd3.command_id = "cmd-turn-3".into();
+        cmd3.session_id = "continuous-sess".into();
+        tasks.submit(cmd3.clone(), config()).await.unwrap();
+        *runtime.receipt.lock().unwrap() = Some(receipt(true));
+        tasks.status().await.unwrap();
+
+        let keys_after_3 = runtime.keys.lock().unwrap().clone();
+        assert_eq!(keys_after_3.len(), 6);
+        let creation_key_3 = keys_after_3[4].clone();
+        assert_ne!(creation_key_3, creation_key_1, "must rotate to new creation key after 30m idle");
+        assert!(creation_key_3.starts_with("voice-create:continuous-sess:"));
+        assert_eq!(keys_after_3[5], "voice-send:cmd-turn-3");
+    }
+
+    #[tokio::test]
+    async fn goal_failure_in_result_text_is_not_reported_as_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut failed_turn = receipt(true);
+        failed_turn.result_ok = Some(true); // Runtime turn succeeded
+        failed_turn.result_text = Some("很抱歉，未能获取到北京的天气信息。".into()); // But goal was unfulfilled
+        *runtime.receipt.lock().unwrap() = Some(failed_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Failed, "must be failed when goal is unfulfilled");
+        assert_eq!(state.result_ok, Some(false));
+        assert_eq!(state.error_code.as_deref(), Some("goal_unfulfilled"));
     }
 }
 

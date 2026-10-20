@@ -110,8 +110,8 @@ impl ProviderVoiceDialogue {
             .await.map_err(|_|"model_unavailable")?;
         tracing::info!(provider_id=%selected.provider_id,model=%selected.model,"voice_dialogue_model_selected");
         let system=if on_sentence.is_some() {
-            "请遵循用户提供的语音决策 JSON 契约。这是低延迟 JSONL 模式，只输出连续 JSON 对象，不加 Markdown。第一对象必须遵循用户的 VoiceDecision 契约，立即结束这个对象：chat 时 reply_tts 只能给首个完整短句（8至16字，禁止把多句合并），understood_request 只用20字内概括；如果需要第二句，必须另起对象，每个后续对象只能是 {\"reply_delta\":\"下一完整短句\"}。chat 合计最多60字、最多4句。非chat只有第一对象，禁止后续句子。后续对象不能改变意图、任务或理解。不要输出思考过程。"
-        } else {"请遵循用户提供的语音决策 JSON 契约，仅输出 JSON。"};
+            "请遵循用户提供的语音决策 JSON 契约。这是低延迟 JSONL 模式，只输出连续 JSON 对象，不加 Markdown。第一对象必须遵循用户的 VoiceDecision 契约，立即结束这个对象：chat 时 reply_tts 只能给首个完整短句（8至16字，禁止把多句合并），understood_request 只用20字内概括；如果需要第二句，必须另起对象，每个后续对象只能是 {\"reply_delta\":\"下一完整短句\"}。chat 合计最多60字、最多4句。非chat只有第一对象，禁止后续句子。后续对象不能改变意图、任务或理解。不要输出思考过程。对于天气、文件读写、系统操作等多步或需要外部工具的任务，必须输出 agent_task 委派执行，严禁编造实时数据。"
+        } else {"请遵循用户提供的语音决策 JSON 契约，仅输出 JSON。对于天气、文件读写、系统操作等需要外部工具的任务，必须输出 agent_task 委派执行，严禁编造实时数据。"};
         let started=std::time::Instant::now();let mut first=true;
         let mut parser=nomifun_api_types::voice::VoiceDecisionStream::default();
         let invalid=tokio::sync::Notify::new();let mut stream_error=None;
@@ -154,6 +154,8 @@ impl ProviderVoiceDialogue {
 pub struct FrozenVoiceExecution {
     pub config:nomifun_api_types::voice::VoiceExecutionConfig,
     pub preset:Option<nomifun_api_types::ResolvedPresetSnapshot>,
+    #[serde(default)]
+    pub handoff_content:Option<String>,
 }
 
 #[async_trait]
@@ -162,6 +164,10 @@ pub trait VoiceDialogueRecorder: Send + Sync {
 
     async fn task_configuration(&self, _command:&nomifun_api_types::voice::VoiceTaskCommand) -> Result<Option<FrozenVoiceExecution>,String> {
         Err("binding_invalid".into())
+    }
+
+    async fn fallback_execution(&self) -> Result<Option<nomifun_api_types::voice::VoiceExecutionConfig>, String> {
+        Ok(None)
     }
     async fn preflight(
         &self,
