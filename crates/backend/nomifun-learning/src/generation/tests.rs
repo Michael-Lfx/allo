@@ -342,9 +342,9 @@
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-                        difficulty: None,
-evidence: None,
-},
+                difficulty: None,
+                evidence: Some("「q1 的证据回引」".into()),
+            },
             ActivityPack {
                 kind: ActivityKind::TrueFalse,
                 prompt: "q2".into(),
@@ -354,9 +354,9 @@ evidence: None,
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-                        difficulty: None,
-evidence: None,
-},
+                difficulty: None,
+                evidence: Some("「q2 的证据回引」".into()),
+            },
         ];
         let reflection = |prompt: &str| ActivityPack {
             kind: ActivityKind::Reflection,
@@ -391,6 +391,47 @@ evidence: None,
         let mut under_floor = at_cap.clone();
         under_floor.remove(0);
         assert!(validate_lesson_activities(&under_floor).is_err());
+    }
+
+    /// 证据回引硬门（t2）：objective 题缺/空 evidence = 违约（重试反馈点名）；
+    /// reflection/open_question 不要求。
+    #[test]
+    fn activity_stage_requires_evidence_on_objective_questions() {
+        let mut bare = ActivityPack {
+            kind: ActivityKind::SingleChoice,
+            prompt: "q".into(),
+            options: vec!["A".into(), "B".into(), "C".into()],
+            answer: json!("A"),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+        };
+        let reflection = ActivityPack {
+            kind: ActivityKind::Reflection,
+            prompt: "r".into(),
+            options: Vec::new(),
+            answer: json!(null),
+            explanation: String::new(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+        };
+        let mut set = vec![bare.clone(), bare.clone(), reflection];
+        let missing = validate_lesson_activities(&set).unwrap_err();
+        assert!(missing.contains("evidence"), "{missing}");
+        bare.evidence = Some("  ".into());
+        set[0] = bare.clone();
+        let blank = validate_lesson_activities(&set).unwrap_err();
+        assert!(blank.contains("evidence"), "blank evidence also rejected: {blank}");
+        bare.evidence = Some("「证据回引」".into());
+        set[0] = bare.clone();
+        set[1] = bare;
+        assert!(validate_lesson_activities(&set).is_ok());
     }
 
     #[test]
@@ -896,9 +937,9 @@ evidence: None,
         r#"{
           "est": 20,
           "activities": [
-            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "section_key": "s1", "difficulty": 1},
-            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "section_key": "s1", "difficulty": 2},
-            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "section_key": "s1", "difficulty": 2},
+            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "evidence": "「q1 的证据回引」", "section_key": "s1", "difficulty": 1},
+            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "evidence": "「q2 的证据回引」", "section_key": "s1", "difficulty": 2},
+            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "evidence": "「q3 的证据回引」", "section_key": "s1", "difficulty": 2},
             {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "section_key": "general", "difficulty": 3}
           ]
         }"#

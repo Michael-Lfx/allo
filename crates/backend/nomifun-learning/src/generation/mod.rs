@@ -122,7 +122,7 @@ Rules:
 - Choice options are BARE text without letter prefixes ("A." / "B、" are added by the system automatically) — an option like "A. 权利" is WRONG, write "权利".
 - ordering and matching items must be SHORT and mutually distinct (no two items are synonyms or subsets of each other).
 - Every explanation states WHY the answer is right AND why the tempting wrong options are wrong — for choice questions (single_choice/multi_choice/true_false) walk EVERY option in the explanation and say per option why it is right or wrong, not just the correct one; for geometry/function/data questions the explanation may include one ```svg block.
-- Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it.
+- Every OBJECTIVE question (every kind except reflection and open_question) carries "evidence": a verbatim quote of at most 120 characters, copied word-for-word from the section body or the cited excerpt, that anchors the question stem — the grade-time reveal shows it beneath the explanation. Quote the source text itself, never paraphrase it. A missing or empty "evidence" on an objective question is a contract violation.
 - Only test what the section bodies teach — never introduce a concept, notation or conclusion the bodies do not contain.
 - null is allowed ONLY for a reflection or open_question answer. Every other string field must be a non-empty string, and every list must be an actual JSON array (use [] when a field does not apply).
 - Questions, answers, and explanations must be supported by the section bodies and the cited excerpt.
@@ -340,3 +340,6 @@ pub(crate) use self::terms::{TERM_MAX_COUNT, term_slices};
 // 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
 // `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
 pub use self::sample::{SampleBaseDisclosure, SampleDisclosure};
+
+/// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。
+pub(crate) use self::activities::evidence_missing;
