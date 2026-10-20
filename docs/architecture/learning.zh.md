@@ -217,10 +217,10 @@ QuestionManager、LearningModelSelector 等；hooks `useCourseLearning` /
 ## 真机冒烟（无头）
 
 `nomicore learning-smoke`（`nomifun-app/src/commands/learning_smoke.rs`，
-wayfinder 票 s1 + j05/j07/j08/j09 扩档）：与应用同接线（DB pool →
-LearningService + set_generation_dependencies + 课时/生成通道注入；provider
-凭据复用 `resolve_provider_config` 现链），缺省从零临时 SQLite（`--db` 可
-指开发库）。八档：
+wayfinder 票 s1 + j05/j07/j08/j09 扩档 + q1/q2/q3 quiz 档）：与应用同接线
+（DB pool → LearningService + set_generation_dependencies + 课时/生成通道注入；
+provider 凭据复用 `resolve_provider_config` 现链），缺省从零临时 SQLite（`--db` 可
+指开发库）。九档：
 
 - `structure`：结构生成双产物过 gd.* 契约门 + 门口对账 + 落列，落列后重读
   重验（失败非零退出）；
@@ -232,10 +232,20 @@ LearningService + set_generation_dependencies + 课时/生成通道注入；prov
 - `content`（j07）：单节点正文生成走真实管线，读数 = 字数/小节数/题目数/
   首现与用名标注（读数面非门禁）；
 - `xp`（j05）：教新 + 复习两线真实结算 → 读数/日历快照打印（读数面非门禁）；
+- `quiz`（q1/q2/q3 + smoke-hardening t5）：K 节点课程的完整回合——触发门
+  （恰 K 结算到期）/ 弱先序 / 投影不漏判底 / 逐节点结算（4 full + 2 partial
+  = 12）/ 校准读面 / 同日折叠零双付 / 首写为终。**双环境判据**：变式在场
+  与否以 plan 实况为准——零凭据临时库 = bank-only 计划 + 变式诚实跳过；
+  有凭据（显式 `--provider/--model` 或 `--db` 解出）= 变式在场断言（每节
+  点 bank + 恰一变式、`plan_json` 含 `"origin":"variant"`、变式判底随
+  grade 下发、同计划折叠复用不重铸），此时一条变式都没生成 = 硬失败；
 - `mount`（j08）：落位 + hash 锚定 + 条数一致 + **重跑幂等**（第二次必须
   skipped，否则 EXIT=4）；
 - `repair`（j09）：留痕驱动回合 + **盘面复验**（磁盘重读独立跑全量 gd.*）
-  + **级联标记**（结构已改时挂载必须判 stale，否则 EXIT=3）。
+  + **级联标记**（结构已改时挂载必须判 stale，否则 EXIT=3）。种子是**全量
+  合法盘面**（smoke-hardening t1：6 主干 × 42 块、八标量键齐 + 门口 G1 对
+  账）——noop（盘面没动）与 applied（修补 op 应用后仍合法）两条路都可赢；
+  旧的最小种子（2 块零 frontmatter）对两路复验都是结构性不可赢，已换。
 
 运行必挂 `nomifun_ai_agent::ArchivingCompleter`（每次调用的
 prompt/response/耗时落 `<data-dir>/observation/learning-smoke/<run>/`

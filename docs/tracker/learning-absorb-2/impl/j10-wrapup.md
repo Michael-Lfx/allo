@@ -91,6 +91,10 @@ ADR-0012 新增 + CONTEXT.md 挂载/维护回合两词条 + 契约 v1.2 版本�
    真机缺陷（结构生成 16384 token 帽截断——目录上限死管道改消费；门口编号
    提示词 `[G1]` 括号残留）与一处已知未修（`learning-smoke repair` 种子结构
    性不可赢，详见 q 波后审计记录）。
+
+   **增补回链（2026-10-20）**：上段「种子结构性不可赢」已在 smoke-hardening
+   t1 修复（修法 1：种子换全量合法盘面，noop 与 applied 两路均可赢；见
+   `docs/tracker/learning-smoke-hardening/tickets/t1-repair-smoke-seed.md`）。
 5. **领域词表终检**：CONTEXT.md j 波词条链（道与术/概念不可学完/概念投影——j01；
    est 与 XP 走 DTO 注释与量纲宣言词条住学习架构文档——挂载/维护回合——本票）与实
    现一致； Avoid 行无漂移。

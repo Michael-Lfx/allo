@@ -377,6 +377,12 @@ pub enum LearningSmokeCommand {
         /// SQLite 库路径（缺省从零临时库）。
         #[arg(long)]
         db: Option<PathBuf>,
+        /// 显式 provider（与 --db 内解出的凭据同效；变式在场判据随凭据启用）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
     },
     /// 内容成色冒烟（j07）：立一门两节点学习图课程（概念挂接 + 别名池 +
     /// 引用名），为汇合节点生成正文落观测面，读数 = 字数/小节数/题目数/
