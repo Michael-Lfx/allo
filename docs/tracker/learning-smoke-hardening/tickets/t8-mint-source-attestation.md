@@ -2,7 +2,7 @@
 id: t8
 title: "铸名 source 出处落地（t2 条款 3）——attestation 口径 + registry source 列"
 type: task
-status: open
+status: closed
 assignee: zhangyj
 blocked_by: []
 part_of: map.md
@@ -33,4 +33,14 @@ append-only 迁移（AGENTS.md 高风险区需 owner 签核），且 learnhub �
 
 ## Resolution
 
-（结案时追加）
+**速览**：全项落地（commit `db4832b49`），owner 现场签核迁移。
+
+- **迁移 082**：`ALTER TABLE learning_concept_registry ADD COLUMN source TEXT`
+  （可空、append-only）；nomifun-db 测试全绿，旧行读侧默认 NULL。
+- **链路**：`ConceptMint.source: Option<String>`（serde default）→
+  `MINT_KEYS` 白名单 += `source` → `apply_batch` 落 registry 行（trim、空串
+  归 NULL）。门禁不因缺 source 打回（纯簿记）。
+- **提示词**：COACH_SYSTEM 的 mints 形状示例加 `source` 字段（「教练提
+  名：……」attestation 形态，明令不是书目引用、禁止编造教材出处）。
+- **往返样**：`mint_source_attestation_lands_on_the_registry_row`（带
+  source 落库读回一致；种子旧行 NULL 容缺）。learning 342 全绿。
