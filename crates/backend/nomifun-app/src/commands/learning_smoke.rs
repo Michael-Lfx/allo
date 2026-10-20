@@ -1234,9 +1234,14 @@ async fn run_quiz(
     let report = service
         .quiz_complete(&owner, &course, &round.round_id, &answers)
         .await?;
+    // 结算档位随答题量：full = 2 + 该节点题数（no-provider 每节点 1 题 =
+    // 3；变式在场 2 题 = 4），partial = 0。4 full + 2 partial。
+    let per_node_items = if variants_present { 2 } else { 1 };
+    let full_xp = 2 + per_node_items;
     anyhow::ensure!(
-        report.earned_xp == 12,
-        "4 full + 2 partial must settle 12, got {}",
+        report.earned_xp == full_xp * 4,
+        "4 full + 2 partial must settle {}, got {}",
+        full_xp * 4,
         report.earned_xp
     );
     anyhow::ensure!(
@@ -1247,7 +1252,7 @@ async fn run_quiz(
         let expected = if wrong_nodes.iter().any(|wrong| *wrong == entry.node_id.to_string()) {
             Some(0)
         } else {
-            Some(3)
+            Some(full_xp)
         };
         anyhow::ensure!(
             entry.earned_xp == expected,
@@ -1257,14 +1262,17 @@ async fn run_quiz(
         );
     }
     // 盘面复验：账本与回合行从磁盘重读，对账服务面读数（repair 模式）。
+    // 账本按本课程过滤——dev 库会累积历史冒烟课程的行，全局口径只在从零
+    // 临时库上成立。
     let (events, ledger_total): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
-         WHERE kind = 'quiz-completed'",
+         WHERE kind = 'quiz-completed' AND course_id = ?",
     )
+    .bind(&course_id)
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        (events, ledger_total) == (k, 12),
+        (events, ledger_total) == (k, full_xp * 4),
         "ledger re-read must match the report ({events} events, {ledger_total} xp)"
     );
     let (status, row_earned): (String, i64) = sqlx::query_as(
@@ -1274,10 +1282,10 @@ async fn run_quiz(
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        status == "completed" && row_earned == 12,
-        "round row must be completed with earned 12 (got {status}/{row_earned})"
+        status == "completed" && row_earned == full_xp * 4,
+        "round row must be completed with earned {} (got {status}/{row_earned})", full_xp * 4
     );
-    println!("[3/6] settled per node: 4 full (3 xp) + 2 partial (0 xp, never negative); ledger re-read matches");
+    println!("[3/6] settled per node: 4 full ({full_xp} xp each) + 2 partial (0 xp, never negative); ledger re-read matches");
 
     // 校准读面：弱节点首卡被真实推进过（stability 落值）→ 其校准点带预测
     // R，分桶读面非空（预测均值 vs 实际正确率；读数面非门禁）。
@@ -1332,12 +1340,13 @@ async fn run_quiz(
     );
     let (events_after, total_after): (i64, i64) = sqlx::query_as(
         "SELECT COUNT(*), COALESCE(SUM(earned_xp), 0) FROM learning_xp_events \
-         WHERE kind = 'quiz-completed'",
+         WHERE kind = 'quiz-completed' AND course_id = ?",
     )
+    .bind(&course_id)
     .fetch_one(&wiring.pool)
     .await?;
     anyhow::ensure!(
-        (events_after, total_after) == (k, 12),
+        (events_after, total_after) == (k, full_xp * 4),
         "folded round must not double-pay (got {events_after}/{total_after})"
     );
 
@@ -1355,8 +1364,9 @@ async fn run_quiz(
 
     let progress = service.quiz_progress(&owner, &course).await?;
     println!(
-        "OK  course={course_id}  settled={} earned=12  progress after quiz: {}/{} due={}",
+        "OK  course={course_id}  settled={} earned={}  progress after quiz: {}/{} due={}",
         report.covered.len(),
+        report.earned_xp,
         progress.settled_count,
         progress.trigger_count,
         progress.due
