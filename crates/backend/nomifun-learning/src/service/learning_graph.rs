@@ -1547,6 +1547,45 @@ impl LearningService {
             for (name, host_id) in &outcome.auto_reusals {
                 rulings.insert(name.clone(), host_id.clone());
             }
+            // ── 评审「移出本批」建议机械执行（t9）：同批内容依赖类问题的
+            // 唯一正路是摘节点（评审判据 2 明文；gate 只能看 assumes 按名
+            // 引用，看不见内容级依赖）。advice 含「移出本批」且 node 精确
+            // 匹配批内标题 → 摘除留痕，问题剔除；否则照常打回。真机实录
+            // （run-1792473152116 call 3）：这类 reject 走重裁必触发点修越
+            // 权烧光预算——「移出本批」是逐字可执行的动作，不折返模型。
+            let mut removed_nodes: Vec<String> = Vec::new();
+            if review.problems.iter().any(|problem| problem.advice.contains("移出本批")) {
+                let mut kept_nodes = Vec::with_capacity(candidate.nodes.len());
+                for node in candidate.nodes.drain(..) {
+                    let remove = review.problems.iter().any(|problem| {
+                        problem.advice.contains("移出本批")
+                            && !problem.node.trim().is_empty()
+                            && problem.node.trim() == node.title.trim()
+                    });
+                    if remove {
+                        removed_nodes.push(node.title.trim().to_owned());
+                    } else {
+                        kept_nodes.push(node);
+                    }
+                }
+                candidate.nodes = kept_nodes;
+                if !removed_nodes.is_empty() {
+                    let mut kept_problems = Vec::with_capacity(review.problems.len());
+                    for problem in review.problems.drain(..) {
+                        let resolved = problem.advice.contains("移出本批")
+                            && removed_nodes.iter().any(|title| title == problem.node.trim());
+                        if !resolved {
+                            kept_problems.push(problem);
+                        }
+                    }
+                    review.problems = kept_problems;
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        nodes = ?removed_nodes,
+                        "review node-removal advice executed mechanically — nodes dropped from the batch"
+                    );
+                }
+            }
             if !rulings.is_empty() && !review.problems.is_empty() {
                 let resolved_mask: Vec<bool> = review
                     .problems
@@ -1652,13 +1691,19 @@ impl LearningService {
             // 门与评审都过：立即落库，不再对同一稿重复评估（评审非确定，
             // 重复跑可能把已过稿误杀）。机械转化留痕进批次 note（t4：转化面
             // 数据随行；note 不在点修守卫比对面）。
-            if !advice_converted.is_empty() || !outcome.auto_reusals.is_empty() {
+            if !advice_converted.is_empty()
+                || !outcome.auto_reusals.is_empty()
+                || !removed_nodes.is_empty()
+            {
                 let mut traces = Vec::new();
                 for (name, canonical, _) in &advice_converted {
                     traces.push(format!("评审建议机械转化「{name}」→复用「{canonical}」"));
                 }
                 for name in outcome.auto_reusals.keys() {
                     traces.push(format!("撞池机械复用「{name}」"));
+                }
+                for title in &removed_nodes {
+                    traces.push(format!("评审摘除「{title}」（移出本批）"));
                 }
                 if !candidate.note.trim().is_empty() {
                     candidate.note.push('；');
