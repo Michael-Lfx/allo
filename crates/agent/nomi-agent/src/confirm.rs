@@ -3,6 +3,10 @@ use std::io::{self, BufRead, Write};
 
 pub struct ToolConfirmer {
     auto_approve: bool,
+    /// Delegated Agents have no approval channel back to the host. When set,
+    /// every tool that is not auto-approved or allow-listed is denied without
+    /// reading stdin, where EOF used to be read as an empty "yes".
+    deny_unconfirmed: bool,
     allow_list: HashSet<String>,
     #[cfg(test)]
     check_count: usize,
@@ -19,6 +23,7 @@ impl ToolConfirmer {
     pub fn new(auto_approve: bool, allow_list: Vec<String>) -> Self {
         Self {
             auto_approve,
+            deny_unconfirmed: false,
             allow_list: allow_list.into_iter().collect(),
             #[cfg(test)]
             check_count: 0,
@@ -28,6 +33,11 @@ impl ToolConfirmer {
     /// Returns whether auto-approve is enabled
     pub fn is_auto_approve(&self) -> bool {
         self.auto_approve
+    }
+
+    /// Fail closed for delegated engines: never prompt on stdin.
+    pub fn deny_unconfirmed(&mut self) {
+        self.deny_unconfirmed = true;
     }
 
     /// Add a tool name to the allow list at runtime.
@@ -46,6 +56,9 @@ impl ToolConfirmer {
         if self.auto_approve || self.allow_list.contains(tool_name) {
             return ConfirmResult::Approved;
         }
+        if self.deny_unconfirmed {
+            return ConfirmResult::Denied;
+        }
 
         eprint!(
             "\n[tool] {}({})\nAllow? [y]es / [n]o / [a]lways / [q]uit > ",
@@ -54,24 +67,46 @@ impl ToolConfirmer {
         io::stderr().flush().unwrap();
 
         let mut input = String::new();
-        if io::stdin().lock().read_line(&mut input).is_err() {
-            return ConfirmResult::Denied;
+        // `Ok(0)` is EOF: an unattended child or a closed stdin must not be
+        // read as consent. Only an explicit y/yes approves.
+        match io::stdin().lock().read_line(&mut input) {
+            Ok(0) | Err(_) => return ConfirmResult::Denied,
+            Ok(_) => {}
         }
 
-        match input.trim().to_lowercase().as_str() {
-            "y" | "yes" | "" => ConfirmResult::Approved,
-            "a" | "always" => {
+        match classify_confirmation_line(&input) {
+            LineDecision::Approve => ConfirmResult::Approved,
+            LineDecision::Always => {
                 self.allow_list.insert(tool_name.to_string());
                 ConfirmResult::Approved
             }
-            "q" | "quit" => ConfirmResult::Quit,
-            _ => ConfirmResult::Denied,
+            LineDecision::Quit => ConfirmResult::Quit,
+            LineDecision::Deny => ConfirmResult::Denied,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn check_count(&self) -> usize {
         self.check_count
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineDecision {
+    Approve,
+    Always,
+    Quit,
+    Deny,
+}
+
+/// The terminal prompt has no "default yes": Enter, EOF, and unknown input all
+/// deny. Callers that need a default must use auto-approve/allow-list instead.
+fn classify_confirmation_line(line: &str) -> LineDecision {
+    match line.trim().to_lowercase().as_str() {
+        "y" | "yes" => LineDecision::Approve,
+        "a" | "always" => LineDecision::Always,
+        "q" | "quit" => LineDecision::Quit,
+        _ => LineDecision::Deny,
     }
 }
 
@@ -116,6 +151,37 @@ mod tests {
             confirmer.check("Read", "/some/path"),
             ConfirmResult::Approved
         );
+    }
+
+    #[test]
+    fn test_unattended_confirmer_denies_without_prompting() {
+        let mut confirmer = ToolConfirmer::new(false, vec!["Read".into()]);
+        confirmer.deny_unconfirmed();
+        assert_eq!(
+            confirmer.check("Write", "out.txt"),
+            ConfirmResult::Denied
+        );
+        assert_eq!(
+            confirmer.check("Bash", "rm -rf ."),
+            ConfirmResult::Denied
+        );
+        // An explicit allow-list entry is still authoritative.
+        assert_eq!(
+            confirmer.check("Read", "in.txt"),
+            ConfirmResult::Approved
+        );
+    }
+
+    #[test]
+    fn test_empty_or_unknown_input_never_approves() {
+        assert_eq!(classify_confirmation_line(""), LineDecision::Deny);
+        assert_eq!(classify_confirmation_line("   "), LineDecision::Deny);
+        assert_eq!(classify_confirmation_line("n"), LineDecision::Deny);
+        assert_eq!(classify_confirmation_line("maybe"), LineDecision::Deny);
+        assert_eq!(classify_confirmation_line("y"), LineDecision::Approve);
+        assert_eq!(classify_confirmation_line(" YES "), LineDecision::Approve);
+        assert_eq!(classify_confirmation_line("a"), LineDecision::Always);
+        assert_eq!(classify_confirmation_line("q"), LineDecision::Quit);
     }
 
     // Phase 6: add_to_allow_list() grants runtime approval
