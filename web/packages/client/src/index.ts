@@ -12,6 +12,7 @@ export * from "./turn-result";
 export * from "./retry";
 export * from "./skills";
 export * from "./store";
+export * from "./store-search";
 export * from "./teams";
 export * from "./models";
 export * from "./workspaces";

@@ -499,6 +499,8 @@ const zhCN = {
     fieldSkills: "技能",
     agentPermissionIgnored: "来源运行时未启用该专家的权限模式与 MCP 声明，导入时已忽略对应授权配置。",
     agentQuickPrompts: "专家帮你做",
+    storeQuickPrompts: "提示词示例",
+    storePromptHint: "提示词：{{prompt}}",
     searchSkills: "搜索技能名称或来源…",
     searchConnectors: "搜索连接器…",
     searchAgents: "搜索专家…",

@@ -41,6 +41,7 @@ flowchart TD
         A28["28-输入区连接器开关"]
         A31["31-SDK入口命名"]
         A35["35-SDK导出助手"]
+        A49["49-目录检索与使用提示"]
     end
 
     subgraph D4["4. 研发计划与工程门禁"]
@@ -153,6 +154,7 @@ flowchart TD
 | [`46-connector-auth-affordance-fix.zh.md`](file:///c:/workspace/allo/docs/agent-store/46-connector-auth-affordance-fix.zh.md) | 授权入口假保护修复：授权入口改由 `credential.mode` 决定、transport 猜测收敛到 `credential_mode()` 单一猜测点、`auth_status` 缺席语义、wire 零变更不升指纹、TC-FIX-001~007 | ✅ PR-1 已实施（2026-10-15；含 mock 改造与单测，1 项既有失败已登记） |
 | [`47-connector-auth-mode-field-semantics.zh.md`](file:///c:/workspace/allo/docs/agent-store/47-connector-auth-mode-field-semantics.zh.md) | 第二阶段：协议 `auth_mode` 改名 `auth_transport`（形状归形状、声明归 `credential.mode`），`fp-16` → `fp-17`、12 层落点矩阵、不双写靠指纹强制两端同步、TC-S2-001~008 | ✅ 已实施（2026-10-15；指纹门禁与跨仓站点已同步） |
 | [`48-allo-connector-market-token-auth.zh.md`](file:///c:/workspace/allo/docs/agent-store/48-allo-connector-market-token-auth.zh.md) | 方案 C：allo 自有连接器市场源（token 型授权）——自有市场布局与 `market/add` 接入、`mcp.json` + `token-schema.json` 契约草案、凭据链路时序、header 口径先验证后发布闸门、D1~D6 决策、TC-C1~C8 验收、R1~R6 风险登记 | 🔧 部分实现（2026-10-16；两条条目 GitHub/百度网盘已落地，落点分别为 header 与 SSE 查询参数，均从 zip 源实测安装、未填即 fail-closed；托管形态改为 zip + ModelScope，真实端点接受性待真 token） |
+| [`49-store-search-and-suggestions.zh.md`](file:///c:/workspace/allo/docs/agent-store/49-store-search-and-suggestions.zh.md) | 目录检索与使用提示：多词 AND 匹配口径、`matchStoreItem` 字段级命中区间（供高亮）、`searchWithHits` / `searchInstalled` / `listStatus`（透出 `markets_pending`）、预取取代缓存、三档排序、**四类 × 两面的提示词接入**（`plugin.json.quickPrompts` 优先 + 索引行 `examples_*` 回落，P1 零 wire；详情面 P2 待定）、D1~D12 决策、TC-1~TC-19 验收 | 🔧 P1 已实施（2026-10-21；client 三方法 + 宿主 `examples → quick_prompts` 回落 + 商店卡片/抽屉提示；详情面 P2 与发布同步待做） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
