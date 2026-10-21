@@ -769,3 +769,388 @@ impl TtsProvider for NullTts {
         Ok(rx)
     }
 }
+
+/// Configuration for offline Sherpa-ONNX TTS.
+/// Baseline: docs/architecture/voice-agent/execution/R1-R5-execution-coaching-2026-10-21.zh.md §8.4
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SherpaOfflineTtsConfig {
+    /// Path to VITS ONNX model file (e.g. model.onnx)
+    pub model_path: Option<std::path::PathBuf>,
+    /// Path to lexicon.txt (pinyin to phonemes mapping)
+    pub lexicon_path: Option<std::path::PathBuf>,
+    /// Path to tokens.txt
+    pub tokens_path: Option<std::path::PathBuf>,
+    /// Path to data directory (e.g. espeak-ng-data)
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Path to dict directory (e.g. jieba dict)
+    pub dict_dir: Option<std::path::PathBuf>,
+    /// Path to rule.fst
+    pub rule_fsts: Option<std::path::PathBuf>,
+    /// Path to rule.far
+    pub rule_fars: Option<std::path::PathBuf>,
+    /// Number of threads for ONNX runtime
+    pub num_threads: i32,
+    /// Speech speed rate (default 1.0)
+    pub speed: f32,
+    /// Speaker ID (for multi-speaker models)
+    pub sid: i32,
+    /// Noise scale (default 0.667)
+    pub noise_scale: f32,
+    /// Noise scale w (default 0.8)
+    pub noise_scale_w: f32,
+    /// Length scale (default 1.0)
+    pub length_scale: f32,
+}
+
+impl Default for SherpaOfflineTtsConfig {
+    fn default() -> Self {
+        Self {
+            model_path: None,
+            lexicon_path: None,
+            tokens_path: None,
+            data_dir: None,
+            dict_dir: None,
+            rule_fsts: None,
+            rule_fars: None,
+            num_threads: 2,
+            speed: 1.0,
+            sid: 0,
+            noise_scale: 0.667,
+            noise_scale_w: 0.8,
+            length_scale: 1.0,
+        }
+    }
+}
+
+impl SherpaOfflineTtsConfig {
+    /// Auto-discovers standard VITS / Matcha model layout from a directory.
+    pub fn from_dir(dir: impl AsRef<std::path::Path>) -> Self {
+        let dir = dir.as_ref();
+        let find_file = |name: &str| {
+            let p = dir.join(name);
+            if p.exists() { Some(p) } else { None }
+        };
+
+        let model = find_file("model.onnx")
+            .or_else(|| find_file("vits.onnx"))
+            .or_else(|| find_file("model.int8.onnx"));
+        let lexicon = find_file("lexicon.txt");
+        let tokens = find_file("tokens.txt");
+        let data_dir = find_file("espeak-ng-data");
+        let dict_dir = find_file("dict");
+        let rule_fsts = find_file("rule.fst");
+        let rule_fars = find_file("rule.far");
+
+        Self {
+            model_path: model,
+            lexicon_path: lexicon,
+            tokens_path: tokens,
+            data_dir,
+            dict_dir,
+            rule_fsts,
+            rule_fars,
+            num_threads: 2,
+            speed: 1.0,
+            sid: 0,
+            noise_scale: 0.667,
+            noise_scale_w: 0.8,
+            length_scale: 1.0,
+        }
+    }
+
+    /// Validates whether the required model and vocabulary files exist on disk.
+    pub fn is_valid(&self) -> bool {
+        let model_ok = self.model_path.as_ref().is_some_and(|p| p.exists());
+        let tokens_ok = self.tokens_path.as_ref().is_some_and(|p| p.exists());
+        let lexicon_ok = self.lexicon_path.as_ref().is_some_and(|p| p.exists());
+        model_ok && tokens_ok && lexicon_ok
+    }
+}
+
+#[cfg(feature = "local-tts")]
+#[derive(Clone)]
+pub struct SherpaOfflineTtsProvider {
+    config: SherpaOfflineTtsConfig,
+    engine: std::sync::Arc<tokio::sync::Mutex<Option<sherpa_onnx::OfflineTts>>>,
+}
+
+#[cfg(feature = "local-tts")]
+impl SherpaOfflineTtsProvider {
+    pub fn new(config: SherpaOfflineTtsConfig) -> Self {
+        Self {
+            config,
+            engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
+
+    pub fn from_dir(dir: impl AsRef<std::path::Path>) -> Self {
+        Self::new(SherpaOfflineTtsConfig::from_dir(dir))
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.config.is_valid()
+    }
+
+    fn init_engine(&self) -> Result<sherpa_onnx::OfflineTts, TtsError> {
+        if !self.config.is_valid() {
+            return Err(TtsError::Synthesis(
+                "offline_tts_resources_missing: required model, lexicon or tokens file not found".into(),
+            ));
+        }
+
+        let model_str = self.config.model_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let lexicon_str = self.config.lexicon_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let tokens_str = self.config.tokens_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let data_dir_str = self.config.data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let dict_dir_str = self.config.dict_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let rule_fsts_str = self.config.rule_fsts.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let rule_fars_str = self.config.rule_fars.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+        let tts_config = sherpa_onnx::OfflineTtsConfig {
+            model: sherpa_onnx::OfflineTtsModelConfig {
+                vits: sherpa_onnx::OfflineTtsVitsModelConfig {
+                    model: model_str,
+                    lexicon: lexicon_str,
+                    tokens: tokens_str,
+                    data_dir: data_dir_str,
+                    dict_dir: dict_dir_str,
+                    noise_scale: self.config.noise_scale,
+                    noise_scale_w: self.config.noise_scale_w,
+                    length_scale: self.config.length_scale,
+                },
+                num_threads: self.config.num_threads,
+                debug: false,
+                provider: Some("cpu".into()),
+                ..Default::default()
+            },
+            rule_fsts: rule_fsts_str,
+            rule_fars: rule_fars_str,
+            max_num_sentences: 1,
+            silence_scale: 0.2,
+        };
+
+        sherpa_onnx::OfflineTts::create(&tts_config).ok_or_else(|| {
+            TtsError::Synthesis("failed_to_create_sherpa_offline_tts_engine".into())
+        })
+    }
+}
+
+#[cfg(feature = "local-tts")]
+#[async_trait]
+impl TtsProvider for SherpaOfflineTtsProvider {
+    async fn synthesize_stream(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(TtsError::Synthesis("empty_text".into()));
+        }
+
+        let sid = if voice.is_empty() {
+            self.config.sid
+        } else {
+            voice.parse::<i32>().unwrap_or(self.config.sid)
+        };
+
+        let wav = {
+            let mut lock = self.engine.lock().await;
+            if lock.is_none() {
+                let engine = self.init_engine()?;
+                *lock = Some(engine);
+            }
+
+            let engine = lock.as_ref().expect("engine must be initialized");
+            let gen_config = sherpa_onnx::GenerationConfig {
+                speed: self.config.speed,
+                sid,
+                ..Default::default()
+            };
+
+            let audio = engine
+                .generate_with_config::<fn(&[f32], f32) -> bool>(text, &gen_config, None)
+                .ok_or_else(|| TtsError::Synthesis("sherpa_offline_tts_generation_failed".into()))?;
+
+            let samples = audio.samples();
+            let sample_rate = audio.sample_rate();
+            if samples.is_empty() || sample_rate <= 0 {
+                return Err(TtsError::Synthesis("sherpa_offline_tts_empty_samples".into()));
+            }
+
+            let wav = nomifun_audio::pcm_to_wav(samples, sample_rate as u32);
+            tracing::info!(
+                text_len = text.len(),
+                sample_count = samples.len(),
+                sample_rate,
+                wav_bytes = wav.len(),
+                "sherpa_offline_tts_synthesized"
+            );
+            wav
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(wav)
+            .await
+            .map_err(|err| TtsError::Synthesis(err.to_string()))?;
+        Ok(rx)
+    }
+}
+
+#[cfg(not(feature = "local-tts"))]
+#[derive(Clone, Default)]
+pub struct SherpaOfflineTtsProvider {
+    config: SherpaOfflineTtsConfig,
+}
+
+#[cfg(not(feature = "local-tts"))]
+impl SherpaOfflineTtsProvider {
+    pub fn new(config: SherpaOfflineTtsConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn from_dir(dir: impl AsRef<std::path::Path>) -> Self {
+        Self::new(SherpaOfflineTtsConfig::from_dir(dir))
+    }
+
+    pub fn is_available(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(not(feature = "local-tts"))]
+#[async_trait]
+impl TtsProvider for SherpaOfflineTtsProvider {
+    async fn synthesize_stream(
+        &self,
+        _text: &str,
+        _voice: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        Err(TtsError::Synthesis("sherpa_offline_tts_not_compiled (enable feature = 'local-tts')".into()))
+    }
+}
+
+/// Fallback TTS provider attempting primary provider first, and falling back
+/// to secondary on failure.
+#[derive(Clone)]
+pub struct FallbackTtsProvider {
+    primary: std::sync::Arc<dyn TtsProvider>,
+    fallback: std::sync::Arc<dyn TtsProvider>,
+}
+
+impl FallbackTtsProvider {
+    pub fn new(
+        primary: std::sync::Arc<dyn TtsProvider>,
+        fallback: std::sync::Arc<dyn TtsProvider>,
+    ) -> Self {
+        Self { primary, fallback }
+    }
+
+    pub fn primary(&self) -> &std::sync::Arc<dyn TtsProvider> {
+        &self.primary
+    }
+
+    pub fn fallback(&self) -> &std::sync::Arc<dyn TtsProvider> {
+        &self.fallback
+    }
+}
+
+#[async_trait]
+impl TtsProvider for FallbackTtsProvider {
+    async fn synthesize_stream(
+        &self,
+        text: &str,
+        voice: &str,
+    ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+        match self.primary.synthesize_stream(text, voice).await {
+            Ok(rx) => Ok(rx),
+            Err(primary_err) => {
+                tracing::warn!(
+                    error = %primary_err,
+                    "primary_tts_failed_attempting_fallback"
+                );
+                self.fallback.synthesize_stream(text, voice).await
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fallback_and_sherpa_tests {
+    use super::*;
+
+    struct MockSuccessTts(Vec<u8>);
+    #[async_trait]
+    impl TtsProvider for MockSuccessTts {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+            let (tx, rx) = mpsc::channel(1);
+            let _ = tx.send(self.0.clone()).await;
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn fallback_tts_provider_uses_fallback_when_primary_fails() {
+        let primary = std::sync::Arc::new(FailingTts);
+        let fallback = std::sync::Arc::new(MockSuccessTts(vec![1, 2, 3, 4]));
+        let provider = FallbackTtsProvider::new(primary, fallback);
+
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must succeed via fallback");
+        let data = rx.recv().await.expect("must receive frame");
+        assert_eq!(data, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn fallback_tts_provider_uses_primary_when_primary_succeeds() {
+        let primary = std::sync::Arc::new(MockSuccessTts(vec![9, 9, 9]));
+        let fallback = std::sync::Arc::new(FailingTts);
+        let provider = FallbackTtsProvider::new(primary, fallback);
+
+        let mut rx = provider
+            .synthesize_stream("hello world", "")
+            .await
+            .expect("must succeed via primary");
+        let data = rx.recv().await.expect("must receive frame");
+        assert_eq!(data, vec![9, 9, 9]);
+    }
+
+    #[tokio::test]
+    async fn sherpa_offline_tts_reports_missing_resources_cleanly() {
+        let provider = SherpaOfflineTtsProvider::new(SherpaOfflineTtsConfig::default());
+        assert!(!provider.is_available());
+        let res = provider.synthesize_stream("测试离线语音", "").await;
+        assert!(res.is_err());
+        let err_msg = format!("{}", res.err().unwrap());
+        assert!(
+            err_msg.contains("offline_tts_resources_missing")
+                || err_msg.contains("sherpa_offline_tts_not_compiled")
+        );
+    }
+
+    #[test]
+    fn sherpa_offline_tts_auto_discovers_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path();
+
+        let cfg = SherpaOfflineTtsConfig::from_dir(path);
+        assert!(!cfg.is_valid());
+
+        // Create standard layout files
+        std::fs::write(path.join("model.onnx"), b"fake onnx").unwrap();
+        std::fs::write(path.join("lexicon.txt"), b"fake lexicon").unwrap();
+        std::fs::write(path.join("tokens.txt"), b"fake tokens").unwrap();
+
+        let cfg2 = SherpaOfflineTtsConfig::from_dir(path);
+        assert!(cfg2.is_valid());
+        assert_eq!(cfg2.model_path, Some(path.join("model.onnx")));
+        assert_eq!(cfg2.lexicon_path, Some(path.join("lexicon.txt")));
+        assert_eq!(cfg2.tokens_path, Some(path.join("tokens.txt")));
+    }
+}

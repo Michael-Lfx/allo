@@ -76,7 +76,7 @@ prefer_mirror = "modelscope"
 }
 
 #[tokio::test]
-async fn test_vt_4_04_ci_sampling_stability_and_memory_leak_check() {
+async fn test_vt_4_04_detect_ethernet_status_loop_stability() {
     let mut sys = System::new_all();
     sys.refresh_all();
     let pid = sysinfo::get_current_pid().expect("obtain PID");
@@ -102,6 +102,6 @@ async fn test_vt_4_04_ci_sampling_stability_and_memory_leak_check() {
 
     assert!(
         memory_delta_mb < 15,
-        "Memory leak detected! Delta is {memory_delta_mb}MB (threshold is < 15MB)"
+        "detect_ethernet_status loop allocation exceeded baseline threshold: {memory_delta_mb}MB"
     );
 }

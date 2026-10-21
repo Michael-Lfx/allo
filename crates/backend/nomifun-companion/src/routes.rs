@@ -833,6 +833,9 @@ async fn delete_companion(
     Extension(_user): Extension<CurrentUser>,
     Path(companion_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    if state.service.list_companions().await.len() <= 1 {
+        return Err(AppError::BadRequest("无法删除最后一个伙伴：系统至少需要保留一个伙伴。".into()));
+    }
     state.service.delete_companion(&companion_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1204,6 +1207,10 @@ mod tests {
             .await
             .unwrap()
             .companion_id;
+        service
+            .patch_companion(&companion_id, serde_json::json!({"model": null}))
+            .await
+            .unwrap();
 
         // The run is companion-scoped: the install-wide route is gone.
         let unscoped = app
@@ -1257,6 +1264,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(history.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn delete_companion_refuses_when_only_one_companion_remains() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, service) = test_app(dir.path()).await;
+        let c1 = service.create_companion("C1", "ink").await.unwrap().companion_id;
+        let c2 = service.create_companion("C2", "ink").await.unwrap().companion_id;
+
+        // With 2 companions, deleting one succeeds.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/companion/companions/{c1}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // With only 1 companion left, deleting it is rejected with 400 Bad Request.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/companion/companions/{c2}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(resp).await;
+        assert!(body["error"].as_str().unwrap().contains("无法删除最后一个伙伴"));
     }
 
     #[tokio::test]

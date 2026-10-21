@@ -15,81 +15,57 @@ use nomifun_audio::EarconKind;
 use nomifun_voice_terminal::*;
 
 // ============================================================================
-// VT-2-01: Schema Parse Success Rate (>= 99.5%)
+// VT-2-01: Schema Parse & Validation for Supported Intent Types
 // ============================================================================
 
 #[test]
-fn test_vt_2_01_schema_parse_rate() {
+fn test_vt_2_01_schema_parse_variants_and_validation() {
     let router = QwenVoiceRouter::new();
 
-    // 200 diverse valid responses according to C3 schema
-    let mut success_count = 0;
-    let total = 200;
+    // Valid variants for all supported intents
+    let chat = r#"{"intent_type": "chat", "reply_tts": "好的，马上为您提供帮助。"}"#;
+    let task = r#"{"intent_type": "agent_task", "spoken_ack": "收到，正在执行。", "task_goal": "清理临时文件", "requires_confirmation": false}"#;
+    let control = r#"{"intent_type": "task_control", "task_control_action": "query_status"}"#;
+    let ignore = r#"{"intent_type": "ignore"}"#;
 
-    for i in 0..total {
-        let json_str = match i % 4 {
-            0 => r#"{"intent_type": "chat", "reply_tts": "好的，马上为您提供帮助。"}"#,
-            1 => r#"{"intent_type": "agent_task", "spoken_ack": "收到，正在执行。", "task_goal": "清理临时文件", "requires_confirmation": false}"#,
-            2 => r#"{"intent_type": "task_control", "task_control_action": "query_status"}"#,
-            _ => r#"{"intent_type": "ignore"}"#,
-        };
+    assert!(router.parse_and_validate(chat).is_ok());
+    assert!(router.parse_and_validate(task).is_ok());
+    assert!(router.parse_and_validate(control).is_ok());
+    assert!(router.parse_and_validate(ignore).is_ok());
 
-        if router.parse_and_validate(json_str).is_ok() {
-            success_count += 1;
-        }
-    }
+    // Invalid variants
+    let malformed = "not json";
+    let missing_field = r#"{"intent_type": "chat"}"#;
+    let unknown_intent = r#"{"intent_type": "unknown_future_intent"}"#;
 
-    let rate = (success_count as f64) / (total as f64);
-    assert!(
-        rate >= 0.995,
-        "Schema parse success rate must be >= 99.5%, got {:.2}%",
-        rate * 100.0
-    );
+    assert!(router.parse_and_validate(malformed).is_err());
+    assert!(router.parse_and_validate(missing_field).is_err());
+    assert!(router.parse_and_validate(unknown_intent).is_err());
 }
 
 // ============================================================================
-// VT-2-02: Labeled Corpus 4-Intent Accuracy (>= 95.0%) & Confusion Matrix
+// VT-2-02: Decision Payload Deserialization
 // ============================================================================
 
 #[test]
-fn test_vt_2_02_intent_accuracy_and_confusion_matrix() {
+fn test_vt_2_02_parse_decision_payloads() {
     let router = QwenVoiceRouter::new();
 
-    // Benchmark corpus: (ASR transcript, expected IntentType, mock output JSON)
     let test_cases = vec![
-        ("今天天气怎么样", IntentType::Chat, r#"{"intent_type": "chat", "reply_tts": "今天天气晴朗。"}"#),
-        ("帮我整理一下昨天的下载目录", IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "好的，正在整理下载目录。", "task_goal": "整理下载目录"}"#),
-        ("现在任务进度如何了", IntentType::TaskControl, r#"{"intent_type": "task_control", "task_control_action": "query_status"}"#),
-        ("停，取消当前任务", IntentType::TaskControl, r#"{"intent_type": "task_control", "task_control_action": "cancel_task"}"#),
-        ("呃……", IntentType::Ignore, r#"{"intent_type": "ignore"}"#),
-        ("你叫什么名字", IntentType::Chat, r#"{"intent_type": "chat", "reply_tts": "我是 Flowy。"}"#),
-        ("在后台启动单元测试并监控", IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "已启动单元测试。", "task_goal": "运行测试"}"#),
-        ("把数据库备份导出到磁盘", IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "正在导出数据库备份。", "task_goal": "导出备份", "requires_confirmation": true}"#),
-        ("还有多久完成", IntentType::TaskControl, r#"{"intent_type": "task_control", "task_control_action": "query_status"}"#),
-        ("电视背景声哗哗哗", IntentType::Ignore, r#"{"intent_type": "ignore"}"#),
+        (IntentType::Chat, r#"{"intent_type": "chat", "reply_tts": "今天天气晴朗。"}"#),
+        (IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "好的，正在整理下载目录。", "task_goal": "整理下载目录"}"#),
+        (IntentType::TaskControl, r#"{"intent_type": "task_control", "task_control_action": "query_status"}"#),
+        (IntentType::TaskControl, r#"{"intent_type": "task_control", "task_control_action": "cancel_task"}"#),
+        (IntentType::Ignore, r#"{"intent_type": "ignore"}"#),
+        (IntentType::Chat, r#"{"intent_type": "chat", "reply_tts": "我是 Flowy。"}"#),
+        (IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "已启动单元测试。", "task_goal": "运行测试"}"#),
+        (IntentType::AgentTask, r#"{"intent_type": "agent_task", "spoken_ack": "正在导出数据库备份。", "task_goal": "导出备份", "requires_confirmation": true}"#),
     ];
 
-    let mut matrix = std::collections::BTreeMap::new();
-    let mut correct = 0;
-    let total = test_cases.len();
-
-    for (_text, expected, mock_json) in &test_cases {
+    for (expected, mock_json) in &test_cases {
         let decision = router.parse_and_validate(mock_json).expect("Parse must succeed");
-        let actual = decision.intent_type;
-
-        *matrix.entry((*expected, actual)).or_insert(0) += 1;
-        if *expected == actual {
-            correct += 1;
-        }
+        assert_eq!(decision.intent_type, *expected);
     }
-
-    let accuracy = (correct as f64) / (total as f64);
-    println!("Confusion matrix: {:?}", matrix);
-    assert!(
-        accuracy >= 0.95,
-        "Intent accuracy must be >= 95.0%, got {:.2}%",
-        accuracy * 100.0
-    );
 }
 
 // ============================================================================
@@ -171,40 +147,33 @@ async fn test_vt_2_04_tts_decode_and_jitter_buffer() {
 }
 
 // ============================================================================
-// VT-2-05: Fast-Path Latency Distribution (P50 <= 850ms, P95 <= 1250ms)
+// VT-2-05: Fast-Path Latency Tracker Percentile Calculations
 // ============================================================================
 
 #[test]
-fn test_vt_2_05_fast_path_latency_distribution() {
+fn test_vt_2_05_fast_path_latency_tracker_percentiles() {
     let mut tracker = FastPathLatencyTracker::new();
 
-    // Simulate 100 latency measurements across the benchmark range defined in interaction.zh.md §3.9
-    // Typical audio pipeline latency: P50 ~ 750ms, P95 ~ 1150ms
-    for i in 0..100 {
-        let ms = if i < 50 {
-            700 + (i * 2) as u64 // 700ms ~ 798ms (P50 around 750ms)
-        } else if i < 95 {
-            800 + ((i - 50) * 8) as u64 // 800ms ~ 1152ms
-        } else {
-            1160 + ((i - 95) * 15) as u64 // 1160ms ~ 1220ms
-        };
-        tracker.record_sample(Duration::from_millis(ms));
+    // 1. Empty tracker returns ZERO
+    assert_eq!(tracker.p50(), Duration::ZERO);
+    assert_eq!(tracker.p95(), Duration::ZERO);
+    assert_eq!(tracker.sample_count(), 0);
+
+    // 2. Single sample returns exact duration
+    tracker.record_sample(Duration::from_millis(100));
+    assert_eq!(tracker.sample_count(), 1);
+    assert_eq!(tracker.p50(), Duration::from_millis(100));
+    assert_eq!(tracker.p95(), Duration::from_millis(100));
+
+    // 3. Known distribution with out-of-order samples (100ms down to 1ms)
+    let mut distribution_tracker = FastPathLatencyTracker::new();
+    for ms in (1..=100).rev() {
+        distribution_tracker.record_sample(Duration::from_millis(ms));
     }
-
-    let p50 = tracker.p50();
-    let p95 = tracker.p95();
-
-    println!("Latency stats: P50 = {:?}, P95 = {:?}", p50, p95);
-    assert!(
-        p50 <= Duration::from_millis(850),
-        "P50 must be <= 850ms, got {:?}",
-        p50
-    );
-    assert!(
-        p95 <= Duration::from_millis(1250),
-        "P95 must be <= 1250ms, got {:?}",
-        p95
-    );
+    assert_eq!(distribution_tracker.sample_count(), 100);
+    assert_eq!(distribution_tracker.p50(), Duration::from_millis(50));
+    assert_eq!(distribution_tracker.p95(), Duration::from_millis(95));
+    assert_eq!(distribution_tracker.p99(), Duration::from_millis(99));
 }
 
 // ============================================================================

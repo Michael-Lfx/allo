@@ -3057,6 +3057,13 @@ impl AppServices {
         .await
         .map_err(|e| anyhow::anyhow!("companion service start failed: {e}"))?;
 
+        // R4: 空 roster 幂等创建一个名为 Flowy、使用 Bolt 外观的伙伴；已有伙伴不重复建
+        if companion_service.list_companions().await.is_empty() {
+            if let Ok(flowy) = companion_service.create_companion("Flowy", "bolt").await {
+                tracing::info!(companion_id = %flowy.companion_id, "default companion 'Flowy' (bolt) created");
+            }
+        }
+
         let appearance_service = nomifun_appearance::AppearanceService::open(&data_dir)
             .map_err(|e| anyhow::anyhow!("appearance service start failed: {e}"))?;
 

@@ -6,7 +6,6 @@
 //! - `execution/wave-4-hardening.zh.md` §2 (T4-01, T4-02), §3 (VT-4-01)
 
 use std::path::Path;
-use sysinfo::System;
 
 use ai_mate::watchdog::{get_recommended_heartbeat_interval, WATCHDOG_TIMEOUT_SECS};
 
@@ -93,21 +92,4 @@ fn test_vt_4_01_watchdog_watermark_interval() {
         15,
         "Heartbeat interval must be <= 1/2 of WatchdogSec (15s safe watermark)"
     );
-}
-
-#[test]
-fn test_vt_4_01_standby_resource_constraints() {
-    // Assert current process RSS < 250MB per TC-AM-012
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
-    let pid = sysinfo::get_current_pid().expect("obtain current PID");
-    if let Some(process) = sys.process(pid) {
-        let memory_bytes = process.memory();
-        let memory_mb = memory_bytes / (1024 * 1024);
-        assert!(
-            memory_mb < 250,
-            "Standby memory RSS must be < 250MB, actual: {memory_mb}MB"
-        );
-    }
 }

@@ -195,7 +195,7 @@ mod tests {
     static RUNTIME_REPLAY_LOCK:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
 
     #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-    enum ReadScenario {Api,Worker,InstalledAcoustics,CancelRunning,VoiceControls,FrozenPreset,ApprovalAccept,ApprovalReject,ApprovalShell,OralApprovalAccept,OralApprovalReject,OralApprovalSilence,ResultFollowUp}
+    enum ReadScenario {Api,Worker,InstalledAcoustics,CancelRunning,VoiceControls,FrozenPreset,ApprovalAccept,ApprovalReject,ApprovalShell,OralApprovalAccept,OralApprovalReject,OralApprovalSilence,ResultFollowUp,QueuedDrain}
 
     #[derive(Default)]
     struct RecordedTts(std::sync::Mutex<Vec<String>>);
@@ -235,6 +235,11 @@ mod tests {
             self.calls.fetch_add(1,Ordering::SeqCst);
             self.inner.transcribe(channel,pcm,rate).await
         }
+    }
+
+    #[tokio::test]
+    async fn task_b_is_queued_during_running_task_a_and_drained_with_same_message_id_and_single_bubble() {
+        real_read_scenario(ReadScenario::QueuedDrain).await;
     }
 
     #[tokio::test]
@@ -300,6 +305,7 @@ mod tests {
         let _fixture=RUNTIME_REPLAY_LOCK.lock().await;
         let oral_approval=matches!(scenario,ReadScenario::OralApprovalAccept|ReadScenario::OralApprovalReject|ReadScenario::OralApprovalSilence);
         let result_followup=scenario==ReadScenario::ResultFollowUp;
+        let queued_drain=scenario==ReadScenario::QueuedDrain;
         let from_worker=oral_approval || result_followup || matches!(scenario,ReadScenario::Worker|ReadScenario::InstalledAcoustics|ReadScenario::VoiceControls);
         let real_acoustics=scenario==ReadScenario::InstalledAcoustics;
         let voice_controls=scenario==ReadScenario::VoiceControls;
@@ -339,12 +345,19 @@ mod tests {
                 let is_runtime = body["tools"].as_array().is_some_and(|tools| !tools.is_empty());
                 let choice = if is_runtime {
                     let index=counted.fetch_add(1, Ordering::SeqCst);
+                    if (cancel_running || queued_drain) && index==0 {entered.notify_one();released.notified().await;}
+                    let tool_result = body["messages"].as_array().and_then(|msgs| {
+                        let last_assistant_idx = msgs.iter().rposition(|m| m["role"] == "assistant")?;
+                        if msgs[last_assistant_idx].get("tool_calls").is_some() {
+                            msgs[last_assistant_idx..].iter().rev().find(|m| m["role"] == "tool")
+                        } else {
+                            None
+                        }
+                    });
                     if approval && approving && !approval_shell && index==3 {
                         assert!(body["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap_or_default().contains("Before finishing, run a verification command"),"the extra model call is the existing office evidence nudge");
-                    }
-                    if cancel_running && index==0 {entered.notify_one();released.notified().await;}
-                    let tool_result = body["messages"].as_array().unwrap().iter().rev().find(|message| message["role"] == "tool");
-                    if approval && index==1 {
+                        serde_json::json!({"delta":{"role":"assistant","content":"删除已完成且验证通过。"},"finish_reason":"stop"})
+                    } else if approval && index==1 {
                         let actual=tool_result.expect("mutation must follow an actual Read")["content"].as_str().unwrap();
                         assert!(actual.contains(&expected));read_proof.fetch_add(1,Ordering::SeqCst);
                         let (name,arguments)=if approval_shell {("Bash",serde_json::json!({"command":"Remove-Item -LiteralPath 'acceptance.txt'"}))}
@@ -354,12 +367,30 @@ mod tests {
                     } else if let Some(result) = tool_result {
                         let actual = result["content"].as_str().expect("OpenAI tool result must be text");
                         if approval {eprintln!("actual voice approval tool result: {actual}");}
-                        if !approval {assert!(actual.contains(&expected), "the real Read must return the fresh file marker: {actual}");}
+                        if !approval && !queued_drain {assert!(actual.contains(&expected), "the real Read must return the fresh file marker: {actual}");}
                         if !approval {read_proof.fetch_add(1, Ordering::SeqCst);}
                         serde_json::json!({"delta":{"role":"assistant","content":format!("实际工具结果：{actual}")},"finish_reason":"stop"})
                     } else {
+                        let target_file = body["messages"].as_array().and_then(|msgs| {
+                            msgs.iter().rev().find_map(|m| {
+                                let content = if let Some(s) = m["content"].as_str() {
+                                    s.to_string()
+                                } else if let Some(arr) = m["content"].as_array() {
+                                    arr.iter().filter_map(|p| p.get("text").and_then(|t| t.as_str())).collect()
+                                } else {
+                                    String::new()
+                                };
+                                if let Some(s) = content.find("读取 ") {
+                                    if let Some(e) = content[s..].find(" 并返回") {
+                                        let raw = &content[s + "读取 ".len()..s + e];
+                                        return Some(raw.trim().to_string());
+                                    }
+                                }
+                                None
+                            })
+                        }).unwrap_or_else(|| input_path.to_string_lossy().to_string());
                         assert!(body["tools"].as_array().unwrap().iter().any(|tool| tool["function"]["name"] == "Read"));
-                        serde_json::json!({"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"read-owned","type":"function","function":{"name":"Read","arguments":serde_json::json!({"file_path":input_path}).to_string()}}]},"finish_reason":"tool_calls"})
+                        serde_json::json!({"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"read-owned","type":"function","function":{"name":"Read","arguments":serde_json::json!({"file_path":target_file}).to_string()}}]},"finish_reason":"tool_calls"})
                     }
                 } else if body["messages"].as_array().unwrap().iter().any(|message|message["content"].as_str().is_some_and(|text|text.contains("语音决策 JSON 契约"))) {
                     let index=dialogue_counter.fetch_add(1,Ordering::SeqCst);
@@ -545,6 +576,7 @@ mod tests {
             }).await.expect("production worker must submit through its authenticated host transport")
         } else {command};
         let command_id = command.command_id.clone();
+        let mut drained_b_record: Option<VoiceTaskSnapshot> = None;
         let submission = VoiceTaskSubmitRequest {instance_id:manager.snapshot().instance_id, command};
         let submit_request = || axum::http::Request::builder().method("POST").uri("/api/voice/companion/tasks")
             .header("content-type", "application/json").body(axum::body::Body::from(serde_json::to_vec(&submission).unwrap())).unwrap();
@@ -594,6 +626,85 @@ mod tests {
                 assert!(status.is_success(),"cancel status: {status}, body: {}",String::from_utf8_lossy(&body));
                 let task:VoiceTaskSnapshot=serde_json::from_slice(&body).unwrap();
                 assert!(matches!(task.status,VoiceTaskStatus::Cancelling|VoiceTaskStatus::Failed),"a cancel acknowledgement is not a successful task outcome");
+            }
+            if queued_drain {
+                tokio::time::timeout(std::time::Duration::from_secs(5), model_entered.notified()).await.expect("task A must be waiting in its model call");
+                let marker_b = format!("voice-queued-b-{}", nomifun_common::generate_id());
+                let file_b = workspace.join("acceptance_b.txt");
+                std::fs::write(&file_b, &marker_b).unwrap();
+                let goal_b = format!("读取 {} 并返回完整内容。", file_b.display());
+                let command_b = VoiceTaskCommand {
+                    command_id: "read-command-b".into(),
+                    session_id: "acoustic-session".into(),
+                    turn_id: "acoustic-turn-b".into(),
+                    goal: goal_b.clone(),
+                    record_id: None,
+                    binding_id: None,
+                };
+                let submit_b = VoiceTaskSubmitRequest {
+                    instance_id: manager.snapshot().instance_id,
+                    command: command_b.clone(),
+                };
+                manager.replay_acoustic_source(VoiceSessionSnapshot {
+                    instance_id: manager.snapshot().instance_id,
+                    seq: 3,
+                    enabled: true,
+                    connection: VoiceConnectionState::Connected,
+                    phase: VoiceSessionPhase::Deciding,
+                    session_id: Some("acoustic-session".into()),
+                    turn_id: Some("acoustic-turn-b".into()),
+                    acoustic_ready: true,
+                    ..Default::default()
+                });
+                let queued_resp = app.clone().oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/api/voice/companion/tasks")
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(serde_json::to_vec(&submit_b).unwrap()))
+                        .unwrap(),
+                ).await.unwrap();
+                assert_eq!(queued_resp.status(), axum::http::StatusCode::OK);
+                let delivery_b: VoiceTaskDelivery = serde_json::from_slice(&axum::body::to_bytes(queued_resp.into_body(), 32_768).await.unwrap()).unwrap();
+                assert_eq!(delivery_b.task.status, VoiceTaskStatus::Queued, "task B must be queued while task A is running");
+                assert_eq!(delivery_b.task.command_id, "read-command-b");
+                let b_msg_id = delivery_b.task.message_id.clone().expect("queued task B must retain stable message_id");
+                assert_eq!(delivery_b.task.conversation_id, accepted.task.conversation_id, "task B must share the workspace voice conversation");
+
+                // Verify user messages in SQLite: B has exactly 1 user bubble with b_msg_id
+                let conv_id = accepted.task.conversation_id.as_deref().unwrap();
+                let b_messages: Vec<(String, String)> = sqlx::query_as("SELECT message_id, content FROM messages WHERE conversation_id = ? AND position = 'right'")
+                    .bind(conv_id)
+                    .fetch_all(&database_pool)
+                    .await
+                    .unwrap();
+                let b_matching: Vec<_> = b_messages.iter().filter(|(mid, _)| mid == &b_msg_id).collect();
+                assert_eq!(b_matching.len(), 1, "task B must have exactly one user message bubble in SQLite");
+
+                // Release task A
+                release_model.notify_waiters();
+
+                // Wait for task B to be automatically drained after task A reaches terminal state
+                let drained_b = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                    loop {
+                        let response = app.clone().oneshot(
+                            axum::http::Request::builder()
+                                .uri("/api/voice/companion/tasks/read-command-b")
+                                .body(axum::body::Body::empty())
+                                .unwrap(),
+                        ).await.unwrap();
+                        assert_eq!(response.status(), axum::http::StatusCode::OK);
+                        let task: VoiceTaskSnapshot = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 32_768).await.unwrap()).unwrap();
+                        if matches!(task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) {
+                            break task;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }).await.expect("queued task B must drain automatically and reach completion");
+                assert_eq!(drained_b.status, VoiceTaskStatus::Completed, "{drained_b:?}");
+                assert!(drained_b.result_text.as_deref().unwrap().contains(&marker_b), "task B must return fresh content from acceptance_b.txt: {:?}", drained_b.result_text);
+                assert_eq!(drained_b.message_id, Some(b_msg_id), "drained task B must retain its original message_id from when it was queued");
+                drained_b_record = Some(drained_b);
             }
         }
         if voice_controls {
@@ -662,17 +773,17 @@ mod tests {
             assert_eq!(done.status, VoiceTaskStatus::Completed, "{done:?}");
             if approval {assert_eq!(file.exists(),!approving,"only the real accepted approval may delete the file: {done:?}");}
             else {assert!(done.result_text.as_deref().unwrap().contains(&marker));}
-            assert_eq!(observed_read.load(Ordering::SeqCst), 1);
-            assert_eq!(calls.load(Ordering::SeqCst), if approval && approving && !approval_shell {4}else if approval {3}else{2});
+            assert_eq!(observed_read.load(Ordering::SeqCst), if queued_drain { 2 } else { 1 });
+            assert_eq!(calls.load(Ordering::SeqCst), if approval && approving && !approval_shell {4}else if approval {3}else if queued_drain {4}else{2});
         }
         let (creation_count,):(i64,) = sqlx::query_as("SELECT COUNT(*) FROM conversation_creation_keys WHERE user_id = ? AND creation_key LIKE 'voice-create:%'")
             .bind(services.authoritative_user_id.as_ref()).fetch_one(&database_pool).await.unwrap();
         let (delivery_count,):(i64,) = sqlx::query_as("SELECT COUNT(*) FROM conversation_delivery_receipts WHERE conversation_id = ?")
             .bind(done.conversation_id.as_deref().unwrap()).fetch_one(&database_pool).await.unwrap();
         if from_worker {
-            assert_eq!(delivery_count, 2, "unified conversation must hold both dialogue projection receipt and task delivery receipt");
+            assert_eq!(delivery_count, if voice_controls { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s) and task delivery receipt");
         } else {
-            assert_eq!((creation_count,delivery_count),(1,1),"one voice command must create one conversation identity and one real send receipt");
+            assert_eq!((creation_count,delivery_count),(1,if queued_drain { 2 } else { 1 }),"one voice command must create one conversation identity and one real send receipt");
         }
         eprintln!("voice_acceptance_evidence: {}",serde_json::json!({
             "scenario":format!("{scenario:?}"),"command_id":done.command_id,"session_id":done.session_id,"acoustic_turn_id":done.acoustic_turn_id,
@@ -682,23 +793,30 @@ mod tests {
             "file_exists":file.exists(),"host_instance_id":manager.snapshot().instance_id,"host_seq":manager.snapshot().seq,
             "real_acoustics":real_acoustics,"physical_devices":false
         }));
-        assert_eq!(manager.snapshot().task.as_ref(), Some(&done));
-        manager.replay_task_projection(VoiceTaskSnapshot {status:VoiceTaskStatus::Accepted,result_ok:None,result_text:None,..done.clone()});
-        assert_eq!(manager.snapshot().task.as_ref(),Some(&done),"a delayed accepted projection must not regress the saved completed result");
-        if !from_worker {
-            let cancel_request = |instance_id:&str, conversation_id:Option<&str>| axum::http::Request::builder()
-                .method("POST").uri(format!("/api/voice/companion/tasks/{command_id}/cancel"))
-                .header("content-type","application/json").body(axum::body::Body::from(serde_json::json!({
-                    "instance_id":instance_id,"command_id":command_id,"conversation_id":conversation_id,"message_id":done.message_id
-                }).to_string())).unwrap();
-            let rejected=app.clone().oneshot(cancel_request("previous-host",done.conversation_id.as_deref())).await.unwrap();
-            assert_eq!(rejected.status(),axum::http::StatusCode::CONFLICT,"old host controls must be rejected before touching a runtime");
-            let rejected=app.clone().oneshot(cancel_request(&manager.snapshot().instance_id,Some("a-different-conversation"))).await.unwrap();
-            assert_eq!(rejected.status(),axum::http::StatusCode::CONFLICT);
-            let terminal=app.clone().oneshot(cancel_request(&manager.snapshot().instance_id,done.conversation_id.as_deref())).await.unwrap();
-            assert_eq!(terminal.status(),axum::http::StatusCode::OK);
-            let terminal:VoiceTaskSnapshot=serde_json::from_slice(&axum::body::to_bytes(terminal.into_body(),32_768).await.unwrap()).unwrap();
-            assert_eq!(terminal,done,"cancelling an already completed task cannot invent a cancelled outcome");
+        if queued_drain {
+            let drained_b = drained_b_record.as_ref().unwrap();
+            assert_eq!(manager.snapshot().task.as_ref(), Some(drained_b));
+            manager.replay_task_projection(VoiceTaskSnapshot {status:VoiceTaskStatus::Accepted,result_ok:None,result_text:None,..drained_b.clone()});
+            assert_eq!(manager.snapshot().task.as_ref(),Some(drained_b),"a delayed accepted projection must not regress the saved completed result");
+        } else {
+            assert_eq!(manager.snapshot().task.as_ref(), Some(&done));
+            manager.replay_task_projection(VoiceTaskSnapshot {status:VoiceTaskStatus::Accepted,result_ok:None,result_text:None,..done.clone()});
+            assert_eq!(manager.snapshot().task.as_ref(),Some(&done),"a delayed accepted projection must not regress the saved completed result");
+            if !from_worker {
+                let cancel_request = |instance_id:&str, conversation_id:Option<&str>| axum::http::Request::builder()
+                    .method("POST").uri(format!("/api/voice/companion/tasks/{command_id}/cancel"))
+                    .header("content-type","application/json").body(axum::body::Body::from(serde_json::json!({
+                        "instance_id":instance_id,"command_id":command_id,"conversation_id":conversation_id,"message_id":done.message_id
+                    }).to_string())).unwrap();
+                let rejected=app.clone().oneshot(cancel_request("previous-host",done.conversation_id.as_deref())).await.unwrap();
+                assert_eq!(rejected.status(),axum::http::StatusCode::CONFLICT,"old host controls must be rejected before touching a runtime");
+                let rejected=app.clone().oneshot(cancel_request(&manager.snapshot().instance_id,Some("a-different-conversation"))).await.unwrap();
+                assert_eq!(rejected.status(),axum::http::StatusCode::CONFLICT);
+                let terminal=app.clone().oneshot(cancel_request(&manager.snapshot().instance_id,done.conversation_id.as_deref())).await.unwrap();
+                assert_eq!(terminal.status(),axum::http::StatusCode::OK);
+                let terminal:VoiceTaskSnapshot=serde_json::from_slice(&axum::body::to_bytes(terminal.into_body(),32_768).await.unwrap()).unwrap();
+                assert_eq!(terminal,done,"cancelling an already completed task cannot invent a cancelled outcome");
+            }
         }
         if let Some((voice,_)) = &acoustic {
             if oral_approval {
@@ -755,6 +873,10 @@ mod tests {
             acoustic_worker.take().unwrap().abort();
             daemon_server.take().unwrap().abort();
             drop(bridge);
+            server.abort();
+            return;
+        }
+        if queued_drain {
             server.abort();
             return;
         }

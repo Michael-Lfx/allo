@@ -30,7 +30,9 @@ use nomifun_voice_terminal::driver::{VoiceRouter, VoiceSessionDriver};
 use nomifun_voice_terminal::playback::ChannelAudioSink;
 use nomifun_voice_terminal::playback::{AudioSinkError, PhysicalAudioSink, PlaybackPipeline};
 use nomifun_voice_terminal::router::QwenVoiceRouter;
-use nomifun_voice_terminal::tts::{EdgeTtsProvider, TtsProvider};
+use nomifun_voice_terminal::tts::{
+    EdgeTtsProvider, FallbackTtsProvider, SherpaOfflineTtsProvider, TtsProvider,
+};
 
 use crate::oobe::OobeManager;
 use crate::voice_events::VoiceEventHub;
@@ -206,11 +208,25 @@ impl VoiceCompanionRuntime {
                 nomifun_voice_terminal::task_client::HostTaskClient::new(endpoint, std::env::var("AI_MATE_CONTROL_TOKEN").unwrap_or_default())
                     .map(|client| Arc::new(client) as Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>).ok()
             }),
-            model_manager,
+            model_manager: model_manager.clone(),
             oobe_manager,
             driver,
             playback,
-            tts: Arc::new(EdgeTtsProvider::new()),
+            tts: {
+                let edge = Arc::new(EdgeTtsProvider::new());
+                let model_dir = std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|_| model_manager.models_dir().join("tts"));
+                let sherpa = Arc::new(SherpaOfflineTtsProvider::from_dir(model_dir));
+                let prefer_offline = std::env::var("NOMIFUN_VOICE_TTS_OFFLINE")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+                if prefer_offline {
+                    Arc::new(FallbackTtsProvider::new(sherpa, edge))
+                } else {
+                    Arc::new(FallbackTtsProvider::new(edge, sherpa))
+                }
+            },
             router,
             transcriber: None,
             capture_pipeline,
@@ -240,7 +256,7 @@ impl VoiceCompanionRuntime {
                 pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
                 announced_tasks: Mutex::new(std::collections::VecDeque::new()),
                 task_client: None,
-                model_manager,
+                model_manager: model_manager.clone(),
                 oobe_manager,
                 driver: Arc::new(Mutex::new(VoiceSessionDriver::new())),
                 playback: Arc::new(PlaybackPipeline::new(Arc::new(ChannelAudioSink::new(tx)))),
@@ -306,6 +322,9 @@ impl VoiceCompanionRuntime {
         let mut driver = self.driver.lock().await;
         let snapshot = self.snapshot();
         if !request.scope.matches(&snapshot) {return Err("task_scope_changed");}
+        if driver.current_state() == AcousticState::FollowUpListening {
+            let _ = driver.handle_event(AcousticEvent::FollowUpTimeout);
+        }
         if driver.current_state()!=AcousticState::Idle || snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
             || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected) {return Err("voice_busy");}
         driver.handle_event(AcousticEvent::TaskSummaryReady).map_err(|_| "voice_busy")?;
@@ -608,7 +627,7 @@ impl VoiceCompanionRuntime {
         }
         let mut d = driver.lock().await;
         if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 4 });
+            let _ = event_tx.send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -668,7 +687,7 @@ impl VoiceCompanionRuntime {
                 && d.begin_listening_window()
             {
                 let _ = event_tx
-                    .send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 4 });
+                    .send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -691,7 +710,7 @@ impl VoiceCompanionRuntime {
                 && d.begin_listening_window()
             {
                 let _ = event_tx
-                    .send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 4 });
+                    .send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 });
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -1203,9 +1222,25 @@ impl VoiceCompanionRuntime {
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
                         }
+                        Ok(delivery) if delivery.task.status == VoiceTaskStatus::Queued
+                            && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
+                            let text = "当前有任务正在执行，新任务已排队。";
+                            let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
+                            let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing { text: text.into() });
+                            if event_tx.feedback().speak_replies {
+                                playback.speak_text_with_started(tts.as_ref(), text, "", || {
+                                    let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text: text.into() });
+                                }).await.err().map(|error| match error {
+                                    AudioSinkError::Synthesis(_) => "tts_failed",
+                                    AudioSinkError::NoAudio => "tts_empty_audio",
+                                    _ => "speaker_failed",
+                                }.to_owned())
+                            } else {
+                                None
+                            }
+                        }
                         Ok(delivery) if delivery.task.conversation_id.is_none() || delivery.task.message_id.is_none()
                             || matches!(delivery.task.status, VoiceTaskStatus::Delivering | VoiceTaskStatus::Unknown) => Some("task_delivery_unknown".into()),
-                        Ok(delivery) if delivery.task.status == VoiceTaskStatus::Queued => None,
                         Ok(_) => None,
                         Err(code) => Some(code),
                     };
@@ -1498,6 +1533,14 @@ impl VoiceCompanionRuntime {
                 {
                     let mut d = driver.lock().await;
                     let timed_state = d.current_state();
+                    if timed_state == AcousticState::FollowUpListening {
+                        let task_active = snapshot.task.as_ref().is_some_and(|t| {
+                            matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Accepted | nomifun_api_types::voice::VoiceTaskStatus::Delivering | nomifun_api_types::voice::VoiceTaskStatus::Queued | nomifun_api_types::voice::VoiceTaskStatus::Cancelling)
+                        });
+                        if task_active {
+                            d.begin_listening_window();
+                        }
+                    }
                     if timed_state == AcousticState::Listening
                         && quiet_input.load(Ordering::Acquire)
                         && snapshot.session_id.is_some()
@@ -2016,9 +2059,9 @@ mod tests {
         // 1. Progress announcement accepted
         runtime.announce_task_result(notice(&runtime, "progress", "正在调用搜索工具。")).await.unwrap();
 
-        // Wait until idle
+        // Wait until speech finished and follow-up or idle entered
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while runtime.snapshot().phase != VoiceSessionPhase::Idle {
+            while runtime.snapshot().phase != VoiceSessionPhase::Idle && runtime.snapshot().phase != VoiceSessionPhase::FollowUp {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })
@@ -2091,7 +2134,7 @@ mod tests {
         runtime.announce_task_result(first).await.unwrap();
 
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while runtime.snapshot().phase != VoiceSessionPhase::Idle {
+            while runtime.snapshot().phase != VoiceSessionPhase::Idle && runtime.snapshot().phase != VoiceSessionPhase::FollowUp {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
         })
@@ -2233,7 +2276,7 @@ mod tests {
                     saw_chime = true;
                 }
                 VoiceCompanionEvent::FollowUpWindow { timeout_secs } => {
-                    assert_eq!(timeout_secs, 4, "follow-up window must strictly be 4 seconds");
+                    assert_eq!(timeout_secs, 180, "follow-up window must be 180 seconds in R3 continuous listening");
                     saw_followup_window = true;
                 }
                 _ => {}

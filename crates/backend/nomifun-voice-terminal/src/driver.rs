@@ -297,7 +297,7 @@ impl VoiceSessionDriver {
         }
         let seconds = match self.fsm.state() {
             AcousticState::Listening => 6,
-            AcousticState::FollowUpListening => 4,
+            AcousticState::FollowUpListening => 180,
             _ => return false,
         };
         self.listening_deadline = Some(Instant::now() + Duration::from_secs(seconds));

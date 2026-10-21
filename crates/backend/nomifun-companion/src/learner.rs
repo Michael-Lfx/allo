@@ -943,7 +943,7 @@ mod tests {
         let (learner, id) = make_learner(dir.path(), "{}").await;
         learner
             .registry
-            .patch(&id, serde_json::json!({"learn": {"model": null}}))
+            .patch(&id, serde_json::json!({"learn": {"model": null}, "model": null}))
             .await
             .unwrap();
         let run = learner.run_for(&id).await.unwrap();

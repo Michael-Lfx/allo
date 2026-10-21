@@ -1,5 +1,7 @@
 # R1 消息与任务闭环执行计划
 
+> **提交后独立复审（2026-10-21）**：固定对象 `2e7327b04`，R1.2 部分实现，R1.3 暂不准入。§11 的“全部关闭”是执行者交付声明，独立复查仍发现生产路径和验证身份缺口；以 [本次复审与收口细则](R1.2-independent-review-2e7327b04-2026-10-21.zh.md) 为准。历史正文完整保留。
+
 > **状态**：执行计划，已获准进入 R1；未实施业务代码。
 > **上位约束**：[v0.4 PRD](../PRD-voice-companion-v0.4.zh.md) §7.3、§8.1；[rev2 审查](qoder-alignment-rev2-review-2026-10-20.zh.md) G1–G5；[rev2 方案](flowy-voice-qoder-alignment-plan-2026-10-20.zh.md)。
 > **代码基准**：`feat/xiaozhi-voice`，`5800811c7e3fb76e43b32afdda9916357f70d900`。

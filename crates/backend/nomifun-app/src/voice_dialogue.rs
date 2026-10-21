@@ -160,6 +160,8 @@ pub struct FrozenVoiceExecution {
     pub display_text:Option<String>,
     #[serde(default)]
     pub conversation_id:Option<String>,
+    #[serde(default)]
+    pub message_id:Option<String>,
 }
 
 #[async_trait]

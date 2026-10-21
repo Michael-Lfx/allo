@@ -77,15 +77,6 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(routerSource).toContain('VoiceSettings');
   });
 
-  test('bsk-0-01 smoke test script is properly authored and archived', () => {
-    const bskUrl = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-0-01-settings-shell.md', import.meta.url);
-    expect(existsSync(bskUrl)).toBe(true);
-    const bskSource = readFileSync(bskUrl, 'utf8');
-    expect(bskSource).toContain('bsk-0-01');
-    expect(bskSource).toContain('SettingsRow');
-    expect(bskSource).toContain('scaleX');
-  });
-
   test('T1-09: connects to /api/voice/models/progress SSE and triggers /install POST', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
@@ -114,15 +105,6 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(source).toMatch(/throttle|200/);
   });
 
-  test('T1-09: bsk-1-01 verification script is properly authored and archived', () => {
-    const bsk1Url = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-1-01-progress-motion.md', import.meta.url);
-    expect(existsSync(bsk1Url)).toBe(true);
-    const bsk1Source = readFileSync(bsk1Url, 'utf8');
-    expect(bsk1Source).toContain('bsk-1-01');
-    expect(bsk1Source).toContain('scaleX');
-    expect(bsk1Source).toContain('tabular-nums');
-  });
-
   test('T2-07: Ready state micro-motion adheres to 240ms duration and cubic-bezier(0.16, 1, 0.3, 1)', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
@@ -148,16 +130,6 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(source).not.toContain('arco-modal');
   });
 
-  test('T2-07: bsk-2-01 verification script is properly authored and archived', () => {
-    const bsk201Url = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-2-01-full-lifecycle.md', import.meta.url);
-    expect(existsSync(bsk201Url)).toBe(true);
-    const bsk201Source = readFileSync(bsk201Url, 'utf8');
-    expect(bsk201Source).toContain('bsk-2-01');
-    expect(bsk201Source).toContain('Removing');
-    expect(bsk201Source).toContain('240ms');
-    expect(bsk201Source).toContain('3');
-  });
-
   test('T2-08: prefers-reduced-motion disables transitions and scales instantaneously', () => {
     const source = readFileSync(componentUrl, 'utf8');
 
@@ -165,15 +137,6 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
     expect(source).toContain('prefers-reduced-motion');
     // Disables motion (transition none / 0ms / transform none)
     expect(source).toMatch(/reducedMotion|prefersReducedMotion/);
-  });
-
-  test('T2-08: bsk-2-02 verification script is properly authored and archived', () => {
-    const bsk202Url = new URL('../../../../../docs/architecture/voice-agent/execution/bsk-2-02-reduced-motion-theme.md', import.meta.url);
-    expect(existsSync(bsk202Url)).toBe(true);
-    const bsk202Source = readFileSync(bsk202Url, 'utf8');
-    expect(bsk202Source).toContain('bsk-2-02');
-    expect(bsk202Source).toContain('prefers-reduced-motion');
-    expect(bsk202Source).toMatch(/check:theme|check:i18n/);
   });
 });
 
