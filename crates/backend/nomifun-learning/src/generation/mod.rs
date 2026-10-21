@@ -342,9 +342,9 @@ pub(crate) use self::terms::{TERM_MAX_COUNT, term_slices};
 // 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
 // `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
 pub use self::sample::{SampleBaseDisclosure, SampleDisclosure};
-// 全量清点 + 分诊（t1）：类型经 lib.rs 再导出（t4 落库/t5 报告消费），编排
-// 入口 pub(crate) 供建课管线（t2/t3）接线。
-pub(crate) use self::triage::run_kb_triage;
+// 全量清点 + 分诊（t1）：类型与编排入口经 lib.rs 再导出（t2 建课管线在
+// crate 内接线，t4 落库/t5 报告消费类型）。
+pub use self::triage::run_kb_triage;
 pub use self::triage::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
