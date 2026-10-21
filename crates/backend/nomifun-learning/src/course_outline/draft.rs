@@ -909,6 +909,8 @@ pub struct OutlineDraftView {
     pub sample_paths: Vec<String>,
     pub scope: Option<ScopeSummary>,
     pub revision: u64,
+    /// t2 结构发现计划的摘要披露(权威章节骨架;描述流/回退路径为 None)。
+    pub plan_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1013,6 +1015,8 @@ impl OutlineDraft {
                 blocks: scope.blocks.clone(),
             }),
             revision: self.revision,
+            // t2:计划摘要随草稿视图披露(co_start 返回给大纲 agent)。
+            plan_summary: self.brief.source_plan.as_ref().map(|plan| plan.brief_line()),
         }
     }
 
@@ -1097,6 +1101,7 @@ mod tests {
             domain: Some("math".into()),
             goal: None,
             sampling: None,
+            source_plan: None,
         }
     }
 
@@ -1109,6 +1114,7 @@ mod tests {
             domain: Some("math".into()),
             goal: None,
             sampling: None,
+            source_plan: None,
         }
     }
 

@@ -65,6 +65,33 @@ impl LearningService {
         let session = generate_id();
         let _task =
             self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
+        // t2 结构发现(仅 KB 流 + 引擎路径):t1 清点/分诊 → 证据驱动章节
+        // 骨架,plan 进简报成为权威骨架(co_start/brief 披露,大纲 agent 只在
+        // 章节内决定课时粒度)。无 completer/连续失败/零证据 → 回退现行采样
+        // 路径(brief.samples 原样保留),不阻断建课;零候选/零 core 硬失败。
+        // 遗留 one-shot 兜底路径(无引擎)不跑结构发现——它无法兑现 plan 的
+        // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
+        let mut brief = brief;
+        if brief.knowledge_base.is_some() && self.course_outline_engine().is_some() {
+            let structure = self
+                .discover_kb_source_plan(&request, &brief, _task.token())
+                .await;
+            match structure {
+                Ok(Some(plan)) => brief.source_plan = Some(plan),
+                Ok(None) => tracing::warn!(
+                    session = %session,
+                    "kb structure discovery produced no usable plan; falling back to sampling"
+                ),
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "failed",
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
+            }
+        }
         let model_override = request
             .provider_id
             .as_ref()
@@ -165,6 +192,50 @@ impl LearningService {
         detail
     }
 
+    /// t2 结构发现编排：t1 分诊 → 证据驱动章节骨架。返回 `Ok(None)` =
+    /// 回退现行采样路径(无 completer/草稿连续失败/零证据降级空章节);
+    /// `Err` = 硬失败(零候选/零 core/用户取消)。
+    async fn discover_kb_source_plan(
+        &self,
+        request: &GenerateCourseRequest,
+        brief: &OutlineBrief,
+        token: tokio_util::sync::CancellationToken,
+    ) -> Result<Option<crate::generation::SourcePlan>, AppError> {
+        let knowledge = self.injected_knowledge_service()?;
+        let kb_ids = request.knowledge_base_ids_normalized();
+        let goal = brief.goal.clone().unwrap_or_default();
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let (inventory, triage) =
+            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, completer.as_deref())
+                .await?;
+        let plan = crate::generation::run_kb_structure(
+            &knowledge,
+            &inventory,
+            &triage,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await?;
+        if let Some(plan) = &plan {
+            tracing::info!(
+                chapters = plan.chapters.len(),
+                degraded = plan.degraded,
+                warnings = plan.warnings.len(),
+                "kb structure plan discovered"
+            );
+            if !plan.is_usable() {
+                // 降级空章节计划:不进简报,回退采样路径。
+                return Ok(None);
+            }
+        }
+        Ok(plan)
+    }
+
     /// Resolve the generation brief up front: the kb flow fetches the base
     /// context and samples its documents inline (local file IO), so the
     /// engine needs no knowledge-service access; the description flow
@@ -222,6 +293,8 @@ impl LearningService {
                 // 目标感知采样的披露（t2）：无目标路径为 None（单库）；多库
                 // 恒有披露（命名空间需要它承载库归属）。
                 sampling: outcome.disclosure,
+                // 结构发现计划由 discover_kb_source_plan 在任务登记后补挂。
+                source_plan: None,
             });
         }
         if let Some(description) = &request.description {
@@ -234,6 +307,8 @@ impl LearningService {
                 // 描述流的目标由 description 自身承担（学习图同语义）。
                 goal: None,
                 sampling: None,
+                // 描述流零结构发现。
+                source_plan: None,
             });
         }
         Err(AppError::BadRequest(

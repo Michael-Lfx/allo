@@ -3890,6 +3890,242 @@ async fn kb_goal_without_any_match_falls_back_and_still_generates() {
     assert!(sampling.brief_line().contains("已按默认顺序采样 1/1 个文件"));
 }
 
+/// t2 结构发现的接线 completer：按系统提示词路由 t1 分诊与 t2 各阶段
+/// （queries/evidence/draft/revise/critique），其它阶段（如 scope）报错走降级。
+struct StructureRouteCompleter {
+    fail_draft: bool,
+    calls: AtomicUsize,
+}
+
+fn route_stage(system: &str, user: &str) -> &'static str {
+    if system.contains("分诊员") {
+        "triage"
+    } else if system.contains("检索查询设计师") {
+        "queries"
+    } else if system.contains("证据摘要员") {
+        "evidence"
+    } else if system.contains("结构设计师") {
+        if user.contains("修订指令") {
+            "revise"
+        } else {
+            "draft"
+        }
+    } else if system.contains("结构评审员") {
+        "critique"
+    } else {
+        "other"
+    }
+}
+
+fn route_triage_paths(user: &str) -> Vec<String> {
+    user.lines()
+        .filter_map(|line| line.strip_prefix("- 文件 "))
+        .map(|rest| rest.split(" ::").next().unwrap_or(rest).to_owned())
+        .collect()
+}
+
+#[async_trait::async_trait]
+impl crate::completer::LearningCompleter for StructureRouteCompleter {
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, nomifun_common::AppError> {
+        Err(nomifun_common::AppError::Internal("结构发现测试只走 json 接缝".into()))
+    }
+
+    async fn complete_json(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        _max_tokens: u32,
+        _temperature: Option<f32>,
+    ) -> Result<String, nomifun_common::AppError> {
+        self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+        let stage = route_stage(system, user);
+        let reply = match stage {
+            "triage" => {
+                let paths = route_triage_paths(user);
+                format!(
+                    "{{\"files\": [{}]}}",
+                    paths
+                        .iter()
+                        .map(|path| format!(
+                            "{{\"path\": \"{path}\", \"role\": \"core\", \"confidence\": 0.9, \"reason\": \"正文\"}}"
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            "queries" => r#"{"queries": ["排序 概念", "排序 实现", "排序 案例", "排序 边界"]}"#.to_owned(),
+            "evidence" => r#"{"summary": "排序教材证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.to_owned(),
+            "draft" | "revise" => r#"{
+                "concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}],
+                "edges": [],
+                "chapters": [{"title": "排序入门", "summary": "排序章", "learning_objectives": [],
+                              "covers": ["c1"], "prerequisites": [],
+                              "source_anchors": [{"path": "ch01.md", "heading": "排序入门"}],
+                              "content_type": "concept"}],
+                "skipped_topics": []
+            }"#
+            .to_owned(),
+            "critique" => r#"{"findings": []}"#.to_owned(),
+            _ => {
+                return Err(nomifun_common::AppError::Internal(format!(
+                    "scope/其它阶段按降级处理:{system}"
+                )))
+            }
+        };
+        if stage == "draft" && self.fail_draft {
+            return Err(nomifun_common::AppError::Internal("draft down".into()));
+        }
+        Ok(reply)
+    }
+}
+
+async fn structure_wiring_service(
+    fail_draft: bool,
+) -> (
+    LearningService,
+    Arc<nomifun_knowledge::KnowledgeService>,
+    Arc<StructureRouteCompleter>,
+    UserId,
+    nomifun_common::KnowledgeBaseId,
+) {
+    let (service, knowledge_service, owner_id) = job_test_service().await;
+    let router = Arc::new(StructureRouteCompleter {
+        fail_draft,
+        calls: AtomicUsize::new(0),
+    });
+    *service.course_completer.write().unwrap() = Some(router.clone());
+    let base = knowledge_service
+        .quick_create_base(Some("教材"), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    let kb_id: nomifun_common::KnowledgeBaseId = base.base.knowledge_base_id.parse().unwrap();
+    let root = knowledge_service
+        .content_root_for_base(kb_id.as_str())
+        .await
+        .unwrap();
+    std::fs::write(root.join("ch01.md"), "# 排序入门\n\n排序的基本概念。").unwrap();
+    std::fs::write(root.join("ch02.md"), "# 查找\n\n二分查找。").unwrap();
+    (service, knowledge_service, router, owner_id, kb_id)
+}
+
+/// t2 接线：KB 流 + 引擎路径跑 t1 分诊 → t2 结构发现，可用计划进简报成为
+/// 权威章节骨架；采样清单(co_read 面)原样保留。
+#[tokio::test]
+async fn kb_flow_attaches_a_usable_source_plan_to_the_brief() {
+    let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service(false).await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    let detail = service
+        .generate_course(
+            &owner_id,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::Traditional,
+                teaching_style: None,
+                knowledge_base_id: Some(kb_id.clone()),
+                description: None,
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: Some("学会排序".into()),
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.course.total_lessons, 1, "课程照常建成");
+
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    let plan = brief.source_plan.expect("可用计划进简报");
+    assert!(plan.is_usable());
+    assert_eq!(plan.chapters[0].title, "排序入门");
+    assert_eq!(plan.chapters[0].source_anchors[0].rel_path, "ch01.md");
+    assert!(!brief.samples.is_empty(), "采样清单保留(co_read 约束维持现状)");
+    assert!(brief.sampling.is_some(), "采样披露保留");
+}
+
+/// t2 回退：草稿连续失败 → 简报无计划，回退现行采样路径，建课不阻断。
+#[tokio::test]
+async fn kb_flow_falls_back_to_sampling_when_structure_discovery_fails() {
+    let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service(true).await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    let detail = service
+        .generate_course(
+            &owner_id,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::Traditional,
+                teaching_style: None,
+                knowledge_base_id: Some(kb_id.clone()),
+                description: None,
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: Some("学会排序".into()),
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.course.total_lessons, 1, "回退后建课不阻断");
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    assert!(brief.source_plan.is_none(), "结构发现失败 → 无计划");
+    assert!(!brief.samples.is_empty(), "回退采样路径照常");
+}
+
+/// t2 边界：描述流零结构发现(completer 零调用)。
+#[tokio::test]
+async fn description_flow_never_runs_structure_discovery() {
+    let (service, _knowledge, router, owner_id, _kb_id) = structure_wiring_service(false).await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    service
+        .generate_course(
+            &owner_id,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::Traditional,
+                teaching_style: None,
+                knowledge_base_id: None,
+                description: Some("零基础期权入门".into()),
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: None,
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+    assert!(brief.source_plan.is_none());
+    assert_eq!(
+        router.calls.load(AtomicOrdering::SeqCst),
+        0,
+        "描述流完全不变:结构发现零调用"
+    );
+}
+
 /// 目标进课时生成上下文（t1）：传统课时的目标从课程行 learning_goal 读出，
 /// 预渲染进 LessonGenerationContext（既有空位）；旧课程（无目标）恒为 None。
 #[tokio::test]

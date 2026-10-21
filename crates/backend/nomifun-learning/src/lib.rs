@@ -36,6 +36,12 @@ pub use generation::{
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
     run_kb_triage,
 };
+pub use generation::{
+    ChapterContentType, ConceptEdgeRelation, ConceptGraph, ConceptGraphEdge, ConceptGraphNode,
+    CoverageExclusion, CoverageFile, CoverageLedger, CoverageTopic, FileCoverageStatus,
+    PlannedChapter, SourceAnchor, SourceCount, SourceEvidence, SourcePlan, TopicStatus,
+    run_kb_structure,
+};
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
