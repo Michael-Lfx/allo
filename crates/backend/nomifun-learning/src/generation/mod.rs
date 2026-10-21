@@ -22,6 +22,7 @@ mod expand;
 mod lesson;
 mod parser;
 mod sample;
+mod snapshot;
 mod structured_batch;
 mod structure;
 mod terms;
@@ -370,6 +371,12 @@ pub use self::expand::run_kb_expansion;
 pub use self::expand::{
     ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport, ExpansionOutcome,
     ExpansionTopicReport, SourceCoverage,
+};
+// 建课时点的来源计划快照信封（t4）：`generate_course` 在落库点组装进
+// `learning_courses.course_source_plan_json`，读侧摘要视图/t5 报告消费类型。
+pub use self::snapshot::{
+    COURSE_SOURCE_PLAN_SNAPSHOT_VERSION, CourseSourcePlanSnapshot, SNAPSHOT_HEADINGS_MAX,
+    SNAPSHOT_PREVIEW_MAX_CHARS,
 };
 
 /// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。

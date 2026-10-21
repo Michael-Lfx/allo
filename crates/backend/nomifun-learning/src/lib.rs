@@ -46,6 +46,10 @@ pub use generation::{
     ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport, ExpansionOutcome,
     ExpansionTopicReport, SourceCoverage, run_kb_expansion,
 };
+pub use generation::{
+    COURSE_SOURCE_PLAN_SNAPSHOT_VERSION, CourseSourcePlanSnapshot, SNAPSHOT_HEADINGS_MAX,
+    SNAPSHOT_PREVIEW_MAX_CHARS,
+};
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
