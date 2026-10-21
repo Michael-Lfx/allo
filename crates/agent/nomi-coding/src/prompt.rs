@@ -1,4 +1,4 @@
-//! Session constitutions: office vs coding (completion-first, Vetta-inspired).
+//! Session constitutions: office vs coding
 
 use crate::env::CodingEnvContext;
 
@@ -23,7 +23,20 @@ Finish the user's real work on this computer, then stop. Prefer advertised dedic
 over shell workarounds. Observe before irreversible desktop or browser actions, and verify \
 the result. For non-trivial multi-step work, keep an honest task list; simple questions \
 get a direct answer. Deliver the artifact or outcome the user can see — do not tour \
-unrelated tools."
+unrelated tools.
+
+## Blockers
+When a step needs something only the user can grant (an elevation or consent prompt, \
+credentials, an approval, physical access) or the same approach has failed twice, stop \
+trying. Never work around an operating-system security prompt or access control: no \
+synthesizing input into consent dialogs, no scheduled-task, permission-rewrite or \
+path-relocation tricks. Report what is blocked, what you tried, and the exact action the \
+user must take.
+
+## Replying
+Every turn ends with a plain-language message to the user: what was done, what failed, \
+what is next. Never end a turn on a tool call, and do not reopen a decision you already \
+reached unless new evidence arrives."
 }
 
 /// Session constitution injected by [`crate::harness::CodingHarness`].
@@ -142,6 +155,15 @@ mod tests {
         assert!(!text.contains("knowledge_"));
         assert!(!text.contains("auto memory"));
         assert!(!text.contains("image_generate"));
+    }
+
+    #[test]
+    fn office_constitution_requires_reporting_blockers_and_a_closing_reply() {
+        let text = office_overlay_instructions();
+        assert!(text.contains("## Blockers"));
+        assert!(text.contains("Never work around an operating-system security prompt"));
+        assert!(text.contains("## Replying"));
+        assert!(text.contains("Never end a turn on a tool call"));
     }
 
     #[test]

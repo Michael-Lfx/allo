@@ -449,6 +449,9 @@ fn coding_tool_file_path(name: &str, input: &serde_json::Value) -> Option<String
 /// guard. See docs/superpowers/specs/2026-06-21-nomi-agent-overhaul-design.md §5 F0.3.
 const DEFAULT_SAFETY_MAX_TURNS: usize = 200;
 
+/// Byte budget for the failure text embedded in an interrupted-turn marker.
+const INTERRUPTED_TURN_REASON_BYTES: usize = 400;
+
 /// Strictest image-count limit among the supported message providers. Amazon
 /// Bedrock Converse rejects a request containing more than 20 images.
 const MAX_PROVIDER_REQUEST_IMAGES: usize = 20;
@@ -1377,6 +1380,15 @@ impl AgentEngine {
         }
     }
 
+    fn clear_file_cache(&self) {
+        let Some(cache) = &self.file_cache else {
+            return;
+        };
+        if let Ok(mut guard) = cache.write() {
+            guard.clear();
+        }
+    }
+
     /// Set the shared plan-mode active flag.
     ///
     /// This flag is shared with EnterPlanMode/ExitPlanMode tools so they can
@@ -1724,6 +1736,7 @@ impl AgentEngine {
         // completed pass, and once per restart. Appends restore by truncate.
         // In-place microcompact clears are written back from the undo log first.
         let mut safe_len = self.messages.len();
+        let turn_start_len = safe_len;
         let mut turn_started = false;
         let result = async {
             let result = self
@@ -1761,6 +1774,9 @@ impl AgentEngine {
                     | AgentError::ContextTooLong { .. })
             ) {
                 self.strip_tool_images_after_provider_error();
+            }
+            if let Err(error) = &result {
+                self.close_interrupted_turn(turn_start_len, error);
             }
             self.save_session();
         } else if turn_started {
@@ -4223,6 +4239,9 @@ impl AgentEngine {
         }
         if !result.cleared_read_paths.is_empty() {
             self.invalidate_file_cache_paths(&result.cleared_read_paths);
+            for path in &result.cleared_read_paths {
+                self.harness_runtime.office_working_set.forget_reads(path);
+            }
         }
         result.estimated_tokens_freed as u64
     }
@@ -4347,6 +4366,13 @@ impl AgentEngine {
                             ));
                         }
                         self.editable_turn = None;
+                        // The folded transcript no longer contains any file
+                        // text read before the fold; claiming otherwise makes
+                        // the model skip a Read it actually needs. The Read
+                        // dedup stub and the Edit must-read guard key off the
+                        // same claim, so the file cache is dropped with it.
+                        self.harness_runtime.office_working_set.reset();
+                        self.clear_file_cache();
                         // Freeze the rewritten prefix BEFORE post_compact_reinject
                         // so persist_turn_tail cannot mutate it (prefix-cache).
                         self.sent_prefix_len = self.messages.len();
@@ -4468,6 +4494,47 @@ impl AgentEngine {
 
     fn accept_prefix_rewrites(&mut self) {
         self.prefix_rewrite_undo.clear();
+    }
+
+    /// A failed turn that already executed tools leaves the transcript ending
+    /// on a user `tool_result` message with no assistant reply: the user never
+    /// received a report, the persisted session carries no trace of why, and
+    /// the next request sees an unexplained dangling tail. Record the failure as
+    /// an assistant-side marker so the history stays well-formed and the next
+    /// turn knows it must report from the tool results instead of assuming a
+    /// reply was delivered. Turns that made no committed progress are left
+    /// alone — their rollback already restored the pre-turn transcript.
+    fn close_interrupted_turn(&mut self, turn_start_len: usize, error: &AgentError) {
+        if self.messages.len() <= turn_start_len {
+            return;
+        }
+        let ends_on_tool_results = self.messages.last().is_some_and(|message| {
+            message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        });
+        if !ends_on_tool_results {
+            return;
+        }
+        let reason = nomi_tools::truncate_middle(
+            &error.to_string(),
+            nomi_tools::TruncationBudget::Bytes(INTERRUPTED_TURN_REASON_BYTES),
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+        self.messages.push(Message::now(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!(
+                    "[Turn interrupted before a final reply: {reason}] The tool calls above \
+                     did run and their results are authoritative. The user has not received \
+                     a report for this turn."
+                ),
+            }],
+        ));
     }
 
     fn commit_transcript_checkpoint(&mut self, safe_len: &mut usize) {
