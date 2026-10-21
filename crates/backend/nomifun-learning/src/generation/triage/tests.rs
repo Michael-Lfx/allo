@@ -2,6 +2,7 @@ use super::*;
 use crate::completer::LearningCompleter;
 use nomifun_common::AppError;
 use nomifun_realtime::UserEventSink;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -133,4 +134,175 @@ async fn triage_degrades_to_core_when_the_completer_call_fails() {
     assert!(report.degraded, "调用失败 → 规则兜底 + degraded");
     assert_eq!(report.counts.core, 1);
     assert_eq!(inventory.total_files, 1);
+}
+
+/// 显式固定 mtime（canonical 规则需要确定性的新旧信号，不依赖写入时序）。
+fn set_mtime(root: &str, rel: &str, when: std::time::SystemTime) {
+    let path = std::path::PathBuf::from(root).join(rel);
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(when))
+        .unwrap();
+}
+
+fn at_secs(secs: u64) -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+#[tokio::test]
+async fn rule_triage_sorts_metadata_empty_and_navigation_files_into_noise() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "运维手册").await;
+    write_kb_file(&root, "LICENSE.md", "MIT License\n\nPermission is granted, free of charge, to any person obtaining a copy.\n");
+    write_kb_file(&root, "docs/contributing.md", "# Contributing\n\n请遵循提交规范：先跑测试再提交。\n");
+    write_kb_file(&root, "empty.md", "   \n\n");
+    write_kb_file(&root, "toc.md", "# 目录\n\n- [第一章 部署](chapter1.md)\n- [第二章 监控](chapter2.md)\n");
+    write_kb_file(&root, "chapter1.md", "# 第一章 部署\n\n蓝绿部署把流量逐步切到新版本，先摘流量再发布。\n");
+
+    let (inventory, report) = run_kb_triage(&knowledge, &[kb_id], "部署手册", None).await.unwrap();
+
+    assert_eq!(inventory.total_files, 5);
+    assert_eq!(report.files.len(), 5, "总数守恒：所有文件都出现在报告中");
+    assert_eq!(report.counts.noise, 4);
+    assert_eq!(report.counts.core, 1, "正文章节在降级模式下不被误杀为 noise");
+    assert_eq!(report.excluded.len(), 4, "noise 全部进 excluded");
+    for exclusion in &report.excluded {
+        assert!(!exclusion.reason.is_empty(), "每个排除项必须有理由：{exclusion:?}");
+    }
+    let license = report
+        .files
+        .iter()
+        .find(|file| file.rel_path == "LICENSE.md")
+        .unwrap();
+    assert_eq!(license.role, KbTriageRole::Noise);
+    assert!(license.reason.contains("元数据"), "{}", license.reason);
+    let toc = report.files.iter().find(|file| file.rel_path == "toc.md").unwrap();
+    assert_eq!(toc.role, KbTriageRole::Noise);
+    assert!(toc.reason.contains("导航"), "{}", toc.reason);
+    assert_eq!(report.candidates().len(), 1);
+}
+
+#[tokio::test]
+async fn identical_content_files_keep_the_newest_as_canonical() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "项目文档").await;
+    let content = "# 使用指南\n\n第一步安装依赖，第二步运行迁移。\n";
+    write_kb_file(&root, "guide.md", content);
+    write_kb_file(&root, "archive/guide-old.md", content);
+    set_mtime(&root, "archive/guide-old.md", at_secs(1_700_000_000));
+    set_mtime(&root, "guide.md", at_secs(1_700_100_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "上手该项目", None).await.unwrap();
+
+    assert_eq!(report.counts.duplicate, 1);
+    assert_eq!(report.counts.core, 1);
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "archive/guide-old.md");
+    assert_eq!(duplicate.duplicate_of, "guide.md");
+    assert!(
+        duplicate.canonical_reason.contains("最新"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+    let excluded_paths: Vec<&str> = report.excluded.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(excluded_paths, ["archive/guide-old.md"]);
+}
+
+#[tokio::test]
+async fn translation_suffix_copies_point_back_to_the_original() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "课程库").await;
+    write_kb_file(&root, "guide.md", "# 指南\n\n中文原文正文：如何配置环境变量并运行测试。\n");
+    write_kb_file(&root, "guide.en.md", "# Guide\n\nEnglish translation of the guide body.\n");
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "环境配置", None).await.unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "guide.en.md");
+    assert_eq!(duplicate.duplicate_of, "guide.md");
+    assert!(
+        duplicate.canonical_reason.contains("原文"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+    let candidate_paths: Vec<&str> =
+        report.candidates().iter().map(|file| file.rel_path.as_str()).collect();
+    assert_eq!(candidate_paths, ["guide.md"], "翻译副本不重复成课");
+    assert_eq!(report.counts.core, 1);
+}
+
+#[tokio::test]
+async fn microsoft_layout_pairs_translations_and_orphans_stay_originals() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "多语言库").await;
+    write_kb_file(&root, "en/intro.md", "# Intro\n\nThis handbook introduces the testing workflow.\n");
+    write_kb_file(&root, "zh/intro.md", "# 简介\n\n本手册介绍测试工作流。\n");
+    write_kb_file(&root, "ja/notes.md", "# 補足\n\nテストに関する補足資料（孤儿翻译，无英文/中文对应文件）。\n");
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "中文目标：测试工作流", None)
+        .await
+        .unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "en/intro.md");
+    assert_eq!(duplicate.duplicate_of, "zh/intro.md");
+    assert!(
+        duplicate.canonical_reason.contains("目标"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+    let notes = report.files.iter().find(|file| file.rel_path == "ja/notes.md").unwrap();
+    assert!(
+        notes.role.is_candidate(),
+        "孤儿翻译保守当原文，不当重复排除：{:?}",
+        notes.role
+    );
+}
+
+#[tokio::test]
+async fn canonical_picks_the_original_and_the_newest_among_old_copies() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "报告库").await;
+    let content = "# 季度报告\n\n收入、成本与留存的数据汇总正文。\n";
+    write_kb_file(&root, "report.md", content);
+    write_kb_file(&root, "backup/report.md", content);
+    write_kb_file(&root, "report.en.md", "# Quarterly Report\n\nThe English translation of the quarterly report.\n");
+    set_mtime(&root, "backup/report.md", at_secs(1_700_000_000));
+    set_mtime(&root, "report.md", at_secs(1_700_200_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "季度经营复盘", None).await.unwrap();
+
+    assert_eq!(report.counts.duplicate, 2, "翻译副本 + 旧版本都排除");
+    assert_eq!(report.counts.core, 1, "canonical 原文进候选");
+    let by_path: HashMap<&str, &KbTriageDuplicate> = report
+        .duplicates
+        .iter()
+        .map(|dup| (dup.path.as_str(), dup))
+        .collect();
+    assert_eq!(by_path["report.en.md"].duplicate_of, "report.md");
+    assert!(by_path["report.en.md"].canonical_reason.contains("原文"));
+    assert_eq!(by_path["backup/report.md"].duplicate_of, "report.md");
+    assert!(by_path["backup/report.md"].canonical_reason.contains("最新"));
+    let canonical = report.files.iter().find(|file| file.rel_path == "report.md").unwrap();
+    assert_eq!(canonical.role, KbTriageRole::Core);
+}
+
+#[tokio::test]
+async fn unresolvable_translation_pairs_stay_uncertain_without_exclusion() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "含混库").await;
+    write_kb_file(&root, "en/guide.md", "# Guide\n\nBoth directories hold the same English body by mistake.\n");
+    write_kb_file(&root, "zh/guide.md", "# Guide\n\nBoth directories hold the same English body by mistake.\n");
+    set_mtime(&root, "en/guide.md", at_secs(1_700_000_000));
+    set_mtime(&root, "zh/guide.md", at_secs(1_700_000_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "中文目标（与两份英文正文都不一致）", None)
+        .await
+        .unwrap();
+
+    assert_eq!(report.counts.uncertain, 2, "判不了翻译方向 → 双双 uncertain");
+    assert_eq!(report.excluded.len(), 0, "无法判定时不自动排除");
+    assert_eq!(report.candidates().len(), 2, "uncertain 保守保留进候选");
+    for file in &report.files {
+        assert!(file.reason.contains("无法判定"), "{}", file.reason);
+    }
 }

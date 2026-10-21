@@ -669,10 +669,263 @@ fn langless_key_of(base_rel: &str) -> (String, Option<String>) {
     (base_rel.to_owned(), None)
 }
 
-/// 规则预分类入口（零 LLM；cycle 2 起填充各规则）。
+/// 元数据文件词干名单（票面）：许可/贡献指南/行为准则/模板等库机制文件，
+/// 与课程内容无关，高置信 noise。
+const METADATA_FILE_STEMS: &[&str] = &[
+    "license",
+    "licence",
+    "contributing",
+    "code_of_conduct",
+    "security",
+    "changelog",
+    "authors",
+    "maintainers",
+    "pull_request_template",
+    "issue_template",
+    "support",
+    "faq",
+    "citation",
+    "codeowners",
+];
+
+/// CJK 占比达到该阈值视为中文文档（粗粒度语言信号，Q12 canonical 规则用）。
+const CJK_LANG_THRESHOLD: f32 = 0.2;
+
+fn detected_lang(cjk_ratio: f32) -> &'static str {
+    if cjk_ratio >= CJK_LANG_THRESHOLD {
+        "zh"
+    } else {
+        "en"
+    }
+}
+
+/// 规则预分类（零 LLM、高置信）：元数据/空文件/纯导航 → noise；翻译布局
+/// （后缀 + 目录）成对记 duplicate_of，canonical 按 Q12（非翻译后缀原文
+/// 优先 → README → 目标语言 → 最新 → 判不了双 uncertain 不排除）；同
+/// content_hash → duplicate（canonical 同规则口径）。
 fn rule_verdicts(scanned: &[ScannedFile], goal: &str) -> HashMap<String, RuleVerdict> {
-    let _ = (scanned, goal);
-    HashMap::new()
+    let mut verdicts: HashMap<String, RuleVerdict> = HashMap::new();
+
+    // 1) 元数据 / 空文件 / 纯导航 → noise。
+    for file in scanned {
+        let verdict = if let Some(stem) = metadata_stem_of(&file.langless_key) {
+            RuleVerdict {
+                role: KbTriageRole::Noise,
+                confidence: 0.95,
+                reason: format!("元数据文件（{stem}）：库机制文件，与课程内容无关"),
+                duplicate_of: None,
+                canonical_reason: None,
+            }
+        } else if file.is_empty {
+            RuleVerdict {
+                role: KbTriageRole::Noise,
+                confidence: 0.9,
+                reason: "空文件（无正文内容）".to_owned(),
+                duplicate_of: None,
+                canonical_reason: None,
+            }
+        } else if file.pure_navigation {
+            RuleVerdict {
+                role: KbTriageRole::Noise,
+                confidence: 0.9,
+                reason: "纯导航页（只有链接目录，无正文）".to_owned(),
+                duplicate_of: None,
+                canonical_reason: None,
+            }
+        } else {
+            continue;
+        };
+        verdicts.insert(file.file.rel_path.clone(), verdict);
+    }
+
+    // 2) 翻译布局（后缀 microsoft/parallel/suffix 统一口径：库内去语言键
+    //    分组；成员 ≥2 才是家族，孤儿翻译保守当原文）。
+    let mut families: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (index, file) in scanned.iter().enumerate() {
+        if verdicts.contains_key(&file.file.rel_path) {
+            continue;
+        }
+        families
+            .entry((file.file.kb_id.as_str(), file.langless_key.as_str()))
+            .or_default()
+            .push(index);
+    }
+    let goal_lang = detected_lang(cjk_ratio(goal.trim()));
+    for members in families.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        match translation_canonical(scanned, members, goal_lang) {
+            Some((canonical_index, canonical_reason)) => {
+                let canonical_path = scanned[canonical_index].file.rel_path.clone();
+                for &index in members {
+                    if index == canonical_index {
+                        continue;
+                    }
+                    let file = &scanned[index];
+                    let tag = file.lang_tag.clone().unwrap_or_default();
+                    verdicts.insert(
+                        file.file.rel_path.clone(),
+                        RuleVerdict {
+                            role: KbTriageRole::Duplicate,
+                            confidence: 0.9,
+                            reason: format!(
+                                "翻译副本（语言标签 {tag}），canonical 为 {canonical_path}"
+                            ),
+                            duplicate_of: Some(canonical_path.clone()),
+                            canonical_reason: Some(canonical_reason.clone()),
+                        },
+                    );
+                }
+            }
+            None => {
+                for &index in members {
+                    let file = &scanned[index];
+                    verdicts.insert(
+                        file.file.rel_path.clone(),
+                        RuleVerdict {
+                            role: KbTriageRole::Uncertain,
+                            confidence: 0.3,
+                            reason: "翻译布局检测到多语言副本，但无法判定翻译方向（规则不定）"
+                                .to_owned(),
+                            duplicate_of: None,
+                            canonical_reason: None,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // 3) 同 content_hash → duplicate（跨库全局口径；canonical：非翻译命名
+    //    优先 → 最新 mtime → 路径字典序兜底，全程确定性）。
+    let mut hash_groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, file) in scanned.iter().enumerate() {
+        if verdicts.contains_key(&file.file.rel_path) {
+            continue;
+        }
+        hash_groups
+            .entry(file.file.content_hash.as_str())
+            .or_default()
+            .push(index);
+    }
+    for members in hash_groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        let (canonical_index, canonical_reason) = hash_canonical(scanned, members);
+        let canonical_path = scanned[canonical_index].file.rel_path.clone();
+        for &index in members {
+            if index == canonical_index {
+                continue;
+            }
+            let file = &scanned[index];
+            verdicts.insert(
+                file.file.rel_path.clone(),
+                RuleVerdict {
+                    role: KbTriageRole::Duplicate,
+                    confidence: 0.9,
+                    reason: format!(
+                        "与 {canonical_path} 内容完全相同（sha256 一致），canonical 按「{canonical_reason}」选定"
+                    ),
+                    duplicate_of: Some(canonical_path.clone()),
+                    canonical_reason: Some(canonical_reason.clone()),
+                },
+            );
+        }
+    }
+    verdicts
+}
+
+/// 元数据词干（先去语言后缀再匹配，`contributing.zh-CN.md` 也是元数据）。
+fn metadata_stem_of(langless_key: &str) -> Option<&'static str> {
+    let file_name = langless_key.rsplit('/').next().unwrap_or_default();
+    let stem = file_name.strip_suffix(".md").unwrap_or(file_name);
+    let lowered = stem.to_ascii_lowercase();
+    METADATA_FILE_STEMS
+        .iter()
+        .find(|candidate| **candidate == lowered)
+        .copied()
+}
+
+/// 翻译家族的 canonical（Q12）：非翻译后缀的原文 → README → 目标语言
+/// （字符占比）→ 最新修改；全平手返回 None（双双 uncertain，不自动排除）。
+fn translation_canonical(
+    scanned: &[ScannedFile],
+    members: &[usize],
+    goal_lang: &str,
+) -> Option<(usize, String)> {
+    if let Some(&index) = members
+        .iter()
+        .find(|&&index| scanned[index].lang_tag.is_none())
+    {
+        return Some((index, "非翻译后缀的原文优先".to_owned()));
+    }
+    let readme_members: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&index| readme_stem_of(&scanned[index].base_rel))
+        .collect();
+    if readme_members.len() == 1 {
+        return Some((readme_members[0], "README 文件优先作为 canonical".to_owned()));
+    }
+    let lang_matches: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&index| detected_lang(scanned[index].cjk_ratio) == goal_lang)
+        .collect();
+    if lang_matches.len() == 1 {
+        return Some((
+            lang_matches[0],
+            "语言与学习目标一致（字符占比判定）".to_owned(),
+        ));
+    }
+    newest_member(scanned, members).map(|index| (index, "同语言下最新修改时间".to_owned()))
+}
+
+/// 同 hash 组的 canonical：唯一非翻译命名成员优先，否则最新 mtime，否则
+/// 路径字典序兜底（确定性——永不返回 None）。
+fn hash_canonical(scanned: &[ScannedFile], members: &[usize]) -> (usize, String) {
+    let untagged: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&index| scanned[index].lang_tag.is_none())
+        .collect();
+    let pool: &[usize] = if untagged.len() == 1 {
+        return (untagged[0], "非翻译命名的原文优先".to_owned());
+    } else if untagged.len() > 1 {
+        &untagged
+    } else {
+        members
+    };
+    if let Some(index) = newest_member(scanned, pool) {
+        return (index, "同内容文件中最新修改时间".to_owned());
+    }
+    let first = pool
+        .iter()
+        .copied()
+        .min_by(|left, right| scanned[*left].file.rel_path.cmp(&scanned[*right].file.rel_path))
+        .unwrap_or(pool[0]);
+    (first, "路径字典序（确定性兜底）".to_owned())
+}
+
+/// 唯一的最大 mtime 成员（None 视为最旧；并列返回 None——无法分新旧）。
+fn newest_member(scanned: &[ScannedFile], members: &[usize]) -> Option<usize> {
+    let max = members
+        .iter()
+        .map(|&index| scanned[index].file.modified_at)
+        .max()
+        .flatten()?;
+    let winners: Vec<usize> = members
+        .iter()
+        .copied()
+        .filter(|&index| scanned[index].file.modified_at == Some(max))
+        .collect();
+    if winners.len() == 1 {
+        Some(winners[0])
+    } else {
+        None
+    }
 }
 
 /// LLM 分诊（cycle 3 换 structured_batch 批拆半；当前单调用整批）。
