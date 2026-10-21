@@ -62,6 +62,11 @@ pub(crate) struct OutlineSnapshot {
     pub learning_goal: String,
     pub samples_meta_json: Option<String>,
     pub source_kb_ids: Vec<KnowledgeBaseId>,
+    /// 来源计划快照（t4）：建课走了「计划 → 展开」管线时的
+    /// `CourseSourcePlanSnapshot` 信封序列化；描述流/legacy/回退采样路径
+    /// 一律 `None`（列上 NULL，与旧课程不可区分——快照不伪造）。与
+    /// modules/lessons 同一事务写入，导入中途失败零残留。
+    pub course_source_plan_json: Option<String>,
 }
 
 #[derive(Clone)]

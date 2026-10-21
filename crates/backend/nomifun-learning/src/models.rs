@@ -1412,6 +1412,10 @@ pub struct CourseSummary {
     pub learning_goal: Option<String>,
     /// 目标感知采样的披露（t2）：无目标路径/旧课程为 `None`。
     pub sampling: Option<CourseSamplingView>,
+    /// 来源计划快照的摘要（t4）：列上 NULL（旧课程/描述流/未走新管线）
+    /// 为 `None`——字段不出现;未知版本/坏形状 → `available=false` 降级,
+    /// 不报错、不伪造。DTO 细化归 t5,这里只读计数。
+    pub source_plan: Option<CourseSourcePlanView>,
 }
 
 /// 采样披露的对外视图（t2）：计数 + 低分未采样的少量示例。完整文件树只
@@ -1442,6 +1446,41 @@ pub struct CourseSamplingBaseView {
     pub sampled_files: usize,
     /// 该库目标零命中：采样退回默认顺序（逐库如实披露，不冒充按目标采样）。
     pub goal_fallback: bool,
+}
+
+/// 来源计划快照的对外摘要视图（t4）：version/available + t1 分诊计数 +
+/// t3 覆盖计数。完整快照只在库里（诊断按 `rel_path` 回 KB 读原文），
+/// 列表/详情响应不背全量信封。`available=false` = 未知版本/坏形状
+/// （读侧降级，不崩溃不伪造）；列上 NULL 时本视图整体不出现。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanView {
+    /// 信封版本；坏 JSON 读不出 version 时为 `None`。
+    pub version: Option<u64>,
+    /// `false` = 未知版本或 v1 形状损坏（计数不可信,置零）。
+    pub available: bool,
+    pub triage: CourseSourcePlanTriageCountsView,
+    pub coverage: CourseSourcePlanCoverageCountsView,
+}
+
+/// 快照里 t1 分诊的角色计数摘要（各角色文件数）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanTriageCountsView {
+    pub core: usize,
+    pub prerequisite: usize,
+    pub practice: usize,
+    pub mixed: usize,
+    pub noise: usize,
+    pub duplicate: usize,
+    pub uncertain: usize,
+}
+
+/// 快照里 t3 展开覆盖的计数摘要（章/课时/文件/topic 四级对账条数）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanCoverageCountsView {
+    pub chapters: usize,
+    pub lessons: usize,
+    pub files: usize,
+    pub topics: usize,
 }
 
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
