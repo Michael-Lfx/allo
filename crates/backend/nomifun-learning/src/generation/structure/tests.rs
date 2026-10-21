@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn node(id: &str, label: &str) -> ConceptGraphNode {
     ConceptGraphNode {
@@ -803,7 +804,7 @@ async fn draft_plan_carries_revision_feedback_when_given() {
         &plan_digest(),
         &plan_chunks(),
         &plan_inventory(),
-        Some("- [coverage] 第一章漏锚点,补上"),
+        Some("修订指令(按 fix_hint 修订):\n- [coverage] 第一章漏锚点,补上"),
     )
     .await
     .unwrap();
@@ -840,5 +841,814 @@ async fn critique_plan_returns_no_findings_when_clean() {
     let findings = critique_plan(&completer, "学会排序", &draft).await.unwrap();
     assert!(findings.is_empty());
 }
+
+// ── slice 4:run_kb_structure 编排(fixture KB + 按阶段路由的脚本)────────
+
+#[derive(Default)]
+struct NoopBroadcaster;
+
+impl nomifun_realtime::UserEventSink for NoopBroadcaster {
+    fn send_to_user(
+        &self,
+        _user_id: &str,
+        _event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+    ) {
+    }
+}
+
+async fn structure_knowledge_service() -> (Arc<KnowledgeService>, tempfile::TempDir) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let knowledge = Arc::new(KnowledgeService::new(
+        Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+            database.pool().clone(),
+        )),
+        data_dir.path(),
+        nomifun_knowledge::KnowledgeEventEmitter::new(Arc::new(NoopBroadcaster), Arc::from(owner_id)),
+    ));
+    (knowledge, data_dir)
+}
+
+async fn create_blank_base(knowledge: &KnowledgeService, name: &str) -> (KnowledgeBaseId, String) {
+    let outcome = knowledge
+        .quick_create_base(Some(name), None, "blank", None, None, None, None)
+        .await
+        .unwrap();
+    (
+        outcome.base.knowledge_base_id.parse().unwrap(),
+        outcome.base.root_path.clone(),
+    )
+}
+
+fn write_kb_file(root: &str, rel: &str, content: &str) {
+    let path = std::path::PathBuf::from(root).join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, content).unwrap();
+}
+
+/// 显式固定 mtime(canonical 规则需要确定性的新旧信号,不依赖写入时序)。
+fn set_mtime(root: &str, rel: &str, when: std::time::SystemTime) {
+    let path = std::path::PathBuf::from(root).join(rel);
+    let file = std::fs::File::options().write(true).open(&path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(when))
+        .unwrap();
+}
+
+fn at_secs(secs: u64) -> std::time::SystemTime {
+    std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+/// 全管线脚本:t1 分诊 + t2 结构发现按系统提示词路由。
+/// 路由键:分诊员 / 检索查询设计师 / 证据摘要员 / 结构设计师(草稿与修订
+/// 按 user 是否含「修订指令」区分)/ 结构评审员。
+struct PipelineCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    route: F,
+    calls: std::sync::atomic::AtomicUsize,
+    stage_counts: std::sync::Mutex<Vec<String>>,
+}
+
+impl<F> PipelineCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    fn new(route: F) -> Self {
+        Self {
+            route,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            stage_counts: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn stage_count(&self, needle: &str) -> usize {
+        self.stage_counts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|stage| stage.contains(needle))
+            .count()
+    }
+}
+
+fn stage_name(system: &str, user: &str) -> &'static str {
+    if system.contains("分诊员") {
+        "triage"
+    } else if system.contains("检索查询设计师") {
+        "queries"
+    } else if system.contains("证据摘要员") {
+        "evidence"
+    } else if system.contains("结构设计师") {
+        if user.contains("修订指令") {
+            "revise"
+        } else {
+            "draft"
+        }
+    } else if system.contains("结构评审员") {
+        "critique"
+    } else {
+        "unknown"
+    }
+}
+
+#[async_trait::async_trait]
+impl<F> LearningCompleter for PipelineCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, AppError> {
+        Err(AppError::Internal("结构发现测试只走 json 接缝".into()))
+    }
+
+    async fn complete_json(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        _max_tokens: u32,
+        _temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.stage_counts.lock().unwrap().push(stage_name(system, user).to_owned());
+        (self.route)(system, user).map_err(|message| AppError::Internal(message))
+    }
+}
+
+fn triage_reply(paths: &[String]) -> Vec<(&str, &str, f32, &str)> {
+    paths
+        .iter()
+        .map(|path| (path.as_str(), "core", 0.9, "课程正文"))
+        .collect()
+}
+
+fn triage_reply_json(paths: &[String]) -> String {
+    format!(
+        "{{\"files\": [{}]}}",
+        triage_reply(paths)
+            .iter()
+            .map(|(path, role, confidence, reason)| {
+                format!(
+                    "{{\"path\": \"{path}\", \"role\": \"{role}\", \"confidence\": {confidence}, \"reason\": \"{reason}\"}}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// 从分诊提示词解析待判文件路径(照 t1 测试的口径)。
+fn prompt_file_paths(user: &str) -> Vec<String> {
+    user.lines()
+        .filter_map(|line| line.strip_prefix("- 文件 "))
+        .map(|rest| rest.split(" ::").next().unwrap_or(rest).to_owned())
+        .collect()
+}
+
+/// 干净教材管线脚本:三文件教材,概念依赖顺书,草稿锚点覆盖全部标题;
+/// 评审干净;哈希确定性。
+fn clean_textbook_route(system: &str, user: &str) -> Result<String, String> {
+    let stage = stage_name(system, user);
+    match stage {
+        "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+        "queries" => Ok(
+            r#"{"queries": ["排序 概述", "排序 机制", "排序 案例", "排序 对比"]}"#.into(),
+        ),
+        "evidence" => Ok(r#"{"summary": "三份教材覆盖排序与图。", "gaps": [], "concepts": ["排序", "图"], "notes": []}"#.into()),
+        "draft" => Ok(r#"{
+            "concepts": [
+              {"id": "c1", "label": "排序", "description": "排序基础", "weight": 0.9},
+              {"id": "c2", "label": "图", "description": "图遍历", "weight": 0.8}
+            ],
+            "edges": [
+              {"src": "c2", "dst": "c1", "relation": "depends_on", "rationale": "先学排序再学图"}
+            ],
+            "chapters": [
+              {"title": "排序", "summary": "排序基础与进阶", "learning_objectives": ["掌握排序"],
+               "covers": ["c1"], "prerequisites": [],
+               "source_anchors": [
+                 {"path": "ch01.md", "heading": "排序入门"},
+                 {"path": "ch01.md", "heading": "比较排序"},
+                 {"path": "ch02.md", "heading": "快速排序"}
+               ], "content_type": "concept"},
+              {"title": "图", "summary": "图的遍历", "learning_objectives": ["掌握遍历"],
+               "covers": ["c2"], "prerequisites": ["排序"],
+               "source_anchors": [
+                 {"path": "ch03.md", "heading": "图的基础"},
+                 {"path": "ch03.md", "heading": "深度优先"}
+               ], "content_type": "concept"}
+            ],
+            "skipped_topics": []
+        }"#
+        .into()),
+        "critique" => Ok(r#"{"findings": []}"#.into()),
+        _ => Err("unexpected stage".into()),
+    }
+}
+
+async fn run_clean_textbook(
+    route: fn(&str, &str) -> Result<String, String>,
+    goal: &str,
+) -> (Option<SourcePlan>, Arc<PipelineCompleter<fn(&str, &str) -> Result<String, String>>>) {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "教材库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n\n## 比较排序\n\n比较排序的下界。\n");
+    write_kb_file(&root, "ch02.md", "# 快速排序\n\n分治实现与复杂度。\n");
+    write_kb_file(&root, "ch03.md", "# 图的基础\n\n图的表示。\n\n## 深度优先\n\nDFS 遍历。\n");
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], goal, Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        goal,
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap();
+    (plan, completer)
+}
+
+#[tokio::test]
+async fn clean_textbook_produces_a_usable_plan_in_book_order() {
+    let (plan, completer) = run_clean_textbook(clean_textbook_route, "学会排序与图").await;
+    let plan = plan.expect("干净教材应有可用计划");
+
+    assert!(plan.is_usable());
+    assert!(!plan.degraded, "{:?}", plan.warnings);
+    // 章节顺序顺书:排序章在图章之前(概念依赖 + 显式前置一致)。
+    let titles: Vec<&str> = plan.chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["排序", "图"]);
+    // 锚点可回溯:kb_id 解析、标题来自原文。
+    for chapter in &plan.chapters {
+        for anchor in &chapter.source_anchors {
+            assert_eq!(anchor.kb_id, plan.evidence.source_counts[0].kb_id);
+            assert!(!anchor.anchor_uncertain, "{:?}", anchor);
+        }
+    }
+    // 覆盖对账:五个 heading topic 全部 covered。
+    assert_eq!(plan.coverage.topics.len(), 5, "{:?}", plan.coverage.topics);
+    assert!(
+        plan.coverage.topics.iter().all(|t| t.status == TopicStatus::Covered),
+        "{:?}",
+        plan.coverage.topics
+    );
+    // 证据读数:4 条查询、来源计数 >0、成本字段齐备。
+    assert_eq!(plan.evidence.queries.len(), 4);
+    assert!(plan.evidence.source_counts[0].chunks > 0);
+    assert_eq!(plan.evidence.candidate_files, 3);
+    assert!(plan.evidence.executed_search_calls > 0);
+    // 哈希:64 位十六进制。
+    for hash in [
+        plan.evidence.queries_hash.as_str(),
+        plan.evidence.evidence_hash.as_str(),
+        plan.evidence.source_fingerprint.as_str(),
+        plan.plan_hash.as_str(),
+    ] {
+        assert_eq!(hash.len(), 64, "{hash}");
+    }
+    // 管线阶段:t1 分诊 → 查询 → 摘要 → 草稿 → 评审(干净,无修订)。
+    assert_eq!(completer.stage_count("triage"), 1);
+    assert_eq!(completer.stage_count("queries"), 1);
+    assert_eq!(completer.stage_count("evidence"), 1);
+    assert_eq!(completer.stage_count("draft"), 1);
+    assert_eq!(completer.stage_count("critique"), 1);
+    assert_eq!(completer.stage_count("revise"), 0);
+}
+
+#[tokio::test]
+async fn identical_runs_produce_identical_hashes_but_goal_changes_do_not() {
+    let (first, _) = run_clean_textbook(clean_textbook_route, "学会排序与图").await;
+    let (second, _) = run_clean_textbook(clean_textbook_route, "学会排序与图").await;
+    let first = first.unwrap();
+    let second = second.unwrap();
+    let first_hash = first.plan_hash.clone();
+    let first_queries_hash = first.evidence.queries_hash.clone();
+    assert_eq!(first_hash, second.plan_hash, "同库同目标重跑可对比");
+
+    let (other, _) = run_clean_textbook(clean_textbook_route, "学会图论").await;
+    assert_ne!(first_hash, other.unwrap().plan_hash);
+    // queries_hash 只跟查询走(两次目标不同但脚本查询相同 → 同 hash)。
+    assert_eq!(first_queries_hash, second.evidence.queries_hash);
+}
+
+#[tokio::test]
+async fn zero_evidence_degrades_with_gaps_and_no_fabricated_chapters() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "零命中库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            // 查询与库内容零交集 → 检索零命中。
+            "queries" => Ok(r#"{"queries": ["量子纠缠", "量子叠加", "量子测量", "量子退相干"]}"#.into()),
+            _ => Err("不应有后续阶段".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "量子计算入门", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "量子计算入门",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("零证据返回降级空计划(不是 None)");
+
+    assert!(!plan.is_usable(), "不伪造章节");
+    assert!(plan.degraded);
+    assert!(!plan.evidence.gaps.is_empty(), "gaps 非空:{:?}", plan.evidence.gaps);
+    assert!(plan.warnings.iter().any(|w| w.contains("零命中")), "{:?}", plan.warnings);
+    assert_eq!(completer.stage_count("evidence"), 0, "零证据不烧摘要/草稿调用");
+}
+
+#[tokio::test]
+async fn draft_failures_fall_back_to_none_with_bounded_calls() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "坏模型库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into()),
+            "draft" => Err("provider down".into()),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(plan.is_none(), "草稿连续失败 → 回退(调用方走现行采样路径)");
+    // 同指纹早停:两次失败即停,不烧第三次。
+    assert_eq!(completer.stage_count("draft"), 2);
+}
+
+#[tokio::test]
+async fn missing_completer_returns_none_without_any_llm_calls() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "无模型库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let (inventory, triage) = run_kb_triage(&knowledge, &[kb_id], "学会排序", None)
+        .await
+        .unwrap();
+    let plan = run_kb_structure(&knowledge, &inventory, &triage, "学会排序", None, None)
+        .await
+        .unwrap();
+    assert!(plan.is_none(), "无 completer → 回退,不跑结构发现");
+}
+
+#[tokio::test]
+async fn zero_core_candidates_hard_fail() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "全噪声库").await;
+    write_kb_file(&root, "LICENSE.md", "MIT License\n\nPermission is granted.\n");
+    write_kb_file(&root, "toc.md", "# 目录\n\n- [第一章](ch1.md)\n");
+    let completer = Arc::new(PipelineCompleter::new(|_system, _user| {
+        Err("不应被调用".into())
+    }));
+    let (inventory, triage) = run_kb_triage(&knowledge, &[kb_id], "学会排序", None)
+        .await
+        .unwrap();
+    assert_eq!(triage.counts.core + triage.counts.mixed, 0);
+    let outcome = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await;
+    assert!(outcome.is_err(), "零 core 硬失败:{outcome:?}");
+    assert_eq!(
+        completer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "硬失败在进入 LLM 阶段前发生"
+    );
+}
+
+#[tokio::test]
+async fn cancellation_propagates_as_conflict() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "取消库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let completer = Arc::new(PipelineCompleter::new(|_system, _user| {
+        Err("不应被调用".into())
+    }));
+    let (inventory, triage) = run_kb_triage(&knowledge, &[kb_id], "学会排序", None)
+        .await
+        .unwrap();
+    let token = CancellationToken::new();
+    token.cancel();
+    let outcome = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        Some(&token),
+    )
+    .await;
+    let error = outcome.unwrap_err().to_string();
+    assert!(error.contains("取消"), "{error}");
+}
+
+#[tokio::test]
+async fn repeated_critique_fingerprint_stops_the_revision_loop_early() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "同指纹库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let draft_reply = r#"{
+        "concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}],
+        "edges": [],
+        "chapters": [{"title": "排序", "summary": "排序", "learning_objectives": [],
+                      "covers": ["c1"], "prerequisites": [],
+                      "source_anchors": [{"path": "ch01.md", "heading": "排序入门"}],
+                      "content_type": "concept"}],
+        "skipped_topics": []
+    }"#;
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into()),
+            "draft" | "revise" => Ok(draft_reply.to_owned()),
+            // 两轮评审同指纹 → 停。
+            "critique" => Ok(r#"{"findings": [{"category": "coverage", "chapter": "排序", "issue": "覆盖不足", "fix_hint": "补锚点"}]}"#.into()),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("同指纹停仍有可用计划");
+
+    assert_eq!(completer.stage_count("critique"), 2, "草稿评审 + 修订后复评,复评同指纹即停");
+    assert_eq!(completer.stage_count("revise"), 1);
+    assert!(
+        plan.warnings.iter().any(|w| w.contains("同指纹")),
+        "早停披露:{:?}",
+        plan.warnings
+    );
+    assert!(plan.is_usable());
+}
+
+#[tokio::test]
+async fn critique_findings_drive_one_revision_round() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "修订库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    write_kb_file(&root, "ch02.md", "# 快速排序\n\n分治实现。\n");
+    let draft_reply = r#"{
+        "concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}],
+        "edges": [],
+        "chapters": [{"title": "排序", "summary": "只有一章", "learning_objectives": [],
+                      "covers": ["c1"], "prerequisites": [],
+                      "source_anchors": [{"path": "ch01.md", "heading": "排序入门"}],
+                      "content_type": "concept"}],
+        "skipped_topics": []
+    }"#;
+    let revised_reply = r#"{
+        "concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}],
+        "edges": [],
+        "chapters": [
+          {"title": "排序", "summary": "排序基础", "learning_objectives": [],
+           "covers": ["c1"], "prerequisites": [],
+           "source_anchors": [{"path": "ch01.md", "heading": "排序入门"}],
+           "content_type": "concept"},
+          {"title": "快速排序", "summary": "修订补的章", "learning_objectives": [],
+           "covers": ["c1"], "prerequisites": ["排序"],
+           "source_anchors": [{"path": "ch02.md", "heading": "快速排序"}],
+           "content_type": "concept"}
+        ],
+        "skipped_topics": []
+    }"#;
+    let route = move |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into()),
+            "draft" => Ok(draft_reply.to_owned()),
+            "revise" => Ok(revised_reply.to_owned()),
+            "critique" => Ok(r#"{"findings": [{"category": "coverage", "chapter": "", "issue": "缺快速排序章", "fix_hint": "补一章快速排序并锚定 ch02.md"}]}"#.into()),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("修订后有可用计划");
+
+    let titles: Vec<&str> = plan.chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["排序", "快速排序"], "修订稿生效");
+    assert_eq!(completer.stage_count("revise"), 1);
+    // 复评仍有意见(fix_hint 已执行但脚本回包固定)→ 预算内停止 + 披露。
+    // 注:这里第二轮 critique 与第一轮同指纹 → 走同指纹停。
+    assert!(plan.is_usable());
+}
+
+#[tokio::test]
+async fn empty_draft_chapters_fall_back_to_an_overview_chapter() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "空章库").await;
+    write_kb_file(&root, "ch01.md", "# 排序入门\n\n排序的基本概念。\n");
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序证据摘要。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into()),
+            "draft" => Ok(r#"{"concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}], "edges": [], "chapters": [], "skipped_topics": []}"#.into()),
+            "critique" => Ok(r#"{"findings": []}"#.into()),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("Overview 兜底仍出计划");
+
+    assert!(plan.is_usable(), "Overview 兜底成章");
+    assert!(plan.degraded, "兜底是降级路径");
+    assert_eq!(plan.chapters[0].title, "Overview");
+    assert_eq!(plan.chapters[0].summary, "排序证据摘要。");
+    assert!(
+        plan.chapters[0].source_anchors.iter().all(|a| a.anchor_uncertain),
+        "path 级锚点"
+    );
+    assert!(plan.warnings.iter().any(|w| w.contains("Overview")), "{:?}", plan.warnings);
+}
+
+/// 脏库验收(t1 混合库延伸):core/mixed topic 全有归属或显式 skipped+reason;
+/// noise/duplicate 不进 plan;uncertain 可见;无静默缺章。
+#[tokio::test]
+async fn dirty_kb_plan_accounts_for_every_candidate_topic() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "脏库").await;
+    let chapter = "# 排序算法\n\n比较排序的下界。\n";
+    write_kb_file(&root, "ch1.md", chapter);
+    write_kb_file(&root, "ch2.md", "# 图算法\n\n最短路径。\n");
+    write_kb_file(&root, "mixed.md", "# 核心讲解\n\n排序的实现细节。\n\n# 会议纪要\n\n讨论了排期与报销。\n");
+    write_kb_file(&root, "LICENSE.md", "MIT License\n\nPermission is granted.\n");
+    write_kb_file(&root, "receipt.md", "# 收据\n\n牛奶 12 元。\n");
+    write_kb_file(&root, "archive/ch1-old.md", chapter);
+    // 同 hash 双胞胎需要确定性新旧:ch1.md 更新 → canonical。
+    set_mtime(&root, "archive/ch1-old.md", at_secs(1_700_000_000));
+    set_mtime(&root, "ch1.md", at_secs(1_700_100_000));
+
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => {
+                let paths = prompt_file_paths(user);
+                let entries: Vec<String> = paths
+                    .iter()
+                    .map(|path| {
+                        let (role, reason) = match path.rsplit('/').next().unwrap_or(path) {
+                            "LICENSE.md" => ("noise", "元数据文件"),
+                            "receipt.md" => ("noise", "消费收据"),
+                            "ch1-old.md" => ("duplicate", "同 hash 旧副本"),
+                            "mixed.md" => ("mixed", "正文相关但混入会议段"),
+                            _ => ("core", "课程正文"),
+                        };
+                        format!(
+                            "{{\"path\": \"{path}\", \"role\": \"{role}\", \"confidence\": 0.9, \"reason\": \"{reason}\"}}"
+                        )
+                    })
+                    .collect();
+                Ok(format!("{{\"files\": [{}]}}", entries.join(", ")))
+            }
+            "queries" => Ok(r#"{"queries": ["排序 概念", "图 概念", "排序 实现", "算法 对比"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序与图的教材证据。", "gaps": [], "concepts": ["排序", "图"], "notes": []}"#.into()),
+            "draft" => Ok(r#"{
+                "concepts": [
+                  {"id": "c1", "label": "排序", "description": "", "weight": 0.9},
+                  {"id": "c2", "label": "图", "description": "", "weight": 0.8}
+                ],
+                "edges": [],
+                "chapters": [
+                  {"title": "排序", "summary": "排序章", "learning_objectives": [],
+                   "covers": ["c1"], "prerequisites": [],
+                   "source_anchors": [
+                     {"path": "ch1.md", "heading": "排序算法"},
+                     {"path": "mixed.md", "heading": "核心讲解"}
+                   ], "content_type": "concept"},
+                  {"title": "图", "summary": "图章", "learning_objectives": [],
+                   "covers": ["c2"], "prerequisites": [],
+                   "source_anchors": [{"path": "ch2.md", "heading": "图算法"}],
+                   "content_type": "concept"}
+                ],
+                "skipped_topics": [
+                  {"path": "mixed.md", "heading": "会议纪要", "reason": "与学习目标无关的会议记录"}
+                ]
+            }"#
+            .into()),
+            "critique" => Ok(r#"{"findings": []}"#.into()),
+            _ => Err("unexpected stage".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_id.clone()], "学会基础算法", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会基础算法",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("脏库仍有计划");
+
+    // mixed 文件:核心 topic 进章节、会议段 skipped + anchor,不整文件排除。
+    let by_label: HashMap<&str, &CoverageTopic> = plan
+        .coverage
+        .topics
+        .iter()
+        .map(|t| (t.label.as_str(), t))
+        .collect();
+    let core = by_label["核心讲解"];
+    assert_eq!(core.status, TopicStatus::Covered);
+    assert_eq!(core.assigned_chapters, vec!["排序".to_owned()]);
+    let meeting = by_label["会议纪要"];
+    assert_eq!(meeting.status, TopicStatus::Skipped);
+    assert!(meeting.reason.as_deref().unwrap().contains("会议"));
+    assert!(
+        !meeting.source_anchors.is_empty(),
+        "跳过段也带 anchor 可回原文:{meeting:?}"
+    );
+    let mixed_file = plan
+        .coverage
+        .files
+        .iter()
+        .find(|f| f.rel_path == "mixed.md")
+        .unwrap();
+    assert_eq!(mixed_file.status, FileCoverageStatus::Partial, "mixed 不整文件排除");
+
+    // noise/duplicate 不进 plan 的覆盖台账,只进 excluded 且有理由。
+    let ledger_paths: Vec<&str> = plan.coverage.files.iter().map(|f| f.rel_path.as_str()).collect();
+    assert!(!ledger_paths.contains(&"LICENSE.md"));
+    assert!(!ledger_paths.contains(&"receipt.md"));
+    assert!(!ledger_paths.contains(&"archive/ch1-old.md"), "duplicate 不进 coverage core 集");
+    assert_eq!(
+        plan.coverage.excluded.len(),
+        3,
+        "LICENSE + 收据 + 同 hash 旧副本:{:?}",
+        plan.coverage.excluded
+    );
+    assert!(plan.coverage.excluded.iter().all(|e| !e.reason.is_empty()));
+
+    // 候选文件的每个 topic 都三态有归属,无静默缺章。
+    assert!(
+        plan.coverage.topics.iter().all(|t| {
+            matches!(
+                t.status,
+                TopicStatus::Covered | TopicStatus::Skipped | TopicStatus::Uncertain
+            )
+        })
+    );
+    // ch2 全覆盖、ch1 全覆盖、mixed 半覆盖。
+    let ch1 = plan.coverage.files.iter().find(|f| f.rel_path == "ch1.md").unwrap();
+    assert_eq!(ch1.status, FileCoverageStatus::Covered);
+}
+
+#[tokio::test]
+async fn multi_base_zero_contribution_is_disclosed_with_a_warning() {
+    let (knowledge, _data_dir) = structure_knowledge_service().await;
+    let (kb_a, root_a) = create_blank_base(&knowledge, "算法库").await;
+    let (kb_b, root_b) = create_blank_base(&knowledge, "菜谱库").await;
+    write_kb_file(&root_a, "sorting.md", "# 排序\n\n排序的基本概念。\n");
+    write_kb_file(&root_b, "braise.md", "# 红烧肉\n\n五花肉焯水后炖煮。\n");
+    let route = |system: &str, user: &str| -> Result<String, String> {
+        match stage_name(system, user) {
+            "triage" => Ok(triage_reply_json(&prompt_file_paths(user))),
+            "queries" => Ok(r#"{"queries": ["排序 概念", "排序 实现"]}"#.into()),
+            "evidence" => Ok(r#"{"summary": "排序证据。", "gaps": [], "concepts": ["排序"], "notes": []}"#.into()),
+            "draft" => Ok(r#"{
+                "concepts": [{"id": "c1", "label": "排序", "description": "", "weight": 0.9}],
+                "edges": [],
+                "chapters": [{"title": "排序", "summary": "排序", "learning_objectives": [],
+                              "covers": ["c1"], "prerequisites": [],
+                              "source_anchors": [{"path": "算法库/sorting.md", "heading": "排序"}],
+                              "content_type": "concept"}],
+                "skipped_topics": []
+            }"#
+            .into()),
+            "critique" => Ok(r#"{"findings": []}"#.into()),
+            _ => Err("unexpected".into()),
+        }
+    };
+    let completer = Arc::new(PipelineCompleter::new(route));
+    let (inventory, triage) =
+        run_kb_triage(&knowledge, &[kb_a.clone(), kb_b.clone()], "学会排序", Some(completer.as_ref()))
+            .await
+            .unwrap();
+    let plan = run_kb_structure(
+        &knowledge,
+        &inventory,
+        &triage,
+        "学会排序",
+        Some(completer.as_ref()),
+        None,
+    )
+    .await
+    .unwrap()
+    .expect("多库仍有计划");
+
+    assert!(plan.is_usable());
+    assert!(
+        plan.warnings.iter().any(|w| w.contains("菜谱库") && w.contains("零贡献")),
+        "0 贡献来源显式 warning:{:?}",
+        plan.warnings
+    );
+    let counts_by_name: HashMap<&str, usize> = plan
+        .evidence
+        .source_counts
+        .iter()
+        .map(|c| (c.kb_name.as_str(), c.chunks))
+        .collect();
+    assert!(counts_by_name["算法库"] > 0);
+    assert_eq!(counts_by_name["菜谱库"], 0);
+    // 多库锚点路径是命名空间引用路径,kb_id 解析正确。
+    let anchor = &plan.chapters[0].source_anchors[0];
+    assert_eq!(anchor.rel_path, "算法库/sorting.md");
+    assert_eq!(anchor.kb_id, kb_a.as_str());
+}
+
+
 
 
