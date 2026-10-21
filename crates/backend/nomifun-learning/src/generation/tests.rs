@@ -514,6 +514,7 @@ evidence: None,
                         kb_id: None,
                     }),
                     sources: Vec::new(),
+                    anchor: None,
                 }],
             }],
         }
@@ -533,6 +534,7 @@ evidence: None,
                 kb_id: None,
             }),
             sources: Vec::new(),
+            anchor: None,
         };
         Blueprint {
             title: "C".into(),
@@ -1146,6 +1148,7 @@ fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
                     kb_id: None,
                 }),
                 sources: Vec::new(),
+                anchor: None,
             }],
         }],
     };

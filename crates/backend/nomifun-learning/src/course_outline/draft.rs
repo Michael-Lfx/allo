@@ -664,6 +664,9 @@ impl OutlineDraft {
                                         kb_id: None,
                                     })
                                     .collect(),
+                                // 定位锚（t3）：大纲引擎草稿不产生锚（整文件
+                                // 成课），分批展开路径才有。
+                                anchor: None,
                             };
                             // 兼容位 = 首个引用（列表与兼容位不漂移）。
                             blueprint_lesson.normalize_sources();

@@ -18,6 +18,7 @@ mod activities;
 mod assemble;
 mod blueprint;
 mod completer;
+mod expand;
 mod lesson;
 mod parser;
 mod sample;
@@ -220,6 +221,11 @@ pub struct BlueprintLesson {
     /// [`BlueprintLesson::cited_sources`] 取用，不直接读两个字段。
     #[serde(default)]
     pub sources: Vec<SourceSpan>,
+    /// 定位锚（t3 分批展开）：正文截取的唯一定位——H2/H3 完整标题或
+    /// 「第 N 段」（headingless 文件）。空 = 整文件/path 级成课（旧路径与
+    /// 大纲引擎产物不带它，serde 缺省兼容旧快照）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 impl BlueprintLesson {
@@ -357,6 +363,13 @@ pub use self::structure::{
     ChapterContentType, ConceptEdgeRelation, ConceptGraph, ConceptGraphEdge, ConceptGraphNode,
     CoverageExclusion, CoverageFile, CoverageLedger, CoverageTopic, FileCoverageStatus,
     PlannedChapter, SourceAnchor, SourceCount, SourceEvidence, SourcePlan, TopicStatus,
+};
+// 分批展开（t3）：编排入口与覆盖报告类型经 lib.rs 再导出（t4 落库/t5 报告
+// 消费；generate_course 在 crate 内接线）。
+pub use self::expand::run_kb_expansion;
+pub use self::expand::{
+    ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport, ExpansionOutcome,
+    ExpansionTopicReport, SourceCoverage,
 };
 
 /// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。
