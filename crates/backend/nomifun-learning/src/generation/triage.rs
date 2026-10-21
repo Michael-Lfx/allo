@@ -272,7 +272,7 @@ pub async fn run_kb_triage(
         let namespace = &namespaces[position];
         let entries = knowledge.list_files(kb_id).await?;
         let mut base_files = 0usize;
-        for entry in knowledge.list_files(kb_id).await? {
+        for entry in entries {
             let citation_path = if namespaced {
                 format!("{namespace}/{}", entry.rel_path)
             } else {
@@ -385,7 +385,7 @@ pub async fn run_kb_triage(
                     .buffer_unordered(TRIAGE_BATCH_CONCURRENCY)
                     .collect::<Vec<_>>()
                     .await;
-                let mut call_failed: Vec<String> = Vec::new();
+                let mut call_failed: Vec<(String, String)> = Vec::new();
                 for batch_output in outputs {
                     for (path, outcome) in batch_output {
                         match outcome {
@@ -407,13 +407,18 @@ pub async fn run_kb_triage(
                                     },
                                 );
                             }
-                            Err(StructuredBatchFailure::Call(_)) => call_failed.push(path),
+                            Err(StructuredBatchFailure::Call(message)) => {
+                                call_failed.push((path, message))
+                            }
                         }
                     }
                 }
                 if !call_failed.is_empty() {
-                    degraded_cause =
-                        Some(format!("{} 个文件的分诊调用失败", call_failed.len()));
+                    degraded_cause = Some(format!(
+                        "{} 个文件的分诊调用失败（首因：{}）",
+                        call_failed.len(),
+                        call_failed[0].1
+                    ));
                 }
             }
         }

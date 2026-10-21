@@ -34,6 +34,7 @@ pub use generation::{
 pub use generation::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
+    run_kb_triage,
 };
 
 pub use learning_graph::ConceptTier;

@@ -554,3 +554,168 @@ async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
         "uncertain 保守保留并可见"
     );
 }
+
+/// 票面验收：混合脏库（core 章节 + 收据/会议记录/剪藏 + LICENSE/配置 +
+/// 翻译副本 + 同 hash 重复 + 缺失标题 + 空导航页 + mixed 文件 + 判不准的
+/// 存根）全量分诊，总数守恒、逐项有理由、保守保留。
+#[tokio::test]
+async fn dirty_kb_triage_conserves_every_file_and_accounts_for_each_exclusion() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "脏知识库").await;
+    let chapter = "# 排序算法\n\n比较排序的下界与线性时间排序的实现分析。\n";
+    write_kb_file(&root, "ch1.md", chapter);
+    write_kb_file(&root, "ch2.md", "# 图算法\n\n最短路径与最小生成树的正确性证明。\n");
+    write_kb_file(&root, "receipts/2024-01.md", "# 收据\n\n便利店购物：饭团 8 元，咖啡 15 元。\n");
+    write_kb_file(&root, "meetings/weekly.md", "# 周会纪要\n\n讨论了排期、报销与团建地点。\n");
+    write_kb_file(&root, "clippings/promo.md", "# 剪藏\n\n某产品发布会通稿摘录，与课程无关。\n");
+    write_kb_file(&root, "LICENSE.md", "MIT License\n\nPermission is granted, free of charge.\n");
+    write_kb_file(&root, "config.md", "# 配置说明\n\n构建脚本的参数开关与环境变量列表。\n");
+    write_kb_file(&root, "guide.md", "# 指南\n\n中文原文：算法课的学习路线与参考资料。\n");
+    write_kb_file(&root, "guide.zh-CN.md", "# 指南\n\n中文译本副本（与 guide.md 成对出现）。\n");
+    write_kb_file(&root, "archive/ch1-old.md", chapter);
+    write_kb_file(&root, "noheading.md", "这一篇没有标题，但正文讲的是动态规划的状态设计。\n");
+    write_kb_file(&root, "toc.md", "# 目录\n\n- [第一章](ch1.md)\n- [第二章](ch2.md)\n");
+    write_kb_file(&root, "mixed.md", "# 混合\n\n前半是算法正文，后半附团队周会记录与推广段落。\n");
+    write_kb_file(&root, "stub.md", "# 存根\n\n只有一句话。\n");
+    set_mtime(&root, "archive/ch1-old.md", at_secs(1_700_000_000));
+    set_mtime(&root, "ch1.md", at_secs(1_700_100_000));
+
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            let entries: Vec<(&str, &str, f32, &str)> = paths
+                .iter()
+                .map(|path| match path.as_str() {
+                    "ch1.md" | "ch2.md" | "noheading.md" | "guide.md" => {
+                        (path.as_str(), "core", 0.9, "算法课程正文")
+                    }
+                    "mixed.md" => ("mixed.md", "mixed", 0.8, "正文相关但混入会议与推广段"),
+                    "stub.md" => ("stub.md", "uncertain", 0.3, "内容太短判不准"),
+                    "receipts/2024-01.md" => ("receipts/2024-01.md", "noise", 0.95, "消费收据"),
+                    "meetings/weekly.md" => ("meetings/weekly.md", "noise", 0.9, "会议纪要"),
+                    "clippings/promo.md" => ("clippings/promo.md", "noise", 0.9, "推广剪藏"),
+                    "config.md" => ("config.md", "noise", 0.85, "构建配置说明"),
+                    other => (other, "uncertain", 0.3, "未预期路径"),
+                })
+                .collect();
+            Ok(reply_json(&entries))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会基础算法", Some(&completer)).await.unwrap();
+
+    // 总数守恒：清点、报告、计数三处口径一致，14 个文件一个不少。
+    assert_eq!(inventory.total_files, 14);
+    assert_eq!(report.files.len(), 14, "所有文件都出现在报告中");
+    assert_eq!(
+        report.counts.core + report.counts.prerequisite + report.counts.practice
+            + report.counts.mixed
+            + report.counts.noise
+            + report.counts.duplicate
+            + report.counts.uncertain,
+        14
+    );
+    assert!(!report.degraded);
+
+    // core 章节不被误杀。
+    let ch1 = report.files.iter().find(|file| file.rel_path == "ch1.md").unwrap();
+    assert_eq!(ch1.role, KbTriageRole::Core);
+    assert_eq!(report.counts.core, 4, "ch1/ch2/noheading/guide 四篇 core");
+
+    // mixed 不整文件排除，进 t2 候选。
+    assert!(report.candidates().iter().any(|file| file.rel_path == "mixed.md"));
+
+    // noise + duplicate 全部有 reason 且都在 excluded。
+    assert_eq!(report.excluded.len(), 8, "6 噪声 + 2 重复");
+    for exclusion in &report.excluded {
+        assert!(!exclusion.reason.is_empty(), "{exclusion:?}");
+    }
+
+    // duplicate 有 duplicate_of + canonical_reason；翻译副本不重复成课。
+    assert_eq!(report.duplicates.len(), 2);
+    let translation = report
+        .duplicates
+        .iter()
+        .find(|dup| dup.path == "guide.zh-CN.md")
+        .expect("翻译副本按规则标 duplicate");
+    assert_eq!(translation.duplicate_of, "guide.md");
+    assert!(!translation.canonical_reason.is_empty());
+    let candidate_paths: Vec<&str> =
+        report.candidates().iter().map(|file| file.rel_path.as_str()).collect();
+    assert!(!candidate_paths.contains(&"guide.zh-CN.md"), "翻译副本不成课");
+    assert!(!candidate_paths.contains(&"archive/ch1-old.md"), "同 hash 旧副本不成课");
+    let old_copy = report
+        .duplicates
+        .iter()
+        .find(|dup| dup.path == "archive/ch1-old.md")
+        .expect("同 hash 重复按规则标 duplicate");
+    assert_eq!(old_copy.duplicate_of, "ch1.md");
+
+    // uncertain 保留并可见。
+    let stub = report.files.iter().find(|file| file.rel_path == "stub.md").unwrap();
+    assert_eq!(stub.role, KbTriageRole::Uncertain);
+    assert!(candidate_paths.contains(&"stub.md"));
+
+    // 空导航页与 LICENSE 由规则判噪声（不依赖模型）。
+    assert_eq!(
+        report
+            .files
+            .iter()
+            .find(|file| file.rel_path == "toc.md")
+            .unwrap()
+            .role,
+        KbTriageRole::Noise
+    );
+    assert_eq!(
+        report
+            .files
+            .iter()
+            .find(|file| file.rel_path == "LICENSE.md")
+            .unwrap()
+            .role,
+        KbTriageRole::Noise
+    );
+}
+
+#[tokio::test]
+async fn multi_kb_triage_namespaces_paths_and_skips_deleted_bases() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_a, root_a) = create_blank_base(&knowledge, "库甲").await;
+    let (kb_b, root_b) = create_blank_base(&knowledge, "库乙").await;
+    write_kb_file(&root_a, "docs/sorting.md", "# 排序\n\n甲库的排序笔记正文。\n");
+    write_kb_file(&root_b, "sorting.md", "# 排序\n\n乙库的另一篇排序正文（内容不同）。\n");
+    let deleted = KnowledgeBaseId::new();
+    let deleted_str = deleted.as_str().to_owned();
+
+    let (inventory, report) =
+        run_kb_triage(&knowledge, &[kb_a.clone(), kb_b.clone(), deleted], "排序入门", None)
+            .await
+            .unwrap();
+
+    assert_eq!(inventory.total_files, 2, "已删库 id 不读");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("不存在或不可读") && warning.contains(deleted_str.as_str())),
+        "缺库披露：{:?}",
+        report.warnings
+    );
+    let paths: Vec<&str> = inventory.files.iter().map(|file| file.rel_path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["库乙/sorting.md", "库甲/docs/sorting.md"],
+        "多库路径带命名空间前缀，输出按引用路径字典序（乙 < 甲）"
+    );
+    let file_yi = &inventory.files[0];
+    let file_jia = &inventory.files[1];
+    assert_eq!(file_yi.kb_id, kb_b.as_str());
+    assert_eq!(file_jia.kb_id, kb_a.as_str());
+    assert_eq!(inventory.bases.len(), 2);
+    assert_eq!(inventory.bases[0].namespace, "库甲");
+    assert_eq!(inventory.bases[1].namespace, "库乙");
+    assert_eq!(report.counts.core, 2, "两库正文都降级进 core");
+    assert!(report.degraded);
+}
