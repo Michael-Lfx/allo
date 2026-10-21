@@ -642,3 +642,203 @@ async fn summarize_evidence_fails_cleanly_for_the_caller_to_fall_back() {
     assert!(outcome.is_err());
 }
 
+// ── slice 3:草稿 / 评审 / 修订 ───────────────────────────────────────────
+
+/// 双文件 inventory:一个带标题、一个无标题(段落锚)。
+fn plan_inventory() -> KbInventory {
+    KbInventory {
+        bases: vec![KbInventoryBase {
+            kb_id: "kb-1".into(),
+            name: "算法库".into(),
+            namespace: String::new(),
+            total_files: 2,
+        }],
+        files: vec![
+            KbInventoryFile {
+                rel_path: "ch1.md".into(),
+                kb_id: "kb-1".into(),
+                size: 100,
+                modified_at: None,
+                content_hash: "a".repeat(64),
+                headings: vec!["排序算法".into(), "快速排序".into()],
+                preview: "比较排序。".into(),
+                kind: KbFileKind::Markdown,
+            },
+            KbInventoryFile {
+                rel_path: "plain.md".into(),
+                kb_id: "kb-1".into(),
+                size: 80,
+                modified_at: None,
+                content_hash: "b".repeat(64),
+                headings: vec![],
+                preview: "无标题正文。".into(),
+                kind: KbFileKind::Markdown,
+            },
+        ],
+        total_files: 2,
+        total_bytes: 180,
+        skipped_hidden: 0,
+        scan_scope: KbScanScope::Markdown,
+    }
+}
+
+fn plan_digest() -> EvidenceDigest {
+    EvidenceDigest {
+        summary: "证据支撑排序入门。".into(),
+        gaps: vec![],
+        concepts: vec!["排序".into(), "快速排序".into()],
+        notes: vec![],
+    }
+}
+
+fn plan_chunks() -> Vec<EvidenceChunk> {
+    vec![EvidenceChunk {
+        kb_id: "kb-1".into(),
+        kb_name: "算法库".into(),
+        rel_path: "ch1.md".into(),
+        heading: "排序算法".into(),
+        snippet: "比较排序的下界。".into(),
+    }]
+}
+
+const DRAFT_REPLY: &str = r#"{
+  "concepts": [
+    {"id": "c1", "label": "排序", "description": "把序列变有序", "weight": 0.9},
+    {"id": "c2", "label": "快速排序", "description": "分治排序", "weight": 0.8},
+    {"id": "c1", "label": "重复概念", "description": "同 id 保留首个", "weight": 0.5}
+  ],
+  "edges": [
+    {"src": "c2", "dst": "c1", "relation": "depends_on", "rationale": "先懂排序"},
+    {"src": "c1", "dst": "cX", "relation": "depends_on", "rationale": "指向未知概念"},
+    {"src": "c1", "dst": "c1", "relation": "depends_on", "rationale": "自环"},
+    {"src": "c1", "dst": "c2", "relation": "歪关系", "rationale": "未知关系"}
+  ],
+  "chapters": [
+    {
+      "title": "排序基础",
+      "summary": "从比较排序开始",
+      "learning_objectives": ["理解下界"],
+      "covers": ["c1", "cX"],
+      "prerequisites": [],
+      "source_anchors": [
+        {"path": "ch1.md", "heading": "排序算法", "snippet": "比较排序的下界。"},
+        {"path": "ch1.md", "heading": "不存在的标题", "snippet": "幻觉标题"},
+        {"path": "幽灵.md", "heading": "不存在"},
+        {"path": "plain.md", "paragraph": 2, "snippet": "第二段"}
+      ],
+      "content_type": "concept"
+    },
+    {
+      "title": "排序基础",
+      "summary": "重名章节",
+      "covers": ["c2"],
+      "source_anchors": [],
+      "content_type": "practice"
+    }
+  ],
+  "skipped_topics": [
+    {"path": "ch1.md", "heading": "会议纪要", "reason": "与目标无关"},
+    {"path": "幽灵.md", "heading": "x", "reason": "路径不存在"}
+  ]
+}"#;
+
+#[tokio::test]
+async fn draft_plan_resolves_anchors_and_normalizes_the_reply() {
+    let completer = StageCompleter::new(|_system, _user| Ok(DRAFT_REPLY.to_owned()));
+    let mut draft = draft_plan(&completer, "学会排序", &plan_digest(), &plan_chunks(), &plan_inventory(), None)
+        .await
+        .unwrap();
+
+    // 概念去重(id 重复保留首个)。
+    assert_eq!(draft.graph.nodes.len(), 2);
+    assert_eq!(draft.graph.nodes[0].label, "排序");
+    // 边清洗:未知端点丢、自环丢、未知关系降级 related。
+    assert_eq!(draft.graph.edges.len(), 2);
+    assert!(draft.graph.edges.iter().any(|e| e.relation == ConceptEdgeRelation::Related), "未知关系降级 related");
+    // 章节重名去重(前置/拓扑按标题引用)。
+    assert_eq!(draft.chapters.len(), 2);
+    assert_ne!(draft.chapters[0].title, draft.chapters[1].title);
+    // covers 只留已知概念。
+    assert_eq!(draft.chapters[0].covers, vec!["c1".to_owned()]);
+
+    // 锚点对账:正常 heading 锚、幻觉标题(保留但 uncertain)、幽灵路径(丢弃)。
+    let anchors = &draft.chapters[0].source_anchors;
+    assert_eq!(anchors.len(), 3, "幽灵路径被丢弃:{anchors:?}");
+    assert_eq!(anchors[0].kb_id, "kb-1");
+    assert!(!anchors[0].anchor_uncertain, "真实标题是精确锚");
+    assert!(anchors[1].anchor_uncertain, "标题对不上原文 → uncertain");
+    // 段落锚。
+    assert_eq!(anchors[2].paragraph, Some(2));
+    assert!(anchors[2].heading_or_anchor.is_none());
+
+    // skipped 只留可回源路径。
+    assert_eq!(draft.skipped.len(), 1);
+    assert_eq!(draft.skipped[0].heading, "会议纪要");
+
+    assert!(
+        draft.warnings.iter().any(|w| w.contains("幽灵.md")),
+        "幻觉路径进 warning:{:?}",
+        draft.warnings
+    );
+    assert!(
+        draft.unresolved.iter().any(|u| u.contains("幽灵.md")),
+        "不可回源锚点进 unresolved:{:?}",
+        draft.unresolved
+    );
+
+    // 提示词面:证据 + 文件标题清单都进了。
+    let prompts = completer.prompts.lock().unwrap();
+    let user = &prompts[0].1;
+    assert!(user.contains("排序算法"), "文件标题清单:{user}");
+    assert!(user.contains("ch1.md"));
+    assert!(user.contains("证据支撑排序入门"), "证据摘要:{user}");
+}
+
+#[tokio::test]
+async fn draft_plan_carries_revision_feedback_when_given() {
+    let completer = StageCompleter::new(|_system, _user| Ok(DRAFT_REPLY.to_owned()));
+    let _ = draft_plan(
+        &completer,
+        "学会排序",
+        &plan_digest(),
+        &plan_chunks(),
+        &plan_inventory(),
+        Some("- [coverage] 第一章漏锚点,补上"),
+    )
+    .await
+    .unwrap();
+    let prompts = completer.prompts.lock().unwrap();
+    assert!(prompts[0].1.contains("修订指令"), "{}", prompts[0].1);
+    assert!(prompts[0].1.contains("漏锚点"), "{}", prompts[0].1);
+}
+
+#[tokio::test]
+async fn critique_plan_normalizes_categories_and_reports_findings() {
+    let completer = StageCompleter::new(|system, _user| {
+        assert!(system.contains("结构评审"), "路由标记:{system}");
+        Ok(r#"{"findings": [
+            {"category": "coverage", "chapter": "排序基础", "issue": "漏了外排序", "fix_hint": "补一章"},
+            {"category": "乱编类别", "chapter": "", "issue": "其他问题", "fix_hint": "看着办"}
+        ]}"#
+            .to_owned())
+    });
+    let draft = draft_plan_from_reply(DRAFT_REPLY, &plan_inventory()).unwrap();
+    let findings = critique_plan(&completer, "学会排序", &draft).await.unwrap();
+
+    assert_eq!(findings.len(), 2);
+    assert_eq!(findings[0].category, "coverage");
+    assert_eq!(findings[1].category, "other", "未知类别归 other");
+    assert_eq!(findings[0].fix_hint, "补一章");
+}
+
+#[tokio::test]
+async fn critique_plan_returns_no_findings_when_clean() {
+    let completer = StageCompleter::new(|_system, _user| {
+        Ok(r#"{"findings": []}"#.to_owned())
+    });
+    let draft = draft_plan_from_reply(DRAFT_REPLY, &plan_inventory()).unwrap();
+    let findings = critique_plan(&completer, "学会排序", &draft).await.unwrap();
+    assert!(findings.is_empty());
+}
+
+
