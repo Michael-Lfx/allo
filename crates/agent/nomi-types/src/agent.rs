@@ -333,12 +333,25 @@ impl std::str::FromStr for AgentToolPolicy {
     }
 }
 
+/// One model inside an execution's already-resolved pool.
+///
+/// This does not widen authority. Hosts reject a pair that is not an active
+/// participant of the execution being created or extended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDelegationModel {
+    pub provider_id: String,
+    pub model: String,
+}
+
 /// One task in the shared `strategy=parallel` request vocabulary.
 ///
 /// Both embedded and platform hosts deserialize this exact DTO. `role` is
 /// intentionally free-form; `tool_policy` is the only field that narrows
 /// tools. When present, `role` is injected as explicit invocation context by
-/// both deployments.
+/// both deployments. `model` selects a participant already in the execution
+/// pool; omitting it inherits the lead model. `model_reason` is display and
+/// audit text only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDelegationTask {
@@ -353,6 +366,13 @@ pub struct AgentDelegationTask {
     /// Explicit narrowing of inherited tool authority.
     #[serde(default)]
     pub tool_policy: AgentToolPolicy,
+    /// Optional participant model. Absent inherits the lead / session model.
+    #[serde(default)]
+    pub model: Option<AgentDelegationModel>,
+    /// Why this task asked for `model`. Never grants tools or a model outside
+    /// the pool.
+    #[serde(default)]
+    pub model_reason: Option<String>,
 }
 
 /// Apply the one shared execution meaning of a delegation role.
@@ -384,6 +404,25 @@ impl AgentDelegationTask {
         }
         if self.role.as_ref().is_some_and(|role| role.trim().is_empty()) {
             return Err("Agent delegation task role must not be blank when provided".to_owned());
+        }
+        if let Some(model) = &self.model {
+            if model.provider_id.trim().is_empty() || model.provider_id.trim() != model.provider_id {
+                return Err(
+                    "Agent delegation task model.provider_id must not be blank".to_owned(),
+                );
+            }
+            if model.model.trim().is_empty() || model.model.trim() != model.model {
+                return Err("Agent delegation task model.model must not be blank".to_owned());
+            }
+        }
+        if self
+            .model_reason
+            .as_ref()
+            .is_some_and(|reason| reason.trim().is_empty())
+        {
+            return Err(
+                "Agent delegation task model_reason must not be blank when provided".to_owned(),
+            );
         }
         Ok(())
     }
@@ -465,11 +504,49 @@ mod tests {
             prompt: prompt.to_owned(),
             role: role.map(str::to_owned),
             tool_policy: AgentToolPolicy::Full,
+            model: None,
+            model_reason: None,
         };
         assert!(task("name", "prompt", Some("任意角色")).validate().is_ok());
         assert!(task(" ", "prompt", None).validate().is_err());
         assert!(task("name", "\n", None).validate().is_err());
         assert!(task("name", "prompt", Some("\t")).validate().is_err());
+    }
+
+    #[test]
+    fn shared_task_model_is_optional_and_must_be_concrete() {
+        let mut task = AgentDelegationTask {
+            name: "scan".to_owned(),
+            prompt: "inspect".to_owned(),
+            role: None,
+            tool_policy: AgentToolPolicy::ReadOnly,
+            model: None,
+            model_reason: None,
+        };
+        assert!(task.validate().is_ok());
+
+        let parsed: AgentDelegationTask = serde_json::from_value(serde_json::json!({
+            "name": "scan",
+            "prompt": "inspect",
+            "model": {"provider_id": "provider-a", "model": "cheap"},
+            "model_reason": "批量检索"
+        }))
+        .unwrap();
+        assert_eq!(parsed.model.as_ref().map(|model| model.model.as_str()), Some("cheap"));
+        assert_eq!(parsed.model_reason.as_deref(), Some("批量检索"));
+        assert!(parsed.validate().is_ok());
+
+        task.model = Some(super::AgentDelegationModel {
+            provider_id: " ".to_owned(),
+            model: "cheap".to_owned(),
+        });
+        assert!(task.validate().is_err());
+        task.model = Some(super::AgentDelegationModel {
+            provider_id: "provider-a".to_owned(),
+            model: "cheap".to_owned(),
+        });
+        task.model_reason = Some("  ".to_owned());
+        assert!(task.validate().is_err());
     }
 
     #[test]

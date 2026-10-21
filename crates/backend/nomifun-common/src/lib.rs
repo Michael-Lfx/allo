@@ -46,8 +46,8 @@ pub use agent_execution::{
     MAX_AGENT_EXECUTION_STEPS,
 };
 pub use nomi_types::agent::{
-    AgentDelegationTask, ParallelDelegationRequest, ParallelDelegationStrategy,
-    apply_agent_role_context,
+    AgentDelegationModel, AgentDelegationTask, ParallelDelegationRequest,
+    ParallelDelegationStrategy, apply_agent_role_context,
 };
 pub use crypto::{decrypt_string, encrypt_string};
 pub use enums::{

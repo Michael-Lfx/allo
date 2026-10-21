@@ -196,6 +196,35 @@ fn route(
     ),
     AppError,
 > {
+    if let Some(requested) = step.requested_model.as_ref() {
+        let participant = participants.iter().find(|participant| {
+            participant.provider_id.as_deref() == Some(requested.provider_id.as_str())
+                && participant.model.as_deref() == Some(requested.model.as_str())
+        });
+        let Some(participant) = participant else {
+            return Err(AppError::BadRequest(format!(
+                "step '{}' model {}/{} is outside the execution model pool",
+                step.title, requested.provider_id, requested.model
+            )));
+        };
+        let viable = step
+            .profile
+            .as_ref()
+            .is_none_or(|profile| score_participant(participant, profile).is_some());
+        if !viable {
+            return Err(AppError::BadRequest(format!(
+                "step '{}' selects a participant that does not satisfy its profile",
+                step.title
+            )));
+        }
+        return Ok((
+            Some(participant.participant_id.clone()),
+            Some(ParticipantAssignmentSource::Planner),
+            None,
+            step.assignment_rationale.clone(),
+        ));
+    }
+
     if let Some(index) = step.participant_index {
         let participant = participants.get(index).ok_or_else(|| {
             AppError::BadRequest(format!(
@@ -387,6 +416,7 @@ mod tests {
             agent_mode: Some(AgentStepMode::Normal),
             depends_on,
             participant_index: Some(0),
+            requested_model: None,
             assignment_rationale: None,
             role: None,
             tool_policy: AgentToolPolicy::Full,
@@ -407,6 +437,7 @@ mod tests {
             agent_mode: Some(AgentStepMode::Normal),
             depends_on: vec![],
             participant_index: Some(0),
+            requested_model: None,
             assignment_rationale: None,
             role: Some(role.to_owned()),
             tool_policy,
@@ -438,6 +469,7 @@ mod tests {
             agent_mode: Some(AgentStepMode::Normal),
             depends_on,
             participant_index: Some(0),
+            requested_model: None,
             assignment_rationale: None,
             role: None,
             tool_policy,
@@ -488,5 +520,104 @@ mod tests {
             normalized_failure_policy(&steps, 2),
             StepFailurePolicy::FailExecution
         );
+    }
+
+    fn participant(id: &str, provider_id: &str, model: &str) -> ExecutionParticipant {
+        ExecutionParticipant {
+            participant_id: id.to_owned(),
+            execution_id: "0190f5fe-7c00-7a00-8000-000000000032".to_owned(),
+            source_agent_id: "0190f5fe-7c00-7a00-8000-000000000114".to_owned(),
+            preset_id: None,
+            preset_revision: None,
+            preset_snapshot: None,
+            provider_id: Some(provider_id.to_owned()),
+            model: Some(model.to_owned()),
+            role: None,
+            capability: None,
+            constraints: None,
+            sort_order: 0,
+            description: None,
+            system_prompt: None,
+            enabled_skills: Vec::new(),
+            disabled_builtin_skills: Vec::new(),
+            introduced_in_revision: 1,
+            retired_in_revision: None,
+            created_at: 0,
+        }
+    }
+
+    fn open_step(title: &str, requested_model: Option<nomifun_api_types::ExecutionModelRef>) -> PlannedExecutionStep {
+        PlannedExecutionStep {
+            title: title.to_owned(),
+            spec: title.to_owned(),
+            profile: None,
+            kind: ExecutionStepKind::Agent,
+            agent_mode: Some(AgentStepMode::Normal),
+            depends_on: Vec::new(),
+            participant_index: None,
+            requested_model,
+            assignment_rationale: Some("explicit parallel delegation".to_owned()),
+            role: None,
+            tool_policy: AgentToolPolicy::ReadOnly,
+            fanout_group: Some("explicit".to_owned()),
+            control_policy: None,
+            failure_policy: StepFailurePolicy::FailExecution,
+        }
+    }
+
+    #[test]
+    fn omitted_model_inherits_the_lead_and_a_named_model_must_be_in_the_pool() {
+        let participants = vec![
+            participant("0190f5fe-7c00-7a00-8000-0000000000a1", "provider-a", "lead"),
+            participant("0190f5fe-7c00-7a00-8000-0000000000a2", "provider-a", "cheap"),
+        ];
+        let inherited = materialize(
+            PlannedExecution {
+                steps: vec![open_step("scan", None)],
+            },
+            &participants,
+        )
+        .expect("omitted model inherits the first participant");
+        assert_eq!(
+            inherited.steps[0].assigned_participant_id.as_deref(),
+            Some("0190f5fe-7c00-7a00-8000-0000000000a1")
+        );
+
+        let pinned = materialize(
+            PlannedExecution {
+                steps: vec![open_step(
+                    "scan",
+                    Some(nomifun_api_types::ExecutionModelRef {
+                        provider_id: "provider-a".to_owned(),
+                        model: "cheap".to_owned(),
+                    }),
+                )],
+            },
+            &participants,
+        )
+        .expect("in-pool model binds that participant");
+        assert_eq!(
+            pinned.steps[0].assigned_participant_id.as_deref(),
+            Some("0190f5fe-7c00-7a00-8000-0000000000a2")
+        );
+
+        let rejected = materialize(
+            PlannedExecution {
+                steps: vec![open_step(
+                    "scan",
+                    Some(nomifun_api_types::ExecutionModelRef {
+                        provider_id: "provider-a".to_owned(),
+                        model: "outside".to_owned(),
+                    }),
+                )],
+            },
+            &participants,
+        );
+        match rejected {
+            Err(error) => {
+                assert!(error.to_string().contains("outside the execution model pool"));
+            }
+            Ok(_) => panic!("a model outside the pool must not materialize"),
+        }
     }
 }

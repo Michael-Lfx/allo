@@ -84,6 +84,11 @@ impl LocalAgentInvocationRunner {
         self
     }
 
+    /// Model name inherited by a delegated Agent that does not name another one.
+    pub(crate) fn session_model(&self) -> &str {
+        &self.base_config.model
+    }
+
     /// Execute a single delegated Agent and await its result.
     pub(crate) async fn invoke_one(&self, input: AgentInvocationInput) -> AgentInvocationOutput {
         self.invoke_with_context(input, None).await

@@ -214,6 +214,7 @@ export type TPlannedExecutionStep = {
   agent_mode?: TAgentStepMode;
   depends_on?: number[];
   participant_index?: number;
+  requested_model?: TExecutionModelRef;
   assignment_rationale?: string;
   role?: string;
   tool_policy?: TAgentToolPolicy;
