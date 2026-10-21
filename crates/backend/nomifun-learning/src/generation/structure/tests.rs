@@ -411,3 +411,234 @@ fn all_skipped_files_report_skipped_status() {
     assert_eq!(ledger.topics[0].status, TopicStatus::Skipped);
     assert_eq!(ledger.files[0].status, FileCoverageStatus::Skipped);
 }
+
+// ── slice 2:查询生成 / 检索均衡 / 证据摘要 ───────────────────────────────
+
+fn hit(kb: &str, path: &str, heading: &str, snippet: &str) -> nomifun_knowledge::service::KnowledgeSearchHit {
+    nomifun_knowledge::service::KnowledgeSearchHit {
+        kb_id: KnowledgeBaseId::new(),
+        kb_name: format!("库{kb}"),
+        rel_path: path.to_owned(),
+        heading: heading.to_owned(),
+        snippet: snippet.to_owned(),
+        score: 10,
+    }
+}
+
+#[test]
+fn plan_search_pairs_are_query_major_and_cap_total_calls_without_starving_bases() {
+    let queries: Vec<String> = (0..10).map(|i| format!("查询{i}")).collect();
+    let bases: Vec<(String, String)> = (0..6)
+        .map(|i| (format!("kb{i}"), format!("库{i}")))
+        .collect();
+    let (pairs, truncated) = plan_search_pairs(&queries, &bases);
+
+    assert!(truncated, "10×6=60 对 > 48 上限,需要截断");
+    assert_eq!(pairs.len(), STRUCTURE_SEARCH_MAX_CALLS);
+    // query-major:第 0 个查询的 6 个库排在最前。
+    assert_eq!(pairs[0], (0, 0));
+    assert_eq!(pairs[5], (0, 5));
+    assert_eq!(pairs[6], (1, 0));
+    // 截断后每个库都还有调用(预算被砍不饿死后面的库:保留的 8 个查询 × 全部 6 库)。
+    for base_index in 0..6 {
+        assert!(
+            pairs.iter().any(|&(_, b)| b == base_index),
+            "库 {base_index} 被饿死"
+        );
+    }
+}
+
+#[test]
+fn balanced_merge_round_robins_sources_instead_of_global_scores() {
+    // 库 A 高分命中多,库 B 只有一条:轮询保证 B 的证据不被全局分数淹没。
+    let per_base = vec![
+        (
+            "kb-a".to_owned(),
+            vec![
+                hit("a", "a1.md", "H1", "片段一"),
+                hit("a", "a2.md", "H2", "片段二"),
+                hit("a", "a3.md", "H3", "片段三"),
+            ],
+        ),
+        ("kb-b".to_owned(), vec![hit("b", "b1.md", "HB", "片段乙")]),
+    ];
+    let merged = balanced_merge(&per_base, STRUCTURE_EVIDENCE_MAX_CHUNKS);
+
+    assert_eq!(merged.len(), 4);
+    assert_eq!(merged[0].rel_path, "a1.md", "每来源内部排序轮询取样");
+    assert_eq!(merged[1].rel_path, "b1.md", "第二来源第二位就出现");
+    assert_eq!(merged[2].rel_path, "a2.md");
+}
+
+#[test]
+fn balanced_merge_dedupes_repeated_hits_and_caps_the_budget() {
+    let repeated = hit("a", "a1.md", "H1", "同一命中");
+    let per_base = vec![(
+        "kb-a".to_owned(),
+        vec![repeated.clone(), repeated.clone(), hit("a", "a2.md", "H2", "片段二")],
+    )];
+    let merged = balanced_merge(&per_base, STRUCTURE_EVIDENCE_MAX_CHUNKS);
+    assert_eq!(merged.len(), 2, "同 (path, heading) 只留一次");
+
+    let many: Vec<_> = (0..40)
+        .map(|i| hit("a", &format!("f{i:02}.md"), "H", "片段"))
+        .collect();
+    let merged = balanced_merge(&[("kb-a".to_owned(), many)], 5);
+    assert_eq!(merged.len(), 5, "总量预算生效");
+}
+
+#[test]
+fn deterministic_queries_partition_goal_terms_with_a_fallback_topic() {
+    let queries = deterministic_queries("学会排序算法与复杂度分析", &[]);
+    assert!(!queries.is_empty());
+    assert!(queries.len() <= 4);
+    assert!(
+        queries.iter().all(|q| !q.trim().is_empty()),
+        "查询不为空:{queries:?}"
+    );
+    // 词条切自原文:至少一条查询包含「排序」这个二元片段。
+    assert!(queries.iter().any(|q| q.contains("排序")), "{queries:?}");
+
+    let fallback = deterministic_queries("", &["金融笔记".to_owned()]);
+    assert!(
+        fallback.iter().any(|q| q.contains("金融笔记")),
+        "空目标回退库名:{fallback:?}"
+    );
+}
+
+/// 按系统提示词路由的脚本 completer(结构发现的四个 LLM 阶段共用)。
+struct StageCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    route: F,
+    calls: std::sync::atomic::AtomicUsize,
+    prompts: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl<F> StageCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    fn new(route: F) -> Self {
+        Self {
+            route,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            prompts: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl<F> LearningCompleter for StageCompleter<F>
+where
+    F: Fn(&str, &str) -> Result<String, String> + Send + Sync,
+{
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, AppError> {
+        Err(AppError::Internal("结构发现测试只走 json 接缝".into()))
+    }
+
+    async fn complete_json(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        _max_tokens: u32,
+        _temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.prompts.lock().unwrap().push((system.to_owned(), user.to_owned()));
+        (self.route)(system, user).map_err(|message| AppError::Internal(message))
+    }
+}
+
+fn empty_inventory() -> KbInventory {
+    KbInventory {
+        bases: vec![KbInventoryBase {
+            kb_id: "kb".into(),
+            name: "测试库".into(),
+            namespace: String::new(),
+            total_files: 1,
+        }],
+        files: vec![],
+        total_files: 0,
+        total_bytes: 0,
+        skipped_hidden: 0,
+        scan_scope: KbScanScope::Markdown,
+    }
+}
+
+#[tokio::test]
+async fn generate_queries_normalizes_llm_output_into_four_to_eight_queries() {
+    // 模型给了 10 条(含 1 条重复、1 条空白)→ 去重截断到 8。
+    let completer = StageCompleter::new(|_system, _user| {
+        Ok(r#"{"queries": ["排序概述", "排序机制", "排序案例", "排序易错点", "排序应用", "排序对比", "排序历史", "排序进阶", "排序概述", "  "]}"#.into())
+    });
+    let queries = generate_queries(&completer, "学会排序", &empty_inventory()).await.unwrap();
+    assert_eq!(queries.len(), STRUCTURE_QUERY_MAX, "超过 8 条截到 8");
+    assert!(queries.iter().all(|q| !q.trim().is_empty()));
+    assert_eq!(queries.iter().collect::<HashSet<_>>().len(), queries.len(), "去重");
+
+    // 模型只给 2 条 → 用确定性查询补齐到下限 4。
+    let completer = StageCompleter::new(|_system, _user| {
+        Ok(r#"{"queries": ["排序概念", "排序实现"]}"#.into())
+    });
+    let queries = generate_queries(&completer, "学会排序算法", &empty_inventory()).await.unwrap();
+    assert!(queries.len() >= STRUCTURE_QUERY_MIN, "补齐到下限:{queries:?}");
+    assert_eq!(queries[0], "排序概念");
+}
+
+#[tokio::test]
+async fn generate_queries_surfaces_call_failures_for_the_caller_to_fall_back() {
+    let completer = StageCompleter::new(|_system, _user| Err("provider down".into()));
+    let outcome = generate_queries(&completer, "学会排序", &empty_inventory()).await;
+    assert!(outcome.is_err(), "调用失败上抛,由编排层做确定性降级");
+}
+
+#[tokio::test]
+async fn summarize_evidence_digests_balanced_chunks_with_clamps() {
+    let completer = StageCompleter::new(|system, user| {
+        assert!(system.contains("证据摘要"), "路由标记:{system}");
+        assert!(user.contains("排序复杂度"), "证据片段进提示词:{user}");
+        let concepts: Vec<String> = (0..25).map(|i| format!("概念{i}")).collect();
+        let notes: Vec<String> = (0..7).map(|i| format!("注{i}")).collect();
+        Ok(serde_json::json!({
+            "summary": "这些证据足以支撑一门排序入门课。",
+            "gaps": ["外部排序的磁盘模型"],
+            "concepts": concepts,
+            "notes": notes,
+        })
+        .to_string())
+    });
+    let chunks = vec![EvidenceChunk {
+        kb_id: "kb".into(),
+        kb_name: "测试库".into(),
+        rel_path: "notes/sorting.md".into(),
+        heading: "排序复杂度".into(),
+        snippet: "比较排序的下界是 n log n。".into(),
+    }];
+    let digest = summarize_evidence(&completer, "学会排序", &chunks).await.unwrap();
+
+    assert_eq!(digest.summary, "这些证据足以支撑一门排序入门课。");
+    assert_eq!(digest.gaps, vec!["外部排序的磁盘模型".to_owned()]);
+    assert_eq!(digest.concepts.len(), 20, "候选概念上限 20");
+    assert_eq!(digest.notes.len(), 5, "notes ≤5");
+}
+
+#[tokio::test]
+async fn summarize_evidence_fails_cleanly_for_the_caller_to_fall_back() {
+    let completer = StageCompleter::new(|_system, _user| Err("provider down".into()));
+    let outcome = summarize_evidence(&completer, "学会排序", &[]).await;
+    assert!(outcome.is_err());
+}
+
