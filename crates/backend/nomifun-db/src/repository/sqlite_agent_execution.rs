@@ -10,7 +10,8 @@ use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 use crate::error::DbError;
 use crate::models::{
-    AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow, AgentExecutionDetailRows,
+    ActiveSubagentRow, AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow,
+    AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionParticipantRow, AgentExecutionRow,
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,
     ConversationDeliveryReceiptRow, ConversationExecutionLinkRow,
@@ -1864,6 +1865,55 @@ impl IAgentExecutionRepository for SqliteAgentExecutionRepository {
         .bind(offset.max(0))
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    async fn list_active_subagents(
+        &self,
+        user_id: &str,
+        execution_id: Option<&str>,
+        include_control_steps: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ActiveSubagentRow>, DbError> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            "SELECT e.execution_id, e.goal AS execution_goal, e.status AS execution_status, \
+                    s.step_id, s.title AS step_title, s.kind AS step_kind, \
+                    s.status AS step_status, a.attempt_id, a.attempt_no, \
+                    a.status AS attempt_status, a.participant_id, p.role AS participant_role, \
+                    (SELECT l.conversation_id FROM conversation_execution_links l \
+                      WHERE l.execution_id = a.execution_id AND l.attempt_id = a.attempt_id \
+                        AND l.relation = 'attempt' AND l.active = 1 \
+                      ORDER BY l.id DESC LIMIT 1) AS conversation_id, \
+                    a.question, a.tokens, a.started_at, a.updated_at AS attempt_updated_at \
+             FROM agent_execution_attempts a \
+             JOIN agent_executions e ON e.execution_id = a.execution_id \
+             JOIN agent_execution_steps s ON s.step_id = a.step_id \
+             LEFT JOIN agent_execution_participants p ON p.participant_id = a.participant_id \
+             WHERE e.user_id = ",
+        );
+        builder.push_bind(user_id);
+        builder.push(
+            " AND e.deleted_at IS NULL \
+               AND e.status NOT IN ('completed','completed_with_failures','failed','cancelled') \
+               AND a.status IN ('queued','running','waiting_input')",
+        );
+        if let Some(execution_id) = execution_id {
+            builder
+                .push(" AND e.execution_id = ")
+                .push_bind(execution_id);
+        }
+        if !include_control_steps {
+            builder.push(" AND s.kind = 'agent'");
+        }
+        builder
+            .push(" ORDER BY a.updated_at DESC, a.id DESC LIMIT ")
+            .push_bind(limit.clamp(1, 500))
+            .push(" OFFSET ")
+            .push_bind(offset.max(0));
+        Ok(builder
+            .build_query_as::<ActiveSubagentRow>()
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     async fn list_recoverable_executions(

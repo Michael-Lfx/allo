@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use nomifun_api_types::{
-    AgentExecution, AgentExecutionDetail, AgentExecutionEvent, ExecutionAttempt, ExecutionParticipant,
-    ExecutionStep, ExecutionStepDependency, ParticipantConstraints,
+    ActiveSubagent, AgentExecution, AgentExecutionDetail, AgentExecutionEvent, ExecutionAttempt,
+    ExecutionParticipant, ExecutionStep, ExecutionStepDependency, ParticipantConstraints,
 };
 use nomifun_common::{
     AgentExecutionActorType, AgentExecutionEventKind, AgentExecutionId, AgentStepMode, AppError,
@@ -11,6 +11,7 @@ use nomifun_common::{
     StepFailurePolicy, UserId, validate_uuidv7,
 };
 use nomifun_db::models::{
+    ActiveSubagentRow,
     AgentExecutionAttemptDetailRow, AgentExecutionDetailRows, AgentExecutionParticipantRow,
     AgentExecutionEventRow, AgentExecutionRow, AgentExecutionStepDependencyRow, AgentExecutionStepRow,
 };
@@ -260,6 +261,36 @@ pub(crate) fn attempt(
     })
 }
 
+pub(crate) fn active_subagent(row: ActiveSubagentRow) -> Result<ActiveSubagent, AppError> {
+    require_id::<AgentExecutionId>("subagent.execution_id", &row.execution_id)?;
+    require_uuidv7("subagent.step_id", &row.step_id)?;
+    require_uuidv7("subagent.attempt_id", &row.attempt_id)?;
+    require_optional_uuidv7("subagent.participant_id", row.participant_id.as_deref())?;
+    require_optional_id::<ConversationId>(
+        "subagent.conversation_id",
+        row.conversation_id.as_deref(),
+    )?;
+    Ok(ActiveSubagent {
+        execution_id: row.execution_id,
+        execution_goal: row.execution_goal,
+        execution_status: parse_enum("subagent.execution_status", &row.execution_status)?,
+        step_id: row.step_id,
+        step_title: row.step_title,
+        step_kind: parse_enum("subagent.step_kind", &row.step_kind)?,
+        step_status: parse_enum("subagent.step_status", &row.step_status)?,
+        attempt_id: row.attempt_id,
+        attempt_no: row.attempt_no,
+        attempt_status: parse_enum("subagent.attempt_status", &row.attempt_status)?,
+        participant_id: row.participant_id,
+        participant_role: row.participant_role,
+        conversation_id: row.conversation_id,
+        question: row.question,
+        tokens: row.tokens,
+        started_at: row.started_at,
+        attempt_updated_at: row.attempt_updated_at,
+    })
+}
+
 pub(crate) fn detail(rows: AgentExecutionDetailRows) -> Result<AgentExecutionDetail, AppError> {
     Ok(AgentExecutionDetail {
         execution: execution(rows.execution, rows.lead_conversation_id)?,
@@ -399,5 +430,49 @@ mod tests {
         row.execution_id = "execution_1".to_owned();
         let error = event(row).unwrap_err();
         assert!(error.to_string().contains("event.execution_id"));
+    }
+
+    fn subagent_row() -> ActiveSubagentRow {
+        ActiveSubagentRow {
+            execution_id: "0190f5fe-7c00-7a00-8000-000000000001".to_owned(),
+            execution_goal: "review the module".to_owned(),
+            execution_status: "running".to_owned(),
+            step_id: "0190f5fe-7c00-7a00-8000-000000000003".to_owned(),
+            step_title: "review".to_owned(),
+            step_kind: "agent".to_owned(),
+            step_status: "running".to_owned(),
+            attempt_id: "0190f5fe-7c00-7a00-8000-000000000004".to_owned(),
+            attempt_no: 1,
+            attempt_status: "waiting_input".to_owned(),
+            participant_id: Some("0190f5fe-7c00-7a00-8000-000000000005".to_owned()),
+            participant_role: Some("reviewer".to_owned()),
+            conversation_id: Some("0190f5fe-7c00-7a00-8000-000000000006".to_owned()),
+            question: Some("continue?".to_owned()),
+            tokens: Some(12),
+            started_at: Some(1),
+            attempt_updated_at: 2,
+        }
+    }
+
+    #[test]
+    fn active_subagent_projection_maps_every_flattened_field() {
+        let mapped = active_subagent(subagent_row()).unwrap();
+        assert_eq!(
+            mapped.execution_status,
+            nomifun_common::AgentExecutionStatus::Running
+        );
+        assert_eq!(mapped.step_kind, ExecutionStepKind::Agent);
+        assert_eq!(mapped.step_status, ExecutionStepStatus::Running);
+        assert_eq!(mapped.attempt_status, ExecutionAttemptStatus::WaitingInput);
+        assert_eq!(mapped.participant_role.as_deref(), Some("reviewer"));
+        assert_eq!(mapped.question.as_deref(), Some("continue?"));
+    }
+
+    #[test]
+    fn active_subagent_projection_fails_closed_on_unknown_status() {
+        let mut row = subagent_row();
+        row.attempt_status = "paused".to_owned();
+        let error = active_subagent(row).unwrap_err();
+        assert!(error.to_string().contains("subagent.attempt_status"));
     }
 }

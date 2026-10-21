@@ -319,6 +319,8 @@ Agent Execution 只接受当前 v3 baseline 中的新建数据。启动期 schem
 - UI 只显示“协作”“协作进度”“任务”“协作者”。诊断详情可显示“尝试”。不建立独立协作路由或额外协作术语；协作状态投影在所属 Conversation 内。
 - “多 Agent”只是 `delegation_policy` 的产品化选择，不创建会话类型、DB 实体、路由分支或独立状态机。
 - 主 Conversation、Attempt Conversation 和协作面板都从 ConversationExecutionLink 读取关系，不各自维护一份关联真相。
+- `GET /api/agent-executions/subagents` 是只读投影，不是新聚合、新表或新状态机：一行对应一个 `queued` / `running` / `waiting_input` Attempt，字段由 Execution、Step、Attempt、Participant 和活动 Attempt Link join 得到。默认排除 verify/judge/loop 控制 Step，`include_control_steps=true` 才显示；支持 `execution_id` 聚合内过滤、limit/offset 和 owner 隔离。投影不写库、不参与调度，删除接口不会丢失任何事实。
+- 协作面板通过该投影展示“运行中的子 Agent”及其 Step、角色、等待问题；投影只在已有 durable 事件到达后重新查询，不从 UI 侧拼装执行状态。
 
 ## 10. 必须保持的能力与不变量
 

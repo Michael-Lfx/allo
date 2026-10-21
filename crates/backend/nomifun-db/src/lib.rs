@@ -19,6 +19,7 @@ pub use id_schema_contract::{
 pub use models::{
     AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
     AppServerRunMappingRow, NewAppServerIdempotencyReceipt,
+    ActiveSubagentRow,
     AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow, AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionParticipantRow, AgentExecutionRow,
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,

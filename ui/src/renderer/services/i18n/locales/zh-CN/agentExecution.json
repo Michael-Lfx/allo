@@ -5,6 +5,14 @@
     "open": "打开协作任务",
     "collapse": "收起协作任务"
   },
+  "subagents": {
+    "title": "运行中的子 Agent",
+    "loading": "正在加载子 Agent…",
+    "loadError": "加载子 Agent 失败：{{error}}",
+    "waitingQuestion": "等待回答：{{question}}",
+    "roleFallback": "子 Agent",
+    "activeCount": "{{count}} 个运行中"
+  },
   "status": {
     "execution": {
       "planning": "规划中",

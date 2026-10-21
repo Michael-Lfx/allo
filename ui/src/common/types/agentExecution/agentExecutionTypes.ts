@@ -191,6 +191,34 @@ export type TAgentExecutionDetail = {
   attempts: TExecutionAttempt[];
 };
 
+/** Flattened read-only projection of one active delegated Agent invocation. */
+export type TActiveSubagent = {
+  execution_id: ExecutionId;
+  execution_goal: string;
+  execution_status: TAgentExecutionStatus;
+  step_id: ExecutionStepId;
+  step_title: string;
+  step_kind: TExecutionStepKind;
+  step_status: TExecutionStepStatus;
+  attempt_id: ExecutionAttemptId;
+  attempt_no: number;
+  attempt_status: TExecutionAttemptStatus;
+  participant_id: ExecutionParticipantId | null;
+  participant_role: string | null;
+  conversation_id: ConversationId | null;
+  question: string | null;
+  tokens: number | null;
+  started_at: number | null;
+  attempt_updated_at: number;
+};
+
+export type TActiveSubagentsQuery = {
+  execution_id?: ExecutionId;
+  include_control_steps?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
 export type TAgentExecutionEvent = {
   execution_id: ExecutionId;
   sequence: number;

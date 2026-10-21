@@ -2001,3 +2001,120 @@ async fn missing_nonactive_attempt_candidate_is_stale_after_writer_serialization
         0
     );
 }
+
+#[tokio::test]
+async fn active_subagents_projection_returns_the_running_attempt_with_its_link() {
+    let fixture = running_attempt_fixture().await;
+
+    let rows = fixture
+        .execution_repo
+        .list_active_subagents(OWNER_ID, None, false, 50, 0)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.execution_id, fixture.execution_id);
+    assert_eq!(row.execution_goal, "verify v3 row identity separation");
+    assert_eq!(row.execution_status, "running");
+    assert_eq!(row.step_id, fixture.step_id);
+    assert_eq!(row.step_title, "recover");
+    assert_eq!(row.step_kind, "agent");
+    assert_eq!(row.attempt_id, fixture.attempt_id);
+    assert_eq!(row.attempt_status, "running");
+    assert_eq!(row.participant_role.as_deref(), Some("builder"));
+    assert_eq!(
+        row.conversation_id.as_deref(),
+        Some(fixture.conversation_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn active_subagents_projection_applies_scope_owner_status_and_kind_filters() {
+    let fixture = running_attempt_fixture().await;
+
+    let other_execution = nomifun_common::generate_id();
+    assert!(
+        fixture
+            .execution_repo
+            .list_active_subagents(OWNER_ID, Some(&other_execution), false, 50, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "execution scope must not leak other aggregates"
+    );
+
+    let other_owner = "0190f5fe-7c00-7a00-8000-0000000000ff";
+    assert!(
+        fixture
+            .execution_repo
+            .list_active_subagents(other_owner, None, false, 50, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the projection must stay owner-scoped"
+    );
+
+    nomifun_db::sqlx::query("UPDATE agent_execution_steps SET kind = 'verify' WHERE step_id = ?")
+        .bind(&fixture.step_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .execution_repo
+            .list_active_subagents(OWNER_ID, None, false, 50, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "control steps are hidden unless explicitly requested"
+    );
+    assert_eq!(
+        fixture
+            .execution_repo
+            .list_active_subagents(OWNER_ID, None, true, 50, 0)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "include_control_steps must expose verify/judge/loop nodes"
+    );
+
+    nomifun_db::sqlx::query("UPDATE agent_execution_attempts SET status = 'completed' WHERE attempt_id = ?")
+        .bind(&fixture.attempt_id)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .execution_repo
+            .list_active_subagents(OWNER_ID, None, true, 50, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "settled attempts must disappear from the active projection"
+    );
+}
+
+#[tokio::test]
+async fn active_subagents_projection_excludes_terminal_executions() {
+    let fixture = running_attempt_fixture().await;
+
+    nomifun_db::sqlx::query(
+        "UPDATE agent_executions SET status = 'cancelled' WHERE execution_id = ?",
+    )
+    .bind(&fixture.execution_id)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        fixture
+            .execution_repo
+            .list_active_subagents(OWNER_ID, None, true, 50, 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "terminal executions must not keep subagents in the active projection"
+    );
+}

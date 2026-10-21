@@ -5,6 +5,14 @@
     "open": "Open collaborative tasks",
     "collapse": "Collapse collaborative tasks"
   },
+  "subagents": {
+    "title": "Active subagents",
+    "loading": "Loading subagents…",
+    "loadError": "Failed to load subagents: {{error}}",
+    "waitingQuestion": "Waiting for: {{question}}",
+    "roleFallback": "Subagent",
+    "activeCount": "{{count}} active"
+  },
   "status": {
     "execution": {
       "planning": "Planning",

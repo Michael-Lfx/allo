@@ -444,3 +444,41 @@ async fn side_question_with_mock_agent() {
         "Expected 200 or 500, got {status}"
     );
 }
+
+// ── Active subagent read model ─────────────────────────────────
+
+#[tokio::test]
+async fn list_active_subagents_route_is_available_and_owner_scoped() {
+    // Keep the companion store inside a disposable data root. The shared
+    // helper uses the crate-relative `data/` directory, which may carry a
+    // store written by a different checkout and make unrelated tests fail.
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory().await.unwrap();
+    let config = nomifun_app::AppConfig {
+        data_dir: data_dir.path().to_path_buf(),
+        work_dir: data_dir.path().to_path_buf(),
+        ..Default::default()
+    };
+    let services = nomifun_app::AppServices::from_config(db, &config).await.unwrap();
+    let mut app = nomifun_app::create_router(&services).await;
+    let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "Pass123!").await;
+
+    let req = get_with_token("/api/agent-executions/subagents", &token);
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["success"], true);
+    assert!(
+        json["data"].as_array().is_some_and(|items| items.is_empty()),
+        "a fresh owner must see an empty subagent projection: {json}"
+    );
+
+    // The static `/subagents` segment must win over `/{execution_id}`; an
+    // invalid execution scope is rejected instead of being treated as an ID.
+    let req = get_with_token(
+        "/api/agent-executions/subagents?execution_id=not-an-execution-id",
+        &token,
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

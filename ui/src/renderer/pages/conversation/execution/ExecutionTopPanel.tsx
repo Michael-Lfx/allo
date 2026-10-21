@@ -8,6 +8,7 @@ import { refreshOnVersionConflict } from './refreshOnVersionConflict';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import ExecutionPlanEditor, { type ExecutionModelPoolSelection } from './ExecutionPlanEditor';
 import ExecutionAdjustBox from './ExecutionAdjustBox';
+import ActiveSubagentsPanel from './ActiveSubagentsPanel';
 import { ExecutionControls } from './ExecutionControls';
 import { useExecution } from './ExecutionContext';
 import type { OpenStepPayload } from './DagCanvas';
@@ -347,6 +348,8 @@ const ExecutionTopPanel: React.FC<{ embedded?: boolean }> = ({ embedded = false 
           })}
         </div>
       )}
+
+      <ActiveSubagentsPanel executionId={executionId} />
 
       <div className={`${styles.body} flex-1 min-h-0`}>
         <Suspense fallback={<Spin className='m-auto' />}>

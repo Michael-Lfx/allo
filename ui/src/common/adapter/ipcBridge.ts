@@ -129,6 +129,8 @@ import type {
   TAdoptExecutionStepOutput,
   TAdjustAgentExecution,
   TAddExecutionSteps,
+  TActiveSubagent,
+  TActiveSubagentsQuery,
   TAgentExecution,
   TAgentExecutionDetail,
   TAgentExecutionEvent,
@@ -5212,6 +5214,20 @@ const fromApiExecutionAttempt = (raw: unknown): TExecutionAttempt => {
   };
 };
 
+const fromApiActiveSubagent = (raw: unknown): TActiveSubagent => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TActiveSubagent),
+    execution_id: parseExecutionId(value.execution_id),
+    step_id: parseExecutionStepId(value.step_id),
+    attempt_id: parseExecutionAttemptId(value.attempt_id),
+    participant_id:
+      value.participant_id == null ? null : parseExecutionParticipantId(value.participant_id),
+    conversation_id:
+      value.conversation_id == null ? null : parseConversationId(value.conversation_id),
+  };
+};
+
 const fromApiAgentExecutionDetail = (raw: unknown): TAgentExecutionDetail => {
   const value = executionWireObject(raw);
   return {
@@ -5268,6 +5284,21 @@ export const agentExecution = {
   list: withResponseMap(
     httpGet<unknown[], void>('/api/agent-executions'),
     (raw): TAgentExecution[] => raw.map(fromApiAgentExecution)
+  ),
+  listActiveSubagents: withResponseMap(
+    httpGet<unknown[], { query?: TActiveSubagentsQuery }>((p) => {
+      const params = new URLSearchParams();
+      const query = p.query;
+      if (query?.execution_id) params.set('execution_id', query.execution_id);
+      if (query?.include_control_steps !== undefined) {
+        params.set('include_control_steps', String(query.include_control_steps));
+      }
+      if (query?.limit !== undefined) params.set('limit', String(query.limit));
+      if (query?.offset !== undefined) params.set('offset', String(query.offset));
+      const suffix = params.toString();
+      return `/api/agent-executions/subagents${suffix ? `?${suffix}` : ''}`;
+    }),
+    (raw): TActiveSubagent[] => raw.map(fromApiActiveSubagent)
   ),
   create: withResponseMap(
     httpPost<unknown, TCreateAgentExecution>('/api/agent-executions'),
