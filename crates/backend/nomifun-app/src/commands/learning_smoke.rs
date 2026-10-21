@@ -14,18 +14,22 @@
 //!   **读数面非门禁**——唯一硬判据 = 全灭 0/n；探测调用直调内层 completer，
 //!   不混入管线档案（learnhub smoke-json 纪律）。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use nomifun_ai_agent::archiving_completer::ArchivingCompleter;
 use nomifun_ai_agent::LiveLearningCompleter;
-use nomifun_common::UserId;
+use nomifun_common::{ProviderId, UserId};
 use nomifun_db::sqlx;
 use nomifun_db::{IUserRepository, SqliteProviderModelRepository, SqliteProviderRepository, SqliteUserRepository};
-use nomifun_learning::{LearningCompleter, LearningService};
+use nomifun_learning::{
+    CourseGenerationMode, CourseKind, GenerateCourseRequest, GenerateLessonRequest,
+    LearningCompleter, LearningService,
+};
 
 use crate::cli::{Cli, LearningSmokeCommand};
 
@@ -46,6 +50,15 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_content(cli, db, provider, model).await,
+        LearningSmokeCommand::Course {
+            dir,
+            goal,
+            name,
+            lessons,
+            db,
+            provider,
+            model,
+        } => run_course(cli, dir, goal, name, lessons, db, provider, model).await,
         LearningSmokeCommand::Mount {
             db,
             provider,
@@ -91,6 +104,8 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
 
 struct SmokeWiring {
     service: Arc<LearningService>,
+    /// 传统课程冒烟档要先把本地 md 目录写成知识库，再交给生成管线采样。
+    knowledge: Arc<nomifun_knowledge::KnowledgeService>,
     pool: nomifun_db::sqlx::SqlitePool,
     owner: UserId,
     /// 保持临时目录存活到命令结束（缺省从零临时库时非空）。
@@ -173,7 +188,20 @@ async fn wire(
         ),
     ));
     let service = Arc::new(LearningService::new(pool.clone()));
-    service.set_generation_dependencies(knowledge_service, pipeline);
+    service.set_generation_dependencies(knowledge_service.clone(), pipeline);
+    // 传统课程（知识库 → 大纲）走与应用同款的双循环大纲引擎；此前的
+    // smoke 档只覆盖学习图/课时内容，这条管线一直没有无头真机入口。
+    service.set_course_outline_engine(Arc::new(
+        nomifun_ai_agent::LiveCourseOutlineAgentEngine {
+            service: service.clone(),
+            deps: nomifun_ai_agent::OneShotDeps {
+                provider_repo: provider_repo.clone() as Arc<dyn nomifun_db::IProviderRepository>,
+                provider_model_repo: provider_model_repo.clone(),
+                encryption_key,
+                workspace: cli.data_dir.clone(),
+            },
+        },
+    ));
     // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
     // 自行解析 provider（OneShotDeps），不经管线 completer。
     service.set_lesson_engine(Arc::new(
@@ -208,6 +236,7 @@ async fn wire(
     Ok((
         SmokeWiring {
             service,
+            knowledge: knowledge_service,
             pool,
             owner: UserId::parse(&owner_id)?,
             _temp,
@@ -233,6 +262,403 @@ impl nomifun_realtime::UserEventSink for NoopEventSink {
         _event: nomifun_api_types::WebSocketMessage<serde_json::Value>,
     ) {
     }
+}
+
+/// 递归收集目录下的 Markdown 文件，返回 `(库内相对路径, 正文)`，按路径
+/// 字典序排序——与采样器的结构信号同一口径（课程式库的 `01-`…`09-`
+/// 前缀就是阅读顺序）。
+fn collect_markdown_files(root: &Path) -> Result<Vec<(String, String)>> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<()> {
+        let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(dir)?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                walk(root, &path, out)?;
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                let relative = path
+                    .strip_prefix(root)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                out.push((relative, content));
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+/// 多库采样路径带 `{库名}/rel` 命名空间；单库是裸路径。两种形状都归一到
+/// 库内相对路径，才能和上传清单比对。
+fn strip_kb_namespace<'a>(path: &'a str, kb_name: &str) -> &'a str {
+    path.strip_prefix(kb_name)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(path)
+}
+
+fn chapter_key(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn chapter_number(path: &str) -> Option<u32> {
+    let head = chapter_key(path).split('-').next()?;
+    // 两种常见的教材命名：`01-标题.md` 与 `ch01-01-标题.md`。
+    let digits = head.strip_prefix("ch").unwrap_or(head);
+    digits.parse().ok()
+}
+
+/// 有 N 个课时要抽看正文时，按课程顺序均匀取点；只要一节就取正中，
+/// 避免总看“前言/安装”这类入口课而看不到后半本教材的接地情况。
+fn lesson_picks(total: usize, wanted: usize) -> Vec<usize> {
+    if total == 0 || wanted == 0 {
+        return Vec::new();
+    }
+    if wanted >= total {
+        return (0..total).collect();
+    }
+    if wanted == 1 {
+        return vec![total / 2];
+    }
+    (0..wanted)
+        .map(|index| index * (total - 1) / (wanted - 1))
+        .collect()
+}
+
+/// `learning-smoke course`：传统课程（知识库 → 大纲）真机冒烟。先用本地
+/// md 目录建一个受管知识库，再走与应用同款的 `generate_course`（目标感知
+/// 采样 + 双循环大纲 + 导入），最后按需生成若干课时正文。机械判据只锁
+/// “管线走通 + 来源可解析”；章节覆盖率、顺序与采样披露作为负优化读数
+/// 打印——完整教材被截断/乱序是产品问题，不应被冒烟入口藏起来。
+#[allow(clippy::too_many_arguments)]
+async fn run_course(
+    cli: &Cli,
+    dir: PathBuf,
+    goal: String,
+    name: Option<String>,
+    lessons: usize,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if goal.trim().is_empty() {
+        eprintln!("--goal must not be empty");
+        return Ok(ExitCode::from(2));
+    }
+    if !dir.is_dir() {
+        eprintln!("--dir must be an existing directory: {}", dir.display());
+        return Ok(ExitCode::from(2));
+    }
+    let files = collect_markdown_files(&dir)?;
+    if files.is_empty() {
+        eprintln!("--dir contains no markdown files: {}", dir.display());
+        return Ok(ExitCode::from(2));
+    }
+    let total_bytes: usize = files.iter().map(|(_, content)| content.len()).sum();
+
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let base_name = name.unwrap_or_else(|| {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "learning-smoke-kb".to_owned())
+    });
+    let base = wiring
+        .knowledge
+        .create_base(&base_name, "learning-smoke course KB", None, None)
+        .await?;
+    let kb_name = base.name.clone();
+    let kb_id = base.knowledge_base_id.clone();
+    let written = wiring
+        .knowledge
+        .upload_files_batch(kb_id.as_str(), &files)
+        .await?;
+    println!(
+        "[1/3] knowledge base {} ({}): {} files, {} bytes written",
+        kb_id.as_str(),
+        kb_name,
+        written,
+        total_bytes
+    );
+
+    let uploaded_paths: BTreeSet<String> =
+        files.iter().map(|(path, _)| path.clone()).collect();
+    let provider_id = provider
+        .as_deref()
+        .map(ProviderId::parse)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("invalid provider id: {error}"))?;
+    let request = GenerateCourseRequest {
+        knowledge_base_id: None,
+        knowledge_base_ids: vec![kb_id],
+        description: None,
+        domain: None,
+        provider_id: provider_id.clone(),
+        model: model.clone(),
+        mode: CourseGenerationMode::OnDemand,
+        course_kind: CourseKind::Traditional,
+        proficiency_statement: None,
+        learner_basis: None,
+        teaching_style: None,
+        goal: Some(goal.trim().to_owned()),
+    };
+    println!("[2/3] goal-aware sampling + outline generation …");
+    let detail = match wiring.service.generate_course(&wiring.owner, request).await {
+        Ok(detail) => detail,
+        Err(error) => {
+            eprintln!("course generation FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "[3/3] course {} — {} ({} modules, {} lessons)",
+        detail.course.id.as_str(),
+        detail.course.title,
+        detail.modules.len(),
+        detail.course.total_lessons
+    );
+    match detail.course.sampling.as_ref() {
+        Some(sampling) => {
+            println!(
+                "sampling: total={} sampled={} coherence={} low_score={} goal_fallback={}",
+                sampling.total_files,
+                sampling.sampled_files,
+                sampling.coherence_files,
+                sampling.low_score_files,
+                sampling.goal_fallback
+            );
+            if !sampling.low_score_examples.is_empty() {
+                println!(
+                    "  low-score examples: {}",
+                    sampling.low_score_examples.join(", ")
+                );
+            }
+        }
+        None => println!("sampling: <none>"),
+    }
+
+    let mut all_lessons = Vec::new();
+    let mut referenced_chapters = BTreeSet::new();
+    let mut unresolved_sources = Vec::new();
+    let mut lessons_without_source = Vec::new();
+    let mut module_centers: Vec<(usize, u32, String)> = Vec::new();
+    for (module_index, module) in detail.modules.iter().enumerate() {
+        println!("\n## module: {}", module.title);
+        let mut module_chapters: Vec<u32> = Vec::new();
+        for lesson in &module.lessons {
+            let sources: Vec<&nomifun_learning::SourceSpan> = if lesson.sources.is_empty() {
+                lesson.source.iter().collect()
+            } else {
+                lesson.sources.iter().collect()
+            };
+            let mut relative_paths = Vec::new();
+            for source in &sources {
+                let relative = strip_kb_namespace(&source.path, &kb_name);
+                if !uploaded_paths.contains(relative) {
+                    unresolved_sources.push(format!("{} -> {}", lesson.title, source.path));
+                }
+                let key = chapter_key(relative).to_owned();
+                referenced_chapters.insert(key);
+                if let Some(number) = chapter_number(relative) {
+                    // 模块的结构位置用“被引章节的中位数”：低章多半是前置
+                    // 引用（讲 rehash 回引第 03 章），高章多半是对照
+                    // （讲 HashMap 顺带提 TreeMap），两者都不该把模块
+                    // 整体抬到错误的位置。
+                    module_chapters.push(number);
+                }
+                relative_paths.push(relative.to_owned());
+            }
+            if sources.is_empty() {
+                lessons_without_source.push(lesson.title.clone());
+            }
+            println!(
+                "- [{}] {}  <- {}",
+                lesson.id.as_str(),
+                lesson.title,
+                if relative_paths.is_empty() {
+                    "<no source>".to_owned()
+                } else {
+                    relative_paths.join(", ")
+                }
+            );
+            all_lessons.push(lesson);
+        }
+        if !module_chapters.is_empty() {
+            module_chapters.sort_unstable();
+            let median = module_chapters[module_chapters.len() / 2];
+            module_centers.push((module_index + 1, median, module.title.clone()));
+        }
+    }
+
+    let uploaded_chapters: BTreeSet<String> = uploaded_paths
+        .iter()
+        .map(|path| chapter_key(path).to_owned())
+        .collect();
+    let missing_chapters: Vec<&String> = uploaded_chapters
+        .difference(&referenced_chapters)
+        .collect();
+    // 前言/目录不是教学内容；把“正文章覆盖”单独列一行，避免 18/19 的
+    // 读数被误读成正文缺一章。
+    let content_chapters: BTreeSet<String> = uploaded_chapters
+        .iter()
+        .filter(|chapter| chapter_number(chapter).is_some_and(|number| number >= 2))
+        .cloned()
+        .collect();
+    let missing_content: Vec<&String> = content_chapters
+        .difference(&referenced_chapters)
+        .collect();
+    let mut order_violations = Vec::new();
+    let mut highest_seen = 0u32;
+    for (position, number, title) in &module_centers {
+        if *number < highest_seen {
+            order_violations.push(format!(
+                "module {position} ({title}) centers on chapter {number:02} after a module centered on chapter {highest_seen:02}"
+            ));
+        }
+        highest_seen = highest_seen.max(*number);
+    }
+    println!("\n--- negative-optimization readings ---");
+    println!(
+        "file coverage: {}/{} referenced (missing: {})",
+        uploaded_chapters.len() - missing_chapters.len(),
+        uploaded_chapters.len(),
+        if missing_chapters.is_empty() {
+            "<none>".to_owned()
+        } else {
+            missing_chapters
+                .iter()
+                .map(|chapter| chapter.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    println!(
+        "content coverage (chapters 02+): {}/{} referenced (missing: {})",
+        content_chapters.len() - missing_content.len(),
+        content_chapters.len(),
+        if missing_content.is_empty() {
+            "<none>".to_owned()
+        } else {
+            missing_content
+                .iter()
+                .map(|chapter| chapter.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    println!(
+        "module order violations: {}",
+        if order_violations.is_empty() {
+            "<none>".to_owned()
+        } else {
+            order_violations.join("; ")
+        }
+    );
+    println!(
+        "lessons without a source: {}",
+        if lessons_without_source.is_empty() {
+            "<none>".to_owned()
+        } else {
+            lessons_without_source.join(", ")
+        }
+    );
+    println!(
+        "unresolved source paths: {}",
+        if unresolved_sources.is_empty() {
+            "<none>".to_owned()
+        } else {
+            unresolved_sources.join("; ")
+        }
+    );
+
+    if detail.modules.is_empty() || all_lessons.is_empty() {
+        eprintln!("course has no modules/lessons");
+        return Ok(ExitCode::from(2));
+    }
+    if !unresolved_sources.is_empty() {
+        eprintln!("course references source paths that do not exist in the uploaded base");
+        return Ok(ExitCode::from(2));
+    }
+    if !lessons_without_source.is_empty() {
+        eprintln!("kb-flow course has lessons without a source");
+        return Ok(ExitCode::from(2));
+    }
+
+    let picks = lesson_picks(all_lessons.len(), lessons);
+    let mut body_failures = 0usize;
+    for (ordinal, index) in picks.iter().enumerate() {
+        let lesson = all_lessons[*index];
+        println!(
+            "\n### lesson body {}/{}: [{}] {}",
+            ordinal + 1,
+            picks.len(),
+            lesson.id.as_str(),
+            lesson.title
+        );
+        let request = GenerateLessonRequest {
+            provider_id: provider_id.clone(),
+            model: model.clone(),
+            feedback: None,
+        };
+        match wiring
+            .service
+            .generate_lesson_content(&wiring.owner, &lesson.id, &request)
+            .await
+        {
+            Ok(view) => {
+                let body_chars: usize = view
+                    .sections
+                    .iter()
+                    .map(|section| section.body_md.chars().count())
+                    .sum();
+                println!(
+                    "generated={} sections={} body_chars={} activities={}",
+                    view.generated,
+                    view.sections.len(),
+                    body_chars,
+                    view.activities.len()
+                );
+                for section in &view.sections {
+                    println!(
+                        "  - {} [{}] {} chars{}",
+                        section.title,
+                        section.section_key,
+                        section.body_md.chars().count(),
+                        if section.degraded { " degraded" } else { "" }
+                    );
+                }
+                let preview: String = view
+                    .sections
+                    .iter()
+                    .flat_map(|section| section.body_md.chars())
+                    .take(600)
+                    .collect();
+                println!("  preview: {}", preview.replace('\n', " "));
+            }
+            Err(error) => {
+                body_failures += 1;
+                eprintln!("lesson body generation FAILED for {}: {error}", lesson.title);
+            }
+        }
+    }
+    if body_failures > 0 {
+        return Ok(ExitCode::from(2));
+    }
+
+    println!("\nEXIT=0");
+    Ok(ExitCode::SUCCESS)
 }
 
 /// `learning-smoke structure`：从零（或 --db）立一门最小学习图课程，跑结构
