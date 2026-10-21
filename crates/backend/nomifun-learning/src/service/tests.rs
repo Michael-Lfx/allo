@@ -8512,6 +8512,277 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(detail_view.duplicates.len(), 200, "详情 duplicates 限长 200");
     }
 
+    // ── t5 WS 阶段事件 + 成本门估算接口 ────────────────────────────────
+
+    /// 跑一次成功的新管建课,返回 (detail, 课程事件 phase 序列, 事件载荷表)。
+    async fn run_kb_course_with_capture(
+        fail_draft: bool,
+        expand_ok: bool,
+    ) -> (
+        CourseDetail,
+        Vec<String>,
+        Vec<serde_json::Value>,
+        UserId,
+    ) {
+        let (service, _knowledge, _router, owner_id, kb_id) =
+            structure_wiring_service_with(fail_draft, expand_ok).await;
+        let events = Arc::new(CapturingBroadcaster::default());
+        service.set_event_sink(LearningEventEmitter::new(
+            events.clone(),
+            Arc::from(owner_id.as_str()),
+        ));
+        service.set_course_outline_engine(Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        }));
+        let detail = service
+            .generate_course(
+                &owner_id,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: Some(kb_id.clone()),
+                    description: None,
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: Some("学会排序".into()),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let captured = events.events.lock().unwrap();
+        let course_events: Vec<&(String, serde_json::Value)> = captured
+            .iter()
+            .filter(|(name, _)| name == "learning.course-generation")
+            .collect();
+        assert!(!course_events.is_empty(), "课程事件流必须有帧");
+        let phases: Vec<String> = course_events
+            .iter()
+            .map(|(_, payload)| payload["phase"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        let payloads: Vec<serde_json::Value> =
+            course_events.iter().map(|(_, payload)| payload.clone()).collect();
+        (detail, phases, payloads, owner_id)
+    }
+
+    /// t5 WS:新管线的阶段事件按序发出(triage → source_plan → coverage),
+    /// 帧载荷带读数;started/completed 等既有 phase 不变、顺序不打乱。
+    #[tokio::test]
+    async fn kb_pipeline_emits_triage_source_plan_and_coverage_phases() {
+        let (_detail, phases, payloads, _owner) = run_kb_course_with_capture(false, true).await;
+
+        let position = |phase: &str| phases.iter().position(|p| p == phase);
+        let triage_started = position("triage_started").expect("triage_started 必须发出");
+        let triage_completed =
+            position("triage_completed").expect("triage_completed 必须发出");
+        let source_plan_started =
+            position("source_plan_started").expect("source_plan_started 必须发出");
+        let source_plan_ready =
+            position("source_plan_ready").expect("source_plan_ready 必须发出");
+        let coverage_ready = position("coverage_ready").expect("coverage_ready 必须发出");
+        let started = position("started").expect("started 保留");
+        let publishing = position("publishing").expect("publishing 保留");
+        let completed = position("completed").expect("completed 保留");
+        assert!(triage_started < triage_completed, "分诊先始后终");
+        assert!(
+            triage_completed < source_plan_started && source_plan_started < source_plan_ready,
+            "计划阶段在分诊之后"
+        );
+        assert!(source_plan_ready < coverage_ready, "覆盖读数在计划之后");
+        assert!(coverage_ready < started, "旧 phase 顺序不因新阶段打乱");
+        assert!(started < publishing && publishing < completed);
+
+        // 帧载荷:triage_completed 带七角色计数 + degraded;source_plan_ready
+        // 带章/概念/gaps;coverage_ready 带 covered/skipped/fallback。
+        let triage_frame = &payloads[triage_completed];
+        assert!(triage_frame["counts"]["total"].as_u64().unwrap_or(0) >= 2);
+        assert!(triage_frame["counts"]["core"].as_u64().unwrap_or(0) >= 1);
+        assert!(
+            triage_frame["degraded"].is_boolean(),
+            "degraded 必须显式携带(规则分诊可见)"
+        );
+        let plan_frame = &payloads[source_plan_ready];
+        assert!(plan_frame["chapters"].as_u64().unwrap_or(0) >= 1);
+        assert!(plan_frame["concepts"].is_u64());
+        assert!(plan_frame["gaps"].is_array(), "gaps 以数组披露");
+        let coverage_frame = &payloads[coverage_ready];
+        assert!(coverage_frame["topics_covered"].as_u64().unwrap_or(0) >= 1);
+        assert!(coverage_frame["topics_skipped"].is_u64());
+        assert!(coverage_frame["fallback"].is_u64());
+    }
+
+    /// t5 WS:回退路径(展开失败 → 大纲引擎)只发 triage/plan 阶段事件,无
+    /// coverage_ready;描述流零 triage 事件(旧客户端行为不变)。
+    #[tokio::test]
+    async fn fallback_and_description_flows_do_not_emit_coverage_ready() {
+        let (_detail, phases, _payloads, _owner) = run_kb_course_with_capture(false, false).await;
+        assert!(
+            phases.iter().any(|p| p == "triage_completed"),
+            "回退路径分诊照常可见"
+        );
+        assert!(
+            !phases.iter().any(|p| p == "coverage_ready"),
+            "展开未成功 → 不发 coverage_ready(不伪造覆盖读数)"
+        );
+        assert!(phases.iter().any(|p| p == "completed"), "回退仍走完旧 phase");
+
+        // 描述流:零新阶段事件。
+        let (service, _knowledge, owner) = job_test_service().await;
+        let events = Arc::new(CapturingBroadcaster::default());
+        service.set_event_sink(LearningEventEmitter::new(
+            events.clone(),
+            Arc::from(owner.as_str()),
+        ));
+        service.set_course_outline_engine(Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        }));
+        let detail = service
+            .generate_course(
+                &owner,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: None,
+                    description: Some("零基础期权入门".into()),
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: None,
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.course.total_lessons, 1);
+        let captured = events.events.lock().unwrap();
+        let course_phases: Vec<String> = captured
+            .iter()
+            .filter(|(name, _)| name == "learning.course-generation")
+            .map(|(_, payload)| payload["phase"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            !course_phases.iter().any(|p| p.starts_with("triage")
+                || p.starts_with("source_plan")
+                || p.starts_with("coverage")),
+            "描述流零结构发现阶段事件,实际 {course_phases:?}"
+        );
+    }
+
+    /// t5 成本门估算:小库(≤40 文件)不触发确认;估算走规则分诊(零 LLM,
+    /// degraded=true)+ 噪声/重复跳过摘要;批数/调用量/耗时读数可读。
+    #[tokio::test]
+    async fn estimate_endpoint_reports_rule_triage_without_confirmation_for_small_kbs() {
+        let (service, knowledge, owner) = job_test_service().await;
+        let base = knowledge
+            .quick_create_base(Some("小库"), None, "blank", None, None, None, None)
+            .await
+            .unwrap();
+        write_kb_file(&base.base.root_path, "ch01.md", "# 排序\n\n正文。");
+        write_kb_file(&base.base.root_path, "ch02.md", "# 查找\n\n正文。");
+        write_kb_file(&base.base.root_path, "license.md", "# License\n\nMIT license text.");
+
+        let estimate = service
+            .estimate_course_generation(
+                &owner,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
+                    description: None,
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: Some("学会排序".into()),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(estimate.triage.total_files, 3);
+        assert!(!estimate.needs_confirm, "3 文件远低于 40 文件阈值");
+        assert!(estimate.triage.degraded, "估算走规则分诊(未做 LLM 判定)");
+        assert!(estimate.estimated_llm_calls >= 1);
+        assert!(estimate.estimated_batches >= 1);
+        assert!(estimate.estimated_seconds >= 1);
+        assert!(
+            !estimate.skipped_examples.is_empty(),
+            "license 类元数据噪声必须有跳过摘要(path + reason)"
+        );
+        assert_eq!(estimate.skipped_examples[0].path, "license.md");
+        assert!(!estimate.skipped_examples[0].reason.is_empty());
+    }
+
+    /// t5 成本门阈值:>40 文件触发确认;>20 次预估调用同样触发(大库两把尺
+    /// 都拦);描述流直接不需要确认。
+    #[tokio::test]
+    async fn estimate_endpoint_flags_large_kbs_and_passes_description_flow() {
+        let (service, knowledge, owner) = job_test_service().await;
+        let base = knowledge
+            .quick_create_base(Some("大库"), None, "blank", None, None, None, None)
+            .await
+            .unwrap();
+        for index in 0..45 {
+            write_kb_file(
+                &base.base.root_path,
+                &format!("ch{index:02}.md"),
+                &format!("# 第{index}章\n\n正文要点。"),
+            );
+        }
+        let kb_request = GenerateCourseRequest {
+            course_kind: crate::models::CourseKind::Traditional,
+            teaching_style: None,
+            knowledge_base_id: Some(base.base.knowledge_base_id.parse().unwrap()),
+            description: None,
+            domain: None,
+            provider_id: None,
+            model: None,
+            mode: crate::models::CourseGenerationMode::OnDemand,
+            goal: Some("通读全书".into()),
+            proficiency_statement: None,
+            learner_basis: None,
+            knowledge_base_ids: Vec::new(),
+        };
+        let estimate = service.estimate_course_generation(&owner, kb_request).await.unwrap();
+        assert_eq!(estimate.triage.total_files, 45);
+        assert!(estimate.needs_confirm, ">40 文件必须确认");
+        assert!(estimate.estimated_llm_calls > 3, "45 文件至少两批分诊 + 计划 + 展开");
+
+        // 描述流:无知识库 → 零估算面,不需要确认。
+        let estimate = service
+            .estimate_course_generation(
+                &owner,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: None,
+                    description: Some("零基础期权入门".into()),
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: None,
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!estimate.needs_confirm);
+        assert_eq!(estimate.triage.total_files, 0);
+    }
+
     /// t4 事务性:导入中途失败(快照列违反 069 CHECK——非对象 JSON 在
     /// course INSERT 处被拒)→ 课程行与 modules/lessons **零残留**,不出现
     /// 「课程行有 plan、modules 没有」的半成品。

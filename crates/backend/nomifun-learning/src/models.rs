@@ -1586,6 +1586,29 @@ pub struct CourseSourcePlanExcludedView {
     pub reason: String,
 }
 
+/// t5 成本门确认阈值（票面定案,后端单源）:超过任一阈值,建课前必须展示
+/// 估算并让用户确认;低于阈值自动跑。
+pub const COURSE_ESTIMATE_CONFIRM_FILES: usize = 40;
+pub const COURSE_ESTIMATE_CONFIRM_CALLS: usize = 20;
+
+/// t5 成本门估算视图:提交建课前的一次**规则分诊**读数（零 LLM、
+/// `triage.degraded=true`——「规则分诊,未做 LLM 判定」在估算里就如实标出）。
+/// `needs_confirm` 由后端按 [`COURSE_ESTIMATE_CONFIRM_FILES`]/
+/// [`COURSE_ESTIMATE_CONFIRM_CALLS`] 判定;描述流全零、不确认。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseGenerationEstimateView {
+    pub total_files: usize,
+    pub estimated_batches: usize,
+    pub estimated_llm_calls: usize,
+    /// 粗估耗时（秒,按调用数 × 经验常数;仅供确认弹窗展示,不是承诺）。
+    pub estimated_seconds: u64,
+    pub needs_confirm: bool,
+    pub triage: CourseSourcePlanTriageView,
+    /// 规则判定的跳过摘要（噪声/重复,path + role + reason,限长 ≤10）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_examples: Vec<CourseSourcePlanExcludedView>,
+}
+
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
 /// ——建议先复习供给节点（候选仍可从学习记录进入，软闸只降推荐优先级）。
 #[derive(Debug, Clone, Serialize)]

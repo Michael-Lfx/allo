@@ -34,6 +34,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
+        .route(
+            "/api/learning/courses/generate/estimate",
+            post(estimate_course_generation),
+        )
         .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
         .route("/api/learning/generation-tasks", get(list_generation_tasks))
         .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
@@ -221,6 +225,18 @@ async fn generate_course(
     // point, which ends the loop and releases the in-flight slot.
     Ok(Json(ApiResponse::ok(
         state.service.generate_course(&user.id, request).await?,
+    )))
+}
+
+/// t5 成本门估算：提交建课前对知识库流做一次规则分诊（零 LLM），返回
+/// 文件数/批数/预估调用/耗时与 `needs_confirm`（阈值后端单源）。
+async fn estimate_course_generation(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<GenerateCourseRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseGenerationEstimateView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.estimate_course_generation(&user.id, request).await?,
     )))
 }
 
