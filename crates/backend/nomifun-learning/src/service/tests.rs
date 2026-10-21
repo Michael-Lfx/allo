@@ -7945,20 +7945,21 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .source_plan
             .as_ref()
             .expect("新课 → 快照摘要可见");
-        assert!(view.available);
-        assert_eq!(view.version, Some(1));
+        assert!(view.snapshot.available);
+        assert_eq!(view.snapshot.version, Some(1));
         assert_eq!(view.triage.core, 1);
-        assert_eq!(view.coverage.chapters, 1);
-        assert_eq!(view.coverage.lessons, 1);
-        assert_eq!(view.coverage.files, 1);
-        assert_eq!(view.coverage.topics, 1);
+        assert_eq!(
+            view.coverage.topics_covered, 1,
+            "t3 覆盖面的 topic 对账(夹具 1 个 covered topic)"
+        );
+        assert_eq!(view.coverage.topics_skipped, 0);
         // 列表面同一视图(parse_sampling_view 同款双消费)。
         let list = service.list_courses(&owner).await.unwrap();
         let listed = list
             .iter()
             .find(|course| course.id == course_id)
             .expect("新课在列");
-        assert!(listed.source_plan.as_ref().unwrap().available);
+        assert!(listed.source_plan.as_ref().unwrap().snapshot.available);
 
         // 直接落一行课程(旧课程/坏形状种子),复用最小 INSERT。
         async fn seed_course(
@@ -8009,8 +8010,8 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .source_plan
             .as_ref()
             .expect("未知版本 → 视图存在但降级");
-        assert!(!view.available, "未知版本降级,不崩溃不伪造");
-        assert_eq!(view.version, Some(99));
+        assert!(!view.snapshot.available, "未知版本降级,不崩溃不伪造");
+        assert_eq!(view.snapshot.version, Some(99));
 
         // 态 4:v1 但形状损坏(历史手改等) → available=false 不报错。
         let broken_id = seed_course(&service,
@@ -8026,9 +8027,489 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .source_plan
             .as_ref()
             .expect("坏形状 → 视图存在但降级");
-        assert!(!view.available);
-        assert_eq!(view.version, Some(1));
+        assert!(!view.snapshot.available);
+        assert_eq!(view.snapshot.version, Some(1));
         assert_eq!(view.triage.core, 0, "不可信计数置零");
+    }
+
+    // ── t5 DTO 细化:triage/plan/coverage/duplicates/snapshot 分面─────────
+
+    /// t5 DTO 细化的富夹具:七角色 + 排除/重复 + 计划(章/概念/边/gaps)+
+    /// 覆盖(covered/skipped/uncertain/fallback/anchor_uncertain)全量字段。
+    fn refined_source_plan_fixture() -> crate::generation::CourseSourcePlanSnapshot {
+        use crate::generation::{
+            ChapterContentType, ConceptEdgeRelation, ConceptGraph, ConceptGraphEdge,
+            ConceptGraphNode, ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport,
+            ExpansionTopicReport, FileCoverageStatus, KbFileKind, KbInventory, KbInventoryBase,
+            KbInventoryFile, KbScanScope, KbTriageCounts, KbTriageDuplicate, KbTriageExclusion,
+            KbTriageReport, KbTriageRole, PlannedChapter, SourceAnchor, SourceCoverage,
+            SourcePlan, TopicStatus,
+        };
+        let inventory = KbInventory {
+            bases: vec![KbInventoryBase {
+                kb_id: "kb-1".to_owned(),
+                name: "教材".to_owned(),
+                namespace: String::new(),
+                total_files: 7,
+            }],
+            files: (0..7)
+                .map(|index| KbInventoryFile {
+                    rel_path: format!("ch{index:02}.md"),
+                    kb_id: "kb-1".to_owned(),
+                    size: 128,
+                    modified_at: Some(1),
+                    content_hash: "a".repeat(64),
+                    headings: vec![format!("第{index}章")],
+                    preview: "预览。".to_owned(),
+                    kind: KbFileKind::Markdown,
+                })
+                .collect(),
+            total_files: 7,
+            total_bytes: 896,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        };
+        let triage = KbTriageReport {
+            files: Vec::new(),
+            counts: KbTriageCounts {
+                core: 2,
+                prerequisite: 1,
+                practice: 1,
+                mixed: 1,
+                noise: 1,
+                duplicate: 1,
+                uncertain: 1,
+            },
+            excluded: vec![
+                KbTriageExclusion {
+                    path: "receipt.md".to_owned(),
+                    role: KbTriageRole::Noise,
+                    reason: "元数据词干命中(收据)".to_owned(),
+                },
+                KbTriageExclusion {
+                    path: "ch00-copy.md".to_owned(),
+                    role: KbTriageRole::Duplicate,
+                    reason: "同内容哈希".to_owned(),
+                },
+            ],
+            duplicates: vec![KbTriageDuplicate {
+                path: "ch00-copy.md".to_owned(),
+                duplicate_of: "ch00.md".to_owned(),
+                canonical_reason: "原文优先".to_owned(),
+            }],
+            degraded: true,
+            warnings: vec!["规则分诊降级".to_owned()],
+        };
+        let plan = SourcePlan {
+            goal: "学会排序".to_owned(),
+            evidence: crate::generation::SourceEvidence {
+                gaps: vec!["外排序未覆盖".to_owned(), "跳表未覆盖".to_owned()],
+                ..Default::default()
+            },
+            concept_graph: ConceptGraph {
+                nodes: (0..3)
+                    .map(|index| ConceptGraphNode {
+                        id: format!("c{index}"),
+                        label: format!("概念{index}"),
+                        description: String::new(),
+                        weight: 1.0,
+                    })
+                    .collect(),
+                edges: vec![
+                    ConceptGraphEdge {
+                        src: "c0".to_owned(),
+                        dst: "c1".to_owned(),
+                        relation: ConceptEdgeRelation::DependsOn,
+                        rationale: String::new(),
+                    },
+                    ConceptGraphEdge {
+                        src: "c1".to_owned(),
+                        dst: "c2".to_owned(),
+                        relation: ConceptEdgeRelation::Extends,
+                        rationale: String::new(),
+                    },
+                ],
+            },
+            chapters: vec![
+                PlannedChapter {
+                    title: "排序入门".to_owned(),
+                    summary: String::new(),
+                    learning_objectives: Vec::new(),
+                    covers: vec!["c0".to_owned(), "c1".to_owned()],
+                    prerequisites: Vec::new(),
+                    source_anchors: vec![
+                        SourceAnchor {
+                            kb_id: "kb-1".to_owned(),
+                            rel_path: "ch01.md".to_owned(),
+                            heading_or_anchor: Some("第1章".to_owned()),
+                            paragraph: None,
+                            snippet: None,
+                            anchor_uncertain: false,
+                        },
+                        SourceAnchor {
+                            kb_id: "kb-1".to_owned(),
+                            rel_path: "ch02.md".to_owned(),
+                            heading_or_anchor: None,
+                            paragraph: Some(1),
+                            snippet: None,
+                            anchor_uncertain: false,
+                        },
+                    ],
+                    content_type: ChapterContentType::Concept,
+                },
+                PlannedChapter {
+                    title: "附录".to_owned(),
+                    summary: String::new(),
+                    learning_objectives: Vec::new(),
+                    covers: vec!["c2".to_owned()],
+                    prerequisites: Vec::new(),
+                    source_anchors: Vec::new(),
+                    content_type: ChapterContentType::Reference,
+                },
+            ],
+            coverage: crate::generation::CoverageLedger::default(),
+            warnings: vec!["计划警告".to_owned()],
+            degraded: false,
+            plan_hash: String::new(),
+        };
+        let anchor = |path: &str, uncertain: bool| SourceAnchor {
+            kb_id: "kb-1".to_owned(),
+            rel_path: path.to_owned(),
+            heading_or_anchor: Some(format!("{path} 标题")),
+            paragraph: None,
+            snippet: None,
+            anchor_uncertain: uncertain,
+        };
+        let coverage = SourceCoverage {
+            goal: "学会排序".to_owned(),
+            chapters: vec![
+                ExpansionChapterReport {
+                    chapter: "排序入门".to_owned(),
+                    modules: vec!["排序入门".to_owned()],
+                    lessons: 3,
+                    skipped: false,
+                    skip_reason: None,
+                },
+                ExpansionChapterReport {
+                    chapter: "附录".to_owned(),
+                    modules: Vec::new(),
+                    lessons: 0,
+                    skipped: true,
+                    skip_reason: Some("参考材料,无教学价值段".to_owned()),
+                },
+            ],
+            lessons: vec![
+                ExpansionLessonReport {
+                    title: "排序入门".to_owned(),
+                    module: "排序入门".to_owned(),
+                    chapter: "排序入门".to_owned(),
+                    sources: vec![anchor("ch01.md", false)],
+                    est: 10,
+                    content_type: ChapterContentType::Concept,
+                    fallback: false,
+                    anchor_uncertain: false,
+                },
+                ExpansionLessonReport {
+                    title: "附录兜底课".to_owned(),
+                    module: "排序入门".to_owned(),
+                    chapter: "排序入门".to_owned(),
+                    sources: vec![anchor("ch02.md", false)],
+                    est: 10,
+                    content_type: ChapterContentType::Concept,
+                    fallback: true,
+                    anchor_uncertain: false,
+                },
+                ExpansionLessonReport {
+                    title: "练习课".to_owned(),
+                    module: "排序入门".to_owned(),
+                    chapter: "排序入门".to_owned(),
+                    sources: vec![anchor("ch05.md", true)],
+                    est: 10,
+                    content_type: ChapterContentType::Practice,
+                    fallback: false,
+                    anchor_uncertain: true,
+                },
+            ],
+            files: vec![
+                ExpansionFileReport {
+                    path: "ch01.md".to_owned(),
+                    role: KbTriageRole::Core,
+                    lessons: vec!["排序入门".to_owned()],
+                    status: FileCoverageStatus::Covered,
+                },
+                ExpansionFileReport {
+                    path: "ch03.md".to_owned(),
+                    role: KbTriageRole::Prerequisite,
+                    lessons: vec!["前置课".to_owned()],
+                    status: FileCoverageStatus::Covered,
+                },
+                ExpansionFileReport {
+                    path: "ch04.md".to_owned(),
+                    role: KbTriageRole::Practice,
+                    lessons: vec!["练习课".to_owned()],
+                    status: FileCoverageStatus::Covered,
+                },
+            ],
+            topics: vec![
+                ExpansionTopicReport {
+                    topic_id: "t1".to_owned(),
+                    label: "比较排序".to_owned(),
+                    anchor: anchor("ch01.md", false),
+                    assigned_lessons: vec!["排序入门".to_owned()],
+                    status: TopicStatus::Covered,
+                    reason: None,
+                },
+                ExpansionTopicReport {
+                    topic_id: "t2".to_owned(),
+                    label: "前置:数组".to_owned(),
+                    anchor: anchor("ch03.md", false),
+                    assigned_lessons: vec!["前置课".to_owned()],
+                    status: TopicStatus::Covered,
+                    reason: None,
+                },
+                ExpansionTopicReport {
+                    topic_id: "t3".to_owned(),
+                    label: "练习:手算快排".to_owned(),
+                    anchor: anchor("ch04.md", false),
+                    assigned_lessons: vec!["练习课".to_owned()],
+                    status: TopicStatus::Covered,
+                    reason: None,
+                },
+                ExpansionTopicReport {
+                    topic_id: "t4".to_owned(),
+                    label: "会议记录".to_owned(),
+                    anchor: anchor("ch06.md", false),
+                    assigned_lessons: Vec::new(),
+                    status: TopicStatus::Skipped,
+                    reason: Some("非教学内容".to_owned()),
+                },
+                ExpansionTopicReport {
+                    topic_id: "t5".to_owned(),
+                    label: "翻译残留".to_owned(),
+                    anchor: anchor("ch07.md", false),
+                    assigned_lessons: Vec::new(),
+                    status: TopicStatus::Uncertain,
+                    reason: None,
+                },
+                ExpansionTopicReport {
+                    topic_id: "t6".to_owned(),
+                    label: "锚点不明段".to_owned(),
+                    anchor: anchor("ch05.md", true),
+                    assigned_lessons: vec!["练习课".to_owned()],
+                    status: TopicStatus::Covered,
+                    reason: None,
+                },
+            ],
+            warnings: vec!["覆盖警告".to_owned()],
+            degraded: false,
+        };
+        crate::generation::CourseSourcePlanSnapshot::capture(&inventory, &triage, &plan, &coverage)
+    }
+
+    /// 导入一门带富信封的课程,返回 (detail, course_id)。
+    async fn import_refined_source_plan_course(
+        service: &LearningService,
+        plan_json: String,
+    ) -> CourseDetail {
+        let lesson = LessonPack {
+            title: "第一课".into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "细化课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "cs".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "细化课程".into(),
+            description: String::new(),
+            domain: "cs".into(),
+            version: 1,
+            modules: Vec::new(),
+        };
+        service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".to_owned(),
+                    learning_goal: "学会排序".to_owned(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    course_source_plan_json: Some(plan_json),
+                },
+            )
+            .await
+            .unwrap()
+    }
+
+    /// t5 DTO 细化:摘要视图分面(snapshot/triage/plan/coverage/duplicates),
+    /// 每个字段可追溯到信封;详情端点额外带全量 excluded/duplicates(限长)。
+    #[tokio::test]
+    async fn course_views_refine_the_source_plan_dto_faces() {
+        let (service, _knowledge, owner) = job_test_service().await;
+        let detail = import_refined_source_plan_course(
+            &service,
+            serde_json::to_string(&refined_source_plan_fixture()).unwrap(),
+        )
+        .await;
+        let course_id = detail.course.id.clone();
+
+        let view = detail
+            .course
+            .source_plan
+            .as_ref()
+            .expect("新课 → 快照视图可见");
+        // snapshot 面:版本 + 可用性。
+        assert_eq!(view.snapshot.version, Some(1));
+        assert!(view.snapshot.available);
+        // triage 面:七角色计数 + total_files(总数守恒)+ degraded + warnings。
+        assert_eq!(view.triage.total_files, 8);
+        assert_eq!(view.triage.core, 2);
+        assert_eq!(view.triage.prerequisite, 1);
+        assert_eq!(view.triage.practice, 1);
+        assert_eq!(view.triage.mixed, 1);
+        assert_eq!(view.triage.noise, 1);
+        assert_eq!(view.triage.duplicate, 1);
+        assert_eq!(view.triage.uncertain, 1);
+        assert!(view.triage.degraded, "degraded 必须可见(规则分诊未做 LLM 判定)");
+        assert_eq!(view.triage.warnings, vec!["规则分诊降级".to_owned()]);
+        // plan 面:章/概念/边计数 + gaps + 章节/来源映射摘要。
+        assert_eq!(view.plan.chapters, 2);
+        assert_eq!(view.plan.concepts, 3);
+        assert_eq!(view.plan.edges, 2);
+        assert_eq!(view.plan.gaps, vec!["外排序未覆盖".to_owned(), "跳表未覆盖".to_owned()]);
+        assert_eq!(view.plan.warnings, vec!["计划警告".to_owned()]);
+        assert_eq!(view.plan.chapter_summaries.len(), 2);
+        let first_chapter = &view.plan.chapter_summaries[0];
+        assert_eq!(first_chapter.title, "排序入门");
+        assert_eq!(first_chapter.concepts, 2);
+        assert_eq!(first_chapter.lessons, 3, "章 → 课时映射来自覆盖报告");
+        assert!(!first_chapter.skipped);
+        assert_eq!(first_chapter.source_files, 2, "章 → 来源文件数(锚点去重)");
+        let second_chapter = &view.plan.chapter_summaries[1];
+        assert!(second_chapter.skipped);
+        assert_eq!(
+            second_chapter.skip_reason.as_deref(),
+            Some("参考材料,无教学价值段")
+        );
+        // coverage 面:topic 四态 + 前置/练习去向 + anchor_uncertain + fallback。
+        assert_eq!(view.coverage.topics_covered, 4);
+        assert_eq!(view.coverage.topics_skipped, 1);
+        assert_eq!(view.coverage.prerequisite_topics, 1);
+        assert_eq!(view.coverage.practice_topics, 1);
+        assert_eq!(view.coverage.anchor_uncertain_topics, 1);
+        assert_eq!(view.coverage.uncertain, vec!["翻译残留".to_owned()]);
+        assert_eq!(view.coverage.skipped_examples.len(), 1);
+        assert_eq!(view.coverage.skipped_examples[0].label, "会议记录");
+        assert_eq!(
+            view.coverage.skipped_examples[0].reason.as_deref(),
+            Some("非教学内容")
+        );
+        assert_eq!(view.coverage.fallback_lessons, 1);
+        assert_eq!(view.coverage.warnings, vec!["覆盖警告".to_owned()]);
+        // duplicates 面:计数 + 示例(path/duplicate_of/canonical_reason)。
+        assert_eq!(view.duplicates.count, 1);
+        assert_eq!(view.duplicates.examples.len(), 1);
+        assert_eq!(view.duplicates.examples[0].path, "ch00-copy.md");
+        assert_eq!(view.duplicates.examples[0].duplicate_of, "ch00.md");
+        assert_eq!(view.duplicates.examples[0].canonical_reason, "原文优先");
+
+        // 详情端点:全量 excluded(path+role+reason)与 duplicates(限长内全量)。
+        let detail = service.course_detail(&course_id, None).await.unwrap();
+        let detail_view = detail
+            .source_plan_detail
+            .as_ref()
+            .expect("详情端点带来源计划诊断明细");
+        assert_eq!(detail_view.excluded.len(), 2);
+        assert_eq!(detail_view.excluded[0].path, "receipt.md");
+        assert_eq!(detail_view.excluded[0].role, "noise");
+        assert_eq!(detail_view.excluded[0].reason, "元数据词干命中(收据)");
+        assert_eq!(detail_view.duplicates.len(), 1);
+        assert_eq!(detail_view.duplicates[0].duplicate_of, "ch00.md");
+
+        // 列表端点:同一摘要视图;诊断明细不出现在列表(可从 CourseSummary
+        // 结构上排除——列表不背全量 excluded)。
+        let list = service.list_courses(&owner).await.unwrap();
+        let listed = list
+            .iter()
+            .find(|course| course.id == course_id)
+            .expect("新课在列");
+        assert!(listed.source_plan.as_ref().unwrap().snapshot.available);
+    }
+
+    /// t5 限长:列表摘要的 skipped_examples/duplicates examples ≤20;详情
+    /// 端点 duplicates ≤200、excluded ≤200(票面「详情可限长」)。
+    #[tokio::test]
+    async fn source_plan_views_bound_their_example_lists() {
+        let (service, _knowledge, _owner) = job_test_service().await;
+        let mut fixture = refined_source_plan_fixture();
+        // 25 个 skipped topic / 205 条 duplicate / 205 条 excluded(超各限长)。
+        for index in 0..25 {
+            fixture.coverage.topics.push(crate::generation::ExpansionTopicReport {
+                topic_id: format!("skip-{index}"),
+                label: format!("跳过{index}"),
+                anchor: crate::generation::SourceAnchor {
+                    kb_id: "kb-1".to_owned(),
+                    rel_path: "ch01.md".to_owned(),
+                    heading_or_anchor: None,
+                    paragraph: Some(index + 1),
+                    snippet: None,
+                    anchor_uncertain: false,
+                },
+                assigned_lessons: Vec::new(),
+                status: crate::generation::TopicStatus::Skipped,
+                reason: Some("无教学价值".to_owned()),
+            });
+        }
+        for index in 0..205 {
+            fixture.triage.duplicates.push(crate::generation::KbTriageDuplicate {
+                path: format!("copy-{index}.md"),
+                duplicate_of: "ch00.md".to_owned(),
+                canonical_reason: "原文优先".to_owned(),
+            });
+            fixture.triage.excluded.push(crate::generation::KbTriageExclusion {
+                path: format!("noise-{index}.md"),
+                role: crate::generation::KbTriageRole::Noise,
+                reason: "元数据词干".to_owned(),
+            });
+        }
+        let detail = import_refined_source_plan_course(
+            &service,
+            serde_json::to_string(&fixture).unwrap(),
+        )
+        .await;
+
+        let view = detail.course.source_plan.as_ref().unwrap();
+        assert_eq!(view.coverage.skipped_examples.len(), 20, "skipped 示例 ≤20");
+        assert_eq!(view.duplicates.count, 206, "duplicates 计数保留全量");
+        assert_eq!(view.duplicates.examples.len(), 20, "duplicates 示例 ≤20");
+        assert_eq!(
+            view.triage.total_files, 8,
+            "角色计数不受示例限长影响(counts 与 duplicates 台账各归各)"
+        );
+
+        let detail = service
+            .course_detail(&detail.course.id, None)
+            .await
+            .unwrap();
+        let detail_view = detail.source_plan_detail.as_ref().unwrap();
+        assert_eq!(detail_view.excluded.len(), 200, "详情 excluded 限长 200");
+        assert_eq!(detail_view.duplicates.len(), 200, "详情 duplicates 限长 200");
     }
 
     /// t4 事务性:导入中途失败(快照列违反 069 CHECK——非对象 JSON 在
