@@ -131,6 +131,12 @@ pub(crate) struct MarketIndexInfo {
     /// by the marketplace import face to stamp them into the component payload
     /// (`44`).
     pub(crate) tags: Vec<LocalizedText>,
+    /// The index row's `examples_zh` / `examples_en`, position-paired like
+    /// `tags_*`. These are the **prompt examples** the market declares for a
+    /// connector or skill node — the only prompt source those kinds have, since
+    /// neither ships a `plugin.json` (doc `49` §3.7). Display data only: never
+    /// search input (doc `49` D9).
+    pub(crate) examples: Vec<LocalizedText>,
 }
 
 /// One market's own entry indexes, read once per market.
@@ -200,6 +206,7 @@ fn read_index(
                     .or_else(|| item.get("description").and_then(|v| v.as_str()))
                     .map(str::to_owned),
                 tags: localized_tags_from_index(item),
+                examples: localized_examples_from_index(item),
             },
         );
     }
@@ -265,6 +272,71 @@ fn localized_tags_from_index(item: &serde_json::Value) -> Vec<LocalizedText> {
         });
     }
     out
+}
+
+/// Pair an index row's `examples_zh` / `examples_en` into `LocalizedText`s, by
+/// position — the same rule `tags_*` follows (`43` §3.3). One side alone is
+/// fine; the missing locale stays `None`. Empty strings are dropped (an empty
+/// hint is not a hint).
+///
+/// Doc `49` §3.7: these reach the store card as `StoreItem.quick_prompts` for
+/// entries that ship no `plugin.json` (connectors and skills).
+fn localized_examples_from_index(item: &serde_json::Value) -> Vec<LocalizedText> {
+    let strings = |key: &str| -> Vec<String> {
+        item.get(key)
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let zh = strings("examples_zh");
+    let en = strings("examples_en");
+    if zh.is_empty() && en.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<LocalizedText> = zh
+        .iter()
+        .cloned()
+        .zip(en.iter().cloned().chain(std::iter::repeat(String::new())))
+        .map(|(zh, en)| LocalizedText {
+            zh: Some(zh),
+            en: (!en.is_empty()).then_some(en),
+        })
+        .collect();
+    // If the English list is longer, its tail entries have no zh counterpart.
+    for extra in en.iter().skip(out.len()) {
+        out.push(LocalizedText { zh: None, en: Some(extra.clone()) });
+    }
+    out
+}
+
+/// The prompt hints a store card shows for one entry.
+///
+/// `plugin.json` wins; the market index row's `examples_*` fills the gap for the
+/// kinds that ship no manifest (connectors and skills — doc `49` §3.7). Both
+/// empty means "this market declared no hints", which travels as an empty array
+/// so the card renders no hint line at all (INV-6).
+fn store_quick_prompts(
+    manifest: Option<&PluginManifest>,
+    index_info: Option<&MarketIndexInfo>,
+) -> Vec<AppServerLocalizedText> {
+    let from_manifest: Vec<AppServerLocalizedText> = manifest
+        .map(|manifest| {
+            manifest.quick_prompts.iter().filter_map(|prompt| localized_or_none(prompt)).collect()
+        })
+        .unwrap_or_default();
+    if !from_manifest.is_empty() {
+        return from_manifest;
+    }
+    index_info
+        .map(|info| info.examples.iter().filter_map(|example| localized_or_none(example)).collect())
+        .unwrap_or_default()
 }
 
 /// The version this entry currently advertises in its marketplace.
@@ -539,12 +611,7 @@ impl StoreProvider for AppServerStoreProvider {
                             None => None,
                         }
                     },
-                    quick_prompts: manifest
-                        .as_ref()
-                        .map(|m| {
-                            m.quick_prompts.iter().filter_map(|p| localized_or_none(p)).collect()
-                        })
-                        .unwrap_or_default(),
+                    quick_prompts: store_quick_prompts(manifest.as_ref(), index_info.as_ref()),
                     // Carried verbatim from the market's own manifest row; the
                     // discovery layer already dropped anything that was not a
                     // calendar date (`18` §3), so this needs no second check.
@@ -1138,5 +1205,77 @@ mod tests {
 
         // A row without any tag declaration contributes nothing.
         assert!(localized_tags_from_index(&serde_json::json!({ "name": "y" })).is_empty());
+    }
+
+    /// Doc `49` §3.7: `examples_zh`/`examples_en` pair by position, exactly like
+    /// `tags_*`, and an empty hint is not a hint.
+    #[test]
+    fn index_row_examples_pair_by_position() {
+        let paired = serde_json::json!({
+            "id": "baidu-netdisk",
+            "examples_zh": ["查看我百度网盘根目录下的文件", "搜索与「项目合同」相关的文件"],
+            "examples_en": ["List my root folder", "Find files about the contract"],
+        });
+        let examples = localized_examples_from_index(&paired);
+        assert_eq!(examples.len(), 2);
+        assert_eq!(examples[0].zh.as_deref(), Some("查看我百度网盘根目录下的文件"));
+        assert_eq!(examples[0].en.as_deref(), Some("List my root folder"));
+        assert_eq!(examples[1].en.as_deref(), Some("Find files about the contract"));
+
+        // zh-only survives with `en: None`.
+        let zh_only = localized_examples_from_index(&serde_json::json!({
+            "examples_zh": ["今天 AI 圈有什么新动态？"],
+        }));
+        assert_eq!(zh_only.len(), 1);
+        assert_eq!(zh_only[0].zh.as_deref(), Some("今天 AI 圈有什么新动态？"));
+        assert_eq!(zh_only[0].en, None);
+
+        // An English-only tail keeps its position instead of shifting left.
+        let en_longer = localized_examples_from_index(&serde_json::json!({
+            "examples_zh": ["第一个"],
+            "examples_en": ["first", "second"],
+        }));
+        assert_eq!(en_longer.len(), 2);
+        assert_eq!(en_longer[0].zh.as_deref(), Some("第一个"));
+        assert_eq!(en_longer[1].zh, None);
+        assert_eq!(en_longer[1].en.as_deref(), Some("second"));
+
+        // Empty strings and a missing declaration both mean "nothing to show".
+        assert!(localized_examples_from_index(&serde_json::json!({
+            "examples_zh": [""],
+            "examples_en": [],
+        }))
+        .is_empty());
+        assert!(localized_examples_from_index(&serde_json::json!({ "id": "x" })).is_empty());
+    }
+
+    /// Doc `49` TC-13…TC-16: manifest first, index row as the fallback, empty
+    /// when neither declares anything (INV-6).
+    #[test]
+    fn quick_prompts_prefer_the_manifest_and_fall_back_to_the_index_row() {
+        let manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+            "name": "aihot",
+            "quickPrompts": [{ "zh": "今天 AI 圈有什么新动态？", "en": "What's new in AI today?" }],
+        }))
+        .expect("manifest");
+
+        let index_info = MarketIndexInfo {
+            examples: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
+            ..MarketIndexInfo::default()
+        };
+
+        // Manifest wins even when the index row also declares examples.
+        let from_manifest = store_quick_prompts(Some(&manifest), Some(&index_info));
+        assert_eq!(from_manifest.len(), 1);
+        assert_eq!(from_manifest[0].zh.as_deref(), Some("今天 AI 圈有什么新动态？"));
+
+        // A connector / skill entry has no manifest: the index row fills in.
+        let from_index = store_quick_prompts(None, Some(&index_info));
+        assert_eq!(from_index.len(), 1);
+        assert_eq!(from_index[0].zh.as_deref(), Some("索引行示例"));
+
+        // Neither declares anything → no hint line on the card.
+        assert!(store_quick_prompts(None, None).is_empty());
+        assert!(store_quick_prompts(None, Some(&MarketIndexInfo::default())).is_empty());
     }
 }

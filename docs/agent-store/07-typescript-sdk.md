@@ -635,15 +635,27 @@ installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstal
 
 ```ts
 client.store.list(): Promise<StoreItem[]>
+client.store.listStatus(): Promise<{ items: StoreItem[]; marketsPending: boolean }>
 client.store.search(query, { kind? }): Promise<StoreItem[]>
+client.store.searchWithHits(query, { kind?, items?, installedOnly?, lang? }): Promise<StoreMatch[]>
+client.store.searchInstalled(query, { kind?, items?, lang? }): Promise<StoreItem[]>
 client.store.installed(): Promise<StoreItem[]>
 client.store.findByConnector(connectorId): Promise<StoreItem | null>
 client.store.checkUpdates(): Promise<StoreItem[]>        // installed && update_available
-client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown"
+client.store.updateHint(item): "none" | "update" | "unknown"
 client.store.install(item, { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>
 client.store.uninstall(item, { componentIds? }): Promise<StoreOperationOutcome>
 client.store.setEnabled(item, enabled, { componentIds? }): Promise<StoreOperationOutcome>
 ```
+
+检索口径与高亮（doc `49`）：`search` 按空白切 term，**全部 term 都在某字段中出现**即命中（AND，
+不要求同字段），大小写无关、不做分词；结果按三档相关性排序（名称 > 标签/分类/职业 > 描述），
+同档保持目录原序。`searchWithHits` 返回每条命中的 `{ field, lang?, ranges }`，`ranges` 是
+**原文**上的 `[start, end)`，可直接切片渲染高亮；`offLanguage: true` 表示命中的是另一个语种的文案
+（当前渲染语言里找不到该词）。`listStatus().marketsPending` 是宿主说「内置市场仍在注册、目录可能
+不全」——应用启动后立刻搜索时必须读它，否则「没有这个条目」与「还没加载完」无法区分。
+`items` 入参是**预取**：传入 `listStatus()` 拿到的数组后，调用为**零 I/O**（不要在 `input`
+事件里裸调 `search()`，那会每次击键打一次全量 `store/list`）。
 
 `findByConnector` 是**反向**那一跳：目录条目里没有任何字段承载它装出来的连接器
 名（真实例子：条目 `fenbi-baokao-decision` / 显示名「粉笔」装出来的 server 叫
