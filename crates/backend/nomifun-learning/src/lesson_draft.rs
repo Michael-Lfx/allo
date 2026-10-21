@@ -7,8 +7,8 @@
 //! The audit reuses the fallback pipeline's rules verbatim — the document
 //! contract (`validate_lesson_document`: length floor + three required
 //! sections in order) and the activity rules (`validate_lesson_activities`:
-//! count floors, reflection cap, concept binding, per-kind shape) — inlined
-//! with position-aware messages so one audit pass surfaces every finding.
+//! count floors, reflection cap, per-kind shape) — inlined with
+//! position-aware messages so one audit pass surfaces every finding.
 
 use std::collections::{HashMap, HashSet};
 
@@ -17,46 +17,189 @@ use crate::generation::{
     LessonOutput, validate_lesson_document,
 };
 use crate::models::{
-    ActivityKind, ActivityPack, ConceptPack, SectionKind, SectionPack, VISUAL_OPTIONS,
+    ActivityKind, ActivityPack, SectionKind, SectionPack, VISUAL_OPTIONS,
     visual_menu_text,
 };
 
-use crate::learning_graph::{SEV_DANGER, SEV_WARNING};
+use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 
 /// Hard cap on the activities a draft may hold: the design guidance is 3-5,
 /// so anything near this cap is already off-script (the audit warns before
 /// it ever blocks).
 const MAX_ACTIVITIES: usize = 10;
 
+/// Grounding 片段的角色（t3 锚定纪律）：`Primary` = 大纲引用的主 source
+/// （全文；检索命中**永不替换它**），`Supplement` = 检索命中扩读的相关文件
+/// 片段。旧构造点（快照兜底/描述流）只有 primary。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExcerptRole {
+    #[default]
+    Primary,
+    Supplement,
+}
+
 /// Grounding excerpt for the kb flow: the sampled file the lesson cites.
+/// t3 扩为多片段：`path`/`text` 是兼容位（旧消费方只读这两个字段），
+/// `kb_id`/`kb_name` 是库归属，`heading` 是检索命中的章节标题，`role`
+/// 区分主引用与补充片段——补充片段靠这些字段可溯源（库+文件+章节）。
 #[derive(Debug, Clone)]
 pub struct LessonExcerpt {
+    /// 库内相对路径（primary = 大纲引用的 source 路径）。
     pub path: String,
+    /// 片段文本（primary = 主 source 全文，按片段预算截断）。
     pub text: String,
+    /// 来源库 id（实时读库时才有；快照兜底与描述流为 `None`）。
+    pub kb_id: Option<String>,
+    /// 来源库名（提示词里可读的归属；与 `kb_id` 同来同去）。
+    pub kb_name: Option<String>,
+    /// 检索命中的章节标题（`search_bases` 的 `heading`；primary 恒为 `None`）。
+    pub heading: Option<String>,
+    /// 主引用 / 检索补充。
+    pub role: ExcerptRole,
+}
+
+impl LessonExcerpt {
+    /// 旧形状构造（path + text、无库归属）：快照兜底与旧消费方用。
+    pub fn text_only(path: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            text: text.into(),
+            kb_id: None,
+            kb_name: None,
+            heading: None,
+            role: ExcerptRole::Primary,
+        }
+    }
+
+    /// 提示词里的角色标签。
+    pub fn role_label(&self) -> &'static str {
+        match self.role {
+            ExcerptRole::Primary => "主引用",
+            ExcerptRole::Supplement => "补充片段",
+        }
+    }
+
+    /// 片段出处标签（提示词与披露共用）：文件 + 库归属 + 命中章节。主引用
+    /// 在快照兜底时没有库归属，只有文件——它是大纲引用的源，身份已明确。
+    pub fn provenance_label(&self) -> String {
+        let mut label = format!("文件 {}", self.path);
+        let kb = self
+            .kb_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.kb_id.as_deref());
+        if let Some(kb) = kb {
+            label.push_str(&format!("（知识库 {kb}）"));
+        }
+        if let Some(heading) = self
+            .heading
+            .as_deref()
+            .map(str::trim)
+            .filter(|heading| !heading.is_empty())
+        {
+            label.push_str(&format!(" 章节「{heading}」"));
+        }
+        label
+    }
 }
 
 /// 学习图课程节点专属的生成上下文（beta）。传统课时恒为 `None`；为 Some
-/// 时，引擎提示词以图语义段落（学习目标/学习范围/前置路径/后续节点）取代
-/// 课程大纲段，保证节点内容有全局观、范围受限、并能顺畅衔接后续节点。
+/// 时，引擎提示词以图语义段落（学习目标/学习范围/前置/后续）取代课程大纲
+/// 段。概念网口径（ADR-0009）：前置段是本课 assumes 的概念与跨课程教这些
+/// 概念的节点摘要；后续段是同课程位于本课之后的节点（衔接参照）。
 #[derive(Debug, Clone)]
 pub struct GraphLessonContext {
     /// 用户生成图时输入的学习目标。
     pub goal: String,
-    /// 学习图的学习范围（scope 分析文本）。
-    pub scope: String,
-    /// 预渲染：到达此节点的前置整条路径（祖先闭包，按拓扑序排列；离节点
-    /// 最近的前置优先展示，超长截断），让生成知道「学习者此刻已经会什么」。
-    /// 节点内容是共享课程资产，不含任何用户个人进度。
+    /// 结构快照回执的程度声明（达成后能独立做成什么；learning_scope 列随
+    /// 结构改造退役）。
+    pub degree_statement: String,
+    /// 预渲染：本课 assumes 的概念 + 跨课程教这些概念的节点摘要（离题最近
+    /// 的教师优先，超长截断），让生成知道「学习者此刻已经会什么」。节点内
+    /// 容是共享课程资产，不含任何用户个人进度。
     pub prerequisite_path: String,
-    /// 预渲染：此节点之后的下游节点（直接后继全列 + 可及后代总数），
-    /// 让生成知道「要为哪些后续学习做衔接」。
+    /// 预渲染：同课程位于本课之后的节点（衔接参照，非依赖关系），让生成
+    /// 知道「要为哪些后续学习做衔接」。
     pub upcoming_nodes: String,
+    /// 概念面（j07 读侧投影）：首现/非首现 + 引用名 + 活跃别名池的结构化
+    /// 数据。`None` = 本节点无概念挂接（teaches/assumes 双空），概念面段
+    /// 整体缺席。
+    pub concept_faces: Option<GraphConceptFaces>,
+}
+
+/// 概念面读侧投影（二轮 g2 / j07）：首现判定（祖先闭包不动点，零新存储）
+/// + 引用名开讲（j04 ref_name 落库）+ 投影词表（活跃别名池）。结构化承载
+/// ——提示词渲染与审计观察条（用名一致性/首现引入）共用同一事实源。
+#[derive(Debug, Clone, Default)]
+pub struct GraphConceptFaces {
+    /// 首现概念（正名）：本节点 teaches 中不在祖先闭包已教集合里的——
+    /// 先情境引入再给正式定义。
+    pub first_seen: Vec<String>,
+    /// 非首现概念（正名）：祖先闭包已教过——一两句回收即可，不重新讲授。
+    pub returning: Vec<String>,
+    /// 引用名（节点挂接时模型实际用名）→ 正名；仅列与正名不同的条目。
+    /// 正文以引用名开讲，正名只在首次出现时括注。
+    pub ref_names: Vec<(String, String)>,
+    /// 正名 → 活跃别名（投影词表，R3）：旧叫法正文不使用，必要时括注帮
+    /// 学习者辨认。
+    pub aliases: Vec<(String, Vec<String>)>,
+}
+
+impl GraphConceptFaces {
+    /// 是否携带任何事实（全空 = 概念面段缺席）。
+    pub fn is_empty(&self) -> bool {
+        self.first_seen.is_empty()
+            && self.returning.is_empty()
+            && self.ref_names.is_empty()
+            && self.aliases.is_empty()
+    }
+
+    /// 渲染进节点内容生成上下文的「概念面」段（含 R2/R5 条款——概念面
+    /// 条款只进图节点路径，本渲染即其唯一落点）。
+    pub fn render_text(&self) -> String {
+        let mut lines = vec![
+            "概念面（本节点要教的概念如何登场——只约束本节点 teaches 的概念）：".to_owned(),
+            "- 登场纪律：首现概念先用情境引出再给正式定义；非首现概念一两句话回收即可，不重新讲授。".to_owned(),
+            "- 用名纪律：正文以本节点标注的名字开讲（前置路径标了引用名的用引用名），正名只在首次出现时括注一次；同一概念从头到尾用同一个名字，不混用别名。".to_owned(),
+        ];
+        if !self.first_seen.is_empty() {
+            lines.push(format!("- 首现（先引入再定义）：{}", self.first_seen.join("、")));
+        }
+        if !self.returning.is_empty() {
+            lines.push(format!(
+                "- 非首现（前置已教过，简短回收）：{}",
+                self.returning.join("、")
+            ));
+        }
+        if !self.ref_names.is_empty() {
+            let rows = self
+                .ref_names
+                .iter()
+                .map(|(reference, canonical)| format!("{reference}（正名：{canonical}）"))
+                .collect::<Vec<_>>()
+                .join("；");
+            lines.push(format!("- 引用名（正文用它开讲）：{rows}"));
+        }
+        if !self.aliases.is_empty() {
+            let rows = self
+                .aliases
+                .iter()
+                .map(|(canonical, aliases)| format!("{canonical} 又叫 {}", aliases.join("/")))
+                .collect::<Vec<_>>()
+                .join("；");
+            lines.push(format!(
+                "- 旧叫法（学习者可能在别处见过；正文不使用，必要时括注帮助辨认）：{rows}"
+            ));
+        }
+        lines.join("\n")
+    }
 }
 
 /// The lesson context an engine generates content for: course/module/lesson
-/// coordinates, the lesson's concepts, and the grounding (the cited excerpt
-/// for the kb flow, the course brief for the description flow). Built by
-/// `generate_lesson_content` from the persisted course snapshot.
+/// coordinates and the grounding (the cited excerpt for the kb flow, the
+/// course brief for the description flow). Built by `generate_lesson_content`
+/// from the persisted course snapshot.
 #[derive(Debug, Clone)]
 pub struct LessonGenerationContext {
     /// 课时行 id——草稿按它挂到课时（断点续跑的查找键：重试时定位到
@@ -72,12 +215,12 @@ pub struct LessonGenerationContext {
     pub total_lessons: usize,
     pub next_lesson_title: Option<String>,
     pub purpose: String,
-    /// Concept packs bound to this lesson (prompt display).
-    pub concepts: Vec<ConceptPack>,
-    /// The exact keys activities may bind — the audit rejects anything else.
-    pub concept_keys: Vec<String>,
-    /// Kb-flow grounding; `None` on the description flow.
+    /// Kb-flow grounding；`None` on the description flow. 兼容位：主引用
+    /// （或快照兜底摘录）——新消费方请用 [`LessonGenerationContext::grounding`]。
     pub excerpt: Option<LessonExcerpt>,
+    /// 多片段 grounding（t3）：primary 在前（主 source 全文），其后是按相关度
+    /// 排序的检索补充片段。空 = 回退兼容位 `excerpt`（旧构造点只填它）。
+    pub excerpts: Vec<LessonExcerpt>,
     /// Pre-rendered full course outline with the current lesson marked — the
     /// anti-duplication / no-scope-creep reference shared by both pipelines.
     pub outline_tree: String,
@@ -86,10 +229,33 @@ pub struct LessonGenerationContext {
     pub adjacent_context: String,
     /// 学习图节点专属上下文；传统课时恒为 `None`。
     pub graph: Option<GraphLessonContext>,
-    /// 防超纲黑名单(learnhub「禁止使用的概念」):传统课时预渲染本课时
-    /// 之外的概念清单;学习图节点预渲染可及后代节点标题清单。空 = 无
-    /// (短课时或图的终点节点)。由上下文构造方决定原料,提示词统一消费。
+    /// 用户目标（t1，传统课程）：课程行 learning_goal 的全文——目标即课程
+    /// 的意图，写作时始终对照；旧课程（无目标）恒为 `None`。学习图节点的
+    /// 目标在 `graph.goal` 里，本字段不重复承载。
+    pub goal: Option<String>,
+    /// 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点预渲染
+    /// 下游节点标题清单。空 = 无。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
+}
+
+impl LessonGenerationContext {
+    /// Grounding 片段全集（t3）：`excerpts` 优先，空时回退兼容位 `excerpt`
+    /// ——旧构造点（只填 `excerpt`）与新构造点（两个都填，值一致）都得到
+    /// 正确结果，消费方只有一个读取入口。
+    pub fn grounding(&self) -> Vec<&LessonExcerpt> {
+        if self.excerpts.is_empty() {
+            self.excerpt.iter().collect()
+        } else {
+            self.excerpts.iter().collect()
+        }
+    }
+
+    /// 清空全部 grounding（兼容位与多片段一起清）。agent 循环的历史清理点
+    /// （检不到源、图节点等）统一走这里，避免两处状态漂移。
+    pub fn clear_grounding(&mut self) {
+        self.excerpt = None;
+        self.excerpts.clear();
+    }
 }
 
 /// One deterministic audit finding. `severity` uses the shared vocabulary
@@ -179,7 +345,6 @@ pub struct LessonDraftView {
     pub module_title: String,
     pub lesson_title: String,
     pub purpose: String,
-    pub concept_keys: Vec<String>,
     /// `excerpt:<path>` for the kb flow, `course_brief` for the description
     /// flow (the grounding text itself rode in on the engine's user turn).
     pub grounding: String,
@@ -250,9 +415,16 @@ impl LessonDraft {
             module_title: self.context.module_title.clone(),
             lesson_title: self.context.lesson_title.clone(),
             purpose: self.context.purpose.clone(),
-            concept_keys: self.context.concept_keys.clone(),
-            grounding: match &self.context.excerpt {
-                Some(excerpt) => format!("excerpt:{}", excerpt.path),
+            grounding: match self.context.grounding().first() {
+                // 披露多片段结构（t3）：主引用路径 + 补充片段计数。
+                Some(excerpt) => {
+                    let supplements = self.context.grounding().len().saturating_sub(1);
+                    if supplements > 0 {
+                        format!("excerpt:{} +{supplements} 补充", excerpt.path)
+                    } else {
+                        format!("excerpt:{}", excerpt.path)
+                    }
+                }
                 None => "course_brief".into(),
             },
             revision: self.revision,
@@ -724,11 +896,25 @@ fn audit_findings(
             format!("lesson has {} activities; the design guidance is 3-5", activities.len()),
         ));
     }
+    // 证据回引（t2）：objective 题缺 evidence 留痕（生成面已硬门拒重试，
+    // 这里兜住历史行与旁路写入——修补回合输入面）。
+    let missing_evidence = activities
+        .iter()
+        .filter(|activity| crate::generation::evidence_missing(activity))
+        .count();
+    if missing_evidence > 0 {
+        findings.push(warning(
+            "evidence_missing",
+            format!(
+                "{missing_evidence} objective question(s) carry no evidence quote — the grade-time reveal shows nothing beneath the explanation"
+            ),
+        ));
+    }
     if reflections > 1 {
         findings.push(warning(
             "reflections_multiple",
             "prefer exactly one reflection question per lesson (more only when one question \
-             cannot cover all of the lesson's concepts)"
+             cannot cover the whole lesson)"
                 .into(),
         ));
     }
@@ -743,29 +929,12 @@ fn audit_findings(
         ));
     }
 
-    // ── Per-activity rules (shape + concept binding), position-aware ──
-    let lesson_keys: HashSet<&str> = context
-        .concept_keys
-        .iter()
-        .map(String::as_str)
-        .collect();
+    // ── Per-activity rules (shape), position-aware ──
     let mut seen_prompts: HashSet<String> = HashSet::new();
     for (position, activity) in activities.iter().enumerate() {
         let at = format!("activity at position {position}");
         if activity.prompt.trim().is_empty() {
             findings.push(danger("activity_prompt_empty", format!("{at}: prompt is empty")));
-        }
-        for concept in &activity.concepts {
-            if !lesson_keys.contains(concept.as_str()) {
-                findings.push(danger(
-                    "concept_binding_unknown",
-                    format!(
-                        "{at} binds concept '{concept}' which is not bound to this lesson; \
-                         bind only: {}",
-                        context.concept_keys.join(", ")
-                    ),
-                ));
-            }
         }
         // Shared per-kind shape rules (all nine kinds); the generation
         // bounds (3-5 options for choice-like kinds) apply.
@@ -779,6 +948,96 @@ fn audit_findings(
                 "activity_prompt_duplicate",
                 format!("{at}: duplicates an earlier activity's prompt"),
             ));
+        }
+    }
+
+    // ── 成色观察条（j07，观察面非阻断——写作纪律不机械化，这里只点名让
+    // 修复轮与发布前自查看得见）：概念面（正文用名一致性 / 首现引入）与
+    // R9 叙述声部（正文自称「本课」、开发面结构词不入正文）。
+    let bodies: Vec<(String, &str)> = section_bodies
+        .iter()
+        .map(|(key, (body, _))| (key.clone(), body.as_str()))
+        .chain(document.iter().map(|body| ("document".to_owned(), *body)))
+        .collect();
+    if !bodies.is_empty() {
+        // 概念面观察（仅图节点路径：概念挂接只在图路径存在）。
+        if let Some(faces) = context
+            .graph
+            .as_ref()
+            .and_then(|graph| graph.concept_faces.as_ref())
+        {
+            let joined = bodies
+                .iter()
+                .map(|(_, body)| *body)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (reference, canonical) in &faces.ref_names {
+                let uses_reference = joined.contains(reference.as_str());
+                let uses_canonical = joined.contains(canonical.as_str());
+                if uses_reference && uses_canonical {
+                    findings.push(warning(
+                        "naming_mixed",
+                        format!(
+                            "概念「{canonical}」的正文同时出现引用名「{reference}」与正名——\
+                             同一概念从头到尾用同一个名字（引用名开讲，正名仅首现括注）"
+                        ),
+                    ));
+                } else if !uses_reference && uses_canonical {
+                    findings.push(warning(
+                        "naming_canonical_only",
+                        format!(
+                            "概念「{canonical}」的正文只用了正名，没有用声明的引用名「{reference}」开讲"
+                        ),
+                    ));
+                }
+            }
+            for concept in &faces.first_seen {
+                let mentioned = faces
+                    .ref_names
+                    .iter()
+                    .find(|(_, canonical)| canonical == concept)
+                    .map(|(reference, _)| joined.contains(reference.as_str()))
+                    .unwrap_or_else(|| joined.contains(concept.as_str()));
+                if !mentioned {
+                    findings.push(warning(
+                        "first_seen_unintroduced",
+                        format!(
+                            "首现概念「{concept}」的名字没有出现在任何正文里——\
+                             首现概念应先用情境引出再给正式定义"
+                        ),
+                    ));
+                }
+            }
+        }
+        // R9 叙述声部（两条管线通用）：逐类点名命中节。
+        const NARRATIVE_SELF: &[&str] = &["本课", "这一课", "本课时"];
+        const STRUCTURE_WORDS: &[&str] = &["本节将", "下一节将", "接下来我们将", "如前所述"];
+        for (kind, terms, label) in [
+            (
+                "narrative_self_reference",
+                NARRATIVE_SELF,
+                "正文自称「本课/这一课」（学习者读的是学习材料，不是课程导语）",
+            ),
+            (
+                "narrative_structure_words",
+                STRUCTURE_WORDS,
+                "开发面结构词混入正文（结构导航是大纲的事，不是正文的）",
+            ),
+        ] {
+            let mut hits: Vec<String> = Vec::new();
+            for (key, body) in &bodies {
+                let matched: Vec<&str> = terms
+                    .iter()
+                    .filter(|term| body.contains(**term))
+                    .copied()
+                    .collect();
+                if !matched.is_empty() {
+                    hits.push(format!("{}（{}）", key, matched.join("、")));
+                }
+            }
+            if !hits.is_empty() {
+                findings.push(warning(kind, format!("{label}：{}", hits.join("；"))));
+            }
         }
     }
     findings
@@ -828,20 +1087,12 @@ mod tests {
             total_lessons: 2,
             next_lesson_title: Some("课时二".into()),
             purpose: "理解期权的定义".into(),
-            concepts: vec![ConceptPack {
-                key: "c1".into(),
-                title: "期权定义".into(),
-                description: "权利与义务的不对称".into(),
-                prerequisites: Vec::new(),
-            }],
-            concept_keys: vec!["c1".into()],
-            excerpt: Some(LessonExcerpt {
-                path: "docs/basics.md".into(),
-                text: "期权的定义……".into(),
-            }),
+            excerpt: Some(LessonExcerpt::text_only("docs/basics.md", "期权的定义……")),
+            excerpts: Vec::new(),
             outline_tree: String::new(),
             adjacent_context: String::new(),
             graph: None,
+            goal: None,
             forbidden_concepts: String::new(),
         }
     }
@@ -857,8 +1108,7 @@ mod tests {
         let mut value = serde_json::json!({
             "kind": kind,
             "prompt": "期权的本质是什么？",
-            "explanation": "因为买方持有权利。",
-            "concepts": ["c1"]
+            "explanation": "因为买方持有权利。"
         });
         if let (Some(object), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
             object.extend(extra.clone());
@@ -874,6 +1124,114 @@ mod tests {
         assert!(kinds.contains(&"activities_too_few"));
         assert!(kinds.contains(&"objective_activities_too_few"));
         assert!(draft.audit_report().contains("[danger]"));
+    }
+
+    /// 成色观察条（j07，观察面非阻断）：概念面（用名混用/只用正名/首现
+    /// 未引入）与 R9 叙述声部——warning 级、不阻断发布；传统路径（无概念
+    /// 面）不产生概念面观察。
+    #[test]
+    fn audit_observes_content_discipline_without_blocking() {
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: Some(GraphConceptFaces {
+                first_seen: vec!["Delta".into()],
+                returning: vec![],
+                ref_names: vec![("Delta".into(), "德尔塔".into())],
+                aliases: vec![],
+            }),
+        });
+        let mut draft = LessonDraft::new(ctx);
+        // 正文同时出现引用名与正名（混用）+ 首现名在场 + R9 自称。
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!(
+                "## 描述\n{body}Delta 与德尔塔是同一回事。本课将介绍它的用法。\n## 例子\n{body}\n## 验证\n{body}\n"
+            ),
+        }]);
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_WARNING && f.kind == "naming_mixed"),
+            "mixed naming observed: {:?}",
+            draft.findings
+        );
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "first_seen_unintroduced"),
+            "first-seen name present → no unintroduced observation"
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_WARNING && f.kind == "narrative_self_reference"),
+            "R9 self-reference observed"
+        );
+        // 观察面不阻断：danger 只来自活动下限等既有契约。
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_DANGER && f.kind.contains("narrative"))
+        );
+
+        // 只用正名、不用引用名 → naming_canonical_only；首现名缺席 →
+        // first_seen_unintroduced。
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: Some(GraphConceptFaces {
+                first_seen: vec!["Vega".into()],
+                returning: vec![],
+                ref_names: vec![("Delta".into(), "德尔塔".into())],
+                aliases: vec![],
+            }),
+        });
+        let mut draft = LessonDraft::new(ctx);
+        let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}德尔塔的定义。\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "naming_canonical_only")
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "first_seen_unintroduced")
+        );
+
+        // 传统路径（graph None）：概念面观察缺席，R9 观察仍然生效。
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetDocument {
+            document: format!("## 描述\n{body}本课将介绍。\n## 例子\n{body}\n## 验证\n{body}\n"),
+        }]);
+        assert!(
+            !draft
+                .findings
+                .iter()
+                .any(|f| f.kind.starts_with("naming_"))
+        );
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.kind == "narrative_self_reference")
+        );
     }
 
     #[test]
@@ -898,7 +1256,8 @@ mod tests {
             .any(|f| f.kind == "document_invalid"
                 && f.message.contains("non-whitespace characters")));
 
-        // Unknown concept binding is rejected with the lesson's keys named.
+        // 补齐客观题后客观题下限告警消失（概念绑定校验已随概念体系退役，
+        // 题目不再携带 concept 绑定）。
         draft.apply_ops(vec![LessonOp::SetDocument {
             document: long_document(),
         }]);
@@ -912,24 +1271,17 @@ mod tests {
                 activity: activity_json("true_false", serde_json::json!({ "answer": true })),
             },
             LessonOp::AddActivity {
-                activity: ActivityPack {
-                    concepts: vec!["ghost".into()],
-                    ..activity_json("reflection", serde_json::json!({ "answer": null }))
-                },
+                activity: activity_json("reflection", serde_json::json!({ "answer": null })),
             },
         ]);
-        let unknown = draft
-            .findings
-            .iter()
-            .find(|f| f.kind == "concept_binding_unknown")
-            .expect("ghost binding must be flagged");
-        assert!(unknown.message.contains("ghost"));
-        assert!(unknown.message.contains("c1"), "names the allowed keys");
-        // Objective floor is now satisfied, so only the binding blocks.
         assert!(!draft
             .findings
             .iter()
             .any(|f| f.kind == "objective_activities_too_few"));
+        assert!(!draft
+            .findings
+            .iter()
+            .any(|f| f.severity == SEV_DANGER && f.kind.starts_with("activity")));
     }
 
     #[test]

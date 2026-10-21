@@ -6,10 +6,10 @@ pub(super) use std::sync::{Arc, Mutex, RwLock};
 
 pub(super) use chrono::Datelike;
 pub(super) use nomifun_common::{
-    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningGraphId,
-    LearningConceptId, LearningCourseId, LearningEnrollmentId, LearningLessonId,
-    LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId, UuidV7Error,
-    generate_id, now_ms,
+    AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningConceptId,
+    LearningCourseId, LearningEnrollmentId, LearningGrowthBatchId,
+    LearningLessonId, LearningModuleId, LearningReviewItemId, LearningTagId, ProviderId, UserId,
+    UuidV7Error, generate_id, now_ms,
 };
 pub(super) use nomifun_db::SqlitePool;
 pub(super) use nomifun_knowledge::KnowledgeService;
@@ -18,52 +18,57 @@ pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
 pub(super) use crate::events::LearningEventEmitter;
-pub(super) use crate::learning_graph::draft::DraftGraph;
-pub(super) use crate::learning_graph::LearningGraphAgentEngine;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
 pub(super) use crate::lesson_draft::{
-    GraphLessonContext, LessonContentAgentEngine, LessonDraft, LessonDraftView, LessonExcerpt,
-    LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
+    ExcerptRole, GraphLessonContext, LessonContentAgentEngine, LessonDraft, LessonDraftView,
+    LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 pub(super) use crate::generation::{
-    Blueprint, LessonOutput, assemble_outline_pack, build_blueprint_prompt,
+    Blueprint, LessonOutput, SampleBaseDisclosure, SampleDisclosure, annotate_blueprint_sources,
+    assemble_outline_pack, base_for_sample_path, build_blueprint_prompt,
     build_description_blueprint_prompt, generate_blueprint, generate_lesson,
-    generate_lesson_activity, sample_base_files, validate_blueprint,
+    generate_lesson_activity, namespace_for_base, rel_path_for_base, sample_bases,
+    validate_blueprint,
 };
 pub(super) use crate::models::{
     ActivityKind, ActivityView, AttemptResult, CalendarCourseRef, CalendarDayStats,
-    CalendarLessonRef, CalendarStats, CheckinStatus, ConceptPack, ConceptRef,
-    ConceptView, CourseDetail, CourseKind, CoursePack, CourseSummary,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonActivityRequest, GenerateLessonRequest,
-    GraphEdgeView, GraphNodeView, GeneratedLessonActivity, LearningGraphView, SectionKind,
+    CalendarLessonRef, CalendarStats, CheckinStatus, CourseDetail, CourseKind, CoursePack,
+    CourseSamplingView, CourseSummary, CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    DiagnosticItem, DiagnosticPlan, DueReview, GenerateCourseRequest,
+    GenerateLessonActivityRequest, GenerateLessonRequest, GeneratedLessonActivity, SectionKind,
     SectionView, LessonStatus,
     LessonView, MemoryCalibrationBin, MemoryCurvePoint, MemoryHealthStats, MemoryLoadDay,
-    MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, TeachingStyle,
+    MemoryStateBucket, MemoryTrueRetention, ModuleView, QuestionEntry, QuizProgressView,
+    TeachingStyle,
     ReviewAnswerResult, ReviewQuestion, ReviewRating, ReviewResult,
     ReviewSource, SetTagsRequest, SourceSpan, StoredActivityConfig, UpdateQuestionRequest,
+    XpCalendar, XpCalendarDay, XpReading,
 };
 pub(super) use crate::scheduler::{
     SchedulerSettings, days_elapsed_between, first_review_due_at, predicted_retrievability,
     recall_bucket, review_day_number, review_day_start_utc, schedule_review,
 };
+
+/// 大纲建课的落库快照：蓝图与采样维持旧形状（`blueprint_json` /
+/// `samples_json`，既有消费方按原格式解析），目标与采样披露走独立列
+/// （`learning_goal` / `samples_meta_json`，t1/t2）。无目标路径的
+/// `learning_goal` 为空串、`samples_meta_json` 为 `None`（列上 NULL）。
+/// 多知识库（t4）：`source_kb_ids` 是归一后的来源库列表（首个 = 主来源），
+/// 空列表由导入侧回退 `CoursePack.source_kb_id` 的单元素视图。
+pub(crate) struct OutlineSnapshot {
+    pub blueprint_json: String,
+    pub samples_json: String,
+    pub learning_goal: String,
+    pub samples_meta_json: Option<String>,
+    pub source_kb_ids: Vec<KnowledgeBaseId>,
+}
+
 #[derive(Clone)]
 pub struct LearningService {
     pool: SqlitePool,
     knowledge_service: Arc<RwLock<Option<Arc<KnowledgeService>>>>,
     course_completer: Arc<RwLock<Option<Arc<dyn LearningCompleter>>>>,
-    /// In-memory learning-graph draft store backing the agent tool set
-    /// (`lg_start` .. `lg_finish`). Generation is a short-lived operation,
-    /// so drafts do not survive restarts; only `lg_finish` publishes to
-    /// the database. Each entry carries its last-activity timestamp: stale
-    /// drafts are evicted lazily (see
-    /// `service::learning_graph::LEARNING_GRAPH_DRAFT_TTL`), so crashed or
-    /// timed-out generation sessions cannot leak memory.
-    learning_graph_drafts: Arc<RwLock<HashMap<String, (DraftGraph, std::time::Instant)>>>,
-    /// Two-loop agent engine; when present, `generate_learning_graph` routes
-    /// through it (draft + `lg_*` tools, audit-gated publish).
-    learning_graph_engine: Arc<RwLock<Option<Arc<dyn LearningGraphAgentEngine>>>>,
     /// In-memory outline draft store backing the agent tool set (`co_start`
     /// .. `co_finish`). Same lifecycle as the learning-graph drafts:
     /// short-lived, `finish` is the single publish path.
@@ -102,24 +107,31 @@ pub struct LearningService {
     /// restart loses in-flight generations, and a 1-3 minute task is
     /// simply re-issued.
     agent_course_jobs: Arc<Mutex<HashMap<String, AgentCourseJobEntry>>>,
-    /// 课程生成的运行注册与取消旗标（学习图与大纲两条生成流共用，是
-    /// status/cancel 端点的唯一数据源）：`begin` 清零旗标并登记主题/开始
-    /// 时刻（RAII 守卫注销），取消端点置位旗标，状态端点读取。旗标 Arc
-    /// 永不更换——引擎在循环开始前克隆给 CancellableProvider，置位即可达。
-    /// 内存态，与草稿存储同生命周期（重启即失）。
-    generation_registry: Arc<GenerationRegistry>,
+    /// 课程生成的运行注册与取消（学习图生长/结构、大纲、课时四类长任务
+    /// 共用，是 status/cancel/快照端点的唯一数据源，见
+    /// [`generation_tasks`]）：每任务一枚 CancellationToken——任务体在检查
+    /// 点轮询 + `select!` 真中断；取消端点触发 token；终态首写即定（取消
+    /// 先到 = cancelled，任务先完成 = 竞速落败如实 done）。内存态，重启
+    /// 即清（终态留痕由批行/草稿等持久面承担）。
+    generation_tasks: Arc<GenerationTaskRegistry>,
+    /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
+    /// 读数面）。内存态，仅诊断。
+    growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
+    /// companion XP 桥（j05 统一账）：结算落账后的同步授予接缝。缺省
+    /// `None`（测试/CLI/无伙伴花名册）——只落学习账，companion 余额滞后。
+    companion_xp_sink: Arc<RwLock<Option<Arc<dyn CompanionXpSink>>>>,
 }
 
-/// 生成注册的内部状态（见 [`LearningService::generation_registry`]）。
-pub(super) struct GenerationRegistry {
-    cancel: Arc<AtomicBool>,
-    run: Mutex<Option<GenerationRun>>,
+/// 生长循环的重试读数（learning-smoke grow/loop 输出用；读数面非门禁）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GrowthRunStats {
+    pub attempts_used: usize,
+    /// success | early_stop | exhausted | cancelled。
+    pub stop_reason: String,
 }
 
-pub(super) struct GenerationRun {
-    pub(super) topic: String,
-    pub(super) started_at: std::time::Instant,
-}
+/// 生成注册的内部状态（见 [`LearningService::generation_tasks`]）。
+pub(crate) type GenerationRegistry = generation_tasks::GenerationTaskRegistry;
 
 impl LearningService {
     pub fn new(pool: SqlitePool) -> Self {
@@ -127,8 +139,6 @@ impl LearningService {
             pool,
             knowledge_service: Arc::new(RwLock::new(None)),
             course_completer: Arc::new(RwLock::new(None)),
-            learning_graph_drafts: Arc::new(RwLock::new(HashMap::new())),
-            learning_graph_engine: Arc::new(RwLock::new(None)),
             course_outline_drafts: Arc::new(RwLock::new(HashMap::new())),
             course_outline_engine: Arc::new(RwLock::new(None)),
             lesson_drafts: Arc::new(RwLock::new(HashMap::new())),
@@ -137,11 +147,19 @@ impl LearningService {
             event_sink: Arc::new(RwLock::new(None)),
             generation_slots: Arc::new(Mutex::new(HashSet::new())),
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
-            generation_registry: Arc::new(GenerationRegistry {
-                cancel: Arc::new(AtomicBool::new(false)),
-                run: Mutex::new(None),
-            }),
+            generation_tasks: Arc::new(GenerationTaskRegistry::new()),
+            growth_run_stats: Arc::new(Mutex::new(None)),
+            companion_xp_sink: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 注入长任务的观测旁路（begin/finish JSONL 行；组合根接
+    /// `<data-dir>/observation/learning-tasks.jsonl`，写失败降级）。
+    pub fn set_generation_task_observer(
+        &self,
+        observer: Arc<dyn Fn(&str) + Send + Sync>,
+    ) {
+        self.generation_tasks.set_observer(observer);
     }
 
     pub fn set_generation_dependencies(
@@ -326,15 +344,6 @@ impl LearningService {
         Ok(())
     }
 
-    /// Inject the two-loop learning-graph agent engine (wiring-time, before
-    /// any request). Generation requires the engine — there is no fallback.
-    pub fn set_learning_graph_engine(&self, engine: Arc<dyn LearningGraphAgentEngine>) {
-        *self
-            .learning_graph_engine
-            .write()
-            .expect("learning graph engine lock poisoned") = Some(engine);
-    }
-
     /// Inject the two-loop course outline agent engine (wiring-time, before
     /// any request). Absent, `generate_course` falls back to the legacy
     /// one-shot pipeline.
@@ -391,20 +400,6 @@ impl LearningService {
             })
     }
 
-    async fn lesson_concepts(
-        &self,
-        lesson_id: &LearningLessonId,
-    ) -> Result<Vec<LearningConceptId>, AppError> {
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT concept_id FROM learning_lesson_concepts WHERE lesson_id = ? ORDER BY concept_id",
-        )
-        .bind(lesson_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        ids.into_iter().map(parse_id).collect()
-    }
-
     async fn lesson_activities(
         &self,
         lesson_id: &LearningLessonId,
@@ -426,14 +421,6 @@ impl LearningService {
                 &row.try_get::<String, _>("config_json").map_err(internal)?,
             )
             .map_err(internal)?;
-            let concept_ids: Vec<String> = sqlx::query_scalar(
-                "SELECT concept_id FROM learning_activity_concepts \
-                 WHERE activity_id = ? ORDER BY concept_id",
-            )
-            .bind(id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
             activities.push(ActivityView {
                 id,
                 kind: ActivityKind::try_from(kind_text.as_str())
@@ -442,57 +429,9 @@ impl LearningService {
                 options: config.options,
                 matches: config.matches,
                 position: row.try_get("position").map_err(internal)?,
-                concepts: concept_ids
-                    .into_iter()
-                    .map(parse_id)
-                    .collect::<Result<_, _>>()?,
             });
         }
         Ok(activities)
-    }
-
-    async fn course_concepts(
-        &self,
-        course_id: &LearningCourseId,
-        enrollment_id: Option<&LearningEnrollmentId>,
-    ) -> Result<Vec<ConceptView>, AppError> {
-        let rows = sqlx::query(
-            "SELECT c.concept_id, c.concept_key, c.title, c.description, m.mastery \
-             FROM learning_concepts c \
-             LEFT JOIN learning_mastery_states m \
-               ON m.concept_id = c.concept_id AND m.enrollment_id = ? \
-             WHERE c.course_id = ? ORDER BY c.concept_key, c.concept_id",
-        )
-        .bind(enrollment_id.map(LearningEnrollmentId::as_str))
-        .bind(course_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        let mut concepts = Vec::with_capacity(rows.len());
-        for row in rows {
-            let id: LearningConceptId =
-                parse_id(row.try_get("concept_id").map_err(internal)?)?;
-            let prerequisites: Vec<String> = sqlx::query_scalar(
-                "SELECT prerequisite_concept_id FROM learning_concept_prerequisites \
-                 WHERE concept_id = ? ORDER BY prerequisite_concept_id",
-            )
-            .bind(id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(internal)?;
-            concepts.push(ConceptView {
-                id,
-                key: row.try_get("concept_key").map_err(internal)?,
-                title: row.try_get("title").map_err(internal)?,
-                description: row.try_get("description").map_err(internal)?,
-                prerequisites: prerequisites
-                    .into_iter()
-                    .map(parse_id)
-                    .collect::<Result<_, _>>()?,
-                mastery: row.try_get("mastery").map_err(internal)?,
-            });
-        }
-        Ok(concepts)
     }
 
 }
@@ -526,23 +465,6 @@ impl Drop for GenerationSlotGuard {
     }
 }
 
-/// RAII deregistration for one registered generation run; dropping it
-/// clears the run entry so every exit path (normal return, failure,
-/// aborted HTTP handler, aborted agent task) leaves no stale entry behind.
-/// See `service::learning_graph::begin_generation`.
-pub(crate) struct GenerationRunGuard<'a>(&'a LearningService);
-
-impl Drop for GenerationRunGuard<'_> {
-    fn drop(&mut self) {
-        *self
-            .0
-            .generation_registry
-            .run
-            .lock()
-            .expect("generation run lock poisoned") = None;
-    }
-}
-
 /// Status snapshot of one agent-session course generation: the entry the
 /// session's status tool polls. `course_id`/`title` are filled only when
 /// the generation completed; `error` only when it failed.
@@ -571,16 +493,28 @@ mod learning_graph;
 mod course;
 mod course_outline;
 mod diagnostic;
+mod generation_tasks;
 mod generate;
 mod lesson;
 mod lesson_draft;
 mod memory;
 mod progress;
+mod quiz;
 mod review;
 mod tags;
+mod xp;
+
+pub use xp::CompanionXpSink;
+
+pub(crate) use generation_tasks::{
+    CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
+    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
+    KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
+};
 
 #[cfg(test)]
 mod tests;
 
+use self::course::CourseKbSources;
 use self::lesson::validate_question_payload;
-use self::progress::{ensure_review_item, evaluate, update_activity_mastery, update_mastery_and_review};
+use self::progress::{ensure_review_item, evaluate, update_mastery_and_review};

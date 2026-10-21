@@ -1,40 +1,41 @@
-//! The course outline draft the `co_*` agent tools edit. Mirrors
-//! `learning_graph/draft.rs`: stable-keyed entities (modules, lessons,
-//! concepts), a batched op vocabulary with per-op rejection reasons and
-//! fuzzy-reference hints, a live deterministic audit, and a single
-//! audit-gated publish path that converts the draft into the generation
-//! stage's [`Blueprint`].
+//! The course outline draft the `co_*` agent tools edit. Stable-keyed
+//! entities (modules, lessons), a batched op vocabulary with per-op
+//! rejection reasons, a live deterministic audit, and a single audit-gated
+//! publish path that converts the draft into the generation stage's
+//! [`Blueprint`].
 //!
-//! Identity model: every module/lesson/concept carries a model-chosen key
-//! (unique per collection), so patch ops stay unambiguous while the draft
-//! is re-ordered or renamed. Ops validate references eagerly — an unknown
-//! key is rejected with the closest existing candidate — while the audit
+//! Identity model: every module/lesson carries a model-chosen key (unique
+//! per collection), so patch ops stay unambiguous while the draft is
+//! re-ordered or renamed. Ops validate references eagerly — an unknown key
+//! is rejected with the closest existing candidate — while the audit
 //! re-checks everything deterministically on every patch and at the finish
-//! gate (DANGER findings block publishing).
+//! gate (DANGER findings block publishing). The per-course concept system
+//! is retired (ADR-0009): the outline carries no concepts and no
+//! prerequisite edges.
 
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::learning_graph::{
-    common_substring_len, fuzzy_resolve_reference, AuditFinding, ScopeAnalysis, BLOCK_MIN_SHARED,
-    SEV_DANGER, SEV_INFO, SEV_WARNING,
-};
+use super::scope::ScopeAnalysis;
 use crate::generation::{Blueprint, BlueprintLesson, BlueprintModule};
-use crate::models::{ConceptPack, SourceSpan};
+use crate::models::SourceSpan;
 
-use super::OutlineBrief;
+use super::{
+    AuditFinding, BLOCK_MIN_SHARED, OutlineBrief, SEV_DANGER, SEV_INFO, SEV_WARNING,
+    common_substring_len,
+};
 
 /// Hard caps so a runaway agent loop cannot inflate the draft without
 /// bound; both leave generous headroom above any course shape the model
 /// may reasonably pick for itself.
 const MAX_MODULES: usize = 12;
 const MAX_LESSONS_PER_MODULE: usize = 12;
-const MAX_CONCEPTS: usize = 96;
 
-/// A lesson binding more concepts than this waters every activity down;
-/// the audit asks (warning, not blocks) for a split.
-const LESSON_CONCEPT_SOFT_CAP: usize = 6;
+/// 一课时的来源文件上限（t4 评审补齐的多引用）：课时 grounding 的总预算
+/// 40KB 分摊给主引用片段，超过 4 处只会让后面的引用在预算里拿不到位置——
+/// 上限既守住预算，也让模型的引用意图保持可读（与提示词里的口径一致）。
+const MAX_LESSON_SOURCES: usize = 4;
 
 // ── Draft entities ─────────────────────────────────────────────────────────
 
@@ -50,31 +51,20 @@ pub struct OutlineModule {
     pub lessons: Vec<String>,
 }
 
-/// One lesson: title/purpose plus its concept bindings and, on the kb
-/// flow, the sampled file it grounds in.
+/// One lesson: title/purpose plus, on the kb flow, the sampled file(s) it
+/// grounds in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutlineLesson {
     pub key: String,
     pub title: String,
     #[serde(default)]
     pub purpose: String,
+    /// kb flow only: the exact sampled file paths this lesson grounds in
+    /// (引用位序，首个 = 主来源). Empty on the description flow (no samples
+    /// exist) and dropped on import. 老草稿视图里的兼容位 `source`（首个）
+    /// 由视图层派生，草稿本体只存这一份清单。
     #[serde(default)]
-    pub concepts: Vec<String>,
-    /// kb flow only: exact sampled file path. `None` on the description
-    /// flow (no samples exist) and dropped on import.
-    #[serde(default)]
-    pub source: Option<String>,
-}
-
-/// One course concept with its prerequisite keys (learning-graph style DAG).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutlineConcept {
-    pub key: String,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub prerequisites: Vec<String>,
+    pub sources: Vec<String>,
 }
 
 /// Course-level title/description, set once via `set_meta`.
@@ -116,70 +106,38 @@ pub enum OutlineOp {
         #[serde(default)]
         description: Option<String>,
     },
-    /// Remove a module and every lesson inside it. Concepts left unbound
-    /// become audit orphans — removing or rebinding them is the agent's job.
+    /// Remove a module and every lesson inside it.
     RemoveModule { key: String },
-    /// Append a lesson to a module. Every concept key must exist.
+    /// Append a lesson to a module.
     AddLesson {
         module: String,
         key: String,
         title: String,
         #[serde(default)]
         purpose: Option<String>,
+        /// kb flow: exact sampled file path(s) — one path or an array of
+        /// paths (引用位序，首个 = 主来源), each must be a sample path.
         #[serde(default, deserialize_with = "de_string_list")]
-        concepts: Vec<String>,
-        /// kb flow: exact sampled file path (must be one of the sample paths).
-        #[serde(default)]
-        source: Option<String>,
+        source: Vec<String>,
     },
-    /// Update an existing lesson. `Some(empty list)` clears the concepts;
-    /// `None` leaves them untouched. The source follows double-option
-    /// semantics: omitted = untouched, `null` = cleared, a path = set.
+    /// Update an existing lesson. The source follows double-option
+    /// semantics: omitted = untouched, `null` = cleared, a path (or an
+    /// array of paths) = set.
     UpdateLesson {
         key: String,
         #[serde(default)]
         title: Option<String>,
         #[serde(default)]
         purpose: Option<String>,
-        #[serde(default)]
-        concepts: Option<Vec<String>>,
-        #[serde(default, deserialize_with = "de_double_option")]
-        source: Option<Option<String>>,
+        #[serde(default, deserialize_with = "de_double_option_source")]
+        source: Option<Option<Vec<String>>>,
     },
     /// Remove a lesson from its module.
     RemoveLesson { key: String },
-    /// Insert a new concept. Prerequisites must reference existing concepts
-    /// (or earlier ops of the batch) and never the concept itself.
-    AddConcept {
-        key: String,
-        title: String,
-        #[serde(default)]
-        description: Option<String>,
-        #[serde(default, deserialize_with = "de_string_list")]
-        prerequisites: Vec<String>,
-    },
-    /// Update an existing concept. `prerequisites` replaces the whole list
-    /// when present.
-    UpdateConcept {
-        key: String,
-        #[serde(default)]
-        title: Option<String>,
-        #[serde(default)]
-        description: Option<String>,
-        #[serde(default)]
-        prerequisites: Option<Vec<String>>,
-    },
-    /// Remove a concept; lessons and other concepts referencing it keep
-    /// the dangling key (the audit flags it).
-    RemoveConcept { key: String },
-    /// Draw a prerequisite edge `concept -> prerequisite`.
-    LinkPrereq { concept: String, prerequisite: String },
-    /// Remove a prerequisite edge.
-    UnlinkPrereq { concept: String, prerequisite: String },
 }
 
-/// Tolerate `"concepts": "single-key"` (or `null`/absence) where the shape
-/// asks for an array — the same leniency the concept graph ops apply.
+/// Tolerate a bare string where a path list is expected (`source` 一条或数组，
+/// t4 评审补齐)：a bare string wraps into a one-element list.
 fn de_string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -197,15 +155,26 @@ where
     })
 }
 
-/// Distinguish an explicit `"source": null` (clear the source) from an
-/// omitted field (leave it untouched): a missing field still deserializes
-/// to the default `None`, while `null` wraps into `Some(None)` — the shape
-/// `op_update_lesson` expects.
-fn de_double_option<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+/// Distinguish an explicit `"source": null` (clear the sources) from an
+/// omitted field (leave it untouched) — the shape `op_update_lesson`
+/// expects. Tolerates both the single-path and the array forms (`sources`
+/// 多引用，t4 评审补齐)：a bare string wraps into a one-element list.
+fn de_double_option_source<'de, D>(deserializer: D) -> Result<Option<Option<Vec<String>>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    serde::Deserialize::deserialize(deserializer).map(Some)
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(Some(
+        Option::<OneOrMany>::deserialize(deserializer)?.map(|value| match value {
+            OneOrMany::One(one) => vec![one],
+            OneOrMany::Many(many) => many,
+        }),
+    ))
 }
 
 // ── The draft ──────────────────────────────────────────────────────────────
@@ -225,7 +194,6 @@ pub struct OutlineDraft {
     pub meta: OutlineMeta,
     pub modules: Vec<OutlineModule>,
     pub lessons: Vec<OutlineLesson>,
-    pub concepts: Vec<OutlineConcept>,
     /// Increments once per accepted op, so tool callers can detect
     /// concurrent edits.
     pub revision: u64,
@@ -247,10 +215,14 @@ impl OutlineDraft {
             meta: OutlineMeta::default(),
             modules: Vec::new(),
             lessons: Vec::new(),
-            concepts: Vec::new(),
             revision: 0,
             findings: Vec::new(),
         };
+        // 目标即课程名（t1 裁决）：目标存在时预置课程标题，模型无需（也不
+        // 引入 LLM 派名）自拟——标题的最终口径仍由装配处统一兜底。
+        if let Some(title) = draft.brief.goal_title() {
+            draft.meta.title = title;
+        }
         // A fresh draft is ALREADY audited: the size mismatch carries from
         // birth, so a premature `co_finish` on a never-patched draft is
         // rejected instead of publishing a blank course.
@@ -291,29 +263,17 @@ impl OutlineDraft {
                 self.op_update_module(key, title.as_deref(), description.as_deref())
             }
             OutlineOp::RemoveModule { key } => self.op_remove_module(key),
-            OutlineOp::AddLesson { module, key, title, purpose, concepts, source } => self
+            OutlineOp::AddLesson { module, key, title, purpose, source } => self
                 .op_add_lesson(
                     module,
                     key,
                     title,
                     purpose.as_deref(),
-                    concepts,
-                    source.as_deref(),
+                    source,
                 ),
-            OutlineOp::UpdateLesson { key, title, purpose, concepts, source } => self
-                .op_update_lesson(key, title.as_deref(), purpose.as_deref(), concepts.as_ref(), source),
+            OutlineOp::UpdateLesson { key, title, purpose, source } => self
+                .op_update_lesson(key, title.as_deref(), purpose.as_deref(), source),
             OutlineOp::RemoveLesson { key } => self.op_remove_lesson(key),
-            OutlineOp::AddConcept { key, title, description, prerequisites } => self
-                .op_add_concept(key, title, description.as_deref(), prerequisites),
-            OutlineOp::UpdateConcept { key, title, description, prerequisites } => self
-                .op_update_concept(key, title.as_deref(), description.as_deref(), prerequisites.as_ref()),
-            OutlineOp::RemoveConcept { key } => self.op_remove_concept(key),
-            OutlineOp::LinkPrereq { concept, prerequisite } => {
-                self.op_link_prereq(concept, prerequisite)
-            }
-            OutlineOp::UnlinkPrereq { concept, prerequisite } => {
-                self.op_unlink_prereq(concept, prerequisite)
-            }
         }
     }
 
@@ -414,8 +374,7 @@ impl OutlineDraft {
         key: &str,
         title: &str,
         purpose: Option<&str>,
-        concepts: &[String],
-        source: Option<&str>,
+        source: &[String],
     ) -> Result<OpOutcome, String> {
         let module_key = module.trim();
         let module_position = self
@@ -433,8 +392,7 @@ impl OutlineDraft {
                 "add_lesson: module '{module_key}' has too many lessons (cap {MAX_LESSONS_PER_MODULE})"
             ));
         }
-        let concepts = self.resolve_concept_refs(concepts, "add_lesson")?;
-        let source = self.resolve_source(source, "add_lesson")?;
+        let sources = self.resolve_sources(source, "add_lesson")?;
         let purpose = purpose.unwrap_or_default().trim().to_owned();
         if purpose.is_empty() {
             return Err("add_lesson: purpose is required (what the learner can do afterwards)".into());
@@ -444,8 +402,7 @@ impl OutlineDraft {
             key: key.clone(),
             title: title.to_owned(),
             purpose,
-            concepts,
-            source,
+            sources,
         });
         self.revision += 1;
         Ok(OpOutcome {
@@ -459,18 +416,15 @@ impl OutlineDraft {
         key: &str,
         title: Option<&str>,
         purpose: Option<&str>,
-        concepts: Option<&Vec<String>>,
-        source: &Option<Option<String>>,
+        source: &Option<Option<Vec<String>>>,
     ) -> Result<OpOutcome, String> {
         let key = key.trim();
-        // Resolve references against the whole draft first — the mutable
-        // lesson borrow must not overlap the lookups.
-        let resolved_concepts = match concepts {
-            Some(list) => Some(self.resolve_concept_refs(list, "update_lesson")?),
-            None => None,
-        };
-        let resolved_source = match source {
-            Some(value) => Some(self.resolve_source(value.as_deref(), "update_lesson")?),
+        // Resolve the source reference against the whole draft first — the
+        // mutable lesson borrow must not overlap the lookup.
+        let resolved_sources = match source {
+            Some(value) => Some(value.as_deref().map_or(Ok(Vec::new()), |paths| {
+                self.resolve_sources(paths, "update_lesson")
+            })?),
             None => None,
         };
         let lesson = self
@@ -484,11 +438,8 @@ impl OutlineDraft {
         if let Some(purpose) = purpose {
             lesson.purpose = purpose.trim().to_owned();
         }
-        if let Some(resolved) = resolved_concepts {
-            lesson.concepts = resolved;
-        }
-        if let Some(resolved) = resolved_source {
-            lesson.source = resolved;
+        if let Some(resolved) = resolved_sources {
+            lesson.sources = resolved;
         }
         self.revision += 1;
         Ok(OpOutcome {
@@ -515,285 +466,45 @@ impl OutlineDraft {
         })
     }
 
-    fn op_add_concept(
-        &mut self,
-        key: &str,
-        title: &str,
-        description: Option<&str>,
-        prerequisites: &[String],
-    ) -> Result<OpOutcome, String> {
-        let key = normalize_key(key, "add_concept")?;
-        let title = require_title(title, "add_concept")?;
-        if self.concepts.iter().any(|concept| concept.key == key) {
-            return Err(format!("add_concept: concept key '{key}' already exists"));
-        }
-        if self.concepts.len() >= MAX_CONCEPTS {
-            return Err(format!(
-                "add_concept: too many concepts (cap {MAX_CONCEPTS}); remove unused ones first"
-            ));
-        }
-        let prerequisites = self.resolve_prereqs(&key, prerequisites, "add_concept")?;
-        let prereq_count = prerequisites.len();
-        self.concepts.push(OutlineConcept {
-            key: key.clone(),
-            title: title.to_owned(),
-            description: description.unwrap_or_default().trim().to_owned(),
-            prerequisites,
-        });
-        self.revision += 1;
-        Ok(OpOutcome {
-            op: "add_concept".into(),
-            summary: format!(
-                "已添加概念 '{key}'（{title}，前置 {prereq_count} 个）"
-            ),
-        })
-    }
-
-    fn op_update_concept(
-        &mut self,
-        key: &str,
-        title: Option<&str>,
-        description: Option<&str>,
-        prerequisites: Option<&Vec<String>>,
-    ) -> Result<OpOutcome, String> {
-        let key = key.trim();
-        // Resolve the new prerequisite list before taking the mutable
-        // concept borrow (same discipline as update_lesson).
-        let resolved_prereqs = match prerequisites {
-            Some(list) => Some(self.resolve_prereqs(key, list, "update_concept")?),
-            None => None,
-        };
-        let concept = self
-            .concepts
-            .iter_mut()
-            .find(|concept| concept.key == key)
-            .ok_or_else(|| format!("update_concept: unknown concept key '{key}'"))?;
-        if let Some(title) = title {
-            concept.title = require_title(title, "update_concept")?.to_owned();
-        }
-        if let Some(description) = description {
-            concept.description = description.trim().to_owned();
-        }
-        if let Some(resolved) = resolved_prereqs {
-            concept.prerequisites = resolved;
-        }
-        self.revision += 1;
-        Ok(OpOutcome {
-            op: "update_concept".into(),
-            summary: format!("已更新概念 '{key}'"),
-        })
-    }
-
-    fn op_remove_concept(&mut self, key: &str) -> Result<OpOutcome, String> {
-        let key = key.trim();
-        let position = self
-            .concepts
-            .iter()
-            .position(|concept| concept.key == key)
-            .ok_or_else(|| format!("remove_concept: unknown concept key '{key}'"))?;
-        self.concepts.remove(position);
-        for concept in &mut self.concepts {
-            concept.prerequisites.retain(|prerequisite| prerequisite != key);
-        }
-        for lesson in &mut self.lessons {
-            lesson.concepts.retain(|concept| concept != key);
-        }
-        self.revision += 1;
-        Ok(OpOutcome {
-            op: "remove_concept".into(),
-            summary: format!("已移除概念 '{key}'（并清理其引用）"),
-        })
-    }
-
-    fn op_link_prereq(&mut self, concept: &str, prerequisite: &str) -> Result<OpOutcome, String> {
-        let concept = concept.trim();
-        let prerequisite = prerequisite.trim();
-        if !self.concepts.iter().any(|c| c.key == concept) {
-            let hint = self
-                .closest_concept(concept)
-                .map(|candidate| format!("; closest existing concept: '{candidate}'"))
-                .unwrap_or_default();
-            return Err(format!("link_prereq: unknown concept '{concept}'{hint}"));
-        }
-        if !self.concepts.iter().any(|c| c.key == prerequisite) {
-            let hint = self
-                .closest_concept(prerequisite)
-                .map(|candidate| format!("; closest existing concept: '{candidate}'"))
-                .unwrap_or_default();
-            return Err(format!("link_prereq: unknown prerequisite '{prerequisite}'{hint}"));
-        }
-        if concept == prerequisite {
-            return Err(format!("link_prereq: '{concept}' cannot require itself"));
-        }
-        {
-            let concept_ref = self
-                .concepts
-                .iter_mut()
-                .find(|c| c.key == concept)
-                .expect("existence checked above");
-            if concept_ref.prerequisites.iter().any(|p| p == prerequisite) {
-                return Err(format!(
-                    "link_prereq: '{concept}' already requires '{prerequisite}'"
-                ));
-            }
-            concept_ref.prerequisites.push(prerequisite.to_owned());
-        }
-        if self.concept_prereq_cycle() {
-            // Roll the edge back so a rejected op leaves no mutation.
-            if let Some(concept_ref) = self.concepts.iter_mut().find(|c| c.key == concept) {
-                concept_ref.prerequisites.retain(|p| p != prerequisite);
-            }
-            return Err(format!(
-                "link_prereq: '{concept}' -> '{prerequisite}' would form a prerequisite cycle"
-            ));
-        }
-        self.revision += 1;
-        Ok(OpOutcome {
-            op: "link_prereq".into(),
-            summary: format!("已建立前置 {concept} -> {prerequisite}"),
-        })
-    }
-
-    fn op_unlink_prereq(
-        &mut self,
-        concept: &str,
-        prerequisite: &str,
-    ) -> Result<OpOutcome, String> {
-        let concept = concept.trim();
-        let prerequisite = prerequisite.trim();
-        let holder = self
-            .concepts
-            .iter_mut()
-            .find(|c| c.key == concept)
-            .ok_or_else(|| format!("unlink_prereq: unknown concept '{concept}'"))?;
-        if !holder.prerequisites.iter().any(|p| p == prerequisite) {
-            return Err(format!(
-                "unlink_prereq: '{concept}' does not require '{prerequisite}'"
-            ));
-        }
-        holder.prerequisites.retain(|p| p != prerequisite);
-        self.revision += 1;
-        Ok(OpOutcome {
-            op: "unlink_prereq".into(),
-            summary: format!("已移除前置 {concept} -> {prerequisite}"),
-        })
-    }
-
     // ── Reference resolution (reject with a closest-candidate hint) ─────
 
-    fn resolve_concept_refs(
-        &self,
-        references: &[String],
-        op: &str,
-    ) -> Result<Vec<String>, String> {
-        let mut resolved = Vec::with_capacity(references.len());
-        for raw in references {
-            let reference = raw.trim();
-            if reference.is_empty() {
-                return Err(format!("{op}: empty concept reference"));
+    /// 课时来源引用的解析（t4 评审补齐：一条课时可引用多处来源）：逐条校验
+    /// 是真实采样路径（引用位序保留、去重），空串忽略——描述流没有任何采样
+    /// 文档，引用一律拒绝。审计 `unknown_source` 用同一把尺复查每一条。
+    fn resolve_sources(&self, sources: &[String], op: &str) -> Result<Vec<String>, String> {
+        let mut resolved: Vec<String> = Vec::new();
+        for source in sources {
+            let path = source.trim();
+            if path.is_empty() {
+                continue;
             }
-            if !self.concepts.iter().any(|concept| concept.key == reference) {
-                let hint = self
-                    .closest_concept(reference)
-                    .map(|candidate| format!("; closest existing concept: '{candidate}'"))
-                    .unwrap_or_default();
-                return Err(format!("{op}: unknown concept '{reference}'{hint}"));
+            if self.samples.is_empty() {
+                return Err(format!(
+                    "{op}: this generation has no sampled documents, so lessons cannot cite a source"
+                ));
             }
-            if !resolved.iter().any(|key| key == reference) {
-                resolved.push(reference.to_owned());
+            if !self.samples.iter().any(|(candidate, _)| candidate == path) {
+                let closest = self
+                    .samples
+                    .iter()
+                    .map(|(candidate, _)| candidate.as_str())
+                    .min_by_key(|candidate| common_substring_len(path, candidate))
+                    .unwrap_or("");
+                return Err(format!(
+                    "{op}: '{path}' is not a sampled file; exact paths are like '{closest}'"
+                ));
             }
+            if resolved.iter().any(|candidate| candidate == path) {
+                continue;
+            }
+            if resolved.len() >= MAX_LESSON_SOURCES {
+                return Err(format!(
+                    "{op}: a lesson cites too many sources (cap {MAX_LESSON_SOURCES})"
+                ));
+            }
+            resolved.push(path.to_owned());
         }
         Ok(resolved)
-    }
-
-    fn resolve_prereqs(
-        &self,
-        own_key: &str,
-        references: &[String],
-        op: &str,
-    ) -> Result<Vec<String>, String> {
-        let mut resolved = Vec::with_capacity(references.len());
-        for raw in references {
-            let reference = raw.trim();
-            if reference.is_empty() {
-                return Err(format!("{op}: empty prerequisite on '{own_key}'"));
-            }
-            if reference == own_key {
-                return Err(format!("{op}: '{own_key}' cannot require itself"));
-            }
-            if !self.concepts.iter().any(|concept| concept.key == reference) {
-                let hint = self
-                    .closest_concept(reference)
-                    .map(|candidate| format!("; closest existing concept: '{candidate}'"))
-                    .unwrap_or_default();
-                return Err(format!("{op}: unknown prerequisite '{reference}'{hint}"));
-            }
-            if !resolved.iter().any(|key| key == reference) {
-                resolved.push(reference.to_owned());
-            }
-        }
-        Ok(resolved)
-    }
-
-    fn resolve_source(&self, source: Option<&str>, op: &str) -> Result<Option<String>, String> {
-        let Some(path) = source else {
-            return Ok(None);
-        };
-        let path = path.trim();
-        if path.is_empty() {
-            return Ok(None);
-        }
-        if self.samples.is_empty() {
-            return Err(format!(
-                "{op}: this generation has no sampled documents, so lessons cannot cite a source"
-            ));
-        }
-        if self.samples.iter().any(|(candidate, _)| candidate == path) {
-            return Ok(Some(path.to_owned()));
-        }
-        let closest = self
-            .samples
-            .iter()
-            .map(|(candidate, _)| candidate.as_str())
-            .min_by_key(|candidate| common_substring_len(path, candidate))
-            .unwrap_or("");
-        Err(format!(
-            "{op}: '{path}' is not a sampled file; exact paths are like '{closest}'"
-        ))
-    }
-
-    fn closest_concept(&self, reference: &str) -> Option<String> {
-        let names: HashSet<String> = self.concepts.iter().map(|concept| concept.key.clone()).collect();
-        fuzzy_resolve_reference(reference, &names, &HashSet::new())
-    }
-
-    /// Cycle detection over the concept prerequisite graph (Kahn's
-    /// algorithm: repeatedly strip concepts whose prerequisites are all
-    /// gone; leftovers form a cycle).
-    fn concept_prereq_cycle(&self) -> bool {
-        let mut remaining: HashSet<&str> =
-            self.concepts.iter().map(|concept| concept.key.as_str()).collect();
-        loop {
-            let ready: Vec<&str> = self
-                .concepts
-                .iter()
-                .filter(|concept| {
-                    remaining.contains(concept.key.as_str())
-                        && concept
-                            .prerequisites
-                            .iter()
-                            .all(|prerequisite| !remaining.contains(prerequisite.as_str()))
-                })
-                .map(|concept| concept.key.as_str())
-                .collect();
-            if ready.is_empty() {
-                break;
-            }
-            for key in ready {
-                remaining.remove(key);
-            }
-        }
-        !remaining.is_empty()
     }
 
     /// kb flow: read one sampled file by exact path (the `co_read` tool).
@@ -873,10 +584,9 @@ impl OutlineDraft {
         }
         lines.push("==== Audit report ====".into());
         lines.push(format!(
-            "{} modules / {} lessons / {} concepts",
+            "{} modules / {} lessons",
             self.modules.len(),
-            self.lessons.len(),
-            self.concepts.len()
+            self.lessons.len()
         ));
         if self.findings.is_empty() {
             lines.push("No findings. Ready to finish.".into());
@@ -903,9 +613,9 @@ impl OutlineDraft {
         lines.join("\n")
     }
 
-    /// A scope block counts as covered when some module, lesson or concept
-    /// title shares a meaningful substring with it (same weak bar the
-    /// concept graph audit applies). The bar is capped by the block's own
+    /// A scope block counts as covered when some module or lesson title
+    /// shares a meaningful substring with it (the deliberately weak bar of
+    /// [`BLOCK_MIN_SHARED`]). The bar is capped by the block's own
     /// character length: the scope analysis can legitimately emit
     /// single-character blocks ("栈", "图") whose longest possible shared
     /// substring is 1 — without the cap such blocks are unmatchable and the
@@ -916,7 +626,6 @@ impl OutlineDraft {
         let covered = |text: &str| common_substring_len(text, block) >= bar;
         self.modules.iter().any(|module| covered(&module.title))
             || self.lessons.iter().any(|lesson| covered(&lesson.title))
-            || self.concepts.iter().any(|concept| covered(&concept.title))
     }
 
     /// Convert a draft that passed the finish gate into the generation
@@ -928,16 +637,6 @@ impl OutlineDraft {
             description: self.meta.description.trim().to_owned(),
             domain: self.brief.domain.clone().unwrap_or_default(),
             version: 1,
-            concepts: self
-                .concepts
-                .iter()
-                .map(|concept| ConceptPack {
-                    key: concept.key.clone(),
-                    title: concept.title.clone(),
-                    description: concept.description.clone(),
-                    prerequisites: concept.prerequisites.clone(),
-                })
-                .collect(),
             modules: self
                 .modules
                 .iter()
@@ -948,15 +647,27 @@ impl OutlineDraft {
                         .lessons
                         .iter()
                         .filter_map(|key| self.lessons.iter().find(|lesson| &lesson.key == key))
-                        .map(|lesson| BlueprintLesson {
-                            title: lesson.title.clone(),
-                            purpose: lesson.purpose.clone(),
-                            concepts: lesson.concepts.clone(),
-                            source: lesson.source.as_ref().map(|path| SourceSpan {
-                                path: path.clone(),
-                                start: None,
-                                end: None,
-                            }),
+                        .map(|lesson| {
+                            let mut blueprint_lesson = BlueprintLesson {
+                                title: lesson.title.clone(),
+                                purpose: lesson.purpose.clone(),
+                                // 库归属由生成管线按采样命名空间标注（t4）：
+                                // 草稿只持有路径，草稿层不认识库。
+                                source: None,
+                                sources: lesson
+                                    .sources
+                                    .iter()
+                                    .map(|path| SourceSpan {
+                                        path: path.clone(),
+                                        start: None,
+                                        end: None,
+                                        kb_id: None,
+                                    })
+                                    .collect(),
+                            };
+                            // 兼容位 = 首个引用（列表与兼容位不漂移）。
+                            blueprint_lesson.normalize_sources();
+                            blueprint_lesson
                         })
                         .collect(),
                 })
@@ -1009,18 +720,11 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
         "lesson",
         draft.lessons.iter().map(|lesson| lesson.key.clone()),
     );
-    push_duplicates(
-        &mut findings,
-        "concept",
-        draft.concepts.iter().map(|concept| concept.key.clone()),
-    );
     push_duplicate_titles(
         &mut findings,
         draft.lessons.iter().map(|lesson| lesson.title.clone()),
     );
 
-    let concept_keys: HashSet<&str> =
-        draft.concepts.iter().map(|concept| concept.key.as_str()).collect();
     for lesson in &draft.lessons {
         if lesson.title.trim().is_empty() {
             findings.push(finding(
@@ -1038,40 +742,9 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
                 vec![lesson.key.clone()],
             ));
         }
-        if lesson.concepts.is_empty() {
-            findings.push(finding(
-                "lesson_missing_field",
-                SEV_DANGER,
-                format!("lesson '{}' binds no concept", lesson.key),
-                vec![lesson.key.clone()],
-            ));
-        }
-        for concept in &lesson.concepts {
-            if !concept_keys.contains(concept.as_str()) {
-                findings.push(finding(
-                    "unknown_concept_ref",
-                    SEV_DANGER,
-                    format!(
-                        "lesson '{}' references unknown concept '{concept}'",
-                        lesson.key
-                    ),
-                    vec![lesson.key.clone()],
-                ));
-            }
-        }
-        if lesson.concepts.len() > LESSON_CONCEPT_SOFT_CAP {
-            findings.push(finding(
-                "concept_overload",
-                SEV_WARNING,
-                format!(
-                    "lesson '{}' binds {} concepts (soft cap {LESSON_CONCEPT_SOFT_CAP}); consider splitting it",
-                    lesson.key,
-                    lesson.concepts.len()
-                ),
-                vec![lesson.key.clone()],
-            ));
-        }
-        if let Some(source) = &lesson.source {
+        // 引用复核（t4 评审补齐）：每条 source 都必须是采样路径——多引用
+        // 课时里任何一条悬空都是 danger，不能只看首个。
+        for source in &lesson.sources {
             if !draft.samples.iter().any(|(path, _)| path == source) {
                 findings.push(finding(
                     "unknown_source",
@@ -1083,64 +756,11 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
         }
     }
 
-    for concept in &draft.concepts {
-        if concept.title.trim().is_empty() {
-            findings.push(finding(
-                "concept_missing_field",
-                SEV_DANGER,
-                format!("concept '{}' has no title", concept.key),
-                vec![concept.key.clone()],
-            ));
-        }
-        for prerequisite in &concept.prerequisites {
-            if !concept_keys.contains(prerequisite.as_str()) {
-                findings.push(finding(
-                    "unknown_prereq",
-                    SEV_DANGER,
-                    format!(
-                        "concept '{}' references unknown prerequisite '{prerequisite}'",
-                        concept.key
-                    ),
-                    vec![concept.key.clone()],
-                ));
-            }
-        }
-        if concept.prerequisites.iter().any(|p| p == &concept.key) {
-            findings.push(finding(
-                "self_prereq",
-                SEV_DANGER,
-                format!("concept '{}' requires itself", concept.key),
-                vec![concept.key.clone()],
-            ));
-        }
-        if !draft
-            .lessons
-            .iter()
-            .any(|lesson| lesson.concepts.iter().any(|key| key == &concept.key))
-        {
-            findings.push(finding(
-                "orphan_concept",
-                SEV_DANGER,
-                format!("concept '{}' is not bound by any lesson", concept.key),
-                vec![concept.key.clone()],
-            ));
-        }
-    }
-    if draft.concept_prereq_cycle() {
-        findings.push(finding(
-            "prereq_cycle",
-            SEV_DANGER,
-            "concept prerequisites form a cycle".into(),
-            vec![],
-        ));
-    }
-
     for key in draft
         .modules
         .iter()
         .map(|module| module.key.as_str())
         .chain(draft.lessons.iter().map(|lesson| lesson.key.as_str()))
-        .chain(draft.concepts.iter().map(|concept| concept.key.as_str()))
     {
         if !kebabish(key) {
             findings.push(finding(
@@ -1160,10 +780,10 @@ fn audit_outline(draft: &OutlineDraft) -> Vec<AuditFinding> {
                     "scope_gap",
                     SEV_DANGER,
                     format!(
-                        "scope block '{block}' is not covered by any module, lesson or concept title \
+                        "scope block '{block}' is not covered by any module or lesson title \
                          (coverage = a title sharing at least {bar} consecutive characters with the \
                          block — a title containing '{block}' always counts); fix: add or rename one \
-                         module/lesson/concept whose title contains '{block}'"
+                         module/lesson whose title contains '{block}'"
                     ),
                     vec![],
                 ));
@@ -1350,7 +970,6 @@ pub struct OutlineInspectView {
     pub description: String,
     pub modules: usize,
     pub lessons: usize,
-    pub concepts: usize,
     /// One line per module with its lesson keys.
     pub module_lines: Vec<String>,
     pub findings: Vec<OutlineFindingSummary>,
@@ -1375,7 +994,6 @@ const fn default_query_limit() -> usize {
 pub struct OutlineQueryView {
     pub modules: Vec<String>,
     pub lessons: Vec<String>,
-    pub concepts: Vec<String>,
 }
 
 impl OutlineDraft {
@@ -1419,7 +1037,6 @@ impl OutlineDraft {
             description: self.meta.description.clone(),
             modules: self.modules.len(),
             lessons: self.lessons.len(),
-            concepts: self.concepts.len(),
             module_lines,
             findings: summarize_findings(&self.findings),
             sample_paths: self.sample_paths(),
@@ -1444,31 +1061,17 @@ impl OutlineDraft {
                 .filter(|lesson| matches(&lesson.title) || matches(&lesson.key))
                 .take(cap)
                 .map(|lesson| {
-                    let source = lesson
-                        .source
-                        .as_deref()
-                        .map(|path| format!("; source: {path}"))
-                        .unwrap_or_default();
+                    // 多引用（t4 评审补齐）：逐条列出，位序即引用顺序。
+                    let source = if lesson.sources.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; source: {}", lesson.sources.join(", "))
+                    };
                     format!(
-                        "{}「{}」— {}（概念: {}{source}）",
+                        "{}「{}」— {}{source}",
                         lesson.key,
                         lesson.title,
-                        lesson.purpose,
-                        lesson.concepts.join(", ")
-                    )
-                })
-                .collect(),
-            concepts: self
-                .concepts
-                .iter()
-                .filter(|concept| matches(&concept.title) || matches(&concept.key))
-                .take(cap)
-                .map(|concept| {
-                    format!(
-                        "{}「{}」（前置: {}）",
-                        concept.key,
-                        concept.title,
-                        concept.prerequisites.join(", ")
+                        lesson.purpose
                     )
                 })
                 .collect(),
@@ -1489,8 +1092,11 @@ mod tests {
                 name: "数学基础".into(),
                 description: "代数入门".into(),
             }),
+            knowledge_bases: Vec::new(),
             samples: Vec::new(),
             domain: Some("math".into()),
+            goal: None,
+            sampling: None,
         }
     }
 
@@ -1498,13 +1104,28 @@ mod tests {
         OutlineBrief {
             description: Some("向量代数入门：从坐标到线性组合".into()),
             knowledge_base: None,
+            knowledge_bases: Vec::new(),
             samples: Vec::new(),
             domain: Some("math".into()),
+            goal: None,
+            sampling: None,
         }
     }
 
     fn samples() -> Vec<(String, String)> {
         vec![("notes/vectors.md".into(), "# 向量\n具有大小和方向的量".into())]
+    }
+
+    /// 两个采样文件的草稿（多引用用例）：`samples()` 的第一份 + 矩阵笔记。
+    fn multi_source_draft() -> OutlineDraft {
+        OutlineDraft::new(
+            kb_brief(),
+            vec![
+                ("notes/vectors.md".into(), "# 向量\n具有大小和方向的量".into()),
+                ("notes/matrices.md".into(), "# 矩阵\n线性变换的坐标表示".into()),
+            ],
+            None,
+        )
     }
 
     fn op(json: &str) -> OutlineOp {
@@ -1520,22 +1141,21 @@ mod tests {
             .collect()
     }
 
-    /// A minimal complete draft: 1 module × 1 lesson, one bound concept.
+    /// A minimal complete draft: 1 module × 1 lesson.
     fn build_complete_draft(brief: OutlineBrief) -> OutlineDraft {
         let kb = brief.knowledge_base.is_some();
         let mut draft = OutlineDraft::new(brief, if kb { samples() } else { Vec::new() }, None);
         let mut ops = vec![
             op(r#"{"op":"set_meta","title":"向量代数","description":"一节课弄懂向量"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
-            op(r#"{"op":"add_concept","key":"vector","title":"向量"}"#),
         ];
         if kb {
             ops.push(op(
-                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","concepts":["vector"],"source":"notes/vectors.md"}"#,
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","source":"notes/vectors.md"}"#,
             ));
         } else {
             ops.push(op(
-                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","concepts":["vector"]}"#,
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量"}"#,
             ));
         }
         let report = draft.apply_ops(ops);
@@ -1562,7 +1182,6 @@ mod tests {
                 .path,
             "notes/vectors.md"
         );
-        assert_eq!(blueprint.concepts[0].key, "vector");
     }
 
     #[test]
@@ -1579,44 +1198,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_concept_reference_names_closest_candidate() {
+    fn unknown_lesson_reference_names_the_module_mismatch() {
+        // 概念引用随概念体系退役；引用校验现在只覆盖模块键——未知模块的
+        // 课时添加被拒绝并点名未知键。
         let mut draft = OutlineDraft::new(kb_brief(), samples(), None);
-        draft.apply_ops(vec![
+        let report = draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
-            op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
-            op(r#"{"op":"add_concept","key":"vector","title":"向量"}"#),
+            op(r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P"}"#),
         ]);
-        let report = draft.apply_ops(vec![op(
-            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","concepts":["vectors"]}"#,
-        )]);
-        assert_eq!(report.accepted.len(), 0);
+        assert_eq!(report.accepted.len(), 1, "set_meta accepted");
         assert!(
             report.rejected[0]
                 .reason
-                .contains("closest existing concept: 'vector'"),
+                .contains("unknown module key 'm1'"),
             "{}",
             report.rejected[0].reason
         );
-    }
-
-    #[test]
-    fn cycle_forming_prereq_is_rejected_and_rolled_back() {
-        let mut draft = OutlineDraft::new(kb_brief(), samples(), None);
-        draft.apply_ops(vec![
-            op(r#"{"op":"set_meta","title":"T"}"#),
-            op(r#"{"op":"add_concept","key":"a","title":"A"}"#),
-            op(r#"{"op":"add_concept","key":"b","title":"B","prerequisites":["a"]}"#),
-        ]);
-        let report = draft.apply_ops(vec![op(
-            r#"{"op":"link_prereq","concept":"a","prerequisite":"b"}"#,
-        )]);
-        assert!(
-            report.rejected[0].reason.contains("cycle"),
-            "{}",
-            report.rejected[0].reason
-        );
-        // The rejected edge is rolled back: 'a' has no prerequisites.
-        assert!(draft.concepts.iter().find(|c| c.key == "a").unwrap().prerequisites.is_empty());
     }
 
     #[test]
@@ -1680,10 +1277,9 @@ mod tests {
         draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
-            op(r#"{"op":"add_concept","key":"vector","title":"向量"}"#),
         ]);
         let report = draft.apply_ops(vec![op(
-            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","concepts":["vector"],"source":"notes/vectors.md"}"#,
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":"notes/vectors.md"}"#,
         )]);
         assert!(
             report.rejected[0].reason.contains("no sampled documents"),
@@ -1698,10 +1294,9 @@ mod tests {
         draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
-            op(r#"{"op":"add_concept","key":"vector","title":"向量"}"#),
         ]);
         let report = draft.apply_ops(vec![op(
-            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","concepts":["vector"],"source":"notes/other.md"}"#,
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":"notes/other.md"}"#,
         )]);
         assert!(
             report.rejected[0].reason.contains("is not a sampled file"),
@@ -1710,17 +1305,145 @@ mod tests {
         );
     }
 
+    /// 一个课时引用多处来源（t4 评审补齐）：source 接受数组，位序保留（首个
+    /// = 主来源），逐条解析成采样路径；蓝图里列表与兼容位同时就位。
     #[test]
-    fn unbound_concept_is_an_orphan_danger() {
-        let mut draft = OutlineDraft::new(kb_brief(), samples(), None);
+    fn add_lesson_accepts_a_source_array_and_keeps_the_citation_order() {
+        let mut draft = multi_source_draft();
+        let report = draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+            op(
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","source":["notes/matrices.md","notes/vectors.md"]}"#,
+            ),
+        ]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        let lesson = draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap();
+        assert_eq!(
+            lesson.sources,
+            vec!["notes/matrices.md".to_owned(), "notes/vectors.md".to_owned()],
+            "引用位序 = 模型给出的顺序（首个 = 主来源）"
+        );
+
+        // 蓝图：列表带全部引用，兼容位 = 首个（`cited_sources` 一把尺）。
+        let blueprint = draft.to_blueprint();
+        let lesson = &blueprint.modules[0].lessons[0];
+        assert_eq!(
+            lesson
+                .cited_sources()
+                .iter()
+                .map(|source| source.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["notes/matrices.md", "notes/vectors.md"]
+        );
+        assert_eq!(
+            lesson.source.as_ref().map(|source| source.path.as_str()),
+            Some("notes/matrices.md"),
+            "兼容位 = 首个引用"
+        );
+    }
+
+    /// 数组里任何一条不是采样文件都拒绝整条 op（不半写）：多引用不能有一条
+    /// 混过去。
+    #[test]
+    fn add_lesson_rejects_an_array_with_any_unsampled_reference() {
+        let mut draft = multi_source_draft();
+        draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+        ]);
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":["notes/vectors.md","notes/ghost.md"]}"#,
+        )]);
+        assert!(
+            report.rejected[0].reason.contains("'notes/ghost.md' is not a sampled file"),
+            "{}",
+            report.rejected[0].reason
+        );
+        assert!(
+            draft.lessons.iter().all(|lesson| lesson.key != "l1"),
+            "整条 op 拒绝：课时不落地"
+        );
+    }
+
+    /// 多引用上限（预算 40KB 的分摊）：超过 4 条的引用被拒绝——既不静默丢弃
+    /// 也不让引用清单无限膨胀。
+    #[test]
+    fn add_lesson_caps_the_source_list() {
+        let five: Vec<(String, String)> = (0..5)
+            .map(|index| (format!("notes/f{index}.md"), "# 文件".to_owned()))
+            .collect();
+        let mut draft = OutlineDraft::new(kb_brief(), five, None);
         draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
-            op(r#"{"op":"add_concept","key":"lonely","title":"L"}"#),
-            op(r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","concepts":[]}"#),
         ]);
-        let kinds = danger_kinds(&draft);
-        assert!(kinds.contains(&"orphan_concept"), "{kinds:?}");
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"add_lesson","module":"m1","key":"l1","title":"L","purpose":"P","source":["notes/f0.md","notes/f1.md","notes/f2.md","notes/f3.md","notes/f4.md"]}"#,
+        )]);
+        assert!(
+            report.rejected[0].reason.contains("too many sources"),
+            "{}",
+            report.rejected[0].reason
+        );
+    }
+
+    /// update_lesson 的 source 双语义（t4 评审补齐后仍是双语义）：数组替换
+    /// 整份清单、`null` 清空、缺省不动。
+    #[test]
+    fn update_lesson_replaces_the_whole_source_list() {
+        let mut draft = multi_source_draft();
+        draft.apply_ops(vec![
+            op(r#"{"op":"set_meta","title":"向量代数"}"#),
+            op(r#"{"op":"add_module","key":"m1","title":"向量基础"}"#),
+            op(
+                r#"{"op":"add_lesson","module":"m1","key":"l1","title":"什么是向量","purpose":"能用坐标表示向量","source":"notes/vectors.md"}"#,
+            ),
+        ]);
+        // 数组替换成两份引用。
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"update_lesson","key":"l1","source":["notes/vectors.md","notes/matrices.md"]}"#,
+        )]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+        let lesson = draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap();
+        assert_eq!(lesson.sources.len(), 2);
+        // 缺省（不带 source 字段）不动。
+        draft.apply_ops(vec![op(r#"{"op":"update_lesson","key":"l1","purpose":"新目标"}"#)]);
+        assert_eq!(
+            draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap().sources.len(),
+            2,
+            "缺省 source 不动"
+        );
+        // `null` 清空整份清单。
+        draft.apply_ops(vec![op(r#"{"op":"update_lesson","key":"l1","source":null}"#)]);
+        assert!(
+            draft.lessons.iter().find(|lesson| lesson.key == "l1").unwrap().sources.is_empty(),
+            "source=null 清空全部引用"
+        );
+    }
+
+    /// 审计逐条复核（t4 评审补齐）：多引用课时里**每一条**悬空都是 danger，
+    /// 报告里点名到具体路径。
+    #[test]
+    fn audit_flags_every_unsampled_reference() {
+        let mut draft = build_complete_draft(kb_brief());
+        assert!(
+            !danger_kinds(&draft).contains(&"unknown_source"),
+            "夹具本身干净"
+        );
+        let lesson = draft
+            .lessons
+            .iter_mut()
+            .find(|lesson| lesson.key == "l1")
+            .unwrap();
+        lesson.sources.push("notes/ghost.md".to_owned());
+        draft.refresh_audit();
+        assert!(
+            danger_kinds(&draft).contains(&"unknown_source"),
+            "第二条悬空引用必须被点名: {:?}",
+            draft.findings
+        );
+        assert!(draft.audit_report().contains("notes/ghost.md"));
     }
 
     #[test]
@@ -1733,15 +1456,15 @@ mod tests {
     }
 
     #[test]
-    fn update_lesson_can_replace_concepts_and_clear_source() {
+    fn update_lesson_can_replace_purpose_and_clear_source() {
         let mut draft = build_complete_draft(kb_brief());
-        draft.apply_ops(vec![
-            op(r#"{"op":"add_concept","key":"matrix","title":"矩阵"}"#),
-            op(r#"{"op":"update_lesson","key":"l1","concepts":["matrix"],"source":null}"#),
-        ]);
+        let report = draft.apply_ops(vec![op(
+            r#"{"op":"update_lesson","key":"l1","purpose":"能手动计算点积","source":null}"#,
+        )]);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
         let lesson = draft.lessons.iter().find(|l| l.key == "l1").unwrap();
-        assert_eq!(lesson.concepts, vec!["matrix".to_owned()]);
-        assert!(lesson.source.is_none());
+        assert_eq!(lesson.purpose, "能手动计算点积");
+        assert!(lesson.sources.is_empty(), "source=null 清空全部引用");
     }
 
     #[test]
@@ -1760,9 +1483,8 @@ mod tests {
         draft.apply_ops(vec![
             op(r#"{"op":"set_meta","title":"T"}"#),
             op(r#"{"op":"add_module","key":"m1","title":"M"}"#),
-            op(r#"{"op":"add_concept","key":"v1","title":"V"}"#),
-            op(r#"{"op":"add_lesson","module":"m1","key":"l1","title":"相同","purpose":"P","concepts":["v1"]}"#),
-            op(r#"{"op":"add_lesson","module":"m1","key":"l2","title":"相同","purpose":"P","concepts":["v1"]}"#),
+            op(r#"{"op":"add_lesson","module":"m1","key":"l1","title":"相同","purpose":"P"}"#),
+            op(r#"{"op":"add_lesson","module":"m1","key":"l2","title":"相同","purpose":"P"}"#),
         ]);
         let kinds: Vec<&str> = draft
             .findings

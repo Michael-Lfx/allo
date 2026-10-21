@@ -3,7 +3,6 @@ import type {
   AttemptResult,
   CalendarStats,
   CheckinStatus,
-  ConceptRef,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
@@ -12,6 +11,9 @@ import type {
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
   GenerateLessonRequest,
+  GraphConceptRowView,
+  GraphHistoryView,
+  LearningStructureView,
   MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
@@ -26,6 +28,10 @@ import type {
   SubmitAttemptRequest,
   UpdateQuestionRequest,
   UpdateSectionBodyRequest,
+  MountRoundSummary,
+  StructureRepairSummary,
+  XpCalendar,
+  XpReading,
 } from './types';
 
 const BASE = '/api/learning';
@@ -38,17 +44,11 @@ const reviewBase = (source: ReviewSource, id: string) =>
 export const learningApi = {
   listCourses: () => httpRequest<CourseSummary[]>('GET', `${BASE}/courses`),
   importCourse: (pack: unknown) => httpRequest<CourseDetail>('POST', `${BASE}/courses`, pack),
-  // 同步生成：agent loop 全程在 HTTP 请求内执行，过程事件经
-  // WS 的 `learning.course-generation` 推送，终态以本响应为准。
+  // 同步创建：课程落库即返回；知识结构生成与首生长在后台执行（进度经
+  // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
-  // 续建失败的学习图生成：服务端定位最近活跃草稿接着建（草稿内存存活
-  // 1 小时）；无存活草稿（404）或引擎未配置（409）时报错，调用方回退
-  // 全量重生成。
-  resumeLearningGraph: (request: { provider_id?: string; model?: string } = {}) =>
-    httpRequest<CourseDetail>('POST', `${BASE}/courses/generate/resume`, request),
-  // 学习图生成状态/取消：关闭对话框后生成仍在后台继续（HTTP 请求内同步
-  // 执行），页面用这对端点恢复悬浮指示条与取消入口。
+  // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
   generationStatus: () =>
     httpRequest<LearningGraphGenerationStatus>(
       'GET',
@@ -59,6 +59,64 @@ export const learningApi = {
       'POST',
       `${BASE}/courses/generate/cancel`,
       {}
+    ),
+  // 手动触发一次生长（就绪补到 7；已在生长中报 409）
+  growGraph: (courseId: string) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
+      {}
+    ),
+  // 学习记录：批次时间线（倒序）
+  graphHistory: (courseId: string) =>
+    httpRequest<GraphHistoryView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/history`
+    ),
+  // 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源
+  graphConcepts: (courseId: string) =>
+    httpRequest<GraphConceptRowView[]>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
+  // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口
+  graphStructure: (courseId: string) =>
+    httpRequest<LearningStructureView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure`
+    ),
+  // 重跑知识结构生成（换参考地图不换课）；进度走 WS structure_* 事件
+  regenerateGraphStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<{ kicked: boolean }>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/regenerate`,
+      request
+    ),
+  // 结构挂载回合（j08）：把待挂集节点挂到结构块（导航事实）；同步返回
+  // 回合摘要（mounted | skipped）
+  mountStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<MountRoundSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/mount`,
+      request
+    ),
+  // 结构修补回合（j09）：按留痕与观察输出七型修补意图；皆空 = skipped，
+  // ops 空 = noop；同步返回回合摘要
+  repairStructure: (
+    courseId: string,
+    request: { provider_id?: string; model?: string } = {}
+  ) =>
+    httpRequest<StructureRepairSummary>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/repair`,
+      request
     ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),
@@ -115,6 +173,11 @@ export const learningApi = {
   },
   listTags: () => httpRequest<string[]>('GET', `${BASE}/tags`),
   checkinToday: () => httpRequest<CheckinStatus>('GET', `${BASE}/checkins/today`),
+  /** XP 读数（两把尺同源回放：今日 XP/目标 + 结算进度尺，ETA 纯投影） */
+  getXpReading: () => httpRequest<XpReading>('GET', `${BASE}/xp/reading`),
+  /** XP 日历：恒 weeks×7 桶含零桶、末桶 = 今日（缺省 12 周） */
+  getXpCalendar: (weeks = 12) =>
+    httpRequest<XpCalendar>('GET', `${BASE}/xp/calendar?weeks=${weeks}`),
   getMemoryStats: (tzOffset: number) =>
     httpRequest<MemoryHealthStats>('GET', `${BASE}/stats/memory?tz_offset=${tzOffset}`),
   getCalendarStats: (year: number, month: number | undefined, tzOffset: number) =>
@@ -204,9 +267,16 @@ export const learningApi = {
     httpRequest<string>('POST', `${BASE}/custom-questions`, request),
   deleteCustomQuestion: (id: string) =>
     httpRequest<void>('DELETE', `${BASE}/custom-questions/${encodeURIComponent(id)}`),
-  listConceptRefs: () => httpRequest<ConceptRef[]>('GET', `${BASE}/concepts`),
-  deleteCourse: (id: string, deleteReviews: boolean) =>
-    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`, {
-      delete_reviews: deleteReviews,
-    }),
+  /** 删除课程（三轮 g3：账本永远保留，无连带删卡选项；内容移除、学习记录保留） */
+  deleteCourse: (id: string) =>
+    httpRequest<void>('DELETE', `${BASE}/courses/${encodeURIComponent(id)}`),
+  /** 课程改名（只动显示名；目标/快照/学习数据不动） */
+  renameCourse: (id: string, title: string) =>
+    httpRequest<CourseSummary>('PATCH', `${BASE}/courses/${encodeURIComponent(id)}`, { title }),
+  /** 归档课程（enabled 翻转，数据零删零改，可恢复） */
+  archiveCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/archive`),
+  /** 恢复归档课程 */
+  restoreCourse: (id: string) =>
+    httpRequest<CourseSummary>('POST', `${BASE}/courses/${encodeURIComponent(id)}/restore`),
 };

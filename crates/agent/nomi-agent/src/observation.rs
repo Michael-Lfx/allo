@@ -1039,6 +1039,7 @@ pub fn messages_to_llm_request(model: &str, messages: &[Message]) -> LlmRequest 
         temperature: None,
         retain_provider_round: false,
         isolate_malformed_tool_calls: false,
+        json_object: false,
     }
 }
 
@@ -1492,6 +1493,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         }
     }
 
@@ -1651,6 +1653,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         };
 
         let mut rx = stream_llm(
@@ -1785,6 +1788,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         };
         let mut rx = stream_llm(
             &LongTextProvider,
@@ -1866,6 +1870,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         };
         let release_done = std::sync::Arc::new(tokio::sync::Notify::new());
         let mut rx = stream_llm(
@@ -1928,6 +1933,7 @@ mod tests {
             temperature: None,
                 retain_provider_round: false,
                 isolate_malformed_tool_calls: false,
+                json_object: false,
         };
         let mut rx = stream_llm(
             &ScriptedProvider,

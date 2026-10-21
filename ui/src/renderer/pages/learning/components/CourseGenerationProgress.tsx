@@ -8,6 +8,7 @@ import type {
 } from '@/common/adapter/ipcBridge';
 import type { CourseDetail } from '../types';
 import { deriveStep, summarizeTools } from '../model';
+import { CourseSamplingLine } from './CourseSamplingLine';
 
 const { Text, Title } = Typography;
 
@@ -21,6 +22,7 @@ export function CourseGenerationProgress({
   status,
   result,
   error,
+  sources = [],
   onStartLearning,
   onRetry,
   onCancel,
@@ -28,6 +30,8 @@ export function CourseGenerationProgress({
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
   error: string | null;
+  /** 多知识库（t4）：来源库名（「来源：库A、库B」；空 = 不展示） */
+  sources?: string[];
   onStartLearning: (courseId: string) => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -83,6 +87,14 @@ export function CourseGenerationProgress({
           <Steps.Step key={label} title={label} />
         ))}
       </Steps>
+
+      {/* 多知识库（t4）：来源披露——课程从哪几个库生成（首个 = 主来源）。
+          分隔符随语言（zh-CN 顿号 / en-US 逗号），不写死中文标点。 */}
+      {sources.length > 0 && (
+        <Text type='secondary' className='text-12px'>
+          {t('learning.courseSources', { names: sources.join(t('learning.listSeparator')) })}
+        </Text>
+      )}
 
       {/* 实时活动流：round/audit 事件各占一行；无事件时退化为纯 spinner */}
       <div
@@ -192,6 +204,13 @@ export function CourseGenerationProgress({
                 {t('learning.genModulesCount', { count: result.modules.length })} ·{' '}
                 {t('learning.genLessonsCount', { count: result.course.total_lessons })}
               </Text>
+              {/* 采样披露（t2）：建课完成视图如实报出按目标采样了多少文件，
+                  目标与库无交集时明说退回默认顺序（工作区同一行、同一口径） */}
+              {result.course.sampling && (
+                <div>
+                  <CourseSamplingLine sampling={result.course.sampling} />
+                </div>
+              )}
             </div>
             <Button type='primary' onClick={() => onStartLearning(result.course.id)}>
               {t('learning.genStartLearning')}

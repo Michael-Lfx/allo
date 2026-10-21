@@ -112,9 +112,12 @@ function ActivityBlock({
 function LessonSourcePanel({
   knowledgeBaseId,
   source,
+  sourceCount = 1,
 }: {
   knowledgeBaseId: string | null;
   source: NonNullable<Lesson['source']>;
+  /** 全部引用来源数（t4 多引用）：>1 时在主 source 旁如实标注「共 N 处来源」 */
+  sourceCount?: number;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -122,6 +125,9 @@ function LessonSourcePanel({
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // 来源库（t4）：课时自身的归属优先（多库课程按采样命名空间解析），
+  // 老课程/单库课程没有 kb_id → 回退课程主来源。
+  const sourceKbId = source.kb_id ?? knowledgeBaseId;
 
   const toggle = () => {
     if (open) {
@@ -131,15 +137,15 @@ function LessonSourcePanel({
     setOpen(true);
     // 原文仅在用户主动查看时才加载；已加载或失败的内容直接复用
     if (content !== null || loading || error !== null) return;
-    if (knowledgeBaseId === null) {
-      // 未来可能出现的无知识库课程：没有可读取的原文，给出提示而不是报错
+    if (sourceKbId === null) {
+      // 无知识库课程（描述流）或来源库已被删除：没有可读取的原文
       setError(t('learning.sourceUnavailable'));
       return;
     }
     setLoading(true);
     void ipcBridge.knowledge.readFile
       .invoke({
-        knowledge_base_id: parseKnowledgeBaseId(knowledgeBaseId),
+        knowledge_base_id: parseKnowledgeBaseId(sourceKbId),
         path: source.path,
       })
       .then((file) => setContent(sliceSourceContent(file.content, source.start, source.end)))
@@ -159,14 +165,19 @@ function LessonSourcePanel({
             {source.start !== null ? `:${source.start}` : ''}
             {source.end !== null ? `-${source.end}` : ''}
           </Text>
+          {sourceCount > 1 && (
+            <Text type='secondary' className='block text-12px'>
+              {t('learning.sourceCountHint', { count: sourceCount })}
+            </Text>
+          )}
         </div>
         <div className='flex shrink-0 items-center gap-8px'>
-          {knowledgeBaseId !== null && (
+          {sourceKbId !== null && (
             <Button
               size='mini'
               onClick={() =>
                 navigate(
-                  `/knowledge/${knowledgeBaseId}?highlight=${encodeURIComponent(source.path)}`
+                  `/knowledge/${sourceKbId}?highlight=${encodeURIComponent(source.path)}`
                 )
               }
             >
@@ -683,10 +694,18 @@ export function LessonBlock({
   // 按需生成课时的行内迷你进度：按 lesson 过滤 round/audit 事件，
   // 一行文本轻量更新（不展开完整 timeline）；终态事件清空文本
   const [progressText, setProgressText] = useState<string | null>(null);
+  // t3 降级披露：grounding 帧报「源库不可达 → 快照兜底」时，生成期间显示一行
+  // 提示——课时照常生成，但用户该知道这次没读库（新一次生成重置）。
+  const [groundingDegraded, setGroundingDegraded] = useState(false);
   useEffect(() => {
     return ipcBridge.learning.lessonGeneration.on((event) => {
       if (event.lesson_id && event.lesson_id !== lesson.id) return;
-      if (event.phase === 'round') {
+      if (event.phase === 'grounding') {
+        setGroundingDegraded(event.degraded === true);
+      } else if (event.phase === 'started') {
+        // 新一次生成从零开始：上一轮的降级状态不残留。
+        setGroundingDegraded(false);
+      } else if (event.phase === 'round') {
         setProgressText(
           `${t('learning.lessonGenRunning')} · ${t('learning.lessonGenRound', { round: event.round ?? '' })}`
         );
@@ -758,6 +777,9 @@ export function LessonBlock({
             {t('learning.generateLessonContent')}
           </Button>
           {progressText && <Text type='secondary'>{progressText}</Text>}
+          {progressText && groundingDegraded && (
+            <Text type='warning'>{t('learning.lessonGenSourceDegraded')}</Text>
+          )}
         </div>
       </div>
     );
@@ -769,11 +791,15 @@ export function LessonBlock({
       <div className='flex flex-wrap items-center gap-8px'>
         <Tag color={lessonStatusTagColors[current.status]}>{statusLabel(current.status, t)}</Tag>
         <Text type='secondary'>
-          {current.estimated_minutes} {t('learning.minutes')}
+          {current.est} {t('learning.minutes')}
         </Text>
       </div>
       {current.source && (
-        <LessonSourcePanel knowledgeBaseId={sourceKbId} source={current.source} />
+        <LessonSourcePanel
+          knowledgeBaseId={sourceKbId}
+          source={current.source}
+          sourceCount={current.sources?.length ?? 1}
+        />
       )}
       {current.sections.length > 0 ? (
         <>

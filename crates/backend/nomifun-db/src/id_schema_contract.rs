@@ -65,28 +65,30 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "knowledge_bindings",
     "knowledge_tags",
     "learning_activities",
-    "learning_activity_concepts",
     "learning_attempts",
-    "learning_concept_prerequisites",
-    "learning_concepts",
+    "learning_concept_registry",
     "learning_course_tags",
     "learning_courses",
     "learning_course_jobs",
     "learning_checkins",
     "learning_custom_questions",
     "learning_enrollments",
-    "learning_graph_prerequisites",
+    "learning_growth_batches",
     "learning_question_tags",
     "learning_lesson_concepts",
     "learning_lesson_progress",
     "learning_lesson_sections",
     "learning_lessons",
-    "learning_mastery_states",
     "learning_modules",
+    "learning_quiz_rounds",
     "learning_review_events",
     "learning_review_items",
     "learning_review_log",
     "learning_tags",
+    "learning_xp_events",
+    "learning_structure_findings",
+    "learning_structure_mounts",
+    "learning_structure_repairs",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -170,18 +172,21 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("knowledge_bindings", "knowledge_binding_id"),
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
-    ("learning_concepts", "concept_id"),
+    ("learning_concept_registry", "concept_id"),
     ("learning_courses", "course_id"),
     ("learning_course_jobs", "job_id"),
     ("learning_checkins", "checkin_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
+    ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
+    ("learning_quiz_rounds", "round_id"),
     ("learning_review_events", "event_id"),
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
+    ("learning_xp_events", "event_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_sessions", "session_id"),
@@ -282,23 +287,34 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     ("knowledge_bindings", "knowledge_binding_id"),
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
-    ("learning_concepts", "concept_id"),
+    ("learning_concept_registry", "concept_id"),
     ("learning_courses", "course_id"),
     ("learning_course_jobs", "job_id"),
     ("learning_course_jobs", "session_id"),
     ("learning_checkins", "checkin_id"),
     ("learning_custom_questions", "custom_question_id"),
     ("learning_enrollments", "enrollment_id"),
+    ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
+    // quiz 回合的身份列（migration 081）：回合行的业务主标识，选题/作答/
+    // 结算都在行内 JSON，不被其他表引用——非关系链接。
+    ("learning_quiz_rounds", "round_id"),
     // The card id in a review event is a plain identifier: deleting the card
     // must not wipe the check-in accounting that aggregates these rows.
     ("learning_review_events", "event_id"),
     ("learning_review_events", "item_id"),
+    // 学习行为组锚（g4 数据面前置列，migration 078）：会话实体缺位时恒
+    // NULL，将来升会话即 session ULID——不是对现存表的引用。
+    ("learning_review_events", "session_id"),
     ("learning_review_items", "review_item_id"),
     ("learning_review_log", "log_id"),
     ("learning_review_log", "item_id"),
     ("learning_tags", "tag_id"),
+    // The ledger's own row id and its idempotency anchor are accounting
+    // identifiers: the XP ledger is append-only truth and never chases the
+    // lifetime of the node it settled.
+    ("learning_xp_events", "event_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_segments", "speaker_id"),
@@ -868,32 +884,27 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("knowledge_binding_bases", "knowledge_binding_id" => "knowledge_bindings", "knowledge_binding_id", false, "idx_knowledge_binding_bases_knowledge_binding_id", Cascade),
     text_ref!("knowledge_binding_bases", "knowledge_base_id" => "knowledge_bases", "knowledge_base_id", false, "idx_knowledge_binding_bases_knowledge_base_id", Cascade),
     text_ref!("learning_courses", "source_kb_id" => "knowledge_bases", "knowledge_base_id", true, "idx_learning_courses_source_kb_id", SetNull),
-    // Catalog-only course deletion keeps the course's modules, enrollments
-    // and concepts as designed historical state (reviewable content without a
-    // live course); graph edges have no such retention story and stay
-    // RequireParent so repair removes them with the course.
+    // Catalog-only course deletion keeps the course's modules and
+    // enrollments as designed historical state (reviewable content without a
+    // live course).
     historical_text_ref!("learning_modules", "course_id" => "learning_courses", "course_id", false, "idx_learning_modules_course_id", Cascade),
     text_ref!("learning_lessons", "module_id" => "learning_modules", "module_id", false, "idx_learning_lessons_module_id", Cascade),
-    historical_text_ref!("learning_concepts", "course_id" => "learning_courses", "course_id", false, "idx_learning_concepts_course_id", Cascade),
-    text_ref!("learning_concept_prerequisites", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_concept_prerequisites_concept_id", Cascade),
-    text_ref!("learning_concept_prerequisites", "prerequisite_concept_id" => "learning_concepts", "concept_id", false, "idx_learning_concept_prerequisites_prerequisite_concept_id", Cascade),
+    // Concept web: lesson teaches/assumes reference the global registry
+    // (ADR-0009). Lesson deletion cascades its web rows; the registry itself
+    // is cross-course and outlives any single lesson.
     text_ref!("learning_lesson_concepts", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_concepts_lesson_id", Cascade),
-    text_ref!("learning_lesson_concepts", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_lesson_concepts_concept_id", Cascade),
+    text_ref!("learning_lesson_concepts", "concept_id" => "learning_concept_registry", "concept_id", false, "idx_learning_lesson_concepts_concept_id", Cascade),
     text_ref!("learning_activities", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_activities_lesson_id", Cascade),
-    text_ref!("learning_activity_concepts", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_activity_concepts_activity_id", Cascade),
-    text_ref!("learning_activity_concepts", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_activity_concepts_concept_id", Cascade),
     text_ref!("learning_enrollments", "user_id" => "users", "user_id", false, "idx_learning_enrollments_user_id", Cascade),
     historical_text_ref!("learning_enrollments", "course_id" => "learning_courses", "course_id", false, "idx_learning_enrollments_course_id", Cascade),
     text_ref!("learning_lesson_progress", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_lesson_progress_enrollment_id", Cascade),
     text_ref!("learning_lesson_progress", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_progress_lesson_id", Cascade),
     text_ref!("learning_lesson_sections", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_lesson_sections_lesson_id", Cascade),
-    text_ref!("learning_graph_prerequisites", "course_id" => "learning_courses", "course_id", false, "idx_learning_graph_prereq_course", Cascade),
-    text_ref!("learning_graph_prerequisites", "lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_graph_prereq_lesson", Cascade),
-    text_ref!("learning_graph_prerequisites", "prerequisite_lesson_id" => "learning_lessons", "lesson_id", false, "idx_learning_graph_prereq_pre", Cascade),
     text_ref!("learning_attempts", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_attempts_enrollment_id", Cascade),
     text_ref!("learning_attempts", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_attempts_activity_id", Cascade),
-    text_ref!("learning_mastery_states", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_mastery_states_enrollment_id", Cascade),
-    text_ref!("learning_mastery_states", "concept_id" => "learning_concepts", "concept_id", false, "idx_learning_mastery_states_concept_id", Cascade),
+    // Growth batches belong to their course: deleting the course removes the
+    // birth ledger with it.
+    text_ref!("learning_growth_batches", "course_id" => "learning_courses", "course_id", false, "idx_learning_growth_batches_course", Cascade),
     text_ref!("learning_review_items", "enrollment_id" => "learning_enrollments", "enrollment_id", false, "idx_learning_review_items_enrollment_id", Cascade),
     text_ref!("learning_review_items", "activity_id" => "learning_activities", "activity_id", false, "idx_learning_review_items_activity_id", Cascade),
     // Check-in rows and review events are user-scoped history rows.
@@ -910,9 +921,27 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     text_ref!("learning_course_jobs", "user_id" => "users", "user_id", false, "idx_learning_course_jobs_user_id", Cascade),
     text_ref!("learning_course_jobs", "kb_id" => "knowledge_bases", "knowledge_base_id", false, "idx_learning_course_jobs_kb_id", KeepHistory),
     text_ref!("learning_course_jobs", "course_id" => "learning_courses", "course_id", true, "idx_learning_course_jobs_course_id", KeepHistory),
-    text_ref!("learning_custom_questions", "concept_id" => "learning_concepts", "concept_id", true, "idx_learning_custom_questions_concept_id", SetNull),
     text_ref!("learning_course_tags", "course_id" => "learning_courses", "course_id", false, "idx_learning_course_tags_course_id", Cascade),
     text_ref!("learning_course_tags", "tag_id" => "learning_tags", "tag_id", false, "idx_learning_course_tags_tag_id", Cascade),
+    // XP 结算账本（migration 078）：追加只增的回放真相——课程/课时被删
+    // （墓碑式）后历史事件必须原样保留，两链接都是历史面（KeepHistory +
+    // 容忍缺失父行）；自建题复习事件两列同空。
+    text_ref!("learning_xp_events", "user_id" => "users", "user_id", false, "idx_learning_xp_events_user_anchor", Cascade),
+    historical_text_ref!("learning_xp_events", "course_id" => "learning_courses", "course_id", true, "idx_learning_xp_events_course", KeepHistory),
+    historical_text_ref!("learning_xp_events", "node_id" => "learning_lessons", "lesson_id", true, "idx_learning_xp_events_node", KeepHistory),
+    // 挂载事实层（migration 079）：一课一行的导航事实与 findings 留痕——
+    // 课程删除后挂载/留痕是否随删？挂载行随课（Cascade，纯导航派生面可
+    // 重建）；findings 是追加留痕（KeepHistory，历史观察不追删）。
+    historical_text_ref!("learning_structure_mounts", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_mounts_course", Cascade),
+    historical_text_ref!("learning_structure_findings", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_findings_course", KeepHistory),
+    // 修补审计（migration 080）：结构编辑的历史档案——课程删除后审计行
+    // 保留（KeepHistory，出处不追删）。
+    historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
+    // quiz 回合（migration 081）：学习者行为历史——用户删除随账（Cascade）；
+    // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
+    // 行为历史不追删）。
+    text_ref!("learning_quiz_rounds", "user_id" => "users", "user_id", false, "idx_learning_quiz_rounds_user", Cascade),
+    historical_text_ref!("learning_quiz_rounds", "course_id" => "learning_courses", "course_id", false, "idx_learning_quiz_rounds_course", KeepHistory),
     text_ref!("learning_question_tags", "question_id" => "learning_activities", "activity_id", false, "idx_learning_question_tags_activity_id", Cascade)
         .with_child_predicate("child.source = 'course'"),
     text_ref!("learning_question_tags", "question_id" => "learning_custom_questions", "custom_question_id", false, "idx_learning_question_tags_custom_question_id", Cascade)
@@ -1033,6 +1062,14 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM creation_tasks, json_each(creation_tasks.result_asset_ids) item" =>
         "workshop_assets", "asset_id", "idx_creation_tasks_result_asset_ids_json", SetNull, RequireParent
     ),
+    // Growth-batch birth ledger: the batch's node list references the lesson
+    // rows it created; deleting a lesson removes it from history (the batch
+    // row itself carries the durable record).
+    json_text_ref!(
+        "learning_growth_batches", "node_ids_json", "$[]",
+        "SELECT item.value AS value FROM learning_growth_batches, json_each(learning_growth_batches.node_ids_json) item" =>
+        "learning_lessons", "lesson_id", "idx_learning_growth_batches_nodes", Cascade, RequireParent
+    ),
     json_text_ref!(
         "client_preferences", "value", "$ (idmm_backup_provider_id)",
         "SELECT value AS value FROM client_preferences WHERE key = 'idmm_backup_provider_id'" =>
@@ -1084,6 +1121,16 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "cs_agents", "knowledge_base_ids", "$[]",
         "SELECT item.value AS value FROM cs_agents, json_each(cs_agents.knowledge_base_ids) item" =>
         "knowledge_bases", "knowledge_base_id", "idx_cs_agents_knowledge_base_ids_json", KeepHistory, AllowMissingHistoricalParent
+    ),
+    // Course source-library list (migration 073): the same story as the
+    // customer-service mount list — the first element is the primary source
+    // (mirrored by the legacy single column `source_kb_id`, which keeps its
+    // own SetNull entry above), and a deleted base stops contributing: the
+    // read side filters deleted ids out of the list, so history keeps them.
+    json_text_ref!(
+        "learning_courses", "source_kb_ids", "$[]",
+        "SELECT item.value AS value FROM learning_courses, json_each(learning_courses.source_kb_ids) item" =>
+        "knowledge_bases", "knowledge_base_id", "idx_learning_courses_source_kb_ids_json", KeepHistory, AllowMissingHistoricalParent
     ),
 ];
 
@@ -3032,11 +3079,13 @@ mod tests {
         let lesson_a = nomifun_common::LearningLessonId::new();
         let lesson_b = nomifun_common::LearningLessonId::new();
         let enrollment_id = nomifun_common::LearningEnrollmentId::new();
+        let concept_id = nomifun_common::LearningConceptId::new();
+        let batch_id = nomifun_common::LearningGrowthBatchId::new();
         sqlx::query(
             "INSERT INTO learning_courses \
              (course_id, title, description, domain, version, course_kind, learning_goal, \
-             learning_scope, graph_meta_json, created_at, updated_at) \
-             VALUES (?, '学习图', '', 'general', 1, 'learning_graph', '目标', '范围', '{}', 1, 1)",
+             learning_scope, created_at, updated_at) \
+             VALUES (?, '学习图', '', 'general', 1, 'learning_graph', '目标', '范围', 1, 1)",
         )
         .bind(course_id.as_str())
         .execute(pool)
@@ -3075,21 +3124,44 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-        for (lesson_id, prerequisite) in [
-            (lesson_b.as_str(), lesson_a.as_str()),
-            (lesson_a.as_str(), lesson_b.as_str()),
+        // 概念网（ADR-0009）：A 教概念、B 假定同一概念。
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, created_at, updated_at) \
+             VALUES (?, '向量基础', '[]', 1, 1)",
+        )
+        .bind(concept_id.as_str())
+        .execute(pool)
+        .await
+        .unwrap();
+        for (lesson_id, role) in [
+            (lesson_a.as_str(), "teaches"),
+            (lesson_b.as_str(), "assumes"),
         ] {
             sqlx::query(
-                "INSERT INTO learning_graph_prerequisites \
-                 (course_id, lesson_id, prerequisite_lesson_id) VALUES (?, ?, ?)",
+                "INSERT INTO learning_lesson_concepts \
+                 (lesson_id, concept_id, role, tier) VALUES (?, ?, ?, 'know')",
             )
-            .bind(course_id.as_str())
             .bind(lesson_id)
-            .bind(prerequisite)
+            .bind(concept_id.as_str())
+            .bind(role)
             .execute(pool)
             .await
             .unwrap();
         }
+        // 生长批次出生档案（节点清单引用两个节点）。
+        let node_ids = serde_json::to_string(&[lesson_a.as_str(), lesson_b.as_str()]).unwrap();
+        sqlx::query(
+            "INSERT INTO learning_growth_batches \
+             (batch_id, course_id, seq, node_ids_json, note, created_at) \
+             VALUES (?, ?, 1, ?, '', 1)",
+        )
+        .bind(batch_id.as_str())
+        .bind(course_id.as_str())
+        .bind(&node_ids)
+        .execute(pool)
+        .await
+        .unwrap();
 
         // Catalog-only deletion: the course row disappears, children stay.
         sqlx::query("DELETE FROM learning_courses WHERE course_id = ?")
@@ -3104,34 +3176,38 @@ mod tests {
             .await
             .expect("orphans must not strand the boot gate");
 
-        // A writable open repairs the RequireParent rows (graph edges) and
-        // keeps the designed historical state (module, lessons, enrollment).
+        // A writable open repairs the RequireParent rows (growth batches hang
+        // off course_id) and keeps the designed historical state (module,
+        // lessons, enrollment, concept web).
         let repaired = repair_logical_reference_orphans(pool).await.unwrap();
         assert!(
             repaired.iter().any(|finding| {
-                finding.child_table == "learning_graph_prerequisites"
+                finding.child_table == "learning_growth_batches"
                     && finding.child_column == "course_id"
-                    && finding.count == 2
+                    && finding.count == 1
             }),
-            "both graph edges must be repaired: {repaired:?}"
+            "the orphaned growth batch must be repaired: {repaired:?}"
         );
-        let edges: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM learning_graph_prerequisites")
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        assert_eq!(edges, 0, "graph edges must not outlive their course");
+        let batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM learning_growth_batches")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(batches, 0, "growth batches must not outlive their course");
         let historical: i64 = sqlx::query_scalar(
             "SELECT (SELECT COUNT(*) FROM learning_modules WHERE course_id = ?) \
              + (SELECT COUNT(*) FROM learning_enrollments WHERE course_id = ?) \
-             + (SELECT COUNT(*) FROM learning_lessons)",
+             + (SELECT COUNT(*) FROM learning_lessons) \
+             + (SELECT COUNT(*) FROM learning_lesson_concepts)",
         )
         .bind(course_id.as_str())
         .bind(course_id.as_str())
         .fetch_one(pool)
         .await
         .unwrap();
-        assert_eq!(historical, 4, "reviewable content must survive repair");
+        assert_eq!(
+            historical, 6,
+            "reviewable content and the concept web must survive repair"
+        );
         let findings = audit_logical_reference_orphans(pool).await.unwrap();
         assert!(findings.is_empty(), "unexpected findings: {findings:?}");
     }

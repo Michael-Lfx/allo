@@ -34,9 +34,10 @@ const UNCONDITIONAL_UUIDV7_BUSINESS_IDS: &[(&str, &str)] = &[
     ("knowledge_bindings", "knowledge_binding_id"),
     ("learning_activities", "activity_id"),
     ("learning_attempts", "attempt_id"),
-    ("learning_concepts", "concept_id"),
+    ("learning_concept_registry", "concept_id"),
     ("learning_courses", "course_id"),
     ("learning_enrollments", "enrollment_id"),
+    ("learning_growth_batches", "batch_id"),
     ("learning_lessons", "lesson_id"),
     ("learning_modules", "module_id"),
     ("learning_review_items", "review_item_id"),
@@ -130,10 +131,15 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
 
     // 数字跟着 schema 走，是两侧迁移合并后的显式契约（新增表时应当被刻意改一次），不是
     // 从迁移里推出来的——所以坏掉时说明有人加了表而没更新契约，不是测试需要放宽。
-    // 学习侧:048 学习图:+learning_graph_prerequisites;050 课时分节:
-    // +learning_lesson_sections;052 复习日志:+learning_review_log。
+    // 学习侧:050 课时分节:+learning_lesson_sections;052 复习日志:
+    // +learning_review_log;066 退役 DAG 图与 per-course 概念体系:-5;067
+    // 概念网生长:+learning_concept_registry/+learning_growth_batches;
+    // 071 终点锚退役:-learning_course_endpoints;078 XP 结算账本:
+    // +learning_xp_events;079 挂载事实层:+learning_structure_mounts/
+    // +learning_structure_findings;080 修补审计:+learning_structure_repairs;
+    // 081 quiz 回合:+learning_quiz_rounds。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 117);
+    assert_eq!(tables.len(), 119);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -1420,4 +1426,78 @@ async fn idmm_logical_targets_store_named_bare_uuidv7_ids() {
             .expect("stored target");
     assert_eq!(stored, conversation_id.as_str());
     validate_uuidv7(&stored).expect("IDMM target must remain a canonical bare UUIDv7");
+}
+
+/// 多知识库（t4 评审修复）：`learning_courses.source_kb_ids` 的 JSON 列表引用
+/// 必须登记进契约（cs_agents.knowledge_base_ids 先例）——登记条目要求列上有
+/// 具名索引（迁移 074），删除索引 = 契约失守；已删库的 id 允许留在历史行里
+/// （KeepHistory：读侧过滤），既不是启动报错、也不被修复流程删课。
+#[tokio::test]
+async fn learning_course_source_kb_ids_is_registered_as_a_json_list_link() {
+    let database = init_database_memory().await.expect("database");
+    let pool = database.pool();
+
+    // 登记条目引用的索引必须真实存在且落在课程表上。
+    let index_table: Option<String> = sqlx::query_scalar(
+        "SELECT tbl_name FROM sqlite_schema \
+         WHERE type = 'index' AND name = 'idx_learning_courses_source_kb_ids_json'",
+    )
+    .fetch_optional(pool)
+    .await
+    .expect("index lookup");
+    assert_eq!(
+        index_table.as_deref(),
+        Some("learning_courses"),
+        "source_kb_ids 的登记索引必须由迁移建在课程表上"
+    );
+    validate_id_schema_contract(pool)
+        .await
+        .expect("the registered JSON list link must satisfy the contract");
+
+    // 索引缺失即契约失守：登记是活的门禁，不是一句注释。
+    sqlx::query("DROP INDEX idx_learning_courses_source_kb_ids_json")
+        .execute(pool)
+        .await
+        .expect("drop index");
+    let error = validate_id_schema_contract(pool)
+        .await
+        .expect_err("a missing list index must fail the contract");
+    assert!(
+        error
+            .to_string()
+            .contains("idx_learning_courses_source_kb_ids_json"),
+        "{error}"
+    );
+
+    // 已删库的历史归属：有效的悬空 id 被审计但不阻断（读侧过滤），修复流程
+    // 也不删课程行（列表引用是 KeepHistory，没有 RequireParent 的删除语义）。
+    let course_id = nomifun_common::generate_id();
+    let dangling_kb_id = nomifun_common::generate_id();
+    let list = serde_json::json!([dangling_kb_id]).to_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, source_kb_ids, version, created_at, updated_at) \
+         VALUES (?, '历史课程', '', 'general', ?, 1, 1, 1)",
+    )
+    .bind(&course_id)
+    .bind(&list)
+    .execute(pool)
+    .await
+    .expect("course row");
+    nomifun_db::validate_id_data_contract(pool)
+        .await
+        .expect("a deleted base id must never strand the dataset");
+    nomifun_db::repair_logical_reference_orphans(pool)
+        .await
+        .expect("repair pass");
+    let surviving: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_courses WHERE course_id = ?")
+            .bind(&course_id)
+            .fetch_one(pool)
+            .await
+            .expect("course count");
+    assert_eq!(
+        surviving, 1,
+        "列表引用不参与 RequireParent 修复：课程行必须原样保留"
+    );
 }

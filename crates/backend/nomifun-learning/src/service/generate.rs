@@ -12,6 +12,21 @@
 
 use super::*;
 
+/// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
+/// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
+/// 120 字。确定性纯函数。
+fn outline_brief_topic(brief: &OutlineBrief) -> String {
+    if let Some(goal) = brief.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        return goal.chars().take(120).collect();
+    }
+    match (&brief.description, &brief.knowledge_base) {
+        (Some(description), _) => description.trim().chars().take(120).collect(),
+        (_, Some(kb)) => kb.name.clone(),
+        // 简报永远带一个来源（validate 保证）；防御性留空而非 panic。
+        _ => String::new(),
+    }
+}
+
 impl LearningService {
     /// Generate a course synchronously. Exactly one source must be set
     /// (knowledge base or free-text description) — enforced by
@@ -29,8 +44,12 @@ impl LearningService {
         let brief = self.resolve_outline_brief(&request).await?;
         // One in-flight generation per (user, source): duplicate submits
         // (double click, parallel agent tool calls) are rejected up front.
+        // 多知识库（t4）：来源键 = 库 id 排序拼接——乱序提交同一组库命中
+        // 同一槽位，不重复建课；单库保持 t2 的 `kb:{id}` 形状。
         let kind_key = match (&brief.knowledge_base, &brief.description) {
-            (Some(kb), _) => format!("kb:{}", kb.kb_id),
+            (Some(_), _) => request
+                .knowledge_base_key()
+                .unwrap_or_else(|| "kb:".to_owned()),
             (_, Some(description)) => {
                 let head: String = description.trim().chars().take(120).collect();
                 format!("desc:{head}")
@@ -38,16 +57,14 @@ impl LearningService {
             _ => unreachable!("validated request always carries one source"),
         };
         let _slot = self.acquire_generation_slot(user_id, kind_key)?;
-        // 登记生成注册（status/cancel 端点的唯一数据源，学习图流同样登
-        // 记）：RAII 守卫在请求结束——含客户端断连中止——时注销。主题取
-        // 描述前 120 字或知识库名，供悬浮指示条展示。
-        let topic: String = match (&brief.description, &brief.knowledge_base) {
-            (Some(description), _) => description.trim().chars().take(120).collect(),
-            (_, Some(kb)) => kb.name.clone(),
-            _ => unreachable!("validated request always carries one source"),
-        };
-        let _run = self.begin_generation(&topic);
+        // 登记长任务（generation_tasks 注册表，status/cancel/快照端点的
+        // 唯一数据源）：守卫 drop（含客户端断连中止）按终态收尾。主题取
+        // 知识库流的用户目标（目标即课程的意图）、描述前 120 字或库名。
+        // 键的课程段 = 会话 id（建课时课程尚不存在）。
+        let topic = outline_brief_topic(&brief);
         let session = generate_id();
+        let _task =
+            self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
         let model_override = request
             .provider_id
             .as_ref()
@@ -70,6 +87,27 @@ impl LearningService {
                 return Err(error);
             }
         };
+        // 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
+        // `SourceSpan.kb_id`——快照/蓝图/课时三处的库归属同源，多库下课时
+        // 读库（t3 实时读数）按它去前缀取正确库。
+        let mut blueprint = blueprint;
+        // 来源库列表（t4 + 评审对齐）：归一顺序原样落库（首个 = 主来源），但
+        // 多库请求里**解析不到的库不进课程行**——它的缺席由采样披露的逐库
+        // 条目（计数 0）如实承担，导入侧的"不写悬空 id"守卫保持原样。
+        let source_kb_ids = if brief.knowledge_bases.is_empty() {
+            request.knowledge_base_ids_normalized()
+        } else {
+            brief
+                .knowledge_bases
+                .iter()
+                .filter_map(|base| KnowledgeBaseId::parse(&base.kb_id).ok())
+                .collect()
+        };
+        annotate_blueprint_sources(
+            &mut blueprint,
+            brief.sampling.as_ref(),
+            &source_kb_ids,
+        );
         self.emit_course_event(serde_json::json!({
             "phase": "publishing",
             "kind": brief.kind(),
@@ -81,8 +119,29 @@ impl LearningService {
         let samples_json = serde_json::to_string(&brief.samples).map_err(|error| {
             AppError::Internal(format!("failed to serialize sampled sources: {error}"))
         })?;
+        // 目标与采样披露走独立列/伴随结构（t1/t2）：samples_json 保持
+        // `Vec<(String, String)>` 旧形状，既有消费方零改动。
+        let samples_meta_json = brief
+            .sampling
+            .as_ref()
+            .map(|sampling| {
+                serde_json::to_string(sampling).map_err(|error| {
+                    AppError::Internal(format!("failed to serialize sampling disclosure: {error}"))
+                })
+            })
+            .transpose()?;
         let detail = self
-            .import_course_outline(pack, blueprint_json, samples_json)
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json,
+                    samples_json,
+                    learning_goal: brief.goal.clone().unwrap_or_default(),
+                    samples_meta_json,
+                    // 来源库列表（t4）：归一顺序原样落库（首个 = 主来源）。
+                    source_kb_ids,
+                },
+            )
             .await;
         match &detail {
             Ok(detail) => {
@@ -110,36 +169,76 @@ impl LearningService {
     /// context and samples its documents inline (local file IO), so the
     /// engine needs no knowledge-service access; the description flow
     /// carries the brief text alone with no sampled sources.
+    ///
+    /// 多知识库（t4）：逐库核验存在 + 解析元数据，预算按库分摊、路径带
+    /// `{库名}/rel` 命名空间；单库逐字走旧路径（零回归）。
     async fn resolve_outline_brief(
         &self,
         request: &GenerateCourseRequest,
     ) -> Result<OutlineBrief, AppError> {
-        match (&request.knowledge_base_id, &request.description) {
-            (Some(kb_id), _) => {
-                let knowledge = self.injected_knowledge_service()?;
-                let base = knowledge.get_base_info(kb_id.as_str()).await?;
-                let samples = sample_base_files(&knowledge, kb_id.as_str()).await?;
-                Ok(OutlineBrief {
-                    description: None,
-                    knowledge_base: Some(KnowledgeBaseBrief {
+        let kb_ids = request.knowledge_base_ids_normalized();
+        if !kb_ids.is_empty() {
+            let knowledge = self.injected_knowledge_service()?;
+            let single = kb_ids.len() == 1;
+            let mut bases: Vec<KnowledgeBaseBrief> = Vec::with_capacity(kb_ids.len());
+            for kb_id in &kb_ids {
+                match knowledge.get_base_info(kb_id.as_str()).await {
+                    Ok(base) => bases.push(KnowledgeBaseBrief {
                         kb_id: kb_id.as_str().to_owned(),
                         name: base.name,
                         description: base.description,
                     }),
-                    samples,
-                    domain: request.domain.clone(),
-                })
+                    // 缺库口径与采样侧同一把尺（t4 裁决，评审对齐）：多库按库
+                    // 跳过——缺失的库在采样披露里计数 0（`sample_bases` 仍拿
+                    // 全量 id 列表），不让一个坏库阻断整门课；单库保持原错误
+                    // （零回归）。全部库都缺失时采样侧以既有的 400 收场。
+                    Err(error) if !single => {
+                        tracing::warn!(
+                            kb_id = kb_id.as_str(),
+                            error = %error,
+                            "knowledge base metadata unavailable; skipping it for this course"
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-            (None, Some(description)) => Ok(OutlineBrief {
+            let goal = request.goal_text();
+            // 目标感知采样（t2）与多库分摊（t4）：目标非空时按相关度选入 +
+            // 连贯预算补相邻，并带回披露快照；缺省（旧客户端）与无目标时逐字
+            // 回退旧行为（单库）。
+            let id_list: Vec<String> = kb_ids.iter().map(|id| id.as_str().to_owned()).collect();
+            let outcome = sample_bases(&knowledge, &id_list, goal.as_deref()).await?;
+            // 主来源 = 列表首个（多库下其余库的归属由采样命名空间承载）。
+            let primary = bases.first().cloned();
+            return Ok(OutlineBrief {
+                description: None,
+                knowledge_base: primary,
+                knowledge_bases: bases,
+                samples: outcome.samples,
+                domain: request.domain.clone(),
+                // 目标（t1）：归一落位；旧客户端不传即 None，主题/标题
+                // 回退库名与模型命名（行为与旧路径一致）。
+                goal,
+                // 目标感知采样的披露（t2）：无目标路径为 None（单库）；多库
+                // 恒有披露（命名空间需要它承载库归属）。
+                sampling: outcome.disclosure,
+            });
+        }
+        if let Some(description) = &request.description {
+            return Ok(OutlineBrief {
                 description: Some(description.trim().to_owned()),
                 knowledge_base: None,
+                knowledge_bases: Vec::new(),
                 samples: Vec::new(),
                 domain: request.domain.clone(),
-            }),
-            (None, None) => Err(AppError::BadRequest(
-                "provide either a knowledge base or a course description".into(),
-            )),
+                // 描述流的目标由 description 自身承担（学习图同语义）。
+                goal: None,
+                sampling: None,
+            });
         }
+        Err(AppError::BadRequest(
+            "provide either a knowledge base or a course description".into(),
+        ))
     }
 
     /// Blueprint production: the injected two-loop agent engine owns the
@@ -165,7 +264,6 @@ impl LearningService {
                 Ok(blueprint) => tracing::info!(
                     session,
                     modules = blueprint.modules.len(),
-                    concepts = blueprint.concepts.len(),
                     "course outline engine end"
                 ),
                 Err(error) => tracing::warn!(session, error = %error, "course outline engine failed"),
@@ -184,12 +282,27 @@ impl LearningService {
             (Some(description), _) => {
                 build_description_blueprint_prompt(description, brief.domain.as_deref())
             }
-            (_, Some(kb)) => build_blueprint_prompt(
-                &kb.name,
-                &kb.description,
-                brief.domain.as_deref(),
-                &brief.samples,
-            ),
+            (_, Some(kb)) => {
+                // 多知识库（t4）：库名逐一点出（采样路径自带 `{库名}/rel` 命名
+                // 空间，模型按路径归属引用来源）。
+                let names: Vec<&str> = brief
+                    .source_knowledge_bases()
+                    .iter()
+                    .map(|base| base.name.as_str())
+                    .collect();
+                let name = if names.is_empty() {
+                    kb.name.clone()
+                } else {
+                    names.join("、")
+                };
+                build_blueprint_prompt(
+                    &name,
+                    &kb.description,
+                    brief.domain.as_deref(),
+                    brief.goal.as_deref(),
+                    &brief.samples,
+                )
+            }
             _ => {
                 return Err(AppError::BadRequest(
                     "course brief carries no generation source".into(),
@@ -212,7 +325,6 @@ impl LearningService {
         tracing::info!(
             session,
             modules = blueprint.modules.len(),
-            concepts = blueprint.concepts.len(),
             "course outline fallback blueprint"
         );
         Ok(blueprint)

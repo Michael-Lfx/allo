@@ -518,6 +518,10 @@ impl OpenAIProvider {
             });
         }
 
+        if request.json_object {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
+
         body
     }
 
@@ -3570,6 +3574,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         }
     }
 
@@ -4230,6 +4235,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_tokens"], 1024);
@@ -4254,6 +4260,7 @@ mod tests {
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
         let body = provider.build_request_body(&req, provider.should_sanitize_tool_schemas(), true, false, None);
         assert_eq!(body["max_completion_tokens"], 2048);

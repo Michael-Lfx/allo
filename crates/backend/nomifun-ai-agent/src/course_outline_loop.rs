@@ -1,15 +1,13 @@
-//! Two-loop agent engine for course outline generation — the course sibling
-//! of [`crate::learning_graph_loop`]. The generation loop (`co_start` →
-//! optional `co_read` grounding → batched `co_patch` builds → `co_audit`
-//! self-check) drives the draft, then audit-gated repair rounds drive
-//! publishing.
+//! Two-loop agent engine for course outline generation. The generation loop
+//! (`co_start` → optional `co_read` grounding → batched `co_patch` builds →
+//! `co_audit` self-check) drives the draft, then audit-gated repair rounds
+//! drive publishing.
 //!
-//! Same layering as the concept graph engine: nomifun-learning holds only
-//! [`CourseOutlineAgentEngine`]; this crate provides the provider-backed
-//! implementation, and the app layer wires it via
-//! `LearningService::set_course_outline_engine`. The loop mechanics, the
-//! fail-closed whitelist and the audit gate contract are shared with the
-//! concept graph through [`crate::loop_core`]; this module contributes the
+//! Layering: nomifun-learning holds only [`CourseOutlineAgentEngine`]; this
+//! crate provides the provider-backed implementation, and the app layer
+//! wires it via `LearningService::set_course_outline_engine`. The loop
+//! mechanics, the fail-closed whitelist and the audit gate contract are
+//! shared through [`crate::loop_core`]; this module contributes the
 //! outline prompts, the `co_*` tool set and the draft/publish context.
 //!
 //! Both grounding flows run through this one engine: the description flow
@@ -54,19 +52,18 @@ pub(crate) const WIRE: WireConfig = WireConfig {
 
 /// Generation-loop system prompt. The model builds the whole outline via the
 /// draft tools; the audit gate still has the last word at `co_finish`.
-const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：把给定的课程简报（自由文本描述或知识库采样）设计成一门结构完整、可直接开课的课程——模块（module）、课时（lesson）、概念（concept），并通过工具逐步构建。
+const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：把给定的课程简报（自由文本描述或知识库采样）设计成一门结构完整、可直接开课的课程——模块（module）、课时（lesson），并通过工具逐步构建。
 - 课程规模由你决策：根据简报/采样资料的范围与复杂度决定模块数与每模块课时数——小而聚焦的主题一两节课即可讲透，体系庞大的主题则需要更多模块与课时；每个课时都必须有实质内容，不要为凑数拆分，也不要为省事硬塞。
-- 概念是课时之间的知识锚点：key 全局唯一且稳定（snake_case 或简短英文短语），title 是名词短语；概念之间用 prerequisites 画依赖（必须无环、不得自引用）；每个课时绑定 2-5 个概念 key。
-- 课时：title 是学习目标句（学完能做什么），purpose 一句话说清这节课解决什么问题、用什么方式；概念绑定必须取自已存在的概念 key。
-- kb 流：每个课时的 source 必须是采样文件的真实路径（co_start 返回的清单或 co_read 见到的路径）；描述流省略 source。
+- 课时：title 是学习目标句（学完能做什么），purpose 一句话说清这节课解决什么问题、用什么方式。
+- kb 流：每个课时的 source 必须是采样文件的真实路径（co_start 返回的清单或 co_read 见到的路径）；一个课时可以落在多处来源上——source 给数组（最多 4 条，按引用顺序，首个为主来源）；描述流省略 source。
 - 模块从易到难排列，整体形成一条连续的学习路径；模块 title 简短，课时内容不越界到相邻模块的主题。
 
 【工具使用纪律】
 1. 第一步必须调用 co_start 创建草稿——它会先做范围分析，返回 draft_id 与（kb 流）采样文件清单。
 2. kb 流：动手设计前先用 co_read 阅读采样文件（至少浏览与主题最相关的若干文件），让大纲真正落在资料上；描述流：简报是唯一 grounding，逐条落实简报中的要点。
-3. 每次 co_patch 前后用 co_inspect 掌握全局；patch 里引用的模块/课时/概念 key 必须与草稿中完全一致（或引用本批前面创建的 key），拿不准先 co_query。
+3. 每次 co_patch 前后用 co_inspect 掌握全局；patch 里引用的模块/课时 key 必须与草稿中完全一致（或引用本批前面创建的 key），拿不准先 co_query。
 4. 分批构建：每批少于 25 个操作，宁可多批，不要超长批次。
-5. 全部构建完成后调用 co_audit 自查；确认没有 danger 级问题才调用 co_finish。scope 覆盖按标题判定：任一模块/课时/概念的 title 含块文本即算覆盖（单字块如「栈」只需任一标题含该字）。
+5. 全部构建完成后调用 co_audit 自查；确认没有 danger 级问题才调用 co_finish。scope 覆盖按标题判定：任一模块/课时的 title 含块文本即算覆盖（单字块如「栈」只需任一标题含该字）。
 
 【结束条件】
 - 只有 co_audit 报告无 danger 时才调用 co_finish；被门禁拒绝时按报告继续修复。"#;
@@ -76,19 +73,16 @@ const GENERATE_AGENT_SYSTEM: &str = r#"你是一名课程大纲设计代理：�
 const REPAIR_AGENT_SYSTEM: &str = r#"你是一名课程大纲修复代理：基于确定性审计报告，精确修复大纲中被指出的问题。
 
 【修复原则】
-1. 审计报告是主要的修复依据：逐条处理 danger 级 findings，按报告给出的证据（模块/课时/概念的 key、缺口清单）精确操作；
+1. 审计报告是主要的修复依据：逐条处理 danger 级 findings，按报告给出的证据（模块/课时的 key、缺口清单）精确操作；
 2. 不做过大的重构、不推翻已通过的结构：只修补报告指出的问题。
 3. 动手前可以用 co_inspect / co_query 查清 key 的精确写法；引用不一致的操作会被拒绝并附最近似候选。
 4. 修复动作分批提交（每批 5-20 个操作），每批后用 co_audit 复查对应 finding 是否消除。
 5. 全部 danger 消除后调用 co_finish 发布。
 
 【常见修复动作对照】
-- 课时缺 title|purpose|concepts：update_lesson 补齐缺失字段。
-- 未知概念引用：add_concept 创建缺失概念，或 update_lesson 把课时改绑到已有概念。
-- 重复 key：update_module / update_lesson / update_concept 重命名其中一个，或 remove 多余项。
-- 自引用 / 环：unlink_prereq 断开成环的边。
-- 孤儿概念：把概念绑定进课时（add_lesson / update_lesson 的 concepts），或 remove_concept 删除。
-- scope 覆盖缺口：为缺失的 scope 块补建模块与课时。覆盖按标题判定：任一模块/课时/概念 title 含块文本即算覆盖，单字块只需任一标题含该字——最省事的修法是把块词写进某个课时的标题。
+- 课时缺 title|purpose：update_lesson 补齐缺失字段。
+- 重复 key：update_module / update_lesson 重命名其中一个，或 remove 多余项。
+- scope 覆盖缺口：为缺失的 scope 块补建模块与课时。覆盖按标题判定：任一模块/课时 title 含块文本即算覆盖，单字块只需任一标题含该字——最省事的修法是把块词写进某个课时的标题。
 
 【结束条件】
 - 审计无 danger 时调用 co_finish；若 co_finish 被拒绝，认真阅读返回的阻塞报告并继续修复。
@@ -131,8 +125,8 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
         )
         .await?;
         // 取消旗标：挂在服务端生成注册上，取消端点置位；包装后的 provider
-        // 在每次 LLM 请求边界轮询（复用 learning_graph_loop 的
-        // CancellableProvider），传统课程生成由此获得与学习图一致的取消能力。
+        // 在每次 LLM 请求边界轮询（CancellableProvider），传统课程生成由此
+        // 获得与学习图生长一致的取消能力。
         let provider: Arc<dyn LlmProvider> = Arc::new(CancellableProvider {
             inner: create_provider(&cfg),
             cancel: self.service.generation_cancel_flag(),
@@ -174,7 +168,6 @@ impl CourseOutlineAgentEngine for LiveCourseOutlineAgentEngine {
                 ctx.log("session_end", serde_json::json!({
                     "ok": true,
                     "modules": blueprint.modules.len(),
-                    "concepts": blueprint.concepts.len(),
                 }));
                 Ok(blueprint)
             }
@@ -367,8 +360,8 @@ impl LoopEventSink for LoopContext {
 /// Live audit snapshot for the repair loop: fetches the full findings text
 /// (the model's repair basis) and logs the `audit` progress frame with the
 /// severity counts and up to five danger examples (the UI's audit badges).
-/// Severity literals match the concept graph's SEV_DANGER/SEV_WARNING/
-/// SEV_INFO vocabulary.
+/// Severity literals follow the shared SEV_DANGER/SEV_WARNING/SEV_INFO
+/// vocabulary (nomifun-learning `course_outline` module).
 fn audit_report(
     ctx: &LoopContext,
     draft_id: &str,
@@ -410,9 +403,18 @@ fn audit_report(
 
 /// The generation loop's user turn: the brief's grounding. The kb flow names
 /// the sampled corpus and points at `co_read`; the description flow hands
-/// over the brief text alone.
+/// over the brief text alone. The learner goal (t1) rides on top of both —
+/// on the kb flow it leads the brief and states the fixed course title
+/// (课程名默认即目标文本，不引入 LLM 派名). The sampling disclosure (t2)
+/// reports the sampled/total counts honestly.
 fn brief_user_text(brief: &OutlineBrief) -> String {
     let mut text = String::new();
+    if let Some(goal) = brief.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        text.push_str(&format!(
+            "学习者目标（课程标题即此文本，不要另起标题；整体文本即目标，简单时就是课程名，\
+             复杂时是目标描述——按它设计课程的范围与深浅）：\n{goal}\n"
+        ));
+    }
     match (&brief.description, &brief.knowledge_base) {
         (Some(description), _) => {
             text.push_str("课程简报：\n");
@@ -420,14 +422,36 @@ fn brief_user_text(brief: &OutlineBrief) -> String {
             text.push('\n');
         }
         (_, Some(kb)) => {
-            text.push_str(&format!(
-                "知识库名称：{}\n知识库描述：{}\n",
-                kb.name.trim(),
-                kb.description.trim()
-            ));
-            text.push_str(
-                "该库的 markdown 文档已采样：co_start 会返回路径清单，用 co_read 按路径阅读。\n",
-            );
+            // 多知识库（t4）：逐个点名来源库（采样路径带 `{库名}/rel` 命名
+            // 空间，同名文件由前缀区分）；单库时就是原来的两行。
+            let bases = brief.source_knowledge_bases();
+            if bases.len() > 1 {
+                text.push_str("知识库（多库来源，采样路径以「库名/」为前缀，引用按前缀归属）：\n");
+                for base in &bases {
+                    text.push_str(&format!("- {}：{}\n", base.name.trim(), base.description.trim()));
+                }
+            } else {
+                text.push_str(&format!(
+                    "知识库名称：{}\n知识库描述：{}\n",
+                    kb.name.trim(),
+                    kb.description.trim()
+                ));
+            }
+            if let Some(sampling) = &brief.sampling {
+                // 如实披露：采样按目标相关度选入，未采入的（低分）文件不在
+                // co_read 清单里，不要引用其路径。
+                text.push_str(&format!("{}\n", sampling.brief_line()));
+            }
+            if bases.len() > 1 {
+                text.push_str(
+                    "这些库的 markdown 文档已采样：co_start 会返回带库名前缀的路径清单，\
+                     用 co_read 按路径原样阅读与引用（同名文件靠前缀区分）。\n",
+                );
+            } else {
+                text.push_str(
+                    "该库的 markdown 文档已采样：co_start 会返回路径清单，用 co_read 按路径阅读。\n",
+                );
+            }
         }
         _ => {}
     }
@@ -558,7 +582,7 @@ fn co_query(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_read(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_read".into(),
-        description: "按路径读取一个采样文件的内容（kb 流专用）。设计大纲前用它阅读采样文档，让课时与概念真正落在资料上；source 引用必须是这里见到的真实路径。".into(),
+        description: "按路径读取一个采样文件的内容（kb 流专用）。设计大纲前用它阅读采样文档，让课时与概念真正落在资料上；source 引用必须是这里见到的真实路径（一个课时引用多条时按引用顺序给数组，首个为主来源）。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -601,7 +625,7 @@ fn co_read(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_scope(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_scope".into(),
-        description: "返回 scope 范围参考全文：大块概念清单——生成阶段的严格完备覆盖自查表。构建前先取回它，逐项核对你的计划，确保每个大块概念都落到某个课时。覆盖判定按标题：任一模块/课时/概念 title 含块文本即算覆盖。".into(),
+        description: "返回 scope 范围参考全文：大块主题清单——生成阶段的严格完备覆盖自查表。构建前先取回它，逐项核对你的计划，确保每个大块主题都落到某个课时。覆盖判定按标题：任一模块/课时 title 含块文本即算覆盖。".into(),
         input_schema: serde_json::json!({ "type": "object", "properties": {} }),
         handler: one_shot_handler(move |_input| {
             let ctx = Arc::clone(&ctx);
@@ -623,7 +647,7 @@ fn co_scope(ctx: Arc<LoopContext>) -> OneShotTool {
 fn co_patch(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "co_patch".into(),
-        description: "批量应用大纲操作（set_meta / add|update|remove_module / add|update|remove_lesson / add|update|remove_concept / link|unlink_prereq），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面创建的 key。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"set_meta\", \"title\": \"期权入门\", \"description\": \"零基础七节课\"},\n  {\"op\": \"add_module\", \"key\": \"m1\", \"title\": \"合约基础\"},\n  {\"op\": \"add_concept\", \"key\": \"option_def\", \"title\": \"期权定义\"},\n  {\"op\": \"add_lesson\", \"module\": \"m1\", \"key\": \"l1\", \"title\": \"认识期权合约\", \"purpose\": \"理解权利与义务的不对称\", \"concepts\": [\"option_def\"], \"source\": \"docs/basics.md\"}\n]}\n\n引用规则：module/模块 key、概念 key、prerequisites 必须与草稿中已有 key（或本批前面创建的 key）完全一致，不一致的操作会被拒绝并附最近似的 key 提示。每批 <25 个操作，宁多批勿超长。".into(),
+        description: "批量应用大纲操作（set_meta / add|update|remove_module / add|update|remove_lesson），一次调用就是一个批次。操作按数组顺序执行，后面的操作可以引用本批前面创建的 key。返回每个操作的成功/拒绝明细 + 最新审计摘要。\n\n调用示例：\n{\"operations\": [\n  {\"op\": \"set_meta\", \"title\": \"期权入门\", \"description\": \"零基础七节课\"},\n  {\"op\": \"add_module\", \"key\": \"m1\", \"title\": \"合约基础\"},\n  {\"op\": \"add_lesson\", \"module\": \"m1\", \"key\": \"l1\", \"title\": \"认识期权合约\", \"purpose\": \"理解权利与义务的不对称\", \"source\": \"docs/basics.md\"}\n]}\n\n引用规则：module/模块 key 必须与草稿中已有 key（或本批前面创建的 key）完全一致，不一致的操作会被拒绝并附最近似的 key 提示。add_lesson/update_lesson 的 source 可以是一条采样路径，也可以是路径数组（最多 4 条，按引用顺序，首个为主来源）——每一条都必须是采样路径，任一条不合法整条操作被拒绝。每批 <25 个操作，宁多批勿超长。".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
@@ -693,10 +717,9 @@ fn co_finish(ctx: Arc<LoopContext>) -> OneShotTool {
                             .map_err(|_| "co_finish: 内部锁故障".to_owned())? =
                             Some(blueprint.clone());
                         Ok(format!(
-                            "课程大纲已通过门禁：\"{}\"，{} 个模块 / {lessons} 个课时 / {} 个概念。",
+                            "课程大纲已通过门禁：\"{}\"，{} 个模块 / {lessons} 个课时。",
                             blueprint.title,
-                            blueprint.modules.len(),
-                            blueprint.concepts.len()
+                            blueprint.modules.len()
                         ))
                     }
                     Err(error) => Err(error.to_string()),
@@ -725,13 +748,20 @@ mod tests {
     use crate::loop_core::{GENERATE_REASONING_EFFORT, run_agent_loop};
 
     /// A complete 2×2 outline batch (the exact target size, all lessons
-    /// titled/purposed/bound) that clears the audit gate. `with_source`
-    /// attaches the kb-flow sample path — the kb flow REQUIRES it (the
-    /// blueprint gate validates sources against the sampled corpus), while
-    /// the description flow rejects any source (nothing is sampled).
+    /// titled/purposed) that clears the audit gate. `with_source` attaches
+    /// the kb-flow sample path — the kb flow REQUIRES it (the blueprint gate
+    /// validates sources against the sampled corpus), while the description
+    /// flow rejects any source (nothing is sampled).
     fn full_outline_ops(with_source: bool) -> serde_json::Value {
         let source = if with_source {
             serde_json::json!("docs/basics.md")
+        } else {
+            serde_json::Value::Null
+        };
+        // 课时二引用两处来源（t4 评审补齐的多引用）：数组 source 必须贯通
+        // 草稿 → 蓝图（位序保留、首个 = 主来源）。
+        let lesson_two_source = if with_source {
+            serde_json::json!(["docs/basics.md", "docs/advanced.md"])
         } else {
             serde_json::Value::Null
         };
@@ -739,12 +769,10 @@ mod tests {
             { "op": "set_meta", "title": "测试课程", "description": "两模块入门课" },
             { "op": "add_module", "key": "m1", "title": "模块一" },
             { "op": "add_module", "key": "m2", "title": "模块二" },
-            { "op": "add_concept", "key": "c1", "title": "概念一" },
-            { "op": "add_concept", "key": "c2", "title": "概念二", "prerequisites": ["c1"] },
-            { "op": "add_lesson", "module": "m1", "key": "l1", "title": "课时一", "purpose": "学会一", "concepts": ["c1"], "source": source },
-            { "op": "add_lesson", "module": "m1", "key": "l2", "title": "课时二", "purpose": "学会二", "concepts": ["c1", "c2"], "source": source },
-            { "op": "add_lesson", "module": "m2", "key": "l3", "title": "课时三", "purpose": "学会三", "concepts": ["c2"], "source": source },
-            { "op": "add_lesson", "module": "m2", "key": "l4", "title": "课时四", "purpose": "学会四", "concepts": ["c1", "c2"], "source": source }
+            { "op": "add_lesson", "module": "m1", "key": "l1", "title": "课时一", "purpose": "学会一", "source": source },
+            { "op": "add_lesson", "module": "m1", "key": "l2", "title": "课时二", "purpose": "学会二", "source": lesson_two_source },
+            { "op": "add_lesson", "module": "m2", "key": "l3", "title": "课时三", "purpose": "学会三", "source": source },
+            { "op": "add_lesson", "module": "m2", "key": "l4", "title": "课时四", "purpose": "学会四", "source": source }
         ] })
     }
 
@@ -756,8 +784,14 @@ mod tests {
                 name: "金融知识库".into(),
                 description: "期权与交易基础笔记".into(),
             }),
-            samples: vec![("docs/basics.md".into(), "期权的定义……".into())],
+            samples: vec![
+                ("docs/basics.md".into(), "期权的定义……".into()),
+                ("docs/advanced.md".into(), "期权策略进阶……".into()),
+            ],
             domain: Some("trading".into()),
+            goal: None,
+            knowledge_bases: Vec::new(),
+            sampling: None,
         }
     }
 
@@ -767,7 +801,47 @@ mod tests {
             knowledge_base: None,
             samples: Vec::new(),
             domain: None,
+            goal: None,
+            knowledge_bases: Vec::new(),
+            sampling: None,
         }
+    }
+
+    /// t1/t2：目标进简报（标题口径），采样披露如实报数；无目标/无披露时
+    /// 简报与旧路径逐字一致。
+    #[test]
+    fn brief_user_text_carries_goal_and_sampling_disclosure() {
+        let mut brief = kb_brief();
+        let legacy = brief_user_text(&brief);
+        assert!(!legacy.contains("学习者目标"), "{legacy}");
+        assert!(!legacy.contains("已按目标采样"), "{legacy}");
+
+        brief.goal = Some("  零基础学 Python 数据分析  ".into());
+        brief.sampling = Some(nomifun_learning::SampleDisclosure {
+            goal: brief.goal.clone(),
+            total_files: 12,
+            sampled_files: 7,
+            coherence_files: 2,
+            goal_fallback: false,
+            goal_terms: vec!["python".into(), "数据".into(), "据分".into(), "分析".into()],
+            tree: vec!["a.md".into()],
+            low_score_files: vec!["x.md".into(), "y.md".into()],
+            bases: Vec::new(),
+        });
+        let text = brief_user_text(&brief);
+        assert!(text.contains("零基础学 Python 数据分析"), "{text}");
+        assert!(text.contains("课程标题即此文本"), "{text}");
+        assert!(text.contains("已按目标采样 7/12 个文件"), "{text}");
+        assert!(text.contains("连贯补入 2 个"), "{text}");
+        assert!(text.contains("2 个低分文件未采样"), "{text}");
+
+        // 目标与库无交集时如实退回：简报不得冒充"按目标采样"。
+        if let Some(sampling) = brief.sampling.as_mut() {
+            sampling.goal_fallback = true;
+        }
+        let fallback = brief_user_text(&brief);
+        assert!(fallback.contains("已按默认顺序采样 7/12 个文件"), "{fallback}");
+        assert!(!fallback.contains("已按目标采样"), "{fallback}");
     }
 
     fn engine(service: Arc<LearningService>) -> LiveCourseOutlineAgentEngine {
@@ -908,6 +982,23 @@ mod tests {
         assert_eq!(blueprint.title, "测试课程");
         assert_eq!(blueprint.modules.len(), 2, "repaired outline publishes");
         assert_eq!(blueprint.domain, "trading", "the brief's domain label rides along");
+        // 多引用（t4 评审补齐）：数组 source 贯通到发布的蓝图，位序保留、
+        // 兼容位 = 首个。
+        let lesson_two = &blueprint.modules[0].lessons[1];
+        assert_eq!(
+            lesson_two
+                .cited_sources()
+                .iter()
+                .map(|source| source.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/basics.md", "docs/advanced.md"],
+            "co_patch 的数组 source 必须整份贯通"
+        );
+        assert_eq!(
+            lesson_two.source.as_ref().map(|source| source.path.as_str()),
+            Some("docs/basics.md"),
+            "兼容位 = 首个引用"
+        );
         // The premature co_finish was rejected with a size finding.
         let rounds = provider.seen_messages.lock().unwrap();
         let rejected = rounds.iter().flat_map(|round| round.iter()).any(|message| {

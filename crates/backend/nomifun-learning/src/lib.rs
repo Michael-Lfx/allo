@@ -7,6 +7,7 @@ mod lesson_draft;
 mod models;
 mod routes;
 mod scheduler;
+mod settle;
 mod service;
 mod state;
 mod tutorial;
@@ -23,34 +24,42 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    GraphLessonContext, LessonContentAgentEngine, LessonDraftView, LessonExcerpt,
-    LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
+    ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine, LessonDraftView,
+    LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 
-pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput};
+pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure};
 
-pub use learning_graph::{
-    GenerateLearningGraphRequest, LearningGraphAgentEngine, LearningGraphAudit, LearningGraphData,
-    LearningGraphEdge, LearningGraphNode, LearningGraphRecord, LearningGraphSummary,
+pub use learning_graph::ConceptTier;
+pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
+pub use learning_graph::structure_contract::{
+    reconcile_doors as reconcile_structure_doors,
+    validate_terrain as validate_terrain_artifact,
+    validate_structure as validate_structure_artifact,
 };
-
-pub use learning_graph::draft::{
-    DraftView, GraphOp, InspectView, NodeListView, NodeQuery, PatchReport, SplitUnit,
-    SubgraphDirection, SubgraphView,
-};
+pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, ConceptPack, ConceptView, CourseDetail,
+    ActivityKind, ActivityView, AttemptResult, CourseDetail,
     CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
-    DueReview, GenerateCourseRequest, GenerateLessonRequest, LessonStatus, LessonView, ModuleView,
-    RateReviewRequest, ReviewRating, ReviewResult, SectionKind, SectionPack, SectionView,
-    SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
-    VISUAL_OPTIONS,
+    DueReview, GenerateCourseRequest, GenerateLessonRequest,
+    GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
+    GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
+    LessonView,
+    ModuleView, QuizGradeFeedback, QuizProgressView, QuizRoundNodeReport, QuizRoundQuestionView,
+    QuizRoundReport, QuizRoundView, RateReviewRequest, ReviewRating, ReviewResult, SectionKind,
+    SectionPack,
+    SectionView, SourceSpan, SubmitAttemptRequest, TeachingStyle, UpdateLessonProgressRequest,
+    VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
 pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
     visual_menu_text,
 };
 pub use routes::learning_routes;
-pub use service::LearningService;
+pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+pub use settle::{
+    QUIZ_EXCELLENT_RATIO, QUIZ_HALF_RATIO, QUIZ_PASS_RATIO, QUIZ_QUESTION_BUDGET,
+    QUIZ_TRIGGER_SETTLEMENTS,
+};
 pub use state::LearningRouterState;

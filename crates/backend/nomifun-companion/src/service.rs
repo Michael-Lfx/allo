@@ -955,6 +955,18 @@ impl CompanionService {
         self.registry.list().await.first().map(|p| p.companion_id.clone())
     }
 
+    /// 学习结算入账桥（j05 统一账）：把一笔已落账的学习结算授予生效默认
+    /// 伙伴（事件 id 幂等去重在 store 层）。花名册为空 = 无合法入账对象，
+    /// 如实返回 false——学习账不受影响，余额滞后是允许态。
+    pub async fn grant_learning_xp(&self, event_id: &str, delta: i64) -> Result<bool, AppError> {
+        let Some(companion_id) = self.default_companion_id().await else {
+            return Ok(false);
+        };
+        self.store
+            .grant_learning_xp(&companion_id, event_id, delta)
+            .await
+    }
+
     // ----- DIY custom figure (spec §3 存储与回显) -----
 
     /// Ingest an uploaded figure image for one companion (two-phase upload: the
@@ -3591,6 +3603,34 @@ mod tests {
         assert_eq!(sb.companion_id.as_deref(), Some(b.companion_id.as_str()));
         assert_eq!(sb.xp, 0);
         assert!(matches!(svc.companion_status(MALFORMED_COMPANION_ID).await, Err(AppError::NotFound(_))));
+    }
+
+    /// 学习结算入账桥幂等（j05 统一账）：同一事件 id 重复授予只入账一次，
+    /// 不同事件各入一次；负数结算（乱猜罚金）照实入账；花名册为空如实
+    /// 返回 false 且不落任何账。
+    #[tokio::test]
+    async fn grant_learning_xp_is_idempotent_by_event_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path()).await;
+
+        // 空花名册：无入账对象，返回 false。
+        let granted = svc.grant_learning_xp("0190f5fe-7c00-7a00-8abc-111111111111", 20).await.unwrap();
+        assert!(!granted, "empty roster grants nothing");
+
+        let a = svc.create_companion("甲", "ink").await.unwrap();
+
+        // 同一事件两次授予：第二次被事件 id 吸收。
+        let event = "0190f5fe-7c00-7a00-8abc-9abc-222222222222";
+        assert!(svc.grant_learning_xp(event, 27).await.unwrap());
+        assert!(!svc.grant_learning_xp(event, 27).await.unwrap(), "duplicate event must not double-credit");
+        // 不同事件正常入账；负数结算（乱猜罚金）照实扣减。
+        assert!(svc.grant_learning_xp("0190f5fe-7c00-7a00-8abc-9abc-333333333333", -12).await.unwrap());
+        let status = svc.companion_status(&a.companion_id).await.unwrap();
+        assert_eq!(status.xp, 27 - 12);
+
+        // 去重账按 companion 记录：换伙伴后同事件 id 不再入旧伙伴的账。
+        let _b = svc.create_companion("乙", "boo").await.unwrap();
+        assert!(!svc.grant_learning_xp(event, 27).await.unwrap());
     }
 
     #[tokio::test]

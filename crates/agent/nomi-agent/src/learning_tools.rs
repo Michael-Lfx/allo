@@ -32,19 +32,41 @@ pub const LEARNING_GENERATE_COURSE_TOOL_NAME: &str = "learning_generate_course";
 /// generate tool so the agent can report progress without a per-call approval.
 pub const LEARNING_COURSE_STATUS_TOOL_NAME: &str = "learning_course_status";
 
+/// 一次建课最多接几个知识库（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES`
+///（`crates/backend/nomifun-learning/src/models.rs`）同一口径（采样预算按库
+/// 分摊）、与前端 `MAX_COURSE_KNOWLEDGE_BASES`（`ui/src/renderer/pages/
+/// learning/hooks/useCourseCreation.ts`）同值——三处跨层（agent 引擎 / 后端 /
+/// SPA）无法共享一个常量，改动时三处同步：工具层先拒（模型拿到可行动的
+/// 报错），后端 400 是权威，前端不静默截断。
+const MAX_COURSE_BASES: usize = 5;
+
+/// 工具描述里出现的上限文案：从常量派生（`up to 5` 之类的硬编码会与
+/// `MAX_COURSE_BASES` 漂移）。
+fn max_bases_hint() -> String {
+    format!("up to {MAX_COURSE_BASES}")
+}
+
 /// A model-issued course-generation request, resolved by the tool to one of
 /// the session's bound bases (or a free-text brief) before forwarding to the
-/// backend. Exactly one of `kb_id` / `description` is set. The session's
+/// backend. Exactly one of `kb_ids` / `description` is set. The session's
 /// active `(provider_id, model)` rides along so generation runs on the model
 /// the user picked in this conversation; `None` falls back to the backend's
 /// default completer. Course size is not part of the request: the backend's
 /// generation model decides the module/lesson layout from the source itself.
 #[derive(Debug, Clone)]
 pub struct CourseGenerationRequest {
-    /// kb flow: the base to ground the course in.
-    pub kb_id: Option<KnowledgeBaseId>,
+    /// kb flow: the bases to ground the course in（多知识库，t4：首个 = 主来源；
+    /// 单库是它的单元素视图）。库名解析后的 id，候选集仍限会话挂载集。
+    pub kb_ids: Vec<KnowledgeBaseId>,
     /// description flow: the free-text course brief (the whole grounding).
     pub description: Option<String>,
+    /// kb flow: the learner goal (traditional course, 2026-10-13). The whole
+    /// text IS the goal — "零基础学 Python 数据分析" when simple, a longer
+    /// target description otherwise; the backend uses it for goal-aware
+    /// sampling, the outline scope and the course title. Absent = the legacy
+    /// path (topic falls back to the base name). Ignored on the description
+    /// flow, where the brief already plays this role.
+    pub goal: Option<String>,
     pub domain: Option<String>,
     pub provider_id: Option<String>,
     pub model: Option<String>,
@@ -163,19 +185,22 @@ impl LearningGenerateCourseTool {
     }
 }
 
-#[async_trait]
-impl Tool for LearningGenerateCourseTool {
-    fn name(&self) -> &str {
-        LEARNING_GENERATE_COURSE_TOOL_NAME
-    }
-
-    fn description(&self) -> &str {
+/// 工具描述（进程内构建一次）：上限文案从 [`MAX_COURSE_BASES`] 派生，
+/// 描述与拒收口径永远是同一个数。
+static SELF_DESCRIPTION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
         "Start a background job that generates a learning course (modules, lessons, quizzes, \
          spaced-repetition concepts). The grounding source is EITHER a free-text course brief \
-         (pass `description`) OR a mounted knowledge base (pass `base`): with `description` no \
-         knowledge base is needed — write a dense brief (topic, scope, learner level, what to \
-         cover) and the course is designed from it; with a base the course is grounded in its \
-         markdown documents, so FIRST make sure the base contains well-structured .md notes: \
+         (pass `description`) OR one or more mounted knowledge bases (pass `base`: a single name, \
+         or an array of names — {} — when the course should draw on several libraries at \
+         once): with `description` no knowledge base is needed — write a dense brief (topic, \
+         scope, learner level, what to cover) and the course is designed from it; with base(s) the \
+         course is grounded in their markdown documents. ALWAYS pass `goal` when generating from \
+         base(s): the learner's goal \
+         text (the whole text IS the goal — a short phrase like \"零基础学 Python 数据分析\" or a \
+         longer target description). Sampling, outline scope and the course title all key off \
+         it, and the title is exactly this text, so do not invent a separate course name. \
+         With a base, FIRST make sure the base contains well-structured .md notes: \
          one topic per file, and each file's atomic unit should cover 描述 (description), \
          例子 (worked examples) and 验证 (self-check questions) at minimum — other sections such as \
          迁移 (transfer), 其他 (other), 关键词 (keywords), 推广 (promotion) are optional and chosen \
@@ -185,7 +210,21 @@ impl Tool for LearningGenerateCourseTool {
          long-form document and exercises are generated only when the learner opens that lesson on \
          the Learning page. The job runs in the background, so this tool returns immediately with \
          a job_id — report progress by calling learning_course_status with it; the user can \
-         also follow or cancel the job on the Learning page."
+         also follow or cancel the job on the Learning page.",
+        max_bases_hint()
+    )
+});
+
+#[async_trait]
+impl Tool for LearningGenerateCourseTool {
+    fn name(&self) -> &str {
+        LEARNING_GENERATE_COURSE_TOOL_NAME
+    }
+
+    fn description(&self) -> &str {
+        // 上限文案从 `MAX_COURSE_BASES` 派生（`up to {n}`）——描述与拒收口径
+        // 同一个数，不会一处改了另一处还写着 5。
+        SELF_DESCRIPTION.as_str()
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -194,17 +233,28 @@ impl Tool for LearningGenerateCourseTool {
             "Which knowledge base to build the course from (its name). Optional when only one base is mounted; unused when description is passed.".to_owned()
         } else {
             format!(
-                "Which knowledge base to build the course from. Must be one of: {}. Unused when description is passed.",
+                "Which knowledge base(s) to build the course from: one name or a JSON array of names \
+                 (max {}) when the course should draw on several libraries at once. Must be among: {}. \
+                 Unused when description is passed.",
+                MAX_COURSE_BASES,
                 names.join(", ")
             )
         };
         json!({
             "type": "object",
             "properties": {
-                "base": { "type": "string", "description": base_desc },
+                "base": {
+                    "type": ["string", "array"],
+                    "items": { "type": "string" },
+                    "description": base_desc
+                },
                 "description": {
                     "type": "string",
                     "description": "Free-text course brief to generate from INSTEAD of a knowledge base: topic, scope, learner level and what to cover. Pass this OR base, not both; no knowledge base is needed with it."
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "The learner's goal for a knowledge-base course (pass it whenever `base` is used). The whole text IS the goal: a short phrase like \"零基础学 Python 数据分析\" or a multi-line target description. It drives goal-aware sampling and the outline scope, and becomes the course title verbatim — do not invent a separate title. Ignored when `description` is passed (the brief is already the goal)."
                 },
                 "domain": {
                     "type": "string",
@@ -245,16 +295,25 @@ impl Tool for LearningGenerateCourseTool {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map(ToOwned::to_owned);
-        let base_arg = input.get("base").and_then(Value::as_str);
-        let kb_id = if description.is_some() {
+        // 多知识库（t4）：`base` 收单个库名或库名数组（候选集仍限会话挂载
+        // 集，逐个按名解析）。最多 5 个——与后端的建课上限同一口径。
+        let requested_bases = match input.get("base") {
+            Some(Value::String(name)) => vec![name.trim().to_owned()],
+            Some(Value::Array(names)) => names
+                .iter()
+                .map(|name| name.as_str().map(str::trim).unwrap_or_default().to_owned())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let kb_ids: Vec<KnowledgeBaseId> = if description.is_some() {
             // Brief flow: the description is the whole grounding, so no base
             // is resolved; an explicit `base` alongside it is a conflict.
-            if base_arg.map(str::trim).is_some_and(|b| !b.is_empty()) {
+            if requested_bases.iter().any(|name| !name.is_empty()) {
                 return ToolResult::error(
                     "learning_generate_course accepts either `base` or `description`, not both",
                 );
             }
-            None
+            Vec::new()
         } else {
             if self.bases.is_empty() {
                 return ToolResult::text(
@@ -263,10 +322,35 @@ impl Tool for LearningGenerateCourseTool {
                      brief, or write notes into a mounted base with knowledge_write first.",
                 );
             }
-            match crate::knowledge_tools::resolve_write_base(&self.bases, base_arg) {
-                Ok(b) => Some(b.0.clone()),
-                Err(e) => return ToolResult::error(e),
+            let mut ids: Vec<KnowledgeBaseId> = Vec::new();
+            if requested_bases.is_empty() {
+                // 未点名：单挂载库自动选中；多库时报可行动的错（列出候选）。
+                match crate::knowledge_tools::resolve_write_base(&self.bases, None) {
+                    Ok(base) => ids.push(base.0.clone()),
+                    Err(error) => return ToolResult::error(error),
+                }
             }
+            for name in &requested_bases {
+                let resolved =
+                    match crate::knowledge_tools::resolve_write_base(
+                        &self.bases,
+                        Some(name.as_str()).filter(|name| !name.is_empty()),
+                    ) {
+                        Ok(base) => base,
+                        Err(error) => return ToolResult::error(error),
+                    };
+                if !ids.iter().any(|id| id == &resolved.0) {
+                    ids.push(resolved.0.clone());
+                }
+            }
+            if ids.len() > MAX_COURSE_BASES {
+                return ToolResult::error(format!(
+                    "learning_generate_course grounds one course in at most {MAX_COURSE_BASES} \
+                     knowledge bases, got {}",
+                    ids.len()
+                ));
+            }
+            ids
         };
         let domain = input
             .get("domain")
@@ -274,6 +358,18 @@ impl Tool for LearningGenerateCourseTool {
             .map(str::trim)
             .filter(|d| !d.is_empty())
             .map(ToOwned::to_owned);
+        // 目标（t1）：知识库流的目标文本；描述流下简报已是目标，忽略该参数
+        // （语义不变）。
+        let goal = if kb_ids.is_empty() {
+            None
+        } else {
+            input
+                .get("goal")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|g| !g.is_empty())
+                .map(ToOwned::to_owned)
+        };
         let mode = input
             .get("mode")
             .and_then(Value::as_str)
@@ -301,8 +397,9 @@ impl Tool for LearningGenerateCourseTool {
             ),
         };
         let req = CourseGenerationRequest {
-            kb_id,
+            kb_ids,
             description,
+            goal,
             domain,
             provider_id,
             model,
@@ -328,7 +425,17 @@ impl Tool for LearningGenerateCourseTool {
     }
 
     fn describe(&self, input: &Value) -> String {
-        let base = input.get("base").and_then(Value::as_str).unwrap_or("");
+        let base = match input.get("base") {
+            Some(Value::String(name)) => name.clone(),
+            Some(Value::Array(names)) => names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+                .join("、"),
+            _ => String::new(),
+        };
         let brief = input
             .get("description")
             .and_then(Value::as_str)
@@ -433,12 +540,20 @@ mod tests {
 
     const KB1: &str = "0190f5fe-7c00-7a00-8abc-012345678961";
     const KB2: &str = "0190f5fe-7c00-7a00-8abc-012345678962";
+    const KB3: &str = "0190f5fe-7c00-7a00-8abc-012345678963";
+    const KB4: &str = "0190f5fe-7c00-7a00-8abc-012345678964";
+    const KB5: &str = "0190f5fe-7c00-7a00-8abc-012345678965";
+    const KB6: &str = "0190f5fe-7c00-7a00-8abc-012345678966";
     const USER: &str = "0190f5fe-7c00-7a00-8abc-0123456789ff";
 
     fn kb_id(label: &str) -> KnowledgeBaseId {
         let value = match label {
             "kb1" => KB1,
             "kb2" => KB2,
+            "kb3" => KB3,
+            "kb4" => KB4,
+            "kb5" => KB5,
+            "kb6" => KB6,
             other => panic!("unknown knowledge-base test label: {other}"),
         };
         KnowledgeBaseId::parse(value).expect("canonical knowledge-base test ID")
@@ -569,7 +684,7 @@ mod tests {
         let (user, session, req) = sink.last.lock().unwrap().clone().unwrap();
         assert_eq!(user, USER);
         assert_eq!(session.as_deref(), Some("session-1"));
-        assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb1")));
+        assert_eq!(req.kb_ids.first(), Some(&kb_id("kb1")));
         assert!(req.description.is_none());
         assert!(req.domain.is_none());
     }
@@ -582,8 +697,74 @@ mod tests {
             .await;
         assert!(!res.is_error, "{res:?}");
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
-        assert_eq!(req.kb_id.as_ref(), Some(&kb_id("kb2")));
+        assert_eq!(req.kb_ids.first(), Some(&kb_id("kb2")));
         assert_eq!(req.domain.as_deref(), Some("ops-runbook"));
+    }
+
+    /// 多知识库（t4）：`base` 收库名数组，逐个按名解析（候选集仍限会话挂载
+    /// 集）、保序去重、上限 5；单库名保持旧行为。
+    #[tokio::test]
+    async fn resolves_multiple_bases_from_a_name_array() {
+        let (course_tool, sink) = tool(vec![("kb1", "Finance"), ("kb2", "Ops"), ("kb3", "Math")]);
+        let res = course_tool
+            .execute(json!({"base": ["Ops", " finance ", "Ops"], "goal": "学会聚类"}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert_eq!(req.kb_ids, vec![kb_id("kb2"), kb_id("kb1")], "保序去重");
+
+        let res = course_tool.execute(json!({"base": ["Ops", "Nope"]})).await;
+        assert!(res.is_error, "未挂载的库名必须是可行动的错: {res:?}");
+        assert!(res.content.contains("Nope"), "{res:?}");
+
+        let (many_tool, _many_sink) = tool(vec![
+            ("kb1", "A"),
+            ("kb2", "B"),
+            ("kb3", "C"),
+            ("kb4", "D"),
+            ("kb5", "E"),
+            ("kb6", "F"),
+        ]);
+        let res = many_tool
+            .execute(json!({"base": ["A", "B", "C", "D", "E", "F"]}))
+            .await;
+        assert!(res.is_error, "上限 5: {res:?}");
+        assert!(res.content.contains('5'), "{res:?}");
+    }
+
+    /// t1：知识库分支的目标参数原样转发（整体文本即目标，含多行长文本）；
+    /// 描述流忽略 goal——简报已是目标，语义与旧路径一致。
+    #[tokio::test]
+    async fn kb_flow_forwards_the_goal_and_description_flow_ignores_it() {
+        let (tool, sink) = tool(vec![("kb1", "Finance")]);
+        let res = tool
+            .execute(json!({"base": "Finance", "goal": "  零基础学 Python 数据分析\n受众：转行者  "}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            req.goal.as_deref(),
+            Some("零基础学 Python 数据分析\n受众：转行者"),
+            "the goal text is trimmed but kept whole (multi-line)"
+        );
+
+        // 空白目标 = 未传（回退库名路径）。
+        let res = tool.execute(json!({"base": "Finance", "goal": "   "})).await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert!(req.goal.is_none());
+
+        let res = tool
+            .execute(json!({"description": "期权入门", "goal": "不该被使用"}))
+            .await;
+        assert!(!res.is_error, "{res:?}");
+        let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
+        assert!(req.kb_ids.is_empty());
+        assert!(
+            req.goal.is_none(),
+            "the description flow carries no separate goal: {:?}",
+            req.goal
+        );
     }
 
     #[tokio::test]
@@ -610,7 +791,7 @@ mod tests {
             .await;
         assert!(!res.is_error, "{res:?}");
         let (_, _, req) = sink.last.lock().unwrap().clone().unwrap();
-        assert!(req.kb_id.is_none());
+        assert!(req.kb_ids.is_empty());
         assert_eq!(
             req.description.as_deref(),
             Some("零基础期权入门：从权利义务讲到期权策略")

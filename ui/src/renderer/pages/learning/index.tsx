@@ -6,8 +6,7 @@ import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useConfig } from '@/renderer/hooks/config/useConfig';
 import { learningApi } from './api';
 import ContentWidthToggle, { useWideContentLayout } from './components/ContentWidthToggle';
-import { CourseCard, CourseDeleteDialog } from './components/CourseCard';
-import { CourseGenerationPill } from './components/CourseGenerationPill';
+import { CourseCard, CourseDeleteDialog } from './components/CourseCard';import { CourseGenerationPill } from './components/CourseGenerationPill';
 import { CourseWorkspace } from './components/CourseWorkspace';
 import LearningModelSelector, { useLearningAutogenModel } from './components/LearningModelSelector';
 import { ReviewBanner } from './components/ReviewBanner';
@@ -18,11 +17,11 @@ import { useCourseLearning } from './hooks/useCourseLearning';
 import { useReviewSession } from './hooks/useReviewSession';
 import { contentColumnWidth, STANDARD_LIST_MAX_WIDTH } from './layout';
 import type { CourseDetail, CourseSummary, DueReview, Lesson, LessonStatus, QuestionEntry } from './types';
-import { errorMessage, loadStoredReviewFilters } from './utils';
+import { errorMessage, knowledgeBaseNames, loadStoredReviewFilters } from './utils';
 
 const { Title, Text, Paragraph } = Typography;
 
-// 页内重型组件按需加载：概念图依赖 @xyflow/react 与 dagre，题目/任务表格
+// 页内重型组件按需加载：题目/任务表格
 // 与复习/创建/标签弹窗仅在对应 Tab 或操作打开时才下载执行。路由级 lazy
 // 只拆到整页，这里进一步把非首屏组件拆成独立 chunk，学习页首屏只加载
 // 课程卡片、复习横幅与模型选择器等核心模块，达到秒开。
@@ -235,6 +234,7 @@ const LearningPage: React.FC = () => {
           onReview={(courseId) => void reviewSession.startCourseReviewSession(courseId)}
           onEditTags={() => void openTagEditor('course', course)}
           onDelete={() => setDeletingCourse(course)}
+          onChanged={() => void load()}
         />
       )),
     [courses, navigate, openTagEditor, reviewSession.startCourseReviewSession]
@@ -420,21 +420,28 @@ const LearningPage: React.FC = () => {
             busy={busyId === 'generate'}
             knowledgeLoading={creation.knowledgeLoading}
             knowledgeBases={creation.knowledgeBases}
-            selectedKnowledgeBaseId={creation.selectedKnowledgeBaseId}
+            selectedKnowledgeBaseIds={creation.selectedKnowledgeBaseIds}
             generationDomain={creation.generationDomain}
             modelChoice={creation.modelChoice}
             creationTab={creation.creationTab}
             creationDescription={creation.creationDescription}
+            graphProficiency={creation.graphProficiency}
+            graphBasis={creation.graphBasis}
+            creationGoal={creation.creationGoal}
             teachingStyle={creation.teachingStyle}
             onTeachingStyleChange={creation.setTeachingStyle}
             generation={creation.generation}
             onClose={creation.closeGenerator}
             onOk={() => void creation.submitGeneration()}
-            onSelectedBaseChange={creation.setSelectedKnowledgeBaseId}
+            onSelectedBaseChange={creation.setSelectedKnowledgeBaseIds}
             onDomainChange={creation.setGenerationDomain}
             onModelChange={(choice) => void creation.setModelChoice(choice)}
             onTabChange={creation.setCreationTab}
             onDescriptionChange={creation.setCreationDescription}
+            onGraphProficiencyChange={creation.setGraphProficiency}
+            onGraphBasisChange={creation.setGraphBasis}
+            onConfirmGraphCreation={() => void creation.confirmGraphCreation()}
+            onGoalChange={creation.setCreationGoal}
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
@@ -446,6 +453,10 @@ const LearningPage: React.FC = () => {
           <CourseGenerationPill
             status={creation.generation.status}
             topic={creation.generation.request.description ?? ''}
+            sources={knowledgeBaseNames(
+              creation.generation.request.knowledge_base_ids ?? [],
+              creation.knowledgeBases
+            )}
             onView={() => void creation.openGenerator()}
             onCancel={() => void creation.cancelGeneration()}
           />

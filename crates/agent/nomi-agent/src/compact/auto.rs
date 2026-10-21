@@ -622,6 +622,7 @@ async fn summarize_with_retry(
             temperature: None,
             retain_provider_round: false,
             isolate_malformed_tool_calls: false,
+            json_object: false,
         };
 
         // Wrap the stream + collection in a timeout so a stalled stream

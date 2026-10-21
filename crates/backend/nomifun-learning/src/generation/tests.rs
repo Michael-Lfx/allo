@@ -1,10 +1,13 @@
     use super::activities::validate_lesson_activities;
     use super::completer::complete_with_timeout;
     use super::lesson::{
-        build_activities_prompt, build_section_rewrite_prompt, validate_lesson_document,
+        build_activities_prompt, build_section_rewrite_prompt, enforce_grounding_budget,
+        render_grounding_fragments, section_body_system, validate_lesson_document,
+        GROUNDING_PRIMARY_MAX_BYTES, GROUNDING_SUPPLEMENT_MAX_BYTES, GROUNDING_TOTAL_MAX_BYTES,
     };
     use super::parser::{strip_code_fences, strip_markdown_fences};
     use super::*;
+    use crate::lesson_draft::{ExcerptRole, LessonExcerpt};
     use crate::models::{SectionOutline, validate_section_outline, ComplexityTier, SectionKind, SectionPack};
     use nomifun_common::KnowledgeBaseId;
     use serde_json::json;
@@ -25,13 +28,30 @@
             "ICT",
             "Trading course",
             Some("trading"),
+            None,
             &[("lessons/liquidity.md".into(), "# Liquidity\nText".into())],
         );
         assert!(prompt.contains("--- FILE: lessons/liquidity.md ---"));
         assert!(prompt.contains("Requested domain label: trading"));
         assert!(prompt.contains("Course size is yours to decide"));
+        assert!(!prompt.contains("Learner goal"), "no goal → no goal block");
         assert!(BLUEPRINT_SYSTEM.contains("untrusted source material"));
         assert!(BLUEPRINT_SYSTEM.contains("Never invent paths"));
+    }
+
+    /// t1：知识库流带目标时，蓝图提示词把目标文本作为方向锚点与标题口径
+    /// 交给模型（整体文本即目标）。
+    #[test]
+    fn blueprint_prompt_carries_the_learner_goal() {
+        let prompt = build_blueprint_prompt(
+            "ICT",
+            "Trading course",
+            None,
+            Some("零基础学 Python 数据分析"),
+            &[("a.md".into(), "# A".into())],
+        );
+        assert!(prompt.contains("Learner goal"), "{prompt}");
+        assert!(prompt.contains("零基础学 Python 数据分析"), "{prompt}");
     }
 
     #[test]
@@ -40,6 +60,21 @@
         // JSON — the old "smaller" instruction caused thin summaries.
         assert!(!BLUEPRINT_SYSTEM.contains("smaller"));
         assert!(!LESSON_SYSTEM.contains("smaller"));
+    }
+
+    /// t2 丰富度条款在提示词面：objective 题必带证据回引；choice 题解析逐
+    /// 选项辨析；节正文篇幅纪律 = 档位预算是展开下限不是上限。
+    #[test]
+    fn richness_clauses_are_present_in_generation_prompts() {
+        assert!(LESSON_SYSTEM.contains("\"evidence\""));
+        assert!(LESSON_SYSTEM.contains("walk EVERY option"));
+        assert!(LESSON_ACTIVITY_SYSTEM.contains("\"evidence\""));
+        assert!(LESSON_ACTIVITY_SYSTEM.contains("verbatim quote"));
+        let standard = section_body_system(crate::models::TeachingStyle::Standard);
+        assert!(
+            standard.contains("THE BUDGET IS THE FLOOR OF A FULLY-WORKED SECTION, NOT A CEILING"),
+            "prose budget must be framed as an expansion floor"
+        );
     }
 
     #[test]
@@ -237,7 +272,6 @@
               "options": null,
               "answer": null,
               "explanation": null,
-              "concepts": ["key", null],
               "distractors": null
             }
           ]
@@ -250,7 +284,6 @@
         assert!(activity.options.is_empty());
         assert!(activity.answer.is_null());
         assert_eq!(activity.explanation, "");
-        assert_eq!(activity.concepts, vec!["key".to_owned()]);
         assert!(activity.distractors.is_empty());
     }
 
@@ -298,35 +331,7 @@
     }
 
     #[test]
-    fn blueprint_validator_rejects_cycles_unsampled_sources_and_empty_outline() {
-        let samples = vec![("real.md".to_owned(), "# Real".to_owned())];
-        let blueprint = Blueprint {
-            title: "C".into(),
-            description: String::new(),
-            domain: String::new(),
-            version: 1,
-            concepts: vec![
-                ConceptPack {
-                    key: "a".into(),
-                    title: "A".into(),
-                    description: String::new(),
-                    prerequisites: Vec::new(),
-                },
-                ConceptPack {
-                    key: "b".into(),
-                    title: "B".into(),
-                    description: String::new(),
-                    prerequisites: Vec::new(),
-                },
-            ],
-            modules: Vec::new(),
-        };
-        let lesson = BlueprintLesson {
-            title: "L".into(),
-            purpose: String::new(),
-            concepts: vec!["a".into()],
-            source: None,
-        };
+    fn activity_stage_enforces_count_floors_and_ai_graded_cap() {
         let objective = vec![
             ActivityPack {
                 kind: ActivityKind::SingleChoice,
@@ -334,24 +339,24 @@
                 options: vec!["A".into(), "B".into(), "C".into()],
                 answer: json!("A"),
                 explanation: "e".into(),
-                concepts: vec!["a".into()],
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-                        difficulty: None,
-},
+                difficulty: None,
+                evidence: Some("「q1 的证据回引」".into()),
+            },
             ActivityPack {
                 kind: ActivityKind::TrueFalse,
                 prompt: "q2".into(),
                 options: Vec::new(),
                 answer: json!(true),
                 explanation: "e".into(),
-                concepts: vec!["a".into()],
                 distractors: Vec::new(),
                 tol: None,
                 section_key: None,
-                        difficulty: None,
-},
+                difficulty: None,
+                evidence: Some("「q2 的证据回引」".into()),
+            },
         ];
         let reflection = |prompt: &str| ActivityPack {
             kind: ActivityKind::Reflection,
@@ -359,11 +364,11 @@
             options: Vec::new(),
             answer: json!(null),
             explanation: String::new(),
-            concepts: vec!["a".into()],
             distractors: Vec::new(),
             tol: None,
             section_key: None,
                 difficulty: None,
+evidence: None,
 };
 
         // Up to three AI-graded questions pass (validate_shape gate each).
@@ -374,21 +379,59 @@
         for activity in &at_cap {
             activity.validate_shape((3, 5), true).unwrap();
         }
-        assert!(validate_lesson_activities(&at_cap, &blueprint, &lesson).is_ok());
+        assert!(validate_lesson_activities(&at_cap).is_ok());
 
         // A fourth AI-graded question exceeds the cap.
         let mut over_cap = at_cap.clone();
         over_cap.push(reflection("r4"));
-        assert!(validate_lesson_activities(&over_cap, &blueprint, &lesson).is_err());
+        assert!(validate_lesson_activities(&over_cap).is_err());
 
-        // AI-graded questions never cross lessons: binding another lesson's
-        // concept is rejected, objective activities stay lesson-bound.
-        let mut cross_lesson = at_cap.clone();
-        cross_lesson[2].concepts = vec!["b".into()];
-        assert!(validate_lesson_activities(&cross_lesson, &blueprint, &lesson).is_err());
-        let mut objective_cross = at_cap.clone();
-        objective_cross[0].concepts = vec!["b".into()];
-        assert!(validate_lesson_activities(&objective_cross, &blueprint, &lesson).is_err());
+        // Objective floors: dropping one objective question breaks the
+        // minimum objective count.
+        let mut under_floor = at_cap.clone();
+        under_floor.remove(0);
+        assert!(validate_lesson_activities(&under_floor).is_err());
+    }
+
+    /// 证据回引硬门（t2）：objective 题缺/空 evidence = 违约（重试反馈点名）；
+    /// reflection/open_question 不要求。
+    #[test]
+    fn activity_stage_requires_evidence_on_objective_questions() {
+        let mut bare = ActivityPack {
+            kind: ActivityKind::SingleChoice,
+            prompt: "q".into(),
+            options: vec!["A".into(), "B".into(), "C".into()],
+            answer: json!("A"),
+            explanation: "e".into(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+        };
+        let reflection = ActivityPack {
+            kind: ActivityKind::Reflection,
+            prompt: "r".into(),
+            options: Vec::new(),
+            answer: json!(null),
+            explanation: String::new(),
+            distractors: Vec::new(),
+            tol: None,
+            section_key: None,
+            difficulty: None,
+            evidence: None,
+        };
+        let mut set = vec![bare.clone(), bare.clone(), reflection];
+        let missing = validate_lesson_activities(&set).unwrap_err();
+        assert!(missing.contains("evidence"), "{missing}");
+        bare.evidence = Some("  ".into());
+        set[0] = bare.clone();
+        let blank = validate_lesson_activities(&set).unwrap_err();
+        assert!(blank.contains("evidence"), "blank evidence also rejected: {blank}");
+        bare.evidence = Some("「证据回引」".into());
+        set[0] = bare.clone();
+        set[1] = bare;
+        assert!(validate_lesson_activities(&set).is_ok());
     }
 
     #[test]
@@ -405,11 +448,11 @@
             options: Vec::new(),
             answer: json!(["magnitude"]),
             explanation: "e".into(),
-            concepts: vec!["a".into()],
             distractors: vec!["length".into(), "norm".into()],
             tol: None,
             section_key: None,
                 difficulty: None,
+evidence: None,
 };
         assert!(base.validate_shape((3, 5), true).is_ok());
 
@@ -436,6 +479,8 @@
         let id = KnowledgeBaseId::new();
         let request = GenerateCourseRequest {
             course_kind: crate::models::CourseKind::Traditional,
+            proficiency_statement: None,
+            learner_basis: None,
             teaching_style: None,
             knowledge_base_id: Some(id.clone()),
             description: None,
@@ -443,35 +488,32 @@
             provider_id: None,
             model: None,
             mode: crate::models::CourseGenerationMode::OnDemand,
+            goal: None,
+            knowledge_base_ids: Vec::new(),
         };
         assert_eq!(request.knowledge_base_id, Some(id));
     }
 
-    /// A minimal blueprint with one module, one lesson and one concept.
+    /// A minimal blueprint with one module and one lesson.
     fn lesson_test_blueprint() -> Blueprint {
         Blueprint {
             title: "C".into(),
             description: String::new(),
             domain: String::new(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![BlueprintModule {
                 title: "M".into(),
                 description: String::new(),
                 lessons: vec![BlueprintLesson {
                     title: "L".into(),
                     purpose: "p".into(),
-                    concepts: vec!["a".into()],
                     source: Some(SourceSpan {
                         path: "real.md".into(),
                         start: None,
                         end: None,
+                        kb_id: None,
                     }),
+                    sources: Vec::new(),
                 }],
             }],
         }
@@ -484,24 +526,19 @@
         let lesson = |title: &str, purpose: &str, source: Option<&str>| BlueprintLesson {
             title: title.into(),
             purpose: purpose.into(),
-            concepts: vec!["a".into()],
             source: source.map(|path| SourceSpan {
                 path: path.into(),
                 start: None,
                 end: None,
+                kb_id: None,
             }),
+            sources: Vec::new(),
         };
         Blueprint {
             title: "C".into(),
             description: String::new(),
             domain: String::new(),
             version: 1,
-            concepts: vec![ConceptPack {
-                key: "a".into(),
-                title: "A".into(),
-                description: String::new(),
-                prerequisites: Vec::new(),
-            }],
             modules: vec![
                 BlueprintModule {
                     title: "模块一".into(),
@@ -594,6 +631,150 @@
         }
     }
 
+    /// t3 多片段 grounding：主引用在前标角色与文件，检索补充在后带库归属与
+    /// 命中章节——片段块是三处提示词共用的那一段。
+    #[test]
+    fn grounding_fragments_render_roles_and_provenance() {
+        let excerpts = vec![
+            LessonExcerpt {
+                kb_id: None,
+                kb_name: None,
+                heading: None,
+                ..LessonExcerpt::text_only("docs/two.md", "第二课原文。")
+            },
+            LessonExcerpt {
+                path: "notes/聚类.md".into(),
+                text: "K-means 的簇数 k 需要预先指定。".into(),
+                kb_id: Some("kb-1".into()),
+                kb_name: Some("数学笔记".into()),
+                heading: Some("聚类分析要点".into()),
+                role: ExcerptRole::Supplement,
+            },
+        ];
+        let rendered = render_grounding_fragments(&excerpts);
+        assert!(rendered.contains("主引用（1/2）文件 docs/two.md"), "{rendered}");
+        assert!(rendered.contains("第二课原文。"), "{rendered}");
+        assert!(
+            rendered.contains("补充片段（2/2）文件 notes/聚类.md（知识库 数学笔记） 章节「聚类分析要点」"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("K-means 的簇数 k 需要预先指定。"), "{rendered}");
+    }
+
+    /// t3 预算守卫：primary 截到 24KB、补充单片段 8KB、合计 40KB，截断处写入
+    /// 标记（模型看得见"后面还有"，不是静默丢弃）；预算内的片段逐字不动。
+    /// 超预算的片段按词条相关度选摘——中段的相关事实不因落在预算外而丢。
+    #[test]
+    fn grounding_budget_truncates_and_marks_over_budget_fragments() {
+        let primary = LessonExcerpt::text_only("docs/big.md", &"主".repeat(30 * 1024 / 3));
+        let supplement = |name: &str, bytes: usize| LessonExcerpt {
+            path: format!("notes/{name}.md"),
+            text: "补".repeat(bytes / 3),
+            kb_id: Some("kb-1".into()),
+            kb_name: None,
+            heading: None,
+            role: ExcerptRole::Supplement,
+        };
+        let kept = enforce_grounding_budget(
+            vec![
+                primary,
+                supplement("a", 10 * 1024),
+                supplement("b", 10 * 1024),
+                supplement("c", 10 * 1024),
+            ],
+            &[],
+        );
+        assert!(!kept.is_empty());
+        assert_eq!(kept[0].role, ExcerptRole::Primary);
+        assert!(
+            kept[0].text.len() <= GROUNDING_PRIMARY_MAX_BYTES,
+            "primary fits its budget: {}",
+            kept[0].text.len()
+        );
+        assert!(kept[0].text.len() > GROUNDING_PRIMARY_MAX_BYTES - 200, "primary uses its budget");
+        assert!(kept[0].text.contains("截断"), "truncation is marked in the text");
+        let total: usize = kept.iter().map(|excerpt| excerpt.text.len()).sum();
+        assert!(total <= GROUNDING_TOTAL_MAX_BYTES, "total budget holds: {total}");
+        for excerpt in kept.iter().skip(1) {
+            assert!(
+                excerpt.text.len() <= GROUNDING_SUPPLEMENT_MAX_BYTES,
+                "each supplement fits its budget: {}",
+                excerpt.text.len()
+            );
+        }
+        // 预算用尽后的片段被丢弃（不是截成空壳）。
+        assert!(kept.len() < 4, "later fragments drop once the total budget is spent");
+        assert!(
+            kept.iter().all(|excerpt| !excerpt.text.trim().is_empty()),
+            "no empty stub fragments"
+        );
+
+        // 预算内的片段原样交付：不加标记、不改一个字。
+        let small = enforce_grounding_budget(
+            vec![
+                LessonExcerpt::text_only("a.md", "短文。"),
+                {
+                    let mut excerpt = supplement("b", 3 * 1024);
+                    excerpt.text = "补充短文。".into();
+                    excerpt
+                },
+            ],
+            &[],
+        );
+        assert_eq!(small.len(), 2);
+        assert_eq!(small[0].text, "短文。");
+        assert_eq!(small[1].text, "补充短文。");
+    }
+
+    /// t3 超预算截断按词条相关度选摘（与 t2 采样同一把尺）：大文件中段的
+    /// 相关事实不因落在预算之外而丢——头部噪声被让位，事实段落进来；无命中
+    /// 词条时回退文件头，摘录绝不为空。
+    #[test]
+    fn grounding_budget_keeps_mid_file_relevant_facts_when_truncating() {
+        let filler = "这是与任何词条都无关的填充段落，用来把相关事实推到大文件的中段。\n\n";
+        let mut big = String::from("# 期权入门\n\n开头噪声标记：本节只讲名词解释。\n\n");
+        for _ in 0..200 {
+            big.push_str(filler);
+        }
+        big.push_str("## 权利义务不对称\n\n关键事实标记：买方持有权利、卖方承担义务。\n\n");
+        for _ in 0..200 {
+            big.push_str(filler);
+        }
+        assert!(big.len() > GROUNDING_PRIMARY_MAX_BYTES, "fixture must exceed the primary budget");
+
+        let terms = vec![
+            "权利".to_string(),
+            "义务".to_string(),
+            "期权".to_string(),
+        ];
+        let kept = enforce_grounding_budget(
+            vec![LessonExcerpt::text_only("docs/大文件.md", &big)],
+            &terms,
+        );
+        assert_eq!(kept.len(), 1);
+        let text = &kept[0].text;
+        assert!(
+            text.contains("关键事实标记：买方持有权利、卖方承担义务"),
+            "中段相关事实必须留下：{}",
+            text.chars().take(200).collect::<String>()
+        );
+        assert!(text.len() <= GROUNDING_PRIMARY_MAX_BYTES, "stays inside the budget");
+        assert!(text.contains("截断"), "truncation is marked");
+
+        // 无命中词条：回退文件头，且绝不产出空片段。
+        let head_only = enforce_grounding_budget(
+            vec![LessonExcerpt::text_only("docs/大文件.md", &big)],
+            &["quaternion".to_string()],
+        );
+        assert_eq!(head_only.len(), 1);
+        assert!(
+            head_only[0].text.starts_with("# 期权入门"),
+            "无命中回退文件头：{}",
+            head_only[0].text.chars().take(80).collect::<String>()
+        );
+        assert!(head_only[0].text.contains("截断"));
+    }
+
     #[test]
     fn section_prompts_carry_task_manifest_and_grounding() {
         // The outline prompt embeds the outline tree, the concepts and asks
@@ -603,11 +784,14 @@
         let blueprint = lesson_test_blueprint();
         let module = &blueprint.modules[0];
         let lesson = &module.lessons[0];
+        let grounding = render_grounding_fragments(&[LessonExcerpt::text_only("real.md", "# Real")]);
         let outline_prompt = super::lesson::build_section_outline_prompt(
-            &blueprint, module, lesson, 0, 0, 1, "# Real",
+            &blueprint, module, lesson, 0, 0, 1, &grounding,
         );
         assert!(outline_prompt.contains("Plan the section outline JSON now."));
-        assert!(outline_prompt.contains("--- FILE: real.md ---"));
+        assert!(outline_prompt.contains("Cited grounding fragments"), "{outline_prompt}");
+        assert!(outline_prompt.contains("--- 主引用（1/1）文件 real.md ---"), "{outline_prompt}");
+        assert!(outline_prompt.contains("# Real"), "{outline_prompt}");
 
         let manifest = vec![SectionPack {
             section_key: "s1".into(),
@@ -621,18 +805,18 @@
         let body_prompt = super::lesson::build_section_body_prompt(
             &blueprint,
             lesson,
-            "# Real",
+            &grounding,
             planned,
             0,
             &manifest,
             None,
             Some("下一课"),
-            "",
             ComplexityTier::Mid,
         );
         assert!(body_prompt.contains("## 本节任务"));
         assert!(body_prompt.contains("节类型：概念"));
         assert!(body_prompt.contains("Write this section's body now."));
+        assert!(body_prompt.contains("主引用（1/1）文件 real.md"), "{body_prompt}");
 
         let finished = SectionPack {
             body_md: "向量的定义……".into(),
@@ -644,11 +828,12 @@
             ComplexityTier::Mid,
             &manifest,
             &[finished.clone()],
-            "# Real",
+            &grounding,
         );
         assert!(activities_prompt.contains("Complexity tier: mid"));
         assert!(activities_prompt.contains("--- SECTION s1 [概念] 概念：向量 ---"));
         assert!(activities_prompt.contains("Design the activity JSON now."));
+        assert!(activities_prompt.contains("主引用（1/1）文件 real.md"), "{activities_prompt}");
     }
 
     #[test]
@@ -750,12 +935,12 @@
 
     fn activities_json() -> String {
         r#"{
-          "estimated_minutes": 20,
+          "est": 20,
           "activities": [
-            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "concepts": ["a"], "section_key": "s1"},
-            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "concepts": ["a"], "section_key": "general"}
+            {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "evidence": "「q1 的证据回引」", "section_key": "s1", "difficulty": 1},
+            {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "evidence": "「q2 的证据回引」", "section_key": "s1", "difficulty": 2},
+            {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "evidence": "「q3 的证据回引」", "section_key": "s1", "difficulty": 2},
+            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "section_key": "general", "difficulty": 3}
           ]
         }"#
         .into()
@@ -823,7 +1008,7 @@
             "太短。".into(),
             section_body("概念：向量"),
             practice_body(),
-            r#"{"estimated_minutes": 20, "activities": []}"#.into(),
+            r#"{"est": 20, "activities": []}"#.into(),
             activities_json(),
         ]);
         let output = generate_lesson(
@@ -903,4 +1088,72 @@ fn section_rewrite_prompt_carries_learner_feedback() {
         ComplexityTier::Mid, Some("   "),
     );
     assert!(!blank.contains("学习者修改意见"));
+}
+
+/// t1：目标即课程名——知识库流带目标时，装配出的课程包标题是目标文本
+/// （折叠单行 + 限长），而不是模型的自由命名；无目标时保持模型标题。
+#[test]
+fn assemble_outline_pack_uses_goal_as_course_title() {
+    let blueprint = |title: &str| Blueprint {
+        title: title.into(),
+        description: "d".into(),
+        domain: "general".into(),
+        version: 1,
+        modules: Vec::new(),
+    };
+    let request = |goal: Option<&str>| GenerateCourseRequest {
+        course_kind: crate::models::CourseKind::Traditional,
+        teaching_style: None,
+        knowledge_base_id: Some(KnowledgeBaseId::new()),
+        description: None,
+        domain: None,
+        provider_id: None,
+        model: None,
+        mode: crate::models::CourseGenerationMode::OnDemand,
+        goal: goal.map(ToOwned::to_owned),
+        proficiency_statement: None,
+        learner_basis: None,
+        knowledge_base_ids: Vec::new(),
+    };
+
+    let pack = assemble_outline_pack(&blueprint("模型自定名"), &request(Some("零基础学 Python 数据分析")));
+    assert_eq!(pack.title, "零基础学 Python 数据分析");
+
+    let legacy = assemble_outline_pack(&blueprint("模型自定名"), &request(None));
+    assert_eq!(legacy.title, "模型自定名");
+}
+
+/// 多知识库（t4）：`validate_blueprint` 的 source 校验语义不变——引用必须
+/// 来自**已采样路径**；多库下路径带 `{库名}/rel` 命名空间，同名文件靠前缀
+/// 区分，未被采样的路径（含别的库的前缀）照旧被拒。
+#[test]
+fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
+    let blueprint = |path: &str| Blueprint {
+        title: "C".into(),
+        description: "d".into(),
+        domain: "general".into(),
+        version: 1,
+        modules: vec![BlueprintModule {
+            title: "M".into(),
+            description: String::new(),
+            lessons: vec![BlueprintLesson {
+                title: "L".into(),
+                purpose: "p".into(),
+                source: Some(SourceSpan {
+                    path: path.into(),
+                    start: None,
+                    end: None,
+                    kb_id: None,
+                }),
+                sources: Vec::new(),
+            }],
+        }],
+    };
+    let samples = vec![
+        ("金融笔记/docs/intro.md".to_owned(), "# 金融".to_owned()),
+        ("课程笔记/docs/intro.md".to_owned(), "# 课程".to_owned()),
+    ];
+    assert!(validate_blueprint(&blueprint("课程笔记/docs/intro.md"), &samples).is_ok());
+    let error = validate_blueprint(&blueprint("别的库/docs/intro.md"), &samples).unwrap_err();
+    assert!(error.contains("unsampled source path"), "{error}");
 }

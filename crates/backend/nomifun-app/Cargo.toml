@@ -249,6 +249,8 @@ bedrock = ["nomifun-system/bedrock"]
 silero-vad = ["nomifun-robot/silero-vad"]
 
 [dependencies]
+tempfile.workspace = true
+
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
 nomifun-db.workspace = true
@@ -380,7 +382,7 @@ nomifun-ai-agent = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
 git2.workspace = true
 http-body-util.workspace = true
-tempfile = "3"
+tempfile.workspace = true
 tower = { workspace = true, features = ["util"] }
 tokio-tungstenite.workspace = true
 wiremock = "0.6"

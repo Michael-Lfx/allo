@@ -12,8 +12,8 @@ impl LearningService {
     /// passed; the main review entry always uses it. `orphan` adds
     /// learner-authored questions that belong to no course; with an empty
     /// `course_ids` list it restricts the queue to those questions only.
-    /// `tags` keeps only items whose concept (course questions) or question
-    /// itself (custom questions) carries at least one of the given tag names.
+    /// `tags` keeps only items whose question itself carries at least one of
+    /// the given tag names.
     pub async fn due_reviews(
         &self,
         user_id: &UserId,
@@ -29,21 +29,19 @@ impl LearningService {
         // Ranking quality: the forgettability order is computed over a wider
         // due-ordered window than the requested page, then truncated.
         let fetch_limit = (limit * 4).min(500);
+        // 安排面收窄（三轮 g3「现存且启用」单源口径）：只服务现存且启用的
+        // 课程——已归档（enabled = 0）与已删除（墓碑）的课程卡都不再出队；
+        // 历史面（日历/统计/打卡）不过筛。已出卡的单卡入口（review_entry）
+        // 不在此列，作答提交不因归档失败。
         let base = "SELECT r.review_item_id, r.enrollment_id, e.course_id, c.title AS course_title, \
                     r.activity_id, a.kind, a.prompt, a.config_json, \
                     l.title AS lesson_title, m.title AS module_title, \
-                    (SELECT ac.concept_id FROM learning_activity_concepts ac \
-                     WHERE ac.activity_id = r.activity_id \
-                     ORDER BY ac.concept_id LIMIT 1) AS concept_id, \
-                    (SELECT lc.title FROM learning_activity_concepts ac \
-                     JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
-                     WHERE ac.activity_id = r.activity_id \
-                     ORDER BY ac.concept_id LIMIT 1) AS concept_title, \
                     r.due_at, r.stability_days, r.difficulty, r.review_count, r.lapse_count, \
                     r.last_reviewed_at, r.edit_pending_at, r.edit_note \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-             LEFT JOIN learning_courses c ON c.course_id = e.course_id \
+             JOIN learning_courses c ON c.course_id = e.course_id \
+               AND c.deleted_at IS NULL AND c.enabled = 1 \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
              JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
@@ -101,7 +99,6 @@ impl LearningService {
             )
             .map_err(internal)?;
             let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
-            let concept_id: Option<String> = row.try_get("concept_id").map_err(internal)?;
             reviews.push(DueReview {
                 id: review_id,
                 source: ReviewSource::Course,
@@ -113,11 +110,6 @@ impl LearningService {
                 course_title: row.try_get("course_title").map_err(internal)?,
                 module_title: Some(row.try_get("module_title").map_err(internal)?),
                 lesson_title: Some(row.try_get("lesson_title").map_err(internal)?),
-                concept_id: match &concept_id {
-                    Some(value) => Some(parse_id(value.clone())?),
-                    None => None,
-                },
-                concept_title: row.try_get("concept_title").map_err(internal)?,
                 question: ReviewQuestion {
                     activity_id: Some(activity_id),
                     kind: ActivityKind::try_from(kind_text.as_str())
@@ -190,8 +182,6 @@ impl LearningService {
                     course_title: None,
                     module_title: None,
                     lesson_title: None,
-                    concept_id: None,
-                    concept_title: None,
                     question: ReviewQuestion {
                         activity_id: None,
                         kind: ActivityKind::try_from(kind_text.as_str())
@@ -241,7 +231,7 @@ impl LearningService {
     }
 
     /// Management view over every review item of the user, enriched with
-    /// course/concept context and the objective activity used for review.
+    /// course context and the objective activity used for review.
     /// Items whose course row was deleted stay listed as orphans.
     pub async fn question_entries(
         &self,
@@ -254,8 +244,8 @@ impl LearningService {
         let search = search.map(|value| value.trim().to_lowercase());
         let mut entries = Vec::new();
 
-        // Course questions: one row per objective activity / linked concept,
-        // enriched with the review item when one exists for this enrollment.
+        // Course questions: one row per objective activity, enriched with the
+        // review item when one exists for this enrollment.
         // Rows without an item are `unlearned`: the lesson was never
         // completed, so nothing entered the review queue yet. A row whose own
         // lesson is not completed yet is also `unlearned` even when the
@@ -263,16 +253,13 @@ impl LearningService {
         // questions seeded by their completed lesson, so showing a
         // due/scheduled state here would make the counts disagree with the
         // queue.
-        let base = "SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
-                           ac.concept_id, lc.title AS concept_title, \
+        let base = format!("SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
                            e.course_id, c.title AS course_title, \
                            p.status AS lesson_status, \
                            ri.review_item_id, ri.due_at, ri.stability_days, ri.difficulty, \
                            ri.review_count, ri.lapse_count, ri.last_reviewed_at, ri.updated_at, \
                            ri.archived_at, ri.edit_pending_at, ri.edit_note \
                     FROM learning_activities a \
-                    JOIN learning_activity_concepts ac ON ac.activity_id = a.activity_id \
-                    LEFT JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
                     JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
                     JOIN learning_modules m ON m.module_id = l.module_id \
                     JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ? \
@@ -281,7 +268,7 @@ impl LearningService {
                       ON p.lesson_id = a.lesson_id AND p.enrollment_id = e.enrollment_id \
                     LEFT JOIN learning_review_items ri \
                       ON ri.enrollment_id = e.enrollment_id AND ri.activity_id = a.activity_id \
-                    WHERE a.kind IN ('single_choice', 'true_false', 'fill_in_blank', 'multi_choice', 'numeric', 'ordering', 'matching')";
+                    WHERE a.kind IN ({OBJECTIVE_KIND_SQL_LIST})");
         let rows = match course_id {
             Some(course_id) => sqlx::query(&format!("{base} AND e.course_id = ? LIMIT 1000"))
                 .bind(user_id.as_str())
@@ -342,12 +329,8 @@ impl LearningService {
             }
             let kind_text: String = row.try_get("kind").map_err(internal)?;
             let prompt: String = row.try_get("prompt").map_err(internal)?;
-            let concept_title: Option<String> = row.try_get("concept_title").map_err(internal)?;
             if let Some(keyword) = &search {
-                let haystack = [concept_title.as_deref().unwrap_or_default(), &prompt]
-                    .join(" ")
-                    .to_lowercase();
-                if !haystack.contains(keyword) {
+                if !prompt.to_lowercase().contains(keyword) {
                     continue;
                 }
             }
@@ -371,10 +354,6 @@ impl LearningService {
                     None => None,
                 },
                 course_title: row.try_get("course_title").map_err(internal)?,
-                concept_id: Some(parse_id(
-                    row.try_get::<String, _>("concept_id").map_err(internal)?,
-                )?),
-                concept_title,
                 question_kind: Some(
                     ActivityKind::try_from(kind_text.as_str())
                         .map_err(|message| AppError::BadRequest(message))?,
@@ -427,12 +406,11 @@ impl LearningService {
         // Learner-authored custom questions; they are never course-scoped.
         if course_id.is_none() {
             let custom_rows = sqlx::query(
-                "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.concept_id, \
-                        lc.title AS concept_title, q.due_at, q.stability_days, q.difficulty, \
-                        q.review_count, q.lapse_count, q.last_reviewed_at, q.updated_at, \
+                "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
+                        q.stability_days, q.difficulty, q.review_count, q.lapse_count, \
+                        q.last_reviewed_at, q.updated_at, \
                         q.archived_at, q.edit_pending_at, q.edit_note \
                  FROM learning_custom_questions q \
-                 LEFT JOIN learning_concepts lc ON lc.concept_id = q.concept_id \
                  WHERE q.user_id = ? LIMIT 500",
             )
             .bind(user_id.as_str())
@@ -473,13 +451,8 @@ impl LearningService {
                 }
                 let kind_text: String = row.try_get("kind").map_err(internal)?;
                 let prompt: String = row.try_get("prompt").map_err(internal)?;
-                let concept_title: Option<String> =
-                    row.try_get("concept_title").map_err(internal)?;
                 if let Some(keyword) = &search {
-                    let haystack = [concept_title.as_deref().unwrap_or_default(), &prompt]
-                        .join(" ")
-                        .to_lowercase();
-                    if !haystack.contains(keyword) {
+                    if !prompt.to_lowercase().contains(keyword) {
                         continue;
                     }
                 }
@@ -487,7 +460,6 @@ impl LearningService {
                     &row.try_get::<String, _>("config_json").map_err(internal)?,
                 )
                 .map_err(internal)?;
-                let concept_id_raw: Option<String> = row.try_get("concept_id").map_err(internal)?;
                 let custom_id: String = row
                     .try_get::<String, _>("custom_question_id")
                     .map_err(internal)?;
@@ -499,11 +471,6 @@ impl LearningService {
                     state: entry_state.to_string(),
                     course_id: None,
                     course_title: None,
-                    concept_id: match concept_id_raw {
-                        Some(value) => Some(parse_id(value)?),
-                        None => None,
-                    },
-                    concept_title,
                     question_kind: Some(
                         ActivityKind::try_from(kind_text.as_str())
                             .map_err(|message| AppError::BadRequest(message))?,
@@ -584,7 +551,7 @@ impl LearningService {
         let kind_text: String = row.try_get("kind").map_err(internal)?;
         let kind = ActivityKind::try_from(kind_text.as_str())
             .map_err(|message| AppError::BadRequest(message))?;
-        let (prompt, config) = validate_question_payload(
+        let (prompt, mut config) = validate_question_payload(
             kind,
             &request.prompt,
             &request.options,
@@ -592,6 +559,16 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
+        // 手工编辑面没有 evidence 字段：保留原回引（t2 证据不随编辑抹除）。
+        config.evidence = sqlx::query_scalar::<_, String>(
+            "SELECT config_json FROM learning_activities WHERE activity_id = ?",
+        )
+        .bind(activity_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?
+        .and_then(|config_json| serde_json::from_str::<StoredActivityConfig>(&config_json).ok())
+        .and_then(|stored| stored.evidence);
         sqlx::query("UPDATE learning_activities SET prompt = ?, config_json = ? WHERE activity_id = ?")
             .bind(prompt)
             .bind(serde_json::to_string(&config).map_err(internal)?)
@@ -747,13 +724,6 @@ impl LearningService {
         let row = sqlx::query(
             "SELECT a.activity_id, a.kind, a.prompt, a.config_json, \
                     e.course_id, c.title AS course_title, \
-                    (SELECT ac.concept_id FROM learning_activity_concepts ac \
-                     WHERE ac.activity_id = a.activity_id \
-                     ORDER BY ac.concept_id LIMIT 1) AS concept_id, \
-                    (SELECT lc.title FROM learning_activity_concepts ac \
-                     JOIN learning_concepts lc ON lc.concept_id = ac.concept_id \
-                     WHERE ac.activity_id = a.activity_id \
-                     ORDER BY ac.concept_id LIMIT 1) AS concept_title, \
                     p.status AS lesson_status, \
                     r.review_item_id, r.due_at, r.stability_days, r.difficulty, \
                     r.review_count, r.lapse_count, r.last_reviewed_at, r.updated_at, r.archived_at, \
@@ -801,7 +771,6 @@ impl LearningService {
             "scheduled"
         };
         let course_id: Option<String> = row.try_get("course_id").map_err(internal)?;
-        let concept_id: Option<String> = row.try_get("concept_id").map_err(internal)?;
         Ok(QuestionEntry {
             source: ReviewSource::Course,
             question_id: row.try_get("activity_id").map_err(internal)?,
@@ -812,11 +781,6 @@ impl LearningService {
                 None => None,
             },
             course_title: row.try_get("course_title").map_err(internal)?,
-            concept_id: match concept_id {
-                Some(value) => Some(parse_id(value)?),
-                None => None,
-            },
-            concept_title: row.try_get("concept_title").map_err(internal)?,
             question_kind: Some(
                 ActivityKind::try_from(kind_text.as_str())
                     .map_err(|message| AppError::BadRequest(message))?,
@@ -844,8 +808,7 @@ impl LearningService {
     }
 
     /// Creates a learner-authored question with its own FSRS schedule. It is
-    /// due immediately so it joins the review queue right away; the optional
-    /// concept only links it back to an existing concept for attribution.
+    /// due immediately so it joins the review queue right away.
     pub async fn create_custom_question(
         &self,
         user_id: &UserId,
@@ -873,34 +836,21 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
-        if let Some(concept_id) = &request.concept_id {
-            let exists: Option<String> = sqlx::query_scalar(
-                "SELECT concept_id FROM learning_concepts WHERE concept_id = ?",
-            )
-            .bind(concept_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(internal)?;
-            if exists.is_none() {
-                return Err(AppError::NotFound(format!("concept {concept_id}")));
-            }
-        }
         let question_id = LearningReviewItemId::new().into_string();
         let now = now_ms();
         let due_at = first_review_due_at(now, self.tz_offset_minutes().await);
         sqlx::query(
             "INSERT INTO learning_custom_questions \
-             (custom_question_id, user_id, kind, prompt, config_json, concept_id, \
+             (custom_question_id, user_id, kind, prompt, config_json, \
               due_at, stability_days, difficulty, review_count, lapse_count, \
               last_reviewed_at, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, 0, 5.0, 0, 0, NULL, ?, ?)",
         )
         .bind(&question_id)
         .bind(user_id.as_str())
         .bind(request.kind.as_str())
         .bind(prompt)
         .bind(serde_json::to_string(&config).map_err(internal)?)
-        .bind(request.concept_id.as_ref().map(LearningConceptId::as_str))
         .bind(due_at)
         .bind(now)
         .bind(now)
@@ -1040,12 +990,11 @@ impl LearningService {
         user_id: &UserId,
     ) -> Result<QuestionEntry, AppError> {
         let row = sqlx::query(
-            "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.concept_id, \
-                    lc.title AS concept_title, q.due_at, q.stability_days, q.difficulty, \
-                    q.review_count, q.lapse_count, q.last_reviewed_at, q.updated_at, \
+            "SELECT q.custom_question_id, q.kind, q.prompt, q.config_json, q.due_at, \
+                    q.stability_days, q.difficulty, q.review_count, q.lapse_count, \
+                    q.last_reviewed_at, q.updated_at, \
                     q.archived_at, q.edit_pending_at, q.edit_note \
              FROM learning_custom_questions q \
-             LEFT JOIN learning_concepts lc ON lc.concept_id = q.concept_id \
              WHERE q.custom_question_id = ? AND q.user_id = ?",
         )
         .bind(question_id)
@@ -1074,7 +1023,6 @@ impl LearningService {
         } else {
             "scheduled"
         };
-        let concept_id: Option<String> = row.try_get("concept_id").map_err(internal)?;
         Ok(QuestionEntry {
             source: ReviewSource::Custom,
             question_id: row.try_get("custom_question_id").map_err(internal)?,
@@ -1082,11 +1030,6 @@ impl LearningService {
             state: state.to_string(),
             course_id: None,
             course_title: None,
-            concept_id: match concept_id {
-                Some(value) => Some(parse_id(value)?),
-                None => None,
-            },
-            concept_title: row.try_get("concept_title").map_err(internal)?,
             question_kind: Some(
                 ActivityKind::try_from(kind_text.as_str())
                     .map_err(|message| AppError::BadRequest(message))?,
@@ -1111,40 +1054,6 @@ impl LearningService {
                 .is_some(),
             edit_note: row.try_get("edit_note").map_err(internal)?,
         })
-    }
-
-    /// Concepts offered in the custom question form: concepts of enrolled
-    /// courses plus orphaned concepts still referenced by review items.
-    pub async fn concept_refs(&self, user_id: &UserId) -> Result<Vec<ConceptRef>, AppError> {
-        let rows = sqlx::query(
-            "SELECT lc.concept_id, lc.title, c.title AS course_title \
-             FROM learning_concepts lc \
-             LEFT JOIN learning_courses c ON c.course_id = lc.course_id \
-             WHERE EXISTS ( \
-                 SELECT 1 FROM learning_enrollments e \
-                 WHERE e.user_id = ? AND e.course_id = lc.course_id \
-             ) OR EXISTS ( \
-                 SELECT 1 FROM learning_review_items r \
-                 JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
-                 JOIN learning_activity_concepts ac ON ac.activity_id = r.activity_id \
-                 WHERE ac.concept_id = lc.concept_id AND e.user_id = ? \
-             ) \
-             ORDER BY lc.title LIMIT 500",
-        )
-        .bind(user_id.as_str())
-        .bind(user_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(ConceptRef {
-                    concept_id: parse_id(row.try_get("concept_id").map_err(internal)?)?,
-                    title: row.try_get("title").map_err(internal)?,
-                    course_title: row.try_get("course_title").map_err(internal)?,
-                })
-            })
-            .collect()
     }
 
     /// Answers a custom question. Correctness is judged server-side; a wrong
@@ -1208,16 +1117,20 @@ impl LearningService {
         };
         // Answered reviews (including auto-rated lapses) count toward the
         // daily check-in regardless of the outcome — gate-blocked repeats
-        // do not.
+        // do not. j05 作答流水：同课程路径的完整作答锚（elapsed 缺席 = NULL）。
         if allowed {
             sqlx::query(
-                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-                 VALUES (?, ?, 'custom', ?, ?)",
+                "INSERT INTO learning_review_events \
+                 (event_id, user_id, source, item_id, created_at, elapsed_ms, response, \
+                  session_id, forgot, predicted) \
+                 VALUES (?, ?, 'custom', ?, ?, NULL, ?, NULL, ?, NULL)",
             )
             .bind(generate_id())
             .bind(user_id.as_str())
             .bind(question_id)
             .bind(now_ms())
+            .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
+            .bind(i64::from(forgot))
             .execute(&self.pool)
             .await
             .map_err(internal)?;
@@ -1257,7 +1170,7 @@ impl LearningService {
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
             "SELECT due_at, stability_days, difficulty, review_count, lapse_count, \
-                    last_reviewed_at \
+                    last_reviewed_at, kind \
              FROM learning_custom_questions \
              WHERE custom_question_id = ? AND user_id = ?",
         )
@@ -1269,6 +1182,9 @@ impl LearningService {
         .ok_or_else(|| AppError::NotFound(format!("custom question {question_id}")))?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let kind = ActivityKind::try_from(kind_text.as_str())
+            .map_err(|message| AppError::BadRequest(message))?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
             stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -1338,6 +1254,19 @@ impl LearningService {
         )
         .await?;
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算（自建题无课程归属，锚 custom 段）：真实推进即一笔。
+        self.settle_review_push(
+            user_id,
+            ReviewSource::Custom,
+            question_id,
+            kind,
+            None,
+            None,
+            rating != ReviewRating::Again,
+            now,
+            settings.tz_offset_minutes,
+        )
+        .await?;
         Ok(ReviewResult {
             id: question_id.to_string(),
             due_at: next.due_at,
@@ -1397,10 +1326,13 @@ impl LearningService {
         rating: ReviewRating,
     ) -> Result<ReviewResult, AppError> {
         let row = sqlx::query(
-            "SELECT r.enrollment_id, r.activity_id, r.due_at, r.stability_days, r.difficulty, \
-                    r.review_count, r.lapse_count, r.last_reviewed_at \
+            "SELECT r.due_at, r.stability_days, r.difficulty, \
+                    r.review_count, r.lapse_count, r.last_reviewed_at, \
+                    a.kind, e.course_id, l.lesson_id \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
+             JOIN learning_activities a ON a.activity_id = r.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              WHERE r.review_item_id = ? AND e.user_id = ?",
         )
         .bind(review_id.as_str())
@@ -1409,12 +1341,12 @@ impl LearningService {
         .await
         .map_err(internal)?
         .ok_or_else(|| AppError::NotFound(format!("review item {review_id}")))?;
-        let enrollment_id: LearningEnrollmentId =
-            parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
-        let activity_id: LearningActivityId =
-            parse_id(row.try_get("activity_id").map_err(internal)?)?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let lapse_count: i64 = row.try_get("lapse_count").map_err(internal)?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let lesson_id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
+        let kind_text: String = row.try_get("kind").map_err(internal)?;
+        let kind = ActivityKind::try_from(kind_text.as_str()).map_err(AppError::Internal)?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
             stability_days: row.try_get("stability_days").map_err(internal)?,
@@ -1454,12 +1386,6 @@ impl LearningService {
             rating,
             &settings,
         )?;
-        let score = match rating {
-            ReviewRating::Again => 0.0,
-            ReviewRating::Hard => 0.55,
-            ReviewRating::Good => 0.8,
-            ReviewRating::Easy => 1.0,
-        };
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         sqlx::query(
             "UPDATE learning_review_items SET due_at = ?, stability_days = ?, difficulty = ?, \
@@ -1477,8 +1403,6 @@ impl LearningService {
         .execute(&mut *transaction)
         .await
         .map_err(internal)?;
-        update_activity_mastery(&mut transaction, &enrollment_id, &activity_id, score, now)
-            .await?;
         record_review_log(
             &mut *transaction,
             user_id,
@@ -1492,6 +1416,20 @@ impl LearningService {
         )
         .await?;
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算：真实推进即一笔（自评 again = 承认遗忘 0 分，
+        // hard/good/easy = 全对）。
+        self.settle_review_push(
+            user_id,
+            ReviewSource::Course,
+            review_id.as_str(),
+            kind,
+            Some(&course_id),
+            Some(&lesson_id),
+            rating != ReviewRating::Again,
+            now,
+            settings.tz_offset_minutes,
+        )
+        .await?;
         Ok(ReviewResult {
             id: review_id.to_string(),
             due_at: next.due_at,
@@ -1548,7 +1486,7 @@ impl LearningService {
     /// Answers the question attached to a due review. Each item carries its
     /// own activity, so the question is loaded straight from the item. A wrong
     /// answer (or an admitted lapse via `forgot`) is immediately rated `again`
-    /// (scheduling + mastery updated); a correct answer only records the
+    /// (schedule rescheduled); a correct answer only records the
     /// attempt and waits for a self-rating via `rate_review`.
     pub async fn answer_review(
         &self,
@@ -1561,10 +1499,11 @@ impl LearningService {
         let row = sqlx::query(
             "SELECT r.enrollment_id, r.activity_id, r.due_at, r.stability_days, \
                     r.difficulty, r.review_count, r.lapse_count, r.last_reviewed_at, \
-                    a.kind, a.config_json \
+                    a.kind, a.config_json, e.course_id, l.lesson_id \
              FROM learning_review_items r \
              JOIN learning_enrollments e ON e.enrollment_id = r.enrollment_id \
              JOIN learning_activities a ON a.activity_id = r.activity_id \
+             JOIN learning_lessons l ON l.lesson_id = a.lesson_id \
              WHERE r.review_item_id = ? AND e.user_id = ?",
         )
         .bind(review_id.as_str())
@@ -1577,6 +1516,8 @@ impl LearningService {
             parse_id(row.try_get("enrollment_id").map_err(internal)?)?;
         let activity_id: LearningActivityId =
             parse_id(row.try_get("activity_id").map_err(internal)?)?;
+        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
+        let lesson_id: LearningLessonId = parse_id(row.try_get("lesson_id").map_err(internal)?)?;
         let due_at: i64 = row.try_get("due_at").map_err(internal)?;
         let snapshot = PushSnapshot {
             review_count: row.try_get("review_count").map_err(internal)?,
@@ -1637,15 +1578,24 @@ impl LearningService {
         // Every answered review counts toward the daily check-in, so the
         // event lands in the same transaction as the attempt — but a stale
         // repeat blocked by the gate is not review work, so it does not.
+        // j05 作答流水：行内带完整作答锚（elapsed/response/forgot；session
+        // 锚待 g4 会话实体，暂 NULL）。`predicted` 列预留给**学习者作答前
+        // 的自预测**（learnhub #105 Will/Wont/Unsure，随复习 UI 落地接入）
+        // ——FSRS 预测住复习日志快照 r_pred，不在此重复。
         if allowed {
             sqlx::query(
-                "INSERT INTO learning_review_events (event_id, user_id, source, item_id, created_at) \
-                 VALUES (?, ?, 'course', ?, ?)",
+                "INSERT INTO learning_review_events \
+                 (event_id, user_id, source, item_id, created_at, elapsed_ms, response, \
+                  session_id, forgot, predicted) \
+                 VALUES (?, ?, 'course', ?, ?, ?, ?, NULL, ?, NULL)",
             )
             .bind(generate_id())
             .bind(user_id.as_str())
             .bind(review_id.as_str())
             .bind(now)
+            .bind(elapsed_ms)
+            .bind(serde_json::to_string(if forgot { &Value::Null } else { &response }).map_err(internal)?)
+            .bind(i64::from(forgot))
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
@@ -1656,9 +1606,6 @@ impl LearningService {
             update_mastery_and_review(
                 &mut transaction,
                 review_id,
-                &enrollment_id,
-                &activity_id,
-                score,
                 ReviewRating::Again,
                 now,
                 &settings,
@@ -1697,6 +1644,22 @@ impl LearningService {
             None
         };
         transaction.commit().await.map_err(internal)?;
+        // 复习线 XP 结算：真实推进（auto-lapse 分支）在账本侧记一笔 0 分
+        // partial（锚 = 课程×卡×学习日）；0 值不过 companion 桥。
+        if rated.as_ref().is_some_and(|result| result.advanced) {
+            self.settle_review_push(
+                user_id,
+                ReviewSource::Course,
+                review_id.as_str(),
+                kind,
+                Some(&course_id),
+                Some(&lesson_id),
+                correct,
+                now,
+                settings.tz_offset_minutes,
+            )
+            .await?;
+        }
         Ok(ReviewAnswerResult {
             correct,
             feedback,

@@ -26,4 +26,59 @@ pub trait LearningCompleter: Send + Sync {
         user: &str,
         max_tokens: u32,
     ) -> Result<String, AppError>;
+
+    /// Judgment-heavy planning call (learning-graph coach): thinking stays ON
+    /// so the model can actually deliberate (survey entry domains, descend the
+    /// prerequisite ladder) before emitting the JSON contract; the drain still
+    /// prefers `content` and only falls back to the reasoning channel when the
+    /// provider leaves it empty. The default delegates to [`complete`] so test
+    /// doubles and conservative implementors keep working.
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        self.complete(model_override, system, user, max_tokens).await
+    }
+
+    /// JSON-mode call: the provider is asked to guarantee a syntactically
+    /// valid JSON object reply (`response_format: json_object`), which is the
+    /// legality floor of every structured-output contract in this crate — the
+    /// local schema validator judges shape, never legality. There is no
+    /// text-mode fallback: the default implementation fails loudly, and so
+    /// does every implementor whose provider lacks the mode. Structure and
+    /// terrain generation (the artifact contracts) build on this seam.
+    /// `temperature` 来自提示词资产注册表（`PromptSpec`；None = provider 默认）。
+    async fn complete_json(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        let _ = (model_override, system, user, max_tokens, temperature);
+        Err(AppError::Conflict(
+            "learning structured output unavailable: this completer does not support json mode"
+                .into(),
+        ))
+    }
+
+    /// JSON-mode sibling of [`complete_with_thinking`]: artifact generation
+    /// (structure + terrain) deliberates before emitting its contract JSON,
+    /// so thinking stays ON and the budget covers the reasoning channel too.
+    /// The default delegates to [`complete_json`].
+    async fn complete_json_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        self.complete_json(model_override, system, user, max_tokens, temperature)
+            .await
+    }
 }

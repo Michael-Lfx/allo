@@ -1770,8 +1770,10 @@ export interface ILearningGenerationToolCall {
  * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
 export interface ILearningCourseGenerationEvent {
   phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
-  /** 生成来源：课程简报 / 知识库 */
-  kind?: 'description' | 'knowledge_base';
+  /** 生成来源：课程简报 / 知识库 / 学习图生长（learning_graph） */
+  kind?: 'description' | 'knowledge_base' | 'learning_graph';
+  /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
+  event?: string;
   /** agent loop 轮次：loop=generate|repair、round/max_rounds、本轮工具调用与摘要文本 */
   loop?: 'generate' | 'repair';
   round?: number;
@@ -1792,9 +1794,11 @@ export interface ILearningCourseGenerationEvent {
 }
 
 /** 课时内容生成过程事件（`learning.lesson-generation`），与课程事件同构，
- * 额外带 lesson 标识供并发生成的 UI 过滤。 */
+ * 额外带 lesson 标识供并发生成的 UI 过滤。`grounding` 帧披露课时 grounding
+ * 的装配读数（t3）：是否实时读库（primary_live）、命中数、扩读片段数、是否
+ * 降级（源库不可达走快照兜底）。 */
 export interface ILearningLessonGenerationEvent {
-  phase: 'started' | 'round' | 'audit' | 'completed' | 'failed';
+  phase: 'started' | 'grounding' | 'round' | 'audit' | 'completed' | 'failed';
   lesson_id?: string;
   title?: string;
   module?: string;
@@ -1808,8 +1812,17 @@ export interface ILearningLessonGenerationEvent {
   info?: number;
   top?: string[];
   activities?: number;
-  estimated_minutes?: number;
+  /** est：专注工作量尺寸锚（1 est 分钟 = 1 分钟专注） */
+  est?: number;
   error?: string;
+  /** t3 grounding 披露：primary 是否来自实时读库。 */
+  primary_live?: boolean;
+  /** t3 grounding 披露：检索命中数。 */
+  hits?: number;
+  /** t3 grounding 披露：读入的补充片段数。 */
+  supplements?: number;
+  /** t3 grounding 披露：是否降级（源库不可达/检索失败 → 快照兜底）。 */
+  degraded?: boolean;
 }
 
 /** 学习模块生成过程事件（概念图生成进度同款 best-effort 推送）。 */
