@@ -129,6 +129,16 @@ pub(crate) fn reconcile_coverage(
         for seed in &file.seeds {
             let mut assigned: Vec<String> = Vec::new();
             let mut topic_anchor = None;
+            // 定位锚(所有状态都带:covered 挂章节锚点,skipped/uncertain 也
+            // 能回原文——「为什么没进课程」必须可追溯)。
+            let mut seed_anchor = || SourceAnchor {
+                kb_id: file.kb_id.clone(),
+                rel_path: file.rel_path.clone(),
+                heading_or_anchor: seed.heading.then(|| seed.label.clone()),
+                paragraph: seed.paragraph,
+                snippet: None,
+                anchor_uncertain: seed.anchor_uncertain,
+            };
             for chapter in chapters {
                 let hit = chapter
                     .source_anchors
@@ -140,19 +150,15 @@ pub(crate) fn reconcile_coverage(
                     }
                     if topic_anchor.is_none() {
                         topic_anchor = Some(SourceAnchor {
-                            kb_id: file.kb_id.clone(),
-                            rel_path: file.rel_path.clone(),
-                            heading_or_anchor: if seed.heading {
-                                Some(seed.label.clone())
-                            } else {
-                                None
-                            },
-                            paragraph: seed.paragraph,
                             snippet: anchor.snippet.clone(),
                             anchor_uncertain: seed.anchor_uncertain || anchor.anchor_uncertain,
+                            ..seed_anchor()
                         });
                     }
                 }
+            }
+            if topic_anchor.is_none() {
+                topic_anchor = Some(seed_anchor());
             }
             let (status, reason) = if !assigned.is_empty() {
                 covered_count += 1;

@@ -11,9 +11,12 @@
 //! 包装 + 阶段间检查点)。
 
 use super::*;
+use crate::learning_graph::growth_retry::{normalize_report, should_stop_early};
+use crate::service::{CANCELLED_MESSAGE, CancellationCompleter};
 use futures::stream::{self, StreamExt};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use tokio_util::sync::CancellationToken;
 
 /// 检索查询条数区间(票面:4–8 条多角度)。
 pub(crate) const STRUCTURE_QUERY_MIN: usize = 4;
@@ -236,7 +239,7 @@ pub struct SourceEvidence {
 }
 
 /// 证据驱动的权威章节骨架(t2 交付;t3 按章节展开 lesson,t4 落库)。
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourcePlan {
     pub goal: String,
     #[serde(default)]
@@ -970,7 +973,9 @@ pub(crate) async fn draft_plan(
         }
     }
     if let Some(feedback) = feedback {
-        prompt.push_str(&format!("\n修订指令(按 fix_hint 修订;只改被点名的问题,输出修订后的完整骨架,不要引入新主题):\n{feedback}\n"));
+        // 反馈原样拼入(调用方自带语义标记:草稿重试是「违反契约」,
+        // 评审修订是「修订指令」——两类反馈可区分)。
+        prompt.push_str(&format!("\n{feedback}\n"));
     }
     let raw = completer
         .complete_json(None, PLAN_SYSTEM, &prompt, 8192, Some(0.3))
@@ -1075,6 +1080,483 @@ struct CritiqueLlm {
     issue: String,
     #[serde(default)]
     fix_hint: String,
+}
+
+// ── 编排(slice 4):triage → 结构发现全管线 ────────────────────────────
+
+/// 取消错误识别:阶段失败文案里携带取消消息时按用户取消终态上抛。
+fn as_cancel(message: &str) -> Option<AppError> {
+    message
+        .contains(CANCELLED_MESSAGE)
+        .then(|| AppError::Conflict(CANCELLED_MESSAGE.to_owned()))
+}
+
+fn sha256_hex(text: &str) -> String {
+    let digest = Sha256::digest(text.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// 评审发现的确定性指纹(同指纹 = 修订未收敛,早停)。
+fn findings_fingerprint(findings: &[CritiqueFinding]) -> String {
+    let text = findings
+        .iter()
+        .map(|finding| {
+            format!("{}|{}|{}|{}", finding.category, finding.chapter, finding.issue, finding.fix_hint)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    normalize_report(&text)
+}
+
+/// 评审发现 → 修订指令(喂给草稿/修订共用接缝)。
+fn render_findings(findings: &[CritiqueFinding]) -> String {
+    findings
+        .iter()
+        .map(|finding| {
+            let chapter = if finding.chapter.is_empty() {
+                String::new()
+            } else {
+                format!("章「{}」", finding.chapter)
+            };
+            format!("- [{}] {chapter}{}; 修法:{}", finding.category, finding.issue, finding.fix_hint)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 证据摘要降级(模型不可用):概念取命中标题、摘要取片段拼接。
+fn deterministic_digest(chunks: &[EvidenceChunk]) -> EvidenceDigest {
+    let mut concepts: Vec<String> = Vec::new();
+    for chunk in chunks {
+        let heading = chunk.heading.trim();
+        if !heading.is_empty()
+            && !concepts.iter().any(|c| c == heading)
+            && concepts.len() < 20
+        {
+            concepts.push(heading.to_owned());
+        }
+    }
+    let snippets: Vec<&str> = chunks.iter().take(3).map(|c| c.snippet.as_str()).collect();
+    EvidenceDigest {
+        summary: format!("(降级摘要)证据片段:{}", snippets.join(" / ")),
+        gaps: Vec::new(),
+        concepts,
+        notes: Vec::new(),
+    }
+}
+
+/// 确定性后处理三连:去环 → 拓扑 → Jaccard 补齐(草稿与修订稿共用)。
+fn finalize_draft(draft: &mut PlanDraft, unresolved: &mut Vec<String>) {
+    postprocess::break_cycles(&mut draft.graph, &mut draft.warnings);
+    let (sorted, prereq_unresolved) =
+        postprocess::topo_sort_chapters(&draft.chapters, &draft.graph, &mut draft.warnings);
+    draft.chapters = sorted;
+    unresolved.extend(prereq_unresolved);
+    postprocess::complete_uncovered_concepts(&mut draft.chapters, &draft.graph);
+}
+
+/// 引用路径 → 库内 IO 路径(headingless 候选文件补读正文用;多库剥离
+/// `{命名空间}/` 前缀,单库直用)。
+fn base_rel_for(inventory: &KbInventory, kb_id: &str, citation_path: &str) -> Option<String> {
+    let base = inventory.bases.iter().find(|base| base.kb_id == kb_id)?;
+    if inventory.bases.len() >= 2 {
+        let prefix = format!("{}/", base.namespace);
+        citation_path.strip_prefix(&prefix).map(str::to_owned)
+    } else {
+        Some(citation_path.to_owned())
+    }
+}
+
+/// 证据驱动的结构发现编排入口(t2):在 t1 清点/分诊之上跑「查询生成 →
+/// 全库检索(query-major、并发 ≤6、总调用 ≤48)→ 证据摘要 → 草稿 → 评审
+/// → 修订 → 确定性后处理 → 覆盖对账」,产出权威章节骨架 [`SourcePlan`]。
+///
+/// 失败口径:
+/// - 无 completer / 草稿连续失败 → `Ok(None)`(调用方回退现行采样路径);
+/// - 零候选 / 零 core → `Err`(硬失败,建课终止);
+/// - 零证据 → `Ok(Some(降级空章节 plan))`(gaps 非空,不伪造章节);
+/// - 用户取消 → `Err(Conflict(CANCELLED_MESSAGE))`。
+pub async fn run_kb_structure(
+    knowledge: &KnowledgeService,
+    inventory: &KbInventory,
+    triage: &KbTriageReport,
+    goal: &str,
+    completer: Option<&dyn LearningCompleter>,
+    cancel: Option<&CancellationToken>,
+) -> Result<Option<SourcePlan>, AppError> {
+    let Some(completer) = completer else {
+        // 无 completer:结构发现无从做起,调用方回退现行 40 文件采样路径。
+        return Ok(None);
+    };
+    let candidates = triage.candidates();
+    if candidates.is_empty() || triage.counts.core + triage.counts.mixed == 0 {
+        return Err(AppError::BadRequest(
+            "知识库分诊后没有可教学的核心候选文件(零 core),无法进行结构发现".into(),
+        ));
+    }
+    let token = cancel.cloned().unwrap_or_default();
+    if token.is_cancelled() {
+        return Err(AppError::Conflict(CANCELLED_MESSAGE.to_owned()));
+    }
+    let completer = CancellationCompleter::new(completer, token.clone());
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    let mut degraded = false;
+
+    // 1) 查询生成(LLM;失败 → 目标词条确定性降级)。
+    let queries = match generate_queries(&completer, goal, inventory).await {
+        Ok(queries) => queries,
+        Err(error) => {
+            if let Some(cancelled) = as_cancel(&error) {
+                return Err(cancelled);
+            }
+            degraded = true;
+            let topics: Vec<String> = inventory
+                .bases
+                .iter()
+                .map(|base| base.name.clone())
+                .collect();
+            warnings.push(format!("检索查询生成失败({error}),按目标词条确定性降级"));
+            deterministic_queries(goal, &topics)
+        }
+    };
+
+    // 2) 全库检索:候选文件所属库,(query × kb) query-major、并发 ≤6、
+    //    总调用 ≤48;每来源内部排序后轮询均衡。
+    let candidate_kbs: HashSet<&str> = candidates.iter().map(|file| file.kb_id.as_str()).collect();
+    let bases: Vec<(String, String)> = inventory
+        .bases
+        .iter()
+        .filter(|base| candidate_kbs.contains(base.kb_id.as_str()))
+        .map(|base| (base.kb_id.clone(), base.name.clone()))
+        .collect();
+    let outcome = search_evidence(knowledge, &queries, &bases).await?;
+    warnings.extend(outcome.pair_warnings);
+    if outcome.truncated {
+        warnings.push(format!(
+            "检索配对(query × 库)超过 {STRUCTURE_SEARCH_MAX_CALLS} 上限,已按查询整轮截断"
+        ));
+    }
+    let source_counts: Vec<SourceCount> = bases
+        .iter()
+        .enumerate()
+        .map(|(index, (kb_id, name))| SourceCount {
+            kb_id: kb_id.clone(),
+            kb_name: name.clone(),
+            chunks: outcome.per_base[index].1.len(),
+        })
+        .collect();
+    for count in &source_counts {
+        if count.chunks == 0 {
+            warnings.push(format!("知识库 {} 在本轮检索中零贡献", count.kb_name));
+        }
+    }
+    let chunks = balanced_merge(&outcome.per_base, STRUCTURE_EVIDENCE_MAX_CHUNKS);
+
+    let queries_hash = sha256_hex(&queries.join("\n"));
+    let source_fingerprint = sha256_hex(
+        &candidates
+            .iter()
+            .filter_map(|file| {
+                inventory
+                    .files
+                    .iter()
+                    .find(|scanned| scanned.rel_path == file.rel_path)
+                    .map(|scanned| format!("{}={}", scanned.rel_path, scanned.content_hash))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+
+    // 3) 零证据:不伪造章节,降级空计划(gaps 非空),调用方回退。
+    if chunks.is_empty() {
+        let gap = format!(
+            "全库检索零命中(查询 {} 条):没有可支撑章节的证据",
+            queries.len()
+        );
+        warnings.push(gap.clone());
+        let evidence = SourceEvidence {
+            queries,
+            source_counts,
+            gaps: vec![gap],
+            queries_hash,
+            source_fingerprint,
+            candidate_files: candidates.len(),
+            planned_search_calls: outcome.planned_calls,
+            executed_search_calls: outcome.executed_calls,
+            ..SourceEvidence::default()
+        };
+        let mut plan = SourcePlan {
+            goal: goal.to_owned(),
+            evidence,
+            degraded: true,
+            warnings,
+            ..SourcePlan::default()
+        };
+        plan.evidence.evidence_hash = sha256_hex(&format!(
+            "{}|{}|",
+            plan.evidence.queries_hash,
+            plan.evidence.source_counts
+                .iter()
+                .map(|c| format!("{}:{}", c.kb_name, c.chunks))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        return Ok(Some(plan));
+    }
+
+    // 4) 证据摘要(LLM;失败 → 确定性降级:概念取命中标题)。
+    let digest = match summarize_evidence(&completer, goal, &chunks).await {
+        Ok(digest) => digest,
+        Err(error) => {
+            if let Some(cancelled) = as_cancel(&error) {
+                return Err(cancelled);
+            }
+            degraded = true;
+            warnings.push(format!("证据摘要失败({error}),按命中标题确定性降级"));
+            deterministic_digest(&chunks)
+        }
+    };
+    let evidence_hash = sha256_hex(&format!(
+        "{}|{}|{}|{}|{}",
+        queries_hash,
+        source_counts
+            .iter()
+            .map(|c| format!("{}:{}", c.kb_name, c.chunks))
+            .collect::<Vec<_>>()
+            .join(","),
+        digest.summary,
+        digest.gaps.join("\u{1}"),
+        digest.concepts.join(",")
+    ));
+
+    // 5) 草稿(解析失败反馈重试 ≤3,同指纹早停;调用失败上抛由 None 兜底)。
+    let mut draft: Option<PlanDraft> = None;
+    let mut feedback: Option<String> = None;
+    let mut prev_fingerprint: Option<String> = None;
+    for attempt in 1..=STRUCTURE_PLAN_MAX_ATTEMPTS {
+        if token.is_cancelled() {
+            return Err(AppError::Conflict(CANCELLED_MESSAGE.to_owned()));
+        }
+        match draft_plan(&completer, goal, &digest, &chunks, inventory, feedback.as_deref()).await {
+            Ok(candidate) => {
+                draft = Some(candidate);
+                break;
+            }
+            Err(error) => {
+                if let Some(cancelled) = as_cancel(&error) {
+                    return Err(cancelled);
+                }
+                let fingerprint = normalize_report(&error);
+                if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
+                    warnings.push("章节骨架草稿连续两轮同指纹失败,停止重试".to_owned());
+                    break;
+                }
+                prev_fingerprint = Some(fingerprint);
+                feedback = Some(format!(
+                    "上一轮输出违反契约:\n{error}\n逐条修正后重新输出完整骨架。"
+                ));
+            }
+        }
+    }
+    let mut draft = match draft {
+        Some(draft) => draft,
+        None => {
+            // 结构发现连续失败:回退(调用方走现行采样路径),不阻断建课。
+            tracing::warn!(goal, "kb structure discovery failed; falling back to sampling");
+            return Ok(None);
+        }
+    };
+    warnings.append(&mut draft.warnings);
+    unresolved.append(&mut draft.unresolved);
+    finalize_draft(&mut draft, &mut unresolved);
+    if draft.chapters.is_empty() {
+        // 无章节兜底 Overview(path 级锚点,anchor_uncertain)。
+        let mut anchor_paths: Vec<String> = Vec::new();
+        let mut anchors = Vec::new();
+        for chunk in &chunks {
+            if anchor_paths.contains(&chunk.rel_path) || anchor_paths.len() >= 8 {
+                continue;
+            }
+            anchor_paths.push(chunk.rel_path.clone());
+            anchors.push(SourceAnchor {
+                kb_id: chunk.kb_id.clone(),
+                rel_path: chunk.rel_path.clone(),
+                heading_or_anchor: None,
+                paragraph: None,
+                snippet: None,
+                anchor_uncertain: true,
+            });
+        }
+        draft.chapters.push(postprocess::overview_fallback(
+            &digest.summary,
+            &draft.graph,
+            anchors,
+        ));
+        degraded = true;
+        warnings.push("模型未产出可用章节,已合成单一 Overview 兜底章".to_owned());
+    }
+
+    // 6) 评审 → 修订(一次)→ 复评(同指纹即停)。
+    let findings = match critique_plan(&completer, goal, &draft).await {
+        Ok(findings) => findings,
+        Err(error) => {
+            if let Some(cancelled) = as_cancel(&error) {
+                return Err(cancelled);
+            }
+            warnings.push(format!("结构评审失败({error}),跳过评审轮"));
+            Vec::new()
+        }
+    };
+    let first_fingerprint = findings_fingerprint(&findings);
+    if !findings.is_empty() {
+        if token.is_cancelled() {
+            return Err(AppError::Conflict(CANCELLED_MESSAGE.to_owned()));
+        }
+        match draft_plan(
+            &completer,
+            goal,
+            &digest,
+            &chunks,
+            inventory,
+            Some(&format!(
+                "修订指令(按 fix_hint 修订;只改被点名的问题,输出修订后的完整骨架,不要引入新主题):\n{}",
+                render_findings(&findings)
+            )),
+        )
+        .await
+        {
+            Ok(mut revised) => {
+                warnings.append(&mut revised.warnings);
+                unresolved.append(&mut revised.unresolved);
+                finalize_draft(&mut revised, &mut unresolved);
+                match critique_plan(&completer, goal, &revised).await {
+                    Ok(second) => {
+                        if findings_fingerprint(&second) == first_fingerprint {
+                            warnings.push(
+                                "两轮评审同指纹(修订未收敛),预算内停止,以确定性后处理兜底"
+                                    .to_owned(),
+                            );
+                        } else if !second.is_empty() {
+                            warnings.push(
+                                "修订后仍有评审意见,预算内停止修订,以确定性后处理兜底"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(cancelled) = as_cancel(&error) {
+                            return Err(cancelled);
+                        }
+                        warnings.push(format!("复评失败({error}),保留修订稿"));
+                    }
+                }
+                draft = revised;
+            }
+            Err(error) => {
+                if let Some(cancelled) = as_cancel(&error) {
+                    return Err(cancelled);
+                }
+                warnings.push(format!("修订失败({error}),保留草稿"));
+            }
+        }
+    }
+
+    // 7) 覆盖对账:候选文件拆 topic(heading → 段落 → path 级),对账三态。
+    if token.is_cancelled() {
+        return Err(AppError::Conflict(CANCELLED_MESSAGE.to_owned()));
+    }
+    let mut topic_files: Vec<topics::TopicFile> = Vec::with_capacity(candidates.len());
+    for file in &candidates {
+        let Some(scanned) = inventory.files.iter().find(|f| f.rel_path == file.rel_path) else {
+            continue;
+        };
+        let content = if scanned.headings.is_empty() {
+            match base_rel_for(inventory, &file.kb_id, &file.rel_path) {
+                Some(rel) => knowledge
+                    .read_file(&file.kb_id, &rel)
+                    .await
+                    .ok()
+                    .map(|content| content.content),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let seeds = topics::split_file_topics(
+            &file.rel_path,
+            &scanned.headings,
+            content.as_deref(),
+            &mut warnings,
+        );
+        topic_files.push(topics::TopicFile {
+            rel_path: file.rel_path.clone(),
+            kb_id: file.kb_id.clone(),
+            role: file.role,
+            seeds,
+        });
+    }
+    let mut coverage = topics::reconcile_coverage(&topic_files, &draft.chapters, &draft.skipped);
+    coverage.excluded = triage
+        .excluded
+        .iter()
+        .map(|exclusion| CoverageExclusion {
+            rel_path: exclusion.path.clone(),
+            role: exclusion.role,
+            reason: exclusion.reason.clone(),
+        })
+        .collect();
+    coverage.unresolved.append(&mut unresolved);
+
+    // 8) 组装 + 指纹(同库同目标重跑可对比)。
+    let plan_hash = sha256_hex(&format!(
+        "{}|{}|{}|{}|{}",
+        goal,
+        evidence_hash,
+        draft
+            .chapters
+            .iter()
+            .map(|chapter| chapter.title.as_str())
+            .collect::<Vec<_>>()
+            .join("→"),
+        draft.graph.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>().join(","),
+        draft
+            .graph
+            .edges
+            .iter()
+            .map(|e| format!("{}>{}", e.src, e.dst))
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    Ok(Some(SourcePlan {
+        goal: goal.to_owned(),
+        evidence: SourceEvidence {
+            queries,
+            source_counts,
+            summary: digest.summary,
+            gaps: digest.gaps,
+            candidate_concepts: digest.concepts,
+            notes: digest.notes,
+            candidate_files: candidates.len(),
+            planned_search_calls: outcome.planned_calls,
+            executed_search_calls: outcome.executed_calls,
+            queries_hash,
+            evidence_hash,
+            source_fingerprint,
+        },
+        concept_graph: draft.graph,
+        chapters: draft.chapters,
+        coverage,
+        warnings,
+        degraded,
+        plan_hash,
+    }))
 }
 
 #[cfg(test)]
