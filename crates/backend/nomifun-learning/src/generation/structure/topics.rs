@@ -88,7 +88,7 @@ pub(crate) fn split_file_topics(
 
 /// 锚点标题与 topic 标签的匹配(模型可能略去上下文词):精确相等或互相
 /// 包含即算命中。
-fn heading_matches(anchor_heading: &str, label: &str) -> bool {
+pub(crate) fn heading_matches(anchor_heading: &str, label: &str) -> bool {
     let anchor_heading = anchor_heading.trim();
     let label = label.trim();
     if anchor_heading.is_empty() || label.is_empty() {
