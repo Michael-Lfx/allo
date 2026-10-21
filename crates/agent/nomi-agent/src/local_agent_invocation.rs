@@ -173,6 +173,10 @@ impl LocalAgentInvocationRunner {
             output,
             self.cwd.clone(),
         );
+        // A delegated Agent cannot reach the host's approval UI. Deny every
+        // tool that is not explicitly auto-approved instead of falling back to
+        // the terminal confirmer (EOF used to be treated as approval).
+        engine.deny_unconfirmed_tools();
         engine.set_process_supervisor(Arc::clone(&supervisor));
         engine.set_initial_reasoning_effort(invocation.effort.clone());
         if let Some(contributor) = contributor {
@@ -1383,6 +1387,49 @@ mod phase7_tests {
             !marker.exists(),
             "read_only and synthesis Agents must not inherit raw-shell parent hooks"
         );
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_denies_an_unapproved_write_without_prompting() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("must-not-exist.txt");
+        let provider = SequenceProvider::from_turns(vec![
+            vec![
+                LlmEvent::ToolUse {
+                    id: "write-one".to_owned(),
+                    name: "Write".to_owned(),
+                    input: serde_json::json!({
+                        "file_path": target,
+                        "content": "delegated write must not land",
+                    }),
+                    extra: None,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta("blocked".to_owned()),
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]);
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            test_config(),
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert!(
+            !target.exists(),
+            "a delegated Agent must not write without an approval channel"
+        );
+        assert_eq!(output.text, "blocked");
     }
 
     #[tokio::test]

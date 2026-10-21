@@ -1204,6 +1204,16 @@ impl AgentEngine {
         self.approval_manager = Some(mgr);
     }
 
+    /// Delegated engines have no channel back to the host's approval UI.
+    /// Deny anything that is not auto-approved instead of falling back to
+    /// stdin, where EOF used to count as an empty "yes".
+    pub fn deny_unconfirmed_tools(&mut self) {
+        self.confirmer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .deny_unconfirmed();
+    }
+
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn nomi_protocol::writer::ProtocolEmitter>) {
         self.protocol_writer = Some(writer);
     }
