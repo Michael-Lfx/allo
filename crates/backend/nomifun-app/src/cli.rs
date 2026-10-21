@@ -398,6 +398,33 @@ pub enum LearningSmokeCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// 传统课程冒烟（知识库 → 课程）：把本地 md 目录写成新知识库 → 目标
+    /// 感知采样 → 双循环大纲 → 导入课程 →（可选）生成课时正文。机械判据
+    /// = 课程落库、课时来源可解析、采样披露可读；章节覆盖/顺序作为负优化
+    /// 读数打印，不单独判红。无凭据临时库如实失败。
+    Course {
+        /// 知识库目录（递归读取 *.md；相对路径即库内路径）。
+        #[arg(long)]
+        dir: PathBuf,
+        /// 用户目标（必填）：目标即课程标题与采样主索引。
+        #[arg(long)]
+        goal: String,
+        /// 知识库名称（缺省 = 目录名）。
+        #[arg(long)]
+        name: Option<String>,
+        /// 生成正文的课时数（0 = 只生成大纲；缺省 1）。
+        #[arg(long, default_value_t = 1)]
+        lessons: usize,
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 结构挂载冒烟（j08）：落位 + hash 锚定 + 条数一致 + **重跑幂等**
     /// （第二次必须 skipped，否则 EXIT=4）；无凭据临时库如实失败。
     Mount {
