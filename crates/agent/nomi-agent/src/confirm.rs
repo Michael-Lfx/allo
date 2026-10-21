@@ -7,6 +7,10 @@ pub struct ToolConfirmer {
     /// every tool that is not auto-approved or allow-listed is denied without
     /// reading stdin, where EOF used to be read as an empty "yes".
     deny_unconfirmed: bool,
+    /// Monotonic count of calls this confirmer refused. Delegated engines
+    /// carry it into the invocation result so a denied write cannot be
+    /// reported as a completed task.
+    denied_count: usize,
     allow_list: HashSet<String>,
     #[cfg(test)]
     check_count: usize,
@@ -24,6 +28,7 @@ impl ToolConfirmer {
         Self {
             auto_approve,
             deny_unconfirmed: false,
+            denied_count: 0,
             allow_list: allow_list.into_iter().collect(),
             #[cfg(test)]
             check_count: 0,
@@ -38,6 +43,11 @@ impl ToolConfirmer {
     /// Fail closed for delegated engines: never prompt on stdin.
     pub fn deny_unconfirmed(&mut self) {
         self.deny_unconfirmed = true;
+    }
+
+    /// Number of tool calls this confirmer refused.
+    pub fn denied_count(&self) -> usize {
+        self.denied_count
     }
 
     /// Add a tool name to the allow list at runtime.
@@ -57,7 +67,7 @@ impl ToolConfirmer {
             return ConfirmResult::Approved;
         }
         if self.deny_unconfirmed {
-            return ConfirmResult::Denied;
+            return self.deny();
         }
 
         eprint!(
@@ -70,7 +80,7 @@ impl ToolConfirmer {
         // `Ok(0)` is EOF: an unattended child or a closed stdin must not be
         // read as consent. Only an explicit y/yes approves.
         match io::stdin().lock().read_line(&mut input) {
-            Ok(0) | Err(_) => return ConfirmResult::Denied,
+            Ok(0) | Err(_) => return self.deny(),
             Ok(_) => {}
         }
 
@@ -81,8 +91,13 @@ impl ToolConfirmer {
                 ConfirmResult::Approved
             }
             LineDecision::Quit => ConfirmResult::Quit,
-            LineDecision::Deny => ConfirmResult::Denied,
+            LineDecision::Deny => self.deny(),
         }
+    }
+
+    fn deny(&mut self) -> ConfirmResult {
+        self.denied_count += 1;
+        ConfirmResult::Denied
     }
 
     #[cfg(test)]
@@ -170,6 +185,21 @@ mod tests {
             confirmer.check("Read", "in.txt"),
             ConfirmResult::Approved
         );
+    }
+
+    #[test]
+    fn denied_count_tracks_fail_closed_denials() {
+        let mut confirmer = ToolConfirmer::new(false, vec!["Read".into()]);
+        confirmer.deny_unconfirmed();
+        assert_eq!(confirmer.check("Write", "out.txt"), ConfirmResult::Denied);
+        assert_eq!(confirmer.check("Bash", "rm -rf ."), ConfirmResult::Denied);
+        assert_eq!(confirmer.check("Read", "in.txt"), ConfirmResult::Approved);
+        assert_eq!(confirmer.denied_count(), 2);
+
+        let mut auto = ToolConfirmer::new(true, vec![]);
+        auto.deny_unconfirmed();
+        assert_eq!(auto.check("Write", "out.txt"), ConfirmResult::Approved);
+        assert_eq!(auto.denied_count(), 0);
     }
 
     #[test]

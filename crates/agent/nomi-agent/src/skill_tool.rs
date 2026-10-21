@@ -1136,6 +1136,7 @@ mod phase7_tests {
                 usage: TokenUsage::default(),
                 turns: 1,
                 is_error: self.is_error,
+                denied_tool_calls: 0,
             }
         }
     }
