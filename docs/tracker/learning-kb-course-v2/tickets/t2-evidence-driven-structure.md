@@ -2,8 +2,8 @@
 id: t2
 title: "证据驱动的结构发现：检索证据 → 概念图 + 章节 spine → 覆盖/顺序校验"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [t1]
 part_of: ../map.md
 ---
@@ -134,3 +134,21 @@ SourcePlan {
 - 结构发现是“证据 → 结构”，不是“目录 → 结构”；LLM 摘要只作证据压缩，source anchor 必须能回原文。
 - 不要在这一步生成 35 节课的完整大纲；plan 只到章节/概念骨架，lesson 粒度留给 t3。
 - 若检索成本过高，先对 t1 的 `core` 文件做路径/标题过滤再检索；不要退回“只看 40 文件”。
+
+## Resolution（2026-10-21 关票）
+
+**交付**（分支 `learn-v2/t2-evidence-structure`，5 提交 `c6212220d..6437fd62a`）：
+
+- 编排入口 `run_kb_structure(knowledge, inventory, triage, goal, completer, cancel) -> Result<Option<SourcePlan>>`，住 `generation/structure.rs`（类型+编排+中文提示词常量）；`SourcePlan` 及全部子类型经 lib.rs 再导出（t4 落库/t5 报告消费）。
+- 纯函数层 `structure/postprocess.rs`（DFS 去环丢 rationale 最短 depends_on 边 ≤20 次、Kahn 拓扑平局按原序/环回退原序+warning、Jaccard 字符二元组覆盖补齐、Overview 兜底）与 `structure/topics.rs`（heading → 段落序号 → path 级 `anchor_uncertain` 拆 topic；covered/skipped+reason/uncertain 三态对账；skipped/uncertain 也带定位锚可回原文）。
+- 检索：查询生成（LLM 4-8 条多角度，失败退目标词条）→ `(query × kb)` query-major 配对（并发 ≤6、总调用 ≤48、整轮截断不饿死库）→ 每来源内部排序轮询取样（dedup、总量 ≤24）→ 证据摘要（concepts 8-20/notes ≤5，失败退命中标题）。
+- 草稿/评审/修订：一次 LLM 出 graph+chapters+skipped_topics；锚点对账（heading 匹配原文→精确锚，对不上→保留+`anchor_uncertain`，路径不可回源→丢弃+unresolved 防幻觉）；评审固定七类；复评同指纹即停（growth_retry 复用）；`CancellationCompleter`+阶段检查点取消。
+- 接缝：`OutlineBrief.source_plan`（serde default）；`generate_course` KB 流在引擎路径跑 t1→t2（遗留 one-shot 兜底零变化）；`co_start` 草稿视图 `plan_summary` + ai-agent `brief_user_text` 披露章节清单与「不得重排/漏章」约束；co_read 清单约束维持现状（t3）。
+- 失败口径：无 completer/草稿连续失败→`Ok(None)` 回退采样；零证据→降级空计划（gaps 非空不伪造章节）；零候选/零 core→Err 硬失败；取消→`Conflict(CANCELLED_MESSAGE)`。
+- 测试：`cargo test -p nomifun-learning` **407 passed / 0 failed**（基线 363 + 新增 44：structure 41 + 接线 3）；`cargo check --workspace` 干净；ai-agent lib 1109 passed。
+
+**实施偏差**（不违背票面）：
+
+1. 结构发现只在**引擎路径**接线（`course_outline_engine` 存在时）；遗留 one-shot 兜底不跑——它无法兑现 plan 权威性，且保持测试/直调的 LLM 调用面零变化。
+2. `SourcePlan` 字段命名：`heading_or_anchor`/`paragraph`/`anchor_uncertain`（锚点定位三级）、`coverage.files[].status` 为 Covered/Partial/Skipped/Uncertain 四态、evidence 增 `queries_hash/evidence_hash/source_fingerprint/candidate_files/planned_search_calls/executed_search_calls`（成本读数与可复现指纹）。evidence_hash 不掺库实例 id（同库同目标重跑可比）。
+3. 票面 19/105 文件真机对比归 t5 三库冒烟；本票以 fixture+scripted completer 覆盖同口径验收（干净教材/脏库/混合文件/无标题/零证据/含环/倒挂/取消/同指纹/哈希稳定）。
