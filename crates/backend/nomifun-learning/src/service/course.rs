@@ -1076,7 +1076,7 @@ struct StoredSourcePath {
 const SOURCE_PLAN_SKIPPED_EXAMPLES_MAX: usize = 20;
 const SOURCE_PLAN_DUPLICATE_EXAMPLES_MAX: usize = 20;
 const SOURCE_PLAN_UNCERTAIN_LABELS_MAX: usize = 20;
-const SOURCE_PLAN_WARNINGS_MAX: usize = 20;
+pub(super) const SOURCE_PLAN_WARNINGS_MAX: usize = 20;
 const SOURCE_PLAN_GAPS_MAX: usize = 20;
 const SOURCE_PLAN_CHAPTER_SUMMARIES_MAX: usize = 50;
 /// 详情端点诊断明细限长（票面「详情保留完整 excluded/duplicates,可限长」）。

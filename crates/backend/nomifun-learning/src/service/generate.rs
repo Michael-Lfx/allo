@@ -12,6 +12,14 @@
 
 use super::*;
 
+/// 结构发现阶段的常数次 LLM 调用(查询生成/证据摘要/结构草稿/结构评审,
+/// 不随库规模变化;估算口径)。
+const STRUCTURE_STAGE_CALLS: usize = 4;
+/// 估算耗时经验常数(秒/次调用;确认弹窗的粗估读数,不是承诺)。
+const ESTIMATE_SECONDS_PER_CALL: u64 = 10;
+/// 估算跳过摘要限长(噪声/重复示例,确认弹窗够用)。
+const ESTIMATE_SKIPPED_EXAMPLES_MAX: usize = 10;
+
 /// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
 /// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
 /// 120 字。确定性纯函数。
@@ -82,14 +90,21 @@ impl LearningService {
         )> = None;
         if brief.knowledge_base.is_some() && self.course_outline_engine().is_some() {
             match self
-                .discover_kb_source_plan(&request, &brief, _task.token())
+                .discover_kb_source_plan(&request, &brief, _task.token(), &_task)
                 .await
             {
                 Ok((inventory, triage, plan)) => {
                     if let Some(plan) = plan.filter(|plan| plan.is_usable()) {
                         brief.source_plan = Some(plan.clone());
                         match self
-                            .expand_kb_course_blueprint(&inventory, &triage, &plan, &brief, _task.token())
+                            .expand_kb_course_blueprint(
+                                &inventory,
+                                &triage,
+                                &plan,
+                                &brief,
+                                _task.token(),
+                                &_task,
+                            )
                             .await
                         {
                             Ok(Some(outcome)) => {
@@ -269,11 +284,15 @@ impl LearningService {
     /// 三件套——inventory+triage 供 t3 分批展开复用(不重复跑 t1 的 LLM 面)。
     /// 计划 `None` = 回退现行采样路径(无 completer/草稿连续失败/零证据降级
     /// 空章节);`Err` = 硬失败(零候选/零 core/用户取消)。
+    ///
+    /// t5:各阶段边界发 WS 进度帧(triage/source_plan)并更新长任务注册表的
+    /// step 文案——「跳过与不确定可见」从分诊一刻就开始,不是建完课才补叙。
     async fn discover_kb_source_plan(
         &self,
         request: &GenerateCourseRequest,
         brief: &OutlineBrief,
         token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
     ) -> Result<
         (
             crate::generation::KbInventory,
@@ -290,9 +309,37 @@ impl LearningService {
             .read()
             .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
             .clone();
+        let kind = brief.kind();
+        task.set_step("triage", "正在清点与分诊来源文件…");
+        self.emit_course_event(serde_json::json!({
+            "phase": "triage_started",
+            "kind": kind,
+        }));
         let (inventory, triage) =
             crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, completer.as_deref())
                 .await?;
+        let counts = &triage.counts;
+        self.emit_course_event(serde_json::json!({
+            "phase": "triage_completed",
+            "kind": kind,
+            "counts": {
+                "total": counts.core + counts.prerequisite + counts.practice
+                    + counts.mixed + counts.noise + counts.duplicate + counts.uncertain,
+                "core": counts.core,
+                "prerequisite": counts.prerequisite,
+                "practice": counts.practice,
+                "mixed": counts.mixed,
+                "noise": counts.noise,
+                "duplicate": counts.duplicate,
+                "uncertain": counts.uncertain,
+            },
+            "degraded": triage.degraded,
+        }));
+        task.set_step("source_plan", "正在从证据规划章节骨架…");
+        self.emit_course_event(serde_json::json!({
+            "phase": "source_plan_started",
+            "kind": kind,
+        }));
         let plan = crate::generation::run_kb_structure(
             &knowledge,
             &inventory,
@@ -311,6 +358,13 @@ impl LearningService {
                     "kb structure plan discovered"
                 );
                 if plan.is_usable() {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "source_plan_ready",
+                        "kind": kind,
+                        "chapters": plan.chapters.len(),
+                        "concepts": plan.concept_graph.nodes.len(),
+                        "gaps": plan.evidence.gaps,
+                    }));
                     Some(plan)
                 } else {
                     // 降级空章节计划:不进简报,回退采样路径。
@@ -329,7 +383,8 @@ impl LearningService {
 
     /// t3 分批展开编排:可用 plan 按章展开产 Blueprint(不再走大纲引擎)。
     /// `Ok(None)` = 无 completer(调用方回退引擎路径);`Err` 取消向上传播、
-    /// 其余由调用方按「展开失败 → 引擎路径」降级。
+    /// 其余由调用方按「展开失败 → 引擎路径」降级。展开成功时发 t5 覆盖
+    /// 读数帧(topics covered/skipped/fallback——跳过与兜底在读数里先可见)。
     async fn expand_kb_course_blueprint(
         &self,
         inventory: &crate::generation::KbInventory,
@@ -337,6 +392,7 @@ impl LearningService {
         plan: &crate::generation::SourcePlan,
         brief: &OutlineBrief,
         token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
     ) -> Result<Option<crate::generation::ExpansionOutcome>, AppError> {
         let knowledge = self.injected_knowledge_service()?;
         let completer = self
@@ -345,7 +401,8 @@ impl LearningService {
             .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
             .clone();
         let goal = brief.goal.clone().unwrap_or_default();
-        crate::generation::run_kb_expansion(
+        task.set_step("expansion", "正在按章节分批展开课时…");
+        let outcome = crate::generation::run_kb_expansion(
             &knowledge,
             inventory,
             triage,
@@ -354,7 +411,111 @@ impl LearningService {
             completer.as_deref(),
             Some(&token),
         )
-        .await
+        .await?;
+        if let Some(outcome) = &outcome {
+            self.emit_course_event(serde_json::json!({
+                "phase": "coverage_ready",
+                "kind": brief.kind(),
+                "topics_covered": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Covered)
+                    .count(),
+                "topics_skipped": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Skipped)
+                    .count(),
+                "fallback": outcome
+                    .coverage
+                    .lessons
+                    .iter()
+                    .filter(|lesson| lesson.fallback)
+                    .count(),
+            }));
+        }
+        Ok(outcome)
+    }
+
+    /// t5 成本门估算:提交建课前对知识库流做一次**规则分诊**(零 LLM、
+    /// `degraded=true`——只读元数据/内容一次),给出文件数/批数/预估调用
+    /// 数/预计耗时与跳过摘要;`needs_confirm` = >40 文件或预估 >20 次 LLM
+    /// 调用(阈值在后端单源)。描述流无知识库 → 全零、不确认。
+    pub async fn estimate_course_generation(
+        &self,
+        _user_id: &UserId,
+        request: GenerateCourseRequest,
+    ) -> Result<crate::models::CourseGenerationEstimateView, AppError> {
+        request.validate()?;
+        let kb_ids = request.knowledge_base_ids_normalized();
+        if kb_ids.is_empty() {
+            return Ok(crate::models::CourseGenerationEstimateView::default());
+        }
+        let knowledge = self.injected_knowledge_service()?;
+        let goal = request.goal_text().unwrap_or_default();
+        // completer=None → t1 规则路径:零 LLM 调用,非噪声全部 core(降级)。
+        let (_inventory, triage) =
+            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, None).await?;
+        let counts = triage.counts;
+        let total_files = counts.core
+            + counts.prerequisite
+            + counts.practice
+            + counts.mixed
+            + counts.noise
+            + counts.duplicate
+            + counts.uncertain;
+        // LLM 分诊只批「规则未判定的文件」(噪声/重复已被规则排除);
+        // 展开按章分批,以候选文件数近似;结构阶段是常数次(查询/证据/
+        // 草稿/评审)。
+        let llm_files = counts.core + counts.prerequisite + counts.practice + counts.mixed + counts.uncertain;
+        let triage_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
+        let expansion_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
+        let estimated_batches = triage_batches + expansion_batches;
+        let estimated_llm_calls = estimated_batches + STRUCTURE_STAGE_CALLS;
+        let estimated_seconds = u64::try_from(estimated_llm_calls)
+            .unwrap_or_default()
+            .saturating_mul(ESTIMATE_SECONDS_PER_CALL);
+        Ok(crate::models::CourseGenerationEstimateView {
+            total_files,
+            estimated_batches,
+            estimated_llm_calls,
+            estimated_seconds,
+            needs_confirm: total_files
+                > crate::models::COURSE_ESTIMATE_CONFIRM_FILES
+                || estimated_llm_calls > crate::models::COURSE_ESTIMATE_CONFIRM_CALLS,
+            triage: crate::models::CourseSourcePlanTriageView {
+                total_files,
+                core: counts.core,
+                prerequisite: counts.prerequisite,
+                practice: counts.practice,
+                mixed: counts.mixed,
+                noise: counts.noise,
+                duplicate: counts.duplicate,
+                uncertain: counts.uncertain,
+                degraded: triage.degraded,
+                warnings: triage
+                    .warnings
+                    .iter()
+                    .take(super::course::SOURCE_PLAN_WARNINGS_MAX)
+                    .cloned()
+                    .collect(),
+            },
+            skipped_examples: triage
+                .excluded
+                .iter()
+                .take(ESTIMATE_SKIPPED_EXAMPLES_MAX)
+                .map(|entry| crate::models::CourseSourcePlanExcludedView {
+                    path: entry.path.clone(),
+                    role: serde_json::to_value(entry.role)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    reason: entry.reason.clone(),
+                })
+                .collect(),
+        })
     }
 
     /// Resolve the generation brief up front: the kb flow fetches the base
