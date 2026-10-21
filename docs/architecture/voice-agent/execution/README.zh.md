@@ -1,3 +1,5 @@
+> **2026-10-22 页面/桌宠实施及联合验收**：[交互补充方案](voice-ui-pet-linkage-acceptance-plan-2026-10-22.zh.md) 与[执行辅导 §11](R1-R5-execution-coaching-2026-10-21.zh.md#voice-ui-pet-linkage)。补齐三视图职责、工作区/伙伴/任务身份、多宠单连接、24 个 VP 用例和串行 UI0–UI4。现有 96 项前端测试通过不代表桌宠语音联动已实现；TypeScript/桌面实测仍有明确门禁。下方历史记录保留。
+
 > **2026-10-21 最新执行入口**：[统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution) 固定保留 SenseVoice、暂不集成 Zipformer，并整合正确性修复与延迟闭环；[15f9a70fc 独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 确认定向测试通过，但仍有八项缺口，不能签核“九项全部清零”。以下历史全文保留。
 
 > **2026-10-21 Eidolon 与流式语音补充**：[执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement) 为轮次、事件、播放和 [外置 ASR 实验](R1-R5-execution-coaching-2026-10-21.zh.md#external-asr-lab) 的细则入口；实验可与当前业务实施分别推进，生产接入仍后置。状态见 [当前快照 §7](current-implementation-status.zh.md#implementation-snapshot-20261021)。以下历次入口按其原始日期/提交阅读，不代表在途修复已签核。
@@ -175,3 +177,5 @@ flowchart LR
 - [语音低延迟串行执行 Plan（2026-10-19）](low-latency-execution-plan-2026-10-19.zh.md)：关闭推理、阶段计时、受控流式分句、停止/追问边界及开发产物交接。
 
 - [低延迟优化实测交接与后续签核（2026-10-19）](low-latency-owner-handoff-2026-10-19.zh.md)
+
+- [2026-10-22 最终串行修复与桌宠联动交接](voice-repair-final-handoff-2026-10-22.zh.md)：当前最新执行入口；C01–C09、四步纵向实施、在途代码风险、验证命令和可复制任务书。历史并行安排不适用于本轮。

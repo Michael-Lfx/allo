@@ -9257,15 +9257,6 @@ impl ConversationService {
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
-        if let Some(expected_epoch) = expected_admission_epoch {
-            let admission = self
-                .conversation_repo
-                .get_turn_admission_state(user_id, conversation_id)
-                .await?;
-            if admission.epoch != expected_epoch {
-                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
-            }
-        }
         if let Some(existing) = self
             .conversation_repo
             .get_message(conversation_key, message_id)
@@ -9309,7 +9300,16 @@ impl ConversationService {
             hidden: false,
             created_at: now_ms(),
         };
-        if let Err(error) = self.conversation_repo.insert_message(&message).await {
+        if let Err(error) = self.conversation_repo.insert_message_with_epoch(&message, user_id, expected_admission_epoch).await {
+            match &error {
+                nomifun_db::DbError::Conflict(msg) if msg == "voice_message_epoch_changed" => {
+                    return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+                }
+                nomifun_db::DbError::Conflict(msg) if msg == "Voice target is busy" => {
+                    return Err(AppError::Conflict("Voice target is busy".into()));
+                }
+                _ => {}
+            }
             // A concurrent append may have won the unique message identity.
             // Re-read and absorb only the exact same public text.
             if let Some(existing) = self
@@ -10908,21 +10908,6 @@ impl ConversationService {
         expected_admission_epoch: Option<i64>,
     ) -> Result<String, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
-        if let Some(expected_epoch) = expected_admission_epoch {
-            let _row = self
-                .conversation_repo
-                .get(conversation_id)
-                .await?
-                .filter(|row| row.user_id == user_id)
-                .ok_or_else(|| AppError::NotFound(format!("conversation {conversation_id}")))?;
-            let admission = self
-                .conversation_repo
-                .get_turn_admission_state(user_id, conversation_id)
-                .await?;
-            if admission.epoch != expected_epoch {
-                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
-            }
-        }
         let operation_id = operation_id.trim();
         let content = content.trim();
         let origin = origin.trim();
@@ -10971,8 +10956,18 @@ impl ConversationService {
                 &request_payload,
                 &candidate,
                 created_at,
+                expected_admission_epoch,
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                nomifun_db::DbError::Conflict(ref msg) if msg == "voice_message_epoch_changed" => {
+                    AppError::Conflict("voice_message_epoch_changed".into())
+                }
+                nomifun_db::DbError::Conflict(ref msg) if msg == "Voice target is busy" => {
+                    AppError::Conflict("Voice target is busy".into())
+                }
+                other => AppError::from(other),
+            })?;
         let conversation = self
             .conversation_repo
             .get(conversation_id)

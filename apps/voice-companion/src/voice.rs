@@ -503,6 +503,21 @@ impl VoiceCompanionRuntime {
         Arc::clone(&self.playback)
     }
 
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn enqueue_pending_utterance(&self, pcm: Vec<f32>, session_id: Option<String>) {
+        let mut queue = self.pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+        queue.push_back(PendingUtterance {
+            pcm,
+            session_id,
+            generation_id: self.playback.generation_id(),
+        });
+    }
+
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn pending_utterance_count(&self) -> usize {
+        self.pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     pub fn router(&self) -> Arc<dyn VoiceRouter> {
         Arc::clone(&self.router)
     }
@@ -543,6 +558,16 @@ impl VoiceCompanionRuntime {
     }
 
     /// Handle far-field wake event with specific matched keyword.
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub async fn advance_time(&self, elapsed: std::time::Duration) {
+        self.driver.lock().await.advance_time(elapsed);
+    }
+
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub async fn expire_listening_deadline(&self) {
+        self.driver.lock().await.expire_listening_deadline();
+    }
+
     pub async fn handle_wake_keyword(&self, keyword: &str) -> Result<(), VoiceWakeError> {
         if !self.oobe_manager.is_paired().await {
             warn!("Wake received but device is not yet paired via OOBE");
@@ -595,7 +620,7 @@ impl VoiceCompanionRuntime {
             voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             let mut d = driver.lock().await;
             if playback.generation_id() == generation && d.begin_listening_window() {
-                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 6 });
+                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
             }
         });
         Ok(())
@@ -764,6 +789,7 @@ impl VoiceCompanionRuntime {
         tts: &Arc<dyn TtsProvider>,
         task_client: &Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         generation: u64,
+        pending_utterances: &Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
     ) {
         if playback.generation_id() != generation {
             return;
@@ -1058,9 +1084,15 @@ impl VoiceCompanionRuntime {
                                 code: code.into(),
                             });
                             driver.lock().await.reset();
-                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
-                                reason: VoiceSessionEndReason::Failed,
-                            });
+                            let has_pending = {
+                                let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                                p.front().is_some_and(|item| item.generation_id == generation)
+                            };
+                            if playback.generation_id() == generation && !has_pending {
+                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+                                    reason: VoiceSessionEndReason::Failed,
+                                });
+                            }
                             return;
                         }
                     }
@@ -1141,7 +1173,11 @@ impl VoiceCompanionRuntime {
                     let _ = d.handle_event(AcousticEvent::IntentIgnore);
                     drop(d);
                     voice_feedback::play(playback, event_tx, VoiceCueKind::Sleep, generation).await;
-                    if playback.generation_id() == generation {
+                    let has_pending = {
+                        let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                        p.front().is_some_and(|item| item.generation_id == generation)
+                    };
+                    if playback.generation_id() == generation && !has_pending {
                         let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
                             reason: VoiceSessionEndReason::NoIntent,
                         });
@@ -1280,16 +1316,32 @@ impl VoiceCompanionRuntime {
                         Err(code) => Some(code),
                     };
                     if playback.generation_id() != generation {return;}
-                    let mut driver = driver.lock().await;
-                    let _ = driver.handle_event(AcousticEvent::TaskAccepted);
-                    drop(driver);
+                    let mut driver_guard = driver.lock().await;
+                    let _ = driver_guard.handle_event(AcousticEvent::TaskAccepted);
+                    drop(driver_guard);
                     let failed = code.is_some();
                     if let Some(code) = code {
                         let _ = event_tx.send(VoiceCompanionEvent::Error {stage:"task".into(),code});
                         voice_feedback::play(playback,event_tx,VoiceCueKind::Error,generation).await;
                     }
                     if playback.generation_id() == generation {
-                        let _ = event_tx.send(if failed {VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed}} else {VoiceCompanionEvent::Idle});
+                        if failed {
+                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed});
+                        } else {
+                            let has_pending = {
+                                let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                                p.front().is_some_and(|item| item.generation_id == generation)
+                            };
+                            if !has_pending {
+                                let mut d = driver.lock().await;
+                                if d.current_state() == AcousticState::Idle {
+                                    let _ = d.handle_event(AcousticEvent::WakeHit);
+                                    if d.begin_listening_window() {
+                                        let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 IntentType::TaskControl | IntentType::AgentTask => {
@@ -1312,7 +1364,11 @@ impl VoiceCompanionRuntime {
             let _ = d.handle_event(AcousticEvent::IntentIgnore);
             drop(d);
             voice_feedback::play(playback, event_tx, VoiceCueKind::Error, generation).await;
-            if playback.generation_id() == generation {
+            let has_pending = {
+                let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                p.front().is_some_and(|item| item.generation_id == generation)
+            };
+            if playback.generation_id() == generation && !has_pending {
                 let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
                     reason: VoiceSessionEndReason::Failed,
                 });
@@ -1356,6 +1412,7 @@ impl VoiceCompanionRuntime {
                 &tts,
                 &task_client,
                 generation,
+                &pending_clone,
             ))
             .catch_unwind()
             .await;
@@ -1384,7 +1441,20 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     if pending.front().is_some() {
-                        if let Ok(AcousticState::Deciding) = d.handle_event(AcousticEvent::FollowUpSpeech) {
+                        let can_decide = match d.current_state() {
+                            AcousticState::FollowUpListening => {
+                                d.handle_event(AcousticEvent::FollowUpSpeech) == Ok(AcousticState::Deciding)
+                            }
+                            AcousticState::Listening => {
+                                d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
+                            }
+                            AcousticState::Idle => {
+                                d.handle_event(AcousticEvent::WakeHit).is_ok()
+                                    && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
+                            }
+                            _ => false,
+                        };
+                        if can_decide {
                             let next_item = pending.pop_front().unwrap();
                             drop(pending);
                             drop(d);
@@ -1405,7 +1475,12 @@ impl VoiceCompanionRuntime {
                                 next_item.session_id,
                             );
                         } else {
-                            pending.pop_front();
+                            while let Some(_) = pending.pop_front() {
+                                let _ = events.send(VoiceCompanionEvent::Error {
+                                    stage: "queue".into(),
+                                    code: "pending_utterance_dropped".into(),
+                                });
+                            }
                         }
                     }
                 }
@@ -1621,7 +1696,7 @@ impl VoiceCompanionRuntime {
                         && snapshot.session_id.is_some()
                         && reminded_session != snapshot.session_id
                         && d.remaining_listening_time().is_some_and(|remaining| {
-                            !remaining.is_zero() && remaining <= std::time::Duration::from_secs(3)
+                            !remaining.is_zero() && remaining <= std::time::Duration::from_secs(177)
                         })
                     {
                         reminded_session = snapshot.session_id.clone();

@@ -103,6 +103,21 @@ pub(crate) struct DeliveryRecord {
     pub voice_context_digest: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrozenField<T> {
+    Omitted,
+    Specified(T),
+}
+
+impl<T> FrozenField<T> {
+    pub(crate) fn into_option(self) -> Option<T> {
+        match self {
+            Self::Specified(val) => Some(val),
+            Self::Omitted => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DeliveryLedger { owner:String, records:Vec<DeliveryRecord> }
 
@@ -608,11 +623,37 @@ impl VoiceTaskService {
 
     #[cfg(test)]
     pub async fn submit(&self, command: VoiceTaskCommand, config: VoiceExecutionConfig) -> Result<VoiceTaskDelivery, String> {
-        self.submit_frozen_with_handoff_queued(command, config, None, None, None, None).await
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            true,
+            false,
+        ).await
     }
     #[allow(dead_code)]
     pub async fn submit_frozen(&self, command:VoiceTaskCommand, config:VoiceExecutionConfig,expected_preset:Option<Option<ResolvedPresetSnapshot>>)->Result<VoiceTaskDelivery,String> {
-        self.submit_frozen_with_handoff_queued(command, config, expected_preset, None, None, None).await
+        let preset_field = match expected_preset {
+            Some(inner) => FrozenField::Specified(inner),
+            None => FrozenField::Omitted,
+        };
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            preset_field,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            true,
+            true,
+        ).await
     }
 
     pub async fn submit_frozen_with_handoff(
@@ -622,7 +663,22 @@ impl VoiceTaskService {
         expected_preset: Option<Option<ResolvedPresetSnapshot>>,
         handoff_content: Option<String>,
     ) -> Result<VoiceTaskDelivery, String> {
-        self.submit_frozen_with_handoff_queued(command, config, expected_preset, handoff_content, None, None).await
+        let preset_field = match expected_preset {
+            Some(inner) => FrozenField::Specified(inner),
+            None => FrozenField::Omitted,
+        };
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            preset_field,
+            FrozenField::Specified(handoff_content),
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            true,
+            true,
+        ).await
     }
 
     pub async fn submit_frozen_with_handoff_queued(
@@ -634,8 +690,22 @@ impl VoiceTaskService {
         display_text: Option<String>,
         target_conversation: Option<String>,
     ) -> Result<VoiceTaskDelivery, String> {
-        self.submit_frozen_with_handoff_queued_with_message_id(command, config, expected_preset, handoff_content, display_text, target_conversation, None)
-            .await
+        let preset_field = match expected_preset {
+            Some(inner) => FrozenField::Specified(inner),
+            None => FrozenField::Omitted,
+        };
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            preset_field,
+            FrozenField::Specified(handoff_content),
+            FrozenField::Specified(display_text),
+            FrozenField::Specified(target_conversation),
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            true,
+            true,
+        ).await
     }
 
     pub async fn submit_frozen_with_handoff_queued_with_message_id(
@@ -648,8 +718,26 @@ impl VoiceTaskService {
         target_conversation: Option<String>,
         message_id: Option<String>,
     ) -> Result<VoiceTaskDelivery, String> {
-        self.submit_frozen_with_handoff_mode(command, config, expected_preset, handoff_content, display_text, target_conversation, message_id, None, true)
-            .await
+        let preset_field = match expected_preset {
+            Some(inner) => FrozenField::Specified(inner),
+            None => FrozenField::Omitted,
+        };
+        let msg_field = match message_id {
+            Some(mid) => FrozenField::Specified(Some(mid)),
+            None => FrozenField::Omitted,
+        };
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            preset_field,
+            FrozenField::Specified(handoff_content),
+            FrozenField::Specified(display_text),
+            FrozenField::Specified(target_conversation),
+            msg_field,
+            FrozenField::Omitted,
+            true,
+            true,
+        ).await
     }
 
     pub async fn submit_frozen_with_handoff_queued_with_context(
@@ -663,31 +751,74 @@ impl VoiceTaskService {
         message_id: Option<String>,
         voice_context_digest: Option<String>,
     ) -> Result<VoiceTaskDelivery, String> {
-        self.submit_frozen_with_handoff_mode(command, config, expected_preset, handoff_content, display_text, target_conversation, message_id, voice_context_digest, true)
-            .await
+        let preset_field = match expected_preset {
+            Some(inner) => FrozenField::Specified(inner),
+            None => FrozenField::Omitted,
+        };
+        self.submit_frozen_with_handoff_mode(
+            command,
+            config,
+            preset_field,
+            FrozenField::Specified(handoff_content),
+            FrozenField::Specified(display_text),
+            FrozenField::Specified(target_conversation),
+            FrozenField::Specified(message_id),
+            FrozenField::Specified(voice_context_digest),
+            true,
+            true,
+        ).await
     }
 
     async fn submit_frozen_with_handoff_mode(
         &self,
         command: VoiceTaskCommand,
         config: VoiceExecutionConfig,
-        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
-        handoff_content: Option<String>,
-        display_text: Option<String>,
-        target_conversation: Option<String>,
-        message_id: Option<String>,
-        voice_context_digest: Option<String>,
+        expected_preset: FrozenField<Option<ResolvedPresetSnapshot>>,
+        handoff_content: FrozenField<Option<String>>,
+        display_text: FrozenField<Option<String>>,
+        target_conversation: FrozenField<Option<String>>,
+        message_id: FrozenField<Option<String>>,
+        voice_context_digest: FrozenField<Option<String>>,
         allow_queue: bool,
+        is_frozen: bool,
     ) -> Result<VoiceTaskDelivery, String> {
         let _guard = self.operation.lock().await;
         if let Some(previous) = self.read_command(&command.command_id)? {
-            let frozen_conflict = (expected_preset.is_some() && previous.config != config)
-                || (handoff_content.is_some() && previous.handoff_content != handoff_content)
-                || (display_text.is_some() && previous.display_text != display_text)
-                || (target_conversation.is_some() && previous.target_conversation != target_conversation)
-                || (voice_context_digest.is_some() && previous.voice_context_digest != voice_context_digest)
-                || (message_id.is_some() && previous.task.message_id.as_ref() != message_id.as_ref());
-            if previous.command != command || frozen_conflict {
+            let mut conflict = previous.command != command;
+            if is_frozen && previous.config != config {
+                conflict = true;
+            }
+            if let FrozenField::Specified(expected) = &expected_preset {
+                if previous.preset_snapshot != *expected {
+                    conflict = true;
+                }
+            }
+            if let FrozenField::Specified(expected) = &handoff_content {
+                if previous.handoff_content != *expected {
+                    conflict = true;
+                }
+            }
+            if let FrozenField::Specified(expected) = &display_text {
+                if previous.display_text != *expected {
+                    conflict = true;
+                }
+            }
+            if let FrozenField::Specified(expected) = &target_conversation {
+                if previous.target_conversation != *expected {
+                    conflict = true;
+                }
+            }
+            if let FrozenField::Specified(expected) = &voice_context_digest {
+                if previous.voice_context_digest != *expected {
+                    conflict = true;
+                }
+            }
+            if let FrozenField::Specified(expected) = &message_id {
+                if previous.task.message_id != *expected {
+                    conflict = true;
+                }
+            }
+            if conflict {
                 return Err("task_command_conflict".into());
             }
             return Ok(VoiceTaskDelivery {
@@ -713,7 +844,11 @@ impl VoiceTaskService {
         }
         self.active_in_session.lock().unwrap().insert(command.command_id.clone());
         let (prepared,preset_snapshot) = self.runtime.prepare_configuration(&config).await?;
-        if expected_preset.as_ref().is_some_and(|expected|expected!=&preset_snapshot || prepared!=config) {return Err("binding_invalid".into());}
+        if let FrozenField::Specified(expected) = &expected_preset {
+            if expected.as_ref() != preset_snapshot.as_ref() || prepared != config {
+                return Err("binding_invalid".into());
+            }
+        }
         let config=prepared;
         let now_ms = nomifun_common::now_ms();
         let deadline_ms = now_ms + self.timeout_ms;
@@ -733,12 +868,16 @@ impl VoiceTaskService {
                 }
             }
         }
+        let target_conversation = target_conversation.into_option().flatten();
+        let handoff_content = handoff_content.into_option().flatten();
+        let display_text = display_text.into_option().flatten();
+        let voice_context_digest = voice_context_digest.into_option().flatten();
+        let message_id_to_use = message_id.into_option().flatten().unwrap_or_else(|| MessageId::new().into_string());
         let creation_key = if target_conversation.is_some() {
             format!("voice-create:workspace:{}", config.workspace)
         } else {
             continuous_creation_key.unwrap_or_else(|| format!("voice-create:{}:{}", command.session_id, now_ms))
         };
-        let message_id_to_use = message_id.unwrap_or_else(|| MessageId::new().into_string());
         let mut record = DeliveryRecord {
             announcement_claimed:false,
             notification_id: None,
@@ -1723,5 +1862,102 @@ mod tests {
         assert_eq!(bound_sends[0].5, display_text, "send_bound display_text must match appended display_text");
         assert_eq!(bound_sends[0].6, handoff, "send_bound goal/content must be handoff content");
     }
-}
 
+    #[tokio::test]
+    async fn test_c07_replay_comparison_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+
+        let cmd = command();
+        let cfg = config();
+        let preset_a: ResolvedPresetSnapshot = serde_json::from_value(serde_json::json!({
+            "preset_id": "018f1a2b-3c4d-7e8f-9a0b-1c2d3e4f5a6b",
+            "preset_revision": 1,
+            "preset_name": "Preset A",
+            "target": "conversation",
+            "instructions": "prompt a",
+        })).unwrap();
+
+        // 1. First submission succeeds (matching mock runtime preset_snapshot which is None)
+        let first = tasks.submit_frozen_with_handoff_queued(
+            cmd.clone(),
+            cfg.clone(),
+            Some(None),
+            Some("来源：语音委派\n测试任务".into()),
+            Some("display text".into()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap();
+        assert_eq!(first.task.status, VoiceTaskStatus::Accepted);
+        assert_eq!(runtime.sent.load(Ordering::SeqCst), 1);
+
+        // 2. Exact replay with same command, config, preset, handoff, display, target -> returns existing, zero extra sends!
+        let replay = tasks.submit_frozen_with_handoff_queued(
+            cmd.clone(),
+            cfg.clone(),
+            Some(None),
+            Some("来源：语音委派\n测试任务".into()),
+            Some("display text".into()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap();
+        assert_eq!(replay.task.status, VoiceTaskStatus::Accepted);
+        assert_eq!(runtime.sent.load(Ordering::SeqCst), 1, "exact replay must not re-send");
+
+        // 3. Replay with different preset_snapshot -> returns task_command_conflict!
+        let preset_b: ResolvedPresetSnapshot = serde_json::from_value(serde_json::json!({
+            "preset_id": "018f1a2b-3c4d-7e8f-9a0b-1c2d3e4f5a6c",
+            "preset_revision": 2,
+            "preset_name": "Preset B",
+            "target": "conversation",
+            "instructions": "prompt b",
+        })).unwrap();
+        let err_preset = tasks.submit_frozen_with_handoff_queued(
+            cmd.clone(),
+            cfg.clone(),
+            Some(Some(preset_b)),
+            Some("来源：语音委派\n测试任务".into()),
+            Some("display text".into()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap_err();
+        assert_eq!(err_preset, "task_command_conflict");
+
+        // 4. Replay with modified workspace in config -> returns task_command_conflict!
+        let mut cfg_modified = cfg.clone();
+        cfg_modified.workspace = "different/workspace".into();
+        let err_cfg = tasks.submit_frozen_with_handoff_queued(
+            cmd.clone(),
+            cfg_modified,
+            Some(Some(preset_a.clone())),
+            Some("来源：语音委派\n测试任务".into()),
+            Some("display text".into()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap_err();
+        assert_eq!(err_cfg, "task_command_conflict");
+
+        // 5. Replay with Specified(None) for handoff when previously Some -> returns task_command_conflict!
+        let err_handoff_cleared = tasks.submit_frozen_with_handoff_mode(
+            cmd.clone(),
+            cfg.clone(),
+            FrozenField::Specified(None),
+            FrozenField::Specified(None), // explicitly cleared
+            FrozenField::Specified(Some("display text".into())),
+            FrozenField::Specified(Some("dedicated-conversation".into())),
+            FrozenField::Omitted,
+            FrozenField::Omitted,
+            true,
+            true,
+        ).await.unwrap_err();
+        assert_eq!(err_handoff_cleared, "task_command_conflict");
+
+        // 6. Replay with changed display_text -> returns task_command_conflict!
+        let err_display = tasks.submit_frozen_with_handoff_queued(
+            cmd.clone(),
+            cfg.clone(),
+            Some(Some(preset_a.clone())),
+            Some("来源：语音委派\n测试任务".into()),
+            Some("changed display text".into()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap_err();
+        assert_eq!(err_display, "task_command_conflict");
+    }
+}

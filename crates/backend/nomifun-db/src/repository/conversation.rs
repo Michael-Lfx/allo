@@ -839,6 +839,7 @@ pub trait IConversationRepository: Send + Sync {
     /// and request payload returns the original persisted message with
     /// `inserted = false`; reusing the operation identity for any other input
     /// is a conflict.
+    #[allow(clippy::too_many_arguments)]
     async fn project_assistant_message_with_receipt(
         &self,
         _user_id: &str,
@@ -848,10 +849,21 @@ pub trait IConversationRepository: Send + Sync {
         _request_payload: &str,
         _message: &MessageRow,
         _now: i64,
+        _expected_admission_epoch: Option<i64>,
     ) -> Result<ConversationMessageProjection, DbError> {
         Err(DbError::Init(
             "atomic Conversation message projection is not supported".to_owned(),
         ))
+    }
+
+    async fn insert_message_with_epoch(
+        &self,
+        message: &MessageRow,
+        user_id: &str,
+        _expected_admission_epoch: Option<i64>,
+    ) -> Result<(), DbError> {
+        let _ = user_id;
+        self.insert_message(message).await
     }
 
     /// Atomically inserts a dialogue pair (user speech and assistant reply) and completes

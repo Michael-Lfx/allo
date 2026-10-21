@@ -746,6 +746,7 @@ mod flow {
             assert_eq!(flow.producer.push(&[0.0; 320]), 320);
             tokio::time::sleep_until(start + Duration::from_millis((frame + 1) * 20)).await;
         }
+        flow.runtime.expire_listening_deadline().await;
         let snapshot = flow.phase("idle").await;
         assert!(
             snapshot.error.is_none(),
@@ -1096,6 +1097,49 @@ mod flow {
             default_cue(nomifun_audio::EarconKind::Sleep).as_slice(),
             "cancelled synthesis must not write late reply audio"
         );
+    }
+
+    #[tokio::test]
+    async fn test_c05_pending_utterance_drained_across_idle_transition() {
+        let flow = Flow::new(TtsMode::Audio).await;
+        flow.utterance().await;
+        tokio::time::timeout(Duration::from_secs(5), flow.synthesis_requested.notified())
+            .await
+            .expect("turn 1 synthesis must be requested");
+
+        let pcm_turn2 = vec![0.05; 3200];
+        let session_id = flow.runtime.snapshot().session_id;
+        flow.runtime.enqueue_pending_utterance(pcm_turn2, session_id);
+        assert_eq!(flow.runtime.pending_utterance_count(), 1);
+
+        // Complete turn 1 synthesis and playback
+        flow.release_synthesis.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), flow.sink.draining.notified())
+            .await
+            .expect("turn 1 audio must reach sink");
+        flow.sink.consumed.notify_one();
+
+        // Turn 2 must be picked up from the queue and proceed to synthesis
+        tokio::time::timeout(Duration::from_secs(5), flow.synthesis_requested.notified())
+            .await
+            .expect("turn 2 from pending queue must be drained and reach synthesis");
+
+        assert_eq!(flow.runtime.pending_utterance_count(), 0);
+        flow.release_synthesis.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), flow.sink.draining.notified())
+            .await
+            .expect("turn 2 audio must reach sink");
+        flow.sink.consumed.notify_one();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while flow.calls.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both turns must complete model completion");
+
+        assert_eq!(flow.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

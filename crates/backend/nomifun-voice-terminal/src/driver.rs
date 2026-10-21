@@ -152,6 +152,7 @@ pub struct VoiceSessionDriver {
     confirmation_deadline: Option<Instant>,
     listening_deadline: Option<Instant>,
     speech_started: bool,
+    simulated_now: Option<Instant>,
 }
 
 impl VoiceSessionDriver {
@@ -165,7 +166,21 @@ impl VoiceSessionDriver {
             confirmation_deadline: None,
             listening_deadline: None,
             speech_started: false,
+            simulated_now: None,
         }
+    }
+
+    pub fn now(&self) -> Instant {
+        self.simulated_now.unwrap_or_else(Instant::now)
+    }
+
+    pub fn set_simulated_now(&mut self, now: Instant) {
+        self.simulated_now = Some(now);
+    }
+
+    pub fn advance_time(&mut self, elapsed: Duration) {
+        let current = self.now();
+        self.simulated_now = Some(current + elapsed);
     }
 
     pub fn current_state(&self) -> AcousticState {
@@ -195,7 +210,7 @@ impl VoiceSessionDriver {
         let next = self.fsm.transition(event)?;
         if event == AcousticEvent::WakeHit {
             self.speech_started = false;
-            self.listening_deadline = Some(Instant::now() + Duration::from_secs(6));
+            self.listening_deadline = Some(self.now() + Duration::from_secs(180));
         } else if next == AcousticState::FollowUpListening && event == AcousticEvent::PlaybackDone {
             self.speech_started = false;
             self.listening_deadline = None;
@@ -213,7 +228,7 @@ impl VoiceSessionDriver {
         // Manage 8-second confirmation watchdog timer
         if next == AcousticState::ListeningConfirm {
             if self.confirmation_deadline.is_none() {
-                self.confirmation_deadline = Some(Instant::now() + Duration::from_secs(8));
+                self.confirmation_deadline = Some(self.now() + Duration::from_secs(8));
             }
         } else {
             self.confirmation_deadline = None;
@@ -231,13 +246,14 @@ impl VoiceSessionDriver {
 
     /// Periodic watchdog check: fires ConfirmTimeout if 8-second confirmation window expires.
     pub fn check_watchdog(&mut self) -> Result<Option<AcousticState>, IllegalTransitionError> {
+        let now = self.now();
         let state = self.fsm.state();
         if matches!(
             state,
             AcousticState::Listening | AcousticState::FollowUpListening
         ) && self
             .listening_deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+            .is_some_and(|deadline| now >= deadline)
         {
             let event = if state == AcousticState::Listening {
                 AcousticEvent::ListenTimeout
@@ -250,7 +266,7 @@ impl VoiceSessionDriver {
             || state == AcousticState::AwaitingConfirmation)
             && let Some(deadline) = self.confirmation_deadline
         {
-            if Instant::now() >= deadline {
+            if now >= deadline {
                 self.confirmation_deadline = None;
                 let next = self.handle_event(AcousticEvent::ConfirmTimeout)?;
                 return Ok(Some(next));
@@ -265,10 +281,10 @@ impl VoiceSessionDriver {
         self.listening_deadline = None;
     }
 
-    pub fn limit_confirmation_window(&mut self,remaining:Duration) {
-        if self.current_state()==AcousticState::ListeningConfirm {
-            let limit=Instant::now()+remaining.min(Duration::from_secs(8));
-            self.confirmation_deadline=Some(self.confirmation_deadline.map_or(limit,|deadline|deadline.min(limit)));
+    pub fn limit_confirmation_window(&mut self, remaining: Duration) {
+        if self.current_state() == AcousticState::ListeningConfirm {
+            let limit = self.now() + remaining.min(Duration::from_secs(8));
+            self.confirmation_deadline = Some(self.confirmation_deadline.map_or(limit, |deadline| deadline.min(limit)));
         }
     }
 
@@ -277,21 +293,24 @@ impl VoiceSessionDriver {
     }
 
     pub fn expire_listening_deadline(&mut self) {
-        self.listening_deadline = Some(Instant::now().checked_sub(Duration::from_millis(10)).unwrap_or_else(Instant::now));
+        let now = self.now();
+        self.listening_deadline = Some(now.checked_sub(Duration::from_millis(10)).unwrap_or(now));
     }
 
     pub fn remaining_listening_time(&self) -> Option<Duration> {
+        let now = self.now();
         self.listening_deadline
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .map(|deadline| deadline.saturating_duration_since(now))
     }
 
     pub fn compensate_listening_feedback(&mut self, elapsed: Duration) -> Option<Duration> {
         if self.fsm.state() != AcousticState::Listening || self.speech_started {
             return None;
         }
+        let now = self.now();
         let deadline = self.listening_deadline.as_mut()?;
         *deadline += elapsed;
-        Some(deadline.saturating_duration_since(Instant::now()))
+        Some(deadline.saturating_duration_since(now))
     }
 
     /// A cue completion must not rearm a deadline after speech has already begun.
@@ -300,11 +319,11 @@ impl VoiceSessionDriver {
             return false;
         }
         let seconds = match self.fsm.state() {
-            AcousticState::Listening => 6,
+            AcousticState::Listening => 180,
             AcousticState::FollowUpListening => 180,
             _ => return false,
         };
-        self.listening_deadline = Some(Instant::now() + Duration::from_secs(seconds));
+        self.listening_deadline = Some(self.now() + Duration::from_secs(seconds));
         true
     }
 
@@ -315,6 +334,7 @@ impl VoiceSessionDriver {
         self.confirmation_deadline = None;
         self.listening_deadline = None;
         self.speech_started = false;
+        self.simulated_now = None;
     }
 }
 

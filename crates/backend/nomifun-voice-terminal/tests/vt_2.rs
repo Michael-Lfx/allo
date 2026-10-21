@@ -242,3 +242,64 @@ async fn test_vt_2_07_offline_network_fallback() {
     assert_eq!(driver.current_state(), AcousticState::Idle);
     assert!(sink.frame_count() > 0, "error.wav must have been written to sink");
 }
+
+
+// ============================================================================
+// C06: 180s Simulated Clock Boundary Tests
+// ============================================================================
+
+#[test]
+fn test_c06_180s_simulated_clock_boundaries() {
+    use std::time::Instant;
+    let mut driver = VoiceSessionDriver::new();
+    let base = Instant::now();
+    driver.set_simulated_now(base);
+
+    // 1. Initial WakeHit enters Listening with 180s deadline
+    driver.handle_event(AcousticEvent::WakeHit).unwrap();
+    assert_eq!(driver.current_state(), AcousticState::Listening);
+
+    // 2. Advance 179s 999ms -> still within deadline, no timeout
+    driver.advance_time(Duration::from_millis(179_999));
+    assert_eq!(driver.check_watchdog().unwrap(), None);
+    assert_eq!(driver.current_state(), AcousticState::Listening);
+
+    // 3. Advance another 2ms (total 180.001s) -> watchdog triggers ListenTimeout, transitioning to Idle
+    driver.advance_time(Duration::from_millis(2));
+    let timeout_result = driver.check_watchdog().unwrap();
+    assert_eq!(timeout_result, Some(AcousticState::Idle));
+    assert_eq!(driver.current_state(), AcousticState::Idle);
+
+    // 4. SpeechEnd before deadline enters Deciding and leaves Listening
+    let mut driver2 = VoiceSessionDriver::new();
+    driver2.set_simulated_now(base);
+    driver2.handle_event(AcousticEvent::WakeHit).unwrap();
+    assert_eq!(driver2.current_state(), AcousticState::Listening);
+    driver2.advance_time(Duration::from_secs(100));
+    driver2.handle_event(AcousticEvent::SpeechEnd).unwrap();
+    assert_eq!(driver2.current_state(), AcousticState::Deciding);
+    // Advance beyond original 180s (another 100s, total 200s)
+    driver2.advance_time(Duration::from_secs(100));
+    assert_eq!(driver2.check_watchdog().unwrap(), None, "deciding state must not trigger listening idle timeout");
+
+    // 5. FollowUpListening warm follow-up window (180s)
+    let mut driver3 = VoiceSessionDriver::new();
+    driver3.set_simulated_now(base);
+    driver3.handle_event(AcousticEvent::WakeHit).unwrap();
+    driver3.handle_event(AcousticEvent::SpeechEnd).unwrap();
+    driver3.handle_event(AcousticEvent::IntentChat).unwrap();
+    driver3.handle_event(AcousticEvent::PlaybackDone).unwrap();
+    assert_eq!(driver3.current_state(), AcousticState::FollowUpListening);
+    assert!(driver3.begin_listening_window());
+
+    // Advance 179.999s -> still in FollowUpListening
+    driver3.advance_time(Duration::from_millis(179_999));
+    assert_eq!(driver3.check_watchdog().unwrap(), None);
+    assert_eq!(driver3.current_state(), AcousticState::FollowUpListening);
+
+    // Advance 2ms -> FollowUpTimeout triggered, returns Some(Idle)
+    driver3.advance_time(Duration::from_millis(2));
+    let fu_timeout = driver3.check_watchdog().unwrap();
+    assert_eq!(fu_timeout, Some(AcousticState::Idle));
+    assert_eq!(driver3.current_state(), AcousticState::Idle);
+}

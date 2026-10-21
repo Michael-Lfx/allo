@@ -1,5 +1,7 @@
 # voice-agent 文档目录 (AI Mate Voice Agent Docs)
 
+> **2026-10-22 页面与桌宠联合验收补充**：[语音页面、工作区会话与桌宠联动方案](execution/voice-ui-pet-linkage-acceptance-plan-2026-10-22.zh.md)。固定 c308b0158 核查：Flowy/Bolt 初始化和最后伙伴删除保护已有代码，但新装默认显示、桌宠统一语音按钮、主会话连续语音态和可视队列尚未闭环；新增 UI0–UI4、24 个 VP 验收用例及 Qoder 0.4.8 静态复核。定向前端 96/96、i18n/theme 通过，TypeScript 仍有 60 条未归因错误；浏览器/Tauri/设备未签核。本轮只更新文档，不将后端测试等同界面联动完成。
+
 > **2026-10-21 R1 进度与后续实施**：[R1–R5 串行执行辅导](execution/R1-R5-execution-coaching-2026-10-21.zh.md)。含当前修复核验、策略/采集缺口及每片代码入口、边界、测试与命令；最新审查见 [R1 §9](execution/R1-voice-message-task-execution-plan-2026-10-20.zh.md)。历史正文保留，局部编译通过不等于 R1 全流程完成。
 
 > **2026-10-20 rev2 源码复审**：[v0.4 工作区连续会话 PRD](PRD-voice-companion-v0.4.zh.md)与[Qoder/远端源码核验及实施就绪结论](execution/qoder-alignment-rev2-review-2026-10-20.zh.md)。补齐可信消息绑定、时间线与模型上下文分离、最小队列阶段出口；R1 可进入契约验证，R5 资源交付仍有门禁。均为文档，未实施业务代码；原方案和历史记录保留。
@@ -77,3 +79,5 @@ AI Mate 无头伴侣主机语音交互方案的权威文档集。两层结构：
 | [R串行执行计划](execution/R-auditory-feedback-plan.zh.md) | R0–R6切片、验收映射、证据格式及Owner离屏剧本；下一实施入口R0 |
 
 v0.1、原无屏基线与执行历史全文保留。旧D9禁止固定4秒滴答；当前轻量模式仅按用户新增需求提供有限且可取消的状态反馈，不启用持续背景音。
+
+2026-10-22 最终复核与下一轮唯一执行导航：[语音修复与桌宠联动交接](execution/voice-repair-final-handoff-2026-10-22.zh.md)。既有主链可保留；数据/身份、连续倾听和页面/桌宠联动仍按 C01–C09 与 VP-01–24 验收。本轮只更新文档，另有在途 epoch 代码修改，未签核其结果。

@@ -14,7 +14,9 @@ use nomifun_ai_agent::types::AgentRuntimeBuildOptions;
 use nomifun_ai_agent::AgentRuntimeRegistry;
 use nomifun_api_types::CreateConversationRequest;
 use nomifun_api_types::voice::VoiceDialogueRequest;
-use nomifun_app::voice_companion_manager::ConversationVoiceDialogueRecorder;
+use nomifun_app::voice_companion_manager::{
+    ConversationVoiceDialogueRecorder, VoiceCompanionProcessManager,
+};
 use nomifun_app::voice_dialogue::{
     VoiceDialoguePreflight, VoiceDialogueRecorder, VoiceDialogueRecorderError,
 };
@@ -539,12 +541,15 @@ async fn a_wake_binding_freezes_the_project_and_its_execution_workspace_across_n
     let create=|workspace:&std::path::Path|serde_json::from_value::<CreateConversationRequest>(serde_json::json!({"type":"nomi","name":"本地项目","extra":{"workspace":workspace.to_string_lossy()}})).unwrap();
     let a=service.create(USER_ID,create(workspace_a.path())).await.unwrap();let b=service.create(USER_ID,create(workspace_b.path())).await.unwrap();
     let candidate=Arc::new(std::sync::RwLock::new(Some(a.conversation_id.clone())));
-    let recorder=ConversationVoiceDialogueRecorder::new(service,USER_ID.into(),dir.path()).with_active_window_candidate(candidate.clone());
-    let frozen=recorder.freeze_session("frozen-session").await.unwrap().unwrap();assert_eq!(frozen.conversation_id,a.conversation_id);
+    let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()).with_active_window_candidate(candidate.clone());
+    let frozen=recorder.freeze_session("frozen-session").await.unwrap().unwrap();
+    let bound_conv=frozen.conversation_id.clone();
+    assert_ne!(bound_conv, a.conversation_id, "must resolve to workspace dedicated voice conversation per C03");
     *candidate.write().unwrap()=Some(b.conversation_id.clone());
     let request=VoiceDialogueRequest::scoped("frozen-session","frozen-turn","读取这个项目");
-    assert_eq!(recorder.preflight(&request).await.unwrap(),VoiceDialoguePreflight::Ready{conversation_id:a.conversation_id.clone()});
-    recorder.record_pair(&a.conversation_id,&request,r#"{"intent_type":"agent_task","understood_request":"读取当前项目。","task_goal":"读取项目A","spoken_ack":"未接受前不能播出"}"#).await.unwrap();
+    assert_eq!(recorder.preflight(&request).await.unwrap(),VoiceDialoguePreflight::Ready{conversation_id:bound_conv.clone()});
+    recorder.record_pair(&bound_conv,&request,r#"{"intent_type":"agent_task","understood_request":"读取当前项目。","task_goal":"读取项目A","spoken_ack":"未接受前不能播出"}"#).await.unwrap();
+    assert_eq!(service.list_messages(USER_ID,&a.conversation_id,Default::default()).await.unwrap().items.len(), 0, "original normal chat remains untouched");
     let command=VoiceTaskCommand{command_id:"voice-frozen-turn".into(),session_id:"frozen-session".into(),turn_id:"frozen-turn".into(),goal:"读取项目A".into(),record_id:request.voice_record_id.clone(),binding_id:request.binding_id.clone()};
     let config=recorder.task_configuration(&command).await.unwrap().unwrap();
     assert_eq!(config.config.workspace,nomifun_common::paths::canonicalize_simplified(workspace_a.path()).unwrap().to_string_lossy());
@@ -755,4 +760,265 @@ async fn review_missing_frozen_execution_cannot_bypass_the_cleared_conversation_
         result.is_err(),
         "cleared conversation with no frozen execution must be rejected, not Ok(None) that admits mutable fallback config"
     );
+}
+
+#[tokio::test]
+async fn test_c01_lock_inversion_barrier_prevention() {
+    let dir = tempfile::tempdir().unwrap();
+    let models = Arc::new(nomifun_voice_models::ModelManager::new(
+        dir.path().to_path_buf(),
+    ));
+    let manager = Arc::new(VoiceCompanionProcessManager::new(models, dir.path()));
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let m1 = manager.clone();
+    let b1 = barrier.clone();
+    let handle1 = tokio::spawn(async move {
+        for i in 0..100 {
+            let snap = nomifun_api_types::voice::VoiceSessionSnapshot {
+                instance_id: "daemon-test".into(),
+                seq: i + 1,
+                phase: nomifun_api_types::voice::VoiceSessionPhase::Listening,
+                acoustic_ready: true,
+                ..Default::default()
+            };
+            m1.project_snapshot_for_test(snap, 0);
+            if i % 10 == 0 {
+                b1.wait().await;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let m2 = manager.clone();
+    let b2 = barrier.clone();
+    let handle2 = tokio::spawn(async move {
+        for i in 0..100 {
+            let task = nomifun_api_types::voice::VoiceTaskSnapshot {
+                command_id: format!("cmd-{i}"),
+                session_id: "session-test".into(),
+                acoustic_turn_id: format!("turn-{i}"),
+                conversation_id: Some("conv-test".into()),
+                message_id: Some(format!("msg-{i}")),
+                runtime_turn_id: None,
+                status: nomifun_api_types::voice::VoiceTaskStatus::Accepted,
+                result_ok: None,
+                result_text: None,
+                error_code: None,
+            };
+            m2.project_task_for_test(task);
+            if i % 10 == 0 {
+                b2.wait().await;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let (r1, r2) = tokio::join!(handle1, handle2);
+        r1.unwrap();
+        r2.unwrap();
+    })
+    .await
+    .expect("concurrent project and project_task must not deadlock");
+}
+
+#[tokio::test]
+async fn test_c03_workspace_routing_and_isolation() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_path = ws_dir.path().to_string_lossy().to_string();
+
+    // Create two normal chats that both point to the same workspace
+    let chat1 = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "Normal Chat 1",
+        "extra": { "workspace": ws_path.clone() },
+    })).unwrap()).await.unwrap();
+
+    let chat2 = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "Normal Chat 2",
+        "extra": { "workspace": ws_path.clone() },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(chat1.conversation_id.clone())));
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+        .with_active_window_candidate(candidate.clone());
+
+    // Call preflight with chat1 as candidate
+    let req1 = VoiceDialogueRequest::scoped("c03-session-1", "turn-1", "帮我看看这个项目");
+    let res1 = recorder.preflight(&req1).await.unwrap();
+    let voice_conv_id1 = match res1 {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!("expected Ready"),
+    };
+
+    // Voice conversation must NOT be chat1
+    assert_ne!(voice_conv_id1, chat1.conversation_id);
+
+    // Record dialogue pair for req1
+    recorder.record_pair(&voice_conv_id1, &req1, r#"{"intent_type":"chat","understood_request":"查看项目","reply_tts":"好的"}"#).await.unwrap();
+
+    // Switch candidate to chat2
+    *candidate.write().unwrap() = Some(chat2.conversation_id.clone());
+
+    // Call preflight with chat2 as candidate
+    let req2 = VoiceDialogueRequest::scoped("c03-session-2", "turn-2", "项目里有什么文件");
+    let res2 = recorder.preflight(&req2).await.unwrap();
+    let voice_conv_id2 = match res2 {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!("expected Ready"),
+    };
+
+    // Both normal chats in the same workspace MUST resolve to the SAME dedicated voice conversation!
+    assert_eq!(voice_conv_id1, voice_conv_id2);
+
+    // Verify chat1 and chat2 have 0 messages in DB
+    assert_eq!(service.list_messages(USER_ID, &chat1.conversation_id, Default::default()).await.unwrap().items.len(), 0, "chat1 must have 0 messages");
+    assert_eq!(service.list_messages(USER_ID, &chat2.conversation_id, Default::default()).await.unwrap().items.len(), 0, "chat2 must have 0 messages");
+
+    // The dedicated voice conversation has the recorded message
+    assert!(service.list_messages(USER_ID, &voice_conv_id1, Default::default()).await.unwrap().items.len() > 0, "dedicated voice conversation must receive the messages");
+}
+
+#[tokio::test]
+async fn test_c04_corrupted_registry_and_crash_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_path = ws_dir.path().to_string_lossy().to_string();
+
+    let chat = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "Normal Chat",
+        "extra": { "workspace": ws_path.clone() },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(chat.conversation_id.clone())));
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+        .with_active_window_candidate(candidate.clone());
+    let sessions_path = dir.path().join("voice").join(format!("workspace-sessions-{USER_ID}.json"));
+    std::fs::create_dir_all(sessions_path.parent().unwrap()).unwrap();
+
+    // 1. Corrupted registry file: writing invalid JSON must return Err(VoiceDialogueRecorderError::WriteFailed)
+    std::fs::write(&sessions_path, b"NOT_A_VALID_JSON{[[{").unwrap();
+    let req1 = VoiceDialogueRequest::scoped("c04-session", "turn-1", "测试损坏注册表");
+    let err = recorder.preflight(&req1).await.unwrap_err();
+    assert!(matches!(err, VoiceDialogueRecorderError::WriteFailed(_)), "corrupted registry must return WriteFailed error");
+
+    // 2. Crash recovery: simulated state where registry has creation_key but conversation_id is empty,
+    // and the conversation ALREADY exists in DB under that creation_key.
+    let canonical = nomifun_common::paths::canonicalize_simplified(ws_dir.path()).unwrap();
+    let canonical_str = canonical.to_string_lossy().to_string();
+    let test_creation_key = format!("voice-create:workspace:{canonical_str}:999999");
+
+    // Pre-create the conversation with this creation_key in DB
+    let created = service.create_voice_idempotent(
+        USER_ID,
+        serde_json::from_value(serde_json::json!({
+            "type": "nomi",
+            "name": "语音 - 恢复测试",
+            "extra": { "voice": true },
+        })).unwrap(),
+        &test_creation_key,
+        &canonical_str,
+        None,
+    ).await.unwrap();
+
+    // Write crash recovery registry state: creation_key is set, conversation_id is EMPTY ("")
+    let registry_json = serde_json::json!({
+        "sessions": {
+            canonical_str.clone(): {
+                "workspace": canonical_str.clone(),
+                "conversation_id": "",
+                "creation_key": test_creation_key,
+                "last_user_interaction_at": nomifun_common::now_ms()
+            }
+        }
+    });
+    std::fs::write(&sessions_path, serde_json::to_vec(&registry_json).unwrap()).unwrap();
+
+    // Now call preflight again: it must recover created.conversation_id and NOT create a new one!
+    let req2 = VoiceDialogueRequest::scoped("c04-session-rec", "turn-rec", "测试崩溃恢复");
+    let res = recorder.preflight(&req2).await.unwrap();
+    match res {
+        VoiceDialoguePreflight::Ready { conversation_id } => {
+            assert_eq!(conversation_id, created.conversation_id, "crash recovery must reuse existing conversation by creation_key");
+        }
+        _ => panic!("expected Ready"),
+    }
+
+    // Verify registry was backfilled with conversation_id
+    let updated_bytes = std::fs::read(&sessions_path).unwrap();
+    let updated_json: serde_json::Value = serde_json::from_slice(&updated_bytes).unwrap();
+    assert_eq!(
+        updated_json["sessions"][&canonical_str]["conversation_id"].as_str().unwrap(),
+        created.conversation_id
+    );
+}
+
+#[tokio::test]
+async fn test_c08_context_truncation_prioritizes_recent_correction() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
+
+    // Turn 1: bulky turn (>1000 chars)
+    let bulky_part = "这是一段非常冗长详细的对话历史记录，用户在其中详细描述了各种背景、业务历史、前期讨论内容以及各种无关紧要的细节要求。";
+    let bulky_text = bulky_part.repeat(18);
+    let first = VoiceDialogueRequest::scoped("c08-context", "turn-1", &bulky_text);
+    let conversation = match recorder.preflight(&first).await.unwrap() {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!(),
+    };
+    recorder.record_pair(
+        &conversation,
+        &first,
+        r#"{"intent_type":"chat","understood_request":"用户提供了冗长的背景描述","reply_tts":"了解了您的背景信息。"}"#,
+    ).await.unwrap();
+
+    // Turn 2: short recent correction
+    let second = VoiceDialogueRequest::scoped("c08-context", "turn-2", "不是北京，改深圳，数量改为 2 不是 20");
+    recorder.preflight(&second).await.unwrap();
+    recorder.record_pair(
+        &conversation,
+        &second,
+        r#"{"intent_type":"chat","understood_request":"用户修正城市为深圳数量为2","reply_tts":"好的，已为您更正为深圳和数量2。"}"#,
+    ).await.unwrap();
+
+    // Turn 3: Agent Task
+    let third = VoiceDialogueRequest::scoped("c08-context", "turn-3", "帮我创建订单");
+    recorder.preflight(&third).await.unwrap();
+    recorder.record_pair(
+        &conversation,
+        &third,
+        r#"{"intent_type":"agent_task","understood_request":"用户要求创建订单","task_goal":"创建订单","spoken_ack":"正在创建订单"}"#,
+    ).await.unwrap();
+
+    let command = nomifun_api_types::voice::VoiceTaskCommand {
+        command_id: "c08-order-command".into(),
+        session_id: "c08-context".into(),
+        turn_id: "turn-3".into(),
+        goal: "创建订单".into(),
+        record_id: third.voice_record_id.clone(),
+        binding_id: third.binding_id.clone(),
+    };
+
+    let handoff = recorder
+        .task_configuration(&command)
+        .await
+        .unwrap()
+        .unwrap()
+        .handoff_content
+        .unwrap();
+
+    // Handoff must preserve the recent correction and turn_id!
+    assert!(handoff.contains("[轮次 turn-2]"), "handoff must preserve turn-2 marker: {handoff}");
+    assert!(handoff.contains("深圳"), "handoff must preserve recent city correction: {handoff}");
+    assert!(handoff.contains("数量改为 2"), "handoff must preserve recent quantity correction: {handoff}");
+    // Bulky turn 1 was omitted due to budget exhaustion from reverse traversal
+    assert!(handoff.contains("（更早轮次已按预算略过）"), "handoff must note omitted earlier turns: {handoff}");
+    assert!(!handoff.contains("这是一段非常冗长详细的对话历史记录"), "bulky turn 1 must be omitted to stay within budget: {handoff}");
 }

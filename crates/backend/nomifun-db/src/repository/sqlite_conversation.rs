@@ -3897,6 +3897,7 @@ impl IConversationRepository for SqliteConversationRepository {
         request_payload: &str,
         message: &MessageRow,
         now: i64,
+        expected_admission_epoch: Option<i64>,
     ) -> Result<ConversationMessageProjection, DbError> {
         let valid_content = serde_json::from_str::<serde_json::Value>(&message.content)
             .is_ok_and(|value| value.is_object());
@@ -3934,6 +3935,19 @@ impl IConversationRepository for SqliteConversationRepository {
         .await?;
         if owned.rows_affected() == 0 {
             return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let epoch: i64 = sqlx::query_scalar(
+                "SELECT admission_epoch FROM conversations WHERE conversation_id = ? AND user_id = ?",
+            )
+            .bind(conversation_id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if epoch != expected_epoch {
+                return Err(DbError::Conflict("voice_message_epoch_changed".into()));
+            }
         }
 
         // Claim the operation directly in its terminal state. The message is
@@ -5359,6 +5373,54 @@ impl IConversationRepository for SqliteConversationRepository {
         .bind(conversation_id)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    async fn insert_message_with_epoch(
+        &self,
+        message: &MessageRow,
+        user_id: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        let owned = sqlx::query(
+            "UPDATE conversations SET updated_at = updated_at \
+             WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(&message.conversation_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if owned.rows_affected() == 0 {
+            return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let epoch: i64 = sqlx::query_scalar(
+                "SELECT admission_epoch FROM conversations WHERE conversation_id = ? AND user_id = ?",
+            )
+            .bind(&message.conversation_id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if epoch != expected_epoch {
+                return Err(DbError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
+
+        if let Some(msg_id) = message.msg_id.as_deref()
+            && msg_id != message.message_id
+        {
+            lock_message_parent(
+                &mut tx,
+                &message.conversation_id,
+                msg_id,
+                "Message parent",
+            )
+            .await?;
+        }
+        insert_message_row(&mut tx, message).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError> {
