@@ -57,7 +57,7 @@
 ## Tickets
 
 - [d1](tickets/d1-design-and-code-state.md) 设计定稿 + 代码现状 + 生长课复用面盘点——**已关**（结论进本 map 与 asset）。
-- [t1](tickets/t1-inventory-and-triage.md) 全量清点 + 规则/LLM 分诊（core/prereq/practice/mixed/noise/duplicate/uncertain，逐项理由；不确定保守保留）。
+- [t1](tickets/t1-inventory-and-triage.md) 全量清点 + 规则/LLM 分诊（core/prereq/practice/mixed/noise/duplicate/uncertain，逐项理由；不确定保守保留）——**已关**（`run_kb_triage` + structured_batch，363 测试绿）。
 - [t2](tickets/t2-evidence-driven-structure.md) 证据驱动的结构发现：多查询检索 → 候选概念/概念图 + 章节 spine → critique/revise → 确定性去环/拓扑/覆盖补齐。
 - [t3](tickets/t3-batched-expansion.md) 分批展开 + 截断自愈 + 来源映射/覆盖校验（40/批、拆半、单文件兜底、长文拆分/短文合并、标题忠实）。
 - [t4](tickets/t4-persistence-and-migration.md) 单个 `course_source_plan_json` 快照列 + 迁移（高风险区，需 owner 签核；t1–t3 形状稳定后做）。
