@@ -1,14 +1,16 @@
+import { HERDSMAN_PLATFORM } from '@/common/types/provider/herdsman';
 import { NOMIFUN_FREE_MODEL_PLATFORM } from '@/common/types/provider/managedModelService';
 
 const modelSelectorProviderRank = (platform?: string): number => {
+  if (platform === HERDSMAN_PLATFORM) return -1;
   if (platform === NOMIFUN_FREE_MODEL_PLATFORM) return 1;
   return 0;
 };
 
 /**
- * Keep supplier providers easiest to reach in model selectors, followed by the
- * managed free provider last. Relative
- * priority inside each group remains exactly as returned by the provider API.
+ * Keep the local Herdsman engine first, then supplier providers, then the
+ * managed free provider. Relative priority inside each group remains exactly
+ * as returned by the provider API.
  */
 export const orderModelSelectorProviders = <T extends { platform?: string }>(providers: readonly T[]): T[] =>
   providers

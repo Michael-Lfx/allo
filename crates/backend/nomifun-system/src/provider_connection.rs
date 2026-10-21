@@ -63,6 +63,7 @@ impl ProviderConnectionService {
         req: UpsertProviderConnectionRequest,
     ) -> Result<ProviderConnectionResponse, AppError> {
         self.require_provider(provider_id).await?;
+        self.reject_herdsman(provider_id).await?;
         validate_role(&req.role)?;
         validate_base_url(&req.base_url)?;
         let auth_scheme = req.auth_scheme.trim().to_ascii_lowercase();
@@ -112,7 +113,21 @@ impl ProviderConnectionService {
     /// Delete one connection profile; returns whether a row was removed.
     pub async fn delete(&self, provider_id: &str, role: &str) -> Result<bool, AppError> {
         self.require_provider(provider_id).await?;
+        self.reject_herdsman(provider_id).await?;
         Ok(self.repo.delete(provider_id, role).await?)
+    }
+
+    async fn reject_herdsman(&self, provider_id: &str) -> Result<(), AppError> {
+        if nomifun_common::is_herdsman_provider_id(provider_id) {
+            return crate::herdsman::forbid_herdsman_mutation(
+                nomifun_common::HERDSMAN_PLATFORM,
+                provider_id,
+            );
+        }
+        let Some(provider) = self.provider_repo.find_by_id(provider_id).await? else {
+            return Ok(());
+        };
+        crate::herdsman::forbid_herdsman_mutation(&provider.platform, provider_id)
     }
 
     /// Validate the canonical id and require the provider row to exist.

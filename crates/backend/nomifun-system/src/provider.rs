@@ -6,7 +6,8 @@ use nomifun_api_types::{
     UpdateProviderRequest,
 };
 use nomifun_common::{
-    AppError, ProviderId, ProviderInUseDetails, decrypt_string, encrypt_string,
+    AppError, ProviderId, ProviderInUseDetails, decrypt_string, encrypt_string, is_herdsman_platform,
+    is_herdsman_provider_id,
 };
 use nomifun_db::{
     CreateProviderParams, IProviderConnectionRepository, IProviderModelRepository,
@@ -231,6 +232,7 @@ impl ProviderService {
             .find_by_id(id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Provider {id} not found")))?;
+        crate::herdsman::forbid_herdsman_mutation(&source.platform, id)?;
         if is_managed_provider_platform(&source.platform) {
             return Err(AppError::Forbidden(
                 "Managed model providers must be changed through their dedicated model-service API"
@@ -368,13 +370,14 @@ impl ProviderService {
     // -----------------------------------------------------------------------
 
     async fn reject_persisted_managed_provider(&self, id: &str) -> Result<(), AppError> {
-        if let Some(row) = self.repo.find_by_id(id).await?
-            && is_managed_provider_platform(&row.platform)
-        {
-            return Err(AppError::Forbidden(
-                "Managed model providers must be changed through their dedicated model-service API"
-                    .into(),
-            ));
+        if let Some(row) = self.repo.find_by_id(id).await? {
+            crate::herdsman::forbid_herdsman_mutation(&row.platform, id)?;
+            if is_managed_provider_platform(&row.platform) {
+                return Err(AppError::Forbidden(
+                    "Managed model providers must be changed through their dedicated model-service API"
+                        .into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -439,7 +442,7 @@ impl ProviderService {
             ))
         })?;
         let managed = is_managed_provider_platform(&row.platform);
-        let api_key = if managed {
+        let api_key = if managed || is_herdsman_platform(&row.platform) {
             String::new()
         } else {
             decrypt_string(&row.api_key_encrypted, &self.encryption_key)?
@@ -575,6 +578,16 @@ fn validate_create_request(req: &CreateProviderRequest) -> Result<(), AppError> 
 }
 
 fn reject_managed_create(req: &CreateProviderRequest) -> Result<(), AppError> {
+    if is_herdsman_platform(req.platform.trim())
+        || req
+            .provider_id
+            .as_deref()
+            .is_some_and(is_herdsman_provider_id)
+    {
+        return Err(AppError::Forbidden(
+            crate::herdsman::HERDSMAN_MUTATION_FORBIDDEN.into(),
+        ));
+    }
     if is_managed_provider_platform(req.platform.trim()) {
         return Err(AppError::Forbidden(
             "Managed model providers are created and configured by their dedicated model-service API"
@@ -585,6 +598,16 @@ fn reject_managed_create(req: &CreateProviderRequest) -> Result<(), AppError> {
 }
 
 fn reject_managed_update(req: &UpdateProviderRequest) -> Result<(), AppError> {
+    if req
+        .platform
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(is_herdsman_platform)
+    {
+        return Err(AppError::Forbidden(
+            crate::herdsman::HERDSMAN_MUTATION_FORBIDDEN.into(),
+        ));
+    }
     if req
         .platform
         .as_deref()
@@ -795,6 +818,23 @@ mod tests {
         };
         assert!(matches!(
             reject_managed_create(&by_platform),
+            Err(AppError::Forbidden(_))
+        ));
+
+        let herdsman_platform = CreateProviderRequest {
+            platform: nomifun_common::HERDSMAN_PLATFORM.into(),
+            ..sample_create_request()
+        };
+        assert!(matches!(
+            reject_managed_create(&herdsman_platform),
+            Err(AppError::Forbidden(message)) if message == crate::herdsman::HERDSMAN_MUTATION_FORBIDDEN
+        ));
+        let herdsman_id = CreateProviderRequest {
+            provider_id: Some(nomifun_common::HERDSMAN_PROVIDER_ID.to_owned()),
+            ..sample_create_request()
+        };
+        assert!(matches!(
+            reject_managed_create(&herdsman_id),
             Err(AppError::Forbidden(_))
         ));
     }

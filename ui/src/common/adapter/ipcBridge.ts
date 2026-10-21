@@ -1912,6 +1912,8 @@ export const mode = {
    */
   fetchModelList: httpPost<FetchModelsResponse, FetchModelsAnonymousRequest>('/api/providers/fetch-models'),
   detectProtocol: httpPost<ProtocolDetectionResponse, ProtocolDetectionRequest>('/api/providers/detect-protocol'),
+  /** Fired when a process-owned provider row changes without a user edit. */
+  onCatalogChanged: wsEmitter<{ source?: string }>('provider.catalog-changed'),
 };
 
 // ---------------------------------------------------------------------------

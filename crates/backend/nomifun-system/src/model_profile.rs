@@ -47,7 +47,20 @@ impl ModelProfileService {
     }
 
     async fn ensure_provider_writable(&self, provider_id: &str) -> Result<(), AppError> {
+        if nomifun_common::is_herdsman_provider_id(provider_id) {
+            return crate::herdsman::forbid_herdsman_mutation(
+                nomifun_common::HERDSMAN_PLATFORM,
+                provider_id,
+            );
+        }
+        // Free-model writes stay open when the feature is on, but a herdsman
+        // platform is still rejected when the provider row can be loaded.
         if self.include_managed_free_models {
+            if let Some(provider_repo) = self.provider_repo.as_ref()
+                && let Some(provider) = provider_repo.find_by_id(provider_id).await?
+            {
+                crate::herdsman::forbid_herdsman_mutation(&provider.platform, provider_id)?;
+            }
             return Ok(());
         }
         let Some(provider_repo) = self.provider_repo.as_ref() else {
@@ -57,6 +70,7 @@ impl ModelProfileService {
             .find_by_id(provider_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Provider '{provider_id}' not found")))?;
+        crate::herdsman::forbid_herdsman_mutation(&provider.platform, provider_id)?;
         // The service-local flag is the policy boundary for this write path;
         // do not re-read the process-global OnceLock here.
         if nomifun_common::is_free_model_platform(&provider.platform) {

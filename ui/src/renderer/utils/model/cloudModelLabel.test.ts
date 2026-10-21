@@ -21,6 +21,11 @@ describe('formatCloudModelLabel', () => {
   test('prefers description over raw id', () => {
     expect(formatCloudModelLabel('AIPC-glm-4.7', { 'AIPC-glm-4.7': 'GLM 4.7' })).toBe('GLM 4.7');
   });
+
+  test('uses a description for the auto wire id and otherwise keeps Auto', () => {
+    expect(formatCloudModelLabel('auto', { auto: 'Token Router' })).toBe('Token Router');
+    expect(formatCloudModelLabel('auto')).toBe('Auto');
+  });
 });
 
 describe('hydrateProviderWithModel', () => {

@@ -153,7 +153,15 @@ export const FLOWY_BUILTIN_PROVIDER_ID =
 export const GOOGLE_AUTH_PROVIDER_ID =
   '0190f5fe-7c00-7a00-8000-000000000202' as ProviderId;
 
-const RESERVED_PROVIDER_IDS = new Set<string>([FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID]);
+/** Local Herdsman engine projection. Discovered by the backend, not created by the user. */
+export const HERDSMAN_PROVIDER_ID =
+  '0190f5fe-7c00-7a00-8000-000000000203' as ProviderId;
+
+const RESERVED_PROVIDER_IDS = new Set<string>([
+  FLOWY_BUILTIN_PROVIDER_ID,
+  GOOGLE_AUTH_PROVIDER_ID,
+  HERDSMAN_PROVIDER_ID,
+]);
 
 const LEGACY_PROVIDER_ID_ALIASES: Record<string, ProviderId> = {
   'flowy-cloud': FLOWY_BUILTIN_PROVIDER_ID,

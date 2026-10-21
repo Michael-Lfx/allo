@@ -61,6 +61,9 @@ let lastProviderCatalogRefreshAt = 0;
 let lastProviderCatalogRefreshResult: ProviderCatalogRefreshResult | null = null;
 let providersAutoRefreshPromise: Promise<ProviderCatalogRefreshResult> | null = null;
 let providersAutoRefreshContextKey: string | null = null;
+let localProviderCatalogPromise: Promise<IProvider[]> | null = null;
+let catalogListenerCount = 0;
+let stopCatalogListeners: (() => void) | null = null;
 
 const getProviderCatalogContextKey = (options: ProviderCatalogRefreshOptions = {}): string =>
   `${options.accountId ?? providerCatalogAccountId}:${options.storageGeneration ?? providerCatalogStorageGeneration}`;
@@ -170,6 +173,63 @@ export function refreshProvidersCatalogIfStale(
   return refreshProvidersCatalog(options);
 }
 
+/**
+ * Reload providers and task catalogs from the local API. Used when a
+ * process-owned row such as Herdsman changes; this path does not call the
+ * cloud catalog sync.
+ */
+export async function refreshLocalProviderCatalog(): Promise<IProvider[]> {
+  if (localProviderCatalogPromise) return localProviderCatalogPromise;
+  const requestGeneration = (providerCatalogGeneration += 1);
+  const refreshPromise = (async () => {
+    const providers = await fetchProviders();
+    if (requestGeneration !== providerCatalogGeneration) return providers;
+    lastProviderCatalogRefreshAt = Date.now();
+    lastProviderCatalogRefreshResult = { providers };
+    await mutate(PROVIDERS_SWR_KEY, providers, { revalidate: false });
+    await mutate(
+      (key: unknown) => typeof key === 'string' && key.startsWith('models-for-task:'),
+      undefined,
+      { revalidate: true }
+    );
+    return providers;
+  })();
+  localProviderCatalogPromise = refreshPromise;
+  try {
+    return await refreshPromise;
+  } finally {
+    if (localProviderCatalogPromise === refreshPromise) {
+      localProviderCatalogPromise = null;
+    }
+  }
+}
+
+function retainLocalProviderCatalogSync(): () => void {
+  catalogListenerCount += 1;
+  if (catalogListenerCount === 1) {
+    const refresh = () => {
+      void refreshLocalProviderCatalog().catch((error) => {
+        console.warn('[providers] Local catalog refresh failed:', error);
+      });
+    };
+    const stopCatalog = ipcBridge.mode.onCatalogChanged.on(refresh);
+    const stopReconnected = ipcBridge.conversation.reconnected.on(refresh);
+    stopCatalogListeners = () => {
+      stopCatalog();
+      stopReconnected();
+    };
+    refresh();
+  }
+  return () => {
+    catalogListenerCount -= 1;
+    if (catalogListenerCount <= 0) {
+      catalogListenerCount = 0;
+      stopCatalogListeners?.();
+      stopCatalogListeners = null;
+    }
+  };
+}
+
 export const useProvidersQuery = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
   const query = useSWR<IProvider[]>(
@@ -189,6 +249,12 @@ export const useProvidersQuery = (options?: { enabled?: boolean }) => {
         : query.data,
     [freeModelsEnabled, query.data],
   );
+
+  // useEffect必要性：应用 WebSocket；目的：牧马人连通状态变化后刷新本地模型目录。未使用 ahooks：订阅的是自有 emitter，不是 DOM 事件。
+  useEffect(() => {
+    if (!enabled) return;
+    return retainLocalProviderCatalogSync();
+  }, [enabled]);
 
   return { ...query, data };
 };
