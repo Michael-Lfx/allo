@@ -30,7 +30,7 @@ use nomifun_db::{
     SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
-use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
+use nomifun_realtime::{BroadcastEventBus, EventBroadcaster, WebSocketManager};
 use nomifun_terminal::{TerminalEventEmitter, TerminalLifecycleServer, TerminalService};
 
 use crate::config::{AppConfig, load_or_create_data_encryption_key};
@@ -1114,6 +1114,8 @@ pub struct AppServices {
     pub(crate) _managed_model_server: Option<nomifun_system::ManagedModelServer>,
     /// Keeps the immediate + periodic managed catalog refresh loop alive.
     pub(crate) _managed_model_refresh_task: Option<nomifun_system::ManagedModelRefreshTask>,
+    /// Holds the local Herdsman status pipe and projects its running models.
+    pub(crate) _herdsman_connection: nomifun_system::HerdsmanConnection,
     /// Authoritative per-model catalog rows (capability profiles + health;
     /// the multimodal model hub reads/writes these).
     pub provider_model_repo: Arc<dyn IProviderModelRepository>,
@@ -3757,6 +3759,20 @@ impl AppServices {
             "startup: AppServices cloud service ready (catalog sync deferred)"
         );
 
+        let catalog_bus = event_bus.clone();
+        let on_herdsman_catalog_changed: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            catalog_bus.broadcast(nomifun_api_types::WebSocketMessage::new(
+                "provider.catalog-changed",
+                serde_json::json!({ "source": "herdsman" }),
+            ));
+        });
+        let herdsman_connection = nomifun_system::start_herdsman_connection(
+            provider_repo_for_services.clone(),
+            provider_model_repo.clone(),
+            encryption_key,
+            on_herdsman_catalog_changed,
+        );
+
         let services = Self {
             database,
             _boot_reconciliation_authority: None,
@@ -3770,6 +3786,7 @@ impl AppServices {
             managed_model_service,
             _managed_model_server: managed_model_server,
             _managed_model_refresh_task: managed_model_refresh_task,
+            _herdsman_connection: herdsman_connection,
             provider_model_repo: provider_model_repo.clone(),
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),

@@ -3520,6 +3520,19 @@ mod tests {
     }
 
     #[test]
+    fn herdsman_token_router_uses_the_openai_client() {
+        assert_eq!(map_nomi_provider("herdsman", None), "openai");
+        let (base_url, compat) = resolve_nomi_url_and_compat(
+            "herdsman",
+            "http://127.0.0.1:16621/v1",
+            "openai",
+            false,
+        );
+        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:16621"));
+        assert!(compat.api_path.is_none());
+    }
+
+    #[test]
     fn resolve_domestic_openai_compatible_platforms_use_configured_chat_base() {
         for (platform, base) in [
             ("ark", "https://ark.cn-beijing.volces.com/api/v3"),

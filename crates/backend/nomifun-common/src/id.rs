@@ -223,6 +223,7 @@ pub fn is_reserved_provider_id(value: &str) -> bool {
         value,
         FLOWY_BUILTIN_PROVIDER_ID
             | GOOGLE_AUTH_PROVIDER_ID
+            | crate::herdsman::HERDSMAN_PROVIDER_ID
             | "flowy-cloud"
             | "google-auth-gemini"
     )
@@ -584,7 +585,11 @@ mod tests {
 
     #[test]
     fn provider_id_accepts_reserved_system_singletons() {
-        for reserved in [FLOWY_BUILTIN_PROVIDER_ID, GOOGLE_AUTH_PROVIDER_ID] {
+        for reserved in [
+            FLOWY_BUILTIN_PROVIDER_ID,
+            GOOGLE_AUTH_PROVIDER_ID,
+            crate::herdsman::HERDSMAN_PROVIDER_ID,
+        ] {
             let parsed = ProviderId::parse(reserved).unwrap();
             assert_eq!(parsed.as_str(), reserved);
             assert!(is_reserved_provider_id(reserved));

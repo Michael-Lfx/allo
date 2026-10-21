@@ -1490,6 +1490,15 @@
       "note": "Provider models run in the cloud, so avoid sending sensitive information. Custom provider models are currently available to Flowy only.",
       "scopeNote": "Finding a model by purpose now lives in the Chat / Voice / Vision / Creation / Embedding sections on the left. This page is only about access and credentials."
     },
+    "herdsman": {
+      "title": "Herdsman",
+      "searchingTitle": "Looking for Herdsman on this computer",
+      "searchingBody": "After Herdsman is installed and running, its running local models appear in conversation model lists, and requests stay on this machine.",
+      "connectedTitle": "Herdsman is connected",
+      "connectedBody": "Running local models can be selected in any conversation. A model leaves the list when it stops and comes back when it is running again.",
+      "disconnectedTitle": "Herdsman is not connected",
+      "disconnectedBody": "It reconnects when the engine is available again. A conversation that already selected it shows the model as unavailable until then."
+    },
     "modality": {
       "chatTitle": "Chat Models",
       "chatSubtitle": "Models that can hold a conversation. The default model for new sessions is set here too.",

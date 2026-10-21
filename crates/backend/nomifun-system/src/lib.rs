@@ -1,5 +1,6 @@
 //! System services: provider management, model fetching, settings, and version checks.
 pub mod bedrock_probe;
+pub mod herdsman;
 pub mod client_pref;
 pub mod managed_model;
 pub mod model_fetcher;
@@ -17,6 +18,7 @@ pub mod sysinfo;
 pub mod version;
 
 pub use bedrock_probe::{ConnectionTestRouterState, ConnectionTestService, connection_test_routes};
+pub use herdsman::{HerdsmanConnection, start_herdsman_connection};
 pub use client_pref::ClientPrefService;
 pub use managed_model::{
     DEFAULT_FREE_REFRESH_INTERVAL, FREE_MODEL_PLATFORM,

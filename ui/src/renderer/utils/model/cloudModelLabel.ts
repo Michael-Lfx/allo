@@ -8,8 +8,8 @@ export function formatCloudModelLabel(
   modelName: string,
   descriptions?: Record<string, string>
 ): string {
-  if (isAutoModel(modelName)) return AUTO_MODEL_LABEL;
   const described = descriptions?.[modelName]?.trim();
+  if (isAutoModel(modelName)) return described || AUTO_MODEL_LABEL;
   const raw = described || modelName;
   return raw.replace(/^AIPC-/i, '');
 }
