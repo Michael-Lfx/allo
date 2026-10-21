@@ -1010,7 +1010,7 @@ impl Tool for ComputerTool {
                 self.do_element_gesture(&input, enigo::Button::Left, 2, "double-click").await
             }
             "launch" => self.do_launch(&input).await,
-            "screenshot" if !self.image_input => self.do_observe().await,
+            "screenshot" if !self.image_input => self.do_observe(&input).await,
             "screenshot" => self.do_screenshot(&input).await,
             "cursor_position" => self.do_cursor_position().await,
             "list_windows" => self.do_list_windows().await,
