@@ -22,6 +22,7 @@ mod lesson;
 mod parser;
 mod sample;
 mod structured_batch;
+mod structure;
 mod terms;
 mod triage;
 #[cfg(test)]
@@ -348,6 +349,13 @@ pub use self::triage::run_kb_triage;
 pub use self::triage::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
+};
+// 证据驱动的结构发现（t2）：SourcePlan 类型与编排入口经 lib.rs 再导出
+// （ai-agent 简报披露消费 brief_line；t3 分批展开/t4 落库消费类型）。
+pub use self::structure::{
+    ChapterContentType, ConceptEdgeRelation, ConceptGraph, ConceptGraphEdge, ConceptGraphNode,
+    CoverageExclusion, CoverageFile, CoverageLedger, CoverageTopic, FileCoverageStatus,
+    PlannedChapter, SourceAnchor, SourceCount, SourceEvidence, SourcePlan, TopicStatus,
 };
 
 /// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。
