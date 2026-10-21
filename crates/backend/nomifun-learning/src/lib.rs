@@ -28,7 +28,13 @@ pub use lesson_draft::{
     LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
 };
 
-pub use generation::{Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure};
+pub use generation::{
+    Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
+};
+pub use generation::{
+    KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
+    KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
+};
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;

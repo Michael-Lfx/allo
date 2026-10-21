@@ -637,8 +637,8 @@ fn legacy_selection(
 
 /// 命名空间清洗（t4）：库名 trim 后把路径分隔符与控制字符替换为 `_`；清洗
 /// 后为空（或只剩 `.`/`..`）退回 `kb-{id 前 8 位}`——命名空间必须非空且不
-/// 携带路径语义。确定性纯函数。
-fn sanitize_namespace(name: &str, kb_id: &str) -> String {
+/// 携带路径语义。确定性纯函数。`pub(super)`：t1 分诊沿用同一清洗口径。
+pub(super) fn sanitize_namespace(name: &str, kb_id: &str) -> String {
     let mut cleaned = String::new();
     for ch in name.trim().chars() {
         if ch == '/' || ch == '\\' || ch.is_control() {
