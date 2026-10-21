@@ -294,6 +294,10 @@ impl VoiceCompanionRuntime {
         self
     }
 
+    pub fn update_task_status(&self, task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>) {
+        self.event_tx.update_task(task);
+    }
+
     pub async fn announce_task_result(&self, request: nomifun_api_types::voice::VoiceTaskResultAnnouncement) -> Result<(), &'static str> {
         if request.text.trim().is_empty() || request.text.len()>16_384 || request.command_id.is_empty() || request.command_id.len()>128 {return Err("task_result_invalid");}
         let notification_id = request.notification_id.clone().unwrap_or_else(|| request.command_id.clone());
@@ -627,7 +631,7 @@ impl VoiceCompanionRuntime {
         }
         let mut d = driver.lock().await;
         if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
+            let _ = event_tx.send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 4 });
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -687,7 +691,7 @@ impl VoiceCompanionRuntime {
                 && d.begin_listening_window()
             {
                 let _ = event_tx
-                    .send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
+                    .send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 4 });
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -710,7 +714,7 @@ impl VoiceCompanionRuntime {
                 && d.begin_listening_window()
             {
                 let _ = event_tx
-                    .send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 });
+                    .send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 4 });
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -1297,14 +1301,14 @@ impl VoiceCompanionRuntime {
         task_client: Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         active_turn: &Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
         generation: u64,
+        pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<Vec<f32>>>>,
     ) {
         let mut active = active_turn.lock().unwrap_or_else(|e| e.into_inner());
         if playback.generation_id() != generation {
             return;
         }
-        if let Some(previous) = active.take() {
-            previous.abort();
-        }
+        let active_turn_clone = active_turn.clone();
+        let pending_clone = pending_utterances.clone();
         *active = Some(tokio::spawn(async move {
             use futures_util::FutureExt;
             if playback.generation_id() != generation {
@@ -1336,6 +1340,31 @@ impl VoiceCompanionRuntime {
                     code: "voice_turn_failed".into(),
                 });
                 let _ = events.send(VoiceCompanionEvent::Idle);
+            } else {
+                let next_item = pending_clone.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
+                if let Some(next_pcm) = next_item {
+                    let mut d = driver.lock().await;
+                    if playback.generation_id() == generation {
+                        if let Ok(AcousticState::Deciding) = d.handle_event(AcousticEvent::FollowUpSpeech) {
+                            drop(d);
+                            let _ = events.send(VoiceCompanionEvent::Transcribing);
+                            let next_gen = playback.generation_id();
+                            Self::start_utterance(
+                                next_pcm,
+                                driver.clone(),
+                                router.clone(),
+                                transcriber.clone(),
+                                playback.clone(),
+                                events.clone(),
+                                tts.clone(),
+                                task_client.clone(),
+                                &active_turn_clone,
+                                next_gen,
+                                pending_clone.clone(),
+                            );
+                        }
+                    }
+                }
             }
         }));
     }
@@ -1365,6 +1394,7 @@ impl VoiceCompanionRuntime {
         let models = Arc::clone(&self.model_manager);
         let event_tx = self.event_tx.clone();
         let active_turn = self.active_turn.clone();
+        let pending_utterances = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<Vec<f32>>::new()));
 
         tokio::spawn(async move {
             let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
@@ -1865,6 +1895,7 @@ impl VoiceCompanionRuntime {
                                     task_client.clone(),
                                     &active_turn,
                                     generation,
+                                    pending_utterances.clone(),
                                 );
                                 utterance_pcm.clear();
                                 kws.reset();
@@ -1931,11 +1962,37 @@ impl VoiceCompanionRuntime {
                                     task_client.clone(),
                                     &active_turn,
                                     generation,
+                                    pending_utterances.clone(),
                                 );
                                 utterance_pcm.clear();
                                 kws.reset();
                                 vad.reset();
                             }
+                        }
+                    }
+
+                    AcousticState::Deciding | AcousticState::DispatchingTask => {
+                        let is_active = vad.process_frame(&chunk);
+                        if is_active {
+                            utterance_pcm.extend_from_slice(&chunk);
+                            speech_started = true;
+                        }
+                        if speech_started && (!is_active || utterance_pcm.len() >= 16_000 * 30) {
+                            speech_started = false;
+                            let pcm = std::mem::take(&mut utterance_pcm);
+                            let should_alert = {
+                                let mut queue = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                                if queue.len() < 2 {
+                                    queue.push_back(pcm);
+                                    false
+                                } else {
+                                    true
+                                }
+                            };
+                            if should_alert {
+                                let _ = playback.play_earcon(EarconKind::Alert).await;
+                            }
+                            vad.reset();
                         }
                     }
 
@@ -2276,7 +2333,7 @@ mod tests {
                     saw_chime = true;
                 }
                 VoiceCompanionEvent::FollowUpWindow { timeout_secs } => {
-                    assert_eq!(timeout_secs, 180, "follow-up window must be 180 seconds in R3 continuous listening");
+                    assert_eq!(timeout_secs, 4, "follow-up window must strictly be 4 seconds");
                     saw_followup_window = true;
                 }
                 _ => {}

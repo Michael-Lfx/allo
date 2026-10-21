@@ -329,6 +329,18 @@ async fn voice_confirmation_handler(
     }
 }
 
+async fn voice_task_status_handler(
+    State(state): State<ServerState>,
+    Json(task): Json<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
+) -> Response {
+    if let Some(runtime) = &state.voice_runtime {
+        runtime.update_task_status(task);
+        StatusCode::OK.into_response()
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
+}
+
 async fn voice_stop_handler(
     State(state): State<ServerState>,
     Json(request): Json<nomifun_api_types::voice::VoiceSessionControlRequest>,
@@ -422,6 +434,7 @@ pub fn build_router_full(
         .route("/api/voice/notifications/{attempt_id}", axum::routing::get(voice_notification_handler))
         .route("/api/voice/task-progress", axum::routing::post(voice_task_result_handler))
         .route("/api/voice/task-result", axum::routing::post(voice_task_result_handler))
+        .route("/api/voice/task-status", axum::routing::post(voice_task_status_handler))
         .route("/api/voice/confirmation",axum::routing::post(voice_confirmation_handler))
         .route("/api/voice/stop", axum::routing::post(voice_stop_handler))
         .route("/api/voice/events", get(voice_events_handler))

@@ -3754,11 +3754,28 @@ impl CompanionStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        let Some(row) = row else { return Ok(None) };
-        let companion_id: String = row.get("companion_id");
-        CompanionId::try_from(companion_id.as_str())
-            .map_err(|error| invalid_disk_id("thread companion id", &companion_id, error))?;
-        Ok(Some(companion_id))
+        if let Some(row) = row {
+            let companion_id: String = row.get("companion_id");
+            CompanionId::try_from(companion_id.as_str())
+                .map_err(|error| invalid_disk_id("thread companion id", &companion_id, error))?;
+            return Ok(Some(companion_id));
+        }
+        let conv_row = sqlx::query("SELECT extra FROM conversations WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        if let Some(conv_row) = conv_row {
+            let extra_str: String = conv_row.get("extra");
+            if let Ok(extra) = serde_json::from_str::<serde_json::Value>(&extra_str) {
+                if let Some(owner) = extra.get("memory_owner_companion_id").and_then(|v| v.as_str()) {
+                    if let Ok(id) = CompanionId::try_from(owner) {
+                        return Ok(Some(id.into_string()));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub async fn is_companion_thread(&self, conversation_id: &str) -> Result<bool, AppError> {

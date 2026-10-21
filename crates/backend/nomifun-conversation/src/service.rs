@@ -9237,7 +9237,7 @@ impl ConversationService {
             return Err(AppError::BadRequest("voice_message_command_empty".to_owned()));
         }
         let conversation_key = parse_conv_id(conversation_id)?;
-        let row = self
+        let _row = self
             .conversation_repo
             .get(conversation_key)
             .await?
@@ -9245,17 +9245,6 @@ impl ConversationService {
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
-        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
-        if extra.get("voice").and_then(serde_json::Value::as_bool) != Some(true)
-            && extra
-                .get("is_default_voice")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-        {
-            return Err(AppError::Forbidden(
-                "voice_message_requires_voice_conversation".to_owned(),
-            ));
-        }
         if let Some(existing) = self
             .conversation_repo
             .get_message(conversation_key, message_id)
@@ -9269,6 +9258,14 @@ impl ConversationService {
                 return Err(AppError::Conflict(
                     "voice_message_already_exists".to_owned(),
                 ));
+            }
+            let desired_content = serde_json::json!({ "content": display_text, "voice_command_id": command_id }).to_string();
+            if existing.content != desired_content {
+                let updates = nomifun_db::MessageRowUpdate {
+                    content: Some(desired_content),
+                    ..Default::default()
+                };
+                let _ = self.conversation_repo.update_message(message_id, &updates).await;
             }
             self.broadcast_voice_user_message(
                 user_id,
@@ -9326,8 +9323,10 @@ impl ConversationService {
             .ok()
             .is_some_and(|value| {
                 value.get("content").and_then(serde_json::Value::as_str) == Some(display_text)
-                    && value.get("voice_command_id").and_then(serde_json::Value::as_str)
-                        == Some(command_id)
+                    && value
+                        .get("voice_command_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|cmd| cmd == command_id)
             })
     }
     /// Starts one explicit continuation of the latest retryable interrupted turn.
@@ -10978,6 +10977,32 @@ impl ConversationService {
         origin: &str,
         expected_admission_epoch: i64,
     ) -> Result<ConversationPairProjection, AppError> {
+        self.project_voice_dialogue_pair_with_user_msg_id(
+            user_id,
+            conversation_id,
+            operation_id,
+            raw_user_text,
+            assistant_text,
+            origin,
+            expected_admission_epoch,
+            None,
+        )
+        .await
+    }
+
+    /// Variation of `project_voice_dialogue_pair` that permits preserving a pre-assigned
+    /// stable user message id (e.g. from a queued voice task).
+    pub async fn project_voice_dialogue_pair_with_user_msg_id(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        raw_user_text: Option<&str>,
+        assistant_text: &str,
+        origin: &str,
+        expected_admission_epoch: i64,
+        user_message_id: Option<&str>,
+    ) -> Result<ConversationPairProjection, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
         let token=CancellationToken::new();
         let _guard=self.runtime_state.acquire_preparation_gate(conversation_id,&token).await?;
@@ -11005,7 +11030,9 @@ impl ConversationService {
         .to_string();
 
         let user_candidate = raw_user_text.filter(|t| !t.trim().is_empty()).map(|text| {
-            let msg_id = MessageId::new().into_string();
+            let msg_id = user_message_id
+                .and_then(|id| MessageId::parse(id).ok().map(|m| m.into_string()))
+                .unwrap_or_else(|| MessageId::new().into_string());
             MessageRow {
                 id: 0,
                 message_id: msg_id.clone(),

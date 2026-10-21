@@ -60,6 +60,12 @@ impl VoiceEventHub {
             .clone()
     }
 
+    pub fn update_task(&self, task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>) {
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state.task = task;
+        state.seq += 1;
+    }
+
     pub fn send(
         &self,
         event: VoiceCompanionEvent,

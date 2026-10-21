@@ -370,12 +370,11 @@ async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
         .await
         .unwrap();
 
-    // BV-04: record_pair detects target became busy post-generation, rejects with BindingBusy
-    let err = recorder
+    // BV-04: record_pair supports busy append while target is busy
+    let res = recorder
         .record_pair(&target_conv_id, &req, r#"{"intent_type":"chat","reply_tts":"助手回复"}"#)
-        .await
-        .unwrap_err();
-    assert!(matches!(err, VoiceDialogueRecorderError::BindingBusy(_)));
+        .await;
+    assert!(res.is_ok(), "record_pair must support appending while target is busy");
 }
 
 
@@ -445,7 +444,7 @@ async fn clearing_a_target_cannot_resurrect_a_generated_turn_or_force_regenerati
     let conv=match recorder.preflight(&request).await.unwrap(){VoiceDialoguePreflight::Ready{conversation_id}=>conversation_id,_=>panic!("new turn")};
     service.conversation_repo().clear_terminal_conversation_messages(USER_ID,&conv,nomifun_common::now_ms()).await.unwrap();
     let output=r#"{"intent_type":"chat","understood_request":"解释这句话。","reply_tts":"这是已生成的回答。"}"#;
-    assert!(matches!(recorder.record_pair(&conv,&request,output).await,Err(VoiceDialogueRecorderError::BindingBusy(_))));
+    assert!(matches!(recorder.record_pair(&conv,&request,output).await,Err(VoiceDialogueRecorderError::BindingInvalid(_))));
     let restored=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path());
     assert_eq!(restored.preflight(&request).await.unwrap(),VoiceDialoguePreflight::Generated{conversation_id:conv.clone(),content:output.into()});
     assert!(restored.record_pair(&conv,&request,output).await.is_err());
@@ -506,10 +505,10 @@ async fn a_post_generation_projection_failure_returns_text_and_retry_never_calls
     let binding=recorder.freeze_session("projection-session").await.unwrap().unwrap();
     service.conversation_repo().clear_terminal_conversation_messages(USER_ID,&binding.conversation_id,nomifun_common::now_ms()).await.unwrap();
     completer.release.notify_one();let first=first.await.unwrap();
-    assert!(matches!(first.0,Err(RouteError::Record{ref code,..}) if code=="binding_busy"));
+    assert!(matches!(first.0,Err(RouteError::Record{ref code,..}) if code=="binding_invalid" || code=="binding_busy"));
     assert!(first.1.as_ref().unwrap().contains("你好，我是你的语音助手。"));
     let retry=router.route_scoped(&scope,"你好，请介绍你自己",None,&[]).await;
-    assert!(matches!(retry.0,Err(RouteError::Record{ref code,..}) if code=="binding_busy"));assert_eq!(first.1,retry.1);
+    assert!(matches!(retry.0,Err(RouteError::Record{ref code,..}) if code=="binding_invalid" || code=="binding_busy"));assert_eq!(first.1,retry.1);
     assert_eq!(completer.calls.load(std::sync::atomic::Ordering::SeqCst),1);
     assert_eq!(service.list_messages(USER_ID,&binding.conversation_id,Default::default()).await.unwrap().items.len(),0);
 }

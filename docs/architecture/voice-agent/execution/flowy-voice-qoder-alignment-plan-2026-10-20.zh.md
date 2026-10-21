@@ -1,5 +1,7 @@
 # Flowy 语音会话 Qoder 对齐改造方案
 
+> **2026-10-21 实施补充**：新增 [§8](#alignment-streaming-supplement) 与 [执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement)。保留 rev2 原文；“流式 ASR 后置”继续适用于生产接入，仓库外模型实验可提前开展，不干扰正在实施的 R1–R5，不表示已经完成测试或功能签核。
+
 > **状态**：方案草案 rev2（已按 2026-10-20 Agent 审查补齐契约）；待其他 Agent 复审；未实施业务代码。
 > **代码基准**：`feat/xiaozhi-voice`，调研时 HEAD `5800811c7`；本文只整理方案，不替代既有 PRD/研究文档。
 > **主依据**：Qoder CN 0.4.8 客户端静态证据为主；Qwen-Live-Harness 固定提交只作为相同机制的佐证。证据边界见 [Qoder 调研](qoder-cn-live-voice-research-2026-10-20.zh.md) 与 [Qwen 调研](qwen-qoder-workspace-voice-deep-research-2026-10-20.zh.md)。
@@ -633,3 +635,23 @@ sequenceDiagram
 - Qoder 静态证据文件：`target/voice-review/qoder-cn-static-evidence-2026-10-20.json`；Qwen 证据：`target/voice-review/qwen-qoder-deep-research-evidence-2026-10-20.json`。
 
 本文是方案草案，不替代研究文档和 PRD；历史调研正文保留，不在本文重写。待其他 Agent 审查后再决定是否进入实施。
+
+<a id="alignment-streaming-supplement"></a>
+
+## 8. Eidolon 机制与外置 ASR 实验补充（2026-10-21）
+
+本节补充 rev2 的实施顺序与交互细则；原调研及阶段描述按原日期/提交阅读，不删除历史正文。完整规则、固定源码证据和 VS-01–08 验收只维护在 [执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement)。
+
+| 决策 | 本次明确的边界 |
+| --- | --- |
+| D10 的实验与接入分离 | 允许提前在仓库外比较 SenseVoice 与流式 Paraformer/Zipformer；此前“暂不测试”不再限制该隔离实验。生产替换仍在消息/任务和连续输入边界修复后，实验结论不得直接标成产品通过 |
+| 轮次处理 | 先保留原文和有界缓冲，区分补充、新一轮、停止声音和取消任务。已接单 runtime 不随插话重发或取消；审批仍只消费最终且明确的确认 |
+| 流式事件 | 复用现有 DTO，明确 partial/final、回复增量、音频可用、实际播放与终态；不因方法名含 stream 宣称全链路流式 |
+| TTS 与 AEC | 按真实阶段测量后优化块播放；模型结束不等于播放结束；没有可靠 AEC 时继续半双工，不默认开放外放打断 |
+| 当前执行不被实验打断 | 一个执行 Agent 继续持有业务代码写入；外置实验不改仓库依赖/模型/配置，不启动生产进程或抢 GPU，构建争用下的性能不作为选型成绩 |
+
+Eidolon 的云端通话、进程内队列和共享角色记忆不替代本项目本地声学、持久 ledger、memory owner 与 Conversation/runtime。其 AGPL 代码和外部资源不得按本项目 Apache-2.0 组件直接并入；按行为规格独立实现，具体代码/资源复用单独审查。
+
+本次仅补文档；外置实验状态及实际结果按 [外置 ASR 实验合同](R1-R5-execution-coaching-2026-10-21.zh.md#external-asr-lab) 分别记录。真人设备、生产接入与 Owner 验收不因文档更新自动通过。
+
+2026-10-21 用户追加产品范围：中文和英文均须支持，中英混说必测，覆盖 ASR、回复语言、TTS、确认/拒绝和任务控制。优先评估双语流式模型；当前中文单语外置 smoke 仅证明接口，不是默认模型选型通过。完整规则与首轮证据集中维护在执行辅导 §9.8–9.9。

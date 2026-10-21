@@ -1,3 +1,5 @@
+> **2026-10-21 Eidolon 与流式语音补充**：[执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement) 为轮次、事件、播放和 [外置 ASR 实验](R1-R5-execution-coaching-2026-10-21.zh.md#external-asr-lab) 的细则入口；实验可与当前业务实施分别推进，生产接入仍后置。状态见 [当前快照 §7](current-implementation-status.zh.md#implementation-snapshot-20261021)。以下历次入口按其原始日期/提交阅读，不代表在途修复已签核。
+
 > **2026-10-21 R1 独立复核与后续执行**：[R1–R5 串行执行辅导](R1-R5-execution-coaching-2026-10-21.zh.md)。R1.1 核心修复已有代码与 SQLite 测试，仍有策略字段/采集幂等缺口；生产同 Conversation/FIFO 尚未接线。含各阶段代码入口、步骤、失败用例、门禁和命令，只更新文档，不提前签核或启动后续实施。
 
 > **2026-10-20 rev2 复审与产品契约**：[源码核验、接缝缺口与 R1–R5 就绪矩阵](qoder-alignment-rev2-review-2026-10-20.zh.md)、[v0.4 PRD](../PRD-voice-companion-v0.4.zh.md)。复核本机 Qoder 客户端及固定远端源码；不代表获取完整 Qoder 源码或验证延迟。原 rev2 保留，不在本轮修改业务代码。

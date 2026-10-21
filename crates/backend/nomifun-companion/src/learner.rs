@@ -331,6 +331,13 @@ impl Learner {
         let events: Vec<_> = events
             .into_iter()
             .filter(|event| event.name != "companion.reply")
+            .filter(|event| {
+                if let Some(id) = event.data.get("companion_id").and_then(|v| v.as_str()) {
+                    id == owner.as_str()
+                } else {
+                    true
+                }
+            })
             .collect();
         if events.is_empty() {
             // Nothing but stale replies. Advance anyway — leaving the cursor here

@@ -2,8 +2,8 @@
 //! The acoustic process supplies only a goal and delivery identity, never permissions.
 use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
-use nomifun_api_types::{CreateConversationRequest, SendMessageRequest, VoiceBoundMessageRequest};
-use nomifun_api_types::voice::VoiceExecutionConfig;
+use nomifun_api_types::{CreateConversationRequest, ResolvedPresetSnapshot, SendMessageRequest, VoiceBoundMessageRequest};
+use nomifun_api_types::voice::{VoiceExecutionConfig, VoiceModelRef};
 use nomifun_ai_agent::AgentRuntimeRegistry;
 use nomifun_conversation::{ConversationService, IdempotentMessageDelivery, PublicTurnDeliveryState};
 
@@ -130,23 +130,110 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
             .map_err(|error| mutation_error(error, "task_delivery_rejected", "task_delivery_failed"))
     }
 
-    async fn send_bound(&self, owner:&str, conversation_id:&str, send_key:&str, message_id:&str, command_id:&str, display_text:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
-        let conversation=self.conversation.get(owner,conversation_id).await.map_err(|error|mutation_error(error,"task_delivery_rejected","task_conversation_unavailable"))?;
-        let workspace=conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).ok_or_else(||TaskMutationError::Rejected("task_policy_missing".into()))?.to_owned();
-        let epoch=self.conversation.conversation_repo().get_turn_admission_state(owner,conversation_id).await.map_err(|_|TaskMutationError::Uncertain("task_delivery_failed".into()))?.epoch;
-        let request=VoiceBoundMessageRequest {
-            message_id:message_id.to_owned(),display_text:display_text.to_owned(),command_id:command_id.to_owned(),
-            expected_admission_epoch:epoch,expected_workspace:workspace,voice_context_digest:None,
-            content:goal.to_owned(),files:Vec::new(),inject_skills:Vec::new(),hidden:false,
-            origin:Some("companion".into()),channel_platform:None,
+    async fn send_bound(
+        &self,
+        owner: &str,
+        conversation_id: &str,
+        send_key: &str,
+        message_id: &str,
+        command_id: &str,
+        display_text: &str,
+        goal: &str,
+        context_digest: Option<&str>,
+        frozen_config: Option<&VoiceExecutionConfig>,
+        preset: Option<&ResolvedPresetSnapshot>,
+    ) -> Result<TaskReceipt, TaskMutationError> {
+        let conversation = self
+            .conversation
+            .get(owner, conversation_id)
+            .await
+            .map_err(|error| mutation_error(error, "task_delivery_rejected", "task_conversation_unavailable"))?;
+
+        if let Some(frozen) = frozen_config {
+            let actual_workspace = conversation
+                .extra
+                .get("voice_task_workspace")
+                .or_else(|| conversation.extra.get("workspace"))
+                .and_then(serde_json::Value::as_str);
+            let workspace_matches = match actual_workspace {
+                Some(ws) => {
+                    let ws_path = Path::new(ws);
+                    let frozen_path = Path::new(&frozen.workspace);
+                    nomifun_common::paths::paths_equivalent(ws_path, frozen_path)
+                }
+                None => false,
+            };
+            if !workspace_matches {
+                return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
+            }
+
+            let actual_model = conversation
+                .model
+                .as_ref()
+                .and_then(|m| serde_json::to_value(m).ok())
+                .and_then(|v| serde_json::from_value::<VoiceModelRef>(v).ok());
+            if frozen.model.is_some() && frozen.model != actual_model {
+                return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
+            }
+
+            let frozen_preset = frozen.preset_id.as_deref().filter(|s| !s.trim().is_empty());
+            let actual_preset = conversation.preset_id.as_deref().filter(|s| !s.trim().is_empty());
+            if frozen_preset != actual_preset {
+                return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
+            }
+
+            if preset.is_some() && conversation.preset_snapshot.as_ref() != preset {
+                return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
+            }
+
+            let frozen_mode = frozen.session_mode.as_deref().unwrap_or("default");
+            let actual_session_mode = conversation
+                .extra
+                .get("session_mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default");
+            if frozen_mode != actual_session_mode {
+                return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
+            }
+        }
+
+        let workspace = conversation
+            .extra
+            .get("voice_task_workspace")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| TaskMutationError::Rejected("task_policy_missing".into()))?
+            .to_owned();
+        let epoch = self
+            .conversation
+            .conversation_repo()
+            .get_turn_admission_state(owner, conversation_id)
+            .await
+            .map_err(|_| TaskMutationError::Uncertain("task_delivery_failed".into()))?
+            .epoch;
+        let request = VoiceBoundMessageRequest {
+            message_id: message_id.to_owned(),
+            display_text: display_text.to_owned(),
+            command_id: command_id.to_owned(),
+            expected_admission_epoch: epoch,
+            expected_workspace: workspace,
+            voice_context_digest: context_digest.map(str::to_owned),
+            content: goal.to_owned(),
+            files: Vec::new(),
+            inject_skills: Vec::new(),
+            hidden: false,
+            origin: Some("companion".into()),
+            channel_platform: None,
         };
-        match self.conversation.send_voice_bound_message(owner,conversation_id,send_key,request,&self.registry).await {
-            Ok(value)=>Ok(receipt(value)),
-            Err(error)=>{
-                if !matches!(self.conversation.public_turn_delivery_state(owner,conversation_id,send_key).await,Ok(PublicTurnDeliveryState::Missing)) {
+        match self.conversation.send_voice_bound_message(owner, conversation_id, send_key, request, &self.registry).await {
+            Ok(value) => Ok(receipt(value)),
+            Err(error) => {
+                if !matches!(
+                    self.conversation.public_turn_delivery_state(owner, conversation_id, send_key).await,
+                    Ok(PublicTurnDeliveryState::Missing)
+                ) {
                     return Err(TaskMutationError::Uncertain("task_delivery_failed".into()));
                 }
-                Err(mutation_error(error,"task_delivery_rejected","task_delivery_failed"))
+                Err(mutation_error(error, "task_delivery_rejected", "task_delivery_failed"))
             }
         }
     }

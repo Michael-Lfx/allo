@@ -833,9 +833,6 @@ async fn delete_companion(
     Extension(_user): Extension<CurrentUser>,
     Path(companion_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if state.service.list_companions().await.len() <= 1 {
-        return Err(AppError::BadRequest("无法删除最后一个伙伴：系统至少需要保留一个伙伴。".into()));
-    }
     state.service.delete_companion(&companion_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

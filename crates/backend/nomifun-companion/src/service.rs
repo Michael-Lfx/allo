@@ -239,6 +239,8 @@ pub struct CompanionService {
     figures_dir: PathBuf,
     /// Serializes figure-library index read-modify-write.
     figures_lock: Mutex<()>,
+    /// Serializes companion deletions so concurrent requests cannot race past the minimum count constraint.
+    delete_lock: Mutex<()>,
     config: SharedConfig,
     event_store_lock: SharedEventStoreLock,
     registry: Arc<CompanionRegistry>,
@@ -454,6 +456,7 @@ impl CompanionService {
             model_lock: Mutex::new(()),
             figures_dir,
             figures_lock: Mutex::new(()),
+            delete_lock: Mutex::new(()),
             config,
             event_store_lock,
             registry,
@@ -837,8 +840,12 @@ impl CompanionService {
     /// per-companion store rows, remove the profile, and re-point the default companion
     /// if it was this one.
     pub async fn delete_companion(&self, id: &str) -> Result<(), AppError> {
+        let _guard = self.delete_lock.lock().await;
         // Existence gate first so a bad id 404s before any side effect.
         self.get_companion(id).await?;
+        if self.registry.list().await.len() <= 1 {
+            return Err(AppError::BadRequest("无法删除最后一个伙伴：系统至少需要保留一个伙伴。".into()));
+        }
         // Cascade the companion's companion threads through the full delete path
         // (kills running agents + removes the real conversations). When the
         // companion manager isn't wired (tests), the thread rows still go
@@ -2897,6 +2904,7 @@ mod tests {
     async fn delete_companion_removes_active_and_draft_skill_trees() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         let input = nomifun_extension::skill_service::SkillDraftInput {
             name: "cleanup".into(),
@@ -2965,6 +2973,7 @@ mod tests {
     async fn list_companion_skills_fails_closed_on_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         seed_draft_skill(&svc, &cid, "alpha").await; // SKILL.md on disk
         // beta: registry row only, NO SKILL.md → fail closed.
@@ -2996,6 +3005,7 @@ mod tests {
     async fn list_companion_skill_page_enriches_only_current_page() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         seed_draft_skill(&svc, &cid, "alpha").await;
         seed_draft_skill(&svc, &cid, "beta").await;
@@ -3014,6 +3024,7 @@ mod tests {
     async fn get_and_write_skill_content_roundtrip_and_validate() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         seed_draft_skill(&svc, &cid, "demo").await;
 
@@ -3031,6 +3042,7 @@ mod tests {
     async fn decide_companion_skill_accept_reject_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
 
         seed_draft_skill(&svc, &cid, "acc").await;
@@ -3066,6 +3078,7 @@ mod tests {
     async fn rejecting_skill_suppresses_its_originating_pattern() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         let input = nomifun_extension::skill_service::SkillDraftInput {
             name: "rej-sig".into(),
@@ -3109,6 +3122,7 @@ mod tests {
     async fn weekly_digest_counts_recent_skills() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         let now = nomifun_common::now_ms();
         svc.store
@@ -3140,6 +3154,7 @@ mod tests {
     async fn draft_from_session_requires_activity() {
         let dir = tempfile::tempdir().unwrap();
         let svc = service(dir.path()).await;
+        let _other = svc.registry.create("保留", "boo").await.unwrap();
         let cid = svc.registry.create("测试", "ink").await.unwrap().companion_id;
         // No collected tool-call activity for this conversation → BadRequest, not a panic.
         assert!(svc.draft_skill_from_session(&cid, &conversation_fixture(90)).await.is_err());
@@ -3533,10 +3548,8 @@ mod tests {
         assert_eq!(svc.get_config().await.default_companion_id.as_deref(), Some(b.companion_id.as_str()));
         assert_eq!(svc.store.get_companion_state_i64(&b.companion_id, "xp").await.unwrap(), 7);
 
-        // Deleting the last companion clears the default entirely.
-        svc.delete_companion(&b.companion_id).await.unwrap();
-        assert_eq!(svc.get_config().await.default_companion_id, None);
-        assert_eq!(svc.default_companion_id().await, None);
+        // Deleting the last companion is refused by R4 rule.
+        assert!(matches!(svc.delete_companion(&b.companion_id).await, Err(AppError::BadRequest(_))));
 
         assert!(matches!(svc.delete_companion(&a.companion_id).await, Err(AppError::NotFound(_))));
     }
@@ -3557,6 +3570,7 @@ mod tests {
         let hook = Arc::new(RecordingHook(std::sync::Mutex::new(Vec::new())));
         svc.set_cleanup_hooks(vec![hook.clone() as Arc<dyn CompanionCleanupHook>]);
 
+        let _other = svc.create_companion("保留", "boo").await.unwrap();
         let p = svc.create_companion("丙", "ink").await.unwrap();
         svc.delete_companion(&p.companion_id).await.unwrap();
         assert_eq!(hook.0.lock().unwrap().as_slice(), &[p.companion_id.clone()]);
@@ -3924,6 +3938,7 @@ mod tests {
             )
             .await
             .unwrap();
+        let _other = svc.create_companion("保留", "ink").await.unwrap();
         let companion = svc.create_companion("墨墨", "custom").await.unwrap();
         svc.patch_companion(&companion.companion_id, link_patch(&fig)).await.unwrap();
         assert!(matches!(svc.delete_figure(&fig.figure_id).await, Err(AppError::Conflict(_))));
@@ -3949,6 +3964,7 @@ mod tests {
             )
             .await
             .unwrap();
+        let _other = svc.create_companion("保留", "ink").await.unwrap();
         let companion = svc.create_companion("墨墨", "custom").await.unwrap();
         svc.patch_companion(&companion.companion_id, link_patch(&fig)).await.unwrap();
         // While the companion's character is `custom`, the figure is genuinely in use.
