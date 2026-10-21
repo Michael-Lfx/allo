@@ -1,6 +1,6 @@
 //! Explicit real-model replay. No microphone, physical output or cloud dialogue.
 #![cfg(feature = "voice-skeleton")]
-use ai_mate::{oobe::OobeManager, voice::VoiceCompanionRuntime};
+use voice_companion::{oobe::OobeManager, voice::VoiceCompanionRuntime};
 use nomifun_audio::{
     KwsEngine, KwsEngineConfig,
     capture::CaptureReadResult,

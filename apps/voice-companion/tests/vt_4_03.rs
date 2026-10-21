@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use ai_mate::oobe::{OobeManager, VerifyOutcome};
+use voice_companion::oobe::{OobeManager, VerifyOutcome};
 use nomifun_api_types::voice::ModelInstallState;
 use nomifun_voice_models::ModelManager;
 

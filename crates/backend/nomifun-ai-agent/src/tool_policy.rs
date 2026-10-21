@@ -732,8 +732,12 @@ impl ToolPolicyEngine {
         }
     }
 
-    pub fn default_ai_mate() -> Self {
+    pub fn default_voice_companion() -> Self {
         Self::new(ToolPolicyTable::default())
+    }
+
+    pub fn default_ai_mate() -> Self {
+        Self::default_voice_companion()
     }
 
     pub fn policy(&self) -> &ToolPolicyTable {

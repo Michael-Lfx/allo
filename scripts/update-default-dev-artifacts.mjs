@@ -26,6 +26,16 @@ async function main() {
       name: 'Flowy.pdb'
     },
     {
+      source: path.join(root, 'target', 'debug', 'voice-companion.exe'),
+      dest: path.join(tempDir, 'voice-companion.exe'),
+      name: 'voice-companion.exe'
+    },
+    {
+      source: path.join(root, 'target', 'debug', 'voice_companion.pdb'),
+      dest: path.join(tempDir, 'voice_companion.pdb'),
+      name: 'voice_companion.pdb'
+    },
+    {
       source: path.join(root, 'target', 'debug', 'ai-mate.exe'),
       dest: path.join(tempDir, 'ai-mate.exe'),
       name: 'ai-mate.exe'
@@ -80,19 +90,23 @@ async function main() {
     },
     {
       from: resolveFrom(
+        path.join(root, 'target', 'voice-staging', 'debug', 'voice-companion.exe'),
+        path.join(root, 'target', 'voice-staging', 'x86_64-pc-windows-msvc', 'debug', 'voice-companion.exe'),
         path.join(root, 'target', 'voice-staging', 'debug', 'ai-mate.exe'),
         path.join(root, 'target', 'voice-staging', 'x86_64-pc-windows-msvc', 'debug', 'ai-mate.exe')
       ),
-      to: path.join(root, 'target', 'debug', 'ai-mate.exe'),
-      name: 'ai-mate.exe'
+      to: path.join(root, 'target', 'debug', 'voice-companion.exe'),
+      name: 'voice-companion.exe'
     },
     {
       from: resolveFrom(
+        path.join(root, 'target', 'voice-staging', 'debug', 'voice_companion.pdb'),
+        path.join(root, 'target', 'voice-staging', 'x86_64-pc-windows-msvc', 'debug', 'voice_companion.pdb'),
         path.join(root, 'target', 'voice-staging', 'debug', 'ai_mate.pdb'),
         path.join(root, 'target', 'voice-staging', 'x86_64-pc-windows-msvc', 'debug', 'ai_mate.pdb')
       ),
-      to: path.join(root, 'target', 'debug', 'ai_mate.pdb'),
-      name: 'ai_mate.pdb'
+      to: path.join(root, 'target', 'debug', 'voice_companion.pdb'),
+      name: 'voice_companion.pdb'
     }
   ];
 

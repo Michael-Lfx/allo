@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use ai_mate::config::{AiMateConfig, Config, PreferMirror, ENV_AI_MATE_MODEL_DIR};
+use voice_companion::config::{AiMateConfig, Config, PreferMirror, ENV_AI_MATE_MODEL_DIR};
 
 #[test]
 fn test_default_config_golden() {
@@ -50,7 +50,7 @@ fn test_empty_models_section_defaults() {
 
     assert_eq!(
         config.models.models_dir,
-        ai_mate::config::default_models_dir()
+        voice_companion::config::default_models_dir()
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 1500);
@@ -65,7 +65,7 @@ fn test_empty_toml_defaults() {
     assert_eq!(config, default_config);
     assert_eq!(
         config.models.models_dir,
-        ai_mate::config::default_models_dir()
+        voice_companion::config::default_models_dir()
     );
     assert_eq!(config.models.auto_download, true);
     assert_eq!(config.models.probe_timeout_ms, 1500);
@@ -135,7 +135,7 @@ prefer_mirror = "invalid_mirror_name"
 #[test]
 fn test_roundtrip_toml() {
     let original = Config {
-        models: ai_mate::config::ModelsConfig {
+        models: voice_companion::config::ModelsConfig {
             models_dir: PathBuf::from("/test/models"),
             auto_download: false,
             probe_timeout_ms: 2500,

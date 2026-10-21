@@ -3,13 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ai_mate::config::Config;
-use ai_mate::net_preboot::{detect_ethernet_status, import_usb_setup};
-use ai_mate::oobe::OobeManager;
-use ai_mate::provision::check_and_auto_download;
-use ai_mate::server::{DEFAULT_SERVER_ADDR, build_router_full};
-use ai_mate::voice::VoiceCompanionRuntime;
-use ai_mate::watchdog::{
+use voice_companion::config::Config;
+use voice_companion::net_preboot::{detect_ethernet_status, import_usb_setup};
+use voice_companion::oobe::OobeManager;
+use voice_companion::provision::check_and_auto_download;
+use voice_companion::server::{DEFAULT_SERVER_ADDR, build_router_full};
+use voice_companion::voice::VoiceCompanionRuntime;
+use voice_companion::watchdog::{
     get_recommended_heartbeat_interval, notify_ready, start_watchdog_heartbeat,
 };
 use nomifun_voice_models::ModelManager;
@@ -47,9 +47,9 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn std::error::Error>> {
                 bypass_pairing = true;
             }
             "--help" | "-h" => {
-                println!("Flowy AI Mate Voice Companion Daemon");
+                println!("Flowy Voice Companion Daemon");
                 println!();
-                println!("Usage: ai-mate [OPTIONS]");
+                println!("Usage: voice-companion [OPTIONS]");
                 println!();
                 println!("Options:");
                 println!("  -c, --config <PATH>      Path to TOML configuration file");
@@ -79,7 +79,7 @@ fn parse_cli_args() -> Result<CliArgs, Box<dyn std::error::Error>> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_ansi(false).init();
-    info!("Starting Flowy AI Mate Voice Companion Daemon...");
+    info!("Starting Flowy Voice Companion Daemon...");
 
     let cli = parse_cli_args()?;
 
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(?eth_status, "Physical network status detected");
 
     let usb_mount_candidate = Path::new("/media/usb");
-    let target_config_path = Path::new("/etc/ai-mate/config.toml");
+    let target_config_path = Path::new("/etc/voice-companion/config.toml");
     if usb_mount_candidate.exists() {
         let _ = import_usb_setup(usb_mount_candidate, target_config_path);
     }

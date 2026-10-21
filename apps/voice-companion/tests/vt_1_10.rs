@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use tempfile::tempdir;
 
-use ai_mate::config::Config;
-use ai_mate::provision::check_and_auto_download;
+use voice_companion::config::Config;
+use voice_companion::provision::check_and_auto_download;
 use nomifun_api_types::voice::ModelInstallState;
 use nomifun_voice_models::ModelManager;
 

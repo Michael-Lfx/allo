@@ -539,7 +539,7 @@ mod tests {
     #[tokio::test]
     #[ignore="explicit cloud dialogue and Edge synthesis latency sampling; fixed text, no real audio device"]
     async fn configured_streaming_worker_latency_probe() {
-        use ai_mate::replay_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,playback::{AudioSink,AudioSinkError,PlaybackPipeline},tts::EdgeTtsProvider};
+        use voice_companion::replay_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,playback::{AudioSink,AudioSinkError,PlaybackPipeline},tts::EdgeTtsProvider};
         struct ProbeSink {first:std::sync::Mutex<Option<std::time::Instant>>,frames:AtomicUsize}
         #[async_trait]
         impl AudioSink for ProbeSink {
@@ -550,13 +550,13 @@ mod tests {
             async fn flush(&self)->Result<(),AudioSinkError>{Ok(())}
             async fn drain(&self)->Result<(),AudioSinkError>{Ok(())}
         }
-        let _=tracing_subscriber::fmt().with_env_filter("nomifun_app::voice_dialogue=info,ai_mate::voice=info,nomifun_voice_terminal::playback=info,nomifun_voice_terminal::tts=info").without_time().try_init();
+        let _=tracing_subscriber::fmt().with_env_filter("nomifun_app::voice_dialogue=info,voice_companion::voice=info,nomifun_voice_terminal::playback=info,nomifun_voice_terminal::tts=info").without_time().try_init();
         let (live,pool)=configured_probe_provider().await;let selected=live.resolve_model(None).await.unwrap();
         let bridge=VoiceDialogueBridge::start(Arc::new(live),Arc::new(RwLock::new(Some(selected.clone()))),"fixed-latency-probe".into(),Router::new()).await.unwrap();
         let models=tempfile::tempdir().unwrap();
         let(capture,producer)=nomifun_audio::voice_pipeline::VoiceCapturePipeline::new(Default::default());
-        let(runtime,_)=ai_mate::voice::VoiceCompanionRuntime::from_capture(
-            Arc::new(nomifun_voice_models::ModelManager::new(models.path())),Arc::new(ai_mate::oobe::OobeManager::new_bypassed()),Arc::new(tokio::sync::Mutex::new(capture)),
+        let(runtime,_)=voice_companion::voice::VoiceCompanionRuntime::from_capture(
+            Arc::new(nomifun_voice_models::ModelManager::new(models.path())),Arc::new(voice_companion::oobe::OobeManager::new_bypassed()),Arc::new(tokio::sync::Mutex::new(capture)),
             Arc::new(nomifun_audio::stt::FakeSttCallback::always("你好，请用两个很短的句子介绍你自己。")),
             Arc::new(OpenAiCompatibleVoiceRouter::with_completion(Arc::new(HostDialogueClient::new(bridge.endpoint.clone(),"fixed-latency-probe".into()).unwrap()))));
         let sink=Arc::new(ProbeSink{first:std::sync::Mutex::new(None),frames:AtomicUsize::new(0)});

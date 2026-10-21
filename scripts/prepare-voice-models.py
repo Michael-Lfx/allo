@@ -81,17 +81,35 @@ MODELS_MANIFEST = [
 
 
 def get_default_models_dir() -> Path:
-    env_dir = os.environ.get("AI_MATE_MODEL_DIR")
+    env_dir = os.environ.get("VOICE_COMPANION_MODEL_DIR") or os.environ.get("AI_MATE_MODEL_DIR")
     if env_dir and env_dir.strip():
         return Path(env_dir.strip())
 
     if sys.platform == "win32":
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            return Path(local_app_data) / "Flowy" / "AI-Mate" / "models"
-        return Path("C:/ProgramData/Flowy/AI-Mate/models")
+            primary = Path(local_app_data) / "Flowy" / "Voice-Companion" / "models"
+            if primary.exists():
+                return primary
+            legacy = Path(local_app_data) / "Flowy" / "AI-Mate" / "models"
+            if legacy.exists():
+                return legacy
+            return primary
+        primary = Path("C:/ProgramData/Flowy/Voice-Companion/models")
+        if primary.exists():
+            return primary
+        legacy = Path("C:/ProgramData/Flowy/AI-Mate/models")
+        if legacy.exists():
+            return legacy
+        return primary
     else:
-        return Path("/var/lib/ai-mate/models")
+        primary = Path("/var/lib/voice-companion/models")
+        if primary.exists():
+            return primary
+        legacy = Path("/var/lib/ai-mate/models")
+        if legacy.exists():
+            return legacy
+        return primary
 
 
 def compute_file_sha256(filepath: Path) -> str:

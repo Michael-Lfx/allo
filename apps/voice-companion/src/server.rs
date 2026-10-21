@@ -30,7 +30,7 @@ pub const INDEX_HTML: &str = include_str!("../static/index.html");
 pub async fn healthz_handler() -> Json<Value> {
     Json(json!({
         "status": "ok",
-        "app": "ai-mate"
+        "app": "voice-companion"
     }))
 }
 
@@ -127,11 +127,12 @@ async fn pairing_guard_middleware(
     if path.starts_with("/api/voice")
         && let Some(token) = &state.control_token
     {
-        if req
+        let header_token = req
             .headers()
-            .get("x-ai-mate-control-token")
-            .and_then(|value| value.to_str().ok())
-            != Some(token.as_str())
+            .get("x-voice-companion-control-token")
+            .or_else(|| req.headers().get("x-ai-mate-control-token"))
+            .and_then(|value| value.to_str().ok());
+        if header_token != Some(token.as_str())
         {
             return (
                 StatusCode::FORBIDDEN,

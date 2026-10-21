@@ -23,11 +23,11 @@
 
 | 测试/入口 | 仍然保护什么 | 维护方式 |
 | --- | --- | --- |
-| [standard_audio_replay](../../../../apps/ai-mate/tests/standard_audio_replay.rs) | 真实 KWS/ASR、低音量、连续唤醒接命令、首字保留和非唤醒负例 | 保留显式资源门禁；记录 fixture/version/hash。缺 fixture 时目前可能调用 Edge 生成，不能默认当纯离线用例 |
-| [voice_session](../../../../apps/ai-mate/tests/voice_session.rs) | 真实 worker 的采集故障、旧窗口隔离、结果文字保留、真实接单依据、播放 drain | 保留；对新增 queued 状态补覆盖，不因使用替身删除 |
-| [voice_streaming](../../../../apps/ai-mate/tests/voice_streaming.rs) | 首句先播放、停止后丢弃晚到内容、模型/合成半途失败、静音、最后 drain 后追问 | 保留。它测试的是文本补全流与分句播放，不是本期未做的流式 ASR |
-| [voice_confirmation](../../../../apps/ai-mate/tests/voice_confirmation.rs) | 实际提示消费后才听确认、授权期限、静默不延长、停止不能授权 | 保留；与 runtime 实际副作用测试分层互补 |
-| [full_voice_flow](../../../../apps/ai-mate/tests/full_voice_flow.rs) | TLS 不 panic、音频解码/播放、模型/TTS 失败保留文字、生产 worker 串联 | 保留；联网用例显式运行，不能把无物理输出写成扬声器通过 |
+| [standard_audio_replay](../../../../apps/voice-companion/tests/standard_audio_replay.rs) | 真实 KWS/ASR、低音量、连续唤醒接命令、首字保留和非唤醒负例 | 保留显式资源门禁；记录 fixture/version/hash。缺 fixture 时目前可能调用 Edge 生成，不能默认当纯离线用例 |
+| [voice_session](../../../../apps/voice-companion/tests/voice_session.rs) | 真实 worker 的采集故障、旧窗口隔离、结果文字保留、真实接单依据、播放 drain | 保留；对新增 queued 状态补覆盖，不因使用替身删除 |
+| [voice_streaming](../../../../apps/voice-companion/tests/voice_streaming.rs) | 首句先播放、停止后丢弃晚到内容、模型/合成半途失败、静音、最后 drain 后追问 | 保留。它测试的是文本补全流与分句播放，不是本期未做的流式 ASR |
+| [voice_confirmation](../../../../apps/voice-companion/tests/voice_confirmation.rs) | 实际提示消费后才听确认、授权期限、静默不延长、停止不能授权 | 保留；与 runtime 实际副作用测试分层互补 |
+| [full_voice_flow](../../../../apps/voice-companion/tests/full_voice_flow.rs) | TLS 不 panic、音频解码/播放、模型/TTS 失败保留文字、生产 worker 串联 | 保留；联网用例显式运行，不能把无物理输出写成扬声器通过 |
 | [voice_task_runtime](../../../../crates/backend/nomifun-app/src/voice_task_runtime.rs) | 真实 Conversation/runtime 的随机 Read、实际删除/危险命令审批、取消、结果回传 | 保留并增加多任务/同时间线断言；替身模型 + 真实工具的证据边界写清 |
 | [Conversation service_test](../../../../crates/backend/nomifun-conversation/src/service_test.rs) 和 SQLite 测试 | owner/消息/准入/回执身份、跨连接竞争、持久化和旧记录兼容 | 保留。643 项包含普通会话回归，不能按“语音不需要”批量删除 |
 | [voice_dialogue_integration](../../../../crates/backend/nomifun-app/tests/voice_dialogue_integration.rs) | 原文落盘、生成至多一次、丢投影响应、工作区/代际、上下文 | 保留保护意图；选择目标、时间线相关断言随新版可信绑定更新 |
@@ -57,8 +57,8 @@
 | [VT-2-01 schema_parse_rate:22](../../../../crates/backend/nomifun-voice-terminal/tests/vt_2.rs#L22) | 四段固定合法 JSON 重复 200 次，得到解析率 ≥99.5% | 合并成四种意图的参数化解析测试，保留非法/缺字段用例；删除重复计数与“模型解析率达标”结论 |
 | [VT-2-02 intent_accuracy:55](../../../../crates/backend/nomifun-voice-terminal/tests/vt_2.rs#L55) | `_text` 根本未输入 router；直接解析预写 mock_json，与预写标签比较 | 删除准确率/混淆矩阵验收断言；有价值的 JSON 样例并入解析用例。真实模型语料评估另列显式任务，不新增生产替身 |
 | [VT-2-05 latency_distribution:178](../../../../crates/backend/nomifun-voice-terminal/tests/vt_2.rs#L178) | 人工构造 700–1220ms 样本，验证样本落在 850/1250ms 指标内 | 若保留 tracker，改为空集/排序/边界/确切分位数的数学单测；删除产品延迟达标推论。当前未找到该 tracker 的生产采样调用方，若确认退役则和模块一起删 |
-| [VT-4-01 standby_resource:99](../../../../apps/ai-mate/tests/vt_4_01.rs#L99) | 测量测试 harness 自身 RSS，没有启动 ai-mate 声学/模型/服务 | 移除 daemon 待机资源门禁断言；迁移成受控子进程的真实资源测量，独立显式运行 |
-| [VT-4-04 memory_leak_check:79](../../../../apps/ai-mate/tests/vt_4_04.rs#L79) | 重复检测网卡，再比较测试进程内存 | 可保留具体枚举函数稳定性单测，移除“语音系统无泄漏/挂机通过”含义；实际 daemon 长时间测试另行留证 |
+| [VT-4-01 standby_resource:99](../../../../apps/voice-companion/tests/vt_4_01.rs#L99) | 测量测试 harness 自身 RSS，没有启动 ai-mate 声学/模型/服务 | 移除 daemon 待机资源门禁断言；迁移成受控子进程的真实资源测量，独立显式运行 |
+| [VT-4-04 memory_leak_check:79](../../../../apps/voice-companion/tests/vt_4_04.rs#L79) | 重复检测网卡，再比较测试进程内存 | 可保留具体枚举函数稳定性单测，移除“语音系统无泄漏/挂机通过”含义；实际 daemon 长时间测试另行留证 |
 
 阈值仍保留在产品/性能要求中。不能为了减少失败而降低阈值，也不能把真实基准数据改成上述合成数据。
 
@@ -122,10 +122,10 @@ cargo test --locked -p nomifun-app --lib voice_tasks
 cargo test --locked -p nomifun-app --lib voice_task_runtime
 cargo test --locked -p nomifun-conversation
 cargo test --locked -p nomifun-companion --lib collector
-cargo test --locked -p ai-mate --features voice-skeleton --test voice_session --test voice_streaming --test voice_confirmation
+cargo test --locked -p voice-companion --features voice-skeleton --test voice_session --test voice_streaming --test voice_confirmation
 bun test --cwd ui src/common/adapter/voiceCompanion.test.ts src/renderer/pages/voiceSession
 bun test scripts/prepare-voice-companion.test.mjs
-cargo tree --locked -p ai-mate --edges normal,build,features
+cargo tree --locked -p voice-companion --edges normal,build,features
 git diff --check
 ```
 
@@ -146,7 +146,7 @@ git diff --check
 3. **清理 VT-4 测试进程内存验收断言**（`vt_4_01.rs`, `vt_4_04.rs`）：
    - 移除测试 harness 自身 RSS < 250MB 的假待机验收断言（`vt_4_01.rs`）。
    - 将 `vt_4_04.rs` 中的 `test_vt_4_04_ci_sampling_stability_and_memory_leak_check` 重命名为 `test_vt_4_04_detect_ethernet_status_loop_stability`，仅保留网卡循环检测函数稳定性，移除“语音系统无泄漏”断言。
-   - 验证：`cargo test --locked -p ai-mate --test vt_4_01 --test vt_4_04`（7 passed, 0 failed）。
+   - 验证：`cargo test --locked -p voice-companion --test vt_4_01 --test vt_4_04`（7 passed, 0 failed）。
 4. **解耦 `voice_tasks` 幂等与排队测试意图**（`voice_tasks.rs`）：
    - 拆分出 `duplicate_command_identity_cannot_change_goal`（幂等）与 `second_active_task_is_enqueued_and_queue_capacity_is_enforced`（排队及容量）。
    - 修复测试替身 `Runtime::send_bound` 的回执观察同步：确保 `send_bound` 将带有真实 `message_id` 的回执同步写入 `*self.receipt`，彻底杜绝后续 `observe` 产生 `task_receipt_scope_changed`。

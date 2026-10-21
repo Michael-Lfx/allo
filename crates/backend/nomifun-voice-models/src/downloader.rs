@@ -29,7 +29,7 @@ impl MirrorConfig {
         let mut mirrors = Vec::new();
 
         // Support custom mirror override via environment variable
-        if let Ok(custom_url) = std::env::var("AI_MATE_MODEL_MIRROR_URL") {
+        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL").or_else(|_| std::env::var("AI_MATE_MODEL_MIRROR_URL")) {
             let custom_url = custom_url.trim().to_string();
             if !custom_url.is_empty() {
                 mirrors.push(Self {

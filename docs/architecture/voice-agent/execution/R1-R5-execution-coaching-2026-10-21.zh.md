@@ -55,7 +55,7 @@ Standards：身份修复方向可接受，策略缺失容错和消费者重复�
 
 ```mermaid
 flowchart LR
-    Audio["ai-mate: 采集 / ASR / 播放"] --> Host["宿主: 会话绑定 / 原文投影 / 快回复"]
+    Audio["voice-companion: 采集 / ASR / 播放"] --> Host["宿主: 会话绑定 / 原文投影 / 快回复"]
     Host --> Ledger["voice_tasks: 冻结配置 / 持久 FIFO"]
     Ledger --> Bound["Conversation: 可信消息绑定 / 原子准入"]
     Bound --> Runtime["既有 runtime / 工具 / 唯一审批管理器"]
@@ -175,7 +175,7 @@ flowchart LR
 
 ### 3.6 R3：连续倾听、180 秒与半双工
 
-**入口：** `apps/ai-mate/src/voice.rs`、`nomifun-voice-terminal` 状态机、`nomifun-audio`、宿主快照与语音面板。任务队列和声学待处理缓冲是不同对象。
+**入口：** `apps/voice-companion/src/voice.rs`、`nomifun-voice-terminal` 状态机、`nomifun-audio`、宿主快照与语音面板。任务队列和声学待处理缓冲是不同对象。
 
 1. 将声学 idle/listening/recognizing/responding/playing/failed 与任务状态分开投影；音量事件只更新声学字段，不能清掉任务/审批/结果。
 2. 就绪后及实际播放结束后计算 180 秒无有效输入；噪声不续期。任务、审批、结果待播期间延后连接空闲结束，但仍有各自执行/审批/播放期限。
@@ -274,7 +274,7 @@ cargo test --locked -p nomifun-app --lib installed_acoustics_reach_a_real_read_a
 
 ```powershell
 # R3：声学、状态机、宿主投影
-cargo test --locked -p ai-mate
+cargo test --locked -p voice-companion
 cargo test --locked -p nomifun-voice-terminal
 cargo test --locked -p nomifun-audio
 cargo test --locked -p nomifun-app --lib voice
@@ -286,7 +286,7 @@ cargo test --locked -p nomifun-app --lib companion
 # R5：TTS 路由和模型资源；真实联网及本地 CPU 测量另列记录
 cargo test --locked -p nomifun-voice-terminal
 cargo test --locked -p nomifun-voice-models
-cargo check --locked -p ai-mate --bin ai-mate
+cargo check --locked -p voice-companion --bin voice-companion
 ```
 
 修改 UI 字典先 `bun run gen:i18n`，补中英文行为断言，再 `bun run check:i18n` / `bun run check:theme` / `bun run check`。真实 provider/Edge 的测试应显式选择已有联网用例并记录环境，不把正常断网替身测试当作真实服务证据。
@@ -298,7 +298,7 @@ cargo fmt --all -- --check
 cargo check --workspace --locked
 bun run check
 bun run build:ui
-cargo tree --locked -p ai-mate --edges normal,build,features
+cargo tree --locked -p voice-companion --edges normal,build,features
 cargo check --locked -p Flowy
 bun run build:win
 ```
@@ -364,7 +364,7 @@ bun run build:win
 
 #### R12-B [Required] 已排队被 daemon 解释为发送失败
 
-证据：[tasks:604](../../../../crates/backend/nomifun-app/src/voice_tasks.rs#L604) 对排队项仍返回 `VoiceTaskStatus::Delivering`；[voice.rs:1208](../../../../apps/ai-mate/src/voice.rs#L1208) 将 Delivering/Unknown 映射为 `task_delivery_unknown`，随后发错误/结束本轮。公开 DTO、UI 本轮都没有新增排队状态。
+证据：[tasks:604](../../../../crates/backend/nomifun-app/src/voice_tasks.rs#L604) 对排队项仍返回 `VoiceTaskStatus::Delivering`；[voice.rs:1208](../../../../apps/voice-companion/src/voice.rs#L1208) 将 Delivering/Unknown 映射为 `task_delivery_unknown`，随后发错误/结束本轮。公开 DTO、UI 本轮都没有新增排队状态。
 
 最小修复：用明确的公开 queued 投影区分“未发送排队”与“发送不确定”，集中更新 DTO、宿主、daemon、语音面板及双语文案；queued 只说已排队和位置，真实接受才说已接单。保持旧字段与旧历史可读，联合更新产物，避免只改枚举而漏消费者。
 
@@ -455,7 +455,7 @@ cargo test --locked -p nomifun-companion --lib collector
 cargo test --locked -p nomifun-app --lib voice_tasks
 cargo test --locked -p nomifun-app --lib voice_companion_manager
 cargo test --locked -p nomifun-app --lib voice_task_runtime
-cargo test --locked -p ai-mate
+cargo test --locked -p voice-companion
 bun run gen:i18n
 bun test --cwd ui src/renderer/pages/voiceSession src/renderer/pages/conversation/platforms/useConversationCommandQueue.test.ts
 bun run typecheck

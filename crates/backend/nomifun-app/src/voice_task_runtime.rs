@@ -200,8 +200,8 @@ mod tests {
     #[derive(Default)]
     struct RecordedTts(std::sync::Mutex<Vec<String>>);
     #[async_trait]
-    impl ai_mate::replay_terminal::tts::TtsProvider for RecordedTts {
-        async fn synthesize_stream(&self,text:&str,_voice:&str) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>,ai_mate::replay_terminal::tts::TtsError> {
+    impl voice_companion::replay_terminal::tts::TtsProvider for RecordedTts {
+        async fn synthesize_stream(&self,text:&str,_voice:&str) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>,voice_companion::replay_terminal::tts::TtsError> {
             self.0.lock().unwrap().push(text.to_owned());
             let pcm:Vec<f32> = (0..2400).map(|sample|0.1*(sample as f32*0.13).sin()).collect();
             let (tx,rx) = tokio::sync::mpsc::channel(1);
@@ -487,9 +487,9 @@ mod tests {
         let mut acoustic_tts = None;
         let mut acoustic_stt = None;
         if from_worker {
-            use ai_mate::{voice::VoiceCompanionRuntime,oobe::OobeManager};
+            use voice_companion::{voice::VoiceCompanionRuntime,oobe::OobeManager};
             use nomifun_audio::{voice_pipeline::{VoiceCapturePipeline,PipelineConfig},stt::FakeSttCallback};
-            use ai_mate::replay_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,task_client::HostTaskClient,playback::{TestAudioSink,PlaybackPipeline}};
+            use voice_companion::replay_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,task_client::HostTaskClient,playback::{TestAudioSink,PlaybackPipeline}};
             let hosted = crate::voice_dialogue::VoiceDialogueBridge::start_with_recorder(models,
                 Arc::new(std::sync::RwLock::new(config.model.clone())),manager.replay_control_credential(),manager.private_task_routes(),Some(recorder)).await.unwrap();
             let router = Arc::new(OpenAiCompatibleVoiceRouter::with_completion(Arc::new(HostDialogueClient::new(hosted.endpoint.clone(),manager.replay_control_credential()).unwrap())));
@@ -515,8 +515,8 @@ mod tests {
             let tts = Arc::new(RecordedTts::default());
             let voice = Arc::new(voice.with_tasks(task_client).with_test_playback(Arc::new(PlaybackPipeline::new(sink.clone())),tts.clone()));
             voice.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
-            let daemon_config = ai_mate::config::Config {control_token:Some(manager.replay_control_credential()),..Default::default()};
-            let daemon_routes = ai_mate::server::build_router_full(&daemon_config,models,(*oobe).clone(),Some(voice.event_sender()),Some(voice.clone()));
+            let daemon_config = voice_companion::config::Config {control_token:Some(manager.replay_control_credential()),..Default::default()};
+            let daemon_routes = voice_companion::server::build_router_full(&daemon_config,models,(*oobe).clone(),Some(voice.event_sender()),Some(voice.clone()));
             daemon_server = Some(tokio::spawn(async move {axum::serve(daemon_listener,daemon_routes).await.unwrap();}));
             if !real_acoustics {voice.handle_wake().await.unwrap();}
             acoustic_worker = Some(voice.start_worker());

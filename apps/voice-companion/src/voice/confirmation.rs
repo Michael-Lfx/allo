@@ -125,7 +125,8 @@ pub fn evaluate_confirmation_text(answer: &str) -> ConfirmationDecision {
     // Negation has highest priority!
     const DENIAL_KEYWORDS: &[&str] = &[
         "不同意", "不要执行", "不要", "先别", "别执行", "别删", "别写", "别动",
-        "取消", "不行", "拒绝", "不确认", "不许可", "否", "no", "cancel", "deny", "stop"
+        "取消", "不行", "拒绝", "不确认", "不许可", "否", "还没", "没有确认", "还没确认", "未确认",
+        "no", "cancel", "deny", "stop"
     ];
     if DENIAL_KEYWORDS.iter().any(|k| clean.contains(k)) {
         return ConfirmationDecision::Denied;

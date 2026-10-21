@@ -1,14 +1,14 @@
-# Flowy AI Mate Windows Service Installation Script (Wave 4 T4-02)
+# Flowy Voice Companion Windows Service Installation Script (Wave 4 T4-02)
 # Requires Administrator privilege
 
 $ErrorActionPreference = "Stop"
 
-$ServiceName = "FlowyAiMate"
-$DisplayName = "Flowy AI Mate Voice Companion Service"
-$Description = "Flowy AI Mate headless voice companion daemon"
-$InstallDir = "$env:ProgramFiles\Flowy\ai-mate"
-$DataDir = "$env:ProgramData\Flowy\ai-mate"
-$BinaryPath = "$InstallDir\ai-mate.exe"
+$ServiceName = "FlowyVoiceCompanion"
+$DisplayName = "Flowy Voice Companion Service"
+$Description = "Flowy headless voice companion daemon"
+$InstallDir = "$env:ProgramFiles\Flowy\voice-companion"
+$DataDir = "$env:ProgramData\Flowy\voice-companion"
+$BinaryPath = "$InstallDir\voice-companion.exe"
 
 Write-Host "Installing $DisplayName..."
 
@@ -17,10 +17,12 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 New-Item -ItemType Directory -Force -Path "$DataDir\models" | Out-Null
 
 # 2. Copy binary if present in current dir
-if (Test-Path ".\target\release\ai-mate.exe") {
+if (Test-Path ".\target\release\voice-companion.exe") {
+    Copy-Item -Force ".\target\release\voice-companion.exe" $BinaryPath
+} elseif (Test-Path ".\voice-companion.exe") {
+    Copy-Item -Force ".\voice-companion.exe" $BinaryPath
+} elseif (Test-Path ".\target\release\ai-mate.exe") {
     Copy-Item -Force ".\target\release\ai-mate.exe" $BinaryPath
-} elseif (Test-Path ".\ai-mate.exe") {
-    Copy-Item -Force ".\ai-mate.exe" $BinaryPath
 }
 
 # 3. Register or Update Service
@@ -38,4 +40,4 @@ if ($existingService) {
 # 4. Set failure recovery to restart service
 & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000
 
-Write-Host "Flowy AI Mate Windows Service configured successfully."
+Write-Host "Flowy Voice Companion Windows Service configured successfully."

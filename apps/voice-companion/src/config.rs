@@ -19,11 +19,14 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Environment variable used to override the models directory path.
+/// Primary environment variable used to override the models directory path.
+pub const ENV_VOICE_COMPANION_MODEL_DIR: &str = "VOICE_COMPANION_MODEL_DIR";
+
+/// Backwards-compatible legacy environment variable used to override the models directory path.
 pub const ENV_AI_MATE_MODEL_DIR: &str = "AI_MATE_MODEL_DIR";
 
 /// Default system models directory for Linux companion host / system service.
-pub const DEFAULT_MODELS_DIR: &str = "/var/lib/ai-mate/models";
+pub const DEFAULT_MODELS_DIR: &str = "/var/lib/voice-companion/models";
 
 /// Default auto-download setting for headless companion host.
 pub const DEFAULT_AUTO_DOWNLOAD: bool = true;
@@ -31,8 +34,8 @@ pub const DEFAULT_AUTO_DOWNLOAD: bool = true;
 /// Default probe timeout in milliseconds for dual-source probing.
 pub const DEFAULT_PROBE_TIMEOUT_MS: u64 = 1500;
 
-/// Default path for the AI Mate configuration file.
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/ai-mate/config.toml";
+/// Default path for the Voice Companion configuration file.
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/voice-companion/config.toml";
 
 /// Preferred model download mirror source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -86,12 +89,31 @@ pub fn default_models_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data)
+            let primary = PathBuf::from(&local_app_data)
+                .join("Flowy")
+                .join("Voice-Companion")
+                .join("models");
+            if primary.exists() {
+                return primary;
+            }
+            let legacy = PathBuf::from(&local_app_data)
                 .join("Flowy")
                 .join("AI-Mate")
                 .join("models");
+            if legacy.exists() {
+                return legacy;
+            }
+            return primary;
         }
-        PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\models")
+        let primary = PathBuf::from("C:\\ProgramData\\Flowy\\Voice-Companion\\models");
+        if primary.exists() {
+            return primary;
+        }
+        let legacy = PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\models");
+        if legacy.exists() {
+            return legacy;
+        }
+        primary
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -99,17 +121,36 @@ pub fn default_models_dir() -> PathBuf {
     }
 }
 
-/// Default path for the AI Mate configuration file (platform-specific).
+/// Default path for the Voice Companion configuration file (platform-specific).
 pub fn default_config_path() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data)
+            let primary = PathBuf::from(&local_app_data)
+                .join("Flowy")
+                .join("Voice-Companion")
+                .join("config.toml");
+            if primary.exists() {
+                return primary;
+            }
+            let legacy = PathBuf::from(&local_app_data)
                 .join("Flowy")
                 .join("AI-Mate")
                 .join("config.toml");
+            if legacy.exists() {
+                return legacy;
+            }
+            return primary;
         }
-        PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\config.toml")
+        let primary = PathBuf::from("C:\\ProgramData\\Flowy\\Voice-Companion\\config.toml");
+        if primary.exists() {
+            return primary;
+        }
+        let legacy = PathBuf::from("C:\\ProgramData\\Flowy\\AI-Mate\\config.toml");
+        if legacy.exists() {
+            return legacy;
+        }
+        primary
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -198,8 +239,9 @@ impl fmt::Debug for AiMateConfig {
     }
 }
 
-/// Type alias for convenient usage.
+/// Type aliases for convenient usage.
 pub type Config = AiMateConfig;
+pub type VoiceCompanionConfig = AiMateConfig;
 
 /// Configuration errors.
 #[derive(Debug, thiserror::Error)]
@@ -245,8 +287,10 @@ impl AiMateConfig {
     where
         F: Fn(&str) -> Option<String>,
     {
-        self.control_token = get_env("AI_MATE_CONTROL_TOKEN").filter(|value| !value.is_empty());
-        if let Some(val) = get_env(ENV_AI_MATE_MODEL_DIR) {
+        self.control_token = get_env("VOICE_COMPANION_CONTROL_TOKEN")
+            .or_else(|| get_env("AI_MATE_CONTROL_TOKEN"))
+            .filter(|value| !value.is_empty());
+        if let Some(val) = get_env(ENV_VOICE_COMPANION_MODEL_DIR).or_else(|| get_env(ENV_AI_MATE_MODEL_DIR)) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.models.models_dir = PathBuf::from(trimmed);
@@ -265,7 +309,7 @@ impl AiMateConfig {
                 self.cloud.endpoint = Some(trimmed.to_string());
             }
         }
-        if let Some(val) = get_env("AI_MATE_LLM_MODEL") {
+        if let Some(val) = get_env("VOICE_COMPANION_LLM_MODEL").or_else(|| get_env("AI_MATE_LLM_MODEL")) {
             let trimmed = val.trim();
             if !trimmed.is_empty() {
                 self.cloud.model = Some(trimmed.to_string());

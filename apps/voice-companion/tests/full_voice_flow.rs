@@ -61,7 +61,7 @@ async fn encrypted_tts_connection_returns_an_error_without_panicking() {
 #[cfg(feature = "voice-skeleton")]
 mod flow {
     use super::*;
-    use ai_mate::{oobe::OobeManager, voice::VoiceCompanionRuntime};
+    use voice_companion::{oobe::OobeManager, voice::VoiceCompanionRuntime};
     use async_trait::async_trait;
     use futures_util::StreamExt;
     use nomifun_audio::voice_pipeline::{PipelineConfig, SpscProducer, VoiceCapturePipeline};

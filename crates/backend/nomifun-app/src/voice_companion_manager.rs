@@ -1682,16 +1682,19 @@ impl VoiceCompanionProcessManager {
         }
     }
 
-    /// Resolves the compiled `ai-mate` executable path on disk.
-    pub fn resolve_ai_mate_binary() -> Option<PathBuf> {
-        let exe_name = if cfg!(windows) {
-            "ai-mate.exe"
+    /// Resolves the compiled `voice-companion` executable path on disk (with fallback to `ai-mate`).
+    pub fn resolve_voice_companion_binary() -> Option<PathBuf> {
+        let exe_names = if cfg!(windows) {
+            ["voice-companion.exe", "ai-mate.exe"]
         } else {
-            "ai-mate"
+            ["voice-companion", "ai-mate"]
         };
 
         // 1. Explicit environment variable override
-        if let Some(env_path) = std::env::var_os("AI_MATE_BIN").map(PathBuf::from) {
+        if let Some(env_path) = std::env::var_os("VOICE_COMPANION_BIN")
+            .or_else(|| std::env::var_os("AI_MATE_BIN"))
+            .map(PathBuf::from)
+        {
             if env_path.is_file() {
                 return Some(env_path);
             }
@@ -1700,35 +1703,37 @@ impl VoiceCompanionProcessManager {
         // 2. Tauri's resource bin is authoritative across Windows/macOS/Linux.
         let bundled_bin=std::env::var_os("NOMIFUN_BUNDLED_BIN_DIR").map(PathBuf::from);
         let current_exe=std::env::current_exe().ok();
-        if let Some(binary)=Self::installed_ai_mate_binary(bundled_bin.as_deref(),current_exe.as_deref()) {return Some(binary);}
+        if let Some(binary)=Self::installed_voice_companion_binary(bundled_bin.as_deref(),current_exe.as_deref()) {return Some(binary);}
 
         // 3. Known development build target directories
-        let candidates = [
-            Path::new("target/debug").join(exe_name),
-            Path::new("target/release").join(exe_name),
-            Path::new("build.noindex/debug").join(exe_name),
-            Path::new("build.noindex/release").join(exe_name),
-        ];
+        for exe_name in exe_names {
+            let candidates = [
+                Path::new("target/debug").join(exe_name),
+                Path::new("target/release").join(exe_name),
+                Path::new("build.noindex/debug").join(exe_name),
+                Path::new("build.noindex/release").join(exe_name),
+            ];
 
-        for c in &candidates {
-            if c.is_file() {
-                return Some(c.clone());
+            for c in &candidates {
+                if c.is_file() {
+                    return Some(c.clone());
+                }
             }
-        }
 
-        // 4. Resolve relative to workspace root if cwd is a sub-crate
-        if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            let root = Path::new(&manifest_dir).ancestors().nth(2);
-            if let Some(r) = root {
-                for dir in [
-                    "target/debug",
-                    "target/release",
-                    "build.noindex/debug",
-                    "build.noindex/release",
-                ] {
-                    let c = r.join(dir).join(exe_name);
-                    if c.is_file() {
-                        return Some(c);
+            // 4. Resolve relative to workspace root if cwd is a sub-crate
+            if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+                let root = Path::new(&manifest_dir).ancestors().nth(2);
+                if let Some(r) = root {
+                    for dir in [
+                        "target/debug",
+                        "target/release",
+                        "build.noindex/debug",
+                        "build.noindex/release",
+                    ] {
+                        let c = r.join(dir).join(exe_name);
+                        if c.is_file() {
+                            return Some(c);
+                        }
                     }
                 }
             }
@@ -1737,10 +1742,31 @@ impl VoiceCompanionProcessManager {
         None
     }
 
+    /// Backwards-compatible alias for resolving the companion binary.
+    #[inline]
+    pub fn resolve_ai_mate_binary() -> Option<PathBuf> {
+        Self::resolve_voice_companion_binary()
+    }
+
+    fn installed_voice_companion_binary(bundled_bin:Option<&Path>,current_exe:Option<&Path>)->Option<PathBuf> {
+        let names = if cfg!(windows) {
+            ["voice-companion.exe", "ai-mate.exe"]
+        } else {
+            ["voice-companion", "ai-mate"]
+        };
+        for name in names {
+            if let Some(candidate) = bundled_bin.into_iter().chain(current_exe.and_then(Path::parent))
+                .map(|directory| directory.join(name)).find(|candidate| candidate.is_file()) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    #[cfg(test)]
     fn installed_ai_mate_binary(bundled_bin:Option<&Path>,current_exe:Option<&Path>)->Option<PathBuf> {
-        let name=if cfg!(windows){"ai-mate.exe"}else{"ai-mate"};
-        bundled_bin.into_iter().chain(current_exe.and_then(Path::parent))
-            .map(|directory|directory.join(name)).find(|candidate|candidate.is_file())
+        Self::installed_voice_companion_binary(bundled_bin, current_exe)
     }
 
     fn read_autostart_config(&self) -> bool {
@@ -1850,20 +1876,23 @@ impl VoiceCompanionProcessManager {
             return Err("Voice acoustic models are not installed yet".to_string());
         }
 
-        let bin_path = Self::resolve_ai_mate_binary().ok_or_else(|| {
-            "ai-mate binary not found. Please compile ai-mate with `cargo build -p ai-mate` first.".to_string()
+        let bin_path = Self::resolve_voice_companion_binary().ok_or_else(|| {
+            "voice-companion binary not found. Please compile voice-companion with `cargo build -p voice-companion` first.".to_string()
         })?;
 
         let feedback_config = serde_json::to_string(&self.requested_feedback()?)
             .map_err(|_| "configuration_invalid")?;
-        info!(binary = %bin_path.display(), "Spawning AI Mate voice companion daemon...");
+        info!(binary = %bin_path.display(), "Spawning Voice Companion daemon...");
         self.starting();
 
         let mut builder = ChildProcessBuilder::new(&bin_path);
         builder.arg("--bypass-pairing");
         builder.arg("--host").arg("127.0.0.1:18080");
+        builder.env("VOICE_COMPANION_MODEL_DIR", self.models_manager.models_dir());
         builder.env("AI_MATE_MODEL_DIR", self.models_manager.models_dir());
+        builder.env("VOICE_COMPANION_CONTROL_TOKEN", &self.control_token);
         builder.env("AI_MATE_CONTROL_TOKEN", &self.control_token);
+        builder.env("VOICE_COMPANION_FEEDBACK_CONFIG", &feedback_config);
         builder.env("AI_MATE_FEEDBACK_CONFIG", feedback_config);
         if let Some(completer) = &self.dialogue_completer {
             let mut bridge = self.dialogue_bridge.lock().await;
@@ -3186,10 +3215,10 @@ mod tests {
 
     #[test]
     fn test_resolve_ai_mate_binary_candidate_search() {
-        let resolved = VoiceCompanionProcessManager::resolve_ai_mate_binary();
+        let resolved = VoiceCompanionProcessManager::resolve_voice_companion_binary();
         if let Some(path) = resolved {
             assert!(path.is_file());
-            assert!(path.to_string_lossy().contains("ai-mate"));
+            assert!(path.to_string_lossy().contains("voice-companion") || path.to_string_lossy().contains("ai-mate"));
         }
     }
 

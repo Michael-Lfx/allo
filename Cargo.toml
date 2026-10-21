@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/ai-mate", "apps/desktop", "apps/web"]
+members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/voice-companion", "apps/desktop", "apps/web"]
 
 [workspace.package]
 version = "1.6.1"

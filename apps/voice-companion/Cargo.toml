@@ -1,5 +1,5 @@
 [package]
-name = "ai-mate"
+name = "voice-companion"
 version.workspace = true
 edition.workspace = true
 
@@ -12,7 +12,7 @@ default = []
 voice-skeleton = ["nomifun-voice-terminal/voice-skeleton"]
 
 [[bin]]
-name = "ai-mate"
+name = "voice-companion"
 path = "src/main.rs"
 
 [dependencies]

@@ -407,7 +407,7 @@ impl nomifun_app::voice_dialogue::VoiceDialogueCompleter for GatedCompleter {
 
 #[tokio::test]
 async fn production_router_records_raw_input_before_one_generation_and_replays_the_raw_decision() {
-    use ai_mate::replay_terminal::{driver::VoiceRouter,router::OpenAiCompatibleVoiceRouter,completion::HostDialogueClient};
+    use voice_companion::replay_terminal::{driver::VoiceRouter,router::OpenAiCompatibleVoiceRouter,completion::HostDialogueClient};
     use nomifun_app::voice_dialogue::VoiceDialogueBridge;
     let dir=tempfile::tempdir().unwrap();let service=fixture_service().await;
     let recorder=Arc::new(ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()));
@@ -493,7 +493,7 @@ async fn a_wake_binding_freezes_the_project_and_its_execution_workspace_across_n
 
 #[tokio::test]
 async fn a_post_generation_projection_failure_returns_text_and_retry_never_calls_the_model_again() {
-    use ai_mate::replay_terminal::{driver::{VoiceRouter,RouteError},router::OpenAiCompatibleVoiceRouter,completion::HostDialogueClient};
+    use voice_companion::replay_terminal::{driver::{VoiceRouter,RouteError},router::OpenAiCompatibleVoiceRouter,completion::HostDialogueClient};
     use nomifun_app::voice_dialogue::VoiceDialogueBridge;
     let dir=tempfile::tempdir().unwrap();let service=fixture_service().await;
     let recorder=Arc::new(ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()));

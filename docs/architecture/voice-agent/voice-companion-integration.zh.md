@@ -40,7 +40,7 @@
 
 ```mermaid
 flowchart TD
-    subgraph Voice["语音产品运行模块：独立 ai-mate"]
+    subgraph Voice["语音产品运行模块：独立 voice-companion"]
         Capture["MicSource 与 KWS 与 VAD"] --> Turn["VoiceSessionDriver 与可取消轮次"]
         Turn --> ASR["复用已加载 SenseVoice"]
         ASR --> Decision["已有四路意图 router<br/>真实模型与短历史"]
@@ -88,9 +88,9 @@ flowchart TD
 
 | 形态 | 采集所有者 | 交互承载 | runtime 接入 | 本轮规划 |
 |---|---|---|---|---|
-| Flowy 桌面 | 被监督 ai-mate | 原生单例会话窗 | 宿主具体 Adapter | 首要完整实现 |
-| 已有无屏主机 | ai-mate | 耳标/播报，配对页只做配对配置 | 仅在部署真实接入时可用 | 保持无头兼容，不能假接单 |
-| Web 控制页面 | 对应主机上的 ai-mate | 配置和主机状态投影 | 主机已有连接 | 复用状态消费，不暗中采集客户端麦克风 |
+| Flowy 桌面 | 被监督 voice-companion | 原生单例会话窗 | 宿主具体 Adapter | 首要完整实现 |
+| 已有无屏主机 | voice-companion | 耳标/播报，配对页只做配对配置 | 仅在部署真实接入时可用 | 保持无头兼容，不能假接单 |
+| Web 控制页面 | 对应主机上的 voice-companion | 配置和主机状态投影 | 主机已有连接 | 复用状态消费，不暗中采集客户端麦克风 |
 
 浏览器远程麦克风和客户端音频播放需要独立传输设计，不在本期默认支持。上轮 Handoff 中“浏览器宿主根级会话面板”仅适用于主机状态投影，不能据此承诺远程客户端语音端到端。
 
@@ -262,7 +262,7 @@ sequenceDiagram
 | 决策 | 选定方案 | 未采用方案及理由 |
 |---|---|---|
 | 产品独立性 | 独立启用、会话、故障和验收，随 Flowy 首发 | 本轮拆成新发行应用：需要新增安装、身份、发布与运营范围 |
-| 进程和核心 | 保留独立 ai-mate；库保持无头 | GUI 回迁 daemon：破坏现有解耦和无屏部署 |
+| 进程和核心 | 保留独立 voice-companion；库保持无头 | GUI 回迁 daemon：破坏现有解耦和无屏部署 |
 | runtime 连接 | 后端具体 Adapter，复用 ConversationService | 通用 runtime 插件框架或第二套 TaskManager：当前无必要，会复制任务事实与权限 |
 | 对话路径 | 真实四分类一次路由，Chat 快轨不初始化任务 runtime | 所有语音都建 Agent task：普通聊天被执行基础设施故障阻断 |
 | 任务作用域 | 首版一个活动语音任务，每任务专属 Conversation | 借用任意当前聊天：取消或确认可能控制不相关任务 |
@@ -281,13 +281,13 @@ sequenceDiagram
 
 | 工作包 | 主要修改位置 | 具体交付 | 验收/依赖 |
 |---|---|---|---|
-| W1 真实装配 | ai-mate/config/main/voice；voice companion manager；voice-terminal/Cargo | 目录/配置生效、Ready 后加载、默认无 skeleton、真实就绪 | R0；自定义目录、缺 endpoint、native 引擎失败测试 |
-| W2 可取消会话 | voice-terminal driver；audio stt/playback/speaker；ai-mate worker | 统一 wake、预滚、ASR 复用、短历史、6 秒静默、发言上限、真实完成/flush | R0；回放覆盖真实 worker，控制和音频消费不阻塞 |
-| W3 产品快照 | api-types/voice；ai-mate server；nomifun-app 伴侣管理 | snapshot、seq、连接状态、pending command、过期事件屏蔽 | R0；晚订阅、Lagged、重连、实例变更测试 |
+| W1 真实装配 | voice-companion/config/main/voice；voice companion manager；voice-terminal/Cargo | 目录/配置生效、Ready 后加载、默认无 skeleton、真实就绪 | R0；自定义目录、缺 endpoint、native 引擎失败测试 |
+| W2 可取消会话 | voice-terminal driver；audio stt/playback/speaker；voice-companion worker | 统一 wake、预滚、ASR 复用、短历史、6 秒静默、发言上限、真实完成/flush | R0；回放覆盖真实 worker，控制和音频消费不阻塞 |
+| W3 产品快照 | api-types/voice；voice-companion server；nomifun-app 伴侣管理 | snapshot、seq、连接状态、pending command、过期事件屏蔽 | R0；晚订阅、Lagged、重连、实例变更测试 |
 | W4 窗口和设置整合 | apps/desktop 新 voice_session_window；ui platform/adapter；会话路由；VoiceSettings/i18n | 常驻显示、握手、状态与控制、删除页面常驻录音、三类就绪配置 | R1；AC-01–10/18/19，主窗口隐藏真机验证 |
 | W5 真任务连接 | nomifun-app 小型 voice_runtime_bridge；必要的 Conversation/ai-agent 调用处 | 幂等创建/发送/观察、映射恢复、真实 ACK、查询/取消/摘要 | R2；AC-11–13/16/17，runtime 不可用时 Chat 继续 |
 | W6 实际确认 | runtime 实际工具派发接线；Conversation confirm；声学确认消费 | 一个权限权威、真实 call 绑定、交集时限、单次确认、拒绝/超时 | R2；AC-14/15，真实高危工具测试，未通过拒绝高危请求 |
-| W7 安装交付 | 桌面 build/bundle 配置、既有资源准备与解析路径 | 正确编译分发 ai-mate/native 库、无额外控制台、完整退出 | R1 发布前 AC-20；不改签名/updater，必要发布文件修改按项目规则处理 |
+| W7 安装交付 | 桌面 build/bundle 配置、既有资源准备与解析路径 | 正确编译分发 voice-companion/native 库、无额外控制台、完整退出 | R1 发布前 AC-20；不改签名/updater，必要发布文件修改按项目规则处理 |
 
 W1–W4 形成首个可用端到端切片；W5–W6 完成任务闭环；W7 是发布前必要门禁。本表是实施分工，不授权自动派发多 Agent，也不包含日历承诺。后续用户启动实施时仅按必要目录修改。
 
@@ -295,7 +295,7 @@ W1–W4 形成首个可用端到端切片；W5–W6 完成任务闭环；W7 是�
 
 1. **契约和状态**：DTO golden、真实回执映射、非法迁移/取消/超时、snapshot 序号、身份与任务作用域测试。
 2. **真实调用链的替身验证**：利用 `MicSource::from_replay_chunks` / `VoiceCapturePipeline::from_replay` 接入 worker；测试替身 ASR/router/sink 和真实 Adapter 函数调用，不只验证 enums。需要证明同句输入一次消费、过期结果不污染、重放不执行。
-3. **受影响 Rust crate**：`cargo check -p <crate>`、`cargo test -p <crate>`；`cargo tree -p ai-mate -e features` 确认生产无 skeleton；`cargo fmt --check`。确认/取消用例需经过实际服务权限路径。
+3. **受影响 Rust crate**：`cargo check -p <crate>`、`cargo test -p <crate>`；`cargo tree -p voice-companion -e features` 确认生产无 skeleton；`cargo fmt --check`。确认/取消用例需经过实际服务权限路径。
 4. **前端行为与门禁**：快照 reducer、首次挂载握手、控制回执与双语断言；`bun run gen:i18n`、`bun run typecheck`、`bun run check`、`bun run build:ui`；提交前 `cargo check --workspace` 和受影响桌面构建。
 5. **真机功能与性能**：PRD AC-01–AC-20，录音、真实模型请求、扬声器完成、原生窗口和实际任务分别留证；记录窗口冷/热延迟和既有基线首音延迟分布，不用空样本百分位签核。
 6. **安装包和平台**：干净 Windows 机器安装验收；Mac/Linux 各自实测后才列入支持清单。现有 72 小时规程仍是待执行门禁，不写成已完成报告。

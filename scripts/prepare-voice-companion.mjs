@@ -13,7 +13,7 @@ export function voiceBuildPlan(env=process.env) {
   return {
     triples:target.arch==='universal'?['aarch64-apple-darwin','x86_64-apple-darwin']:[target.triple],
     profile:env.TAURI_ENV_DEBUG==='true'?'debug':'release',
-    binary:target.platform==='win32'?'ai-mate.exe':'ai-mate',
+    binary:target.platform==='win32'?'voice-companion.exe':'voice-companion',
   };
 }
 
@@ -21,11 +21,11 @@ export function builtVoiceExecutable(output) {
   let executable;
   for (const line of output.split('\n')) {
     let item;try {item=JSON.parse(line);} catch {continue;}
-    if (item.reason!=='compiler-artifact' || item.target?.name!=='ai-mate' || !item.target.kind.includes('bin')) continue;
+    if (item.reason!=='compiler-artifact' || item.target?.name!=='voice-companion' || !item.target.kind.includes('bin')) continue;
     if (item.features?.includes('voice-skeleton')) throw new Error('Refusing to package a voice-skeleton executable');
     if (item.executable) executable=item.executable;
   }
-  if (!executable) throw new Error('Cargo did not produce the ai-mate executable');
+  if (!executable) throw new Error('Cargo did not produce the voice-companion executable');
   return executable;
 }
 
@@ -41,20 +41,20 @@ async function main() {
   const executables=[];
   for (const triple of plan.triples) {
     console.log(`[voice-package] building ${triple} ${plan.profile}`);
-    const result=spawnSync('cargo',['build','-p','ai-mate','--bin','ai-mate','--no-default-features',
+    const result=spawnSync('cargo',['build','-p','voice-companion','--bin','voice-companion','--no-default-features',
       '--target',triple,'--message-format=json-render-diagnostics',...(plan.profile==='release'?['--release']:[])],
       {cwd:root,encoding:'utf8',stdio:['ignore','pipe','inherit'],windowsHide:true,maxBuffer:64*1024*1024});
     if (result.error) throw result.error;
     if (result.status!==0) {
       process.stderr.write(result.stdout||'');
-      throw new Error(`ai-mate build failed for ${triple}: ${result.status}`);
+      throw new Error(`voice-companion build failed for ${triple}: ${result.status}`);
     }
     executables.push(builtVoiceExecutable(result.stdout));
   }
   const outDir=join(root,'apps','desktop','resources','bin');
   let executable=executables[0];
   if (executables.length>1) {
-    executable=join(dirname(executables[0]),'ai-mate-universal');
+    executable=join(dirname(executables[0]),'voice-companion-universal');
     const result=spawnSync('lipo',['-create',...executables,'-output',executable],{stdio:'inherit',windowsHide:true});
     if (result.error) throw result.error;
     if (result.status!==0) throw new Error('lipo could not assemble the universal voice daemon');

@@ -7,13 +7,13 @@
 
 use std::path::Path;
 
-use ai_mate::watchdog::{get_recommended_heartbeat_interval, WATCHDOG_TIMEOUT_SECS};
+use voice_companion::watchdog::{get_recommended_heartbeat_interval, WATCHDOG_TIMEOUT_SECS};
 
 #[test]
 fn test_vt_4_01_linux_systemd_unit_contract() {
-    let service_path = Path::new("packaging/linux/ai-mate.service");
+    let service_path = Path::new("packaging/linux/voice-companion.service");
     let content = std::fs::read_to_string(service_path)
-        .expect("packaging/linux/ai-mate.service must exist");
+        .expect("packaging/linux/voice-companion.service must exist");
 
     // 1. Type=notify
     assert!(
@@ -21,10 +21,10 @@ fn test_vt_4_01_linux_systemd_unit_contract() {
         "systemd service must declare Type=notify for sd_notify integration"
     );
 
-    // 2. Dedicated non-privileged user isolation: aimate
+    // 2. Dedicated non-privileged user isolation: voicecompanion
     assert!(
-        content.contains("User=aimate") && content.contains("Group=aimate"),
-        "systemd service must run under isolated non-privileged user 'aimate'"
+        content.contains("User=voicecompanion") && content.contains("Group=voicecompanion"),
+        "systemd service must run under isolated non-privileged user 'voicecompanion'"
     );
 
     // 3. WatchdogSec=30s
@@ -35,8 +35,8 @@ fn test_vt_4_01_linux_systemd_unit_contract() {
 
     // 4. Working directory and restart policy
     assert!(
-        content.contains("WorkingDirectory=/var/lib/ai-mate"),
-        "WorkingDirectory must point to /var/lib/ai-mate"
+        content.contains("WorkingDirectory=/var/lib/voice-companion"),
+        "WorkingDirectory must point to /var/lib/voice-companion"
     );
     assert!(
         content.contains("Restart=always"),
@@ -46,13 +46,13 @@ fn test_vt_4_01_linux_systemd_unit_contract() {
 
 #[test]
 fn test_vt_4_01_macos_launchd_descriptor_contract() {
-    let plist_path = Path::new("packaging/macos/com.flowy.aimate.plist");
+    let plist_path = Path::new("packaging/macos/com.flowy.voicecompanion.plist");
     let content = std::fs::read_to_string(plist_path)
-        .expect("packaging/macos/com.flowy.aimate.plist must exist");
+        .expect("packaging/macos/com.flowy.voicecompanion.plist must exist");
 
     assert!(
-        content.contains("com.flowy.aimate"),
-        "plist must declare label com.flowy.aimate"
+        content.contains("com.flowy.voicecompanion"),
+        "plist must declare label com.flowy.voicecompanion"
     );
     assert!(
         content.contains("<key>KeepAlive</key>") && content.contains("<true/>"),
@@ -66,13 +66,13 @@ fn test_vt_4_01_macos_launchd_descriptor_contract() {
 
 #[test]
 fn test_vt_4_01_windows_service_descriptor_contract() {
-    let xml_path = Path::new("packaging/windows/ai-mate-service.xml");
+    let xml_path = Path::new("packaging/windows/voice-companion-service.xml");
     let content = std::fs::read_to_string(xml_path)
-        .expect("packaging/windows/ai-mate-service.xml must exist");
+        .expect("packaging/windows/voice-companion-service.xml must exist");
 
     assert!(
-        content.contains("<id>FlowyAiMate</id>"),
-        "XML must declare service id FlowyAiMate"
+        content.contains("<id>FlowyVoiceCompanion</id>"),
+        "XML must declare service id FlowyVoiceCompanion"
     );
     assert!(
         content.contains("<startmode>Automatic</startmode>"),

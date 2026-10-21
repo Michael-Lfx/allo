@@ -376,7 +376,7 @@ windows-sys = { workspace = true, features = [
 junction = "1"
 
 [dev-dependencies]
-ai-mate = { path = "../../../apps/ai-mate", features = ["voice-skeleton"] }
+voice-companion = { path = "../../../apps/voice-companion", features = ["voice-skeleton"] }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 nomifun-api-types.workspace = true
 nomifun-realtime.workspace = true

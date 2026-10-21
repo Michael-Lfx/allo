@@ -2,7 +2,7 @@
 #![cfg(feature="voice-skeleton")]
 use std::{sync::{Arc,atomic::{AtomicBool,Ordering}},time::Duration};
 use async_trait::async_trait;
-use ai_mate::{oobe::OobeManager,voice::VoiceCompanionRuntime};
+use voice_companion::{oobe::OobeManager,voice::VoiceCompanionRuntime};
 use nomifun_api_types::voice::*;
 use nomifun_audio::{stt::FakeSttCallback,voice_pipeline::{PipelineConfig,VoiceCapturePipeline}};
 use nomifun_voice_terminal::{driver::StubVoiceRouter,playback::{AudioSink,AudioSinkError,PlaybackPipeline},tts::{TtsProvider,TtsError}};
@@ -35,7 +35,7 @@ async fn scenario(heard:Option<&str>,ttl:Duration,stop_during_prompt:bool,prompt
     let runtime=Arc::new(runtime.with_test_playback(Arc::new(PlaybackPipeline::new(sink.clone())),Arc::new(PromptTts)));
     runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
     let worker=runtime.start_worker();
-    let app=ai_mate::server::build_router_full(&ai_mate::config::Config{control_token:Some("approval-fixture".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
+    let app=voice_companion::server::build_router_full(&voice_companion::config::Config{control_token:Some("approval-fixture".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
     let snapshot=runtime.snapshot();
     let prompt=VoiceToolConfirmationPrompt {
         scope:VoiceSessionControlRequest {instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},

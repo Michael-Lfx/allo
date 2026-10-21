@@ -5,8 +5,8 @@ use http_body_util::BodyExt;
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-use ai_mate::config::Config;
-use ai_mate::server::build_router;
+use voice_companion::config::Config;
+use voice_companion::server::build_router;
 use nomifun_voice_models::ModelManager;
 
 #[tokio::test]
@@ -40,7 +40,7 @@ async fn test_healthz_endpoint() {
     let json: serde_json::Value = serde_json::from_slice(&body_bytes).expect("valid JSON response");
 
     assert_eq!(json["status"], "ok");
-    assert_eq!(json["app"], "ai-mate");
+    assert_eq!(json["app"], "voice-companion");
 }
 
 #[tokio::test]

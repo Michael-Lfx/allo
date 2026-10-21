@@ -10,7 +10,7 @@ use std::io::Write;
 use sysinfo::System;
 use tempfile::tempdir;
 
-use ai_mate::net_preboot::{detect_ethernet_status, import_usb_setup};
+use voice_companion::net_preboot::{detect_ethernet_status, import_usb_setup};
 
 #[tokio::test]
 async fn test_vt_4_04_ethernet_detection() {

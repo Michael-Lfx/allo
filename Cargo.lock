@@ -226,35 +226,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ai-mate"
-version = "1.6.1"
-dependencies = [
- "async-trait",
- "axum",
- "chrono",
- "futures-util",
- "http 1.5.0",
- "http-body-util",
- "nomifun-api-types",
- "nomifun-audio",
- "nomifun-common",
- "nomifun-voice-models",
- "nomifun-voice-terminal",
- "rand 0.9.5",
- "serde",
- "serde_json",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "toml 0.8.2",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7046,7 +7017,6 @@ dependencies = [
 name = "nomifun-app"
 version = "1.6.1"
 dependencies = [
- "ai-mate",
  "anyhow",
  "async-trait",
  "axum",
@@ -7140,6 +7110,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "voice-companion",
  "windows-sys 0.61.2",
  "wiremock",
  "zip 2.4.2",
@@ -14069,6 +14040,35 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "voice-companion"
+version = "1.6.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures-util",
+ "http 1.5.0",
+ "http-body-util",
+ "nomifun-api-types",
+ "nomifun-audio",
+ "nomifun-common",
+ "nomifun-voice-models",
+ "nomifun-voice-terminal",
+ "rand 0.9.5",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "toml 0.8.2",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "vsimd"

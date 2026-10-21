@@ -86,7 +86,7 @@ impl nomifun_voice_terminal::tts::TtsProvider for SentenceSpeech {
 }
 struct StreamingWorker {
     server:ModelStream,
-    runtime:ai_mate::voice::VoiceCompanionRuntime,
+    runtime:voice_companion::voice::VoiceCompanionRuntime,
     producer:nomifun_audio::voice_pipeline::SpscProducer,
     sink:Arc<SpeechSink>,
     speech:Arc<SentenceSpeech>,
@@ -99,8 +99,8 @@ impl StreamingWorker {
     async fn with_error(fail:bool)->Self {
         let server=ModelStream::with_error(fail).await;let models=tempfile::tempdir().unwrap();
         let(capture,producer)=nomifun_audio::voice_pipeline::VoiceCapturePipeline::new(Default::default());
-        let(runtime,_)=ai_mate::voice::VoiceCompanionRuntime::from_capture(
-            Arc::new(nomifun_voice_models::ModelManager::new(models.path())),Arc::new(ai_mate::oobe::OobeManager::new_bypassed()),Arc::new(tokio::sync::Mutex::new(capture)),
+        let(runtime,_)=voice_companion::voice::VoiceCompanionRuntime::from_capture(
+            Arc::new(nomifun_voice_models::ModelManager::new(models.path())),Arc::new(voice_companion::oobe::OobeManager::new_bypassed()),Arc::new(tokio::sync::Mutex::new(capture)),
             Arc::new(nomifun_audio::stt::FakeSttCallback::always("你好")),server.router());
         let sink=Arc::new(SpeechSink::default());let speech=Arc::new(SentenceSpeech::default());
         let runtime=runtime.with_test_playback(Arc::new(nomifun_voice_terminal::playback::PlaybackPipeline::new(sink.clone())),speech.clone());

@@ -2,7 +2,7 @@
 #![cfg(feature = "voice-skeleton")]
 use std::{sync::Arc, time::Duration};
 
-use ai_mate::{
+use voice_companion::{
     oobe::OobeManager,
     voice::{VoiceCompanionEvent, VoiceCompanionRuntime},
 };
@@ -33,7 +33,7 @@ async fn an_async_task_result_waits_for_actual_input_silence_before_playing(){
     let(runtime,_)=VoiceCompanionRuntime::from_capture(models.clone(),oobe.clone(),Arc::new(Mutex::new(capture)),Arc::new(FakeSttCallback::always("普通背景讲话")),Arc::new(StubVoiceRouter::chat("unused")));
     let sink=Arc::new(TestAudioSink::new());let runtime=Arc::new(runtime.with_test_playback(Arc::new(PlaybackPipeline::new(sink.clone())),Arc::new(Speech)));
     runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
-    let app=ai_mate::server::build_router_full(&ai_mate::config::Config {control_token:Some("result-fixture".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
+    let app=voice_companion::server::build_router_full(&voice_companion::config::Config {control_token:Some("result-fixture".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
     let worker=runtime.start_worker();
     for _ in 0..20 {
         let pcm:Vec<f32>=(0..320).map(|sample|0.03*(sample as f32*std::f32::consts::TAU*200.0/16000.0).sin()).collect();
@@ -70,11 +70,11 @@ async fn feedback_controls_use_the_supervisor_credential_and_preserve_session_st
         Arc::new(StubVoiceRouter::chat("你好")),
     );
     let runtime = Arc::new(runtime);
-    let config = ai_mate::config::Config {
+    let config = voice_companion::config::Config {
         control_token: Some("test-supervisor".into()),
         ..Default::default()
     };
-    let app = ai_mate::server::build_router_full(
+    let app = voice_companion::server::build_router_full(
         &config,
         models,
         (*oobe).clone(),
@@ -364,7 +364,7 @@ async fn supervisor_credential_is_required_and_never_published() {
         Arc::new(FakeSttCallback::always("你好")),
         Arc::new(StubVoiceRouter::chat("你好")),
     );
-    let mut config = ai_mate::config::Config::default();
+    let mut config = voice_companion::config::Config::default();
     config.control_token = Some("fixture-private-credential".into());
     assert!(!format!("{config:?}").contains("fixture-private-credential"));
     assert!(
@@ -372,7 +372,7 @@ async fn supervisor_credential_is_required_and_never_published() {
             .unwrap()
             .contains("fixture-private-credential")
     );
-    let app = ai_mate::server::build_router_full(
+    let app = voice_companion::server::build_router_full(
         &config,
         models,
         (*oobe).clone(),
@@ -448,8 +448,8 @@ async fn wake_http_rejects_unpaired_runtime_instead_of_claiming_success() {
         Arc::new(FakeSttCallback::always("你好")),
         Arc::new(StubVoiceRouter::chat("你好")),
     );
-    let app = ai_mate::server::build_router_full(
-        &ai_mate::config::Config::default(),
+    let app = voice_companion::server::build_router_full(
+        &voice_companion::config::Config::default(),
         models,
         (*oobe).clone(),
         Some(runtime.event_sender()),
@@ -491,8 +491,8 @@ async fn task_results_require_current_scope_preserve_text_on_tts_failure_and_do_
     let sink = Arc::new(TestAudioSink::new());
     let runtime = Arc::new(runtime.with_test_playback(Arc::new(PlaybackPipeline::new(sink.clone())),tts.clone()));
     runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
-    let config = ai_mate::config::Config {control_token:Some("host-owned-fixture".into()),..Default::default()};
-    let app = ai_mate::server::build_router_full(&config,models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
+    let config = voice_companion::config::Config {control_token:Some("host-owned-fixture".into()),..Default::default()};
+    let app = voice_companion::server::build_router_full(&config,models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
     let scope = |snapshot:&nomifun_api_types::voice::VoiceSessionSnapshot| VoiceSessionControlRequest {instance_id:snapshot.instance_id.clone(),session_id:snapshot.session_id.clone(),turn_id:snapshot.turn_id.clone()};
     let body = VoiceTaskResultAnnouncement {scope:scope(&runtime.snapshot()),command_id:"actual-command".into(),notification_id:None,attempt_id:None,goal:None,text:"真实任务的文件读取结果。".into()};
     let request = |body:&VoiceTaskResultAnnouncement, token:bool| {
@@ -671,8 +671,8 @@ async fn late_event_subscriber_receives_current_session_immediately() {
     );
     let runtime = Arc::new(runtime);
     runtime.handle_wake_keyword("Hey Flowy").await.unwrap();
-    let app = ai_mate::server::build_router_full(
-        &ai_mate::config::Config::default(),
+    let app = voice_companion::server::build_router_full(
+        &voice_companion::config::Config::default(),
         models,
         (*oobe).clone(),
         Some(runtime.event_sender()),
@@ -733,7 +733,7 @@ async fn notification_is_not_played_until_the_sink_drains_and_an_exact_retry_onl
     let sink=Arc::new(Sink{entered:Default::default(),release:Default::default(),frames:Default::default()});
     let runtime=Arc::new(runtime.with_test_playback(Arc::new(PlaybackPipeline::new(sink.clone())),Arc::new(Speech)));
     runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
-    let app=ai_mate::server::build_router_full(&ai_mate::config::Config{control_token:Some("playback-proof".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
+    let app=voice_companion::server::build_router_full(&voice_companion::config::Config{control_token:Some("playback-proof".into()),..Default::default()},models,(*oobe).clone(),Some(runtime.event_sender()),Some(runtime.clone()));
     let snapshot=runtime.snapshot();let payload=VoiceTaskResultAnnouncement{scope:VoiceSessionControlRequest{instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},command_id:"result".into(),notification_id:Some("notification".into()),attempt_id:Some("attempt".into()),goal:Some("读取文件".into()),text:"文件读取的真实结果。".into()};
     let request=|payload:&VoiceTaskResultAnnouncement|http::Request::builder().method("POST").uri("/api/voice/task-result").header("content-type","application/json").header("x-ai-mate-control-token","playback-proof").body(axum::body::Body::from(serde_json::to_vec(payload).unwrap())).unwrap();
     let owned=app.clone();let req=request(&payload);let posting=tokio::spawn(async move{owned.oneshot(req).await.unwrap()});

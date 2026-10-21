@@ -3,22 +3,22 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.flowy.aimate</string>
+    <string>com.flowy.voicecompanion</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/ai-mate</string>
+        <string>/usr/local/bin/voice-companion</string>
         <string>--config</string>
-        <string>/etc/ai-mate/config.toml</string>
+        <string>/etc/voice-companion/config.toml</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>WorkingDirectory</key>
-    <string>/Library/Application Support/Flowy/ai-mate</string>
+    <string>/Library/Application Support/Flowy/voice-companion</string>
     <key>StandardOutPath</key>
-    <string>/var/log/flowy-ai-mate.log</string>
+    <string>/var/log/flowy-voice-companion.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/flowy-ai-mate.error.log</string>
+    <string>/var/log/flowy-voice-companion.error.log</string>
 </dict>
 </plist>
