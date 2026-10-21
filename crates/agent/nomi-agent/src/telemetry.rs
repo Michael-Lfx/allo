@@ -131,6 +131,7 @@ pub(crate) struct HistoryFacts {
     pub tool_results: usize,
     pub tool_result_errors: usize,
     pub tool_result_bytes: usize,
+    pub images: usize,
     /// Assistant messages since the last user turn began: how deep the current
     /// tool loop is.
     pub loop_depth: usize,
@@ -161,11 +162,16 @@ impl HistoryFacts {
             for block in &message.content {
                 match block {
                     ContentBlock::ToolUse { .. } => facts.tool_calls += 1,
+                    ContentBlock::Image { .. } => facts.images += 1,
                     ContentBlock::ToolResult {
-                        content, is_error, ..
+                        content,
+                        is_error,
+                        images,
+                        ..
                     } => {
                         facts.tool_results += 1;
                         facts.tool_result_bytes += content.len();
+                        facts.images += images.len();
                         if *is_error {
                             facts.tool_result_errors += 1;
                         }
@@ -187,6 +193,7 @@ impl HistoryFacts {
             "tool_results": self.tool_results,
             "tool_result_errors": self.tool_result_errors,
             "tool_result_bytes": self.tool_result_bytes,
+            "images": self.images,
             "loop_depth": self.loop_depth,
         })
     }
@@ -202,6 +209,10 @@ fn thinking_label(request: &LlmRequest) -> Option<&'static str> {
 
 pub(crate) fn reasoning_dropped(history: &HistoryFacts, wire: &WireFacts) -> usize {
     history.reasoning_messages.saturating_sub(wire.reasoning_kept)
+}
+
+pub(crate) fn images_stripped(history: &HistoryFacts, wire: &WireFacts) -> usize {
+    history.images.saturating_sub(wire.images)
 }
 
 pub(crate) struct LlmRequestFacts<'a> {
@@ -254,6 +265,7 @@ pub(crate) fn request_facts_value(history: &HistoryFacts, wire: Option<&WireFact
         "wire": wire.map(|wire| {
             let mut value = serde_json::to_value(wire).unwrap_or(Value::Null);
             value["reasoning_dropped"] = json!(reasoning_dropped(history, wire));
+            value["images_stripped"] = json!(images_stripped(history, wire));
             value
         }),
     })
@@ -819,6 +831,7 @@ mod tests {
             reasoning_placeholders: 1,
             drop_prior_turn_reasoning: true,
             require_reasoning_content: true,
+            ..WireFacts::default()
         };
 
         let props = llm_request_props(
@@ -909,6 +922,8 @@ mod tests {
         assert_eq!(value["history"]["reasoning_messages"], 3);
         assert_eq!(value["wire"]["reasoning_kept"], 1);
         assert_eq!(value["wire"]["reasoning_dropped"], 2);
+        assert_eq!(value["history"]["images"], 0);
+        assert_eq!(value["wire"]["images_stripped"], 0);
         assert!(request_facts_value(&history, None)["wire"].is_null());
     }
 

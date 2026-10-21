@@ -145,11 +145,17 @@ impl OpenAIProvider {
                                 images,
                             } = block
                             {
-                                let content = if *is_error {
+                                let mut content = if *is_error {
                                     format!("[tool error] {content}")
                                 } else {
                                     content.clone()
                                 };
+                                if !images.is_empty() && !compat.supports_image() {
+                                    content.push_str(&format!(
+                                        "\n[{} tool image(s) omitted: this model does not support image input]",
+                                        images.len()
+                                    ));
+                                }
                                 result.push(json!({
                                     "role": "tool",
                                     "tool_call_id": tool_use_id,
@@ -786,6 +792,12 @@ fn wire_facts(messages: &[Value], compat: &ProviderCompat) -> WireFacts {
             }
             Some("tool") => facts.tool_messages += 1,
             _ => {}
+        }
+        if let Some(parts) = message["content"].as_array() {
+            facts.images += parts
+                .iter()
+                .filter(|part| part["type"].as_str() == Some("image_url"))
+                .count();
         }
     }
     facts
@@ -3491,6 +3503,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_images_are_noted_when_dropped_for_a_text_only_model() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+        let compat = ProviderCompat {
+            supports_image: Some(false),
+            ..Default::default()
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "observed".into(),
+                is_error: false,
+                images: vec![nomi_types::tool::ToolImage {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
+            }],
+        )];
+        let out = OpenAIProvider::build_messages(&messages, "", &compat, false);
+        let s = serde_json::to_string(&out).unwrap();
+        assert!(!s.contains("image_url"), "{s}");
+        assert!(s.contains("1 tool image(s) omitted"), "{s}");
+    }
+
+    #[test]
     fn keeps_user_image_when_supports_image_true() {
         use nomi_types::message::{ContentBlock, Message, Role};
         let compat = ProviderCompat::default(); // supports_image() == true
@@ -4002,6 +4039,41 @@ mod tests {
         provider
             .describe_request(&request)
             .expect("the OpenAI provider exposes its wire format")
+    }
+
+    #[test]
+    fn describe_request_counts_images_that_reach_the_wire() {
+        let history = || {
+            vec![
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data: "AAAA".into(),
+                    }],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "shot".into(),
+                        is_error: false,
+                        images: vec![nomi_types::tool::ToolImage {
+                            media_type: "image/png".into(),
+                            data: "BBBB".into(),
+                        }],
+                    }],
+                ),
+            ]
+        };
+
+        assert_eq!(described(no_compat(), history()).images, 2);
+
+        let text_only = ProviderCompat {
+            supports_image: Some(false),
+            ..ProviderCompat::default()
+        };
+        assert_eq!(described(text_only, history()).images, 0);
     }
 
     #[test]

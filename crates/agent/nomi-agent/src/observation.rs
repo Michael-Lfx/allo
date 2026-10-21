@@ -2469,6 +2469,7 @@ mod tests {
             reasoning_placeholders: 1,
             drop_prior_turn_reasoning: true,
             require_reasoning_content: true,
+            ..WireFacts::default()
         }
     }
 
