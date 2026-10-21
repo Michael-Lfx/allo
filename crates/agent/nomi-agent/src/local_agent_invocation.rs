@@ -1079,6 +1079,7 @@ mod phase7_tests {
     use nomi_types::message::{StopReason, TokenUsage};
     use nomi_types::agent::{AgentInvocationInput, AgentToolPolicy};
     use std::collections::{BTreeSet, VecDeque};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     fn test_registry(
@@ -1166,6 +1167,65 @@ mod phase7_tests {
                 .unwrap()
                 .pop_front()
                 .expect("one provider turn per invocation");
+            let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+            for event in events {
+                sender.try_send(event).unwrap();
+            }
+            Ok(receiver)
+        }
+    }
+
+    /// Always answers the first provider turn with a Write tool call, then a
+    /// final EndTurn. Extra turns (for example a harness continuation) get the
+    /// same final text, so the test asserts the write rather than a call count.
+    struct WriteThenDoneProvider {
+        target: std::path::PathBuf,
+        content: &'static str,
+        calls: AtomicUsize,
+    }
+
+    impl WriteThenDoneProvider {
+        fn new(target: std::path::PathBuf, content: &'static str) -> Self {
+            Self {
+                target,
+                content,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for WriteThenDoneProvider {
+        async fn stream(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, ProviderError> {
+            let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let events = if first {
+                vec![
+                    LlmEvent::ToolUse {
+                        id: "write-one".to_owned(),
+                        name: "Write".to_owned(),
+                        input: serde_json::json!({
+                            "file_path": self.target,
+                            "content": self.content,
+                        }),
+                        extra: None,
+                    },
+                    LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage::default(),
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta("written".to_owned()),
+                    LlmEvent::Done {
+                        stop_reason: StopReason::EndTurn,
+                        usage: TokenUsage::default(),
+                    },
+                ]
+            };
             let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
             for event in events {
                 sender.try_send(event).unwrap();
@@ -1430,6 +1490,52 @@ mod phase7_tests {
             "a delegated Agent must not write without an approval channel"
         );
         assert_eq!(output.text, "blocked");
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_with_auto_approve_writes_without_prompting() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("yolo-write.txt");
+        let provider = WriteThenDoneProvider::new(target.clone(), "yolo");
+        let mut config = test_config();
+        config.tools.auto_approve = true;
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            config,
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert_eq!(output.text, "written");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "yolo",
+            "auto_approve (yolo) must keep delegated writes working"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_with_allowlisted_write_writes_without_prompting() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("allowlisted-write.txt");
+        let provider = WriteThenDoneProvider::new(target.clone(), "allowlisted");
+        let mut config = test_config();
+        config.tools.allow_list = vec!["Write".to_owned()];
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            config,
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert_eq!(output.text, "written");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "allowlisted",
+            "an explicit allow-list entry must still authorize the write"
+        );
     }
 
     #[tokio::test]
