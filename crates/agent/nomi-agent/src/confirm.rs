@@ -10,6 +10,10 @@ pub struct ToolConfirmer {
     allow_list: HashSet<String>,
     #[cfg(test)]
     check_count: usize,
+    /// Test-only evidence that the interactive stdin prompt was reached. A
+    /// delegated engine must deny before this point.
+    #[cfg(test)]
+    prompt_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,8 @@ impl ToolConfirmer {
             allow_list: allow_list.into_iter().collect(),
             #[cfg(test)]
             check_count: 0,
+            #[cfg(test)]
+            prompt_count: 0,
         }
     }
 
@@ -60,6 +66,17 @@ impl ToolConfirmer {
             return ConfirmResult::Denied;
         }
 
+        self.prompt_for_decision(tool_name, tool_input_display)
+    }
+
+    /// Interactive fallback used only when a host approval channel exists.
+    /// Delegated engines return before this method, so they never read stdin.
+    fn prompt_for_decision(&mut self, tool_name: &str, tool_input_display: &str) -> ConfirmResult {
+        #[cfg(test)]
+        {
+            self.prompt_count += 1;
+        }
+
         eprint!(
             "\n[tool] {}({})\nAllow? [y]es / [n]o / [a]lways / [q]uit > ",
             tool_name, tool_input_display
@@ -88,6 +105,13 @@ impl ToolConfirmer {
     #[cfg(test)]
     pub(crate) fn check_count(&self) -> usize {
         self.check_count
+    }
+
+    /// How many times the *interactive* path was entered. Delegated engines
+    /// must keep this at zero even when they deny the tool.
+    #[cfg(test)]
+    pub(crate) fn prompt_count(&self) -> usize {
+        self.prompt_count
     }
 }
 
@@ -170,6 +194,24 @@ mod tests {
             confirmer.check("Read", "in.txt"),
             ConfirmResult::Approved
         );
+        // PR #353: the deny path must return before any stdin prompt. If it
+        // ever regressed to prompting, an EOF/closed stdin would again be read
+        // as an empty answer.
+        assert_eq!(
+            confirmer.prompt_count(),
+            0,
+            "deny_unconfirmed must never enter the interactive prompt path"
+        );
+    }
+
+    #[test]
+    fn test_auto_approve_never_prompts_on_stdin() {
+        let mut confirmer = ToolConfirmer::new(true, vec![]);
+        assert_eq!(
+            confirmer.check("Bash", "echo hello"),
+            ConfirmResult::Approved
+        );
+        assert_eq!(confirmer.prompt_count(), 0);
     }
 
     #[test]
