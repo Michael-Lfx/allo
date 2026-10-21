@@ -433,6 +433,14 @@ impl LearningService {
             0
         };
 
+        // 来源计划诊断明细（t5）：详情端点带全量 excluded/duplicates（限长）。
+        // 摘要视图已在 `course_summary_from_row` 里构建;这里按同一列的原始
+        // JSON 再解析一次（单课程详情页,一次本地读,可接受）。
+        let source_plan_raw: Option<String> = row
+            .try_get("course_source_plan_json")
+            .map_err(internal)?;
+        let source_plan_detail = parse_source_plan_detail(source_plan_raw.as_deref());
+
         Ok(CourseDetail {
             course,
             enrollment_id,
@@ -440,6 +448,7 @@ impl LearningService {
             next_lesson_id,
             due_review_count,
             graph,
+            source_plan_detail,
         })
     }
 
@@ -1062,53 +1071,290 @@ struct StoredSourcePath {
     end: Option<i64>,
 }
 
-/// 来源计划快照列的摘要解析（t4，仿 `parse_sampling_view`）：NULL →
-/// `None`（旧课程/描述流——字段不出现，不伪造空计划）；未知版本/坏形状 →
-/// `available=false` 降级，不报错。完整信封留在库里，视图只读计数
-/// （t1 分诊角色计数 + t3 覆盖四级计数），DTO 细化归 t5。
+/// 摘要视图的示例/摘要列表限长（t5）：列表端点不背全量清单,详情端点用
+/// [`SOURCE_PLAN_DETAIL_MAX`] 的更高上限。
+const SOURCE_PLAN_SKIPPED_EXAMPLES_MAX: usize = 20;
+const SOURCE_PLAN_DUPLICATE_EXAMPLES_MAX: usize = 20;
+const SOURCE_PLAN_UNCERTAIN_LABELS_MAX: usize = 20;
+const SOURCE_PLAN_WARNINGS_MAX: usize = 20;
+const SOURCE_PLAN_GAPS_MAX: usize = 20;
+const SOURCE_PLAN_CHAPTER_SUMMARIES_MAX: usize = 50;
+/// 详情端点诊断明细限长（票面「详情保留完整 excluded/duplicates,可限长」）。
+const SOURCE_PLAN_DETAIL_MAX: usize = 200;
+
+/// 快照信封的解析结果（t5）：`available=false` 时信封不可用（未知版本/
+/// v1 形状损坏），读侧降级不报错。解析成功的信封供摘要/明细两个视图共用。
+enum ParsedSourcePlan {
+    /// 未知版本（含读不出 version 的坏 JSON）：version 保留用于披露。
+    UnknownVersion(u64),
+    /// v1 但形状损坏（历史手改等）：版本可读但内容不可信。
+    BrokenShape(u64),
+    Available(crate::generation::CourseSourcePlanSnapshot),
+}
+
+fn parse_source_plan_snapshot(raw: &str) -> ParsedSourcePlan {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return ParsedSourcePlan::UnknownVersion(0);
+    };
+    let version = value.get("version").and_then(Value::as_u64);
+    match version {
+        Some(version)
+            if version
+                == u64::from(crate::generation::COURSE_SOURCE_PLAN_SNAPSHOT_VERSION) =>
+        {
+            match serde_json::from_value::<crate::generation::CourseSourcePlanSnapshot>(value) {
+                Ok(snapshot) => ParsedSourcePlan::Available(snapshot),
+                Err(_) => ParsedSourcePlan::BrokenShape(version),
+            }
+        }
+        // 未知版本（version 缺失 = 0:不可信,同样降级）。
+        other => ParsedSourcePlan::UnknownVersion(other.unwrap_or(0)),
+    }
+}
+
+/// t1 分诊三角色文件 → topic 去向的对账辅助（t5 覆盖面）:rel_path →
+/// role 映射来自覆盖报告的文件台账（文件只是锚载体,topic 按锚点归属）。
+fn topic_role_by_path(
+    coverage: &crate::generation::SourceCoverage,
+) -> std::collections::HashMap<&str, crate::generation::KbTriageRole> {
+    coverage
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.role))
+        .collect()
+}
+
+/// 来源计划快照列的摘要解析（t4 落地、t5 细化分面,仿 `parse_sampling_view`）：
+/// NULL → `None`（旧课程/描述流——字段不出现,不伪造空计划）;未知版本/坏
+/// 形状 → `available=false` 降级,不报错。完整信封留在库里,摘要只读计数与
+/// ≤20 的示例（列表端点不背全量清单）。
 fn parse_source_plan_view(raw: Option<&str>) -> Option<crate::models::CourseSourcePlanView> {
     let raw = raw?;
-    let value: Value = serde_json::from_str(raw).ok()?;
-    let version = value.get("version").and_then(Value::as_u64);
-    if version != Some(u64::from(crate::generation::COURSE_SOURCE_PLAN_SNAPSHOT_VERSION)) {
-        // 未知版本（含读不出 version 的坏 JSON）:降级视图,计数置零。
-        return Some(crate::models::CourseSourcePlanView {
-            version,
-            available: false,
-            ..Default::default()
-        });
-    }
-    let snapshot: crate::generation::CourseSourcePlanSnapshot =
-        match serde_json::from_value(value) {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                // v1 形状损坏（历史手改等）:版本可读但内容不可信。
-                return Some(crate::models::CourseSourcePlanView {
-                    version,
-                    available: false,
-                    ..Default::default()
-                });
-            }
-        };
+    let snapshot = match parse_source_plan_snapshot(raw) {
+        ParsedSourcePlan::Available(snapshot) => snapshot,
+        ParsedSourcePlan::UnknownVersion(version) => {
+            return Some(unavailable_source_plan_view(version));
+        }
+        ParsedSourcePlan::BrokenShape(version) => {
+            return Some(unavailable_source_plan_view(version));
+        }
+    };
     let counts = snapshot.triage.counts;
+    let triage = crate::models::CourseSourcePlanTriageView {
+        total_files: counts.core
+            + counts.prerequisite
+            + counts.practice
+            + counts.mixed
+            + counts.noise
+            + counts.duplicate
+            + counts.uncertain,
+        core: counts.core,
+        prerequisite: counts.prerequisite,
+        practice: counts.practice,
+        mixed: counts.mixed,
+        noise: counts.noise,
+        duplicate: counts.duplicate,
+        uncertain: counts.uncertain,
+        degraded: snapshot.triage.degraded,
+        warnings: snapshot
+            .triage
+            .warnings
+            .iter()
+            .take(SOURCE_PLAN_WARNINGS_MAX)
+            .cloned()
+            .collect(),
+    };
+    // 章节/来源映射摘要:章课时数与 skipped 来自 t3 覆盖报告的章对账。
+    let chapter_lessons: std::collections::HashMap<&str, (&usize, &bool, &Option<String>)> =
+        snapshot
+            .coverage
+            .chapters
+            .iter()
+            .map(|report| (report.chapter.as_str(), (&report.lessons, &report.skipped, &report.skip_reason)))
+            .collect();
+    let chapter_summaries = snapshot
+        .plan
+        .chapters
+        .iter()
+        .take(SOURCE_PLAN_CHAPTER_SUMMARIES_MAX)
+        .map(|chapter| {
+            let (lessons, skipped, skip_reason) = chapter_lessons
+                .get(chapter.title.as_str())
+                .copied()
+                .unwrap_or((&0, &false, &None));
+            let mut source_paths = std::collections::BTreeSet::new();
+            for anchor in &chapter.source_anchors {
+                source_paths.insert(anchor.rel_path.as_str());
+            }
+            crate::models::CourseSourcePlanChapterSummaryView {
+                title: chapter.title.clone(),
+                concepts: chapter.covers.len(),
+                lessons: *lessons,
+                skipped: *skipped,
+                skip_reason: skip_reason.clone(),
+                source_files: source_paths.len(),
+            }
+        })
+        .collect();
+    let plan = crate::models::CourseSourcePlanPlanView {
+        chapters: snapshot.plan.chapters.len(),
+        concepts: snapshot.plan.concept_graph.nodes.len(),
+        edges: snapshot.plan.concept_graph.edges.len(),
+        gaps: snapshot
+            .plan
+            .evidence
+            .gaps
+            .iter()
+            .take(SOURCE_PLAN_GAPS_MAX)
+            .cloned()
+            .collect(),
+        chapter_summaries,
+        warnings: snapshot
+            .plan
+            .warnings
+            .iter()
+            .take(SOURCE_PLAN_WARNINGS_MAX)
+            .cloned()
+            .collect(),
+    };
+    // 覆盖面:topic 四态 + 前置/练习角色去向（topic 锚点 → 文件角色对账）。
+    let role_by_path = topic_role_by_path(&snapshot.coverage);
+    let mut topics_covered = 0usize;
+    let mut topics_skipped = 0usize;
+    let mut prerequisite_topics = 0usize;
+    let mut practice_topics = 0usize;
+    let mut anchor_uncertain_topics = 0usize;
+    let mut uncertain = Vec::new();
+    let mut skipped_examples = Vec::new();
+    for topic in &snapshot.coverage.topics {
+        match topic.status {
+            crate::generation::TopicStatus::Covered => {
+                topics_covered += 1;
+                match role_by_path.get(topic.anchor.rel_path.as_str()) {
+                    Some(crate::generation::KbTriageRole::Prerequisite) => {
+                        prerequisite_topics += 1;
+                    }
+                    Some(crate::generation::KbTriageRole::Practice) => {
+                        practice_topics += 1;
+                    }
+                    _ => {}
+                }
+            }
+            crate::generation::TopicStatus::Skipped => {
+                topics_skipped += 1;
+                if skipped_examples.len() < SOURCE_PLAN_SKIPPED_EXAMPLES_MAX {
+                    skipped_examples.push(crate::models::CourseSourcePlanSkippedTopicView {
+                        label: topic.label.clone(),
+                        reason: topic.reason.clone(),
+                    });
+                }
+            }
+            crate::generation::TopicStatus::Uncertain => {
+                if uncertain.len() < SOURCE_PLAN_UNCERTAIN_LABELS_MAX {
+                    uncertain.push(topic.label.clone());
+                }
+            }
+        }
+        if topic.anchor.anchor_uncertain {
+            anchor_uncertain_topics += 1;
+        }
+    }
+    let coverage = crate::models::CourseSourcePlanCoverageView {
+        topics_covered,
+        topics_skipped,
+        prerequisite_topics,
+        practice_topics,
+        anchor_uncertain_topics,
+        uncertain,
+        skipped_examples,
+        fallback_lessons: snapshot
+            .coverage
+            .lessons
+            .iter()
+            .filter(|lesson| lesson.fallback)
+            .count(),
+        warnings: snapshot
+            .coverage
+            .warnings
+            .iter()
+            .take(SOURCE_PLAN_WARNINGS_MAX)
+            .cloned()
+            .collect(),
+    };
+    let duplicates = crate::models::CourseSourcePlanDuplicatesView {
+        count: snapshot.triage.duplicates.len(),
+        examples: snapshot
+            .triage
+            .duplicates
+            .iter()
+            .take(SOURCE_PLAN_DUPLICATE_EXAMPLES_MAX)
+            .map(|duplicate| crate::models::CourseSourcePlanDuplicateExampleView {
+                path: duplicate.path.clone(),
+                duplicate_of: duplicate.duplicate_of.clone(),
+                canonical_reason: duplicate.canonical_reason.clone(),
+            })
+            .collect(),
+    };
     Some(crate::models::CourseSourcePlanView {
-        version,
-        available: true,
-        triage: crate::models::CourseSourcePlanTriageCountsView {
-            core: counts.core,
-            prerequisite: counts.prerequisite,
-            practice: counts.practice,
-            mixed: counts.mixed,
-            noise: counts.noise,
-            duplicate: counts.duplicate,
-            uncertain: counts.uncertain,
+        snapshot: crate::models::CourseSourcePlanSnapshotView {
+            version: Some(u64::from(snapshot.version)),
+            available: true,
         },
-        coverage: crate::models::CourseSourcePlanCoverageCountsView {
-            chapters: snapshot.coverage.chapters.len(),
-            lessons: snapshot.coverage.lessons.len(),
-            files: snapshot.coverage.files.len(),
-            topics: snapshot.coverage.topics.len(),
+        triage,
+        plan,
+        coverage,
+        duplicates,
+    })
+}
+
+/// 不可用快照的降级摘要（未知版本/坏形状）：版本保留披露、计数全零、
+/// `available=false`——读侧不报错、不伪造可信计数。
+fn unavailable_source_plan_view(version: u64) -> crate::models::CourseSourcePlanView {
+    crate::models::CourseSourcePlanView {
+        snapshot: crate::models::CourseSourcePlanSnapshotView {
+            version: (version > 0).then_some(version),
+            available: false,
         },
+        ..Default::default()
+    }
+}
+
+/// 详情端点的来源计划诊断明细（t5）：全量 excluded（path + role + reason）
+/// 与 duplicates,限长 [`SOURCE_PLAN_DETAIL_MAX`];列 NULL → `None`（字段不
+/// 出现）;不可用信封 → 仍返回空明细（available=false 由摘要视图披露,详情
+/// 明细零条目即可,不需要第二种降级叙事）。
+fn parse_source_plan_detail(raw: Option<&str>) -> Option<crate::models::CourseSourcePlanDetailView> {
+    let raw = raw?;
+    let snapshot = match parse_source_plan_snapshot(raw) {
+        ParsedSourcePlan::Available(snapshot) => snapshot,
+        _ => return Some(crate::models::CourseSourcePlanDetailView::default()),
+    };
+    Some(crate::models::CourseSourcePlanDetailView {
+        excluded: snapshot
+            .triage
+            .excluded
+            .iter()
+            .take(SOURCE_PLAN_DETAIL_MAX)
+            .map(|entry| crate::models::CourseSourcePlanExcludedView {
+                path: entry.path.clone(),
+                role: serde_json::to_value(entry.role)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                reason: entry.reason.clone(),
+            })
+            .collect(),
+        duplicates: snapshot
+            .triage
+            .duplicates
+            .iter()
+            .take(SOURCE_PLAN_DETAIL_MAX)
+            .map(|duplicate| crate::models::CourseSourcePlanDuplicateExampleView {
+                path: duplicate.path.clone(),
+                duplicate_of: duplicate.duplicate_of.clone(),
+                canonical_reason: duplicate.canonical_reason.clone(),
+            })
+            .collect(),
     })
 }
 
