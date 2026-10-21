@@ -1,3 +1,5 @@
+> **2026-10-21 最新执行入口**：[统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution) 固定保留 SenseVoice、暂不集成 Zipformer，并整合正确性修复与延迟闭环；[15f9a70fc 独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 确认定向测试通过，但仍有八项缺口，不能签核“九项全部清零”。以下历史全文保留。
+
 # Flowy 语音会话 Qoder 对齐改造方案
 
 > **2026-10-21 实施补充**：新增 [§8](#alignment-streaming-supplement) 与 [执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement)。保留 rev2 原文；“流式 ASR 后置”继续适用于生产接入，仓库外模型实验可提前开展，不干扰正在实施的 R1–R5，不表示已经完成测试或功能签核。
@@ -655,3 +657,9 @@ Eidolon 的云端通话、进程内队列和共享角色记忆不替代本项目
 本次仅补文档；外置实验状态及实际结果按 [外置 ASR 实验合同](R1-R5-execution-coaching-2026-10-21.zh.md#external-asr-lab) 分别记录。真人设备、生产接入与 Owner 验收不因文档更新自动通过。
 
 2026-10-21 用户追加产品范围：中文和英文均须支持，中英混说必测，覆盖 ASR、回复语言、TTS、确认/拒绝和任务控制。优先评估双语流式模型；当前中文单语外置 smoke 仅证明接口，不是默认模型选型通过。完整规则与首轮证据集中维护在执行辅导 §9.8–9.9。
+
+## 9. 本轮统一执行决策（2026-10-21）
+
+用户在外置录音对比后决定：保留 SenseVoice 做最终识别，当前不加入 Zipformer；先修消息/任务作用域和连续会话，再测 VAD → ASR → LLM 稳定首句 → TTS → sink 首帧的完整延迟。双语及中英混说要求不变。外置流式模型继续作为实验，不是本轮产品依赖。
+
+本方案的最新实施细则统一集中在[执行辅导 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution)。15f9a70fc 的自动检查和未闭环边界见[独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md)；旧方案与执行者交付声明保留，不能覆盖本次复审发现。180 秒连接空闲、30 分钟 Conversation 复用、排队/执行/审批期限是不同计时；不得以旧 4 秒契约注释推翻连续倾听需求。

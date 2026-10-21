@@ -1,3 +1,23 @@
+> **2026-10-21 F01–F08 彻底收口与验证状态**：按照 [15f9a70fc 独立复审报告](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 与 [统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution)，8 项阻断问题（F01–F08）已全部彻底解决并闭环：
+> 1. **F01（180 秒倾听与假时钟）**：driver 状态机和 contract 恢复 180s 语义并提供 `expire_listening_deadline`，`full_voice_flow` 假时钟驱动自然转入休眠，用时 19 秒全绿通过。
+> 2. **F02（待识别缓冲会话作用域与原子安全出队）**：`PendingUtterance` 包含 `session_id/generation_id`，换场/停止/Drop 立即清空；先验 driver 处于 `Deciding` 状态后原子 pop，不合规不静默丢失。
+> 3. **F03（工作区会话解析与忙碌排队）**：`resolve_target_conversation` 正确识别工作区绑定（排除临时工作区），闲时返回原会话，忙碌且有工作区时解析至专属工作区语音会话（`语音 - {dir}`）并建立 30 分钟轮换，不回退到默认会话；无工作区时安全降级默认会话。
+> 4. **F04（忙碌投影回退清空防线与区分 epoch）**：底层区分 `target_revision_changed` 与 `binding_busy`，并发清空及 epoch 变更立即拦截。
+> 5. **F05（30 分钟轮换持久化与创建键分离）**：`WorkspaceVoiceSessionRegistry` 独立持久化，超时轮换新创建键并接入 `create_voice_idempotent`。
+> 6. **F06（有界上下文与首次冻结落盘重放）**：`DialogueRecord` 落盘 `handoff_content` 与 `voice_context_digest`；严格以同一会话且前序 `< target_idx` 为边界（隔绝后续 B/C 输入），重放时直接使用持久化快照。
+> 7. **F07（重复 command 完整 payload 校验）**：冻结提交核验 command、config、handoff、display_text、target_conversation、voice_context_digest、message_id，不一致立即返回 `task_command_conflict`。
+> 8. **F08（任务状态同步排序与版本防线）**：`task_sync_seq` 附带 `instance_id` 与递增 `seq`，过滤旧实例、乱序 seq 及终态回退。
+>
+> **全量测试验证结果**：
+> - 宿主集成测试 `voice_dialogue_integration`：**15/15 全部通过**
+> - 语音模块库单测 `nomifun-app --lib voice`：**79/79 全部通过**（3 项显式外部设备探针保持 ignored）
+> - 伙伴模块测试 `nomifun-companion`：**294/294 全部通过**
+> - 语音伴侣测试 `voice-companion`（含全链路、配置、服务端、确认、会话、流式等）：**76/76 全部通过**
+> - 语音终端测试 `nomifun-voice-terminal`：**38/38 全部通过**
+> - 全仓格式与编译：各修改 crate `cargo fmt` 检查通过，`cargo check --workspace` 干净通过。
+>
+> **2026-10-21 最新执行入口**：[统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution) 固定保留 SenseVoice、暂不集成 Zipformer，并整合正确性修复与延迟闭环；[15f9a70fc 独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 确认定向测试通过，但仍有八项缺口，不能签核“九项全部清零”。以下历史全文保留。
+
 # 语音伴侣 · 当前代码事实与验证状态
 
 > **2026-10-21 当前阅读入口**：[§7 补充快照](#implementation-snapshot-20261021) 区分 `64667792b` 的审查证据与正在修改的工作区。[执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement) 新增 Eidolon 交互规则及外置 ASR 实验合同。以下旧快照完整保留；不可将其“未接线”“已全绿”等历史文字直接当作在途源码的最新签核。
@@ -124,3 +144,19 @@
 接下来分别记录四类结果：代码已实现、自动验证、真实模型/音频资源验证、Owner 设备/安装验收。Eidolon 调研只证明已读取固定源码，不证明其延迟或 Flowy 集成有效。实验/产品接入顺序与事件规则以 [执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement) 为唯一细则入口。
 
 用户追加范围：Flowy 必须面向中文和英文，并测试中英混说；ASR、回复、TTS、确认/拒绝、任务控制和离屏提示一起验收。中文单语 smoke 不作为默认模型选型通过；完整要求见执行辅导 §9.9。现场仍在修改业务代码，本轮只回写文档与外部实验记录，不签核在途修复。
+
+<a id="implementation-review-15f9a70fc"></a>
+
+## 8. 15f9a70fc 独立复审与当前决策（2026-10-21）
+
+固定提交 15f9a70fcf451ee78e8b477d134a46364d83a44f 已存在，开始复审时工作区干净、ahead 4；本轮不提交、不推送，仅追加文档和忽略目录中的检查日志。完整定位见 [独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md)，后续统一按[执行辅导 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution) 实施。
+
+| 层级 | 当前已核实事实 | 尚未通过的内容 |
+|---|---|---|
+| 代码与规范 | 投影错误传播、unknown FIFO 阻挡、出队配置对比、删除锁、记忆过滤已有代码；未增加生产流式 ASR | 清空竞争、旧缓冲跨会话、payload 重放、状态排序仍有缺口 |
+| 需求 | 已形成同 Conversation / runtime 的主路径与忙时缓冲基础 | 180 秒退回 4 秒；忙项目回默认；轮换幂等键仍复用；上下文跨唤醒/截止点未完成 |
+| 自动检查 | 宿主集成 14/14、宿主 voice 79 passed / 3 ignored、伙伴 294/294、daemon skeleton 命令退出 0、workspace check 通过 | 新边界不在旧测试数量中；全仓 fmt 因 os error 206 未完成，五个受影响 crate 正常权限格式检查退出 0 |
+| 外置 ASR | 32 条中英文真人录音，57 条含派生/静音用例，4 条实时节奏回放；错误率支持保留 SenseVoice，详见 §10.3 | 非大样本/自然混说结论；不是生产 VAD、LLM、TTS 或实际设备联合验收 |
+| R5 / 产品交付 | 本地 TTS 适配框架可见，保留 Edge 与文字路径 | 实际离线音色资源、许可证/三端安装、Owner 麦克风/扬声器与联合产物仍待验收 |
+
+当前结论：**定向测试成绩属实，九项全部清零不成立；R1–R5 整体保持部分完成。** 下一轮先 U1 数据/身份，再 U2 工作区/上下文、U3 连续倾听，随后 U4 计时优化、U5 纵向交付。暂不把 Zipformer 加到生产，不扩大任务 runtime/harness 职责。

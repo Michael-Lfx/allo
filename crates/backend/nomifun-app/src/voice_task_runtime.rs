@@ -96,7 +96,7 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         Ok((effective,preset_snapshot))
     }
 
-    async fn create(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>, _creation_key:&str) -> Result<String,TaskMutationError> {
+    async fn create(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>, creation_key:&str) -> Result<String,TaskMutationError> {
         if config.preset_id.is_some()!=preset.is_some() || preset.is_some_and(|snapshot|Some(&snapshot.preset_id)!=config.preset_id.as_ref()) {
             return Err(TaskMutationError::Rejected("task_execution_config_invalid".into()));
         }
@@ -108,13 +108,12 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
             "delegation_policy":"disabled",
             "extra":{"voice":true,"workspace":canonical.to_string_lossy(),"session_mode":mode}
         })).map_err(|_| TaskMutationError::Rejected("task_execution_config_invalid".into()))?;
-        let workspace_key=format!("voice-create:workspace:{}",canonical.to_string_lossy());
-        let created=self.conversation.create_voice_idempotent(owner,request,&workspace_key,&config.workspace,preset.cloned()).await.map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
+        let created=self.conversation.create_voice_idempotent(owner,request,creation_key,&config.workspace,preset.cloned()).await.map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
         Ok(created.conversation_id)
     }
 
-    async fn create_bound(&self,owner:&str,config:&VoiceExecutionConfig,preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>,_creation_key:&str,target:Option<&str>)->Result<String,TaskMutationError>{
-        let Some(conversation_id)=target else {return self.create(owner,config,preset,_creation_key).await;};
+    async fn create_bound(&self,owner:&str,config:&VoiceExecutionConfig,preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>,creation_key:&str,target:Option<&str>)->Result<String,TaskMutationError>{
+        let Some(conversation_id)=target else {return self.create(owner,config,preset,creation_key).await;};
         self.conversation.ensure_voice_task_policy(owner,conversation_id,&config.workspace,config.model.as_ref(),preset,config.session_mode.as_deref()).await
             .map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
         Ok(conversation_id.to_owned())

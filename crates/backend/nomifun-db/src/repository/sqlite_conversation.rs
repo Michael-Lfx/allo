@@ -4109,8 +4109,11 @@ impl IConversationRepository for SqliteConversationRepository {
         let (epoch,active,status):(i64,Option<String>,Option<String>)=sqlx::query_as(
             "SELECT admission_epoch,active_turn_operation_id,status FROM conversations WHERE conversation_id = ? AND user_id = ?")
             .bind(conversation_id).bind(user_id).fetch_one(&mut *tx).await?;
-        if epoch!=expected_admission_epoch || active.is_some() || status.as_deref()==Some("running") {
-            return Err(DbError::Conflict("Voice target lifecycle changed".into()));
+        if epoch != expected_admission_epoch {
+            return Err(DbError::Conflict("Voice target admission epoch changed".into()));
+        }
+        if active.is_some() || status.as_deref() == Some("running") {
+            return Err(DbError::Conflict("Voice target is busy".into()));
         }
         // Claim the operation directly in its terminal state. Both messages and receipt
         // commit in the same transaction or neither commits.

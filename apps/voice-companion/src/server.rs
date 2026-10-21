@@ -329,12 +329,30 @@ async fn voice_confirmation_handler(
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum VoiceTaskStatusPayload {
+    Versioned {
+        task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>,
+        instance_id: Option<String>,
+        seq: Option<u64>,
+    },
+    Legacy(Option<nomifun_api_types::voice::VoiceTaskSnapshot>),
+}
+
 async fn voice_task_status_handler(
     State(state): State<ServerState>,
-    Json(task): Json<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
+    Json(payload): Json<VoiceTaskStatusPayload>,
 ) -> Response {
     if let Some(runtime) = &state.voice_runtime {
-        runtime.update_task_status(task);
+        match payload {
+            VoiceTaskStatusPayload::Versioned { task, instance_id, seq } => {
+                runtime.update_task_status_versioned(task, instance_id.as_deref(), seq);
+            }
+            VoiceTaskStatusPayload::Legacy(task) => {
+                runtime.update_task_status(task);
+            }
+        }
         StatusCode::OK.into_response()
     } else {
         StatusCode::SERVICE_UNAVAILABLE.into_response()

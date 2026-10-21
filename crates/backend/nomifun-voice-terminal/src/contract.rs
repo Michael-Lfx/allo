@@ -101,7 +101,7 @@ pub enum AcousticState {
     DispatchingTask,
     /// Background task completed, playing summary report
     SpeakingSummary,
-    /// 4-second warm follow-up listening window without wake word
+    /// 180-second warm follow-up listening window without wake word
     FollowUpListening,
 }
 

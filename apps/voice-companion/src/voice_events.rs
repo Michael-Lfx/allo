@@ -11,6 +11,7 @@ pub(crate) struct VoiceEventHub {
     state: Mutex<VoiceSessionSnapshot>,
     feedback: Mutex<nomifun_api_types::voice::VoiceFeedbackConfig>,
     context: Mutex<Vec<nomifun_voice_terminal::router::ChatMessage>>,
+    last_task_seq: std::sync::atomic::AtomicU64,
 }
 
 impl VoiceEventHub {
@@ -20,6 +21,7 @@ impl VoiceEventHub {
             tx,
             feedback: Mutex::new(Default::default()),
             context: Mutex::new(Vec::new()),
+            last_task_seq: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(VoiceSessionSnapshot {
                 instance_id: nomifun_common::generate_id(),
                 enabled: true,
@@ -61,7 +63,45 @@ impl VoiceEventHub {
     }
 
     pub fn update_task(&self, task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>) {
+        self.update_task_versioned(task, None, None);
+    }
+
+    pub fn update_task_versioned(
+        &self,
+        task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>,
+        instance_id: Option<&str>,
+        seq: Option<u64>,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(inst) = instance_id {
+            if !state.instance_id.is_empty() && inst != state.instance_id {
+                return;
+            }
+        }
+        if let Some(s) = seq {
+            let last = self.last_task_seq.load(std::sync::atomic::Ordering::SeqCst);
+            if s < last {
+                return;
+            }
+            self.last_task_seq.store(s, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let (Some(current_task), Some(new_task)) = (&state.task, &task) {
+            if current_task.command_id == new_task.command_id {
+                let current_is_terminal = matches!(
+                    current_task.status,
+                    nomifun_api_types::voice::VoiceTaskStatus::Completed
+                        | nomifun_api_types::voice::VoiceTaskStatus::Failed
+                );
+                let new_is_terminal = matches!(
+                    new_task.status,
+                    nomifun_api_types::voice::VoiceTaskStatus::Completed
+                        | nomifun_api_types::voice::VoiceTaskStatus::Failed
+                );
+                if current_is_terminal && !new_is_terminal {
+                    return;
+                }
+            }
+        }
         state.task = task;
         state.seq += 1;
     }

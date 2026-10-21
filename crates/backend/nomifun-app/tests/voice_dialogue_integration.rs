@@ -315,6 +315,72 @@ async fn bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conver
 }
 
 #[tokio::test]
+async fn bv_03_busy_workspace_candidate_preserves_workspace_voice_conversation() {
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).expect("canonical fixture owner"),
+    )
+    .await
+    .unwrap();
+    let conv_repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let user_id = USER_ID;
+
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_str = ws_dir.path().to_string_lossy().to_string();
+
+    let conversation_svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(user_id),
+        std::env::temp_dir(),
+        Arc::new(NullSink),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        conv_repo.clone(),
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let req: CreateConversationRequest = serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "项目开发",
+        "extra": {
+            "workspace": ws_str,
+        },
+    })).unwrap();
+    let candidate = conversation_svc.create(user_id, req).await.unwrap();
+    let candidate_conv_id = candidate.conversation_id;
+
+    // Mark candidate conversation as busy
+    sqlx::query("UPDATE conversations SET active_turn_operation_id = 'turn-test-busy' WHERE conversation_id = ?")
+        .bind(&candidate_conv_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let candidate_holder = std::sync::Arc::new(std::sync::RwLock::new(Some(candidate_conv_id.clone())));
+    let journal_dir = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(
+        conversation_svc.clone(),
+        user_id.to_string(),
+        journal_dir.path(),
+    )
+    .with_active_window_candidate(candidate_holder);
+
+    // F03: When candidate has a workspace and is busy, preflight MUST resolve to the workspace voice conversation, NOT default "语音助手"
+    let req_busy = VoiceDialogueRequest::scoped("session-ws-busy", "turn-ws-busy", "你好");
+    let preflight_busy = recorder.preflight(&req_busy).await.unwrap();
+    match preflight_busy {
+        VoiceDialoguePreflight::Ready { conversation_id } => {
+            let row = conv_repo.get(&conversation_id).await.unwrap().unwrap();
+            assert_ne!(row.name, "语音助手", "must not degrade to default voice assistant");
+            assert!(row.name.starts_with("语音 - "), "must resolve workspace voice conversation");
+            let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+            assert!(extra.get("voice_task_workspace").is_some());
+        }
+        _ => panic!("expected Ready"),
+    }
+}
+
+#[tokio::test]
 async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
     let db = nomifun_db::init_database_memory_with_owner(
         nomifun_common::UserId::parse(USER_ID.to_owned()).expect("canonical fixture owner"),

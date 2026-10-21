@@ -680,9 +680,20 @@ impl VoiceTaskService {
         allow_queue: bool,
     ) -> Result<VoiceTaskDelivery, String> {
         let _guard = self.operation.lock().await;
-        if let Some(previous)=self.read_command(&command.command_id)? {
-            if previous.command!=command {return Err("task_command_conflict".into());}
-            return Ok(VoiceTaskDelivery {task:self.reconcile(previous).await?,freshly_accepted:false});
+        if let Some(previous) = self.read_command(&command.command_id)? {
+            let frozen_conflict = (expected_preset.is_some() && previous.config != config)
+                || (handoff_content.is_some() && previous.handoff_content != handoff_content)
+                || (display_text.is_some() && previous.display_text != display_text)
+                || (target_conversation.is_some() && previous.target_conversation != target_conversation)
+                || (voice_context_digest.is_some() && previous.voice_context_digest != voice_context_digest)
+                || (message_id.is_some() && previous.task.message_id.as_ref() != message_id.as_ref());
+            if previous.command != command || frozen_conflict {
+                return Err("task_command_conflict".into());
+            }
+            return Ok(VoiceTaskDelivery {
+                task: self.reconcile(previous).await?,
+                freshly_accepted: false,
+            });
         }
         Self::validate_command(&command)?;
         let mut queue_behind_active = false;

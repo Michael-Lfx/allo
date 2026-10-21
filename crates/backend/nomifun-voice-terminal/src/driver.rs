@@ -276,6 +276,10 @@ impl VoiceSessionDriver {
         self.listening_deadline = None;
     }
 
+    pub fn expire_listening_deadline(&mut self) {
+        self.listening_deadline = Some(Instant::now().checked_sub(Duration::from_millis(10)).unwrap_or_else(Instant::now));
+    }
+
     pub fn remaining_listening_time(&self) -> Option<Duration> {
         self.listening_deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
@@ -297,7 +301,7 @@ impl VoiceSessionDriver {
         }
         let seconds = match self.fsm.state() {
             AcousticState::Listening => 6,
-            AcousticState::FollowUpListening => 4,
+            AcousticState::FollowUpListening => 180,
             _ => return false,
         };
         self.listening_deadline = Some(Instant::now() + Duration::from_secs(seconds));

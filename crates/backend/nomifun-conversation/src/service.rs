@@ -9228,6 +9228,18 @@ impl ConversationService {
         display_text: &str,
         command_id: &str,
     ) -> Result<(), AppError> {
+        self.append_voice_message_with_epoch(user_id, conversation_id, message_id, display_text, command_id, None).await
+    }
+
+    pub async fn append_voice_message_with_epoch(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        display_text: &str,
+        command_id: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<(), AppError> {
         MessageId::parse(message_id)
             .map_err(|error| AppError::BadRequest(format!("invalid voice message id: {error}")))?;
         if display_text.trim().is_empty() {
@@ -9245,6 +9257,15 @@ impl ConversationService {
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let admission = self
+                .conversation_repo
+                .get_turn_admission_state(user_id, conversation_id)
+                .await?;
+            if admission.epoch != expected_epoch {
+                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
         if let Some(existing) = self
             .conversation_repo
             .get_message(conversation_key, message_id)
@@ -10874,7 +10895,34 @@ impl ConversationService {
         content: &str,
         origin: &str,
     ) -> Result<String, AppError> {
+        self.project_assistant_message_idempotent_with_epoch(user_id, conversation_id, operation_id, content, origin, None).await
+    }
+
+    pub async fn project_assistant_message_idempotent_with_epoch(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        content: &str,
+        origin: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<String, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let _row = self
+                .conversation_repo
+                .get(conversation_id)
+                .await?
+                .filter(|row| row.user_id == user_id)
+                .ok_or_else(|| AppError::NotFound(format!("conversation {conversation_id}")))?;
+            let admission = self
+                .conversation_repo
+                .get_turn_admission_state(user_id, conversation_id)
+                .await?;
+            if admission.epoch != expected_epoch {
+                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
         let operation_id = operation_id.trim();
         let content = content.trim();
         let origin = origin.trim();

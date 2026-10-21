@@ -964,6 +964,7 @@ mod flow {
             .unwrap();
         flow.sink.consumed.notify_one();
         flow.phase("follow_up").await;
+        flow.runtime.driver().lock().await.expire_listening_deadline();
         flow.phase("idle").await;
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {

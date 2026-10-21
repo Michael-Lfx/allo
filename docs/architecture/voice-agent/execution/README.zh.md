@@ -1,3 +1,5 @@
+> **2026-10-21 最新执行入口**：[统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution) 固定保留 SenseVoice、暂不集成 Zipformer，并整合正确性修复与延迟闭环；[15f9a70fc 独立复审](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 确认定向测试通过，但仍有八项缺口，不能签核“九项全部清零”。以下历史全文保留。
+
 > **2026-10-21 Eidolon 与流式语音补充**：[执行辅导 §9](R1-R5-execution-coaching-2026-10-21.zh.md#voice-streaming-supplement) 为轮次、事件、播放和 [外置 ASR 实验](R1-R5-execution-coaching-2026-10-21.zh.md#external-asr-lab) 的细则入口；实验可与当前业务实施分别推进，生产接入仍后置。状态见 [当前快照 §7](current-implementation-status.zh.md#implementation-snapshot-20261021)。以下历次入口按其原始日期/提交阅读，不代表在途修复已签核。
 
 > **2026-10-21 R1 独立复核与后续执行**：[R1–R5 串行执行辅导](R1-R5-execution-coaching-2026-10-21.zh.md)。R1.1 核心修复已有代码与 SQLite 测试，仍有策略字段/采集幂等缺口；生产同 Conversation/FIFO 尚未接线。含各阶段代码入口、步骤、失败用例、门禁和命令，只更新文档，不提前签核或启动后续实施。
