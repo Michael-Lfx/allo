@@ -73,6 +73,13 @@ impl LearningService {
         // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
         let mut brief = brief;
         let mut expansion: Option<crate::generation::ExpansionOutcome> = None;
+        // t4 快照信封的四件套库存位:inventory/triage 只在展开成功时保留
+        // (coverage 在 expansion 里,plan 在 brief.source_plan 里)——四件
+        // 套齐全 = 课程确实按 plan 建成,落库点才组装信封。
+        let mut discovered: Option<(
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+        )> = None;
         if brief.knowledge_base.is_some() && self.course_outline_engine().is_some() {
             match self
                 .discover_kb_source_plan(&request, &brief, _task.token())
@@ -85,7 +92,10 @@ impl LearningService {
                             .expand_kb_course_blueprint(&inventory, &triage, &plan, &brief, _task.token())
                             .await
                         {
-                            Ok(Some(outcome)) => expansion = Some(outcome),
+                            Ok(Some(outcome)) => {
+                                discovered = Some((inventory, triage));
+                                expansion = Some(outcome);
+                            }
                             Ok(None) => {}
                             Err(error) => {
                                 if matches!(
@@ -127,9 +137,10 @@ impl LearningService {
             "phase": "started",
             "kind": brief.kind(),
         }));
-        let blueprint = match expansion {
+        let (blueprint, expansion_coverage) = match expansion {
             // t3 分批展开产物:plan 权威骨架的确定性落地,直接进装配/导入
-            //(跳过大纲引擎;失败时上面已回退 engine 路径)。
+            //(跳过大纲引擎;失败时上面已回退 engine 路径)。coverage 保留
+            // 给 t4 快照信封。
             Some(outcome) => {
                 tracing::info!(
                     session,
@@ -137,13 +148,13 @@ impl LearningService {
                     coverage_warnings = outcome.coverage.warnings.len(),
                     "kb expansion blueprint"
                 );
-                outcome.blueprint
+                (outcome.blueprint, Some(outcome.coverage))
             }
             None => match self
                 .generate_course_blueprint(&brief, model_override, &session)
                 .await
             {
-                Ok(blueprint) => blueprint,
+                Ok(blueprint) => (blueprint, None),
                 Err(error) => {
                     self.emit_course_event(serde_json::json!({
                         "phase": "failed",
@@ -197,6 +208,25 @@ impl LearningService {
                 })
             })
             .transpose()?;
+        // 来源计划快照(t4):四件套齐全(清点/分诊/计划/展开覆盖)才组装
+        // v1 信封——体积控制在 capture 里统一截断;描述流/回退采样路径/
+        // legacy 走 None(列上 NULL,不伪造)。导入与 modules/lessons 同事务。
+        let course_source_plan_json =
+            match (&discovered, brief.source_plan.as_ref(), expansion_coverage.as_ref()) {
+                (Some((inventory, triage)), Some(plan), Some(coverage)) => Some(
+                    serde_json::to_string(
+                        &crate::generation::CourseSourcePlanSnapshot::capture(
+                            inventory, triage, plan, coverage,
+                        ),
+                    )
+                    .map_err(|error| {
+                        AppError::Internal(format!(
+                            "failed to serialize course source plan snapshot: {error}"
+                        ))
+                    })?,
+                ),
+                _ => None,
+            };
         let detail = self
             .import_course_outline(
                 pack,
@@ -207,6 +237,9 @@ impl LearningService {
                     samples_meta_json,
                     // 来源库列表（t4）：归一顺序原样落库（首个 = 主来源）。
                     source_kb_ids,
+                    // 来源计划快照（t4）：只有建课确实走了「计划 → 展开」
+                    // 管线才写;描述流/回退路径 NULL,不伪造。
+                    course_source_plan_json,
                 },
             )
             .await;

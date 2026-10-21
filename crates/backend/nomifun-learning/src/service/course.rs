@@ -55,26 +55,31 @@ impl LearningService {
         .map_err(|error| AppError::Internal(format!("failed to serialize source kb ids: {error}")))?;
 
         let is_outline = outline.is_some();
-        let (blueprint_json, samples_json, learning_goal, samples_meta_json) = outline
-            .as_ref()
-            .map(|snapshot| {
-                (
-                    Some(snapshot.blueprint_json.as_str()),
-                    Some(snapshot.samples_json.as_str()),
-                    Some(snapshot.learning_goal.as_str()),
-                    Some(snapshot.samples_meta_json.as_deref()),
-                )
-            })
-            .unwrap_or((None, None, None, None));
+        let (blueprint_json, samples_json, learning_goal, samples_meta_json, course_source_plan_json) =
+            outline
+                .as_ref()
+                .map(|snapshot| {
+                    (
+                        Some(snapshot.blueprint_json.as_str()),
+                        Some(snapshot.samples_json.as_str()),
+                        Some(snapshot.learning_goal.as_str()),
+                        Some(snapshot.samples_meta_json.as_deref()),
+                        snapshot.course_source_plan_json.as_deref(),
+                    )
+                })
+                .unwrap_or((None, None, None, None, None));
         let content_generated: i64 = if is_outline { 0 } else { 1 };
         let now = now_ms();
         let course_id = LearningCourseId::new();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
+        // 来源计划快照（t4）与蓝图/采样同 INSERT:同一事务,导入中途失败
+        // (含 069 CHECK 拒绝非对象 JSON)零残留。NULL = 旧课程/描述流/未走
+        // 新管线,不回填。
         sqlx::query(
             "INSERT INTO learning_courses \
              (course_id, title, description, domain, source_kb_id, source_kb_ids, version, blueprint_json, samples_json, \
-              samples_meta_json, learning_goal, teaching_style, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              samples_meta_json, learning_goal, teaching_style, course_source_plan_json, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(course_id.as_str())
         .bind(pack.title.trim())
@@ -88,6 +93,7 @@ impl LearningService {
         .bind(samples_meta_json.flatten())
         .bind(learning_goal.unwrap_or_default())
         .bind(pack.teaching_style.as_str())
+        .bind(course_source_plan_json)
         .bind(now)
         .bind(now)
         .execute(&mut *transaction)
@@ -209,7 +215,7 @@ impl LearningService {
         // 各消费面按「现存且启用」口径自筛（三轮 g3），目录本身不藏归档课。
         let rows = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, c.enabled, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -261,7 +267,7 @@ impl LearningService {
         let user_value = user_id.map(UserId::as_str);
         let row = sqlx::query(
             "SELECT c.course_id, c.title, c.description, c.domain, c.course_kind, c.source_kb_id, c.source_kb_ids, c.version, c.updated_at, \
-                    c.learning_goal, c.samples_meta_json, c.enabled, \
+                    c.learning_goal, c.samples_meta_json, c.enabled, c.course_source_plan_json, \
                     EXISTS(SELECT 1 FROM learning_enrollments e \
                            WHERE e.course_id = c.course_id AND e.user_id = ?) AS enrolled, \
                     (SELECT COUNT(*) FROM learning_lessons l \
@@ -891,6 +897,12 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
     let sampling = samples_meta_json
         .as_deref()
         .and_then(parse_sampling_view);
+    // 来源计划快照摘要（t4）：NULL → None（字段不出现）；未知版本/坏形状
+    // → available=false（诊断字段不让课程列表整体失败）。
+    let source_plan_json: Option<String> = row
+        .try_get("course_source_plan_json")
+        .map_err(internal)?;
+    let source_plan = parse_source_plan_view(source_plan_json.as_deref());
     Ok(CourseSummary {
         id: parse_id(row.try_get("course_id").map_err(internal)?)?,
         title: row.try_get("title").map_err(internal)?,
@@ -920,6 +932,7 @@ fn course_summary_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<CourseSummar
         tags: Vec::new(),
         learning_goal,
         sampling,
+        source_plan,
     })
 }
 
@@ -1047,6 +1060,56 @@ struct StoredSourcePath {
     start: Option<i64>,
     #[serde(default)]
     end: Option<i64>,
+}
+
+/// 来源计划快照列的摘要解析（t4，仿 `parse_sampling_view`）：NULL →
+/// `None`（旧课程/描述流——字段不出现，不伪造空计划）；未知版本/坏形状 →
+/// `available=false` 降级，不报错。完整信封留在库里，视图只读计数
+/// （t1 分诊角色计数 + t3 覆盖四级计数），DTO 细化归 t5。
+fn parse_source_plan_view(raw: Option<&str>) -> Option<crate::models::CourseSourcePlanView> {
+    let raw = raw?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let version = value.get("version").and_then(Value::as_u64);
+    if version != Some(u64::from(crate::generation::COURSE_SOURCE_PLAN_SNAPSHOT_VERSION)) {
+        // 未知版本（含读不出 version 的坏 JSON）:降级视图,计数置零。
+        return Some(crate::models::CourseSourcePlanView {
+            version,
+            available: false,
+            ..Default::default()
+        });
+    }
+    let snapshot: crate::generation::CourseSourcePlanSnapshot =
+        match serde_json::from_value(value) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                // v1 形状损坏（历史手改等）:版本可读但内容不可信。
+                return Some(crate::models::CourseSourcePlanView {
+                    version,
+                    available: false,
+                    ..Default::default()
+                });
+            }
+        };
+    let counts = snapshot.triage.counts;
+    Some(crate::models::CourseSourcePlanView {
+        version,
+        available: true,
+        triage: crate::models::CourseSourcePlanTriageCountsView {
+            core: counts.core,
+            prerequisite: counts.prerequisite,
+            practice: counts.practice,
+            mixed: counts.mixed,
+            noise: counts.noise,
+            duplicate: counts.duplicate,
+            uncertain: counts.uncertain,
+        },
+        coverage: crate::models::CourseSourcePlanCoverageCountsView {
+            chapters: snapshot.coverage.chapters.len(),
+            lessons: snapshot.coverage.lessons.len(),
+            files: snapshot.coverage.files.len(),
+            topics: snapshot.coverage.topics.len(),
+        },
+    })
 }
 
 /// 采样披露的对外视图上限：低分未采样的示例路径（UI 披露够用，响应不背

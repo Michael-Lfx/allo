@@ -287,6 +287,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     learning_goal: String::new(),
                     samples_meta_json: None,
                     source_kb_ids: Vec::new(),
+                    course_source_plan_json: None,
                 },
             )
             .await
@@ -4262,6 +4263,7 @@ async fn lesson_context_carries_the_course_goal() {
                         learning_goal: goal,
                         samples_meta_json: None,
                         source_kb_ids: Vec::new(),
+                        course_source_plan_json: None,
                     },
                 )
                 .await
@@ -4431,6 +4433,7 @@ async fn import_kb_lesson_course_with_sources(
                 // 旧课程形状：无采样披露（目标词条集也无从持久化）。
                 samples_meta_json: None,
                 source_kb_ids: Vec::new(),
+                course_source_plan_json: None,
             },
         )
         .await
@@ -5335,6 +5338,7 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
                 learning_goal: "学会期权".into(),
                 samples_meta_json: Some(disclosure.to_string()),
                 source_kb_ids: vec![primary_id.parse().unwrap(), other_id.parse().unwrap()],
+                course_source_plan_json: None,
             },
         )
         .await
@@ -5481,6 +5485,7 @@ async fn lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_bas
                 learning_goal: "学会期权".into(),
                 samples_meta_json: Some(disclosure.to_string()),
                 source_kb_ids: vec![primary_id.parse().unwrap(), other_id.parse().unwrap()],
+                course_source_plan_json: None,
             },
         )
         .await
@@ -7562,4 +7567,528 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(bins[0].count, 1);
         assert_eq!(bins[0].actual, Some(1.0), "该题答对 → 桶内实际正确率 1.0");
         assert!(bins[0].predicted > 0.0 && bins[0].predicted <= 1.0);
+    }
+
+    // ── t4 持久化:来源计划快照列(course_source_plan_json)──────────────────
+
+    /// 最小可用信封夹具:t1–t3 四件套各一,capture 照真实路径组装。
+    fn source_plan_envelope_fixture() -> crate::generation::CourseSourcePlanSnapshot {
+        use crate::generation::{
+            KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope,
+            KbTriageCounts, KbTriageReport, SourceCoverage, SourcePlan,
+        };
+        let inventory = KbInventory {
+            bases: vec![KbInventoryBase {
+                kb_id: "kb-1".to_owned(),
+                name: "教材".to_owned(),
+                namespace: String::new(),
+                total_files: 1,
+            }],
+            files: vec![KbInventoryFile {
+                rel_path: "ch01.md".to_owned(),
+                kb_id: "kb-1".to_owned(),
+                size: 128,
+                modified_at: Some(1),
+                content_hash: "a".repeat(64),
+                headings: vec!["排序入门".to_owned()],
+                preview: "排序的基本概念。".to_owned(),
+                kind: KbFileKind::Markdown,
+            }],
+            total_files: 1,
+            total_bytes: 128,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        };
+        let triage = KbTriageReport {
+            files: Vec::new(),
+            counts: KbTriageCounts {
+                core: 1,
+                ..KbTriageCounts::default()
+            },
+            excluded: Vec::new(),
+            duplicates: Vec::new(),
+            degraded: false,
+            warnings: Vec::new(),
+        };
+        use crate::generation::{
+            ChapterContentType, ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport,
+            ExpansionTopicReport, FileCoverageStatus, KbTriageRole, SourceAnchor, TopicStatus,
+        };
+        let coverage = SourceCoverage {
+            goal: "学会排序".to_owned(),
+            chapters: vec![ExpansionChapterReport {
+                chapter: "排序入门".to_owned(),
+                modules: vec!["排序入门".to_owned()],
+                lessons: 1,
+                skipped: false,
+                skip_reason: None,
+            }],
+            lessons: vec![ExpansionLessonReport {
+                title: "排序入门".to_owned(),
+                module: "排序入门".to_owned(),
+                chapter: "排序入门".to_owned(),
+                sources: vec![SourceAnchor {
+                    kb_id: "kb-1".to_owned(),
+                    rel_path: "ch01.md".to_owned(),
+                    heading_or_anchor: Some("排序入门".to_owned()),
+                    paragraph: None,
+                    snippet: Some("排序的基本概念。".to_owned()),
+                    anchor_uncertain: false,
+                }],
+                est: 10,
+                content_type: ChapterContentType::Concept,
+                fallback: false,
+                anchor_uncertain: false,
+            }],
+            files: vec![ExpansionFileReport {
+                path: "ch01.md".to_owned(),
+                role: KbTriageRole::Core,
+                lessons: vec!["排序入门".to_owned()],
+                status: FileCoverageStatus::Covered,
+            }],
+            topics: vec![ExpansionTopicReport {
+                topic_id: "t1".to_owned(),
+                label: "排序入门".to_owned(),
+                anchor: SourceAnchor {
+                    kb_id: "kb-1".to_owned(),
+                    rel_path: "ch01.md".to_owned(),
+                    heading_or_anchor: Some("排序入门".to_owned()),
+                    paragraph: None,
+                    snippet: None,
+                    anchor_uncertain: false,
+                },
+                assigned_lessons: vec!["排序入门".to_owned()],
+                status: TopicStatus::Covered,
+                reason: None,
+            }],
+            warnings: Vec::new(),
+            degraded: false,
+        };
+        crate::generation::CourseSourcePlanSnapshot::capture(
+            &inventory,
+            &triage,
+            &SourcePlan::default(),
+            &coverage,
+        )
+    }
+
+    /// t4 写侧:快照信封随课程导入**同一事务**写进 course_source_plan_json,
+    /// 导入成功后列可读回、内容 = 信封序列化原样(与 modules/lessons 同生)。
+    #[tokio::test]
+    async fn import_persists_the_source_plan_snapshot_column() {
+        let (service, _knowledge, _owner) = job_test_service().await;
+        let lesson = |title: &str| LessonPack {
+            title: title.into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "快照课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson("第一课")],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "快照课程".into(),
+            description: String::new(),
+            domain: "math".into(),
+            version: 1,
+            modules: Vec::new(),
+        };
+        let plan_json = serde_json::to_string(&source_plan_envelope_fixture()).unwrap();
+        let detail = service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".to_owned(),
+                    learning_goal: "学会排序".to_owned(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    course_source_plan_json: Some(plan_json.clone()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT course_source_plan_json FROM learning_courses WHERE course_id = ?")
+                .bind(detail.course.id.as_str())
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(plan_json.as_str()),
+            "列内容 = 信封序列化原样(不重排/不重写)"
+        );
+        assert_eq!(detail.course.total_lessons, 1, "modules/lessons 同事务落库");
+    }
+
+    async fn read_source_plan_column(
+        service: &LearningService,
+        course_id: &str,
+    ) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT course_source_plan_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap()
+    }
+
+    /// t4 接线:建课走了「计划 → 展开」管线 → 落库点组装 v1 信封
+    /// (inventory/triage/plan/coverage 四件套)写 course_source_plan_json。
+    #[tokio::test]
+    async fn kb_flow_persists_the_source_plan_snapshot_when_expansion_succeeds() {
+        let (service, _knowledge, _router, owner_id, kb_id) =
+            structure_wiring_service_with(false, true).await;
+        service.set_course_outline_engine(Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        }));
+        let detail = service
+            .generate_course(
+                &owner_id,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: Some(kb_id.clone()),
+                    description: None,
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: Some("学会排序".into()),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let raw = read_source_plan_column(&service, detail.course.id.as_str())
+            .await
+            .expect("展开成功 → 快照信封落库");
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["version"], json!(1), "v1 信封");
+        assert_eq!(
+            value["inventory"]["total_files"],
+            json!(2),
+            "t1 清点(ch01/ch02)进信封"
+        );
+        assert!(
+            value["triage"]["counts"]["core"].as_u64().unwrap_or(0) >= 1,
+            "t1 分诊计数进信封"
+        );
+        assert!(
+            !value["plan"]["chapters"].as_array().unwrap().is_empty(),
+            "t2 计划骨架进信封"
+        );
+        assert_eq!(
+            value["coverage"]["lessons"].as_array().unwrap().len(),
+            1,
+            "t3 展开覆盖进信封"
+        );
+    }
+
+    /// t4 语义:展开失败回退采样路径建成的课程**不伪造快照**——列上 NULL
+    /// (课程不是按 plan 建的,快照不得冒充);描述流同理。
+    #[tokio::test]
+    async fn fallback_and_description_courses_carry_no_source_plan_snapshot() {
+        // 展开失败 → 回退大纲引擎路径(计划进简报但课程非按 plan 展开)。
+        let (service, _knowledge, _router, owner_id, kb_id) =
+            structure_wiring_service_with(false, false).await;
+        service.set_course_outline_engine(Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        }));
+        let detail = service
+            .generate_course(
+                &owner_id,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: Some(kb_id.clone()),
+                    description: None,
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: Some("学会排序".into()),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.course.total_lessons, 1, "回退路径建课不阻断");
+        assert!(
+            read_source_plan_column(&service, detail.course.id.as_str())
+                .await
+                .is_none(),
+            "回退采样路径 → 快照列 NULL,不伪造"
+        );
+        assert!(
+            detail.course.source_plan.is_none(),
+            "回退课程的读面同样不出现 source_plan"
+        );
+
+        // 描述流 → 零结构发现,快照列 NULL。
+        let (service, _knowledge, _router, owner_id, _kb_id) =
+            structure_wiring_service(false).await;
+        service.set_course_outline_engine(Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        }));
+        let detail = service
+            .generate_course(
+                &owner_id,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: None,
+                    description: Some("零基础期权入门".into()),
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: None,
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            read_source_plan_column(&service, detail.course.id.as_str())
+                .await
+                .is_none(),
+            "描述流 → 快照列 NULL"
+        );
+        assert!(
+            detail.course.source_plan.is_none(),
+            "描述流读面不出现 source_plan"
+        );
+    }
+
+    /// t4 读侧四态:旧课程 NULL → 字段不出现;新课 → available=true 带计数;
+    /// 未知 version → available=false 不报错;v1 形状损坏 → available=false
+    /// 不报错。描述流(列 NULL)与旧课程同一解析路径。
+    #[tokio::test]
+    async fn course_views_expose_the_source_plan_summary_in_four_states() {
+        let (service, _knowledge, owner) = job_test_service().await;
+
+        // 态 2:新课(导入带信封) → 摘要可见,计数来自信封。
+        let lesson = LessonPack {
+            title: "第一课".into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "快照课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "快照课程".into(),
+            description: String::new(),
+            domain: "math".into(),
+            version: 1,
+            modules: Vec::new(),
+        };
+        let plan_json = serde_json::to_string(&source_plan_envelope_fixture()).unwrap();
+        let detail = service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".to_owned(),
+                    learning_goal: "学会排序".to_owned(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    course_source_plan_json: Some(plan_json),
+                },
+            )
+            .await
+            .unwrap();
+        let course_id = detail.course.id.clone();
+        let detail = service.course_detail(&course_id, None).await.unwrap();
+        let view = detail
+            .course
+            .source_plan
+            .as_ref()
+            .expect("新课 → 快照摘要可见");
+        assert!(view.available);
+        assert_eq!(view.version, Some(1));
+        assert_eq!(view.triage.core, 1);
+        assert_eq!(view.coverage.chapters, 1);
+        assert_eq!(view.coverage.lessons, 1);
+        assert_eq!(view.coverage.files, 1);
+        assert_eq!(view.coverage.topics, 1);
+        // 列表面同一视图(parse_sampling_view 同款双消费)。
+        let list = service.list_courses(&owner).await.unwrap();
+        let listed = list
+            .iter()
+            .find(|course| course.id == course_id)
+            .expect("新课在列");
+        assert!(listed.source_plan.as_ref().unwrap().available);
+
+        // 直接落一行课程(旧课程/坏形状种子),复用最小 INSERT。
+        async fn seed_course(
+            service: &LearningService,
+            title: &str,
+            plan: Option<&str>,
+        ) -> String {
+            let id = LearningCourseId::new().into_string();
+            sqlx::query(
+                "INSERT INTO learning_courses \
+                 (course_id, title, description, domain, version, course_source_plan_json, created_at, updated_at) \
+                 VALUES (?, ?, '', 'general', 1, ?, 1000, 1000)",
+            )
+            .bind(&id)
+            .bind(title)
+            .bind(plan)
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+            id
+        }
+
+        // 态 1:旧课程(列 NULL) → 字段不出现,不伪造空计划。
+        let legacy_id = seed_course(&service, "旧课程", None).await;
+        let legacy = service
+            .course_detail(
+                &LearningCourseId::parse(&legacy_id).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            legacy.course.source_plan.is_none(),
+            "旧课程(NULL)→ source_plan 字段不出现"
+        );
+
+        // 态 3:未知 version → available=false,读侧降级不报错。
+        let future_id = seed_course(&service,
+            "未来版本课程",
+            Some(r#"{"version":99,"inventory":{"total_files":2}}"#),
+        ).await;
+        let future = service
+            .course_detail(&LearningCourseId::parse(&future_id).unwrap(), None)
+            .await
+            .unwrap();
+        let view = future
+            .course
+            .source_plan
+            .as_ref()
+            .expect("未知版本 → 视图存在但降级");
+        assert!(!view.available, "未知版本降级,不崩溃不伪造");
+        assert_eq!(view.version, Some(99));
+
+        // 态 4:v1 但形状损坏(历史手改等) → available=false 不报错。
+        let broken_id = seed_course(&service,
+            "坏形状课程",
+            Some(r#"{"version":1,"inventory":"not-an-object"}"#),
+        ).await;
+        let broken = service
+            .course_detail(&LearningCourseId::parse(&broken_id).unwrap(), None)
+            .await
+            .unwrap();
+        let view = broken
+            .course
+            .source_plan
+            .as_ref()
+            .expect("坏形状 → 视图存在但降级");
+        assert!(!view.available);
+        assert_eq!(view.version, Some(1));
+        assert_eq!(view.triage.core, 0, "不可信计数置零");
+    }
+
+    /// t4 事务性:导入中途失败(快照列违反 069 CHECK——非对象 JSON 在
+    /// course INSERT 处被拒)→ 课程行与 modules/lessons **零残留**,不出现
+    /// 「课程行有 plan、modules 没有」的半成品。
+    #[tokio::test]
+    async fn failed_import_leaves_no_course_residue() {
+        let (service, _knowledge, _owner) = job_test_service().await;
+        let lesson = LessonPack {
+            title: "第一课".into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "半成品课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: String::new(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "半成品课程".into(),
+            description: String::new(),
+            domain: "math".into(),
+            version: 1,
+            modules: Vec::new(),
+        };
+        let result = service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".to_owned(),
+                    learning_goal: String::new(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    // 迁移 069 CHECK:数组/标量/非法 JSON 一律拒绝——事务
+                    // 在 course INSERT 处中断。
+                    course_source_plan_json: Some("[1, 2]".to_owned()),
+                },
+            )
+            .await;
+        assert!(result.is_err(), "非对象快照必须被 CHECK 拒绝");
+
+        for table in ["learning_courses", "learning_modules", "learning_lessons"] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(service.pool_for_tests())
+                .await
+                .unwrap();
+            assert_eq!(count, 0, "{table} 零残留");
+        }
     }
