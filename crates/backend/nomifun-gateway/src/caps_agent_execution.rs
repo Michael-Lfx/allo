@@ -9,7 +9,7 @@ use std::sync::Arc;
 use nomifun_api_types::{
     AddExecutionStepsRequest, AdjustAgentExecutionRequest, ConfigureExecutionStepRequest,
     ConversationResponse, CreateAgentExecutionRequest, CreateExecutionFromTemplateRequest,
-    ExecutionModelPool, ExecutionModelRef, ExecutionStepProfile, PlannedExecutionStep,
+    ExecutionModelPool, ExecutionModelRef, PlannedExecutionStep,
     ReassignExecutionStepRequest,
     RenameAgentExecutionRequest, ReplanAgentExecutionRequest, ResolvedPresetSnapshot,
     RetryExecutionStepRequest, SteerExecutionStepRequest, UpdateExecutionStepRequest,
@@ -692,29 +692,33 @@ fn explicit_plan(
     }
     let mut planned: Vec<PlannedExecutionStep> = steps
         .into_iter()
-        .map(|step| PlannedExecutionStep {
-            title: step.name,
-            spec: step.prompt,
-            profile: Some(ExecutionStepProfile {
-                kind: "general".to_owned(),
-                needs_vision: false,
-                needs_long_context: false,
-                needs_high_reasoning: false,
-                bulk: true,
-            }),
-            kind: ExecutionStepKind::Agent,
-            agent_mode: Some(AgentStepMode::Normal),
-            depends_on: Vec::new(),
-            // Explicit fan-out describes work, not a participant cardinality.
-            // The router assigns every node inside the inherited model/preset
-            // authority, including plans with more steps than participants.
-            participant_index: None,
-            assignment_rationale: Some("explicit parallel delegation".to_owned()),
-            role: step.role,
-            tool_policy: step.tool_policy,
-            fanout_group: Some("explicit".to_owned()),
-            control_policy: None,
-            failure_policy: StepFailurePolicy::FailExecution,
+        .map(|step| {
+            let assignment_rationale = match step.model_reason.as_deref() {
+                Some(reason) => format!("explicit parallel delegation: {reason}"),
+                None => "explicit parallel delegation".to_owned(),
+            };
+            // No profile: an omitted model inherits the lead participant instead
+            // of being scored toward an economy model. A named model is bound
+            // to that pool participant when the plan is materialized.
+            PlannedExecutionStep {
+                title: step.name,
+                spec: step.prompt,
+                profile: None,
+                kind: ExecutionStepKind::Agent,
+                agent_mode: Some(AgentStepMode::Normal),
+                depends_on: Vec::new(),
+                participant_index: None,
+                requested_model: step.model.map(|model| ExecutionModelRef {
+                    provider_id: model.provider_id,
+                    model: model.model,
+                }),
+                assignment_rationale: Some(assignment_rationale),
+                role: step.role,
+                tool_policy: step.tool_policy,
+                fanout_group: Some("explicit".to_owned()),
+                control_policy: None,
+                failure_policy: StepFailurePolicy::FailExecution,
+            }
         })
         .collect();
     if synthesize {
@@ -727,6 +731,7 @@ fn explicit_plan(
             agent_mode: Some(AgentStepMode::Synthesis),
             depends_on: (0..planned.len()).collect(),
             participant_index: None,
+            requested_model: None,
             assignment_rationale: Some("synthesis".to_owned()),
             // Role is prompt/routing/display context; tool authority is the
             // separate typed policy below.
@@ -1356,7 +1361,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         CapabilityMeta::new(
             "nomi_delegate",
             "agent_execution",
-            "Delegate work into one Agent Execution. Choose exactly one native-JSON shape. planned: strategy='planned' plus goal and optional work_dir/model_pool(object)/plan_gate/adaptation_policy/max_parallel(integer); never send tasks or synthesize. parallel: strategy='parallel' plus tasks(array of 1-16 objects) and optional synthesize(boolean); never send planned aggregate settings. At a top-level Conversation this creates an execution; inside an active Attempt it atomically appends Steps and returns immediately, so end the turn without polling. Returns the canonical execution receipt.",
+            "Delegate work into one Agent Execution. Choose exactly one native-JSON shape. planned: strategy='planned' plus goal and optional work_dir/model_pool(object)/plan_gate/adaptation_policy/max_parallel(integer); never send tasks or synthesize. parallel: strategy='parallel' plus tasks(array of 1-16 objects) and optional synthesize(boolean); never send planned aggregate settings. A task may set model {provider_id, model} only when that pair is already in the execution pool, plus model_reason; omit model to inherit the lead model. A model outside the pool is rejected and no execution is created. At a top-level Conversation this creates an execution; inside an active Attempt it atomically appends Steps and returns immediately, so end the turn without polling. Returns the canonical execution receipt.",
             DangerTier::Write,
         ),
         |deps, ctx, params| delegate(deps, ctx, params),
@@ -1384,6 +1389,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_common::AgentDelegationModel;
     use crate::registry::Registry;
 
     const ATTEMPT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000003";
@@ -1480,7 +1486,12 @@ mod tests {
                 "strategy": "parallel",
                 "tasks": [
                     {"name": "planner", "prompt": "make a plan"},
-                    {"name": "reviewer", "prompt": "review the result"}
+                    {
+                        "name": "reviewer",
+                        "prompt": "review the result",
+                        "model": {"provider_id": "provider-a", "model": "cheap"},
+                        "model_reason": "批量检索"
+                    }
                 ],
                 "synthesize": true
             }),
@@ -1511,12 +1522,16 @@ mod tests {
                     prompt: "a".to_owned(),
                     role: None,
                     tool_policy: AgentToolPolicy::Full,
+                    model: None,
+                    model_reason: None,
                 },
                 AgentDelegationTask {
                     name: "B".to_owned(),
                     prompt: "b".to_owned(),
                     role: None,
                     tool_policy: AgentToolPolicy::ReadOnly,
+                    model: None,
+                    model_reason: None,
                 },
             ],
             true,
@@ -1529,6 +1544,35 @@ mod tests {
         assert_eq!(steps[1].tool_policy, AgentToolPolicy::ReadOnly);
         assert_eq!(steps[2].tool_policy, AgentToolPolicy::ReadOnly);
         assert!(steps.iter().all(|step| step.participant_index.is_none()));
+        assert!(steps.iter().all(|step| step.profile.is_none()));
+        assert!(steps.iter().all(|step| step.requested_model.is_none()));
+    }
+
+    #[test]
+    fn explicit_parallel_plan_pins_a_named_pool_model_and_keeps_the_reason() {
+        let steps = explicit_plan(
+            vec![AgentDelegationTask {
+                name: "scan".to_owned(),
+                prompt: "list files".to_owned(),
+                role: None,
+                tool_policy: AgentToolPolicy::ReadOnly,
+                model: Some(AgentDelegationModel {
+                    provider_id: "provider-a".to_owned(),
+                    model: "cheap".to_owned(),
+                }),
+                model_reason: Some("批量检索".to_owned()),
+            }],
+            false,
+        )
+        .unwrap();
+        let requested = steps[0].requested_model.as_ref().expect("named model");
+        assert_eq!(requested.provider_id, "provider-a");
+        assert_eq!(requested.model, "cheap");
+        assert!(steps[0].profile.is_none());
+        assert_eq!(
+            steps[0].assignment_rationale.as_deref(),
+            Some("explicit parallel delegation: 批量检索")
+        );
     }
 
     #[test]
@@ -1539,18 +1583,24 @@ mod tests {
                 prompt: "inspect".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
             AgentDelegationTask {
                 name: "A".to_owned(),
                 prompt: "\n".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
             AgentDelegationTask {
                 name: "A".to_owned(),
                 prompt: "inspect".to_owned(),
                 role: Some("\t".to_owned()),
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
         ] {
             assert!(explicit_plan(vec![task], false).is_err());
@@ -1624,12 +1674,16 @@ mod tests {
                     prompt: "implement".to_owned(),
                     role: Some("builder".to_owned()),
                     tool_policy: AgentToolPolicy::Full,
+                    model: None,
+                    model_reason: None,
                 },
                 AgentDelegationTask {
                     name: "domain".to_owned(),
                     prompt: "review".to_owned(),
                     role: Some("领域专家".to_owned()),
                     tool_policy: AgentToolPolicy::ReadOnly,
+                    model: None,
+                    model_reason: None,
                 },
             ],
             false,
@@ -1688,6 +1742,8 @@ mod tests {
                 prompt: "must be rejected".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             }],
             synthesize: false,
         };

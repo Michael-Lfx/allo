@@ -20,6 +20,8 @@ const DESCRIPTION: &str = concat!(
     "Start one embedded Agent Execution with strategy=parallel. It synchronously invokes ",
     "1-16 Agents (200 turns each, inheriting the session output limit) and returns the same ",
     "execution_id/status/message receipt as a platform execution, plus terminal results. ",
+    "Omit task.model to inherit this session's model. A task.model is accepted only when its ",
+    "model name equals the session model; any other model is rejected before work starts. ",
     "Sibling progress is coordinated by the host without adding another model tool. ",
     "Use synthesize=true to add a read-only consolidation pass. Dependency DAGs and ",
     "durable cross-turn recovery require a platform host."
@@ -85,11 +87,16 @@ impl Tool for LocalDelegateTool {
 
         let execution_id = embedded_execution_id();
         let synthesize = request.synthesize;
-        let invocations = request
+        let session_model = self.runner.session_model().to_owned();
+        let invocations = match request
             .tasks
             .into_iter()
-            .map(task_invocation)
-            .collect::<Vec<_>>();
+            .map(|task| task_invocation(task, &session_model))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(invocations) => invocations,
+            Err(error) => return rejected(error),
+        };
         let results = self.runner.execute_fanout(invocations).await;
 
         let synthesis = if synthesize && results.len() >= 2 {
@@ -144,14 +151,27 @@ fn embedded_execution_id() -> String {
     AgentExecutionId::new().into_string()
 }
 
-fn task_invocation(task: AgentDelegationTask) -> AgentInvocationInput {
+fn task_invocation(
+    task: AgentDelegationTask,
+    session_model: &str,
+) -> Result<AgentInvocationInput, String> {
+    if let Some(requested) = task.model.as_ref()
+        && requested.model != session_model
+    {
+        return Err(format!(
+            "task '{}' requested model {}/{} but embedded delegation can only use the session model '{session_model}'",
+            task.name, requested.provider_id, requested.model
+        ));
+    }
     let AgentDelegationTask {
         name,
         prompt,
         role,
         tool_policy,
+        model: _,
+        model_reason: _,
     } = task;
-    AgentInvocationInput {
+    Ok(AgentInvocationInput {
         name,
         prompt: apply_agent_role_context(prompt, role.as_deref()),
         max_turns: DEFAULT_AGENT_MAX_TURNS,
@@ -160,7 +180,7 @@ fn task_invocation(task: AgentDelegationTask) -> AgentInvocationInput {
         effort: None,
         tool_policy,
         exact_tools: Vec::new(),
-    }
+    })
 }
 
 fn build_synthesis_prompt(results: &[AgentInvocationOutput]) -> String {
@@ -261,7 +281,9 @@ mod tests {
         local_delegate_json_schema, parse_request, rejected, task_invocation,
     };
     use nomifun_common::AgentExecutionId;
-    use nomi_types::agent::{AgentDelegationTask, AgentInvocationOutput, AgentToolPolicy};
+    use nomi_types::agent::{
+        AgentDelegationModel, AgentDelegationTask, AgentInvocationOutput, AgentToolPolicy,
+    };
     use nomi_types::message::TokenUsage;
     use serde_json::{Value, json};
 
@@ -308,12 +330,18 @@ mod tests {
 
     #[test]
     fn local_role_context_reaches_the_agent_prompt_without_changing_authority() {
-        let invocation = task_invocation(AgentDelegationTask {
-            name: "review".to_owned(),
-            prompt: "Inspect the database migration.".to_owned(),
-            role: Some("database reviewer".to_owned()),
-            tool_policy: AgentToolPolicy::ReadOnly,
-        });
+        let invocation = task_invocation(
+            AgentDelegationTask {
+                name: "review".to_owned(),
+                prompt: "Inspect the database migration.".to_owned(),
+                role: Some("database reviewer".to_owned()),
+                tool_policy: AgentToolPolicy::ReadOnly,
+                model: None,
+                model_reason: None,
+            },
+            "session-model",
+        )
+        .expect("omitted model inherits the session");
         assert!(
             invocation
                 .prompt
@@ -321,6 +349,45 @@ mod tests {
         );
         assert!(invocation.prompt.ends_with("Inspect the database migration."));
         assert_eq!(invocation.tool_policy, AgentToolPolicy::ReadOnly);
+        assert!(invocation.model.is_none());
+    }
+
+    #[test]
+    fn embedded_delegation_rejects_a_model_other_than_the_session() {
+        let error = task_invocation(
+            AgentDelegationTask {
+                name: "scan".to_owned(),
+                prompt: "list files".to_owned(),
+                role: None,
+                tool_policy: AgentToolPolicy::ReadOnly,
+                model: Some(AgentDelegationModel {
+                    provider_id: "other".to_owned(),
+                    model: "cheap".to_owned(),
+                }),
+                model_reason: Some("批量检索".to_owned()),
+            },
+            "session-model",
+        )
+        .expect_err("a different model must not start work");
+        assert!(error.contains("session-model"));
+        assert!(error.contains("cheap"));
+
+        let inherited = task_invocation(
+            AgentDelegationTask {
+                name: "scan".to_owned(),
+                prompt: "list files".to_owned(),
+                role: None,
+                tool_policy: AgentToolPolicy::ReadOnly,
+                model: Some(AgentDelegationModel {
+                    provider_id: "session-provider".to_owned(),
+                    model: "session-model".to_owned(),
+                }),
+                model_reason: None,
+            },
+            "session-model",
+        )
+        .expect("the session model is inheritance, not a switch");
+        assert!(inherited.model.is_none());
     }
 
     #[test]

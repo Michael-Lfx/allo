@@ -499,6 +499,10 @@ pub struct PlannedExecutionStep {
     pub depends_on: Vec<usize>,
     #[serde(default)]
     pub participant_index: Option<usize>,
+    /// Model the caller named for this step. Resolved to a participant in the
+    /// execution pool at materialize time. Absent inherits the lead participant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ExecutionModelRef>,
     #[serde(default)]
     pub assignment_rationale: Option<String>,
     #[serde(default)]
