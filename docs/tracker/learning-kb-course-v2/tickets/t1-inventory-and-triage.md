@@ -2,8 +2,8 @@
 id: t1
 title: "全量清点 + 分诊：core/prerequisite/practice/mixed/noise/duplicate/uncertain，逐项理由"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [d1]
 part_of: ../map.md
 ---
@@ -88,6 +88,22 @@ part_of: ../map.md
 - **批拆半单测**：模拟 40 文件批 JSON 截断，断言拆半后仍覆盖全部文件；单文件失败 → `uncertain`。
 - **多库**：两个库、路径命名空间正确；已删库 id 不读。
 - `cargo test -p nomifun-learning` 全绿；`cargo check -p nomifun-learning` 干净。
+
+## Resolution（2026-10-21 关票）
+
+**交付**（分支 `learn-v2/t1-inventory-triage`，4 提交 `880c248ad..4d7bdb227`，已并入集成分支）：
+
+- 编排入口 `run_kb_triage(knowledge, kb_ids, goal, completer) -> (KbInventory, KbTriageReport)`，住 `generation/triage.rs`（~1200 行，类型+编排+规则+中文提示词常量），lib.rs 公开导出。
+- 规则预分类零 LLM：元数据词干/空文件/纯导航页→noise；翻译布局（`guide.zh-CN.md` 后缀 + `en/` 目录统一为去语言键分组，孤儿翻译保守当原文）；同 sha256→duplicate；Q12 canonical 顺序 = 非翻译后缀原文 → README → 目标语言（CJK 占比）→ 最新 mtime → 全平手双 uncertain 不排除。
+- LLM 分诊 ≤40/批、并发 ≤4（buffer_unordered）；单文件解析失败→uncertain+理由；无 completer/调用失败→规则降级 `degraded=true` 不阻断；清点正文只读一次。
+- **structured_batch 新写**于 `generation/structured_batch.rs`（pub(crate)，t3/g1 复用）：基于 `parser::parse_json_object` 的驱动层——整批尝试 → Call 错误（不拆半）/ Parse 错误（拆半递归）→ 部分覆盖只补缺失子集 → 单文件兜底 → 逐条目结果（输入序、总数守恒）。对象安全 `BatchAttempt` trait。
+- 测试：`cargo test -p nomifun-learning` **363 passed / 0 failed**（基线 344 + 新增 19：triage 14 + structured_batch 5）；票面验收 6 组全覆盖（脏库守恒/mixed 进候选/排除有理由/duplicate_of+canonical_reason/降级两路/40 文件截断拆半 7 次调用全覆盖/多库命名空间+删库跳过）。
+
+**实施偏差**（不违背票面）：
+
+1. `structured_batch` 用 trait 驱动而非闭包泛型；补充 Call/Parse 失败二分契约（调用层失败不拆半）。
+2. `KbInventoryFile.rel_path` = 引用路径（多库 `{库名}/rel`、单库裸路径，与采样/SourceSpan 口径一致）；另加 `bases`（逐库命名空间披露）与 `scan_scope`（markdown）两个稳定字段；`skipped_hidden` 恒 0（服务端过滤 machinery 目录，字段保留给 t4 形状稳定）。
+3. 错误一律 `AppError`：零可读 markdown → BadRequest；缺库跳过+warning（票面 error_type/needs_reindex 形态在代码中不存在）。
 
 ## 备注
 
