@@ -42,6 +42,10 @@ pub use generation::{
     PlannedChapter, SourceAnchor, SourceCount, SourceEvidence, SourcePlan, TopicStatus,
     run_kb_structure,
 };
+pub use generation::{
+    ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport, ExpansionOutcome,
+    ExpansionTopicReport, SourceCoverage, run_kb_expansion,
+};
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;

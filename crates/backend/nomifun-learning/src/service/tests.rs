@@ -244,6 +244,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
             purpose: purpose.into(),
             source,
             sources: Vec::new(),
+            anchor: None,
         };
         let blueprint_module = |title: &str,
                                 lessons: Vec<crate::generation::BlueprintLesson>|
@@ -3738,6 +3739,7 @@ impl crate::course_outline::CourseOutlineAgentEngine for RecordingOutlineEngine 
                     purpose: "P".into(),
                     source: None,
                     sources: Vec::new(),
+                    anchor: None,
                 }],
             }],
         })
@@ -3890,10 +3892,12 @@ async fn kb_goal_without_any_match_falls_back_and_still_generates() {
     assert!(sampling.brief_line().contains("已按默认顺序采样 1/1 个文件"));
 }
 
-/// t2 结构发现的接线 completer：按系统提示词路由 t1 分诊与 t2 各阶段
-/// （queries/evidence/draft/revise/critique），其它阶段（如 scope）报错走降级。
+/// t2 结构发现 + t3 分批展开的接线 completer:按系统提示词路由 t1 分诊、
+/// t2 各阶段(queries/evidence/draft/revise/critique)与 t3 章节展开;
+/// `expand_ok = false` 时展开阶段报错(回退引擎路径用)。
 struct StructureRouteCompleter {
     fail_draft: bool,
+    expand_ok: bool,
     calls: AtomicUsize,
 }
 
@@ -3912,6 +3916,8 @@ fn route_stage(system: &str, user: &str) -> &'static str {
         }
     } else if system.contains("结构评审员") {
         "critique"
+    } else if system.contains("章节展开设计师") {
+        "expand"
     } else {
         "other"
     }
@@ -3973,6 +3979,16 @@ impl crate::completer::LearningCompleter for StructureRouteCompleter {
             }"#
             .to_owned(),
             "critique" => r#"{"findings": []}"#.to_owned(),
+            "expand" => {
+                if !self.expand_ok {
+                    return Err(nomifun_common::AppError::Internal("expand down".into()));
+                }
+                // 章节展开:t2 草稿只有 ch01.md 一个锚点文件。
+                r#"{"sections": [{"title": "排序入门", "lessons": [
+                    {"title": "排序入门", "purpose": "掌握排序概念", "sources": ["ch01.md"]}
+                ]}]}"#
+                .to_owned()
+            }
             _ => {
                 return Err(nomifun_common::AppError::Internal(format!(
                     "scope/其它阶段按降级处理:{system}"
@@ -3995,9 +4011,23 @@ async fn structure_wiring_service(
     UserId,
     nomifun_common::KnowledgeBaseId,
 ) {
+    structure_wiring_service_with(fail_draft, false).await
+}
+
+async fn structure_wiring_service_with(
+    fail_draft: bool,
+    expand_ok: bool,
+) -> (
+    LearningService,
+    Arc<nomifun_knowledge::KnowledgeService>,
+    Arc<StructureRouteCompleter>,
+    UserId,
+    nomifun_common::KnowledgeBaseId,
+) {
     let (service, knowledge_service, owner_id) = job_test_service().await;
     let router = Arc::new(StructureRouteCompleter {
         fail_draft,
+        expand_ok,
         calls: AtomicUsize::new(0),
     });
     *service.course_completer.write().unwrap() = Some(router.clone());
@@ -4015,8 +4045,9 @@ async fn structure_wiring_service(
     (service, knowledge_service, router, owner_id, kb_id)
 }
 
-/// t2 接线：KB 流 + 引擎路径跑 t1 分诊 → t2 结构发现，可用计划进简报成为
-/// 权威章节骨架；采样清单(co_read 面)原样保留。
+/// t2+t3 接线(KB 流 + 引擎路径,展开失败回退):t1 分诊 → t2 结构发现产出
+/// 可用计划,但 t3 章节展开调用失败 → 回退大纲引擎路径,计划仍进简报
+/// (引擎在章节内尊重骨架);建课不阻断,采样清单(co_read 面)原样保留。
 #[tokio::test]
 async fn kb_flow_attaches_a_usable_source_plan_to_the_brief() {
     let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service(false).await;
@@ -4089,7 +4120,49 @@ async fn kb_flow_falls_back_to_sampling_when_structure_discovery_fails() {
     assert!(!brief.samples.is_empty(), "回退采样路径照常");
 }
 
-/// t2 边界：描述流零结构发现(completer 零调用)。
+/// t3 接线:可用 plan → 分批展开直接产 Blueprint(大纲引擎不被调用),
+/// 课时来自展开回包、来源可回溯、快照落库。
+#[tokio::test]
+async fn kb_flow_expands_a_usable_plan_without_calling_the_outline_engine() {
+    let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service_with(false, true).await;
+    let engine = Arc::new(RecordingOutlineEngine {
+        briefs: Mutex::new(Vec::new()),
+    });
+    service.set_course_outline_engine(engine.clone());
+    let detail = service
+        .generate_course(
+            &owner_id,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::Traditional,
+                teaching_style: None,
+                knowledge_base_id: Some(kb_id.clone()),
+                description: None,
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: Some("学会排序".into()),
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        engine.briefs.lock().unwrap().is_empty(),
+        "plan 可用 → 展开路径,大纲引擎不被调用"
+    );
+    assert_eq!(detail.course.total_lessons, 1, "展开课时落库");
+    assert_eq!(detail.modules[0].title, "排序入门", "模块 = plan 章节标题");
+    let lesson = &detail.modules[0].lessons[0];
+    assert_eq!(lesson.title, "排序入门");
+    assert_eq!(lesson.source.as_ref().unwrap().path, "ch01.md", "课时来源可回溯");
+    // 蓝图快照带定位锚(整文件成课无锚,但来源 span 的 kb 标注在位)。
+    assert!(lesson.source.as_ref().unwrap().kb_id.is_some(), "来源库已标注");
+}
+
+/// t3 边界:描述流零展开(completer 零调用)——与 t2 描述流共用守卫。
 #[tokio::test]
 async fn description_flow_never_runs_structure_discovery() {
     let (service, _knowledge, router, owner_id, _kb_id) = structure_wiring_service(false).await;
@@ -4170,6 +4243,7 @@ async fn lesson_context_carries_the_course_goal() {
                 purpose: "目标一".into(),
                 source: None,
                 sources: Vec::new(),
+                anchor: None,
             }],
         }],
     };
@@ -4343,6 +4417,7 @@ async fn import_kb_lesson_course_with_sources(
                 purpose: "理解期权的定义与权利义务".into(),
                 source: sources.first().cloned(),
                 sources,
+                anchor: None,
             }],
         }],
     };
@@ -4849,6 +4924,7 @@ impl crate::course_outline::CourseOutlineAgentEngine for CitingOutlineEngine {
                         kb_id: None,
                     }),
                     sources: Vec::new(),
+                    anchor: None,
                 }],
             }],
         })
@@ -5224,6 +5300,7 @@ async fn lesson_grounding_reads_the_cited_base_when_two_bases_share_a_path() {
                 purpose: "理解期权".into(),
                 source,
                 sources: Vec::new(),
+                anchor: None,
             }],
         }],
     };
@@ -5369,6 +5446,7 @@ async fn lesson_grounding_never_reads_a_deleted_base_path_from_the_surviving_bas
                 purpose: "理解期权".into(),
                 source,
                 sources: Vec::new(),
+                anchor: None,
             }],
         }],
     };

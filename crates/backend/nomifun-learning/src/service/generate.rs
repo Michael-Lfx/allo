@@ -65,23 +65,50 @@ impl LearningService {
         let session = generate_id();
         let _task =
             self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
-        // t2 结构发现(仅 KB 流 + 引擎路径):t1 清点/分诊 → 证据驱动章节
-        // 骨架,plan 进简报成为权威骨架(co_start/brief 披露,大纲 agent 只在
-        // 章节内决定课时粒度)。无 completer/连续失败/零证据 → 回退现行采样
-        // 路径(brief.samples 原样保留),不阻断建课;零候选/零 core 硬失败。
+        // t2 结构发现 + t3 分批展开(仅 KB 流 + 引擎路径):t1 清点/分诊 →
+        // 证据驱动章节骨架 → **有可用 plan 时按章展开直接产 Blueprint(不再
+        // 调大纲引擎)**;展开失败(非取消)→ 回退现行大纲引擎路径(degraded
+        // 不阻断);无 completer/连续失败/零证据 → 无 plan,采样路径照旧。
         // 遗留 one-shot 兜底路径(无引擎)不跑结构发现——它无法兑现 plan 的
         // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
         let mut brief = brief;
+        let mut expansion: Option<crate::generation::ExpansionOutcome> = None;
         if brief.knowledge_base.is_some() && self.course_outline_engine().is_some() {
-            let structure = self
+            match self
                 .discover_kb_source_plan(&request, &brief, _task.token())
-                .await;
-            match structure {
-                Ok(Some(plan)) => brief.source_plan = Some(plan),
-                Ok(None) => tracing::warn!(
-                    session = %session,
-                    "kb structure discovery produced no usable plan; falling back to sampling"
-                ),
+                .await
+            {
+                Ok((inventory, triage, plan)) => {
+                    if let Some(plan) = plan.filter(|plan| plan.is_usable()) {
+                        brief.source_plan = Some(plan.clone());
+                        match self
+                            .expand_kb_course_blueprint(&inventory, &triage, &plan, &brief, _task.token())
+                            .await
+                        {
+                            Ok(Some(outcome)) => expansion = Some(outcome),
+                            Ok(None) => {}
+                            Err(error) => {
+                                if matches!(
+                                    &error,
+                                    AppError::Conflict(message)
+                                        if message.contains(crate::service::CANCELLED_MESSAGE)
+                                ) {
+                                    self.emit_course_event(serde_json::json!({
+                                        "phase": "failed",
+                                        "kind": brief.kind(),
+                                        "error": error.to_string(),
+                                    }));
+                                    return Err(error);
+                                }
+                                tracing::warn!(
+                                    session = %session,
+                                    error = %error,
+                                    "kb expansion failed; falling back to the outline engine"
+                                );
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
                     self.emit_course_event(serde_json::json!({
                         "phase": "failed",
@@ -100,19 +127,32 @@ impl LearningService {
             "phase": "started",
             "kind": brief.kind(),
         }));
-        let blueprint = match self
-            .generate_course_blueprint(&brief, model_override, &session)
-            .await
-        {
-            Ok(blueprint) => blueprint,
-            Err(error) => {
-                self.emit_course_event(serde_json::json!({
-                    "phase": "failed",
-                    "kind": brief.kind(),
-                    "error": error.to_string(),
-                }));
-                return Err(error);
+        let blueprint = match expansion {
+            // t3 分批展开产物:plan 权威骨架的确定性落地,直接进装配/导入
+            //(跳过大纲引擎;失败时上面已回退 engine 路径)。
+            Some(outcome) => {
+                tracing::info!(
+                    session,
+                    modules = outcome.blueprint.modules.len(),
+                    coverage_warnings = outcome.coverage.warnings.len(),
+                    "kb expansion blueprint"
+                );
+                outcome.blueprint
             }
+            None => match self
+                .generate_course_blueprint(&brief, model_override, &session)
+                .await
+            {
+                Ok(blueprint) => blueprint,
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "failed",
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
+            },
         };
         // 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
         // `SourceSpan.kb_id`——快照/蓝图/课时三处的库归属同源，多库下课时
@@ -192,15 +232,23 @@ impl LearningService {
         detail
     }
 
-    /// t2 结构发现编排：t1 分诊 → 证据驱动章节骨架。返回 `Ok(None)` =
-    /// 回退现行采样路径(无 completer/草稿连续失败/零证据降级空章节);
-    /// `Err` = 硬失败(零候选/零 core/用户取消)。
+    /// t2 结构发现编排:t1 分诊 → 证据驱动章节骨架。返回清点/分诊/计划
+    /// 三件套——inventory+triage 供 t3 分批展开复用(不重复跑 t1 的 LLM 面)。
+    /// 计划 `None` = 回退现行采样路径(无 completer/草稿连续失败/零证据降级
+    /// 空章节);`Err` = 硬失败(零候选/零 core/用户取消)。
     async fn discover_kb_source_plan(
         &self,
         request: &GenerateCourseRequest,
         brief: &OutlineBrief,
         token: tokio_util::sync::CancellationToken,
-    ) -> Result<Option<crate::generation::SourcePlan>, AppError> {
+    ) -> Result<
+        (
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+            Option<crate::generation::SourcePlan>,
+        ),
+        AppError,
+    > {
         let knowledge = self.injected_knowledge_service()?;
         let kb_ids = request.knowledge_base_ids_normalized();
         let goal = brief.goal.clone().unwrap_or_default();
@@ -221,19 +269,59 @@ impl LearningService {
             Some(&token),
         )
         .await?;
-        if let Some(plan) = &plan {
-            tracing::info!(
-                chapters = plan.chapters.len(),
-                degraded = plan.degraded,
-                warnings = plan.warnings.len(),
-                "kb structure plan discovered"
-            );
-            if !plan.is_usable() {
-                // 降级空章节计划:不进简报,回退采样路径。
-                return Ok(None);
+        let plan = match plan {
+            Some(plan) => {
+                tracing::info!(
+                    chapters = plan.chapters.len(),
+                    degraded = plan.degraded,
+                    warnings = plan.warnings.len(),
+                    "kb structure plan discovered"
+                );
+                if plan.is_usable() {
+                    Some(plan)
+                } else {
+                    // 降级空章节计划:不进简报,回退采样路径。
+                    None
+                }
             }
-        }
-        Ok(plan)
+            None => {
+                tracing::warn!(
+                    "kb structure discovery produced no usable plan; falling back to sampling"
+                );
+                None
+            }
+        };
+        Ok((inventory, triage, plan))
+    }
+
+    /// t3 分批展开编排:可用 plan 按章展开产 Blueprint(不再走大纲引擎)。
+    /// `Ok(None)` = 无 completer(调用方回退引擎路径);`Err` 取消向上传播、
+    /// 其余由调用方按「展开失败 → 引擎路径」降级。
+    async fn expand_kb_course_blueprint(
+        &self,
+        inventory: &crate::generation::KbInventory,
+        triage: &crate::generation::KbTriageReport,
+        plan: &crate::generation::SourcePlan,
+        brief: &OutlineBrief,
+        token: tokio_util::sync::CancellationToken,
+    ) -> Result<Option<crate::generation::ExpansionOutcome>, AppError> {
+        let knowledge = self.injected_knowledge_service()?;
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let goal = brief.goal.clone().unwrap_or_default();
+        crate::generation::run_kb_expansion(
+            &knowledge,
+            inventory,
+            triage,
+            plan,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await
     }
 
     /// Resolve the generation brief up front: the kb flow fetches the base
