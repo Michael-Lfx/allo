@@ -127,6 +127,7 @@ pub struct VoiceTaskSubmitRequest {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceTaskStatus {
+    Queued,
     Delivering,
     Unknown,
     Accepted,

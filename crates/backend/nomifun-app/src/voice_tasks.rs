@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use nomifun_api_types::voice::{VoiceExecutionConfig, VoiceTaskCommand, VoiceTaskDelivery, VoiceTaskNotification, VoiceTaskSnapshot, VoiceTaskStatus};
 use nomifun_api_types::ResolvedPresetSnapshot;
 use nomifun_api_types::voice::{VoiceToolConfirmation,VoiceToolConfirmationRequest};
+use nomifun_common::MessageId;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -32,8 +33,11 @@ pub(crate) trait VoiceTaskRuntime: Send + Sync {
     async fn resolve_configuration(&self, config: &VoiceExecutionConfig) -> Result<VoiceExecutionConfig, String>;
     async fn prepare_configuration(&self, config: &VoiceExecutionConfig) -> Result<(VoiceExecutionConfig,Option<ResolvedPresetSnapshot>),String>;
     async fn create(&self, owner: &str, config: &VoiceExecutionConfig, preset:Option<&ResolvedPresetSnapshot>, creation_key: &str) -> Result<String, TaskMutationError>;
+    async fn create_bound(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&ResolvedPresetSnapshot>, creation_key:&str, target:Option<&str>) -> Result<String,TaskMutationError>;
     async fn find_created(&self, owner: &str, creation_key: &str) -> Result<Option<String>, String>;
+    async fn append(&self, owner:&str, conversation_id:&str, message_id:&str, display_text:&str, command_id:&str) -> Result<(),TaskMutationError>;
     async fn send(&self, owner: &str, conversation_id: &str, send_key: &str, goal: &str) -> Result<TaskReceipt, TaskMutationError>;
+    async fn send_bound(&self, owner:&str, conversation_id:&str, send_key:&str, message_id:&str, command_id:&str, display_text:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError>;
     async fn observe(&self, owner: &str, conversation_id: &str, send_key: &str) -> Result<Option<TaskReceipt>, String>;
     async fn cancel(&self, owner: &str, conversation_id: &str, send_key:&str,message_id:&str) -> Result<(), String>;
     async fn confirmations(&self,owner:&str,conversation_id:&str,send_key:&str,message_id:&str)->Result<Vec<VoiceToolConfirmation>,String>;
@@ -41,6 +45,7 @@ pub(crate) trait VoiceTaskRuntime: Send + Sync {
 }
 
 pub const DEFAULT_VOICE_TASK_TIMEOUT_MS: i64 = 30 * 60 * 1000;
+pub const MAX_QUEUED_VOICE_TASKS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DeliveryRecord {
@@ -56,6 +61,8 @@ pub(crate) struct DeliveryRecord {
     pub notification_status: Option<String>,
     #[serde(default)]
     pub replay_ids: Vec<String>,
+    #[serde(default)]
+    pub queued: bool,
     pub owner: String,
     pub command: VoiceTaskCommand,
     pub config: VoiceExecutionConfig,
@@ -76,6 +83,10 @@ pub(crate) struct DeliveryRecord {
     pub last_receipt_at_ms: Option<i64>,
     #[serde(default)]
     pub handoff_content: Option<String>,
+    #[serde(default)]
+    pub display_text: Option<String>,
+    #[serde(default)]
+    pub target_conversation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +108,7 @@ pub(crate) struct VoiceTaskService {
     timeout_ms: i64,
     operation: Mutex<()>,
     progress: std::sync::Mutex<std::collections::HashMap<String,TaskProgressObserver>>,
+    active_in_session: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 fn is_explicit_goal_failure(text: &str) -> bool {
@@ -110,7 +122,7 @@ fn is_explicit_goal_failure(text: &str) -> bool {
 
 impl VoiceTaskService {
     pub fn new(owner: String, path: PathBuf, runtime: Arc<dyn VoiceTaskRuntime>) -> Self {
-        Self { owner, path, runtime, timeout_ms: DEFAULT_VOICE_TASK_TIMEOUT_MS, operation: Mutex::new(()), progress: Default::default() }
+        Self { owner, path, runtime, timeout_ms: DEFAULT_VOICE_TASK_TIMEOUT_MS, operation: Mutex::new(()), progress: Default::default(), active_in_session: Arc::new(std::sync::Mutex::new(Default::default())) }
     }
 
     #[cfg(test)]
@@ -290,7 +302,15 @@ impl VoiceTaskService {
     }
 
     fn read(&self) -> Result<Option<DeliveryRecord>,String> {
-        Ok(self.read_ledger()?.and_then(|mut ledger|ledger.records.pop()))
+        let Some(ledger)=self.read_ledger()? else { return Ok(None); };
+        let active_unqueued = ledger.records.iter().position(|record| {
+            !record.queued && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
+        });
+        let active_queued = ledger.records.iter().position(|record| {
+            record.queued && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
+        });
+        let index = active_unqueued.or(active_queued).unwrap_or_else(|| ledger.records.len().saturating_sub(1));
+        Ok(ledger.records.into_iter().nth(index))
     }
 
     fn read_command(&self, command_id:&str) -> Result<Option<DeliveryRecord>,String> {
@@ -303,7 +323,7 @@ impl VoiceTaskService {
         let mut ledger=previous.unwrap_or_else(||DeliveryLedger {owner:self.owner.clone(),records:Vec::new()});
         if let Some(index)=ledger.records.iter().position(|saved|saved.command.command_id==record.command.command_id) {
             let saved=&ledger.records[index];
-            if saved.command!=record.command || saved.config!=record.config || saved.preset_snapshot!=record.preset_snapshot || saved.creation_key!=record.creation_key || saved.send_key!=record.send_key {
+            if saved.command!=record.command || saved.config!=record.config || saved.preset_snapshot!=record.preset_snapshot || saved.creation_key!=record.creation_key || saved.send_key!=record.send_key || saved.display_text!=record.display_text || saved.target_conversation!=record.target_conversation {
                 return Err("task_state_invalid".into());
             }
             ledger.records[index]=record.clone();
@@ -381,6 +401,24 @@ impl VoiceTaskService {
 
     async fn reconcile(&self, mut record: DeliveryRecord) -> Result<VoiceTaskSnapshot, String> {
         if matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) { return Ok(record.task); }
+        if record.queued {
+            let now_ms = nomifun_common::now_ms();
+            if record.cancel_requested {
+                record.queued = false;
+                record.task.status = VoiceTaskStatus::Failed;
+                record.task.error_code = Some("task_cancelled".into());
+                self.save(&record)?;
+                return Ok(record.task);
+            }
+            if record.deadline_at_ms.is_some_and(|dl| now_ms >= dl) {
+                record.queued = false;
+                record.task.status = VoiceTaskStatus::Failed;
+                record.task.error_code = Some("task_deadline_exceeded".into());
+                self.save(&record)?;
+                return Ok(record.task);
+            }
+            return Ok(record.task);
+        }
         let now_ms = nomifun_common::now_ms();
         let clock_rollback = record.last_observed_at_ms.is_some_and(|last| now_ms + 5_000 < last);
         let deadline_exceeded = record.deadline_at_ms.is_some_and(|dl| now_ms >= dl);
@@ -443,7 +481,99 @@ impl VoiceTaskService {
     pub async fn status(&self) -> Result<Option<VoiceTaskSnapshot>, String> {
         let guard = self.operation.try_lock();
         if guard.is_err() {return self.current_task();}
-        match self.read()? { Some(record) => self.reconcile(record).await.map(Some), None => Ok(None) }
+        let Some(ledger) = self.read_ledger()? else { return Ok(None); };
+        if let Some(record) = ledger.records.iter().find(|r| !r.queued && !matches!(r.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)).cloned() {
+            let task = self.reconcile(record).await?;
+            if matches!(task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
+                && let Some(next) = self.drain_queued_locked().await?
+            {
+                return Ok(Some(next));
+            }
+            return Ok(Some(task));
+        }
+        if let Some(next) = self.drain_queued_locked().await? {
+            return Ok(Some(next));
+        }
+        self.read().map(|opt| opt.map(|r| r.task))
+    }
+
+    async fn drain_queued_locked(&self) -> Result<Option<VoiceTaskSnapshot>, String> {
+        let Some(ledger) = self.read_ledger()? else { return Ok(None); };
+        if ledger.records.iter().any(|record| {
+            !record.queued
+                && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
+        }) {
+            return Ok(None);
+        }
+        let Some(mut next) = ledger
+            .records
+            .into_iter()
+            .find(|record| record.queued && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed))
+        else {
+            return Ok(None);
+        };
+        if !self.active_in_session.lock().unwrap().contains(&next.command.command_id) {
+            return Ok(None);
+        }
+        let now=nomifun_common::now_ms();
+        if next.cancel_requested {
+            next.queued = false;
+            next.task.status = VoiceTaskStatus::Failed;
+            next.task.error_code = Some("task_cancelled".into());
+            self.save(&next)?;
+            return Ok(Some(next.task));
+        }
+        if next.deadline_at_ms.is_some_and(|dl| now >= dl) {
+            next.queued = false;
+            next.task.status = VoiceTaskStatus::Failed;
+            next.task.error_code = Some("task_deadline_exceeded".into());
+            self.save(&next)?;
+            return Ok(Some(next.task));
+        }
+        let (prepared, preset) = match self.runtime.prepare_configuration(&next.config).await {
+            Ok(val) => val,
+            Err(_) => {
+                next.queued = false;
+                next.task.status = VoiceTaskStatus::Failed;
+                next.task.error_code = Some("task_execution_config_invalid".into());
+                self.save(&next)?;
+                return Ok(Some(next.task));
+            }
+        };
+        if prepared != next.config || (next.preset_snapshot.is_some() && next.preset_snapshot != preset) {
+            next.queued = false;
+            next.task.status = VoiceTaskStatus::Failed;
+            next.task.error_code = Some("task_execution_config_invalid".into());
+            self.save(&next)?;
+            return Ok(Some(next.task));
+        }
+        next.queued = false;
+        next.task.status = VoiceTaskStatus::Delivering;
+        next.send_started_at_ms = Some(now);
+        next.deadline_at_ms = Some(now.saturating_add(self.timeout_ms));
+        next.last_observed_at_ms = Some(now);
+        self.save(&next)?;
+        let conversation = next.task.conversation_id.clone().ok_or("task_delivery_pending")?;
+        let message_id = next.task.message_id.clone().ok_or("task_delivery_pending")?;
+        let command_id = next.command.command_id.clone();
+        let display_text = next.display_text.as_deref().unwrap_or(&next.command.goal);
+        let message_to_send = next.handoff_content.as_deref().unwrap_or(&next.command.goal);
+        let deadline = next.deadline_at_ms.unwrap_or_else(|| nomifun_common::now_ms() + self.timeout_ms);
+        let remaining = std::time::Duration::from_millis(deadline.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
+        let sending = tokio::time::timeout(
+            remaining,
+            self.runtime.send_bound(&self.owner, &conversation, &next.send_key, &message_id, &command_id, display_text, message_to_send),
+        )
+        .await
+        .unwrap_or_else(|_| Err(TaskMutationError::Uncertain("task_deadline_exceeded".into())));
+        let receipt = match sending {
+            Ok(receipt) => receipt,
+            Err(error) => return Err(self.persist_mutation_failure(&mut next, error, "task_delivery_unknown")?),
+        };
+        Self::apply_receipt(&mut next, receipt)?;
+        next.last_receipt_at_ms = Some(nomifun_common::now_ms());
+        self.save(&next)?;
+        Ok(Some(next.task))
     }
 
     #[cfg(test)]
@@ -462,18 +592,55 @@ impl VoiceTaskService {
         expected_preset: Option<Option<ResolvedPresetSnapshot>>,
         handoff_content: Option<String>,
     ) -> Result<VoiceTaskDelivery, String> {
+        self.submit_frozen_with_handoff_mode(command, config, expected_preset, handoff_content, None, None, false)
+            .await
+    }
+
+    pub async fn submit_frozen_with_handoff_queued(
+        &self,
+        command: VoiceTaskCommand,
+        config: VoiceExecutionConfig,
+        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
+        handoff_content: Option<String>,
+        display_text: Option<String>,
+        target_conversation: Option<String>,
+    ) -> Result<VoiceTaskDelivery, String> {
+        self.submit_frozen_with_handoff_mode(command, config, expected_preset, handoff_content, display_text, target_conversation, true)
+            .await
+    }
+
+    async fn submit_frozen_with_handoff_mode(
+        &self,
+        command: VoiceTaskCommand,
+        config: VoiceExecutionConfig,
+        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
+        handoff_content: Option<String>,
+        display_text: Option<String>,
+        target_conversation: Option<String>,
+        allow_queue: bool,
+    ) -> Result<VoiceTaskDelivery, String> {
         let _guard = self.operation.lock().await;
         if let Some(previous)=self.read_command(&command.command_id)? {
             if previous.command!=command {return Err("task_command_conflict".into());}
             return Ok(VoiceTaskDelivery {task:self.reconcile(previous).await?,freshly_accepted:false});
         }
         Self::validate_command(&command)?;
+        let mut queue_behind_active = false;
+        let mut queued_count = 0usize;
         if let Some(ledger) = self.read_ledger()? {
+            queued_count = ledger.records.iter().filter(|record| record.queued && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)).count();
             for record in ledger.records {
                 let previous = self.reconcile(record).await?;
-                if !matches!(previous.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) { return Err("task_already_active".into()); }
+                if !matches!(previous.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) {
+                    if !allow_queue { return Err("task_already_active".into()); }
+                    queue_behind_active = true;
+                }
             }
         }
+        if queue_behind_active && queued_count >= MAX_QUEUED_VOICE_TASKS {
+            return Err("task_queue_full".into());
+        }
+        self.active_in_session.lock().unwrap().insert(command.command_id.clone());
         let (prepared,preset_snapshot) = self.runtime.prepare_configuration(&config).await?;
         if expected_preset.as_ref().is_some_and(|expected|expected!=&preset_snapshot || prepared!=config) {return Err("binding_invalid".into());}
         let config=prepared;
@@ -495,9 +662,11 @@ impl VoiceTaskService {
                 }
             }
         }
-        let creation_key = continuous_creation_key.unwrap_or_else(|| {
-            format!("voice-create:{}:{}", command.session_id, now_ms)
-        });
+        let creation_key = if allow_queue {
+            format!("voice-create:workspace:{}", config.workspace)
+        } else {
+            continuous_creation_key.unwrap_or_else(|| format!("voice-create:{}:{}", command.session_id, now_ms))
+        };
         let mut record = DeliveryRecord {
             announcement_claimed:false,
             notification_id: None,
@@ -505,10 +674,11 @@ impl VoiceTaskService {
             last_attempt_at_ms: None,
             notification_status: None,
             replay_ids: Vec::new(),
+            queued: queue_behind_active,
             owner: self.owner.clone(),
             creation_key,
             send_key: format!("voice-send:{}",command.command_id),
-            task: VoiceTaskSnapshot { command_id:command.command_id.clone(), session_id:command.session_id.clone(), acoustic_turn_id:command.turn_id.clone(), conversation_id:None,message_id:None,runtime_turn_id:None,status:VoiceTaskStatus::Delivering,result_ok:None,result_text:None,error_code:None },
+            task: VoiceTaskSnapshot { command_id:command.command_id.clone(), session_id:command.session_id.clone(), acoustic_turn_id:command.turn_id.clone(), conversation_id:None,message_id:allow_queue.then(||MessageId::new().into_string()),runtime_turn_id:None,status:if queue_behind_active {VoiceTaskStatus::Queued}else{VoiceTaskStatus::Delivering},result_ok:None,result_text:None,error_code:None },
             command, config, preset_snapshot,
             send_started_at_ms: Some(now_ms),
             deadline_at_ms: Some(deadline_ms),
@@ -516,11 +686,13 @@ impl VoiceTaskService {
             cancel_requested: false,
             last_receipt_at_ms: None,
             handoff_content,
+            display_text,
+            target_conversation,
         };
         // This is the required pre-side-effect boundary. Failure cannot create or send.
         self.save(&record)?;
         let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
-        let creation=tokio::time::timeout(remaining,self.runtime.create(&self.owner,&record.config,record.preset_snapshot.as_ref(),&record.creation_key)).await
+        let creation=tokio::time::timeout(remaining,self.runtime.create_bound(&self.owner,&record.config,record.preset_snapshot.as_ref(),&record.creation_key,record.target_conversation.as_deref())).await
             .unwrap_or_else(|_|{record.cancel_requested=true;Err(TaskMutationError::Uncertain("task_deadline_exceeded".into()))});
         let conversation = match creation {
             Ok(conversation) => conversation,
@@ -529,8 +701,35 @@ impl VoiceTaskService {
         if conversation.is_empty() { return Err("task_creation_unknown".into()); }
         record.task.conversation_id=Some(conversation.clone());
         self.save(&record)?;
-        let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
         let message_to_send = record.handoff_content.as_deref().unwrap_or(&record.command.goal);
+        let display_text = record.display_text.clone().unwrap_or_else(|| record.command.goal.clone());
+        if allow_queue {
+            let message_id = record.task.message_id.clone().ok_or("task_delivery_unknown")?;
+            let command_id = record.command.command_id.clone();
+            let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
+            let append=tokio::time::timeout(remaining,self.runtime.append(&self.owner,&conversation,&message_id,&display_text,&command_id)).await
+                .unwrap_or_else(|_|{record.cancel_requested=true;Err(TaskMutationError::Uncertain("task_deadline_exceeded".into()))});
+            if let Err(error) = append {
+                return Err(self.persist_mutation_failure(&mut record,error,"task_delivery_unknown")?);
+            }
+            if queue_behind_active {
+                self.save(&record)?;
+                return Ok(VoiceTaskDelivery {task:record.task, freshly_accepted:false});
+            }
+            let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
+            let sending=tokio::time::timeout(remaining,self.runtime.send_bound(&self.owner,&conversation,&record.send_key,&message_id,&command_id,&display_text,message_to_send)).await
+                .unwrap_or_else(|_|{record.cancel_requested=true;Err(TaskMutationError::Uncertain("task_deadline_exceeded".into()))});
+            let receipt = match sending {
+                Ok(receipt) => receipt,
+                Err(error) => {return Err(self.persist_mutation_failure(&mut record,error,"task_delivery_unknown")?);},
+            };
+            let fresh = !receipt.replayed && !receipt.completed;
+            Self::apply_receipt(&mut record,receipt)?;
+            record.last_receipt_at_ms=Some(nomifun_common::now_ms());
+            self.save(&record)?;
+            return Ok(VoiceTaskDelivery {task:record.task, freshly_accepted:fresh});
+        }
+        let remaining=std::time::Duration::from_millis(deadline_ms.saturating_sub(nomifun_common::now_ms()).max(1) as u64);
         let sending=tokio::time::timeout(remaining,self.runtime.send(&self.owner,&conversation,&record.send_key,message_to_send)).await
             .unwrap_or_else(|_|{record.cancel_requested=true;Err(TaskMutationError::Uncertain("task_deadline_exceeded".into()))});
         let receipt = match sending {
@@ -546,9 +745,25 @@ impl VoiceTaskService {
 
     pub async fn cancel(&self, command_id: &str) -> Result<VoiceTaskSnapshot, String> {
         let _guard=self.operation.lock().await;
-        let mut record=self.read()?.ok_or("task_not_found")?;
-        if record.task.command_id != command_id { return Err("task_scope_changed".into()); }
+        let mut record = match self.read_command(command_id)? {
+            Some(record) => record,
+            None => {
+                if self.read()?.is_some() {
+                    return Err("task_scope_changed".into());
+                } else {
+                    return Err("task_not_found".into());
+                }
+            }
+        };
         if matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) { return Ok(record.task); }
+        if record.queued {
+            record.cancel_requested = true;
+            record.queued = false;
+            record.task.status = VoiceTaskStatus::Failed;
+            record.task.error_code = Some("task_cancelled".into());
+            self.save(&record)?;
+            return Ok(record.task);
+        }
         record.cancel_requested = true;
         record.task.status=VoiceTaskStatus::Cancelling;
         self.save(&record)?;
@@ -604,6 +819,8 @@ mod tests {
         keys: StdMutex<Vec<String>>,
         confirmations: StdMutex<Vec<VoiceToolConfirmation>>,
         confirmed: StdMutex<Vec<(String, bool)>>,
+        appended: StdMutex<Vec<(String, String, String, String, String)>>,
+        bound_sends: StdMutex<Vec<(String, String, String, String, String, String, String)>>,
     }
     fn receipt(completed: bool) -> TaskReceipt { TaskReceipt {message_id:"message-real".into(),runtime_turn_id:Some("runtime-turn-real".into()),replayed:false,completed,result_ok:completed.then_some(true),result_text:completed.then(|| "actual result".into()),error_code:None} }
     #[async_trait]
@@ -628,7 +845,7 @@ mod tests {
             let path=self.state_path.lock().unwrap().clone().unwrap();
             let mut saved:DeliveryLedger=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
             let saved=saved.records.pop().unwrap();
-            assert_eq!(saved.task.status,VoiceTaskStatus::Delivering);
+            assert!(matches!(saved.task.status,VoiceTaskStatus::Delivering|VoiceTaskStatus::Queued));
             assert!(saved.task.conversation_id.is_none());
             if self.reject_create.load(Ordering::SeqCst) {return Err(TaskMutationError::Rejected("task_creation_rejected".into()));}
             self.created.fetch_add(1,Ordering::SeqCst);
@@ -636,9 +853,28 @@ mod tests {
             if self.lose_create_response.load(Ordering::SeqCst) {return Err(TaskMutationError::Uncertain("response_lost".into()));}
             Ok("dedicated-conversation".into())
         }
+        async fn create_bound(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&ResolvedPresetSnapshot>, key:&str, target:Option<&str>) -> Result<String,TaskMutationError> {
+            if let Some(target_conv) = target {
+                assert_eq!(owner, "owner");
+                self.keys.lock().unwrap().push(key.into());
+                return Ok(target_conv.into());
+            }
+            self.create(owner, config, preset, key).await
+        }
         async fn find_created(&self,owner:&str,key:&str) -> Result<Option<String>,String> {
             assert_eq!(owner,"owner");
             Ok(self.keys.lock().unwrap().iter().any(|saved|saved==key).then(||"dedicated-conversation".into()))
+        }
+        async fn append(&self, owner:&str, conversation_id:&str, message_id:&str, display_text:&str, command_id:&str) -> Result<(),TaskMutationError> {
+            assert_eq!(owner, "owner");
+            self.appended.lock().unwrap().push((owner.into(), conversation_id.into(), message_id.into(), display_text.into(), command_id.into()));
+            Ok(())
+        }
+        async fn send_bound(&self, owner:&str, conversation:&str, key:&str, message_id:&str, command_id:&str, display_text:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
+            self.bound_sends.lock().unwrap().push((owner.into(), conversation.into(), key.into(), message_id.into(), command_id.into(), display_text.into(), goal.into()));
+            let mut receipt = self.send(owner, conversation, key, goal).await?;
+            receipt.message_id = message_id.to_string();
+            Ok(receipt)
         }
         async fn send(&self, owner:&str, conversation:&str, key:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
             assert_eq!((owner,conversation),("owner","dedicated-conversation"));
@@ -661,8 +897,8 @@ mod tests {
             if self.fail_observe.load(Ordering::SeqCst) { return Err("runtime_offline".into()); }
             Ok(self.receipt.lock().unwrap().clone().map(|mut receipt| {receipt.replayed=true;receipt}))
         }
-        async fn cancel(&self, _: &str, _: &str, key:&str,message_id:&str) -> Result<(),String> {
-            assert!(key.starts_with("voice-send:"));assert_eq!(message_id,"message-real");
+        async fn cancel(&self, _: &str, _: &str, key:&str,_message_id:&str) -> Result<(),String> {
+            assert!(key.starts_with("voice-send:"));
             self.cancelled.fetch_add(1,Ordering::SeqCst); Ok(())
         }
     }
@@ -1143,6 +1379,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_task_submitted_while_another_is_active_is_queued_and_runs_after_terminal() {
+        let dir=tempfile::tempdir().unwrap();let runtime=Arc::new(Runtime::default());let path=dir.path().join("task.json");
+        let tasks=service(path,runtime.clone());
+        let first=tasks.submit_frozen_with_handoff_queued(command(),config(),None,None,None,None).await.unwrap();
+        assert_eq!(first.task.status,VoiceTaskStatus::Accepted);
+        let mut first_receipt=receipt(false);
+        first_receipt.message_id=first.task.message_id.clone().unwrap();
+        *runtime.receipt.lock().unwrap()=Some(first_receipt);
+
+        let mut second_command=command();
+        second_command.command_id="command-b".into();
+        second_command.turn_id="acoustic-turn-b".into();
+        second_command.goal="inspect workspace".into();
+        let second=tasks.submit_frozen_with_handoff_queued(second_command,config(),None,None,None,None).await.unwrap();
+        assert_eq!(second.task.status,VoiceTaskStatus::Queued);
+        assert_eq!(runtime.sent.load(Ordering::SeqCst),1,"queued task must not send while A is active");
+
+        let mut completed=receipt(true);
+        completed.message_id=first.task.message_id.clone().unwrap();
+        *runtime.receipt.lock().unwrap()=Some(completed);
+        let next=tasks.status().await.unwrap().unwrap();
+        assert_eq!(next.command_id,"command-b");
+        assert_eq!(next.conversation_id.as_deref(),Some("dedicated-conversation"));
+        assert_eq!(runtime.sent.load(Ordering::SeqCst),2);
+    }
+    #[tokio::test]
     async fn continuous_session_reuses_creation_key_within_idle_window_and_rotates_after_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(Runtime::default());
@@ -1216,6 +1478,113 @@ mod tests {
         assert_eq!(state.status, VoiceTaskStatus::Failed, "must be failed when goal is unfulfilled");
         assert_eq!(state.result_ok, Some(false));
         assert_eq!(state.error_code.as_deref(), Some("goal_unfulfilled"));
+    }
+
+    #[tokio::test]
+    async fn max_queued_tasks_rejection_at_capacity_8_and_cancel_frees_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+
+        // A is active
+        let first = tasks.submit_frozen_with_handoff_queued(command(), config(), None, None, None, None).await.unwrap();
+        assert_eq!(first.task.status, VoiceTaskStatus::Accepted);
+        let mut first_receipt = receipt(false);
+        first_receipt.message_id = first.task.message_id.clone().unwrap();
+        *runtime.receipt.lock().unwrap() = Some(first_receipt);
+
+        // Submit 8 queued items
+        for i in 1..=8 {
+            let mut cmd = command();
+            cmd.command_id = format!("cmd-queued-{i}");
+            cmd.turn_id = format!("turn-queued-{i}");
+            let res = tasks.submit_frozen_with_handoff_queued(cmd, config(), None, None, None, None).await.unwrap();
+            assert_eq!(res.task.status, VoiceTaskStatus::Queued);
+        }
+
+        // 9th queued item must be rejected with task_queue_full
+        let mut cmd9 = command();
+        cmd9.command_id = "cmd-queued-9".into();
+        cmd9.turn_id = "turn-queued-9".into();
+        let err = tasks.submit_frozen_with_handoff_queued(cmd9.clone(), config(), None, None, None, None).await.unwrap_err();
+        assert_eq!(err, "task_queue_full");
+
+        // Cancel 8th queued item
+        let cancelled = tasks.cancel("cmd-queued-8").await.unwrap();
+        assert_eq!(cancelled.status, VoiceTaskStatus::Failed);
+        assert_eq!(cancelled.error_code.as_deref(), Some("task_cancelled"));
+
+        // Now cmd9 can be queued successfully into the freed slot
+        let res9 = tasks.submit_frozen_with_handoff_queued(cmd9, config(), None, None, None, None).await.unwrap();
+        assert_eq!(res9.task.status, VoiceTaskStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn restarting_service_does_not_automatically_drain_prior_queued_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let path = dir.path().join("task.json");
+        let tasks = service(path.clone(), runtime.clone());
+
+        let first = tasks.submit_frozen_with_handoff_queued(command(), config(), None, None, None, None).await.unwrap();
+        assert_eq!(first.task.status, VoiceTaskStatus::Accepted);
+        let mut first_receipt = receipt(false);
+        first_receipt.message_id = first.task.message_id.clone().unwrap();
+        *runtime.receipt.lock().unwrap() = Some(first_receipt);
+
+        let mut second_cmd = command();
+        second_cmd.command_id = "cmd-queued-b".into();
+        second_cmd.turn_id = "turn-queued-b".into();
+        tasks.submit_frozen_with_handoff_queued(second_cmd, config(), None, None, None, None).await.unwrap();
+
+        // Simulate app restart by creating a new service instance
+        let restarted = service(path, runtime.clone());
+
+        // Finish first task
+        let mut completed = receipt(true);
+        completed.message_id = first.task.message_id.clone().unwrap();
+        *runtime.receipt.lock().unwrap() = Some(completed);
+
+        // Calling status on restarted service observes terminal A, but does NOT drain B automatically
+        let st = restarted.status().await.unwrap().unwrap();
+        assert_eq!(st.command_id, "command-a");
+        assert_eq!(st.status, VoiceTaskStatus::Completed);
+        assert_eq!(runtime.sent.load(Ordering::SeqCst), 1, "restarted service must not auto-drain B");
+
+        // B remains in Queued state
+        let st_b = restarted.status_for("cmd-queued-b").await.unwrap();
+        assert_eq!(st_b.status, VoiceTaskStatus::Queued);
+    }
+
+    #[tokio::test]
+    async fn raw_display_text_and_task_goal_are_separated_and_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+
+        let mut cmd = command();
+        cmd.goal = "task goal extracted by llm".into();
+        let display_text = "用户真实的原始口语输入".to_string();
+        let handoff = format!("来源：语音委派\n用户原文：{display_text}\n任务目标：inspect workspace");
+
+        let delivery = tasks.submit_frozen_with_handoff_queued(
+            cmd,
+            config(),
+            None,
+            Some(handoff.clone()),
+            Some(display_text.clone()),
+            Some("dedicated-conversation".into()),
+        ).await.unwrap();
+        assert_eq!(delivery.task.status, VoiceTaskStatus::Accepted);
+
+        let appended = runtime.appended.lock().unwrap().clone();
+        assert_eq!(appended.len(), 1);
+        assert_eq!(appended[0].3, display_text, "appended display_text must be the raw user speech");
+
+        let bound_sends = runtime.bound_sends.lock().unwrap().clone();
+        assert_eq!(bound_sends.len(), 1);
+        assert_eq!(bound_sends[0].5, display_text, "send_bound display_text must match appended display_text");
+        assert_eq!(bound_sends[0].6, handoff, "send_bound goal/content must be handoff content");
     }
 }
 

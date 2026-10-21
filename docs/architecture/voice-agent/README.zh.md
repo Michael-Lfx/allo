@@ -1,6 +1,14 @@
 # voice-agent 文档目录 (AI Mate Voice Agent Docs)
 
+> **2026-10-21 R1 进度与后续实施**：[R1–R5 串行执行辅导](execution/R1-R5-execution-coaching-2026-10-21.zh.md)。含当前修复核验、策略/采集缺口及每片代码入口、边界、测试与命令；最新审查见 [R1 §9](execution/R1-voice-message-task-execution-plan-2026-10-20.zh.md)。历史正文保留，局部编译通过不等于 R1 全流程完成。
+
+> **2026-10-20 rev2 源码复审**：[v0.4 工作区连续会话 PRD](PRD-voice-companion-v0.4.zh.md)与[Qoder/远端源码核验及实施就绪结论](execution/qoder-alignment-rev2-review-2026-10-20.zh.md)。补齐可信消息绑定、时间线与模型上下文分离、最小队列阶段出口；R1 可进入契约验证，R5 资源交付仍有门禁。均为文档，未实施业务代码；原方案和历史记录保留。
+
 > **当前代码事实（2026-10-20）**：[实现状态与验证记录](execution/current-implementation-status.zh.md)，基准 `10a1628ab`。真实任务交付、上下文、部分连续会话、审批及结果播报已有实现；新版 PRD 全量验收未完成。下方“待实施 / 本轮仅文档”等为原阶段历史。默认不可删除宠物、统一工作区语音会话及 Realtime/AOQ 仍属调研候选。
+
+> **2026-10-20 方案草案**：[Flowy 语音会话 Qoder 对齐改造方案](execution/flowy-voice-qoder-alignment-plan-2026-10-20.zh.md)。覆盖连续会话、工作区语音 Conversation、队列、默认 Flowy/Bolt 伙伴、memory owner、本地快模型与 Edge/Piper TTS；待其他 Agent 审查，未实施。
+
+> **2026-10-20 v0.4 实施入口**：[语音伴侣 v0.4 PRD](PRD-voice-companion-v0.4.zh.md) 收敛 R1–R5 交付边界；[rev2 源码核验与就绪审查](execution/qoder-alignment-rev2-review-2026-10-20.zh.md) 给出 G1–G8 缺口。当前结论：只批准 R1 契约验证与最小闭环，不批准全量 R1–R5。
 
 > **2026-10-20 优化 PRD**：[v0.3 连续任务、低打断授权与可靠播报](PRD-voice-companion-v0.3.zh.md)。依据本机会话日志和 GitHub 项目经验，建议复用现有权限模式与具体工具白名单，不统一启用 yolo；补齐执行会话连续性、确认澄清、结果语义和播放回执。本轮只交付文档，待实施及验收；较早方案与历史状态保留。
 

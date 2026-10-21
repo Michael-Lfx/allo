@@ -137,6 +137,299 @@ renderer 对 `SpawnBackendAgent` 校验请求，再调用主输入框所使用�
 | 本地路线 | 保留现有本地 KWS/ASR 与文本补全分工 | 实时云音频是另一种能力和数据路径，不能静默替换本地隐私约定 |
 | 权限 | 延续现有软件会话模式与审批策略 | 不能因为截图“自动审批”就认定语音应全部放行 |
 
+### 4.1 补充核对：内置宠物与语音入口（2026-10-20）
+
+后续静态核对补上了“默认宠物”这一项，避免把“宠物可选”误解成“Qoder 没有内置宠物”，也避免把 Qoder 的内置桌宠和 Flowy 上游的 companion 档案混为一谈：
+
+| 观察 | 静态证据 | 能推出什么 |
+| --- | --- | --- |
+| Qoder 自带内置桌宠 | renderer 宠物目录回退值为 `{activePetId, pets:[{petId, displayName:"Qoduck", source:"builtin"}]}`；设置文案写“当前宿主仅支持内置的 Q 达鸭” | 安装即有内置宠物资源，不需要用户先创建伙伴 |
+| 桌宠显示与语音入口分离 | 设置文案：“开启后，它会悬浮在桌面上，可拖拽位置；发起语音任务时会临时切换为语音入口。”；主进程桌宠控制器同时维护 `intentVisible` 与 `suspendedByVoice` | 语音启动可临时改变宠物呈现，但不等于修改“显示宠物”设置 |
+| 语音启动不写设置 | 语音 `startSession` 只传 `anchor` / `source`；`setDesktopPetEnabled` 仅在用户菜单的显示/隐藏开关里调用 | 语音任务不会把设置里的宠物开关改成开启 |
+| 语音会话默认主按钮是麦克风 | composer 动作顺序为 `stopLiveVoice > disabled > send（有内容）> stopAgent > startLiveVoice（空输入）`；空输入渲染 `composer.voice.liveStart` 麦克风 | 语音会话在无文字输入时默认是语音按钮，有文字才变为发送 |
+| 关闭桌宠后是否仍强制显示 | 静态代码只能证明“语音临时状态”和“持久设置”分离；未启动 Qoder 实测 | 不能据此断言设置关闭时一定强制显示；需真机确认 |
+
+这里要修正一个容易混淆的表述：上一轮说“上游默认没有宠物”，针对的是 Flowy 上游 `nomifun-desktop` 的 companion 档案；Qoder CN 是另一套设计，内置 `Qoduck` 资源确实随安装存在。两者不能混为一谈。
+
+对 Flowy 的落地建议因此更明确：优先做“内置宠物展示入口 + 独立语音入口”，不要为了一个语音按钮创建真实 companion 档案；语音临时入口不得写回“显示宠物”设置，也不得自动开麦。
+
+### 4.2 会话生命周期、转写保留与退出命令（2026-10-20）
+
+这一节专门核对“Qoder 唤醒后是否一直保持、是否只发送提问、说‘退下’能否关闭且不污染历史”这几个问题。结论是：**连续对话成立，但“永不超时”“只发送提问”“退出词不写入历史”不能当作已证实的 Qoder 行为。**
+
+| 问题 | 静态证据 | 结论 |
+| --- | --- | --- |
+| 是否说完一句就退出 | `startSession` 成功后保持 `phase:"listening"`，持续发送 PCM；只有 `state idle`、错误、用户 stop 或超时才清理 | 不是逐句退出，可以连续多轮 |
+| 是否永不超时 | renderer 内置字符串 `Your session was closed because no response was generated for 180 seconds.`；错误映射同时处理 `response_idle_timeout` 与 `user_idle_timeout` | 有超时；至少 180 秒无回复会关闭，用户空闲超时由服务端返回，客户端未定义其时长 |
+| 是否只发送“有意义的提问” | `upsertLiveVoiceTranscript` 只在转写文本为空时移除消息；非空 final 转写全部写入；客户端没有本地“是否提问”分类器 | 客户端没有“只发送提问”的过滤；是否响应由实时模型/服务端决定 |
+| “退下”是否是客户端命令 | renderer 未找到“退下/退出语音”等命令字符串；客户端只有 `stopLiveVoice` 按钮/快捷键，以及桌宠的 `desktopPetVoiceRequested` 入口 | 客户端没有“退下”解析；若 Qoder 能响应，属于服务端模型/提示词行为，静态证据不能证实 |
+| 退出语句是否不进聊天记录 | 同一 `upsertLiveVoiceTranscript` 没有排除控制语句；唯一清理是空转写 | 客户端不能保证；若服务端仍发送该转写，它会进入聊天记录，除非在宿主侧主动过滤 |
+| Flowy 能否直接照搬 | Qoder 是连续实时音频 + 服务端模型；Flowy 是 KWS + ASR + LLM + TTS | 交互目标可借鉴，但生命周期、退出词和上下文过滤必须由 Flowy 自己实现 |
+
+因此，产品目标应写成 Flowy 自己的明确规则，而不是“Qoder 已验证”：
+
+- **会话生命周期**：唤醒或点击后保持一个显式语音会话，直到用户说退出、点击关闭、发生错误或达到产品定义的闲置上限；如果选择“不自动超时”，需单独评估麦克风占用、隐私和资源成本，不能把它描述成 Qoder 的既有行为。
+- **控制语句隔离**：退出词、静音、停止等控制语句应在投影到 Conversation 之前被宿主消费，不写入用户消息、不进入 LLM 上下文；不能依赖模型“自己不说出来”。
+- **有意义的语音门控**：VAD/ASR 空结果、纯噪声、低置信度片段不提交；是否需要“只提交提问”的本地意图判定应单独设计并测试，不能假设 Qoder 客户端已经做了。
+- **转写与结果分离**：即使用户说了退出词，也只改变会话状态；已经接受的后台任务、结果和审批仍按原身份保留。
+
+线上 Qwen-Live-Harness 的公开源码进一步印证这些边界：Qwen 客户端没有“退下”结束工具，只有显式 End call；语义 VAD 会拒绝部分噪声候选，但 `MemoryDialogueCollector` 仍记录所有非空用户文本，没有退出词过滤。详见 [Qwen 调研 §3.8](qwen-qoder-workspace-voice-deep-research-2026-10-20.zh.md)。
+
+### 4.3 证据等级与实现优先级（2026-10-20）
+
+判断规则：
+
+1. **Qoder CN 0.4.8 客户端静态证据是主依据**；用户实际观察用于校验交互，但不把单次截图当作所有版本的契约。
+2. **Qwen-Live-Harness 固定提交的公开源码是佐证**：只在它确实实现相同机制时提高可信度；它没有的，不反向否定 Qoder。
+3. **QoderAI 公开仓库不包含桌面客户端**；`forward-quickstart` 只能作为 Cloud Agents 语音中继参考，不能证明桌面行为。
+4. 两侧都没有源码证据的（如“退下”语音关闭、退出词不入历史），保持“未证实”，不因为产品目标合理就升级为高优先级。
+
+| 结论/候选 | 证据 | 可信度 | 实施优先级 |
+| --- | --- | --- | --- |
+| 内置桌宠资源 + 临时语音入口；语音不写显示设置 | Qoder 客户端静态 | 高 | P0：先做展示入口，不建 companion 行 |
+| 空输入默认麦克风、有文字才发送 | Qoder 客户端静态 | 高 | P0：主输入框交互 |
+| 连续多轮，不逐句退出 | Qoder 客户端 + Qwen 连续通话 | 高 | P0：会话生命周期 |
+| 显式结束/关闭，而非依赖模型 | Qoder 客户端 stop + Qwen End call | 高 | P0：显式 End call/退出按钮 |
+| 长时间保持、不固定 30 秒休眠 | Qwen 客户端无固定空闲关闭；Qoder 有 180 秒无回复关闭 | 中 | P1：产品策略；不能写成“Qoder 已验证无超时” |
+| 噪声/无效语音不提交 | Qwen 服务端 semantic VAD + `onInputRejected`；Qoder 未在客户端证实 | 中 | P1：Flowy 自己做 VAD/ASR 门控 |
+| “退下”语音关闭 | Qoder 客户端未找到；Qwen 无 end_call；QoderAI 无桌面源码 | 低/未证实 | P2：先做显式按钮/快捷键；语音命令另行验证 |
+| 控制语句不进入历史/上下文 | 两侧客户端都没有过滤；Qwen 只过滤空文本 | 低（反向证据） | P1：宿主侧主动消费，不能等模型 |
+| Qoder 桌面工作区/会话归属细节 | Qoder 客户端静态 + 用户实测 | 高 | P0：按 §4.1/§4.2 继续 |
+
+“提高优先级”只适用于**两边都有实现证据**的机制（连续通话、显式结束、语义/ASR 门控）。只有 Qwen 有、Qoder 客户端没有的，按“候选实现模式”处理；只有 Qoder 有、Qwen 没有的，以 Qoder 为准。
+
+### 4.4 Flowy 本地化路线与实时音频边界（2026-10-20 讨论稿）
+
+状态：讨论稿，未实施；不改变 PRD 已批准范围。目标是把“Qoder 式连续会话”落到 Flowy 的本地模型路线，而不是复制 Qoder 的云端实时链路。
+
+**180 秒的语义要先说清楚：**
+
+- Qoder 的 180 秒是 `response_idle_timeout`：文案为“no response was generated for 180 seconds”，不是严格的“180 秒没有声音”。
+- Qoder 另有 `user_idle_timeout`，时长由服务端返回，客户端不定义。
+- 因此“KWS 唤醒后 180 秒无有效语音才退出”是 **Flowy 自己的产品规则**，可以作为目标，但不能写成“Qoder 同款 180 秒静默”。
+
+**本地链路：**
+
+```text
+KWS 唤醒
+  -> 持续 listening
+  -> VAD 切分一句
+  -> 本地流式/分段 ASR
+  -> 空/噪声/低置信度门控
+  -> 本地文本 LLM
+  -> 句子级本地流式 TTS（可选 Edge TTS）
+  -> 播放完回到 listening
+  -> 180 秒无有效语音 / 主动退出 -> 关闭
+```
+
+可以借鉴 Qoder 的会话状态、显式结束、增量事件、门控和“语音临时入口”；不需要 AOQ、云端 realtime 模型或每句重新唤醒。真正的本地全双工语音到语音需要本地 omni/realtime 模型和较强硬件，属于独立 S4，不是 S1–S3 的前置条件。
+
+**TTS 路由建议：**
+
+| 模式 | 行为 |
+| --- | --- |
+| `local-only` | 始终本地 TTS；完全离线，隐私最好，音质取决于本地模型 |
+| `auto` | 在线且允许出网时用 Edge TTS；离线/失败/429 自动回退本地 TTS；保留文字 |
+| `edge-only` | 仅 Edge TTS，适合在线演示；不可作为离线默认 |
+
+Edge TTS 是云端服务，严格“本地模型路线”下不能作为唯一 TTS。当前 Edge TTS 已有 429 限流证据，必须保留冷却和回退。
+
+**速度判断：**
+
+- 首音延迟：本地小模型（Piper/Kokoro 等）通常更快、更稳定；Edge TTS 取决于 RTT、TLS、服务队列和限流，好网络下也可能很快。
+- 音质/资源：Edge TTS 通常音质更好、零本地算力；本地大神经 TTS 音质更好但无 GPU 时可能明显更慢。
+- 不能只看“合成速度”，要看“请求→首音、首音→播完、失败率、CPU/GPU 占用”的 P50/P95；用同一组真实句子实测后再定默认。
+
+**建议优先级：**
+
+1. S1 连续会话 + 180 秒静默/主动退出 + 控制语句隔离。
+2. S2 内置宠物展示入口 + 主输入框语音态 + TTS 路由。
+3. S3 有效语音门控 + 上下文/结果语义。
+4. S4 实时音频试验（本地 omni 或公开 provider，独立立项）。
+
+**待决策：**
+
+- 180 秒是否只算“有效用户语音”，任务进度/播放/噪声是否不续期。
+- 语音退出是否首版支持，还是只做按钮/快捷键。
+- 默认是 KWS 连续模式，还是保留 KWS 短追问 + 点击连续模式。
+- “本地模型”是否硬性禁止 Edge TTS；若允许联网，默认 `auto` 还是 `local-only`。
+- 本地 TTS/ASR 选型、硬件基线和首音 P95 目标。
+
+已确认（2026-10-20 讨论）：180 秒从**播报结束重新计算**；任务运行/审批/结果待播报期间不关闭语音；本地语音模型优先 CPU，GPU 留给本地 LLM；Edge TTS 在线优先、失败回退本地；KWS 唤醒后默认连续模式；首版只做按钮/快捷键关闭；队列不再后置。
+
+### 4.5 语音会话与普通会话：提示、队列与 runtime（2026-10-20）
+
+Qoder 静态证据表明：语音不是“另一个 runtime”，而是同一 chat 的另一个入口，但语音侧有自己的提示和消息标记。
+
+| 证据 | 位置/内容 | 含义 |
+| --- | --- | --- |
+| `SpawnBackendAgent` 调度 | 默认 `dispatchMode:"queued"`；只有 `interruptCurrent===true` 才用 `"replace"`；忙碌时 `schedulingOutcome:"queued"`，否则 `"started"` | 语音请求进入现有 chat 队列，不默认中断；替换必须显式 |
+| 同一 chat，独立语音身份 | 使用 `chatSessionId`；另有 `voiceSessionId`；消息标记 `messageStream:"voice"` | 语音消息与普通消息在同一时间线，但来源可区分 |
+| 语音结果提示 | `[COMPLETE]` 要求 “Give the user a concise spoken result… Do not invoke a function or mention protocol metadata”；`[STATUS]` 要求一句短句、不朗读问题/选项/元数据 | runtime 的完整结果不等于 TTS 文本；语音侧必须做短摘要 |
+| 语音不执行工具 | `SpawnBackendAgent` 把请求交给既有 chat 发送入口；工具、审批、队列都在 runtime | 语音只负责交互和委派，不复制工具系统 |
+| Qwen 佐证 | `instructions.ts` 有独立实时语音指令；`notification-speech.ts` 发送空 tools 和 `tool_choice:none` | 语音提示与普通 chat 提示不同，但执行仍走 backend |
+
+结论：Qoder 的语音会话与普通会话共享 Conversation、runtime 和队列；语音侧有独立的消息流标记、短回答提示和结果摘要层。没有证据表明它替换了 runtime 的 loop。完整的 Qoder 语音 system prompt 未在静态 bundle 中定位，不能编造。
+
+协作方式既不是“每句话新建 subagent”，也不是“把全部上下文塞进一个 prompt”：
+
+- 语音模型和 backend chat 是两个执行上下文，但共享 `chatSessionId` 和消息时间线。
+- `SpawnBackendAgent` 通过既有 chat 发送入口提交请求；backend 使用增量隐藏上下文（`[QODER_LIVE_VOICE_CONTEXT]` + `[CURRENT_USER_REQUEST]`）执行，不会每次复制全部历史。
+- 语音侧只接收状态/终态上下文（`[STATUS]`、`[COMPLETE]`）和结果摘要；backend 的完整工具轨迹不进入语音模型。
+- Qoder 的 chat 自己可能再使用 subagent，但语音 handoff 本身不是新建 subagent。
+- 忙碌时 handoff 进入现有队列，语音继续响应；任务完成后再把摘要送回语音侧。
+
+**队列不应后置：** Qoder 默认 `queued` 是实证，Qwen 也有有界队列（ACP 上限 8，取消排队项不影响运行项）。Flowy 应在现有 Conversation 队列上做有界队列，语音返回 accepted/queued，不能静默丢弃；PRD v0.3 的“首版不隐式排队”需要按此修订。
+
+### 4.6 本地模型选型建议（讨论稿）
+
+- **ASR**：流式 Zipformer/Paraformer 负责增量转写，SenseVoice 负责最终准确文本；VAD 分段。低配 CPU 不要同时跑两套重模型，可先 SenseVoice 分段 + 前端 partial 占位。
+- **TTS**：Piper 作为低延迟 CPU 默认；Kokoro/MeloTTS 作为质量优先候选；大模型 CosyVoice/GPT-SoVITS 需要 GPU，不能承诺 CPU 首音。
+- **LLM**：语音快回答用独立的小模型（约 3B–7B，量化），任务 runtime 继续用现有模型；不要为了语音把任务模型降级。
+- **指标**：首 partial、最终 ASR、首 LLM token、首音、打断停止延迟；ASR 看 CER/WER，TTS 看 RTF/音质。用同一组真实句子测 P50/P95 后再定默认。
+- **Edge TTS**：按用户决策优先执行；失败/离线回退本地，保留冷却，不能把 Edge 当本地模型。
+
+### 4.7 伙伴记忆与工作区语音会话（2026-10-20 讨论稿）
+
+问题：伙伴记忆可以复用为语音记忆，但桌宠有自己的聊天框和模型选择；在工作区唤起语音时，应在当前工作区新建语音会话，而不是进入桌宠独立聊天。这样学习和记忆如何归属？
+
+现状事实：
+
+- companion 记忆/学习按 `companion_id` 归属；collector 优先读事件里的 `companion_id`，其次 thread registry，再次默认伙伴（`collector.rs:507-524`）。
+- `is_companion_event` 需要 wire `companion:true` 或已登记的 companion thread（`collector.rs:496-505`）。普通工作区语音会话不会被采集为 companion 事件。
+- `conversation.extra` 的 `companion_session` / `companion_id` 会触发 companion 绑定、知识挂载和 wire marker；直接复用会把工作区语音变成伙伴会话，带来模型/知识/UI 副作用。
+- 当前 Companion 语音模式使用 `companion_active_thread`；忙碌时回默认语音会话（`voice_companion_manager.rs:250-260`）。
+
+可选方案：
+
+| 方案 | 对话归属 | 记忆/学习 | 代价 |
+| --- | --- | --- | --- |
+| A. 记忆归属与对话归属解耦（推荐） | 当前工作区新建语音会话，使用工作区模型/权限 | 绑定默认伙伴作为 `memory_owner`，注入伙伴记忆/人格并采集学习 | 需要新增 memory owner 元数据与 collector 支持，不能直接复用 `companion_session` |
+| B. 真实 companion thread | 语音直接进伙伴独立聊天 | 天然复用伙伴记忆/学习 | 与“当前工作区语音会话”冲突，桌宠聊天与工作区会话分离 |
+| C. 无伙伴记忆 | 当前工作区语音会话 | 不学习/不注入伙伴记忆 | 最简单，但用户要求的“伙伴记忆变成语音记忆”无法满足 |
+
+决策（2026-10-20）：选择 **A**。采用“虚拟展示入口 + 当前工作区语音会话 + 默认伙伴作为 memory owner”；不把语音会话伪装成 companion thread，也不让伙伴模型静默覆盖工作区模型。
+
+方案 A 的关键设计：
+
+- 新增 `memory_owner_companion_id`（或等价字段），只用于记忆注入、学习和人格上下文；**不要复用 `companion_session`**，避免工作区语音被当成伙伴会话。
+- 语音用户消息用 `message_stream:"voice"` / `input_source:"voice"` 标记；不要把 `origin` 设为 `voice`，因为 collector 会跳过所有非空 `origin` 的用户消息。控制语句（退出/静音/停止）不生成消息。
+- collector 需要支持 `memory_owner_companion_id` 作为 companion 事件归属，或事件显式 stamp `companion:true` + `companion_id`；要评估 XP、知识挂载、模型传播等副作用。
+- 模型/预设/权限仍来自当前工作区会话；伙伴只提供人格、记忆和默认语音音色。不要静默用伙伴模型覆盖工作区模型。
+- 删除伙伴后，语音会话的 `memory_owner` 置空或回退默认语音会话；旧历史保留，不重写。
+- 需要产品决定：默认伙伴是否自动成为所有语音会话的 memory owner，还是只对“宠物入口”或用户显式选择的语音会话生效。
+
+### 4.8 Flowy 整合改造切片（讨论稿）
+
+目标架构：
+
+```text
+KWS / 宠物入口 / 快捷键
+  -> VoiceSession（宿主持有生命周期）
+  -> VoiceConversation（当前工作区下的真实 Conversation，出现在会话列表）
+  -> ai-mate：本地 KWS / VAD / ASR / TTS
+  -> 语音快模型：短回答 + 意图/委派
+  -> 现有 Conversation 队列 -> 现有 runtime / 工具 / 审批
+  -> 完整结果落聊天记录 -> 语音摘要 -> TTS
+  -> 记忆归属：memory_owner_companion_id（默认伙伴，可选）
+```
+
+| 切片 | 改造 |
+| --- | --- |
+| S1 连续会话 | ai-mate 连续模式替代 4 秒追问；180 秒从最后一次有效语音或播报结束计算；任务/审批/结果待播报期间暂停；按钮/快捷键关闭；30 秒单句上限改为可配置 |
+| S2 会话与队列 | 每个工作区一个语音 Conversation；用户语音/助手短回复/任务结果在同一时间线；复用现有队列，默认 queued，replace 仅显式；输入框空输入麦克风、有文字发送 |
+| S3 记忆归属 | `memory_owner_companion_id` 绑定默认伙伴；注入伙伴人格/记忆、采集学习；不复用 `companion_session`；语音消息用 `messageStream:"voice"`/`input_source:"voice"`；控制语句不生成消息 |
+| S4 模型与 TTS | 语音快模型、任务模型、伙伴聊天模型分开；本地语音模型 CPU 优先，GPU 留给 LLM；Edge TTS 在线优先，失败回退本地 Piper；完整结果保留，只播摘要 |
+| S5 实时音频（可选） | `RealtimeProvider` 抽象；本地级联为默认，实时 provider 独立评估；不引入 AOQ Electron/Node 依赖 |
+
+关键数据：
+
+- `VoiceSessionScope`：user、workspace、voice_conversation_id、memory_owner_companion_id、mode、started_at、last_accepted_user_speech_at、playback_ended_at、active_task_ids、pending_approvals、ended_reason。
+- `VoiceConversation`：`extra.voice=true`、`workspace`、`memory_owner_companion_id`、`voice_mode`；不是 `companion_session`，也不是伙伴 active thread。
+- `VoiceTask`：目标为 voice_conversation_id；`dispatchMode=queued` 默认；`replace` 仅显式；`command_id` 幂等；取消排队项不影响运行项。
+- `spoken_summary`：完整结果与 TTS 文本分开；TTS 失败保文，不重做任务。
+
+待确认：默认伙伴是否自动创建；语音会话是否同一工作区 30 分钟内复用；键盘输入是否 TTS；队列容量；本地 ASR/TTS 选型。
+
+后续讨论已确认（2026-10-20）：
+
+- 默认伙伴首次启动自动创建；已有至少一个伙伴的用户不重复创建；至少保留一个，禁止删除到 0。
+- 语音设置增加“语音伙伴/默认桌宠”选择；语音会话的 memory owner 冻结所选伙伴。
+- 任务执行沿用当前语音 Conversation 的模型；语音快回答使用独立快模型；伙伴聊天模型只影响桌宠自己的聊天。
+- ASR 后的快 LLM 层保留：负责 Chat/Task/Ignore、短口播回复、任务结果摘要；任务 runtime 仍用当前会话模型。
+- 键盘输入默认不 TTS；TTS 默认 Edge，失败回退 Piper；队列有界、可配置，取消排队项可见。
+- 30 分钟复用窗口：Qoder 客户端和 Qwen 线上源码均未找到同义规则，属于 Flowy 自有产品规则。建议同一工作区语音 Conversation 在最后一次有效交互后 30 分钟内复用，超过窗口新建；180 秒会话退出与 30 分钟会话复用分层。
+- 默认伙伴名称 `Flowy`，复用现有形象 `bolt`（Bolt）；模型默认 `auto`，用户切换后按普通会话规则记住选择。
+- 30 分钟任务轮换暂缓：先解决 runtime 与语音会话的衔接，再讨论任务会话轮换；当前保留 180 秒会话退出、30 分钟会话复用和既有任务预算三层独立计时。
+- 流式 ASR（Zipformer/Paraformer）暂不接入、不测试，等当前改造完成后再做 S4 A/B；当前先用 SenseVoice 分段。
+
+### 4.9 ASR 后是否还需要一层 LLM（2026-10-20）
+
+需要，但要拆成两层：
+
+| 层 | 作用 | 模型 |
+| --- | --- | --- |
+| 语音快模型 | 判断 Chat / Task / Ignore / 控制；生成短口播回复；任务结果摘要 | 本地小模型（CPU 或与 LLM 共享 GPU，视资源）；也可用规则兜底 |
+| 任务 runtime 模型 | 真正执行工具、文件、浏览器、审批和长任务 | 当前语音 Conversation 的模型/预设，不另设 |
+
+不能简单去掉快模型、把所有 ASR 文本直接送 runtime：
+
+- 小聊、确认、忽略也会变成任务 turn，产生工具/审批和长回复；
+- TTS 需要短句，runtime 的完整结果不适合直接朗读；
+- Chat/Task 分流、排队回执、结果摘要都需要一个轻量层；
+- Qoder 用实时语音模型承担这层，Qwen 用实时 Omni 模型承担；本地级联路线对应一个本地快模型。
+
+如果未来采用本地 omni/realtime 模型，这层可以并入 omni；当前级联路线应保留独立快模型。云端 LLM 不是必需：Edge TTS 只负责合成，快模型和任务模型都可以本地。
+
+任务结果摘要长度建议：
+
+| 场景 | 目标 | 硬上限 |
+| --- | --- | --- |
+| 状态/排队/权限提示 | 1 句，说明当前状态或下一步 | 30 字 / 约 6 秒 |
+| 简单 Chat 回复 | 1–2 句，直接回答 | 60 字 / 约 12 秒 |
+| 任务终态摘要 | 1–2 句：结果 + 关键数据 + 是否需要用户下一步 | 120 字 / 约 20 秒 |
+| 失败/未知 | 1 句说明未完成原因，再给可执行下一步 | 80 字 / 约 15 秒 |
+
+摘要由语音快模型生成，完整结果继续留在聊天记录；不截断已保存的结果。超过硬上限时强制二次压缩，不把长文直接交给 TTS。
+
+### 4.10 Qoder 协作方式在 Flowy 的可行性（2026-10-20）
+
+结论：**可行，但应做成“语音入口 + 现有 Conversation/runtime”，不修改 harness loop。** 语音只是另一个 ingress，runtime 仍然收到普通用户 turn。
+
+可以不动 harness 的部分：
+
+- 语音 Conversation 是普通 Conversation，只是带 `voice` 元数据；runtime 不知道也不关心语音。
+- 语音快模型在 runtime 外（`voice_dialogue`/router）；任务通过既有 send 入口提交。
+- 结果摘要、TTS、队列回执由语音层/宿主生成，不进入 agent loop。
+- 记忆归属由 collector/metadata 处理，不改工具循环。
+- Agent Store/harness 保持隔离。
+
+需要新增或谨慎扩展（都在语音/Conversation 边界）：
+
+- API types：可选 `display_text`、隐藏上下文、`memory_owner_companion_id`、`spoken_summary`、voice 元数据。
+- `voice_tasks`：目标改为工作区语音 Conversation；有界 FIFO；accepted/queued；取消排队项；不再每任务新建“语音任务”Conversation。
+- `voice_dialogue`：保留本地快模型；Chat/Task/Ignore；结果摘要。
+- `nomifun-companion`：首次启动自动创建默认伙伴；禁止删到 0；memory owner；collector 归属。
+- UI：语音会话图标/分组、语音设置选择伙伴、输入框麦克风/发送切换、队列状态。
+- `ai-mate`：连续会话、180 秒、任务暂停计时。
+- Conversation send：需要一种“可见用户气泡 + 隐藏任务上下文”的提交方式，避免重复用户消息；这是 shared layer 的可选扩展，不是 loop 改动。
+
+不能直接复用的：
+
+- 现有 `useConversationCommandQueue` 是 renderer 持有、localStorage 持久化的命令队列，不是后端语音队列；可以复用交互样式，但不能作为语音任务队列。
+- 不能把语音消息同时投影一次、再发送一次普通用户消息，否则会出现重复用户气泡和重复上下文。
+- 不能把 Qoder 的云端 realtime 模型/AOQ 直接搬进 Flowy；本地级联仍是默认。
+
+需要验证的风险：
+
+- 可见气泡与隐藏 prompt 的关联身份；
+- 队列持久化与语音会话关闭的交互；
+- 任务结果摘要与完整结果的一致性；
+- memory owner 的 collector 归属和删除回退；
+- 语音队列与普通命令队列是否最终统一。
+
+完整方案与验收见 [Flowy 语音会话 Qoder 对齐改造方案](flowy-voice-qoder-alignment-plan-2026-10-20.zh.md)。
+
 公开可进一步阅读的参考：[Qwen-Live-Harness](https://github.com/QwenLM/Qwen-Live-Harness)明确使用 Qwen Omni Realtime 做交互，并能委派 Qoder CLI 等后台 harness。这是另一个公开项目，不是已经证明的 Qoder CN 服务端源码。它当前说明完整桌面体验主要支持 macOS，Windows/Linux 仍在推进；不宜整套替代 Flowy 的跨平台宿主。
 
 ## 5. 候选串行执行与验收
@@ -177,6 +470,27 @@ renderer 对 `SpawnBackendAgent` 校验请求，再调用主输入框所使用�
 | `node_modules/aoq-electron-sdk/ts/IAoqClientEngine.ts` | 原生采集、播放、连接、消息、打断与音量接口 |
 | `node_modules/aoq-electron-sdk/ts/Types.ts` | 音频编解码、轨道、连接与网络统计类型；不能把可选类型当实际启用配置 |
 
+补充定位（2026-10-20，同一 renderer `DIR8HOYO.js` SHA256 `52b8425ff40f90ef76782847291e61183ad0a2eb4a6c44df443494466b8eccef`；偏移仍为 UTF-16 零起始位置）：
+
+| ASAR 内路径/符号 | 定位 |
+| --- | --- |
+| 同上 `activePetId` / 内置 Qoduck 目录 | 14758256 |
+| 同上设置文案“临时切换为语音入口” | 4307236 |
+| 同上 composer 动作判定 `function e60` | 7593775 |
+| 同上麦克风按钮 `composer.voice.liveStart` | 7743250 |
+| 同上 `setDesktopPetEnabled` | 7898947 |
+| 同上语音启动 `p=!!i\|\|n?.source==="desktopPet"` | 7657602 |
+| 同上转写写入 `upsertLiveVoiceTranscript` | 5106941 |
+| 同上 180 秒无回复关闭文案 | 3768652 |
+| 同上 `response_idle_timeout` / `user_idle_timeout` | 7688415 / 7688063 |
+| 同上 `stopLiveVoice` | 7593818 |
+| 同上“退下/退出语音”命令字符串 | 未找到 |
+| `out/preload/index.cjs` | 180610 字节；SHA256 `18b3b69689d406c81dc2e8f9a96e7253cf486251851025df5cdc43db7bbf277c` |
+| 同上 `desktopPetGetEnabled` / `desktopPetSetEnabled` | 32634 / 32668 |
+| 同上 `desktopPetVoiceRequested` | 33208 |
+| 同上 `onDesktopPetEnabledChanged` | 99671 |
+| `out/main/electronMain.js` 桌宠控制器 `intentVisible` / `suspendedByVoice` | 14404001 / 14404044 |
+
 本次只解码静态字符串数据、读取调用链，没有执行安装包代码或原生 SDK。
 
 ## 附录 B：公开来源与历史边界
@@ -193,3 +507,7 @@ renderer 对 `SpawnBackendAgent` 校验请求，再调用主输入框所使用�
 ## 后续调查补充（2026-10-20）
 
 新一轮已核对 AOQ 官方文档和 Qwen-Live-Harness 固定提交，并追踪 Qoder 工作区入口，详见 [深入调查与候选方案](qwen-qoder-workspace-voice-deep-research-2026-10-20.zh.md)。本报告中的“Qoder 私有 AOQ SDK/服务”应区分理解：AOQ（AI over QUIC）SDK 有公开发行包和接入文档，Qoder 业务服务仍属于其自身产品。Linux 另有 C++/Python SDK，但原生采集/播放覆盖不同，不能将 Electron 包的平台限制推广到整个 AOQ。新建工作区选择还有路由、默认设置与 recent 优先级，不能把一次前台工作区实测概括为所有入口都直接继承当前聊天。保留上述原始调查正文以供追溯。
+
+本轮进一步补核对了内置宠物与语音入口：Qoder CN 的 `Qoduck` 是随安装存在的内置桌宠资源，设置页的“显示桌面宠物”是持久开关；发起语音任务时它可临时切换为语音入口，语音启动路径没有写回该开关。composer 在空输入时默认显示麦克风按钮，有内容时才显示发送。该结论来自静态 bundle 和 preload 调用链，未启动 Qoder 实测，因此“显示宠物关闭时语音是否仍强制显示宠物”仍需真机确认；上述补充见 §4.1 与附录 A。
+
+关于会话生命周期，本轮另核对到 Qoder 并非无限保持：renderer 明确有 `response_idle_timeout` 的 180 秒无回复关闭文案，并处理 `user_idle_timeout`；客户端转写写入会保留所有非空文本，没有“只发送提问”或“退出词不入历史”的本地过滤，也没有“退下”命令解析。因此“连续多轮”成立，“永不超时/只提交提问/退出词不污染”不能当作 Qoder 的既有事实，详见 §4.2。

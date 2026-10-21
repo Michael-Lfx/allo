@@ -156,6 +156,10 @@ pub struct FrozenVoiceExecution {
     pub preset:Option<nomifun_api_types::ResolvedPresetSnapshot>,
     #[serde(default)]
     pub handoff_content:Option<String>,
+    #[serde(default)]
+    pub display_text:Option<String>,
+    #[serde(default)]
+    pub conversation_id:Option<String>,
 }
 
 #[async_trait]

@@ -11200,6 +11200,7 @@ export type I18nKey =
   | 'voice.task.status.completed'
   | 'voice.task.status.delivering'
   | 'voice.task.status.failed'
+  | 'voice.task.status.queued'
   | 'voice.task.status.unknown'
   | 'voice.task.title'
   | 'voice.task.toolArguments'

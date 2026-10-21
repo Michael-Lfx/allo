@@ -221,7 +221,7 @@ pub use conversation::{
     EditResubmitReceiptState, EditResubmitStateResponse, CodingTurnRollbackAvailability,
     CodingTurnRollbackResponse, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem,
     MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
-    UpdateConversationArtifactRequest, UpdateConversationRequest,
+    UpdateConversationArtifactRequest, UpdateConversationRequest, VoiceBoundMessageRequest,
 };
 pub use cron::{
     CreateCronJobRequest, CronAgentConfigDto, CronJobExecutedEvent, CronJobMetadataDto,

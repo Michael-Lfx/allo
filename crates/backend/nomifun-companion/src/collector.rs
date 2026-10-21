@@ -8,7 +8,7 @@
 //! something the model chose rather than the owner — and only the tool NAME and
 //! param SHAPE, never a value.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -26,6 +26,11 @@ const MAX_FIELD_CHARS: usize = 2000;
 /// remains readable so the new policy never strands existing learning data.
 const MAX_EVENT_LINE_BYTES: usize = 64 * 1024;
 const EVENT_PRUNE_INTERVAL_SECONDS: u64 = 6 * 60 * 60;
+/// Bounded in-process replay guard for stable user-message identities.
+/// It absorbs `message.userCreated` re-broadcasts from append retries without
+/// relying on UI de-duplication; bounded so a long-lived collector cannot grow
+/// without limit.
+const MAX_SEEN_USER_MESSAGE_IDS: usize = 4096;
 
 /// One normalized JSONL record.
 #[derive(Debug, Serialize, Deserialize)]
@@ -88,6 +93,8 @@ pub struct Collector {
     /// every companion's enabled consumers, so pruning cannot be decided from the
     /// shared config alone.
     registry: Arc<crate::registry::CompanionRegistry>,
+    /// Stable source identities already collected for the current process.
+    seen_user_message_ids: VecDeque<String>,
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -135,6 +142,26 @@ fn payload_origin(data: &serde_json::Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
+fn load_recent_user_message_ids(companion_dir: &Path) -> VecDeque<String> {
+    let Ok(events) = read_recent_events(companion_dir, MAX_SEEN_USER_MESSAGE_IDS * 4) else {
+        return VecDeque::new();
+    };
+    let mut ids = VecDeque::new();
+    for event in events {
+        if !matches!(event.source.as_str(), "chat_user_messages" | "companion_dialogues") {
+            continue;
+        }
+        if let Some(message_id) = event.data.get("msg_id").and_then(serde_json::Value::as_str)
+            && !message_id.is_empty()
+        {
+            ids.push_back(message_id.to_owned());
+        }
+    }
+    while ids.len() > MAX_SEEN_USER_MESSAGE_IDS {
+        ids.pop_front();
+    }
+    ids
+}
 fn events_dir(companion_dir: &Path) -> PathBuf {
     companion_dir.join("events")
 }
@@ -470,12 +497,33 @@ impl Collector {
         registry: Arc<crate::registry::CompanionRegistry>,
         event_store_lock: SharedEventStoreLock,
     ) -> Self {
+        let seen_user_message_ids = load_recent_user_message_ids(&companion_dir);
         Self {
             companion_dir,
             config,
             event_store_lock,
             store,
             registry,
+            seen_user_message_ids,
+        }
+    }
+
+    /// A stable identity is only marked after the event append succeeds.
+    fn user_message_seen(&self, message_id: &str) -> bool {
+        !message_id.is_empty()
+            && self
+                .seen_user_message_ids
+                .iter()
+                .any(|seen| seen == message_id)
+    }
+
+    fn mark_user_message_seen(&mut self, message_id: &str) {
+        if message_id.is_empty() || self.user_message_seen(message_id) {
+            return;
+        }
+        self.seen_user_message_ids.push_back(message_id.to_owned());
+        while self.seen_user_message_ids.len() > MAX_SEEN_USER_MESSAGE_IDS {
+            self.seen_user_message_ids.pop_front();
         }
     }
 
@@ -617,6 +665,14 @@ impl Collector {
                 if payload_origin(&msg.data).is_some() {
                     return;
                 }
+                let message_id = msg
+                    .data
+                    .get("msg_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if self.user_message_seen(message_id) {
+                    return;
+                }
                 if self.is_companion_event(&msg.data).await {
                     // Companion threads: the owner talking TO a companion. Collect
                     // as a dedicated high-value source (default ON); never as
@@ -625,10 +681,13 @@ impl Collector {
                         let companion_id = self.resolve_companion_id(&msg.data).await;
                         let data = serde_json::json!({
                             "conversation_id": msg.data.get("conversation_id"),
+                            "msg_id": message_id,
                             "companion_id": companion_id,
                             "content": truncate_chars(msg.data.get("content").and_then(|c| c.as_str()).unwrap_or(""), MAX_FIELD_CHARS),
                         });
-                        self.append("companion_dialogues", "companion.user_message", data).await;
+                        if self.append("companion_dialogues", "companion.user_message", data).await {
+                            self.mark_user_message_seen(message_id);
+                        }
                     }
                     return;
                 }
@@ -637,9 +696,12 @@ impl Collector {
                 }
                 let data = serde_json::json!({
                     "conversation_id": msg.data.get("conversation_id"),
+                    "msg_id": message_id,
                     "content": truncate_chars(msg.data.get("content").and_then(|c| c.as_str()).unwrap_or(""), MAX_FIELD_CHARS),
                 });
-                self.append("chat_user_messages", &msg.name, data).await;
+                if self.append("chat_user_messages", &msg.name, data).await {
+                    self.mark_user_message_seen(message_id);
+                }
             }
             // Tool calls are the only thing collected off the stream, and the arm
             // is gated on that source alone. Companion
@@ -744,7 +806,7 @@ impl Collector {
         source: &str,
         name: &str,
         data: serde_json::Value,
-    ) {
+    ) -> bool {
         let event = CollectedEvent {
             event_id: CompanionEventId::new().into_string(),
             ts: now_ms(),
@@ -756,7 +818,7 @@ impl Collector {
             Ok(line) => line,
             Err(error) => {
                 tracing::warn!(error = %error, source, "companion collector rejected event");
-                return;
+                return false;
             }
         };
         let event_guard = self.event_store_lock.clone().write_owned().await;
@@ -777,12 +839,14 @@ impl Collector {
         })
         .await;
         match result {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => true,
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, source, "companion collector failed to append event");
+                false
             }
             Err(error) => {
                 tracing::warn!(error = %error, source, "companion collector append task failed");
+                false
             }
         }
     }
@@ -1648,6 +1712,86 @@ mod tests {
         assert_eq!(events[0].data["created_by"], "user");
     }
 
+    #[tokio::test]
+    async fn replayed_user_message_is_collected_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::CompanionStore::open_memory().await.unwrap();
+        let mut config = SharedCompanionConfig::default();
+        config.collect.chat_user_messages = true;
+        let config = Arc::new(RwLock::new(config));
+        let mut collector = Collector::new(
+            dir.path().to_path_buf(),
+            config.clone(),
+            store.clone(),
+        );
+        let message_id = nomifun_common::generate_id();
+        let event = WebSocketMessage::new(
+            "message.userCreated",
+            serde_json::json!({
+                "conversation_id": "conversation-replay",
+                "msg_id": message_id,
+                "content": "只应采集一次",
+            }),
+        );
+        collector.handle(&event).await;
+        collector.handle(&event).await;
+        drop(collector);
+
+        let mut restarted = Collector::new(dir.path().to_path_buf(), config, store);
+        restarted.handle(&event).await;
+
+        let (events, _) = read_events_since(dir.path(), 0, 10).unwrap();
+        assert_eq!(events.len(), 1, "append replay must not feed the learner twice");
+        assert_eq!(events[0].data["msg_id"], message_id);
+        assert_eq!(events[0].data["content"], "只应采集一次");
+    }
+
+    #[tokio::test]
+    async fn collector_write_failure_permits_retry_and_preserves_idempotency() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::CompanionStore::open_memory().await.unwrap();
+        let mut config = SharedCompanionConfig::default();
+        config.collect.chat_user_messages = true;
+        let config = Arc::new(RwLock::new(config));
+
+        // Inject disk failure: block directory creation by placing a file at events_dir path
+        let blocked_events = dir.path().join("events");
+        std::fs::write(&blocked_events, "not-a-directory").unwrap();
+
+        let mut collector = Collector::new(
+            dir.path().to_path_buf(),
+            config.clone(),
+            store.clone(),
+        );
+        let message_id = nomifun_common::generate_id();
+        let event = WebSocketMessage::new(
+            "message.userCreated",
+            serde_json::json!({
+                "conversation_id": "conversation-fail-retry",
+                "msg_id": message_id,
+                "content": "写入失败后可重试",
+            }),
+        );
+
+        // First attempt fails to write to disk, so it must not mark the message as seen
+        collector.handle(&event).await;
+        assert!(read_events_since(dir.path(), 0, 10).is_err() || read_events_since(dir.path(), 0, 10).unwrap().0.is_empty());
+
+        // Recover disk writability
+        std::fs::remove_file(&blocked_events).unwrap();
+
+        // Retry with same message_id should succeed now
+        collector.handle(&event).await;
+        let (events, _) = read_events_since(dir.path(), 0, 10).unwrap();
+        assert_eq!(events.len(), 1, "retry after disk write failure must succeed");
+        assert_eq!(events[0].data["msg_id"], message_id);
+        assert_eq!(events[0].data["content"], "写入失败后可重试");
+
+        // Subsequent replays must be deduplicated
+        collector.handle(&event).await;
+        let (events_after_replay, _) = read_events_since(dir.path(), 0, 10).unwrap();
+        assert_eq!(events_after_replay.len(), 1, "replay after successful retry must be ignored");
+    }
     #[tokio::test]
     async fn unregistered_companion_turn_falls_back_to_default_companion() {
         let dir = tempfile::tempdir().unwrap();

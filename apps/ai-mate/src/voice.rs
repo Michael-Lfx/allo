@@ -1140,6 +1140,7 @@ impl VoiceCompanionRuntime {
                     match result {
                         Ok(task) => {
                             let text=match task.status {
+                                VoiceTaskStatus::Queued => "任务已排队，等待上一任务结束。".into(),
                                 VoiceTaskStatus::Delivering => "任务正在提交，尚未核实接单。".into(),
                                 VoiceTaskStatus::Unknown => "任务状态尚未核实，正在核对原回执。".into(),
                                 VoiceTaskStatus::Accepted => "任务已接受，正在等待执行结果。".into(),
@@ -1204,6 +1205,7 @@ impl VoiceCompanionRuntime {
                         }
                         Ok(delivery) if delivery.task.conversation_id.is_none() || delivery.task.message_id.is_none()
                             || matches!(delivery.task.status, VoiceTaskStatus::Delivering | VoiceTaskStatus::Unknown) => Some("task_delivery_unknown".into()),
+                        Ok(delivery) if delivery.task.status == VoiceTaskStatus::Queued => None,
                         Ok(_) => None,
                         Err(code) => Some(code),
                     };

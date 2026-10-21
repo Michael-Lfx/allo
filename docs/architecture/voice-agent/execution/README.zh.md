@@ -1,4 +1,14 @@
+> **2026-10-21 R1 独立复核与后续执行**：[R1–R5 串行执行辅导](R1-R5-execution-coaching-2026-10-21.zh.md)。R1.1 核心修复已有代码与 SQLite 测试，仍有策略字段/采集幂等缺口；生产同 Conversation/FIFO 尚未接线。含各阶段代码入口、步骤、失败用例、门禁和命令，只更新文档，不提前签核或启动后续实施。
+
+> **2026-10-20 rev2 复审与产品契约**：[源码核验、接缝缺口与 R1–R5 就绪矩阵](qoder-alignment-rev2-review-2026-10-20.zh.md)、[v0.4 PRD](../PRD-voice-companion-v0.4.zh.md)。复核本机 Qoder 客户端及固定远端源码；不代表获取完整 Qoder 源码或验证延迟。原 rev2 保留，不在本轮修改业务代码。
+
 > **当前实施状态（2026-10-20）**：[代码事实与验证记录](current-implementation-status.zh.md)，代码基准 `10a1628ab`。以下旧阶段正文和待实施标记完整保留；当前已有实现与剩余差距以该快照核对，验收目标仍按对应 PRD。当前执行遵循串行原则；历史多 Agent 分工不是本轮授权。
+
+> **2026-10-20 Qoder 对齐方案草案（待审查）**：[Flowy 语音会话 Qoder 对齐改造方案](flowy-voice-qoder-alignment-plan-2026-10-20.zh.md)。连续会话、工作区语音 Conversation、队列、默认 Flowy/Bolt 伙伴、memory owner、本地快模型与 Edge/Piper TTS；未实施，待其他 Agent 审查。
+
+> **2026-10-20 rev2 复审与 R1 入口**：[rev2 源码核验与就绪审查](qoder-alignment-rev2-review-2026-10-20.zh.md) 与 [v0.4 PRD](../PRD-voice-companion-v0.4.zh.md)。结论：可进入 R1 契约验证与最小闭环；不直接全量实施 R1–R5。G1–G5 是 R1 前置，G7/G8 分别卡 R5/R3。
+
+> **2026-10-20 R1 执行计划**：[R1 消息与任务闭环执行计划](R1-voice-message-task-execution-plan-2026-10-20.zh.md)。只做 R1，不进入 R2–R5；先契约验证，再存储/绑定、同 Conversation + 最小 FIFO、上下文 handoff。
 
 > **2026-10-20 优化产品入口（待实施）**：[v0.3 PRD：连续任务、低打断授权与可靠播报](../PRD-voice-companion-v0.3.zh.md)。含日志证据、权限决策、GitHub经验及P0–P5串行切片；执行前以其新增决策更新旧计划，旧验收门禁继续继承。正文历史不删除，本轮未实施业务变更。
 

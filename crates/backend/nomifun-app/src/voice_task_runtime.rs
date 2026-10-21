@@ -2,7 +2,7 @@
 //! The acoustic process supplies only a goal and delivery identity, never permissions.
 use std::{path::Path, sync::Arc};
 use async_trait::async_trait;
-use nomifun_api_types::{CreateConversationRequest, SendMessageRequest};
+use nomifun_api_types::{CreateConversationRequest, SendMessageRequest, VoiceBoundMessageRequest};
 use nomifun_api_types::voice::VoiceExecutionConfig;
 use nomifun_ai_agent::AgentRuntimeRegistry;
 use nomifun_conversation::{ConversationService, IdempotentMessageDelivery, PublicTurnDeliveryState};
@@ -96,7 +96,7 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         Ok((effective,preset_snapshot))
     }
 
-    async fn create(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>, creation_key:&str) -> Result<String,TaskMutationError> {
+    async fn create(&self, owner:&str, config:&VoiceExecutionConfig, preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>, _creation_key:&str) -> Result<String,TaskMutationError> {
         if config.preset_id.is_some()!=preset.is_some() || preset.is_some_and(|snapshot|Some(&snapshot.preset_id)!=config.preset_id.as_ref()) {
             return Err(TaskMutationError::Rejected("task_execution_config_invalid".into()));
         }
@@ -106,16 +106,50 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         let request:CreateConversationRequest=serde_json::from_value(serde_json::json!({
             "type":"nomi", "name":"语音任务", "model":config.model,
             "delegation_policy":"disabled",
-            "extra":{"workspace":canonical.to_string_lossy(),"session_mode":mode}
+            "extra":{"voice":true,"workspace":canonical.to_string_lossy(),"session_mode":mode}
         })).map_err(|_| TaskMutationError::Rejected("task_execution_config_invalid".into()))?;
-        let created=self.conversation.create_voice_idempotent(owner,request,creation_key,&config.workspace,preset.cloned()).await.map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
+        let workspace_key=format!("voice-create:workspace:{}",canonical.to_string_lossy());
+        let created=self.conversation.create_voice_idempotent(owner,request,&workspace_key,&config.workspace,preset.cloned()).await.map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
         Ok(created.conversation_id)
     }
 
+    async fn create_bound(&self,owner:&str,config:&VoiceExecutionConfig,preset:Option<&nomifun_api_types::ResolvedPresetSnapshot>,_creation_key:&str,target:Option<&str>)->Result<String,TaskMutationError>{
+        let Some(conversation_id)=target else {return self.create(owner,config,preset,_creation_key).await;};
+        self.conversation.ensure_voice_task_policy(owner,conversation_id,&config.workspace,config.model.as_ref(),preset,config.session_mode.as_deref()).await
+            .map_err(|error|mutation_error(error,"task_creation_rejected","task_creation_failed"))?;
+        Ok(conversation_id.to_owned())
+    }
     async fn find_created(&self,owner:&str,creation_key:&str) -> Result<Option<String>,String> {
         self.conversation.voice_conversation_by_creation_key(owner,creation_key).await.map_err(|_|"task_creation_lookup_failed".into())
     }
 
+    async fn append(&self, owner:&str, conversation_id:&str, message_id:&str, display_text:&str, command_id:&str) -> Result<(),TaskMutationError> {
+        self.conversation
+            .append_voice_message(owner, conversation_id, message_id, display_text, command_id)
+            .await
+            .map_err(|error| mutation_error(error, "task_delivery_rejected", "task_delivery_failed"))
+    }
+
+    async fn send_bound(&self, owner:&str, conversation_id:&str, send_key:&str, message_id:&str, command_id:&str, display_text:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
+        let conversation=self.conversation.get(owner,conversation_id).await.map_err(|error|mutation_error(error,"task_delivery_rejected","task_conversation_unavailable"))?;
+        let workspace=conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).ok_or_else(||TaskMutationError::Rejected("task_policy_missing".into()))?.to_owned();
+        let epoch=self.conversation.conversation_repo().get_turn_admission_state(owner,conversation_id).await.map_err(|_|TaskMutationError::Uncertain("task_delivery_failed".into()))?.epoch;
+        let request=VoiceBoundMessageRequest {
+            message_id:message_id.to_owned(),display_text:display_text.to_owned(),command_id:command_id.to_owned(),
+            expected_admission_epoch:epoch,expected_workspace:workspace,voice_context_digest:None,
+            content:goal.to_owned(),files:Vec::new(),inject_skills:Vec::new(),hidden:false,
+            origin:Some("companion".into()),channel_platform:None,
+        };
+        match self.conversation.send_voice_bound_message(owner,conversation_id,send_key,request,&self.registry).await {
+            Ok(value)=>Ok(receipt(value)),
+            Err(error)=>{
+                if !matches!(self.conversation.public_turn_delivery_state(owner,conversation_id,send_key).await,Ok(PublicTurnDeliveryState::Missing)) {
+                    return Err(TaskMutationError::Uncertain("task_delivery_failed".into()));
+                }
+                Err(mutation_error(error,"task_delivery_rejected","task_delivery_failed"))
+            }
+        }
+    }
     async fn send(&self, owner:&str, conversation_id:&str, send_key:&str, goal:&str) -> Result<TaskReceipt,TaskMutationError> {
         let conversation=self.conversation.get(owner,conversation_id).await.map_err(|error|mutation_error(error,"task_delivery_rejected","task_conversation_unavailable"))?;
         if conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).is_none() {return Err(TaskMutationError::Rejected("task_policy_missing".into()));}
@@ -635,7 +669,11 @@ mod tests {
             .bind(services.authoritative_user_id.as_ref()).fetch_one(&database_pool).await.unwrap();
         let (delivery_count,):(i64,) = sqlx::query_as("SELECT COUNT(*) FROM conversation_delivery_receipts WHERE conversation_id = ?")
             .bind(done.conversation_id.as_deref().unwrap()).fetch_one(&database_pool).await.unwrap();
-        assert_eq!((creation_count,delivery_count),(1,1),"one voice command must create one conversation identity and one real send receipt");
+        if from_worker {
+            assert_eq!(delivery_count, 2, "unified conversation must hold both dialogue projection receipt and task delivery receipt");
+        } else {
+            assert_eq!((creation_count,delivery_count),(1,1),"one voice command must create one conversation identity and one real send receipt");
+        }
         eprintln!("voice_acceptance_evidence: {}",serde_json::json!({
             "scenario":format!("{scenario:?}"),"command_id":done.command_id,"session_id":done.session_id,"acoustic_turn_id":done.acoustic_turn_id,
             "conversation_id":done.conversation_id,"message_id":done.message_id,"runtime_turn_id":done.runtime_turn_id,"status":done.status,"result_ok":done.result_ok,

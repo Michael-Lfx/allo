@@ -128,9 +128,32 @@ Qwen 还实现了语音侧直接 web_search、视觉分析、监控和记忆。�
 | 新建工作区解析 | `YP1`，11954090；优先路由指定，再取设置默认，再取 recent；校验实际可用工作区 |
 | recent 的来源 | `recordRecent`；记录成功创建的会话工作区，不等于所有页面切换都立即更新它 |
 
+补充核对（2026-10-20）：Qoder 内置的 `Qoduck` 不是用户创建的 companion 档案。renderer 的宠物目录回退值直接包含 `{displayName:"Qoduck", source:"builtin"}`，设置页写“当前宿主仅支持内置的 Q 达鸭”。显示开关与语音入口是两层状态：设置文案说明“发起语音任务时会临时切换为语音入口”，主进程桌宠控制器同时维护 `intentVisible` 与 `suspendedByVoice`。语音启动路径没有调用 `setDesktopPetEnabled`，该开关只由用户菜单/设置页写入。因此“语音临时入口不会改动显示宠物设置”有静态依据；但“显示宠物关闭时语音是否仍强制显示宠物”需要真机验证，静态代码不能单独下结论。Qoder 的会话生命周期、180 秒无回复关闭、转写保留与“退下”命令边界另见上一轮报告 §4.2。
+
 因此，用户看到“从项目启动语音，新会话归属项目”是有效实测；但本轮静态调查不能保证当“最近创建 A、当前查看 B、设置默认 C”冲突时，所有宠物入口都会取 B。更可靠的 Flowy 规则是宿主显式传入并冻结 B，启动前显示实际归属。
 
 另一个结论必须保留：新建项目下语音会话 ≠ 继续项目当前普通聊天 ID。需要使用普通聊天已有事实时，只带用户需要的引用/摘要并标明来源，不能默默挪走整个历史或扩大权限。
+
+### 3.8 线上源码补核：会话生命周期、语义 VAD 与退出命令（2026-10-20）
+
+本轮补查 Qwen-Live-Harness 固定提交和 QoderAI 公开仓库，回答“能否一直保持、是否只发送有意义的提问、能否说退下关闭且不污染历史”：
+
+| 问题 | Qwen-Live-Harness 公开源码 | QoderAI 公开仓库 |
+| --- | --- | --- |
+| 是否逐句退出 | 不是。通话由 Host 的 Start/End call 控制，`live-view.ts:105`、`:729` 只提供显式开始/结束 | `forward-quickstart` 是云端语音中继示例，`useVoiceSession.ts:253` 也是显式 `end()` |
+| 是否无限保持 | 客户端未找到 Qoder 式空闲关闭定时器；通话持续到用户 End call、连接/恢复失败或进程退出。服务端/供应商是否另有限时不在仓库内 | 中继有鉴权、初始化、发送、关闭超时；没有“用户空闲自动结束”的产品逻辑 |
+| 是否只发送提问 | 不是本地意图分类。语义 VAD 由服务端 `semantic_vad` 判定；被拒绝的候选走 `onInputRejected`（`live-session.ts:3198`、`realtime-session.ts:5020`），不结束通话、不写入用户转写。普通陈述/指令仍可成为有效 turn | 只是转发 `audio.append` / `transcript.final`，没有语义 VAD 或意图过滤 |
+| 说“退下”能否关闭 | 未实现语音退出命令，也没有 `end_call` 工具；`tools/definitions.ts` 的工具列表只有搜索、handoff、session stop、permission、proactive 等。`instructions.ts:29` 只说用户想结束时自然收尾，不关闭通话 | 没有“退下”或语音结束命令；只有 UI 的 `connection.close` / `end()` |
+| 退出词是否不进历史 | 没有控制语句过滤。`memory/dialogue.ts:75-80` 只丢弃空文本；所有非空用户转写会被 `recordUser` 记录。若“退下”被服务端作为转写接受，它会进入 Memory 上下文 | 没有控制语句过滤；`transcript.final` 直接进入时间线 |
+
+结论：
+
+- Qwen 的“语义 VAD 拒绝噪声”是可借鉴的真实实现，但它判定的是“是否是有效语义 turn”，不是“是否是提问”；不能被描述成“只发送问题”。
+- Qwen 和 QoderAI 公开源码都没有“说退下关闭通话”的命令，也没有把退出词从记忆/对话上下文中剔除的机制。Qoder 桌面版是否在服务端做了类似处理，仍无法从本机静态 bundle 证实。
+- Qwen 客户端没有固定空闲超时，因此“长时间保持”比 Qoder 更接近；但供应商/网络/恢复失败仍会结束通话，不能承诺绝对不退出。
+- Flowy 若采用“直到用户说退出或点击关闭”，需要自己实现显式会话生命周期、控制语句消费和语义/ASR 门控，不能把 Qwen 或 Qoder 的行为当作现成能力。
+
+证据优先级：仍以 Qoder CN 客户端为主，Qwen 公开源码只在实现相同机制时提高可信度；不能因为 Qwen 有 semantic VAD 就推定 Qoder 也有，也不能因为 Qoder 有 180 秒无回复关闭就推定 Qwen 也如此。分级和 P0/P1/P2 见 [Qoder 调研 §4.3](qoder-cn-live-voice-research-2026-10-20.zh.md)。
 
 ## 4. 给 Flowy 的产品决策建议
 
@@ -143,6 +166,8 @@ Qwen 还实现了语音侧直接 web_search、视觉分析、监控和记忆。�
 - 更换皮肤或宠物外观不更换工作区、权限、Conversation 或录音所有者。
 - 隐藏宠物不取消任务；不能因为“不可删除”而强制常驻、自动录音或自动重开用户关掉的麦克风。主窗口语音按钮/快捷键仍然可用。
 - 内置入口不自动开启现有伙伴的学习、采集、记忆或技能演化；这些是另一组已有产品能力和授权。
+
+补充核对：Qoder 的内置 `Qoduck` 进一步支持“内置展示入口”这条路线，而不是“内置 companion 实体”。它随安装存在、在设置中可选，但显示开关是持久状态；语音任务只临时把它切换为语音入口，不写回显示开关。实现时应把 `显示宠物` 与 `语音临时入口` 分成两层状态：语音启动不写宠物开关、不自动录音，语音结束恢复原可见性。若产品仍要求一个不可删除的伙伴实体，则必须另做后端删除保护、展示与迁移，不能只藏掉前端删除菜单。
 
 当前 Flowy `nomifun-companion/src/service.rs:614` 是创建真实伙伴档案，首个伙伴成为 default；`:839` 支持删除，删除最后一个后可以没有默认伙伴；Nomi 页面也有空列表状态。因此当前代码并不等价于“安装内置不可删除入口”。实现时先判断能否复用现有内置形象和窗口，避免为了一个语音按钮强行新建具备完整伙伴副作用的档案。
 
@@ -187,6 +212,8 @@ Qwen 还实现了语音侧直接 web_search、视觉分析、监控和记忆。�
 
 普通 Flowy Cloud 文本 provider 已有模型列表，不等于已经支持实时音频协议、授权和计费。需要平台端确认能力；也可在独立测试配置中使用用户授权的公开 Realtime provider。不能把文本 `chat/completions` 地址当成音频接口。
 
+若 Flowy 坚持本地模型优先，实时音频应降级为可选的 S4：主链路用本地 VAD/ASR + 本地文本模型 + 本地 TTS 的连续级联；实时 provider 只在明确需要降低首音延迟且允许出网时启用。TTS 可选本地小模型（首音更快、离线）或 Edge TTS（音质好但依赖网络、有限流）；建议 `auto` 路由并保留失败回退，默认隐私模式走本地。不能把 Edge TTS 当作“本地 TTS”，也不能用 Qoder/Qwen 的云端实时体验直接承诺本地性能。
+
 ## 5. 可交接的串行切片与验收
 
 | 顺序 | 交付目标 | 关键验收 |
@@ -197,6 +224,8 @@ Qwen 还实现了语音侧直接 web_search、视觉分析、监控和记忆。�
 | S3 实时音频原型 | 固定模型、单一采集、增量转写/音频、函数委派复用 S2 | 固定音频样本与真实工具；比较现有链路/Realtime 的话音结束→首有效回复→首音 P50/P95；包含超时和低音量样本 |
 | S4 结果/审批/恢复 | 迁移正确时序和身份保护，不搬运整个上游框架 | 讲话时结果到达、response.done 早于实际播放、重复/旧 epoch、拒绝/模糊审批、断线不重跑任务、播放失败留文 |
 | S5 三端交付 | Windows→macOS→Linux 分别构建与声学验收 | 检查资源/SDK许可、音频设备、打包退出；没有测过的平台只写结构兼容，不能签核支持 |
+
+补充：S1 的“默认不可删宠物”应按本轮证据拆成两层——内置展示入口（必须存在、可隐藏、不创建 companion 行）与可选的伙伴实体（如产品坚持，才需要删除保护和迁移）。Qoder 的 `Qoduck` 属于前者；它的显示开关不会被语音启动写回。首版验收应明确“语音临时入口不改变显示宠物设置、不自动开麦”。
 
 优先迁移的上游测试：
 
@@ -223,3 +252,7 @@ Qwen 还实现了语音侧直接 web_search、视觉分析、监控和记忆。�
 - [AOQ 官方定义](https://help.aliyun.com/zh/model-studio/realtime-api-overview)、[AOQ 接入](https://help.aliyun.com/zh/model-studio/realtime-aoq-access)、[Electron 接口](https://help.aliyun.com/zh/model-studio/aoq-electron-sdk-reference)、[Linux C++ 接口](https://help.aliyun.com/zh/model-studio/aoq-linux-cpp-sdk-reference)。官方总览平台表和具体 SDK 覆盖范围并不完全相同，部署应以具体版本与平台文档验证。
 
 历史调查保留在 [上一轮报告](qoder-cn-live-voice-research-2026-10-20.zh.md)。本轮补充 SDK 公开性、Linux 能力和工作区解析的限定，未删除历史正文、未将新建议标记为已实施。截图中 Qoder 对 Allo 分支提交数与改动范围的描述属于截图里的产品输出，本轮没有将其当成本仓库事实或执行指令。
+
+本轮补充的内置宠物/语音入口证据来自同一 Qoder 0.4.8 安装包：renderer `out/renderer/assets/DIR8HOYO.js` SHA256 `52b8425ff40f90ef76782847291e61183ad0a2eb4a6c44df443494466b8eccef`；preload `out/preload/index.cjs` 180610 字节，SHA256 `18b3b69689d406c81dc2e8f9a96e7253cf486251851025df5cdc43db7bbf277c`。具体字符串/调用链定位见上一轮报告 §4.1 与附录 A 的补充表；仍属静态证据，未启动 Qoder 或使用真实麦克风。
+
+§3.8 的 Qwen 源码定位（固定提交 `b2d17b8706b226ff7792683ecd8f050f18f9752e`）：[语义 VAD 配置](https://github.com/QwenLM/Qwen-Live-Harness/blob/b2d17b8706b226ff7792683ecd8f050f18f9752e/packages/qwen-live-harness/src/realtime/realtime-session.ts#L3551)、[拒绝输入处理](https://github.com/QwenLM/Qwen-Live-Harness/blob/b2d17b8706b226ff7792683ecd8f050f18f9752e/packages/qwen-live-harness/src/orchestrator/live-session.ts#L3198)、[空转写过滤](https://github.com/QwenLM/Qwen-Live-Harness/blob/b2d17b8706b226ff7792683ecd8f050f18f9752e/packages/qwen-live-harness/src/memory/dialogue.ts#L75)、[End call 入口](https://github.com/QwenLM/Qwen-Live-Harness/blob/b2d17b8706b226ff7792683ecd8f050f18f9752e/packages/qwen-live-harness-host/src/renderer/live-view.ts#L105)、[结束通话提示](https://github.com/QwenLM/Qwen-Live-Harness/blob/b2d17b8706b226ff7792683ecd8f050f18f9752e/packages/qwen-live-harness/src/realtime/instructions.ts#L29)。QoderAI 公开的 `forward-quickstart` 是 Cloud Agents 语音中继示例（`server/src/voiceProxy.ts`、`client/src/voice/useVoiceSession.ts`），不是 Qoder 桌面实现，也没有语义 VAD 或语音退出命令；不能拿它证明桌面版行为。

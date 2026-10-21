@@ -399,14 +399,20 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let frozen=records.iter().find(|r|r.request.session_id==request.session_id).cloned()
             .ok_or_else(||VoiceDialogueRecorderError::BindingInvalid("binding_missing".into()))?;
         let (conversation_id,execution,frozen_preset,source_workspace)=(frozen.conversation_id,frozen.execution,frozen.frozen_preset,frozen.source_workspace);
-        if self.conversation_service.is_conversation_busy(&self.user_id,&conversation_id).await
-            .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))? {
-            return Err(VoiceDialogueRecorderError::BindingBusy("target_busy".into()));
-        }
         let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&conversation_id).await
             .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
-        if records.iter().find(|r|r.request.session_id==request.session_id).is_some_and(|r|r.admission_epoch!=epoch) {
-            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        let has_unsettled = records.iter().any(|r| {
+            r.request.session_id == request.session_id
+                && r.request.voice_record_id.is_some()
+                && !r.projected
+                && r.output.is_none()
+        });
+        if has_unsettled {
+            if records.iter().find(|r| r.request.session_id == request.session_id).is_some_and(|r| r.admission_epoch != epoch) {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+        } else if let Some(sentinel) = records.iter_mut().find(|r| r.request.session_id == request.session_id && r.request.voice_record_id.is_none()) {
+            sentinel.admission_epoch = epoch;
         }
         let requested_at = Some(chrono::Local::now().to_rfc3339());
         records.push(DialogueRecord {
@@ -472,7 +478,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             return Err("task_command_conflict".into());
         }
         let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&record.conversation_id).await.map_err(|_|"binding_invalid")?;
-        if epoch.epoch!=record.admission_epoch || epoch.active_operation_id.is_some() {return Err("binding_invalid".into());}
+        if epoch.epoch!=record.admission_epoch {return Err("binding_invalid".into());}
         let config=record.execution.as_ref().ok_or("binding_invalid")?;
         if let Some(source)=&record.source_workspace {
             let canonical=nomifun_common::paths::canonicalize_simplified(Path::new(source)).map_err(|_|"binding_invalid")?;
@@ -562,6 +568,8 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             config: config.clone(),
             preset: record.frozen_preset.clone(),
             handoff_content,
+            display_text: Some(raw_user_text.to_owned()).filter(|text| !text.trim().is_empty()),
+            conversation_id: Some(record.conversation_id.clone()),
         }))
     }
 }
@@ -1162,8 +1170,10 @@ impl VoiceCompanionProcessManager {
         let turn_id = request.command.turn_id.clone();
         let tasks_ref = tasks.clone();
         let handoff = frozen.as_ref().and_then(|f| f.handoff_content.clone());
+        let display_text = frozen.as_ref().and_then(|f| f.display_text.clone());
+        let target_conversation = frozen.as_ref().and_then(|f| f.conversation_id.clone());
         let handle = tokio::spawn(async move {
-            match tasks.submit_frozen_with_handoff(request.command, config, frozen.map(|f|f.preset), handoff).await {
+            match tasks.submit_frozen_with_handoff_queued(request.command, config, frozen.map(|f|f.preset), handoff, display_text, target_conversation).await {
                 Ok(delivery) => { manager.project_task(delivery.task.clone()); Ok(delivery) },
                 Err(code) => {
                     if matches!(code.as_str(), "task_creation_unknown" | "task_delivery_unknown") {
@@ -2816,7 +2826,21 @@ mod tests {
                 self.created.store(true, Ordering::SeqCst);
                 Ok("conv-slow".into())
             }
+            async fn create_bound(&self, owner: &str, config: &VoiceExecutionConfig, preset: Option<&nomifun_api_types::ResolvedPresetSnapshot>, creation_key: &str, target: Option<&str>) -> Result<String, crate::voice_tasks::TaskMutationError> {
+                if let Some(target_id) = target {
+                    tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+                    self.created.store(true, Ordering::SeqCst);
+                    return Ok(target_id.into());
+                }
+                self.create(owner, config, preset, creation_key).await
+            }
             async fn find_created(&self, _: &str, _: &str) -> Result<Option<String>, String> { Ok(Some("conv-slow".into())) }
+            async fn append(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<(), crate::voice_tasks::TaskMutationError> { Ok(()) }
+            async fn send_bound(&self, owner: &str, conversation_id: &str, send_key: &str, message_id: &str, _command_id: &str, _display_text: &str, goal: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                let mut receipt = self.send(owner, conversation_id, send_key, goal).await?;
+                receipt.message_id = message_id.to_string();
+                Ok(receipt)
+            }
             async fn send(&self, _: &str, _: &str, _: &str, _: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
                 Ok(crate::voice_tasks::TaskReceipt {
                     message_id: "msg-slow".into(),
@@ -3529,7 +3553,19 @@ mod tests {
             async fn resolve_configuration(&self, config: &VoiceExecutionConfig) -> Result<VoiceExecutionConfig, String> { Ok(config.clone()) }
             async fn prepare_configuration(&self, config: &VoiceExecutionConfig) -> Result<(VoiceExecutionConfig, Option<nomifun_api_types::ResolvedPresetSnapshot>), String> { Ok((config.clone(), None)) }
             async fn create(&self, _: &str, _: &VoiceExecutionConfig, _: Option<&nomifun_api_types::ResolvedPresetSnapshot>, _: &str) -> Result<String, crate::voice_tasks::TaskMutationError> { Ok("conv-stub".into()) }
+            async fn create_bound(&self, owner: &str, config: &VoiceExecutionConfig, preset: Option<&nomifun_api_types::ResolvedPresetSnapshot>, creation_key: &str, target: Option<&str>) -> Result<String, crate::voice_tasks::TaskMutationError> {
+                if let Some(target_id) = target {
+                    return Ok(target_id.into());
+                }
+                self.create(owner, config, preset, creation_key).await
+            }
             async fn find_created(&self, _: &str, _: &str) -> Result<Option<String>, String> { Ok(Some("conv-stub".into())) }
+            async fn append(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<(), crate::voice_tasks::TaskMutationError> { Ok(()) }
+            async fn send_bound(&self, owner: &str, conversation_id: &str, send_key: &str, message_id: &str, _command_id: &str, _display_text: &str, goal: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
+                let mut receipt = self.send(owner, conversation_id, send_key, goal).await?;
+                receipt.message_id = message_id.to_string();
+                Ok(receipt)
+            }
             async fn send(&self, _: &str, _: &str, _: &str, _: &str) -> Result<crate::voice_tasks::TaskReceipt, crate::voice_tasks::TaskMutationError> {
                 Ok(crate::voice_tasks::TaskReceipt {
                     message_id: "msg-stub".into(),

@@ -40,6 +40,7 @@
     "openFailed": "Could not open the task. Please retry.",
     "failedHint": "Task status could not be verified or execution failed. Open the full task for details; do not submit it again until checked.",
     "status": {
+      "queued": "Task queued; waiting for the active task to finish",
       "delivering": "Submitting task; acceptance is not yet verified",
       "unknown": "Acceptance not yet verified. Checking the original receipt.",
       "accepted": "Task accepted; waiting for the execution result",

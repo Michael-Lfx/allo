@@ -30,6 +30,9 @@ for (const [locale, dictionary] of [['zh-CN',zh],['en-US',en]] as const) {
     expect(html).toContain('fresh workspace content');
     expect(html).toContain(locale==='zh-CN'?'查看完整任务':'Open full task');
     expect(html).not.toContain('voice.');
+    const queued = render({...task,status:'queued',result_ok:null,result_text:null});
+    expect(queued).toContain(locale==='zh-CN'?'任务已排队，等待当前任务结束':'Task queued; waiting for the active task to finish');
+    expect(queued).not.toContain('voice.');
     const unknown = render({...task,status:'unknown',result_ok:null,result_text:null});
     expect(unknown).toContain(locale==='zh-CN'?'接单状态待核对':'Acceptance not yet verified');
     expect(unknown).not.toContain(locale==='zh-CN'?'任务已完成':'Task completed');

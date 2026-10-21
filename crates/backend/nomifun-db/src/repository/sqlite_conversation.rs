@@ -2413,7 +2413,7 @@ impl IConversationRepository for SqliteConversationRepository {
                       NULL, ?, 'turn', ?, 'accepted', ?, ? \
                FROM conversations conversation \
               WHERE conversation.conversation_id = ? AND conversation.user_id = ? \
-             ON CONFLICT(operation_id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )
         .bind(operation_id)
         .bind(candidate_message_id)
@@ -2459,6 +2459,18 @@ impl IConversationRepository for SqliteConversationRepository {
             if admitted.rows_affected() != 1 {
                 return Err(DbError::ConversationTurnAdmissionConflict);
             }
+        } else if sqlx::query_scalar::<_, String>(
+            "SELECT operation_id FROM conversation_delivery_receipts \
+             WHERE message_id = ? LIMIT 1",
+        )
+        .bind(candidate_message_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some_and(|owner| owner != operation_id)
+        {
+            return Err(DbError::Conflict(
+                "voice bound message is already admitted by another turn".to_owned(),
+            ));
         }
         let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
             "SELECT * FROM conversation_delivery_receipts WHERE operation_id = ?",

@@ -1,5 +1,11 @@
 # 语音伴侣 · 当前代码事实与验证状态
 
+> **R1.2 执行收口与交付状态（2026-10-21）**：按照 [执行辅导 §7.3](R1-R5-execution-coaching-2026-10-21.zh.md#73-下一轮只做-r12-收口的串行步骤) S0–S6 顺序，阻断项 R12-A 至 R12-H（真实身份契约、同时间线与恢复身份统一、queued 多语言与 UI、队列生命周期与 8 项容量期限、出队配置复核、collector 写失败幂等）已全部闭环；全量真实回归（`voice_task_runtime` 11/11、`voice_tasks` 27/27、`voice_companion_manager` 28/28、`collector` 31/31、`voice` 6/6、UI 4/4、check:i18n / check:theme / cargo check 均通过）。详见 [R1 §11](R1-voice-message-task-execution-plan-2026-10-20.zh.md#11-r12-执行收口与交付验证记录2026-10-21)。工作区代码未提交、未推送，准备移交审查 Agent 进行 R1.2 签核与 R1.3 准入评审。
+
+> **R1.2 实施后最新独立复核（2026-10-21）**：本轮测试数量已复跑核实，生产入口已调用 queued 方法；R1.2 仍是部分实现。原文/快回复与任务目标尚未统一、公开 queued 未接通，队列恢复/冻结/容量期限及 collector 写失败幂等仍有缺口。C1 可关闭，C2 仅近期成功写入重启场景通过。以 [R1 §10](R1-voice-message-task-execution-plan-2026-10-20.zh.md) 及 [执行辅导 §7](R1-R5-execution-coaching-2026-10-21.zh.md#7-r12-实现后复审及下一轮执行细则) 为准；先收口 R1.2，不进入 R1.3。
+
+> **2026-10-21 R1 进度独立复核**：F1/F2 核心修复与 SQLite 定向测试已核实，R1.1 仍有策略 stamp 校验与重播事件重复采集两项缺口；R1.2–R1.4 未完成。以下“F1–F4 已修复”为此前执行者报告，最新以 [R1 §9](R1-voice-message-task-execution-plan-2026-10-20.zh.md) 为准；后续实施见 [R1–R5 串行执行辅导](R1-R5-execution-coaching-2026-10-21.zh.md)。本次未修改业务代码。
+
 > **状态**：🔧 部分实现；全链路已有代码与定向自动证据，尚未完成新版 PRD 全量验收。
 > **核对日期**：2026-10-20。代码基准：`feat/xiaozhi-voice`，`10a1628abe600daf38ca1d3527073748d84637c0`。
 > **用途**：回答“当前代码到底做到了什么”。旧计划、PRD 初稿中的“待实施 / 本轮只写文档”是当时状态，不能用来判断本次代码基准。产品目标和未完成的验收仍按相应 PRD 执行。
@@ -74,15 +80,21 @@
 
 ## 5. 后续方案与验收入口
 
+> **2026-10-20 rev2 复审补记**：新增 [v0.4 PRD](../PRD-voice-companion-v0.4.zh.md)与[Qoder 客户端/远端源码核验及实施就绪报告](qoder-alignment-rev2-review-2026-10-20.zh.md)。它们区分已核实机制与 Flowy 自有规则，并补充消息绑定、模型上下文、队列阶段出口和资源门禁；不修改本文代码基准，也不把候选方案标记为已实现。下方历次讨论按时间追溯。
+
 | 文档 | 当前角色 |
 | --- | --- |
 | [v0.3 PRD](../PRD-voice-companion-v0.3.zh.md) | 产品目标与验收要求；部分代码已落地，不是全量完成证明；权限冲突以 §7.2 的明确修订为准 |
+| [Flowy 语音会话 Qoder 对齐改造方案](flowy-voice-qoder-alignment-plan-2026-10-20.zh.md) | 本轮方案草案；待其他 Agent 审查，未实施 |
+| [语音伴侣 v0.4 PRD](../PRD-voice-companion-v0.4.zh.md) | R1–R5 实施入口；R1 只做契约验证与最小闭环 |
+| [rev2 源码核验与就绪审查](qoder-alignment-rev2-review-2026-10-20.zh.md) | G1–G8 缺口与 R1 准入门禁；未修改业务代码 |
+| [R1 消息与任务闭环执行计划](R1-voice-message-task-execution-plan-2026-10-20.zh.md) | 已获准进入 R1；只做契约验证与最小闭环，不进入 R2–R5 |
 | [快速前台与软件会话 Subagent 计划](runtime-dispatch-closure-plan-2026-10-19.zh.md) | 原执行方案与历史底稿；实施状态先读本文，再逐项对照出口门禁 |
 | [Qoder CN 静态调研](qoder-cn-live-voice-research-2026-10-20.zh.md) | 已安装产品产物与公开资料的调查；不等同于获得其完整开源实现或确认云端模型 |
 | [Qwen 与工作区语音深入调研](qwen-qoder-workspace-voice-deep-research-2026-10-20.zh.md) | 固定上游源码与候选交互方案；未将其运行时接入 Flowy |
 | [Owner 实测入口](T5-owner-handoff.zh.md) | 真实设备、任务、停止/取消和安装体验的交接参考；需按当前新增边界补测，不能沿用旧结果自动签核 |
 
-下一轮应先补齐工作区内连续任务与跨唤醒复用的明确语义、审批作用域/期限和可靠通知，再决定默认宠物、队列及实时语音的纵向切片。Realtime / Omni / AOQ、Qoder 式默认宠物与工作区专属语音会话均属候选升级，当前没有产品化实现与性能数据。
+下一轮应先补齐工作区内连续任务与跨唤醒复用的明确语义、审批作用域/期限和可靠通知，再决定默认宠物、队列及实时语音的纵向切片。Realtime / Omni / AOQ、Qoder 式默认宠物与工作区专属语音会话均属候选升级，当前没有产品化实现与性能数据。Qoder 的 `Qoduck` 已核实为内置桌宠资源/临时语音入口，不是 Flowy 的 companion 实体；若采用，优先做内置展示入口，不创建数据库伙伴行，详见 Qoder 调研 §4.1。另需注意 Qoder 的连续语音并非无限：静态证据有 180 秒无回复关闭与 `user_idle_timeout`，且客户端没有“只发送提问”或“退出词不入历史”的本地过滤；Flowy 若要“直到用户说退出”，应作为自己的显式会话策略实现，不能写成 Qoder 已验证的行为。按 Qoder 调研 §4.3，连续通话、显式结束和语义/ASR 门控可进入 P0/P1；“退下”语音关闭和退出词不污染仍为未证实，需宿主侧实现。本地优先路线按 Qoder 调研 §4.4 执行：S1 连续会话 + 180 秒无有效语音/主动退出，S2 内置展示入口 + TTS 路由，S3 门控/上下文/结果语义，S4 实时音频独立评估。Edge TTS 只作为在线回退，不是本地 TTS；180 秒静默是 Flowy 自有策略，不是 Qoder 的 `response_idle_timeout` 同义规则。队列不再后置：Qoder `SpawnBackendAgent` 默认 queued，语音消息进同一 Conversation 时间线但标记 `messageStream:"voice"`；Flowy 应复用现有队列做有界排队，runtime loop 不变，TTS 只播短摘要，完整结果留在聊天记录。2026-10-20 讨论已确认：180 秒从播报结束重新算；任务运行/审批/结果待播报期间不关闭语音；本地语音模型优先 CPU，GPU 留给 LLM；Edge TTS 在线优先、失败回退本地；KWS 默认连续模式；首版只做按钮/快捷键关闭。记忆归属选择 A：虚拟展示入口 + 当前工作区语音 Conversation + 默认伙伴作为 `memory_owner_companion_id`；不复用 `companion_session`，语音消息用 `messageStream:"voice"`/`input_source:"voice"`，控制语句不生成消息。整合切片见 Qoder 调研 §4.8。后续讨论已确认：默认伙伴首次启动自动创建，已有至少一个不重复创建，禁止删到 0；语音设置增加“语音伙伴/默认桌宠”选择；任务执行沿用当前语音 Conversation 模型，语音快回答用独立快模型；ASR 后的快 LLM 层保留；键盘输入默认不 TTS；队列有界、可配置，取消排队项可见；TTS 默认 Edge、失败回退 Piper；30 分钟复用窗口是 Flowy 自有规则，Qoder/Qwen 源码未找到同义证据；ASR 需实测 SenseVoice 分段 vs 流式 Zipformer。后续确认：默认伙伴名 `Flowy`、形象 `bolt`（Bolt），模型默认 `auto`，切换后按普通会话规则记住；30 分钟任务轮换暂缓，先解决 runtime 与语音衔接；流式 ASR 暂不接入/测试，先用 SenseVoice 分段；TTS 摘要建议状态 ≤30 字、简单回复 ≤60 字、任务终态 ≤120 字、失败 ≤80 字，完整结果留在聊天记录。R1 已开始：`VoiceBoundMessageRequest`、`append_voice_message`、`send_voice_bound_message` 已落地；F1–F4（回执身份、原子绑定、scope/epoch 校验、append 重试）已修复并通过真实 SQLite 定向测试；C1（只接受 voice_task_workspace）与 C2（collector 按 msg_id 去重）也已关闭。同 Conversation/最小 FIFO、上下文 handoff 和 voice manager 接线仍未完成，R1 不能宣称完成。
 
 ## 6. 历史记录的阅读规则
 

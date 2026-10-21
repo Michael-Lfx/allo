@@ -62,7 +62,7 @@ export interface VoiceTaskSnapshot {
   conversation_id: string | null;
   message_id: string | null;
   runtime_turn_id: string | null;
-  status: 'delivering' | 'unknown' | 'accepted' | 'cancelling' | 'completed' | 'failed';
+  status: 'queued' | 'delivering' | 'unknown' | 'accepted' | 'cancelling' | 'completed' | 'failed';
   result_ok: boolean | null;
   result_text: string | null;
   error_code: string | null;
