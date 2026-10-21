@@ -21,6 +21,7 @@ mod completer;
 mod lesson;
 mod parser;
 mod sample;
+mod structured_batch;
 mod terms;
 mod triage;
 #[cfg(test)]

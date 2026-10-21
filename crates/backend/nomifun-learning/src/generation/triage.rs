@@ -10,7 +10,11 @@
 //! 的编排入口 [`run_kb_triage`]。
 
 use super::sample::sanitize_namespace;
+use super::structured_batch::{structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure};
 use super::*;
+use futures::stream::{self, StreamExt};
+use std::future::Future;
+use std::pin::Pin;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +30,11 @@ const TRIAGE_MD_ONLY_WARNING: &str =
 
 /// 降级 core 的置信度（规则兜底不是模型判定，低置信 + 理由披露）。
 const TRIAGE_DEGRADED_CONFIDENCE: f32 = 0.25;
+
+/// LLM 分诊批大小上限（票面：剩余文件 ≤40/批）。
+pub(crate) const TRIAGE_BATCH_MAX_FILES: usize = 40;
+/// 分诊 LLM 调用并发上限（票面建议 ≤4）。
+pub(crate) const TRIAGE_BATCH_CONCURRENCY: usize = 4;
 
 /// 清点扫描范围（v1 只有 Markdown 文档面；PDF/Word/图片后续单独立票）。
 /// 如实披露、不静默忽略。
@@ -346,14 +355,65 @@ pub async fn run_kb_triage(
     let mut llm_verdicts: HashMap<String, RuleVerdict> = HashMap::new();
     match completer {
         None => {
-            degraded_cause =
-                Some("未配置模型（completer）".to_owned());
+            degraded_cause = Some("未配置模型（completer）".to_owned());
         }
         Some(completer) => {
-            match triage_with_llm(completer, goal, &inventory, &remaining).await {
-                Ok(resolved) => llm_verdicts.extend(resolved),
-                Err(error) => {
-                    degraded_cause = Some(format!("分诊调用失败（{error}）"));
+            if !remaining.is_empty() {
+                let lookup: HashMap<&str, &ScannedFile> = scanned
+                    .iter()
+                    .map(|file| (file.file.rel_path.as_str(), file))
+                    .collect();
+                let attempt = TriageBatchAttempt {
+                    completer,
+                    goal,
+                    inventory: &inventory,
+                    lookup: &lookup,
+                };
+                let batch_ids: Vec<String> = remaining
+                    .iter()
+                    .map(|file| file.file.rel_path.clone())
+                    .collect();
+                // 批次划分（≤40/批）+ 批间并发（≤4）；批内拆半由
+                // structured_batch 递归处理（顺序，失败罕见且对数深度）。
+                let batches: Vec<Vec<String>> = batch_ids
+                    .chunks(TRIAGE_BATCH_MAX_FILES)
+                    .map(<[String]>::to_vec)
+                    .collect();
+                let attempt_ref = &attempt;
+                let outputs = stream::iter(batches)
+                    .map(|batch| async move { structured_batch(&batch, attempt_ref).await })
+                    .buffer_unordered(TRIAGE_BATCH_CONCURRENCY)
+                    .collect::<Vec<_>>()
+                    .await;
+                let mut call_failed: Vec<String> = Vec::new();
+                for batch_output in outputs {
+                    for (path, outcome) in batch_output {
+                        match outcome {
+                            Ok(verdict) => {
+                                llm_verdicts.insert(path, verdict);
+                            }
+                            Err(StructuredBatchFailure::Parse(message)) => {
+                                // 单文件兜底仍失败 → uncertain + 理由，不丢。
+                                llm_verdicts.insert(
+                                    path,
+                                    RuleVerdict {
+                                        role: KbTriageRole::Uncertain,
+                                        confidence: 0.2,
+                                        reason: format!(
+                                            "单文件分诊仍解析失败，保守按 uncertain 保留：{message}"
+                                        ),
+                                        duplicate_of: None,
+                                        canonical_reason: None,
+                                    },
+                                );
+                            }
+                            Err(StructuredBatchFailure::Call(_)) => call_failed.push(path),
+                        }
+                    }
+                }
+                if !call_failed.is_empty() {
+                    degraded_cause =
+                        Some(format!("{} 个文件的分诊调用失败", call_failed.len()));
                 }
             }
         }
@@ -928,29 +988,49 @@ fn newest_member(scanned: &[ScannedFile], members: &[usize]) -> Option<usize> {
     }
 }
 
-/// LLM 分诊（cycle 3 换 structured_batch 批拆半；当前单调用整批）。
-async fn triage_with_llm(
-    completer: &dyn LearningCompleter,
-    goal: &str,
-    inventory: &KbInventory,
-    remaining: &[&ScannedFile],
-) -> Result<HashMap<String, RuleVerdict>, AppError> {
-    if remaining.is_empty() {
-        return Ok(HashMap::new());
+/// LLM 分诊的批尝试器：一片条目 → 提示词 → complete_json → 容错解析 →
+/// 逐文件判定。调用层失败报 [`StructuredBatchError::Call`]（驱动层不拆半，
+/// 交给降级兜底），解析失败报 [`StructuredBatchError::Parse`]（驱动层拆半）。
+struct TriageBatchAttempt<'a> {
+    completer: &'a dyn LearningCompleter,
+    goal: &'a str,
+    inventory: &'a KbInventory,
+    lookup: &'a HashMap<&'a str, &'a ScannedFile>,
+}
+
+impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
+    fn attempt<'s>(
+        &'s self,
+        slice: &'s [String],
+    ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, RuleVerdict>, StructuredBatchError>> + Send + 's>>
+    {
+        Box::pin(async move {
+            let files: Vec<&ScannedFile> = slice
+                .iter()
+                .filter_map(|id| self.lookup.get(id.as_str()).copied())
+                .collect();
+            if files.is_empty() {
+                return Err(StructuredBatchError::Parse(
+                    "批内没有可分诊的文件（内部错误）".to_owned(),
+                ));
+            }
+            let prompt = build_triage_user_prompt(self.goal, self.inventory, &files);
+            let raw = self
+                .completer
+                .complete_json(
+                    None,
+                    TRIAGE_SYSTEM,
+                    &prompt,
+                    triage_output_tokens(slice.len()),
+                    Some(0.1),
+                )
+                .await
+                .map_err(|error| StructuredBatchError::Call(error.to_string()))?;
+            let reply: TriageLlmReply =
+                parse_json_object(&raw).map_err(StructuredBatchError::Parse)?;
+            Ok(map_llm_reply(reply, &files))
+        })
     }
-    let prompt = build_triage_user_prompt(goal, inventory, remaining);
-    let raw = completer
-        .complete_json(
-            None,
-            TRIAGE_SYSTEM,
-            &prompt,
-            triage_output_tokens(remaining.len()),
-            Some(0.1),
-        )
-        .await?;
-    let reply: TriageLlmReply = parse_json_object(&raw)
-        .map_err(|error| AppError::Conflict(format!("triage reply unparsable: {error}")))?;
-    Ok(map_llm_reply(reply, remaining))
 }
 
 /// 把模型回包映射回请求集（未知路径忽略；未知角色保守 uncertain）。
