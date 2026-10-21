@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.5 - 2026-10-21
+
+- The app discovers a local Herdsman instance and lists its running models.
+- Parallel delegated tasks can pick a model from the pool. Subagents refuse tools unless they are approved.
+- Text-only models skip screenshots, and compaction no longer leaves stale state or forced retries.
+
 ## v1.6.4 - 2026-10-20
 
 - Storyboard canvas no longer shows a cut badge. Video prompts are truncated only after a vendor hard-rejects them, not by a local character cap.
