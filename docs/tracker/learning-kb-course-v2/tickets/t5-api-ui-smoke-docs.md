@@ -2,8 +2,8 @@
 id: t5
 title: "DTO/WS/UI/冒烟/域文档：清点分诊与覆盖报告可见"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [t4]
 part_of: ../map.md
 ---
@@ -88,3 +88,105 @@ part_of: ../map.md
 - UI 只展示快照，不实时重算 KB；KB 变更后课程不自动变（与现有课程快照语义一致）。
 - `skipped_examples ≤20` 是为列表端点限长；详情页可看全量（分页）。
 - 所有“跳过/降级/fallback”必须在 UI 有可见文案，避免再次出现“静默截断”。
+
+## Resolution（2026-10-22 关票）
+
+**交付**（分支 `learn-v2/t5-api-ui-smoke-docs`，基线之上共 6 个提交：t4 后已并
+`f08c1b1f5` DTO 分面细化 + `78bba868e` WS phase/成本门端点；本日新增
+`f00c59a09` CLI 三变体 + `839b07565` UI 接线 + `bf05f1049` i18n 双语 +
+`1751b0924` 文档四件）：
+
+- **CLI 冒烟三变体**（`nomifun-app` cli.rs + learning_smoke.rs）：`--triage-only`
+  打印七角色 counts/excluded reasons/uncertain，有 warning 也 EXIT=0（读数面
+  非门禁）；`--plan-only` 加跑结构计划，打印 chapters/锚点/覆盖台账/gaps
+  （计划不可用 EXIT=2）；`--report-json` 落 triage[/plan]，full 档落库内 v1
+  信封。两旗互斥有解析测试；报告 JSON 形状有 fixture 测试
+  （`course_report_tests`）。
+- **WS 帧补样例**：`triage_completed` 携带有界示例（≤10 excluded/
+  duplicates/duplicate_of/uncertain），进度视图可就地展开跳过理由；
+  `started/publishing/completed/failed` 顺序语义不变（78bba868e 已落）。
+- **UI**：`CourseGenerationProgress` 首见 triage 帧切换新五段步骤条（准备→
+  来源分诊→来源结构计划→课时展开→完成），triage/source_plan/coverage 帧
+  有读数行与可展开明细（NomiCollapse），描述流/旧客户端走旧步骤条零回归；
+  `CreateCourseDialog` 接成本门（`estimateGeneration` → `needs_confirm` 时挂
+  `CourseCostGateModal`：文件/批/调用/耗时 + 规则分诊计数 + 跳过摘要，
+  低于阈值不打扰、估算失败 fail-open）；`CourseWorkspace` 新「来源覆盖」卡
+  （`CourseSourceCoverageCard`：topic 覆盖/前置练习去向/mixed 部分进入/
+  anchor_uncertain/fallback 课时/duplicate canonical/跳过与不确定 topic/
+  gaps/分级 warnings/章节映射/文件级排除明细）。三态判定
+  `sourceCoverageState`：NULL 不渲染空卡、未知版本显式「不可用」、正常快照
+  全量披露。纯决策函数（`isModernPipeline`/`deriveModernStep`/
+  `triageCountsLine`/`uncertainTooMany`/`estimateLines`/`sourceCoverageState`/
+  `coverageTopicTotals`/`triageViewCounts`）住 model.ts 全测。
+- **i18n**：37 个新键 zh-CN/en-US 双语对称（`learning.json`），占位符断言 +
+  双语断言测试 `sourcePlanLocales.test.ts`（仿 learningGoalLocales 样例）；
+  `gen:i18n` 更新 `i18n-keys.d.ts`。
+- **文档**：ADR-0014（四段裁决与取舍，引用 map 与 research asset）；
+  `docs/contracts/learning-course-source-plan.md`（信封 JSON 形状/CHECK/
+  NULL 兼容/锚点不变量/mixed·duplicate_of·anchor_uncertain 语义/版本策略）；
+  CONTEXT.md 七词条（Kb Inventory/Kb Triage/Source Plan/SourceCoverage/
+  Mixed File/Anchor Uncertain/Uncertain，与 Structure/Coverage Gauge 明确
+  分立）；learning.zh.md 传统脏库路径 + 069 迁移记录 + 新 WS phase + course
+  冒烟档说明。
+
+**验证**（真实跑过）：
+
+- `cargo test -p nomifun-learning` **436 passed / 0 failed**；
+  `cargo check --workspace` 干净（exit 0）；CLI fixture 测试绿
+  （`learning_smoke_course_parses_triage_plan_and_report_flags` +
+  `course_report_carries_triage_and_optional_plan`）；`cargo fmt -p` 已跑。
+- UI：`bun run typecheck` 与基线持平（61 个既有错误全部在 videoCanvas/
+  cloudLogin/conversation 等未触碰文件，learning 相关 0 错——stash 对比
+  核实）；`bun run check:i18n` 过；`bun run check:theme` 过；
+  **`bun run check:dead-css` 在基线上就不过**（11 组既有漂移，全部在未触碰
+  文件，stash 复跑同样失败——非本票引入，需独立清理票）。
+- UI 测试：learning 域 4 文件 29 pass（model 决策面 + 双语断言×2 + 多库披露）。
+
+**真机三库冒烟**（2026-10-22，凭据 = 从上一波冒烟备份搬 provider 行
+`0190f5fe-7c00-7a00-8000-000000000201` + 17 个模型行 + encryption_key 到
+隔离库；provider=AIPC-deepseek-v4.1-flash；工件
+`C:\Users\test\Desktop\work\learning-smoke-course-20261022-t5\`：7 份
+report JSON + 3 份 full log + observation JSONL）：
+
+1. **clean**（19 文件《数据结构思维》）**EXIT=0**：triage core=9/mixed=2/
+   noise=1/uncertain=7 degraded=false；plan 11 章；coverage 84 covered/
+   22 uncertain/2 skipped；85 课时 fallback=0；正文 6 节 8375 字生成。
+   窄目标下 15/16 两章未引用——**从旧管线的静默缺失变为显式 skipped+reason**
+   （「Redis 持久化关联较弱」「爬虫综合实践关联度低」），模块顺序零违例。
+   旧 clean 冒烟无回归。
+2. **dirty**（clean + 8 个注入文件）**EXIT=0**：noise=2（LICENSE 元数据 +
+   会议纪要）、duplicate=3（翻译副本→原文、同 hash 双对→最新 mtime
+   canonical）、mixed=1（树遍历+报销杂记：进入段=07 章正文照常锚定，跳过段
+   =「包含差旅报销等无关内容」skipped+reason）——**票面 dirty 判据全数满足**
+   （noise/duplicate 有 reason 不进课程、mixed 有进入/跳过段、uncertain 可
+   见）。另实证批拆半兜底：一批 LLM 判定缺 7 个条目时逐文件保守落 uncertain
+   保留，不丢弃。
+3. **large**（105 文件 Rust 书）**EXIT=0**（约 7 分钟）：triage core=101/
+   noise=3 degraded=false；plan 17 章；topics 85 covered/93 skipped（附录
+   与参考节全部显式 skipped+reason）/236 uncertain；85 课时 fallback=0；
+   gaps 5 条可读。**旧问题对照**：15/16 倒挂消失（Deref/Rc/RefCell →
+   threads 顺序正确）；ch14（Cargo 进阶）本跑仍未进课程——但不再静默：其
+   文件在台账落 uncertain（可见缺口）。仍有 5-7 章序在 ch10 之后的轻度倒挂
+   （读数面，非门禁）。
+
+**冒烟发现（移交后续，不阻断本票）**：
+
+1. **同内容对双层排除风险**（t1 层）：规则层按「最新 mtime」选 z9 备份为
+   canonical 后，LLM 层又因文件名含「备份」把 canonical 判成 duplicate——
+   一跑中 05/z9 双双排除、LinkedList 章内容完全丢失（另一跑未复现，LLM 非确
+   定）。建议：LLM 分诊输入排除规则已定的 canonical，或 duplicate 判定不得
+   指向已排除文件。
+2. **大书锚点覆盖偏窄**（t2/t3 层）：large 只锚定 17/105 文件、85 文件落
+   uncertain（可见但无逐文件解释）；ch14 无章无显式 skip。覆盖披露面达标，
+   结构质量归 t2/t3 后续调优。
+3. **provider SSE 瞬态**：一次结构评审调用挂起约 30 分钟（无超时保护），
+   重跑即过；另多次 failed-provider-sse 诊断落盘后引擎重试成功（与上波同
+   款）。建议给 completer 调用加超时。
+
+**偏差**（不违背票面）：
+
+1. dead-css 门在基线即红（11 组既有漂移，无一在本次触碰文件）——按「修好
+   半成品」口径未越界代清，如实上报。
+2. 成本门确认弹窗顺带展示 triage 计数/跳过摘要（Q13 定案的「不做独立审阅
+   页」落法）；「生成中/详情看完整报告」由新步骤条读数行 + 覆盖卡承担。
+3. `--lesson N` 维持现状（本跑用 `--lessons 1` 抽样正文）。

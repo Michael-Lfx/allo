@@ -61,7 +61,7 @@
 - [t2](tickets/t2-evidence-driven-structure.md) 证据驱动的结构发现：多查询检索 → 候选概念/概念图 + 章节 spine → critique/revise → 确定性去环/拓扑/覆盖补齐——**已关**（`run_kb_structure` + `SourcePlan` 进 brief，407 测试绿）。
 - [t3](tickets/t3-batched-expansion.md) 分批展开 + 截断自愈 + 来源映射/覆盖校验（40/批、拆半、单文件兜底、长文拆分/短文合并、标题忠实）——**已关**（`run_kb_expansion` + `SourceCoverage`，plan 可用时绕过大纲引擎，423 测试绿）。
 - [t4](tickets/t4-persistence-and-migration.md) 单个 `course_source_plan_json` 快照列 + 迁移（高风险区，需 owner 签核；t1–t3 形状稳定后做）——**已关**（迁移 069 + `CourseSourcePlanSnapshot` v1 信封 + 同事务落库 + 读侧摘要四态，430 测试绿；owner Q14 签核记录在票面 Resolution）。
-- [t5](tickets/t5-api-ui-smoke-docs.md) DTO/WS/UI/冒烟/域文档收口（clean/dirty/large 三库冒烟；双语文案；SourcePlan/SourceCoverage 术语）。
+- [t5](tickets/t5-api-ui-smoke-docs.md) DTO/WS/UI/冒烟/域文档收口（clean/dirty/large 三库冒烟；双语文案；SourcePlan/SourceCoverage 术语）——**已关**（DTO 分面 + WS triage/source_plan/coverage 帧 + 成本门估算端点 + UI 新步骤条/确认弹窗/来源覆盖卡 + 37 键双语 + ADR-0014/契约/CONTEXT 词条；CLI `--triage-only/--plan-only/--report-json`；真机三库全 EXIT=0、dirty 判据全满足、15/16 倒挂消失且旧截断变显式 skipped+reason；436 测试绿；冒烟移交项与证据在票面 Resolution）。
 - [g1](tickets/g1-graph-course-reuse.md) 生长课复用边界——**已关**（A/E/F 并入本波；B/C/D 等 `learning-goal-kb/t5`）。
 
 ## Not yet specified
