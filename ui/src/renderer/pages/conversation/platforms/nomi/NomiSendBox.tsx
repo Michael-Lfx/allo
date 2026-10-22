@@ -797,6 +797,69 @@ const NomiSendBox: React.FC<{
     onExecute: executeCommand,
   });
 
+  const pendingOrdinaryQueueDrainRef = useRef<Array<{
+    item: { input: string; files: string[]; workspace_path?: string };
+    resolve: (result: ConversationCommandQueueItem | null) => void;
+    reject: (err: unknown) => void;
+  }>>([]);
+
+  const safeEnqueue = useCallback(
+    async (item: { input: string; files: string[]; workspace_path?: string }) => {
+      if (conversationVoiceKind === 'ordinary') {
+        const directResult = enqueue(item);
+        if (directResult) return directResult;
+      }
+      return new Promise<ConversationCommandQueueItem | null>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          const index = pendingOrdinaryQueueDrainRef.current.findIndex((entry) => entry.item === item);
+          if (index !== -1) {
+            pendingOrdinaryQueueDrainRef.current.splice(index, 1);
+            reject(new Error('conversation command was not queued'));
+          }
+        }, 10000);
+
+        pendingOrdinaryQueueDrainRef.current.push({
+          item,
+          resolve: (result) => {
+            clearTimeout(timeoutId);
+            resolve(result);
+          },
+          reject: (err) => {
+            clearTimeout(timeoutId);
+            reject(err);
+          },
+        });
+      });
+    },
+    [conversationVoiceKind, enqueue]
+  );
+
+  useEffect(() => {
+    if (conversationVoiceKind !== 'ordinary') return;
+    if (pendingOrdinaryQueueDrainRef.current.length === 0) return;
+
+    const pending = [...pendingOrdinaryQueueDrainRef.current];
+    pendingOrdinaryQueueDrainRef.current = [];
+
+    for (const { item, resolve, reject } of pending) {
+      try {
+        const queuedItem = enqueue(item);
+        resolve(queuedItem);
+      } catch (err) {
+        reject(err);
+      }
+    }
+  }, [conversationVoiceKind, enqueue]);
+
+  useEffect(() => {
+    return () => {
+      for (const { reject } of pendingOrdinaryQueueDrainRef.current) {
+        reject(new Error('SendBox unmounted before queue was enabled'));
+      }
+      pendingOrdinaryQueueDrainRef.current = [];
+    };
+  }, []);
+
   // Handle initial message from Guid page — wait until model is ready
   useEffect(() => {
     if (!conversation_id || !current_model?.use_model) return;
@@ -945,7 +1008,7 @@ const NomiSendBox: React.FC<{
       voiceSendAttempts: voiceSendAttempts.current,
       resolveConversationKind,
       sendVoiceKeyboardMessage,
-      enqueue,
+      enqueue: safeEnqueue,
       clearFiles,
       emitFileClear: () => emitter.emit('nomi.selected.file.clear'),
       notifyError: (msg) => Message.error(msg),
