@@ -32,12 +32,24 @@ pub(crate) enum StructuredBatchFailure {
     Parse(String),
 }
 
+/// 一次批尝试的语境（h1）：首批，还是补判重发（解析失败后的拆半，或
+/// 部分覆盖后的缺条目子集）。语义不变——只是把「这次为什么又来一次」
+/// 透传给提示词层，让补判可以用「只判定以下 N 个文件」的定向措辞。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BatchPass {
+    /// 首次尝试（整批首发）。
+    Initial,
+    /// 补判重发：此前一次回包解析失败（拆半递归）或覆盖不全（缺条目子集）。
+    Repair,
+}
+
 /// 一次批尝试的接缝：给定条目 id 列表，产出「id → 结果」映射（调用方负责
 /// 提示词、补全调用与解析校验；未覆盖的 id 由驱动层补递归）。
 pub(crate) trait BatchAttempt<T>: Send + Sync {
     fn attempt<'a>(
         &'a self,
         slice: &'a [String],
+        pass: BatchPass,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, T>, StructuredBatchError>> + Send + 'a>>;
 }
 
@@ -48,7 +60,7 @@ pub(crate) async fn structured_batch<T: Send>(
     attempt: &dyn BatchAttempt<T>,
 ) -> Vec<(String, Result<T, StructuredBatchFailure>)> {
     let mut outcomes: HashMap<String, Result<T, StructuredBatchFailure>> = HashMap::new();
-    resolve(attempt, ids, &mut outcomes).await;
+    resolve(attempt, ids, &mut outcomes, BatchPass::Initial).await;
     ids.iter()
         .map(|id| {
             let outcome = outcomes.remove(id).unwrap_or_else(|| {
@@ -67,11 +79,12 @@ fn resolve<'a, T: Send>(
     attempt: &'a dyn BatchAttempt<T>,
     slice: &'a [String],
     outcomes: &'a mut HashMap<String, Result<T, StructuredBatchFailure>>,
+    pass: BatchPass,
 ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
     Box::pin(async move {
         if slice.len() == 1 {
             let id = slice[0].clone();
-            let outcome = match attempt.attempt(slice).await {
+            let outcome = match attempt.attempt(slice, pass).await {
                 Ok(mut map) => match map.remove(&id) {
                     Some(value) => Ok(value),
                     None => Err(StructuredBatchFailure::Parse(
@@ -88,7 +101,7 @@ fn resolve<'a, T: Send>(
             outcomes.insert(id, outcome);
             return;
         }
-        match attempt.attempt(slice).await {
+        match attempt.attempt(slice, pass).await {
             Err(StructuredBatchError::Call(message)) => {
                 for id in slice {
                     outcomes.insert(
@@ -119,7 +132,7 @@ fn resolve<'a, T: Send>(
                     // 整批零覆盖：等价于解析失败，拆半（否则会在同大小批上打转）。
                     split_and_recurse(attempt, slice, outcomes).await;
                 } else {
-                    resolve(attempt, &missing, outcomes).await;
+                    resolve(attempt, &missing, outcomes, BatchPass::Repair).await;
                 }
             }
         }
@@ -134,8 +147,8 @@ fn split_and_recurse<'a, T: Send>(
     Box::pin(async move {
         let mid = slice.len() / 2;
         let (left, right) = slice.split_at(mid);
-        resolve(attempt, left, outcomes).await;
-        resolve(attempt, right, outcomes).await;
+        resolve(attempt, left, outcomes, BatchPass::Repair).await;
+        resolve(attempt, right, outcomes, BatchPass::Repair).await;
     })
 }
 
@@ -159,6 +172,7 @@ mod tests {
         fn attempt<'a>(
             &'a self,
             slice: &'a [String],
+            _pass: BatchPass,
         ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, u32>, StructuredBatchError>> + Send + 'a>>
         {
             Box::pin(async move {
@@ -228,6 +242,7 @@ mod tests {
         fn attempt<'a>(
             &'a self,
             _slice: &'a [String],
+            _pass: BatchPass,
         ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, u32>, StructuredBatchError>> + Send + 'a>>
         {
             Box::pin(async move {
@@ -267,6 +282,7 @@ mod tests {
         fn attempt<'a>(
             &'a self,
             slice: &'a [String],
+            _pass: BatchPass,
         ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, u32>, StructuredBatchError>> + Send + 'a>>
         {
             Box::pin(async move {

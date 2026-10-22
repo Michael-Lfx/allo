@@ -17,7 +17,7 @@
 //! t4 落库)。`blueprint_json` 继续是最终 modules/lessons 快照。
 
 use super::structured_batch::{
-    structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure,
+    structured_batch, BatchAttempt, BatchPass, StructuredBatchError, StructuredBatchFailure,
 };
 use super::structure::topics as structure_topics;
 use super::*;
@@ -707,6 +707,7 @@ impl BatchAttempt<Vec<RawLesson>> for ExpandBatchAttempt<'_> {
     fn attempt<'s>(
         &'s self,
         slice: &'s [String],
+        _pass: BatchPass,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, Vec<RawLesson>>, StructuredBatchError>> + Send + 's>>
     {
         Box::pin(async move {
