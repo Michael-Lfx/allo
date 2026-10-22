@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nomifun_db::{IPluginSnapshotRepository, SqlitePluginSnapshotRepository};
-use nomifun_importer::{ImporterService, ImportRequest, LocalizedText, SourceKind};
+use nomifun_importer::{DisplayFields, ImporterService, ImportRequest, LocalizedText, SourceKind};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
@@ -52,7 +52,7 @@ async fn tc_imp_001_002_software_company_imports_five_agents_and_one_team() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -142,7 +142,7 @@ async fn tc_imp_003_agents_only_never_creates_a_team() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -168,7 +168,7 @@ async fn tc_imp_004_path_traversal_and_absolute_paths_are_blocked() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
             .await
             .unwrap();
@@ -217,7 +217,7 @@ async fn tc_imp_005_symlink_escape_is_rejected() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -257,7 +257,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -274,7 +274,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -292,7 +292,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -329,7 +329,7 @@ async fn market_entry_version_overrides_the_manifest_placeholder() {
         entry_name: Some("single-hello".into()),
         source_revision: None,
         declared_version: None,
-        index_tags: None,
+        index_display: None,
     };
 
     // Historical behaviour: the manifest placeholder wins.
@@ -383,7 +383,7 @@ async fn market_entry_content_change_needs_a_raised_version() {
         entry_name: Some("skill-demo".into()),
         source_revision: None,
         declared_version: None,
-        index_tags: None,
+        index_display: None,
     }
     .with_declared_version(Some(version.into()));
 
@@ -423,7 +423,7 @@ async fn tc_imp_007_partial_component_failure_keeps_good_components() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -451,7 +451,7 @@ async fn tc_imp_008_high_risk_components_are_static_imports_only() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -489,7 +489,7 @@ async fn tc_imp_009_credential_values_never_enter_snapshot_or_repository() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -520,7 +520,7 @@ async fn skill_market_imports_skills_with_market_identity() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -547,7 +547,7 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -606,7 +606,7 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -695,7 +695,7 @@ async fn a_declared_token_schema_becomes_the_credential_form() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -855,7 +855,7 @@ async fn connector_market_imports_connector_entries() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -886,7 +886,7 @@ async fn tc_imp_010_file_path_declarations_and_object_dependencies() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -952,7 +952,7 @@ async fn tc_imp_011_cli_connector_directory_imports_connector_and_skills() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1012,7 +1012,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1029,7 +1029,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1054,7 +1054,7 @@ async fn tc_imp_013_author_object_and_string_component_roots() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1082,7 +1082,7 @@ async fn tc_imp_014_single_skill_directory_without_marketplace_json() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1114,9 +1114,19 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
                 entry_name: Some("single-skill-dir".into()),
                 source_revision: None,
                 declared_version: Some("2.0.0".into()),
-                index_tags: None,
+                index_display: None,
             }
-            .with_index_tags(Some(tags.clone())),
+            .with_index_display(Some(DisplayFields {
+                // `50` §3.2: the four display keys are stamped from the index
+                // row exactly like the author's own declaration is for agents.
+                name: Some(LocalizedText {
+                    zh: Some("示例技能".into()),
+                    en: Some("Demo skill".into()),
+                }),
+                description: Some(LocalizedText { zh: Some("索引行简介".into()), en: None }),
+                prompts: vec![LocalizedText { zh: Some("帮我做一件事".into()), en: None }],
+                tags: tags.clone(),
+            })),
         )
         .await
         .unwrap();
@@ -1124,6 +1134,11 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
     let comps = repo.get_components(&result.snapshot_id).await.unwrap();
     let skill = find_kind(&comps, "skill").pop().unwrap();
     let payload: serde_json::Value = serde_json::from_str(&skill.payload_json).unwrap();
+    assert_eq!(payload["display_name"]["zh"], "示例技能");
+    assert_eq!(payload["display_name"]["en"], "Demo skill");
+    assert_eq!(payload["display_description"]["zh"], "索引行简介");
+    assert!(payload["display_description"]["en"].is_null());
+    assert_eq!(payload["quick_prompts"][0]["zh"], "帮我做一件事");
     assert_eq!(payload["tags"][0]["zh"], "办公协同");
     assert_eq!(payload["tags"][0]["en"], "Collaboration");
     // A one-sided tag keeps the missing locale explicitly null in the *stored
@@ -1144,7 +1159,7 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
             entry_name: None,
             source_revision: None,
             declared_version: Some("3.0.0".into()),
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1169,7 +1184,7 @@ async fn tc_imp_015_display_metadata_preserved() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1214,7 +1229,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
         .await
         .unwrap();
@@ -1228,7 +1243,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         })
             .await,
         Err(nomifun_importer::ImportError::SourceNotFound)

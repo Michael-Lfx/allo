@@ -166,6 +166,18 @@ pub struct PluginManifest {
     pub profession: Option<LocalizedText>,
     #[serde(default, deserialize_with = "deserialize_localized_text")]
     pub display_description: Option<LocalizedText>,
+    /// Sibling-key flavour of the display description (`50` §3.4): the teams
+    /// market writes `description_zh` / `description_en` instead of the nested
+    /// `displayDescription` map (18 of 30 packages use the zh key, 11 the en
+    /// one). The explicit `rename` is required: this struct deserializes as
+    /// camelCase, so the default would look for `descriptionZh`.
+    ///
+    /// Read through [`Self::localized_display_description`], which merges the
+    /// two shapes per locale.
+    #[serde(default, rename = "description_zh")]
+    pub description_zh: Option<String>,
+    #[serde(default, rename = "description_en")]
+    pub description_en: Option<String>,
     #[serde(default)]
     pub default_init_prompt: Option<LocalizedText>,
     #[serde(default, deserialize_with = "deserialize_localized_list")]
@@ -190,6 +202,77 @@ impl PluginManifest {
     pub fn version(&self) -> &str {
         self.version.as_deref().unwrap_or("1.0.0")
     }
+
+    /// The author's display description, both shapes merged per locale
+    /// (`50` §3.4): the nested `displayDescription` wins, the missing side is
+    /// taken from `description_{zh,en}`. `None` when neither declares anything.
+    pub fn localized_display_description(&self) -> Option<LocalizedText> {
+        let mut out = self.display_description.clone().unwrap_or_default();
+        if out.zh.as_deref().is_none_or(str::is_empty) {
+            out.zh = self.description_zh.clone().filter(|text| !text.trim().is_empty());
+        }
+        if out.en.as_deref().is_none_or(str::is_empty) {
+            out.en = self.description_en.clone().filter(|text| !text.trim().is_empty());
+        }
+        (!out.is_empty()).then_some(out)
+    }
+}
+
+/// The display metadata an installed entity carries (`50` §3.1–§3.3).
+///
+/// One type for both ends of the pipeline: the marketplace layer fills it from
+/// the index row and hands it to the import request, the importer merges it with
+/// the author's `plugin.json` and stamps the result into the component payload,
+/// and the catalog reads the identical shape back out. Merging therefore happens
+/// exactly once, at the write face (`50` INV-5).
+///
+/// `prompts` and `tags` are position-paired lists (`43` §3.3): the author's list
+/// wins whole, because pairing one list's zh side with another's en side would
+/// invent combinations the market never declared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DisplayFields {
+    pub name: Option<LocalizedText>,
+    pub description: Option<LocalizedText>,
+    pub prompts: Vec<LocalizedText>,
+    pub tags: Vec<LocalizedText>,
+}
+
+impl DisplayFields {
+    /// Author declaration first, index row fills the gaps (`50` §3.3).
+    pub fn merge(author: Self, index: Self) -> Self {
+        Self {
+            name: merge_localized(author.name, index.name),
+            description: merge_localized(author.description, index.description),
+            prompts: if author.prompts.is_empty() { index.prompts } else { author.prompts },
+            tags: if author.tags.is_empty() { index.tags } else { author.tags },
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none()
+            && self.description.is_none()
+            && self.prompts.is_empty()
+            && self.tags.is_empty()
+    }
+}
+
+/// Per-locale fill (`50` INV-4): a side that is present stays, a side that is
+/// missing takes the fallback. Blank strings count as missing — a market that
+/// writes `""` declared nothing.
+fn merge_localized(
+    primary: Option<LocalizedText>,
+    fallback: Option<LocalizedText>,
+) -> Option<LocalizedText> {
+    let mut out = primary.unwrap_or_default();
+    if let Some(fallback) = fallback {
+        if out.zh.as_deref().is_none_or(str::is_empty) {
+            out.zh = fallback.zh.filter(|text| !text.trim().is_empty());
+        }
+        if out.en.as_deref().is_none_or(str::is_empty) {
+            out.en = fallback.en.filter(|text| !text.trim().is_empty());
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Market manifests (`.codebuddy-skill/marketplace.json` /
@@ -535,6 +618,72 @@ pub fn read_plugin_display(root: &Path) -> Option<PluginManifest> {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Display description: two authoring shapes (`50` §3.4)
+    // -----------------------------------------------------------------------
+
+    /// The nested `displayDescription` wins per locale; the `description_zh` /
+    /// `description_en` sibling keys fill the side it omits.
+    #[test]
+    fn the_nested_description_and_the_sibling_keys_merge_per_locale() {
+        let nested_only = parse_plugin_manifest(
+            r#"{"name":"t","displayDescription":{"zh":"中文简介","en":"English"}}"#,
+        )
+        .unwrap();
+        let merged = nested_only.localized_display_description().expect("merged");
+        assert_eq!(merged.zh.as_deref(), Some("中文简介"));
+        assert_eq!(merged.en.as_deref(), Some("English"));
+
+        // The sibling-key shape the teams market actually uses (18 of 30).
+        let siblings_only =
+            parse_plugin_manifest(r#"{"name":"t","description_zh":"中文简介","description_en":""}"#)
+                .unwrap();
+        let merged = siblings_only.localized_display_description().expect("merged");
+        assert_eq!(merged.zh.as_deref(), Some("中文简介"));
+        assert_eq!(merged.en, None, "a blank sibling declares nothing");
+
+        // Both shapes: the nested one keeps its side, the siblings fill the other.
+        let both = parse_plugin_manifest(
+            r#"{"name":"t","displayDescription":{"zh":"嵌套中文"},"description_en":"Sibling English"}"#,
+        )
+        .unwrap();
+        let merged = both.localized_display_description().expect("merged");
+        assert_eq!(merged.zh.as_deref(), Some("嵌套中文"));
+        assert_eq!(merged.en.as_deref(), Some("Sibling English"));
+
+        // The base `description` never stands in for a locale (`50` INV-3).
+        let base_only = parse_plugin_manifest(r#"{"name":"t","description":"English only"}"#).unwrap();
+        assert!(base_only.localized_display_description().is_none());
+    }
+
+    /// `DisplayFields::merge` is per-locale for scalars and whole-list for the
+    /// position-paired lists (`50` INV-4 / §3.3).
+    #[test]
+    fn merging_display_fields_keeps_the_author_and_fills_from_the_index() {
+        let author = DisplayFields {
+            name: Some(LocalizedText { zh: Some("作者名".into()), en: None }),
+            description: None,
+            prompts: Vec::new(),
+            tags: vec![LocalizedText { zh: Some("作者标签".into()), en: None }],
+        };
+        let index = DisplayFields {
+            name: Some(LocalizedText { zh: Some("索引名".into()), en: Some("Index name".into()) }),
+            description: Some(LocalizedText { zh: Some("索引简介".into()), en: None }),
+            prompts: vec![LocalizedText { zh: Some("索引示例".into()), en: None }],
+            tags: vec![LocalizedText { zh: Some("索引标签".into()), en: None }],
+        };
+        let merged = DisplayFields::merge(author, index);
+        assert_eq!(merged.name.as_ref().and_then(|t| t.zh.as_deref()), Some("作者名"));
+        assert_eq!(merged.name.as_ref().and_then(|t| t.en.as_deref()), Some("Index name"));
+        assert_eq!(merged.description.as_ref().and_then(|t| t.zh.as_deref()), Some("索引简介"));
+        assert_eq!(merged.prompts.len(), 1, "an empty author list yields to the index");
+        assert_eq!(
+            merged.tags[0].zh.as_deref(),
+            Some("作者标签"),
+            "a declared author list is not merged item by item"
+        );
+    }
+
     #[test]
     fn valid_manifest_paths_normalize() {
         assert_eq!(validate_relative_path("./agents").unwrap(), "agents");
@@ -552,8 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_manifest_identity_required() {
-        let ok = parse_plugin_manifest(r#"{"name":"demo","agents":["./agents"]}"#).unwrap();
+    fn plugin_manifest_identity_required() {        let ok = parse_plugin_manifest(r#"{"name":"demo","agents":["./agents"]}"#).unwrap();
         assert_eq!(ok.name, "demo");
         assert_eq!(ok.version(), "1.0.0", "missing version defaults");
         let missing = parse_plugin_manifest(r#"{"version":"1.0.0"}"#);

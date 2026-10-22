@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-17`，56 WS 核心方法 / 83 双端路由端点）  \
+> 状态：现行规范（统一协议 v1，指纹 `fp-18`，56 WS 核心方法 / 83 双端路由端点）  \
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -16,7 +16,7 @@ App Server Protocol 确立为系统的**唯一公共对外接口面**：
 1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
 2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
 3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
-4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-16`）守卫协议两端，消解冗余复杂的迁移开销。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-18`）守卫协议两端，消解冗余复杂的迁移开销。
 
 ---
 
@@ -183,7 +183,16 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-17`**（2026-10-15）把连接器摘要里那个**名不副实**的字段改回原名（doc `47`）：
+> 指纹：**`fp-18`**（2026-10-22）让**四类实体共享同一组展示字段**（doc `50`）：
+> `AppServerAgentSummary` / `AppServerTeamSummary` / `AppServerSkillSummary` /
+> `AppServerConnectorSummary` 各带 `display_name` / `display_description` / `tags` /
+> `quick_prompts` 四个**同名同型**字段（`{zh?, en?}`）。`display_description` 与
+> `quick_prompts` 从 `AppServerAgentDetail` **上移**到 summary（detail 经 `flatten`
+> 照旧携带，序列化结果不变）；连接器首次拥有这四个字段，`name` 仍是运行期标识
+> （工具命名空间 `connector__<name>__<tool>` 依赖它，不可替换）。取值在**导入期**按
+> 「作者声明 → 市场索引行 → 缺席」**逐语种**合并后固化进组件 payload，读面只做反序列化、
+> 不回查市场。**无方法增删**，计数仍 `56 / 83`。
+> 上一值 **`fp-17`**（2026-10-15）把连接器摘要里那个**名不副实**的字段改回原名（doc `47`）：
 > `AppServerConnectorSummary.auth_mode` 更名 `auth_transport`——该字段由 transport 推导，
 > 从来不是「认证方式」；「调用方要为这个连接器做什么」由 `credential.mode` 与 `status`
 > 回答（`34` §6.1，配套修复见 doc `46`）。**无方法增删**，计数仍 `56 / 83`。
@@ -656,6 +665,30 @@ payload，`skill/list` / `skill/get` 经与头像同一条 provenance 链（运�
 已完成安装的技能的标签与其安装时的市场声明一致，市场随后改标签要走一次升级
 （`store/update-entry`）才生效——与技能内容本身同一语义。内置技能与用户技能没有标签源，
 该字段缺席。技能市场只有扁平标签、没有分类字典，因此**技能面没有 `category_id`**。
+
+**四类实体的展示字段（`fp-18` 起，doc `50`）**：`agent` / `team` / `skill` / `connector`
+四类实体的 summary（因而 list 与 get 两面）各带四个**同名同型**字段：
+
+```text
+display_name?         { zh?, en? }          # 展示名，缺席时客户端回落到 name
+display_description?  { zh?, en? }          # 展示简介
+tags[]                { zh?, en? }[]        # 展示标签（位置配对）
+quick_prompts[]       { zh?, en? }[]        # 提示词示例
+```
+
+四条规矩：
+
+1. **缺席就是缺席**：四个字段都允许整体缺席（`display_*` 省略、数组为空）。宿主**绝不**把
+   单语的 `name` / `description` 复制进 `display_*`——连接器索引行的顶层 `description`
+   有 210/283 条是英文（doc `50` P4），拿它兜底等于把「中文界面显示英文」固化进契约。
+2. **逐语种合并**：`display_name.zh` 与 `display_name.en` 各自独立回落（作者声明 →
+   市场索引行 → 缺席），一侧有值不代表另一侧有值。
+3. **导入期归一，读面只搬运**：合并发生在 importer（`DisplayFields::merge`），结果写进组件
+   payload 的四个同名键；`agent|team|skill|connector` 四条读面只做反序列化，不新增任何
+   市场索引读取或 DB 查询。老快照没有这些键 → 字段缺席，要拿到就 `store/update-entry`。
+4. **连接器的 `name` 不是展示名**：它是工具命名空间的一段（`connector__<name>__<tool>`，
+   `connector/call` 依赖它），所以展示名单独用 `display_name`，两者不可互换。
+
 
 #### 4.3.1 技能文件读面（`skill/files` · `skill/file`，2026-09-20 加入）
 

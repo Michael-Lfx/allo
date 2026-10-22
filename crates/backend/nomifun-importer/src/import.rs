@@ -22,7 +22,7 @@ use crate::compat;
 use crate::dependency::{CatalogIndex, DependencyProblem, check_dependencies};
 use crate::digest::tree_digest;
 use crate::frontmatter::{parse_agent, parse_skill, AgentDoc};
-use crate::manifest::{PluginManifest, validate_relative_path};
+use crate::manifest::{DisplayFields, PluginManifest, validate_relative_path};
 use crate::models::{
     Component, CompatTriple, SourceKind, component_id, sanitize_slug,
 };
@@ -57,12 +57,13 @@ pub struct ImportRequest {
     /// snapshot instead of becoming a new version. `None` = keep the historical
     /// behaviour (use the manifest's own version).
     pub declared_version: Option<String>,
-    /// Localized display tags from the **market index row** (`43` M1 pairing,
-    /// doc `44`): the only tag source for skill / connector entries, which ship
-    /// no `plugin.json`. Written into every skill/connector component payload
-    /// so the installed-skill catalog can show the same tags the store item
-    /// does. `None` = the entry (or its market) declares none.
-    pub index_tags: Option<Vec<crate::manifest::LocalizedText>>,
+    /// Display metadata from the **market index row** (`50` §3.3): the only
+    /// display source for skill / connector entries, which ship no
+    /// `plugin.json`. Merged with the author's own declaration and stamped into
+    /// every skill / connector / team component payload so the installed
+    /// catalogs show what the store shows. `None` = the entry (or its market)
+    /// declares nothing.
+    pub index_display: Option<DisplayFields>,
 }
 
 impl ImportRequest {
@@ -72,9 +73,10 @@ impl ImportRequest {
         self
     }
 
-    /// Carry the market index row's localized tags into the snapshot (`44`).
-    pub fn with_index_tags(mut self, tags: Option<Vec<crate::manifest::LocalizedText>>) -> Self {
-        self.index_tags = tags;
+    /// Carry the market index row's display metadata into the snapshot
+    /// (`50` §3.3).
+    pub fn with_index_display(mut self, display: Option<DisplayFields>) -> Self {
+        self.index_display = display;
         self
     }
 
@@ -87,7 +89,7 @@ impl ImportRequest {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         }
     }
 
@@ -105,7 +107,7 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         }
     }
 
@@ -124,7 +126,7 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: Some(source_revision),
             declared_version: None,
-            index_tags: None,
+            index_display: None,
         }
     }
 }
@@ -277,10 +279,10 @@ impl ImporterService {
             source_uri: source.display().to_string(), // internal only
         };
         let mut builder = ComponentBuilder::new(declared_version)
-            // The market index row's tags (`44`): the only tag source for
-            // skill/connector entries. Plugin imports ignore it — their
-            // `plugin.json` tags win.
-            .with_index_tags(request.index_tags.clone().unwrap_or_default());
+            // The market index row's display metadata (`50` §3.3): the only
+            // bilingual source for skill/connector entries, and a fallback for
+            // teams. Author declarations win per locale (`DisplayFields::merge`).
+            .with_index_display(request.index_display.clone().unwrap_or_default());
         let mut agents: Vec<(String, AgentDoc)> = Vec::new();
         // `dependencies` are consumed by the component builder, which only
         // *registers* them; keep a copy for the optional decision below.
@@ -478,11 +480,12 @@ impl ImporterService {
 
 struct ComponentBuilder {
     version: String,
-    /// Localized tags the market index row declares (`44`): stamped into every
-    /// skill / connector component payload, so an installed skill's catalog
-    /// face shows the same tags the store item does. Empty = the entry's
-    /// market declares none (or this import had no marketplace provenance).
-    index_tags: Vec<crate::manifest::LocalizedText>,
+    /// Display metadata the market index row declares (`50` §3.3): stamped into
+    /// every skill / connector / team component payload, so an installed
+    /// entity's catalog face shows the same text the store item does. Empty =
+    /// the entry's market declares nothing (or this import has no marketplace
+    /// provenance).
+    index_display: DisplayFields,
     components: Vec<Component>,
     /// snapshot-relative paths already claimed (component id uniqueness)
     claimed: HashSet<String>,
@@ -496,7 +499,7 @@ impl ComponentBuilder {
     fn new(version: String) -> Self {
         Self {
             version,
-            index_tags: Vec::new(),
+            index_display: DisplayFields::default(),
             components: Vec::new(),
             claimed: HashSet::new(),
             warnings: Vec::new(),
@@ -505,21 +508,20 @@ impl ComponentBuilder {
         }
     }
 
-    /// Set the index-row tags for this import (`44`). Called once, before the
-    /// component builders run.
-    fn with_index_tags(mut self, tags: Vec<crate::manifest::LocalizedText>) -> Self {
-        self.index_tags = tags;
+    /// Set the index-row display metadata for this import (`50` §3.3). Called
+    /// once, before the component builders run.
+    fn with_index_display(mut self, display: DisplayFields) -> Self {
+        self.index_display = display;
         self
     }
 
-    /// The payload fragment carrying the index tags; empty (and omitted from
-    /// the payload) when the market declares none.
-    fn index_tags_payload(&self) -> serde_json::Value {
-        if self.index_tags.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::to_value(&self.index_tags).unwrap_or_default()
-        }
+    /// The display fields to stamp into one component payload (`50` §3.3): the
+    /// author's own declaration (when the entity has a manifest) merged with the
+    /// index row, author first. Merging happens here, once, at the write face
+    /// (`50` INV-5).
+    fn display_for(&self, manifest: Option<&PluginManifest>) -> DisplayFields {
+        let author = manifest.map(author_display).unwrap_or_default();
+        DisplayFields::merge(author, self.index_display.clone())
     }
 
     fn push(&mut self, component: Component) {
@@ -603,6 +605,41 @@ fn attach_plugin_display(payload: &mut serde_json::Value, manifest: &PluginManif
     }
     if let Some(category_id) = &manifest.category_id {
         payload["category_id"] = json!(category_id);
+    }
+}
+
+/// The author's own display metadata, in the shape the payload writer wants
+/// (`50` §3.3). `displayDescription` and its `description_{zh,en}` sibling-key
+/// flavour are merged per locale by
+/// [`PluginManifest::localized_display_description`].
+fn author_display(manifest: &PluginManifest) -> DisplayFields {
+    DisplayFields {
+        name: manifest.display_name.clone().filter(|text| !text.is_empty()),
+        description: manifest.localized_display_description(),
+        prompts: manifest.quick_prompts.clone(),
+        tags: manifest.tags.clone(),
+    }
+}
+
+/// Write the display fields into a component payload (`50` §3.2).
+///
+/// The key names are the wire field names, the same ones
+/// [`attach_plugin_display`] has always written for agents — the three other
+/// kinds simply did not use them. Nothing is written for a field that declared
+/// nothing, so an absent field stays absent on the wire instead of becoming an
+/// empty string or an empty array (`50` INV-3).
+fn attach_display_fields(payload: &mut serde_json::Value, display: &DisplayFields) {
+    if let Some(name) = display.name.as_ref() {
+        payload["display_name"] = serde_json::to_value(name).unwrap_or_default();
+    }
+    if let Some(description) = display.description.as_ref() {
+        payload["display_description"] = serde_json::to_value(description).unwrap_or_default();
+    }
+    if !display.prompts.is_empty() {
+        payload["quick_prompts"] = serde_json::to_value(&display.prompts).unwrap_or_default();
+    }
+    if !display.tags.is_empty() {
+        payload["tags"] = serde_json::to_value(&display.tags).unwrap_or_default();
     }
 }
 
@@ -889,30 +926,38 @@ fn build_plugin_components(
             builder.warn(format!("Team 成员文件缺失/不可解析：{name}（02 §6 step 3）"));
         }
         let id = component_id(&meta.plugin_id, "team");
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": meta.name,
+            "description": manifest.description,
+            "source": meta.source_kind.as_str(),
+            "lead_agent_id": lead_id,
+            "member_agent_ids": member_ids,
+            "planner_policy": "planned",
+            "adaptation_policy": "fixed",
+            "plan_gate": "automatic",
+            "coordination_policy": "leader_planned",
+            "workflow_limits": { "max_parallel": 4 },
+            "team_runtime_capabilities": [
+                "fixed_members", "planning_context", "planned_dag", "local_parallel",
+                "retry", "replan", "events", "artifacts",
+            ],
+        });
+        // Display face (`50` §3.1 / D9): author declaration, index row fills the
+        // gaps. The team payload carried neither `tags` nor `category_id`
+        // before, so `team/list` read two fields that were always empty.
+        attach_display_fields(&mut payload, &builder.display_for(Some(manifest)));
+        if let Some(category_id) = &manifest.category_id {
+            payload["category_id"] = json!(category_id);
+        }
         builder.push(Component::new(
             crate::models::KIND_TEAM,
             id.clone(),
             meta.name.clone(),
             None,
             compat::team(all_resolved),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": meta.name,
-                "description": manifest.description,
-                "source": meta.source_kind.as_str(),
-                "lead_agent_id": lead_id,
-                "member_agent_ids": member_ids,
-                "planner_policy": "planned",
-                "adaptation_policy": "fixed",
-                "plan_gate": "automatic",
-                "coordination_policy": "leader_planned",
-                "workflow_limits": { "max_parallel": 4 },
-                "team_runtime_capabilities": [
-                    "fixed_members", "planning_context", "planned_dag", "local_parallel",
-                    "retry", "replan", "events", "artifacts",
-                ],
-            }),
+            payload,
         ));
     }
 }
@@ -968,10 +1013,10 @@ fn build_skill_market_components(
                         "relative_path": rel,
                         "has_arguments_note": doc.has_arguments_note,
                     });
-                    // Market index row tags (`44`): the skill's only tag source.
-                    if let Some(tags) = builder.index_tags_payload().as_array() {
-                        payload["tags"] = serde_json::Value::Array(tags.clone());
-                    }
+                    // Display face (`50` §3.1): the market index row is the only
+                    // bilingual source a skill has — `SKILL.md` declares one
+                    // language only.
+                    attach_display_fields(&mut payload, &builder.display_for(None));
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
@@ -1021,10 +1066,10 @@ fn build_single_skill_components(
                         "relative_path": rel,
                         "has_arguments_note": doc.has_arguments_note,
                     });
-                    // Market index row tags (`44`): the skill's only tag source.
-                    if let Some(tags) = builder.index_tags_payload().as_array() {
-                        payload["tags"] = serde_json::Value::Array(tags.clone());
-                    }
+                    // Display face (`50` §3.1): the market index row is the only
+                    // bilingual source a skill has — `SKILL.md` declares one
+                    // language only.
+                    attach_display_fields(&mut payload, &builder.display_for(None));
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
@@ -1089,21 +1134,23 @@ fn build_connector_market_components(
             .and_then(|value| value.as_str())
             .unwrap_or("none")
             .to_owned();
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "kind": kind,
+            "transport_summary": transport,
+            "auth_mode": auth_mode,
+            "tool_filter": format!("connector__{slug}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             None,
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "kind": kind,
-                "transport_summary": transport,
-                "auth_mode": auth_mode,
-                "tool_filter": format!("connector__{slug}__<tool>"),
-            }),
+            payload,
         ));
     }
 }
@@ -1148,36 +1195,38 @@ fn build_cli_connector_components(
     } else {
         "cli-auth".to_owned()
     };
+    let mut payload = json!({
+        "id": id,
+        "version": builder.version,
+        "name": directory_name,
+        "kind": "cli",
+        "runtime": {
+            "type": runtime_type,
+            "version": runtime_version,
+        },
+        "transport_summary": if init_summary.is_empty() {
+            format!("cli:{}", directory_name)
+        } else {
+            init_summary.clone()
+        },
+        "auth_mode": auth_mode,
+        "auth": {
+            "init": init_summary,
+            "status": status_summary,
+            "status_match": cli.status_match.clone(),
+            "domain": auth_domain,
+        },
+        "version_check": version_check,
+        "tool_filter": format!("connector__{directory_name}__<tool>"),
+    });
+    attach_display_fields(&mut payload, &builder.display_for(None));
     builder.push(Component::new(
         crate::models::KIND_CONNECTOR,
         id.clone(),
         directory_name.to_owned(),
         None,
         compat::connector(),
-        json!({
-            "id": id,
-            "version": builder.version,
-            "name": directory_name,
-            "kind": "cli",
-            "runtime": {
-                "type": runtime_type,
-                "version": runtime_version,
-            },
-            "transport_summary": if init_summary.is_empty() {
-                format!("cli:{}", directory_name)
-            } else {
-                init_summary.clone()
-            },
-            "auth_mode": auth_mode,
-            "auth": {
-                "init": init_summary,
-                "status": status_summary,
-                "status_match": cli.status_match.clone(),
-                "domain": auth_domain,
-            },
-            "version_check": version_check,
-            "tool_filter": format!("connector__{directory_name}__<tool>"),
-        }),
+        payload,
     ));
 
     // skills/ scan (one SKILL.md per subdirectory; shallow, mirrors the
@@ -1334,23 +1383,25 @@ fn build_mcp_connector_components(
             (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
         };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "connector_id": directory_name,
+            "kind": kind,
+            "transport": transport,
+            "transport_summary": transport_summary,
+            "auth_mode": auth_mode,
+            "tool_filter": format!("connector__{name}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             Some("mcp.json".to_owned()),
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "connector_id": directory_name,
-                "kind": kind,
-                "transport": transport,
-                "transport_summary": transport_summary,
-                "auth_mode": auth_mode,
-                "tool_filter": format!("connector__{name}__<tool>"),
-            }),
+            payload,
         ));
     }
 
@@ -1467,22 +1518,24 @@ fn build_connector_components(
             (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
         };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "kind": kind,
+            "transport": transport,
+            "transport_summary": transport_summary,
+            "auth_mode": "oauth",
+            "tool_filter": format!("connector__{name}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             Some(source_rel.to_owned()),
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "kind": kind,
-                "transport": transport,
-                "transport_summary": transport_summary,
-                "auth_mode": "oauth",
-                "tool_filter": format!("connector__{name}__<tool>"),
-            }),
+            payload,
         ));
     }
 }
@@ -2221,6 +2274,7 @@ pub fn component_to_public(component: &Component) -> AppServerImportComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::LocalizedText;
 
     #[test]
     fn sensitive_field_detection_never_leaks_values() {
@@ -2240,6 +2294,66 @@ mod tests {
             "wb-software-company-software-team-lead"
         );
         assert_eq!(component_id("my plugin", "hello world"), "wb-my-plugin-hello-world");
+    }
+
+    // -----------------------------------------------------------------------
+    // Display fields (`50` §3.2/§3.3)
+    // -----------------------------------------------------------------------
+
+    /// TC-9: the author's declaration wins per locale, the index row fills the
+    /// gaps — and the stamped payload carries the wire field names verbatim.
+    #[test]
+    fn the_author_declaration_wins_and_the_index_fills_the_missing_locale() {
+        let manifest: PluginManifest = serde_json::from_value(json!({
+            "name": "demo-team",
+            "displayName": { "zh": "股价分析团" },
+            "quickPrompts": [{ "zh": "帮我看看今天的盘面", "en": "How is the market today?" }],
+        }))
+        .expect("manifest");
+
+        let builder = ComponentBuilder::new("1.0.0".into()).with_index_display(DisplayFields {
+            name: Some(LocalizedText { zh: Some("索引行名字".into()), en: Some("Index name".into()) }),
+            description: Some(LocalizedText {
+                zh: Some("索引行简介".into()),
+                en: Some("Index description".into()),
+            }),
+            prompts: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
+            tags: vec![LocalizedText { zh: Some("数据智能".into()), en: None }],
+        });
+
+        let merged = builder.display_for(Some(&manifest));
+        // Author's zh survives; the index's en fills the side the author omitted.
+        assert_eq!(merged.name.as_ref().and_then(|text| text.zh.as_deref()), Some("股价分析团"));
+        assert_eq!(merged.name.as_ref().and_then(|text| text.en.as_deref()), Some("Index name"));
+        // No author description at all → the index row answers both sides.
+        assert_eq!(
+            merged.description.as_ref().and_then(|text| text.zh.as_deref()),
+            Some("索引行简介")
+        );
+        // A position-paired list is taken whole from whichever side declared it.
+        assert_eq!(merged.prompts.len(), 1);
+        assert_eq!(merged.prompts[0].zh.as_deref(), Some("帮我看看今天的盘面"));
+        assert_eq!(merged.tags.len(), 1);
+
+        let mut payload = json!({});
+        attach_display_fields(&mut payload, &merged);
+        assert_eq!(payload["display_name"]["zh"], "股价分析团");
+        assert_eq!(payload["display_name"]["en"], "Index name");
+        assert_eq!(payload["display_description"]["en"], "Index description");
+        assert_eq!(payload["quick_prompts"][0]["en"], "How is the market today?");
+        assert_eq!(payload["tags"][0]["zh"], "数据智能");
+    }
+
+    /// TC-7 / INV-3: nothing declared → no key at all (not an empty object, not
+    /// a copy of the single-language `name`).
+    #[test]
+    fn nothing_declared_writes_no_display_keys() {
+        let builder = ComponentBuilder::new("1.0.0".into());
+        let merged = builder.display_for(None);
+        assert!(merged.is_empty());
+        let mut payload = json!({ "name": "fenbi_mcp" });
+        attach_display_fields(&mut payload, &merged);
+        assert_eq!(payload, json!({ "name": "fenbi_mcp" }));
     }
 
     // -----------------------------------------------------------------------

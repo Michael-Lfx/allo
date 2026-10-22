@@ -239,8 +239,18 @@ use tokio::sync::mpsc;
 /// field is derived from the transport and says nothing about what the
 /// connector needs — the declaration answers that through `credential.mode`
 /// (`34` §6.1), and a client must never pick an auth affordance from a shape.
-/// No method is added or removed, so the documented split stays `56 / 83`.
-pub const PROTOCOL_VERSION: &str = "fp-17";
+/// **`fp-18` also gives all four entity kinds the same display fields** (doc
+/// `50`): `AppServerAgentSummary`, `AppServerTeamSummary`,
+/// `AppServerSkillSummary` and `AppServerConnectorSummary` each carry
+/// `display_name` / `display_description` / `tags` / `quick_prompts` with
+/// identical names and types. `display_description` and `quick_prompts` move up
+/// from `AppServerAgentDetail` (which keeps them through `flatten`, so the JSON
+/// is unchanged), and the connector summary gains all four for the first time —
+/// `name` stays the runtime identity the tool namespace is built from. The
+/// values are merged at import from the author's `plugin.json` and the market
+/// index row, then read back from the component payload; no method is added or
+/// removed, so the documented split stays `56 / 83`.
+pub const PROTOCOL_VERSION: &str = "fp-18";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9392,6 +9402,8 @@ mod tests {
             avatar_url: None,
             tags: vec![],
             category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
@@ -9433,6 +9445,10 @@ mod tests {
             },
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
@@ -9516,6 +9532,8 @@ mod tests {
                 avatar_url: None,
                 tags: vec![],
                 category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -9587,6 +9605,8 @@ mod tests {
                 avatar_url: None,
                 tags: vec![],
                 category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -12242,6 +12262,9 @@ model = "mimo-v2.5-free"
             required_connectors: vec![],
             avatar_url: None,
             tags: vec![],
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12257,6 +12280,10 @@ model = "mimo-v2.5-free"
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         }
     }
 
@@ -12692,6 +12719,8 @@ model = "mimo-v2.5-free"
             avatar_url: None,
             tags: vec![],
             category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12707,6 +12736,9 @@ model = "mimo-v2.5-free"
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
             tags: vec![],
             category_id: None,
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -13060,8 +13092,6 @@ model = "mimo-v2.5-free"
             background: None,
             isolation: None,
             permission_mode_ignored: false,
-            display_description: None,
-            quick_prompts: vec![],
             default_init_prompt: None,
             expert_type: None,
         };
@@ -13588,6 +13618,9 @@ model = "mimo-v2.5-free"
                         // `nomifun-app`（`app_server_entry_assets`），不在这里。
                         avatar_url: None,
                         tags: vec![],
+                        display_name: None,
+                        display_description: None,
+                        quick_prompts: vec![],
                     }
                 })
                 .collect())

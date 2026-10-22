@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use nomifun_api_types::AppServerLocalizedText;
 use nomifun_db::IPluginSnapshotRepository;
 
 /// Icon extensions the store asset endpoint serves, in probe order.
@@ -83,12 +82,20 @@ impl AppServerEntryAssets {
         self.avatar_for_snapshot(&row.snapshot_id).await
     }
 
-    /// The localized tags one installed product's market index row declared
-    /// (`44`). Walks the same provenance chain as the avatar resolution —
-    /// runtime product → snapshot → skill component payload — and reads the
-    /// `tags` the importer stamped in. `None` = not a market product, or the
-    /// market declares no tags.
-    pub async fn tags_for_skill(&self, snapshot_id: &str, slug: Option<&str>) -> Option<Vec<AppServerLocalizedText>> {
+    /// The display metadata one installed product's component payload carries
+    /// (`50` §3.5).
+    ///
+    /// Walks the same provenance chain as the avatar resolution — runtime
+    /// product → snapshot → skill component payload — and reads the four keys
+    /// the importer stamped in (`display_name`, `display_description`,
+    /// `quick_prompts`, `tags`). `None` = not a market product, or a snapshot
+    /// predating `50` (whose fields the client fills from `name` /
+    /// `description`).
+    pub async fn display_for_skill(
+        &self,
+        snapshot_id: &str,
+        slug: Option<&str>,
+    ) -> Option<nomifun_importer::DisplayFields> {
         let components = self.snapshots.get_components(snapshot_id).await.ok()?;
         // The payload that owns this skill: prefer the component whose
         // relative path carries the runtime slug, else the first skill row.
@@ -98,23 +105,9 @@ impl AppServerEntryAssets {
             .find(|component| {
                 slug.is_none_or(|name| component.relative_path.as_deref().is_some_and(|rel| rel.contains(name)))
             })?;
-        let value: serde_json::Value = serde_json::from_str(&row.payload_json).ok()?;
-        let tags = value.get("tags")?.as_array()?;
-        let mut out = Vec::new();
-        for tag in tags {
-            let (en, zh) = match tag {
-                serde_json::Value::String(text) => (None, Some(text.clone())),
-                serde_json::Value::Object(map) => (
-                    map.get("en").and_then(|v| v.as_str()).map(str::to_owned),
-                    map.get("zh").and_then(|v| v.as_str()).map(str::to_owned),
-                ),
-                _ => continue,
-            };
-            if en.is_some() || zh.is_some() {
-                out.push(AppServerLocalizedText { en, zh });
-            }
-        }
-        (!out.is_empty()).then_some(out)
+        let payload: serde_json::Value = serde_json::from_str(&row.payload_json).ok()?;
+        let display = crate::app_server_display::display_from_payload(&payload);
+        (!display.is_empty()).then_some(display)
     }
 
     /// Drop the memo (market refresh / re-install may change an entry icon).

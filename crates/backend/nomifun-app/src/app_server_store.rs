@@ -25,7 +25,7 @@ use nomifun_db::{
     IMarketplaceRepository, IPluginSnapshotRepository, PluginMarketplaceRow,
     PluginSnapshotComponentRow,
 };
-use nomifun_importer::{ImporterService, LocalizedText, PluginManifest};
+use nomifun_importer::{DisplayFields, ImporterService, LocalizedText, PluginManifest};
 
 /// Composition-root Store provider: marketplace catalog + provenance install
 /// state + one-click install.
@@ -123,8 +123,12 @@ pub(crate) struct MarketIndexInfo {
     /// own, so without it the entry is pinned at the `1.0.0` placeholder and can
     /// never be seen to change (`36` D2 / `18` §11 D9).
     version: Option<String>,
-    #[allow(dead_code)]
-    description: Option<String>,
+    /// The row's description, both languages kept apart (`50` §3.3).
+    ///
+    /// The row's **top-level** `description` is deliberately not used: its
+    /// language is not reliable (210 of 283 connector rows carry English there,
+    /// `50` P4), so it must never stand in for a missing locale (`50` INV-3).
+    description: LocalizedText,
     /// The index row's localized tags (`tags_zh`/`tags_en`, position-paired,
     /// `legacy_tags_*` merged with zh-value dedup — `43` §3.3). The only tag
     /// source for skill/connector entries, which carry no `plugin.json`. Read
@@ -137,6 +141,29 @@ pub(crate) struct MarketIndexInfo {
     /// neither ships a `plugin.json` (doc `49` §3.7). Display data only: never
     /// search input (doc `49` D9).
     pub(crate) examples: Vec<LocalizedText>,
+}
+
+impl MarketIndexInfo {
+    /// The display metadata this row declares (`50` §3.3), in the shape the
+    /// importer stamps into a payload and the catalogs read back out.
+    pub(crate) fn display(&self) -> DisplayFields {
+        DisplayFields {
+            name: localized_pair(self.name_zh.as_deref(), self.name_en.as_deref()),
+            description: (!self.description.is_empty()).then(|| self.description.clone()),
+            prompts: self.examples.clone(),
+            tags: self.tags.clone(),
+        }
+    }
+}
+
+/// A `{zh, en}` pair with blank sides dropped — a market that writes `""`
+/// declared nothing (`50` INV-3).
+fn localized_pair(zh: Option<&str>, en: Option<&str>) -> Option<LocalizedText> {
+    let text = LocalizedText {
+        zh: zh.map(str::to_owned).filter(|text| !text.trim().is_empty()),
+        en: en.map(str::to_owned).filter(|text| !text.trim().is_empty()),
+    };
+    (!text.is_empty()).then_some(text)
 }
 
 /// One market's own entry indexes, read once per market.
@@ -194,17 +221,26 @@ fn read_index(
             key.to_owned(),
             MarketIndexInfo {
                 name_zh: item.get("name_zh").and_then(|v| v.as_str()).map(str::to_owned),
-                name_en: item
-                    .get("name_en")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("name").and_then(|v| v.as_str()))
-                    .map(str::to_owned),
+                // The row's `name` is deliberately **not** a fallback here
+                // (`50` D6): for a connector it is the entry's display text and
+                // for a skill it is the technical slug, so copying it in would
+                // put either Chinese into the `en` slot or a slug into
+                // `display_name`. The store item's own `name` chain already ends
+                // with the entry name, so dropping it changes nothing there.
+                name_en: item.get("name_en").and_then(|v| v.as_str()).map(str::to_owned),
                 version: item.get("version").and_then(|v| v.as_str()).map(str::to_owned),
-                description: item
-                    .get("description_zh")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("description").and_then(|v| v.as_str()))
-                    .map(str::to_owned),
+                description: LocalizedText {
+                    zh: item
+                        .get("description_zh")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_owned),
+                    en: item
+                        .get("description_en")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_owned),
+                },
                 tags: localized_tags_from_index(item),
                 examples: localized_examples_from_index(item),
             },
