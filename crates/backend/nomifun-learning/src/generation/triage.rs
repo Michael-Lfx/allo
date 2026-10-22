@@ -9,7 +9,6 @@
 //! 本票不改 `generate_course` 主流程接线（t2/t3 的接缝）；交付的是可独立调用
 //! 的编排入口 [`run_kb_triage`]。
 
-use super::sample::sanitize_namespace;
 use super::structured_batch::{structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure};
 use super::*;
 use futures::stream::{self, StreamExt};
@@ -121,6 +120,32 @@ impl KbTriageRole {
     /// 一律保留，`mixed` 不整文件排除，`uncertain` 不静默丢）。
     pub fn is_candidate(self) -> bool {
         !matches!(self, KbTriageRole::Noise | KbTriageRole::Duplicate)
+    }
+
+    /// serde snake_case 名（与序列化口径一致；报告/脚本/冒烟共用的稳定读数）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KbTriageRole::Core => "core",
+            KbTriageRole::Prerequisite => "prerequisite",
+            KbTriageRole::Practice => "practice",
+            KbTriageRole::Mixed => "mixed",
+            KbTriageRole::Noise => "noise",
+            KbTriageRole::Duplicate => "duplicate",
+            KbTriageRole::Uncertain => "uncertain",
+        }
+    }
+
+    /// 展开批提示词的角色行（中文提示语，t3 `build_expand_user_prompt` 用）。
+    pub fn prompt_label(self) -> &'static str {
+        match self {
+            KbTriageRole::Core => "core(正文)",
+            KbTriageRole::Prerequisite => "prerequisite(前置背景)",
+            KbTriageRole::Practice => "practice(练习)",
+            KbTriageRole::Mixed => "mixed(混合,只看给出的相关段)",
+            KbTriageRole::Noise => "noise",
+            KbTriageRole::Duplicate => "duplicate",
+            KbTriageRole::Uncertain => "uncertain",
+        }
     }
 }
 
@@ -527,31 +552,15 @@ impl KbTriageCounts {
     }
 }
 
-/// 多库命名空间分配（沿用采样侧口径，t4）：按（库名 trim, kb_id）字典序定
-/// 库序，库名清洗（`sanitize_namespace`）后同名库从第二个起加 `~2`、`~3`。
+/// 多库命名空间分配沿用采样侧单一实现（t4）：按（库名 trim, kb_id）字典
+/// 序定库序，库名清洗（`sanitize_namespace`）后同名库从第二个起加 `~2`、
+/// `~3`——两侧（采样/分诊）同口径同行为（评审 T1 抽共享）。
 fn assign_namespaces(bases: &[(String, String)]) -> Vec<String> {
-    let mut order: Vec<usize> = (0..bases.len()).collect();
-    order.sort_by(|left, right| {
-        bases[*left]
-            .1
-            .trim()
-            .cmp(bases[*right].1.trim())
-            .then_with(|| bases[*left].0.cmp(&bases[*right].0))
-    });
-    let mut namespaces: Vec<String> = vec![String::new(); bases.len()];
-    let mut used: HashSet<String> = HashSet::new();
-    for index in order {
-        let (kb_id, name) = &bases[index];
-        let base_ns = sanitize_namespace(name, kb_id);
-        let mut candidate = base_ns.clone();
-        let mut suffix = 2usize;
-        while !used.insert(candidate.clone()) {
-            candidate = format!("{base_ns}~{suffix}");
-            suffix += 1;
-        }
-        namespaces[index] = candidate;
-    }
-    namespaces
+    let pairs: Vec<(&str, &str)> = bases
+        .iter()
+        .map(|(kb_id, name)| (kb_id.as_str(), name.as_str()))
+        .collect();
+    super::sample::assign_namespaces(&pairs)
 }
 
 /// 正文一次读出的全部分析信号（语言/布局键在扫描处单独计算）。
