@@ -5717,14 +5717,23 @@ impl ConversationService {
     /// Idempotently ensures the default standalone voice conversation ("语音助手") exists
     /// for the given user, returning its canonical conversation ID.
     pub async fn ensure_default_voice_conversation(&self, user_id: &str) -> Result<String, AppError> {
-        let creation_key = format!("voice:default:{user_id}");
+        self.ensure_default_voice_conversation_with_owner(user_id, None).await
+    }
+
+    pub async fn ensure_default_voice_conversation_with_owner(&self, user_id: &str, owner: Option<&str>) -> Result<String, AppError> {
+        let owner = owner.map(CompanionId::try_from).transpose()
+            .map_err(|e|AppError::BadRequest(format!("invalid voice memory owner: {e}")))?;
+        let creation_key = match &owner {
+            Some(owner) => format!("voice:default:{user_id}:{owner}"),
+            None => format!("voice:default:{user_id}"),
+        };
         if let Some(existing) = self.conversation_repo.find_by_creation_key(user_id, &creation_key).await? {
             return Ok(existing.conversation_id);
         }
         let req = CreateConversationRequest {
             name: Some("语音助手".to_owned()),
             r#type: AgentType::Nomi,
-            extra: serde_json::json!({ "is_default_voice": true }),
+            extra: serde_json::json!({ "is_default_voice": true, "voice": true, "memory_owner_companion_id": owner }),
             source: Some(ConversationSource::Nomifun),
             model: None,
             preset_id: None,
@@ -9194,6 +9203,7 @@ impl ConversationService {
         message_id: &str,
         display_text: &str,
         created_at: i64,
+        memory_owner_companion_id: Option<&CompanionId>,
     ) {
         self.user_events.send_to_user(
             user_id,
@@ -9209,6 +9219,8 @@ impl ConversationService {
                     "origin": serde_json::Value::Null,
                     "companion": false,
                     "companion_id": serde_json::Value::Null,
+                    "voice": true,
+                    "memory_owner_companion_id": memory_owner_companion_id,
                     "channel_platform": serde_json::Value::Null,
                     "created_at": created_at,
                 }),
@@ -9249,7 +9261,9 @@ impl ConversationService {
             return Err(AppError::BadRequest("voice_message_command_empty".to_owned()));
         }
         let conversation_key = parse_conv_id(conversation_id)?;
-        let _row = self
+        let projection_token = CancellationToken::new();
+        let _projection_guard = self.runtime_state.acquire_preparation_gate(conversation_key, &projection_token).await?;
+        let row = self
             .conversation_repo
             .get(conversation_key)
             .await?
@@ -9257,6 +9271,17 @@ impl ConversationService {
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let memory_owner = voice_memory_owner_from_extra(&row.extra)?;
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let current_epoch = self
+                .conversation_repo
+                .get_turn_admission_state(user_id, conversation_key)
+                .await?
+                .epoch;
+            if current_epoch != expected_epoch {
+                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
         if let Some(existing) = self
             .conversation_repo
             .get_message(conversation_key, message_id)
@@ -9285,6 +9310,7 @@ impl ConversationService {
                 message_id,
                 display_text,
                 existing.created_at,
+                memory_owner.as_ref(),
             );
             return Ok(());
         }
@@ -9318,12 +9344,23 @@ impl ConversationService {
                 .await?
                 .filter(|existing| Self::message_has_public_text(&existing.content, display_text, command_id))
             {
+                if let Some(expected_epoch) = expected_admission_epoch {
+                    let current_epoch = self
+                        .conversation_repo
+                        .get_turn_admission_state(user_id, conversation_key)
+                        .await?
+                        .epoch;
+                    if current_epoch != expected_epoch {
+                        return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+                    }
+                }
                 self.broadcast_voice_user_message(
                     user_id,
                     &existing.conversation_id,
                     message_id,
                     display_text,
                     existing.created_at,
+                    memory_owner.as_ref(),
                 );
                 return Ok(());
             }
@@ -9335,6 +9372,7 @@ impl ConversationService {
             message_id,
             display_text,
             message.created_at,
+            memory_owner.as_ref(),
         );
         Ok(())
     }
@@ -10908,6 +10946,8 @@ impl ConversationService {
         expected_admission_epoch: Option<i64>,
     ) -> Result<String, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
+        let projection_token = CancellationToken::new();
+        let _projection_guard = self.runtime_state.acquire_preparation_gate(conversation_id, &projection_token).await?;
         let operation_id = operation_id.trim();
         let content = content.trim();
         let origin = origin.trim();
@@ -11130,6 +11170,15 @@ impl ConversationService {
                 companion_context_from_extra(&conversation.extra)?;
 
             if let Some(user_row) = &projection.user_message {
+                let memory_owner = voice_memory_owner_from_extra(&conversation.extra)?;
+                self.broadcast_voice_user_message(
+                    user_id,
+                    conversation_id,
+                    &user_row.message_id,
+                    raw_user_text.unwrap_or_default(),
+                    user_row.created_at,
+                    memory_owner.as_ref(),
+                );
                 let user_data = serde_json::from_str::<serde_json::Value>(&user_row.content)
                     .unwrap_or_else(|_| serde_json::json!({ "content": user_row.content }));
                 self.user_events.send_to_user(
@@ -17807,16 +17856,33 @@ fn parse_message_cursor(cursor: &str) -> Result<(i64, String), AppError> {
 /// collector, the companion window's remote-turn bubble) can recognize companion
 /// conversations — including Channel Agent sessions that never register in
 /// the companion-side thread table — straight off the wire.
+fn voice_memory_owner_from_extra(extra: &str) -> Result<Option<CompanionId>, AppError> {
+    let value: serde_json::Value = serde_json::from_str(extra)
+        .map_err(|error| AppError::Internal(format!("invalid conversation extra JSON: {error}")))?;
+    let owner=value.get("memory_owner_companion_id").filter(|value| !value.is_null()).or_else(|| {
+        // Explicit legacy companion-session targets already have a trusted
+        // owner. Ordinary/voice workspaces must never infer one from that key.
+        (value.get("companion_session").and_then(|v|v.as_bool())==Some(true))
+            .then(||value.get("companion_id").filter(|v|!v.is_null())).flatten()
+    });
+    match owner {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| AppError::Internal("invalid voice memory owner".into()))?;
+            CompanionId::parse(raw).map(Some).map_err(|_| AppError::Internal("invalid voice memory owner".into()))
+        }
+    }
+}
+
 fn companion_context_from_extra(
     extra: &str,
 ) -> Result<(bool, Option<CompanionId>, Option<String>), AppError> {
     let value: serde_json::Value = serde_json::from_str(extra)
         .map_err(|error| AppError::Internal(format!("invalid conversation extra JSON: {error}")))?;
-    let companion = value
-        .get("companion_session")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let companion_id = match value.get("companion_id") {
+    let companion_id_val = value
+        .get("companion_id")
+        .filter(|v| !v.is_null());
+    let companion_id = match companion_id_val {
         None => None,
         Some(value) => {
             let raw = value.as_str().ok_or_else(|| {
@@ -17830,7 +17896,11 @@ fn companion_context_from_extra(
             )
         }
     };
-    let channel_platform = match value.get("channel_platform") {
+    let companion = value
+        .get("companion_session")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let channel_platform = match value.get("channel_platform").filter(|v| !v.is_null()) {
         None => None,
         Some(value) => {
             let raw = value.as_str().ok_or_else(|| {
@@ -18036,6 +18106,19 @@ mod tests {
     const PROVIDER_ID_1: &str = "0190f5fe-7c00-7a00-8000-000000000001";
     const PROVIDER_ID_2: &str = "0190f5fe-7c00-7a00-8000-000000000002";
     const RUNTIME_PRESET_ID: &str = "0190f5fe-7c00-7a00-8000-000000000003";
+
+    #[test]
+    fn voice_memory_owner_is_separate_from_companion_session_with_explicit_legacy_support() {
+        let workspace=json!({"voice":true,"memory_owner_companion_id":PROVIDER_ID_1,"companion_id":null}).to_string();
+        assert_eq!(voice_memory_owner_from_extra(&workspace).unwrap().unwrap().as_str(),PROVIDER_ID_1);
+        assert_eq!(companion_context_from_extra(&workspace).unwrap(),(false,None,None));
+        let legacy=json!({"companion_session":true,"companion_id":PROVIDER_ID_1}).to_string();
+        assert_eq!(voice_memory_owner_from_extra(&legacy).unwrap().unwrap().as_str(),PROVIDER_ID_1);
+        let unowned=json!({"voice":true,"companion_id":PROVIDER_ID_1}).to_string();
+        assert!(voice_memory_owner_from_extra(&unowned).unwrap().is_none());
+        let invalid=json!({"companion_session":true,"companion_id":PROVIDER_ID_1,"memory_owner_companion_id":"bad-owner"}).to_string();
+        assert!(voice_memory_owner_from_extra(&invalid).is_err());
+    }
 
     #[test]
     fn reasoning_effort_change_only_marks_real_nomi_value_changes() {

@@ -281,6 +281,20 @@ impl VoiceSessionDriver {
         self.listening_deadline = None;
     }
 
+    /// A quiet continuous connection may yield output without ending its session.
+    pub fn yield_for_notification(&mut self) -> bool {
+        if self.speech_started {
+            return false;
+        }
+        let event = match self.current_state() {
+            AcousticState::Idle => return true,
+            AcousticState::Listening => AcousticEvent::ListenTimeout,
+            AcousticState::FollowUpListening => AcousticEvent::FollowUpTimeout,
+            _ => return false,
+        };
+        self.handle_event(event) == Ok(AcousticState::Idle)
+    }
+
     pub fn limit_confirmation_window(&mut self, remaining: Duration) {
         if self.current_state() == AcousticState::ListeningConfirm {
             let limit = self.now() + remaining.min(Duration::from_secs(8));

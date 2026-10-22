@@ -542,7 +542,9 @@ impl Collector {
     /// for events that predate the marker. The marker also covers entry
     /// points the registry never sees (Channel Agent sessions).
     async fn is_companion_event(&self, data: &serde_json::Value) -> bool {
-        if data.get("companion").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if data.get("companion").and_then(|v| v.as_bool()).unwrap_or(false)
+            || data.get("memory_owner_companion_id").is_some_and(|value| !value.is_null())
+        {
             return true;
         }
         match data.get("conversation_id").and_then(|v| v.as_str()) {
@@ -555,6 +557,9 @@ impl Collector {
     /// present, else the thread registry's owner, else the default companion,
     /// else nobody.
     async fn resolve_companion_id(&self, data: &serde_json::Value) -> Option<String> {
+        if let Some(owner) = data.get("memory_owner_companion_id").filter(|value| !value.is_null()) {
+            return owner.as_str().and_then(|id| CompanionId::try_from(id).ok()).map(|id| id.into_string());
+        }
         if let Some(id) = data
             .get("companion_id")
             .and_then(|v| v.as_str())
@@ -564,11 +569,15 @@ impl Collector {
             return Some(id.into_string());
         }
         if let Some(conv) = data.get("conversation_id").and_then(|v| v.as_str())
-            && let Some(id) = self.store.thread_companion_id(conv).await.ok().flatten()
+            && let Ok(Some(id)) = self.store.thread_companion_id(conv).await
         {
             return Some(id);
         }
-        self.config.read().await.default_companion_id.clone()
+        if data.get("companion").and_then(|v| v.as_bool()).unwrap_or(false) {
+            self.config.read().await.default_companion_id.clone()
+        } else {
+            None
+        }
     }
 
     /// Spawn the bus-tap loop. The collector observes both instance-public and
@@ -671,6 +680,12 @@ impl Collector {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
                 if self.user_message_seen(message_id) {
+                    return;
+                }
+                if msg.data.get("voice").and_then(|value| value.as_bool()) == Some(true)
+                    && self.resolve_companion_id(&msg.data).await.is_none()
+                {
+                    tracing::warn!(message_id, "voice memory event has no valid frozen owner; collection skipped");
                     return;
                 }
                 if self.is_companion_event(&msg.data).await {
@@ -1506,6 +1521,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn voice_original_uses_frozen_owner_once_without_granting_companion_xp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::CompanionStore::open_memory().await.unwrap();
+        let owner = companion_fixture(3);
+        let mut config = SharedCompanionConfig::default();
+        config.default_companion_id = Some(companion_fixture(4).try_into().unwrap());
+        let mut collector = Collector::new(dir.path().to_path_buf(),Arc::new(RwLock::new(config)),store.clone());
+        let original = WebSocketMessage::new("message.userCreated",serde_json::json!({
+            "conversation_id":conversation_fixture(3),"msg_id":"stable-voice-original", "content":"不是北京，改深圳，数量是2",
+            "voice":true,"companion":false,"companion_id":null,"memory_owner_companion_id":owner,
+        }));
+        collector.handle(&original).await;
+        collector.handle(&original).await;
+        let (events,_) = read_events_since(dir.path(),0,10).unwrap();
+        assert_eq!(events.len(),1);
+        assert_eq!(events[0].data["companion_id"],owner);
+        assert_eq!(events[0].data["content"],"不是北京，改深圳，数量是2");
+        assert_eq!(store.get_companion_state_i64(&owner,"xp").await.unwrap(),0);
+        assert!(collector.resolve_companion_id(&serde_json::json!({"memory_owner_companion_id":"invalid","companion":true})).await.is_none());
+    }
+
+    #[tokio::test]
     async fn payload_marker_identifies_companion_without_registry() {
         // Channel Agent sessions never register in companion_threads —
         // the wire markers (companion / companion_id) must be enough.
@@ -1821,6 +1858,56 @@ mod tests {
             .await;
         assert_eq!(store.get_companion_state_i64(&default_companion, "xp").await.unwrap(), 2);
         assert_eq!(store.get_state_i64("xp").await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_c09_main_side_db_separation_and_owner_switch_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::CompanionStore::open_memory().await.unwrap();
+        let conversation = conversation_fixture(99);
+        let companion_a = companion_fixture(1);
+        let companion_b = companion_fixture(2);
+
+        // 1. Separation test: thread_companion_id must not query main conversations table or error with no such table
+        let thread_res = store.thread_companion_id(&conversation).await;
+        assert_eq!(thread_res.unwrap(), None, "side db must return Ok(None) without cross-table query to conversations");
+
+        // 2. Owner switch & replay test:
+        // Default companion is set to Companion B (e.g. user switched default companion).
+        let mut config = SharedCompanionConfig::default();
+        config.default_companion_id = Some(companion_b.clone());
+        let config = Arc::new(RwLock::new(config));
+        let mut collector = Collector::new(dir.path().to_path_buf(), config.clone(), store.clone());
+
+        // Event from conversation whose frozen memory owner is Companion A
+        collector
+            .handle(&WebSocketMessage::new(
+                "turn.completed",
+                serde_json::json!({
+                    "conversation_id": conversation,
+                    "memory_owner_companion_id": companion_a,
+                }),
+            ))
+            .await;
+
+        // XP must be credited to Companion A, NEVER to Companion B!
+        assert_eq!(store.get_companion_state_i64(&companion_a, "xp").await.unwrap(), 2);
+        assert_eq!(store.get_companion_state_i64(&companion_b, "xp").await.unwrap(), 0);
+
+        // 3. Failure isolation: an ordinary event without companion marker or companion_id must NOT be attributed to Companion B
+        let ordinary_conv = conversation_fixture(100);
+        collector
+            .handle(&WebSocketMessage::new(
+                "turn.completed",
+                serde_json::json!({
+                    "conversation_id": ordinary_conv,
+                }),
+            ))
+            .await;
+
+        // Neither companion gets XP; Companion B still has 0
+        assert_eq!(store.get_companion_state_i64(&companion_a, "xp").await.unwrap(), 2);
+        assert_eq!(store.get_companion_state_i64(&companion_b, "xp").await.unwrap(), 0);
     }
 
     #[test]

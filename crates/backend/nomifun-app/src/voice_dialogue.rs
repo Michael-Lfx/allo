@@ -168,6 +168,9 @@ pub struct FrozenVoiceExecution {
 
 #[async_trait]
 pub trait VoiceDialogueRecorder: Send + Sync {
+    async fn keyboard_configuration(&self, _conversation_id:&str) -> Result<FrozenVoiceExecution,String> {
+        Err("binding_invalid".into())
+    }
     async fn freeze_session(&self,_session_id:&str)->Result<Option<nomifun_api_types::voice::VoiceBindingSnapshot>,VoiceDialogueRecorderError> {Ok(None)}
 
     async fn task_configuration(&self, _command:&nomifun_api_types::voice::VoiceTaskCommand) -> Result<Option<FrozenVoiceExecution>,String> {

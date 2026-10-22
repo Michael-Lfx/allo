@@ -90,7 +90,8 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     expect(html).toContain('ignore');
     expect(html).toContain(dictionary.session.userText);
     expect(html).toContain(dictionary.session.modelText);
-    expect(html).toContain('<details open="">');
+    expect(html).toContain('<details>');
+    expect(html).not.toContain('<details open');
     expect(html).not.toContain(dictionary.session.assistantText);
     expect(html).not.toContain(dictionary.session.understoodRequest);
   });

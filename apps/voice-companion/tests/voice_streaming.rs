@@ -4,6 +4,23 @@ use std::time::Duration;
 use nomifun_voice_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,driver::VoiceRouter};
 use nomifun_api_types::voice::VoiceDialogueRequest;
 
+#[tokio::test]
+async fn model_failure_does_not_strand_an_already_captured_follow_up() {
+    let flow=StreamingWorker::with_error(true).await;
+    flow.speak().await;
+    tokio::time::timeout(Duration::from_secs(2),flow.sink.wrote.notified()).await.unwrap();
+    let session=flow.runtime.snapshot().session_id;
+    flow.runtime.enqueue_pending_utterance(vec![0.05;3200],session);
+    assert_eq!(flow.runtime.pending_utterance_count(),1);
+    flow.server.release.notify_one();
+    let resolved=tokio::time::timeout(Duration::from_secs(2),async {
+        while flow.server.calls.load(Ordering::SeqCst)<2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await;
+    assert!(resolved.is_ok(),"B already captured before A's model error must reach processing; calls={}, pending={}, snapshot={:?}",flow.server.calls.load(Ordering::SeqCst),flow.runtime.pending_utterance_count(),flow.runtime.snapshot());
+}
+
 struct ModelStream {
     endpoint:String,
     release:Arc<tokio::sync::Notify>,

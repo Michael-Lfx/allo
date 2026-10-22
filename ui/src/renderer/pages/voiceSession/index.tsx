@@ -10,6 +10,7 @@ import { THEME_SYNC_EVENT, type ThemeSyncPayload } from '@renderer/utils/theme/t
 import VoiceAudioStatus from './VoiceAudioStatus';
 import VoiceConversation from './VoiceConversation';
 import VoiceTaskStatus from './VoiceTaskStatus';
+import VoiceTaskQueue from './VoiceTaskQueue';
 import VoiceTaskDiagnostics from './VoiceTaskDiagnostics';
 import VoiceErrorStatus from './VoiceErrorStatus';
 
@@ -66,9 +67,10 @@ export default function VoiceSessionPage() {
     <div role='status' aria-live='polite'>{snapshot ? t(`voice.session.phase.${snapshot.phase}`) : t('voice.session.connecting')}</div>
     <div className='shrink-0'><VoiceAudioStatus snapshot={snapshot} includeError={false} compact /></div>
     <section className='flex-1 min-h-0 overflow-auto flex flex-col gap-3'>
-      <VoiceTaskDiagnostics snapshot={snapshot} />
       <VoiceConversation snapshot={snapshot} />
       <VoiceTaskStatus task={snapshot?.task} errorCode={snapshot?.task_error_code} instanceId={snapshot?.instance_id} confirmation={snapshot?.confirmation} />
+      <VoiceTaskQueue items={snapshot?.queue} instanceId={snapshot?.instance_id}/>
+      <details><summary className='cursor-pointer text-t-secondary'>{t('voice.queue.diagnostics')}</summary><VoiceTaskDiagnostics snapshot={snapshot}/></details>
       {failed && <p role='alert'>{t('voice.session.unavailable')}</p>}
       <VoiceErrorStatus error={snapshot?.error ?? null} endedReason={snapshot?.ended_reason} />
     </section>

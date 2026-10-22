@@ -19,7 +19,7 @@ export default function VoiceConversation({ snapshot }: { snapshot: VoiceSnapsho
       {turn.reply_state === 'streaming' && <p role='status' className='m-0 text-12px text-t-secondary'>{t('voice.session.replyStreaming')}</p>}
       {turn.reply_state === 'interrupted' && <p role='status' className='m-0 text-12px text-t-secondary'>{t('voice.session.replyIncomplete')}</p>}
       {turn.turn_id !== snapshot?.turn_id && turn.error && <VoiceErrorStatus error={turn.error} />}
-      {turn.model_text && <details open><summary className='text-12px text-t-secondary cursor-pointer'>{t('voice.session.modelText')}</summary><pre className='text-12px whitespace-pre-wrap break-words m-0'>{turn.model_text}</pre></details>}
+      {turn.model_text && <details><summary className='text-12px text-t-secondary cursor-pointer'>{t('voice.session.modelText')}</summary><pre className='text-12px whitespace-pre-wrap break-words m-0'>{turn.model_text}</pre></details>}
     </article>)}
   </div>;
 }

@@ -124,6 +124,22 @@ pub struct VoiceTaskSubmitRequest {
     pub command: VoiceTaskCommand,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceKeyboardMessageRequest {
+    pub conversation_id: String,
+    pub command_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceQueueItem {
+    pub task: VoiceTaskSnapshot,
+    pub display_text: String,
+    pub workspace: String,
+    /// Zero is the running/unresolved item; waiting positions are one based.
+    pub position: usize,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VoiceTaskStatus {
@@ -489,6 +505,8 @@ pub struct VoiceBindingSnapshot {
     pub binding_id: String,
     pub conversation_id: String,
     pub workspace: Option<String>,
+    #[serde(default)]
+    pub memory_owner_companion_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -634,6 +652,8 @@ pub enum VoiceReplyState {Streaming,Complete,Interrupted}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceSessionSnapshot {
+    #[serde(default)]
+    pub queue: Vec<VoiceQueueItem>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub binding: Option<VoiceBindingSnapshot>,
     #[serde(default,skip_serializing_if="Option::is_none")]

@@ -602,6 +602,7 @@
     "needsConfirm": "Action needs confirmation — open the chat tab",
     "done": "Done!",
     "menuOpenChat": "Open chat",
+    "menuOpenVoice": "Open voice",
     "expand": "Expand input",
     "collapse": "Collapse",
     "dismiss": "Dismiss",

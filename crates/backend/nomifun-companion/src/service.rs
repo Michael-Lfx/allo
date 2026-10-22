@@ -615,7 +615,20 @@ impl CompanionService {
     /// Create a companion. The first companion ever created automatically becomes the
     /// default companion (shared config saved + broadcast).
     pub async fn create_companion(&self, name: &str, character: &str) -> Result<CompanionProfileConfig, AppError> {
+        let _guard = self.delete_lock.lock().await;
         let profile = self.registry.create(name, character).await?;
+        self.finish_created_companion(profile).await
+    }
+
+    pub async fn ensure_default_companion(&self) -> Result<Option<CompanionProfileConfig>, AppError> {
+        let _guard = self.delete_lock.lock().await;
+        match self.registry.create_default_if_empty().await? {
+            Some(profile) => self.finish_created_companion(profile).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    async fn finish_created_companion(&self, profile: CompanionProfileConfig) -> Result<CompanionProfileConfig, AppError> {
         // A brand-new companion starts reading the shared event spool from NOW.
         // Left at the absent-row default of 0 it would distill the entire retained
         // history on its first run — weeks of the owner's events re-summarised into
@@ -3501,6 +3514,22 @@ mod tests {
                 .is_empty(),
             "a successful policy PATCH must complete its immediate retention pass before returning"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_bootstrap_creates_one_visible_default_and_preserves_hidden_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path()).await;
+        let (a, b) = tokio::join!(svc.ensure_default_companion(), svc.ensure_default_companion());
+        assert_eq!(usize::from(a.unwrap().is_some()) + usize::from(b.unwrap().is_some()), 1);
+        let roster = svc.list_companions().await;
+        assert_eq!(roster.len(), 1);
+        let id = roster[0].companion_id.clone();
+        assert!(svc.get_companion(&id).await.unwrap().appearance.companion_enabled);
+        svc.patch_companion(&id, serde_json::json!({"appearance":{"companion_enabled":false}})).await.unwrap();
+        assert!(svc.ensure_default_companion().await.unwrap().is_none());
+        assert!(!svc.get_companion(&id).await.unwrap().appearance.companion_enabled);
+        assert!(svc.delete_companion(&id).await.is_err(), "bootstrap cannot remove the last entry");
     }
 
     #[tokio::test]

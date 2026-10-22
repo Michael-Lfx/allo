@@ -388,5 +388,15 @@
     "suppressed": "语音播报已关闭",
     "replay": "重听任务结果",
     "started": "已开始播放，尚未播完"
+  },
+  "queue": {
+    "title": "任务队列",
+    "position": "等待第 {{position}} 项",
+    "diagnostics": "任务诊断与播报记录",
+    "plainTextOnly": "语音会话队列暂支持纯文字；请移除附件或已选技能后发送。"
+  },
+  "entry": {
+    "start": "开始语音对话",
+    "openActive": "返回当前语音会话"
   }
 }

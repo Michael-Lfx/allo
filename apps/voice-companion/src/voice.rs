@@ -353,11 +353,10 @@ impl VoiceCompanionRuntime {
         let mut driver = self.driver.lock().await;
         let snapshot = self.snapshot();
         if !request.scope.matches(&snapshot) {return Err("task_scope_changed");}
-        if driver.current_state() == AcousticState::FollowUpListening {
-            let _ = driver.handle_event(AcousticEvent::FollowUpTimeout);
-        }
-        if driver.current_state()!=AcousticState::Idle || snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
-            || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected) {return Err("voice_busy");}
+        if snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
+            || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected)
+            || !self.pending_utterances.lock().unwrap_or_else(|e|e.into_inner()).is_empty()
+            || !driver.yield_for_notification() {return Err("voice_busy");}
         driver.handle_event(AcousticEvent::TaskSummaryReady).map_err(|_| "voice_busy")?;
         let generation = self.playback.generation_id();
         announced.push_back(AnnouncementRecord {
@@ -809,6 +808,7 @@ impl VoiceCompanionRuntime {
             return;
         }
         info!(
+            session_id = ?scope.session_id, turn_id = ?scope.turn_id,
             elapsed_ms = started.elapsed().as_millis() as u64,
             text_chars = text_opt.as_ref().map_or(0, |text| text.chars().count()),
             "voice_asr_finished"
@@ -895,6 +895,7 @@ impl VoiceCompanionRuntime {
 
                 let speak_replies = event_tx.feedback().speak_replies;
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
+                let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -906,7 +907,8 @@ impl VoiceCompanionRuntime {
                         move || {
                             let text = first_speech_text.lock().unwrap().clone().unwrap_or_default();
                             let ttfa_ms = stream_start.elapsed().as_millis() as u64;
-                            info!(elapsed_ms = ttfa_ms, text_chars = text.chars().count(), "voice_first_audio_started");
+                            info!(session_id=?latency_scope.0,turn_id=?latency_scope.1,from_model_start_ms=ttfa_ms,
+                                text_chars = text.chars().count(), "voice_first_audio_started");
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text });
                         }
                     };
@@ -1048,6 +1050,8 @@ impl VoiceCompanionRuntime {
                             }
                         }
                         other_err => {
+                            let mut failed_driver = driver.lock().await;
+                            if playback.generation_id() != generation { return; }
                             let _ = playback.interrupt().await;
                             let _ = playback_guard.0.take();
                             let code = match other_err {
@@ -1083,12 +1087,12 @@ impl VoiceCompanionRuntime {
                                 stage: "dialogue".into(),
                                 code: code.into(),
                             });
-                            driver.lock().await.reset();
+                            failed_driver.reset();
                             let has_pending = {
                                 let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
-                                p.front().is_some_and(|item| item.generation_id == generation)
+                                p.front().is_some_and(|item| item.generation_id == generation && item.session_id == scope.session_id)
                             };
-                            if playback.generation_id() == generation && !has_pending {
+                            if !has_pending {
                                 let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
                                     reason: VoiceSessionEndReason::Failed,
                                 });
@@ -1110,6 +1114,7 @@ impl VoiceCompanionRuntime {
                     let _ = event_tx.send(VoiceCompanionEvent::ModelResponse { text });
                 }
                 info!(
+                    session_id = ?scope.session_id, turn_id = ?scope.turn_id,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     ok = true,
                     "voice_model_finished"
@@ -1337,6 +1342,7 @@ impl VoiceCompanionRuntime {
                                 if d.current_state() == AcousticState::Idle {
                                     let _ = d.handle_event(AcousticEvent::WakeHit);
                                     if d.begin_listening_window() {
+                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
                                         let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
                                     }
                                 }
@@ -1431,14 +1437,16 @@ impl VoiceCompanionRuntime {
                 let _ = events.send(VoiceCompanionEvent::Idle);
             } else {
                 let mut d = driver.lock().await;
-                if playback.generation_id() == generation {
+                if events.snapshot().session_id == session_id
+                    && events.snapshot().ended_reason.is_none()
+                {
+                    // Output interruption does not invalidate PCM captured in this connection.
+                    // Stop/new wake changes the session or ends it under the same driver lock.
+                    let next_generation = playback.generation_id();
                     let mut pending = pending_clone.lock().unwrap_or_else(|e| e.into_inner());
-                    while let Some(front) = pending.front() {
-                        if front.generation_id != generation || front.session_id != session_id {
-                            pending.pop_front();
-                        } else {
-                            break;
-                        }
+                    pending.retain(|item| item.generation_id == generation && item.session_id == session_id);
+                    for item in pending.iter_mut() {
+                        item.generation_id = next_generation;
                     }
                     if pending.front().is_some() {
                         let can_decide = match d.current_state() {
@@ -1683,9 +1691,9 @@ impl VoiceCompanionRuntime {
                 {
                     let mut d = driver.lock().await;
                     let timed_state = d.current_state();
-                    if timed_state == AcousticState::FollowUpListening {
+                    if matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening) {
                         let task_active = snapshot.task.as_ref().is_some_and(|t| {
-                            matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Accepted | nomifun_api_types::voice::VoiceTaskStatus::Delivering | nomifun_api_types::voice::VoiceTaskStatus::Queued | nomifun_api_types::voice::VoiceTaskStatus::Cancelling)
+                            !matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Completed | nomifun_api_types::voice::VoiceTaskStatus::Failed)
                         });
                         if task_active {
                             d.begin_listening_window();

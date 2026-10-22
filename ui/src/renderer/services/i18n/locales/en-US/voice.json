@@ -388,5 +388,15 @@
     "suppressed": "Spoken replies are disabled",
     "replay": "Replay task result",
     "started": "Playback started; not finished yet"
+  },
+  "queue": {
+    "title": "Task queue",
+    "position": "Waiting: {{position}}",
+    "diagnostics": "Task diagnostics and playback history",
+    "plainTextOnly": "Voice conversation queues currently accept plain text. Remove attachments or selected skills before sending."
+  },
+  "entry": {
+    "start": "Start voice conversation",
+    "openActive": "Open active voice conversation"
   }
 }

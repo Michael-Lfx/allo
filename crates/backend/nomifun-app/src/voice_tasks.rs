@@ -213,6 +213,23 @@ impl VoiceTaskService {
         Ok(self.read()?.map(|record|record.task))
     }
 
+    pub fn queue_projection(&self) -> Result<Vec<nomifun_api_types::voice::VoiceQueueItem>, String> {
+        let mut position = 0;
+        Ok(self.read_ledger()?.into_iter().flat_map(|ledger| ledger.records).filter(|r|
+            !matches!(r.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
+        ).map(|r| {
+            let queue_position = if r.queued { position += 1; position } else { 0 };
+            nomifun_api_types::voice::VoiceQueueItem {
+                task: r.task, display_text: r.display_text.unwrap_or(r.command.goal),
+                workspace: r.config.workspace, position: queue_position,
+            }
+        }).collect())
+    }
+
+    pub fn task_by_id(&self, command_id: &str) -> Result<Option<VoiceTaskSnapshot>, String> {
+        Ok(self.read_command(command_id)?.map(|r| r.task))
+    }
+
     pub async fn replay(&self, command:&VoiceTaskCommand) -> Result<Option<VoiceTaskDelivery>,String> {
         let Some(record)=self.read_command(&command.command_id)? else {return Ok(None);};
         if record.command!=*command {return Err("task_command_conflict".into());}
@@ -225,7 +242,7 @@ impl VoiceTaskService {
 
     pub fn pending_result(&self) -> Result<Option<(VoiceTaskSnapshot,String)>,String> {
         Ok(self.read_ledger()?.and_then(|ledger|ledger.records.into_iter().find(|record|
-            !record.announcement_claimed && matches!(record.task.status,VoiceTaskStatus::Completed|VoiceTaskStatus::Failed)
+            !record.command.session_id.starts_with("keyboard-") && !record.announcement_claimed && matches!(record.task.status,VoiceTaskStatus::Completed|VoiceTaskStatus::Failed)
         )).map(|record|(record.task,record.command.goal)))
     }
 
@@ -338,7 +355,13 @@ impl VoiceTaskService {
         let active_queued = ledger.records.iter().position(|record| {
             record.queued && !matches!(record.task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed)
         });
-        let index = active_unqueued.or(active_queued).unwrap_or_else(|| ledger.records.len().saturating_sub(1));
+        // A later queued item may already have been cancelled while A/B were
+        // executing. Show the most recently observed terminal fact, not the
+        // last enqueued item, once the FIFO is empty.
+        let latest_terminal = ledger.records.iter().enumerate().max_by_key(|(index,record)|
+            (record.last_receipt_at_ms.unwrap_or(0).max(record.last_observed_at_ms.unwrap_or(0)),*index)
+        ).map(|(index,_)|index);
+        let Some(index) = active_unqueued.or(active_queued).or(latest_terminal) else {return Ok(None);};
         Ok(ledger.records.into_iter().nth(index))
     }
 
@@ -656,6 +679,7 @@ impl VoiceTaskService {
         ).await
     }
 
+    #[allow(dead_code)]
     pub async fn submit_frozen_with_handoff(
         &self,
         command: VoiceTaskCommand,
@@ -681,6 +705,7 @@ impl VoiceTaskService {
         ).await
     }
 
+    #[allow(dead_code)]
     pub async fn submit_frozen_with_handoff_queued(
         &self,
         command: VoiceTaskCommand,
@@ -708,6 +733,7 @@ impl VoiceTaskService {
         ).await
     }
 
+    #[allow(dead_code)]
     pub async fn submit_frozen_with_handoff_queued_with_message_id(
         &self,
         command: VoiceTaskCommand,
@@ -988,7 +1014,9 @@ impl VoiceTaskService {
             record.cancel_requested = true;
             record.queued = false;
             record.task.status = VoiceTaskStatus::Failed;
+            record.task.result_ok = Some(false);
             record.task.error_code = Some("task_cancelled".into());
+            record.last_observed_at_ms = Some(nomifun_common::now_ms());
             self.save(&record)?;
             return Ok(record.task);
         }

@@ -29,6 +29,44 @@ use nomifun_db::{
 };
 use nomifun_realtime::UserEventSink;
 
+#[derive(Default)]
+struct ReviewCapturedEvents(std::sync::Mutex<Vec<nomifun_api_types::WebSocketMessage<serde_json::Value>>>);
+impl UserEventSink for ReviewCapturedEvents {
+    fn send_to_user(&self, _: &str, event: nomifun_api_types::WebSocketMessage<serde_json::Value>) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+#[tokio::test]
+async fn voice_user_created_event_preserves_the_frozen_memory_owner() {
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap()).await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let captured = Arc::new(ReviewCapturedEvents::default());
+    let svc = ConversationService::new(Arc::<str>::from(USER_ID),std::env::temp_dir(),captured.clone(),Arc::new(NoopSkillResolver),Arc::new(EmptyRegistry),repo,Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),Arc::new(nomifun_conversation::NoExecutionConversationBoundary));
+    let owner = "0190f5fe-7c00-7a00-8000-000000000003";
+    let conversation = svc.create(USER_ID,serde_json::from_value(serde_json::json!({"type":"nomi","name":"voice owner probe","extra":{"voice":true,"memory_owner_companion_id":owner}})).unwrap()).await.unwrap();
+    svc.append_voice_message(USER_ID,&conversation.conversation_id,&nomifun_common::MessageId::new().into_string(),"记住这句话只属于原伙伴","review-owner-command").await.unwrap();
+    let events=captured.0.lock().unwrap();
+    let evt=events.iter().find(|e|e.name=="message.userCreated").unwrap();
+    let actual=evt.data.get("memory_owner_companion_id").or_else(||evt.data.get("companion_id")).and_then(|v|v.as_str());
+    assert_eq!(actual,Some(owner),"production userCreated loses frozen memory owner: {}",evt.data);
+}
+
+#[tokio::test]
+async fn latest_user_correction_survives_a_long_assistant_reply() {
+    let dir=tempfile::tempdir().unwrap();
+    let recorder=ConversationVoiceDialogueRecorder::new(fixture_service().await,USER_ID.into(),dir.path());
+    let first=VoiceDialogueRequest::scoped("review-c08","review-c08-one","不是北京，改深圳，数量改为 2 不是 20");
+    let VoiceDialoguePreflight::Ready{conversation_id}=recorder.preflight(&first).await.unwrap() else {panic!("expected Ready")};
+    let output=serde_json::json!({"intent_type":"chat","understood_request":"城市为深圳数量2","reply_tts":"这是较长的补充解释。".repeat(200)}).to_string();
+    recorder.record_pair(&conversation_id,&first,&output).await.unwrap();
+    let next=VoiceDialogueRequest::scoped("review-c08","review-c08-two","按刚才修正的要求创建订单");
+    recorder.preflight(&next).await.unwrap();
+    recorder.record_pair(&conversation_id,&next,r#"{"intent_type":"agent_task","task_goal":"创建订单","understood_request":"按更正要求创建订单","spoken_ack":"正在处理"}"#).await.unwrap();
+    let command=nomifun_api_types::voice::VoiceTaskCommand{command_id:"review-c08-command".into(),session_id:"review-c08".into(),turn_id:"review-c08-two".into(),goal:"创建订单".into(),record_id:next.voice_record_id.clone(),binding_id:next.binding_id.clone()};
+    let handoff=recorder.task_configuration(&command).await.unwrap().unwrap().handoff_content.unwrap();
+    assert!(handoff.contains("深圳") && handoff.contains("数量改为 2"),"a long assistant reply must not silently erase the latest short correction; handoff={handoff}");
+}
+
 struct NullSink;
 
 impl UserEventSink for NullSink {
@@ -1021,4 +1059,107 @@ async fn test_c08_context_truncation_prioritizes_recent_correction() {
     // Bulky turn 1 was omitted due to budget exhaustion from reverse traversal
     assert!(handoff.contains("（更早轮次已按预算略过）"), "handoff must note omitted earlier turns: {handoff}");
     assert!(!handoff.contains("这是一段非常冗长详细的对话历史记录"), "bulky turn 1 must be omitted to stay within budget: {handoff}");
+}
+
+#[tokio::test]
+async fn workspace_interaction_registry_failure_keeps_generated_reply_retryable_without_duplicate_bubbles() {
+    let dir=tempfile::tempdir().unwrap();
+    let workspace=tempfile::tempdir().unwrap();
+    let service=fixture_service().await;
+    let source=service.create(USER_ID,serde_json::from_value(serde_json::json!({"type":"nomi","extra":{"workspace":workspace.path()}})).unwrap()).await.unwrap();
+    let candidate=Arc::new(std::sync::RwLock::new(Some(source.conversation_id)));
+    let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()).with_active_window_candidate(candidate);
+    let request=VoiceDialogueRequest::scoped("registry-failure-session","registry-failure-turn","你好");
+    let conversation=match recorder.preflight(&request).await.unwrap(){VoiceDialoguePreflight::Ready{conversation_id}=>conversation_id,_=>panic!("ready")};
+    let registry=dir.path().join("voice").join(format!("workspace-sessions-{USER_ID}.json"));
+    let saved=std::fs::read(&registry).unwrap();
+    std::fs::write(&registry,b"corrupt registry").unwrap();
+    let reply=r#"{"intent_type":"chat","reply_tts":"你好，我在听。"}"#;
+    assert!(recorder.record_pair(&conversation,&request,reply).await.is_err());
+    let records:serde_json::Value=serde_json::from_slice(&std::fs::read(dir.path().join("voice").join(format!("dialogue-{USER_ID}.json"))).unwrap()).unwrap();
+    let record=records.as_array().unwrap().iter().find(|r|r["request"]["turn_id"]=="registry-failure-turn").unwrap();
+    assert_eq!(record["output"],reply);
+    assert_eq!(record["projected"],false);
+    std::fs::write(&registry,saved).unwrap();
+    recorder.record_pair(&conversation,&request,reply).await.unwrap();
+    assert!(matches!(recorder.preflight(&request).await.unwrap(),VoiceDialoguePreflight::Cached{..}));
+    let messages=service.list_messages(USER_ID,&conversation,Default::default()).await.unwrap();
+    assert_eq!(messages.items.len(),2);
+}
+
+#[tokio::test]
+async fn voice_dialogue_and_assistant_projection_share_a_timeline_without_polluting_foreground_chat() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_path = ws_dir.path().to_string_lossy().to_string();
+
+    // 1. Create a random temporary file in workspace P
+    let random_nonce = format!("nonce-{}", nomifun_common::now_ms());
+    let target_filename = "test_doc.txt";
+    let target_file_path = ws_dir.path().join(target_filename);
+    std::fs::write(&target_file_path, format!("Random File Content: {random_nonce}")).unwrap();
+
+    // 2. Main window is in normal chat for workspace P
+    let normal_chat = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "P 普通聊天",
+        "extra": { "workspace": ws_path.clone() },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(normal_chat.conversation_id.clone())));
+    let recorder = std::sync::Arc::new(
+        ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+            .with_active_window_candidate(candidate.clone())
+    );
+
+    // Service-boundary test: no pet window, PCM, provider, runtime tool or speaker is exercised here.
+    let voice_req = VoiceDialogueRequest::scoped("ui1-pet-session", "ui1-turn-1", "请读取 test_doc.txt 的内容并告诉我");
+    let preflight_res = recorder.preflight(&voice_req).await.unwrap();
+    let voice_conv_id = match preflight_res {
+        VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+        _ => panic!("expected Ready voice conversation"),
+    };
+
+    // Dedicated voice conversation is created, distinct from normal chat
+    assert_ne!(voice_conv_id, normal_chat.conversation_id);
+
+    // Project an already obtained fast-model decision.
+    let output_json = serde_json::json!({
+        "intent_type": "agent_task",
+        "understood_request": "读取文件 test_doc.txt",
+        "task_goal": "读取文件 test_doc.txt",
+        "spoken_ack": "正在为您读取文件",
+        "reply_tts": "正在为您读取文件"
+    }).to_string();
+
+    recorder.record_pair(&voice_conv_id, &voice_req, &output_json).await.unwrap();
+
+    // Local fixture content is a projection input, not evidence of runtime execution.
+    let read_file_content = std::fs::read_to_string(&target_file_path).unwrap();
+    assert!(read_file_content.contains(&random_nonce));
+
+    // Assistant projection must be left-side content, not another user message.
+    let execution_result_text = format!("文件已成功读取，内容为：{read_file_content}");
+    service.project_assistant_message_idempotent(
+        USER_ID,
+        &voice_conv_id,
+        "cmd-ui1-1",
+        &execution_result_text,
+        "voice-task-result",
+    ).await.unwrap();
+
+    // 8. Assertions:
+    // - Normal chat P has ZERO messages (was NOT polluted)
+    let normal_msgs = service.list_messages(USER_ID, &normal_chat.conversation_id, Default::default()).await.unwrap();
+    assert_eq!(normal_msgs.items.len(), 0, "normal chat must have 0 messages");
+
+    // - Dedicated voice conversation has all 3 messages: user request, spoken ack reply, and assistant result with real file content
+    let voice_msgs = service.list_messages(USER_ID, &voice_conv_id, Default::default()).await.unwrap();
+    assert_eq!(voice_msgs.items.len(), 3, "voice conversation must have exactly 3 messages: prompt, quick reply ack, and tool result");
+    assert_eq!(voice_msgs.items.iter().filter(|m|m.position==Some(nomifun_common::MessagePosition::Right)).count(),1);
+    assert_eq!(voice_msgs.items.iter().filter(|m|m.position==Some(nomifun_common::MessagePosition::Left)).count(),2);
+    assert!(voice_msgs.items.iter().any(|m| m.content["content"] == "请读取 test_doc.txt 的内容并告诉我"));
+    assert!(voice_msgs.items.iter().any(|m| m.content["content"].as_str().is_some_and(|c| c.contains("正在为您读取文件"))));
+    assert!(voice_msgs.items.iter().any(|m| m.content["content"].as_str().is_some_and(|c| c.contains(&random_nonce))));
 }

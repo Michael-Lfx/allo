@@ -263,6 +263,11 @@ pub async fn voice_wake_handler(
                 Json(json!({"success": true, "keyword": kw})),
             )
                 .into_response(),
+            Err(crate::voice::VoiceWakeError::Busy) if rt.snapshot().session_id.is_some()
+                && rt.snapshot().ended_reason.is_none() => (
+                    StatusCode::OK,
+                    Json(json!({"success":true,"already_active":true})),
+                ).into_response(),
             Err(error) => {
                 let status = match error {
                     crate::voice::VoiceWakeError::PairingRequired => StatusCode::FORBIDDEN,

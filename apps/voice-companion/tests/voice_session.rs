@@ -639,6 +639,8 @@ async fn external_wake_expires_even_without_any_pcm() {
     let mut events = runtime.event_sender().subscribe();
     let worker = runtime.start_worker();
     runtime.handle_wake_keyword("Hey Flowy").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    runtime.advance_time(Duration::from_secs(181)).await;
     let result = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             if matches!(events.recv().await.unwrap(), VoiceCompanionEvent::Idle) {
@@ -671,13 +673,18 @@ async fn late_event_subscriber_receives_current_session_immediately() {
     );
     let runtime = Arc::new(runtime);
     runtime.handle_wake_keyword("Hey Flowy").await.unwrap();
+    let original_session=runtime.snapshot().session_id.clone();
     let app = voice_companion::server::build_router_full(
         &voice_companion::config::Config::default(),
         models,
         (*oobe).clone(),
         Some(runtime.event_sender()),
-        Some(runtime),
+        Some(runtime.clone()),
     );
+    let repeated=app.clone().oneshot(http::Request::builder().method("POST").uri("/api/voice/wake")
+        .header("content-type","application/json").body(axum::body::Body::from("{}")).unwrap()).await.unwrap();
+    assert_eq!(repeated.status(),http::StatusCode::OK,"another entry must reuse the live capture");
+    assert_eq!(runtime.snapshot().session_id,original_session);
     let response = app
         .oneshot(
             http::Request::builder()

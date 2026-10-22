@@ -281,7 +281,7 @@ mod tests {
     static RUNTIME_REPLAY_LOCK:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
 
     #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-    enum ReadScenario {Api,Worker,InstalledAcoustics,CancelRunning,VoiceControls,FrozenPreset,ApprovalAccept,ApprovalReject,ApprovalShell,OralApprovalAccept,OralApprovalReject,OralApprovalSilence,ResultFollowUp,QueuedDrain}
+    enum ReadScenario {Api,Worker,InstalledAcoustics,CancelRunning,VoiceControls,FrozenPreset,ApprovalAccept,ApprovalReject,ApprovalShell,OralApprovalAccept,OralApprovalReject,OralApprovalSilence,ResultFollowUp,QueuedDrain,KeyboardQueuedDrain}
 
     #[derive(Default)]
     struct RecordedTts(std::sync::Mutex<Vec<String>>);
@@ -326,6 +326,11 @@ mod tests {
     #[tokio::test]
     async fn task_b_is_queued_during_running_task_a_and_drained_with_same_message_id_and_single_bubble() {
         real_read_scenario(ReadScenario::QueuedDrain).await;
+    }
+
+    #[tokio::test]
+    async fn keyboard_b_uses_the_voice_fifo_and_can_cancel_c_without_cancelling_a() {
+        real_read_scenario(ReadScenario::KeyboardQueuedDrain).await;
     }
 
     #[tokio::test]
@@ -391,8 +396,9 @@ mod tests {
         let _fixture=RUNTIME_REPLAY_LOCK.lock().await;
         let oral_approval=matches!(scenario,ReadScenario::OralApprovalAccept|ReadScenario::OralApprovalReject|ReadScenario::OralApprovalSilence);
         let result_followup=scenario==ReadScenario::ResultFollowUp;
-        let queued_drain=scenario==ReadScenario::QueuedDrain;
-        let from_worker=oral_approval || result_followup || matches!(scenario,ReadScenario::Worker|ReadScenario::InstalledAcoustics|ReadScenario::VoiceControls);
+        let keyboard_queue=scenario==ReadScenario::KeyboardQueuedDrain;
+        let queued_drain=matches!(scenario,ReadScenario::QueuedDrain|ReadScenario::KeyboardQueuedDrain);
+        let from_worker=oral_approval || result_followup || keyboard_queue || matches!(scenario,ReadScenario::Worker|ReadScenario::InstalledAcoustics|ReadScenario::VoiceControls);
         let real_acoustics=scenario==ReadScenario::InstalledAcoustics;
         let voice_controls=scenario==ReadScenario::VoiceControls;
         let cancel_running=matches!(scenario,ReadScenario::CancelRunning|ReadScenario::VoiceControls);
@@ -564,7 +570,7 @@ mod tests {
         let recorder=Arc::new(crate::voice_companion_manager::ConversationVoiceDialogueRecorder::new(
             Arc::new(state.service.clone()),services.authoritative_user_id.to_string(),&services.data_dir,
         ).with_target_config(builder.target_selection()).with_active_window_candidate(builder.active_window_candidate()).with_execution_runtime(runtime));
-        let manager=Arc::new(if from_worker {builder.with_recorder(recorder.clone())}else{builder});
+        let manager=Arc::new(if from_worker || keyboard_queue {builder.with_recorder(recorder.clone())}else{builder});
         let mut acoustic = None;
         let mut acoustic_worker = None;
         let mut daemon_server = None;
@@ -666,10 +672,14 @@ mod tests {
         let submission = VoiceTaskSubmitRequest {instance_id:manager.snapshot().instance_id, command};
         let submit_request = || axum::http::Request::builder().method("POST").uri("/api/voice/companion/tasks")
             .header("content-type", "application/json").body(axum::body::Body::from(serde_json::to_vec(&submission).unwrap())).unwrap();
-        if !from_worker {
-            let accepted = app.clone().oneshot(submit_request()).await.unwrap();
-            assert_eq!(accepted.status(), axum::http::StatusCode::OK);
-            let accepted: VoiceTaskDelivery = serde_json::from_slice(&axum::body::to_bytes(accepted.into_body(), 32_768).await.unwrap()).unwrap();
+        if !from_worker || keyboard_queue {
+            let accepted: VoiceTaskDelivery = if keyboard_queue {
+                VoiceTaskDelivery {task:manager.snapshot().task.expect("A was accepted through the production voice worker"),freshly_accepted:false}
+            } else {
+                let response = app.clone().oneshot(submit_request()).await.unwrap();
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 32_768).await.unwrap()).unwrap()
+            };
             assert!(accepted.task.conversation_id.is_some());
             if approval {
                 let uri=format!("/api/voice/companion/tasks/{command_id}/confirmations");
@@ -731,7 +741,7 @@ mod tests {
                     instance_id: manager.snapshot().instance_id,
                     command: command_b.clone(),
                 };
-                manager.replay_acoustic_source(VoiceSessionSnapshot {
+                if !keyboard_queue {manager.replay_acoustic_source(VoiceSessionSnapshot {
                     instance_id: manager.snapshot().instance_id,
                     seq: 3,
                     enabled: true,
@@ -741,13 +751,16 @@ mod tests {
                     turn_id: Some("acoustic-turn-b".into()),
                     acoustic_ready: true,
                     ..Default::default()
-                });
+                });}
+                let (submit_path,submit_body)=if keyboard_queue {
+                    ("/api/voice/companion/messages",serde_json::json!({"conversation_id":accepted.task.conversation_id,"command_id":"read-command-b","text":goal_b}))
+                } else {("/api/voice/companion/tasks",serde_json::to_value(&submit_b).unwrap())};
                 let queued_resp = app.clone().oneshot(
                     axum::http::Request::builder()
                         .method("POST")
-                        .uri("/api/voice/companion/tasks")
+                        .uri(submit_path)
                         .header("content-type", "application/json")
-                        .body(axum::body::Body::from(serde_json::to_vec(&submit_b).unwrap()))
+                        .body(axum::body::Body::from(serde_json::to_vec(&submit_body).unwrap()))
                         .unwrap(),
                 ).await.unwrap();
                 assert_eq!(queued_resp.status(), axum::http::StatusCode::OK);
@@ -756,6 +769,28 @@ mod tests {
                 assert_eq!(delivery_b.task.command_id, "read-command-b");
                 let b_msg_id = delivery_b.task.message_id.clone().expect("queued task B must retain stable message_id");
                 assert_eq!(delivery_b.task.conversation_id, accepted.task.conversation_id, "task B must share the workspace voice conversation");
+
+                if keyboard_queue {
+                    let replay=app.clone().oneshot(axum::http::Request::builder().method("POST").uri(submit_path).header("content-type","application/json")
+                        .body(axum::body::Body::from(submit_body.to_string())).unwrap()).await.unwrap();
+                    assert_eq!(replay.status(),axum::http::StatusCode::OK);
+                    let replay:VoiceTaskDelivery=serde_json::from_slice(&axum::body::to_bytes(replay.into_body(),32768).await.unwrap()).unwrap();
+                    assert_eq!(replay.task.message_id,delivery_b.task.message_id);
+                    let response=app.clone().oneshot(axum::http::Request::builder().method("POST").uri(submit_path).header("content-type","application/json")
+                        .body(axum::body::Body::from(serde_json::json!({"conversation_id":accepted.task.conversation_id,"command_id":"cancel-keyboard-c","text":"Do not execute this queued request"}).to_string())).unwrap()).await.unwrap();
+                    assert_eq!(response.status(),axum::http::StatusCode::OK);
+                    let c:VoiceTaskDelivery=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),32768).await.unwrap()).unwrap();
+                    assert_eq!(c.task.status,VoiceTaskStatus::Queued);
+                    let projection=manager.snapshot();
+                    assert_eq!(projection.queue.len(),3);
+                    assert_eq!(projection.queue[1].position,1);
+                    assert_eq!(projection.queue[2].position,2);
+                    let cancelled=app.clone().oneshot(axum::http::Request::builder().method("POST").uri("/api/voice/companion/tasks/cancel-keyboard-c/cancel").header("content-type","application/json")
+                        .body(axum::body::Body::from(serde_json::json!({"instance_id":projection.instance_id,"command_id":c.task.command_id,"conversation_id":c.task.conversation_id,"message_id":c.task.message_id}).to_string())).unwrap()).await.unwrap();
+                    assert_eq!(cancelled.status(),axum::http::StatusCode::OK);
+                    assert_eq!(manager.snapshot().queue.len(),2);
+                    assert_eq!(manager.snapshot().task.unwrap().command_id,accepted.task.command_id);
+                }
 
                 // Verify user messages in SQLite: B has exactly 1 user bubble with b_msg_id
                 let conv_id = accepted.task.conversation_id.as_deref().unwrap();
@@ -797,7 +832,7 @@ mod tests {
             let (voice,producer)=acoustic.as_ref().unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(5),model_entered.notified()).await.unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(5),async {
-                while voice.snapshot().phase!=VoiceSessionPhase::Idle {tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
+                while voice.snapshot().phase!=VoiceSessionPhase::Listening {tokio::time::sleep(std::time::Duration::from_millis(10)).await;}
             }).await.unwrap();
             let snapshot=manager.snapshot();
             manager.stop_session(nomifun_api_types::voice::VoiceSessionControlRequest {instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id}).await.unwrap();
@@ -867,7 +902,7 @@ mod tests {
         let (delivery_count,):(i64,) = sqlx::query_as("SELECT COUNT(*) FROM conversation_delivery_receipts WHERE conversation_id = ?")
             .bind(done.conversation_id.as_deref().unwrap()).fetch_one(&database_pool).await.unwrap();
         if from_worker {
-            assert_eq!(delivery_count, if voice_controls { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s) and task delivery receipt");
+            assert_eq!(delivery_count, if voice_controls || keyboard_queue { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s) and each executed task delivery receipt");
         } else {
             assert_eq!((creation_count,delivery_count),(1,if queued_drain { 2 } else { 1 }),"one voice command must create one conversation identity and one real send receipt");
         }

@@ -860,9 +860,14 @@ pub trait IConversationRepository: Send + Sync {
         &self,
         message: &MessageRow,
         user_id: &str,
-        _expected_admission_epoch: Option<i64>,
+        expected_admission_epoch: Option<i64>,
     ) -> Result<(), DbError> {
         let _ = user_id;
+        if expected_admission_epoch.is_some() {
+            return Err(DbError::Init(
+                "atomic admission epoch check is not supported by this repository implementation".to_owned(),
+            ));
+        }
         self.insert_message(message).await
     }
 

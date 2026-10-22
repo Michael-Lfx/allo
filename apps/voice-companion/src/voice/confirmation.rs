@@ -18,13 +18,12 @@ impl VoiceCompanionRuntime {
         let mut driver=self.driver.lock().await;
         let snapshot=self.snapshot();
         if !request.scope.matches(&snapshot){return Err("task_scope_changed");}
-        if driver.current_state() == AcousticState::FollowUpListening && !snapshot.audio.as_ref().is_some_and(|audio| audio.speech_detected) {
-            let _ = driver.handle_event(AcousticEvent::FollowUpTimeout);
-        }
-        if driver.current_state()!=AcousticState::Idle || snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
-            || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected)
-            || self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner()).is_some(){return Err("voice_busy");}
         if !self.capture_available(){return Err("microphone_unavailable");}
+        if snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
+            || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected)
+            || !self.pending_utterances.lock().unwrap_or_else(|e|e.into_inner()).is_empty()
+            || self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner()).is_some()
+            || !driver.yield_for_notification(){return Err("voice_busy");}
         let generation=self.playback.generation_id();
         driver.handle_event(AcousticEvent::ToolPolicyIntercept).map_err(|_|"voice_busy")?;
         *self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner())=Some(PendingConfirmation {
@@ -55,7 +54,15 @@ impl VoiceCompanionRuntime {
             }
             let text=if approved {"已提交本次确认，等待执行侧校验。"}else{"未获得本次确认，本次语音答复为拒绝。"};
             let _=self.event_tx.send(VoiceCompanionEvent::ResponseReady {text:text.into()});
-            let _=self.event_tx.send(VoiceCompanionEvent::Idle);
+            if snapshot.session_id.is_some() && snapshot.ended_reason.is_none() {
+                let _ = driver.handle_event(AcousticEvent::WakeHit);
+                if driver.begin_listening_window() {
+                    let _ = self.event_tx.send(VoiceCompanionEvent::Listening);
+                    let _ = self.event_tx.send(VoiceCompanionEvent::ListeningReady {timeout_secs:180});
+                }
+            } else {
+                let _=self.event_tx.send(VoiceCompanionEvent::Idle);
+            }
         }
         Ok(VoiceToolConfirmationReply {approval_id:request.approval_id,msg_id:request.msg_id,call_id:request.call_id,approved})
     }

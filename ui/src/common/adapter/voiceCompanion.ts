@@ -3,7 +3,8 @@ import { isTauriRuntime } from './tauriRuntime';
 
 export type VoicePhase = 'idle' | 'listening' | 'transcribing' | 'deciding' | 'synthesizing' | 'speaking' | 'follow_up' | 'text_follow_up' | 'awaiting_confirmation' | 'listening_confirm' | 'dispatching' | 'error';
 export interface VoiceSnapshot {
-  binding?: {session_id:string;binding_id:string;conversation_id:string;workspace:string|null}|null;
+  binding?: {session_id:string;binding_id:string;conversation_id:string;workspace:string|null;memory_owner_companion_id?:string|null}|null;
+  queue?: VoiceQueueItem[];
   task_progress?: {command_id:string;stage:string;health:string;last_event_at_ms:number|null;last_progress_at_ms:number|null}|null;
   task_notification?: VoiceTaskNotification|null;
   confirmation?: VoiceToolConfirmation | null;
@@ -66,6 +67,11 @@ export interface VoiceTaskSnapshot {
   result_ok: boolean | null;
   result_text: string | null;
   error_code: string | null;
+}
+
+export interface VoiceQueueItem {task:VoiceTaskSnapshot;display_text:string;workspace:string;position:number}
+export function sendVoiceKeyboardMessage(conversationId:string,commandId:string,text:string):Promise<{task:VoiceTaskSnapshot}> {
+  return voiceTaskRequest('/messages',{conversation_id:conversationId,command_id:commandId,text});
 }
 
 export interface VoiceToolConfirmation {

@@ -30,10 +30,12 @@ pub fn install(app: AppHandle, init_script: String) {
     let Some(manager) = VoiceCompanionProcessManager::global() else {
         return;
     };
-    if let Some(main)=app.get_webview_window("main") {
-        let owner=manager.clone();
+    if let Some(main) = app.get_webview_window("main") {
+        let owner = manager.clone();
         main.on_window_event(move |event| {
-            if matches!(event,WindowEvent::Focused(false)|WindowEvent::Destroyed) {owner.set_candidate_conversation(None);}
+            if matches!(event, WindowEvent::Destroyed) {
+                owner.set_candidate_conversation(None);
+            }
         });
     }
     let mut events = manager.subscribe();
