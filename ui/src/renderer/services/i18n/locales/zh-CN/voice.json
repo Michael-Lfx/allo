@@ -104,13 +104,13 @@
     }
   },
   "dialogue": {
-    "title": "对话模型",
-    "description": "复用供应商设置中的模型和凭据；支持 Flowy Cloud 与 OpenAI 兼容的本地或远程模型。",
-    "model": "语音对话模型",
+    "title": "快速回复模型",
+    "description": "自动选择可用的快速对话模型。执行任务使用绑定会话的工作区、模型和预设。",
+    "model": "当前生效模型",
     "default": "自动使用 Flowy Cloud 对话模型",
-    "selected": "当前模型：{{model}}。更改将在下一次语音请求生效。",
+    "selected": "{{provider}} / {{model}}",
     "unavailable": "没有可用的对话模型。请检查供应商配置、模型启用状态及 Flowy 登录。",
-    "failed": "对话模型配置读取或保存失败，请重试同步。",
+    "failed": "无法读取快速回复模型，请重新打开设置重试。",
     "stale": "不可用的模型：{{model}}"
   },
   "audio": {

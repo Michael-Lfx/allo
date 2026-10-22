@@ -14,6 +14,7 @@ import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
 import VoiceTargetSettingsSection from './VoiceTargetSettings';
+import VoiceDialogueStatusSection from './VoiceDialogueStatus';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
   SettingsList,
@@ -960,6 +961,7 @@ const VoiceSettings: React.FC = () => {
         </SettingsSection>
 
         <VoiceTargetSettingsSection />
+        <VoiceDialogueStatusSection />
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
 
         {modelStatus === 'Ready' && (

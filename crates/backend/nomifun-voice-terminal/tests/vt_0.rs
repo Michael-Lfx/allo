@@ -234,11 +234,12 @@ fn test_c3_voice_decision_schema_missing_intent_type_rejected() {
 fn test_c4_fsm_legal_transitions_vt_0_04() {
     assert_eq!(
         LEGAL_TRANSITIONS.len(),
-        20,
-        "Exactly 20 transitions defined in interaction.zh.md §3.6"
+        21,
+        "Includes the recoverable ignored-utterance transition"
     );
 
-    for &(from, event, expected_to) in LEGAL_TRANSITIONS {
+    for (index, &(from, event, expected_to)) in LEGAL_TRANSITIONS.iter().enumerate() {
+        assert!(!LEGAL_TRANSITIONS[..index].iter().any(|&(s, e, _)| s == from && e == event), "Ambiguous transition");
         let res = next_state(from, event);
         assert_eq!(
             res,
@@ -268,6 +269,7 @@ fn test_c4_fsm_illegal_transitions_rejected() {
         AcousticEvent::SpeechEnd,
         AcousticEvent::ListenTimeout,
         AcousticEvent::IntentIgnore,
+        AcousticEvent::UtteranceIgnored,
         AcousticEvent::IntentChat,
         AcousticEvent::IntentTaskControl,
         AcousticEvent::ConfirmationRequired,
@@ -284,6 +286,7 @@ fn test_c4_fsm_illegal_transitions_rejected() {
         AcousticEvent::FollowUpTimeout,
     ];
 
+    assert!(LEGAL_TRANSITIONS.iter().all(|&(s, e, to)| all_states.contains(&s) && all_states.contains(&to) && all_events.contains(&e)));
     let mut illegal_count = 0;
     for state in all_states {
         for event in all_events {
@@ -362,7 +365,15 @@ fn test_c4_fsm_full_lifecycle_scenarios() {
         AcousticState::Idle
     );
 
-    // Scenario 3: Ignore route
+    // An unusable utterance keeps the call alive and the next utterance can reply.
+    let mut fsm = AcousticFsm::new();
+    fsm.transition(AcousticEvent::WakeHit).unwrap();
+    fsm.transition(AcousticEvent::SpeechEnd).unwrap();
+    assert_eq!(fsm.transition(AcousticEvent::UtteranceIgnored).unwrap(), AcousticState::Listening);
+    fsm.transition(AcousticEvent::SpeechEnd).unwrap();
+    assert_eq!(fsm.transition(AcousticEvent::IntentChat).unwrap(), AcousticState::SpeakingFast);
+
+    // Explicit abort remains distinct from an ignored utterance.
     let mut fsm = AcousticFsm::new();
     fsm.transition(AcousticEvent::WakeHit).unwrap();
     fsm.transition(AcousticEvent::SpeechEnd).unwrap();

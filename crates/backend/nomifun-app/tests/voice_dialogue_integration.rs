@@ -122,6 +122,39 @@ impl AgentRuntimeRegistry for EmptyRegistry {
 const USER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 
 #[tokio::test]
+async fn new_bindings_ignore_retired_global_execution_and_recovery_keeps_the_frozen_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let unrelated = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    let initial = recorder.freeze_session("before-retired-config").await.unwrap().unwrap();
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("voice_companion.json");
+    let legacy = serde_json::json!({"execution":{"workspace":unrelated.path(),"model":null,"preset_id":null},
+        "dialogue_model":{"provider_id":"deleted-provider","model":"deleted-model"},"autostart":false});
+    std::fs::write(&config_path, legacy.to_string()).unwrap();
+    let fresh = recorder.freeze_session("after-retired-config").await.unwrap().unwrap();
+    assert_eq!(fresh.workspace, initial.workspace, "a new default binding must ignore the retired global workspace");
+    assert_ne!(fresh.workspace.as_deref(), unrelated.path().to_str());
+    let restored = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    assert_eq!(restored.freeze_session("before-retired-config").await.unwrap().unwrap().workspace, initial.workspace);
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(&config_path).unwrap()).unwrap(), legacy,
+        "resolving a binding must not rewrite other preferences or historical configuration");
+    let malformed = serde_json::json!({"execution":"retired malformed value","autostart":false});
+    std::fs::write(&config_path, malformed.to_string()).unwrap();
+    assert_eq!(restored.freeze_session("malformed-retired-config").await.unwrap().unwrap().workspace, initial.workspace);
+    // Existing journals may still contain an old accepted task's frozen directory.
+    let journal_path = dir.path().join("voice").join(format!("dialogue-{USER_ID}.json"));
+    let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
+    journal[0]["execution"]["workspace"] = unrelated.path().to_string_lossy().into_owned().into();
+    std::fs::write(&journal_path,journal.to_string()).unwrap();
+    let recovered = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
+    assert_eq!(recovered.freeze_session("before-retired-config").await.unwrap().unwrap().workspace.as_deref(), unrelated.path().to_str(),
+        "recovery must preserve old frozen parameters rather than retroactively rebind them");
+}
+
+#[tokio::test]
 async fn ignored_turns_leave_no_public_messages_and_do_not_displace_valid_handoff() {
     let dir=tempfile::tempdir().unwrap();
     let service=fixture_service().await;
@@ -515,7 +548,19 @@ async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
 
 
 async fn fixture_service() -> Arc<ConversationService> {
+    fixture_service_with_models(&[]).await
+}
+
+async fn fixture_service_with_models(models: &[&str]) -> Arc<ConversationService> {
     let db=nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap()).await.unwrap();
+    if !models.is_empty() {
+        use nomifun_db::IProviderRepository;
+        nomifun_db::SqliteProviderRepository::new(db.pool().clone()).create(nomifun_db::CreateProviderParams {
+            provider_id:Some(USER_ID),platform:"openai",name:"binding fixture",base_url:"http://127.0.0.1:1/v1",api_key_encrypted:"unused",
+            models:&serde_json::to_string(models).unwrap(),enabled:true,model_context_limits:None,model_protocols:None,model_descriptions:None,
+            model_enabled:None,bedrock_config:None,is_full_url:false,sort_order:None,
+        }).await.unwrap();
+    }
     Arc::new(ConversationService::new(Arc::<str>::from(USER_ID),std::env::temp_dir(),Arc::new(NullSink),Arc::new(NoopSkillResolver),Arc::new(EmptyRegistry),
         Arc::new(SqliteConversationRepository::new(db.pool().clone())),Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),Arc::new(nomifun_conversation::NoExecutionConversationBoundary)))
 }
@@ -605,9 +650,9 @@ async fn a_claim_survives_restart_without_an_automatic_second_generation() {
 #[tokio::test]
 async fn a_wake_binding_freezes_the_project_and_its_execution_workspace_across_navigation() {
     use nomifun_api_types::voice::VoiceTaskCommand;
-    let dir=tempfile::tempdir().unwrap();let workspace_a=tempfile::tempdir().unwrap();let workspace_b=tempfile::tempdir().unwrap();let service=fixture_service().await;
-    let create=|workspace:&std::path::Path|serde_json::from_value::<CreateConversationRequest>(serde_json::json!({"type":"nomi","name":"本地项目","extra":{"workspace":workspace.to_string_lossy()}})).unwrap();
-    let a=service.create(USER_ID,create(workspace_a.path())).await.unwrap();let b=service.create(USER_ID,create(workspace_b.path())).await.unwrap();
+    let dir=tempfile::tempdir().unwrap();let workspace_a=tempfile::tempdir().unwrap();let workspace_b=tempfile::tempdir().unwrap();let service=fixture_service_with_models(&["project-a","project-b"]).await;
+    let create=|workspace:&std::path::Path,model:&str|serde_json::from_value::<CreateConversationRequest>(serde_json::json!({"type":"nomi","name":"本地项目","model":{"provider_id":USER_ID,"model":model},"extra":{"workspace":workspace.to_string_lossy()}})).unwrap();
+    let a=service.create(USER_ID,create(workspace_a.path(),"project-a")).await.unwrap();let b=service.create(USER_ID,create(workspace_b.path(),"project-b")).await.unwrap();
     let candidate=Arc::new(std::sync::RwLock::new(Some(a.conversation_id.clone())));
     let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()).with_active_window_candidate(candidate.clone());
     let frozen=recorder.freeze_session("frozen-session").await.unwrap().unwrap();
@@ -621,6 +666,8 @@ async fn a_wake_binding_freezes_the_project_and_its_execution_workspace_across_n
     let command=VoiceTaskCommand{command_id:"voice-frozen-turn".into(),session_id:"frozen-session".into(),turn_id:"frozen-turn".into(),goal:"读取项目A".into(),record_id:request.voice_record_id.clone(),binding_id:request.binding_id.clone()};
     let config=recorder.task_configuration(&command).await.unwrap().unwrap();
     assert_eq!(config.config.workspace,nomifun_common::paths::canonicalize_simplified(workspace_a.path()).unwrap().to_string_lossy());
+    assert_eq!(config.config.model.as_ref().unwrap().model,"project-a");
+    assert_eq!(recorder.bound_execution("frozen-session").await.unwrap().unwrap(),config.config);
     let implicit_command=VoiceTaskCommand{command_id:"voice-frozen-turn".into(),session_id:"frozen-session".into(),turn_id:"frozen-turn".into(),goal:"读取项目A".into(),record_id:None,binding_id:None};
     let implicit_config=recorder.task_configuration(&implicit_command).await.unwrap().unwrap();
     assert_eq!(implicit_config.config.workspace,config.config.workspace);

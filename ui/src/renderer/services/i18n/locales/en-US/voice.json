@@ -104,13 +104,13 @@
     }
   },
   "dialogue": {
-    "title": "Dialogue model",
-    "description": "Reuse models and credentials from provider settings. Supports Flowy Cloud and OpenAI-compatible local or remote models.",
-    "model": "Voice dialogue model",
+    "title": "Quick reply model",
+    "description": "Automatically selects an available quick reply model. Tasks use the bound conversation's workspace, model and preset.",
+    "model": "Effective model",
     "default": "Automatically use a Flowy Cloud chat model",
-    "selected": "Current model: {{model}}. Changes apply to the next voice request.",
+    "selected": "{{provider}} / {{model}}",
     "unavailable": "No dialogue model is available. Check provider configuration, enabled models and Flowy login.",
-    "failed": "Could not load or save the dialogue model configuration. Retry syncing.",
+    "failed": "Could not read the quick reply model. Reopen settings to retry.",
     "stale": "Unavailable model: {{model}}"
   },
   "audio": {

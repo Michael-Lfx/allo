@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVoiceSession, getVoiceDialogueSettings, saveVoiceDialogueModel, voiceServiceAvailability, type VoiceSnapshot } from './voiceCompanion';
+import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVoiceSession, getVoiceDialogueSettings, voiceServiceAvailability, type VoiceSnapshot } from './voiceCompanion';
 import { getVoiceFeedbackSettings, saveVoiceFeedback, previewVoiceFeedback } from './voiceCompanion';
 import * as voice from './voiceCompanion';
 
@@ -50,24 +50,18 @@ test('tool decisions carry actual approval identities and never grant permanent 
   } finally {globalThis.fetch=original;}
 });
 
-test('execution settings and task reads keep explicit references and never invoke wake or message delivery', async () => {
+test('task reads never write configuration or invoke wake or message delivery', async () => {
   const original = globalThis.fetch;
   const requests: Array<{url:string;init?:RequestInit}> = [];
-  const execution = {workspace:'D:\\owned',model:{provider_id:'catalog-provider',model:'catalog-model'},preset_id:null};
   globalThis.fetch = (async (input:RequestInfo|URL,init?:RequestInit) => {
-    requests.push({url:String(input),init});
-    return Response.json({requested:execution,effective:null,available:false,reason_code:'runtime_unavailable'});
+    requests.push({url:String(input),init}); return Response.json({status:'accepted'});
   }) as typeof fetch;
   try {
-    const settings = await voice.getVoiceExecutionSettings();
-    expect(settings.available).toBe(false);
-    await voice.saveVoiceExecutionSettings(execution);
     await voice.getVoiceTask('owned-task');
-    expect(requests.map(({url})=>url.split('/api/')[1])).toEqual(['voice/companion/execution','voice/companion/execution','voice/companion/tasks/owned-task']);
-    expect(JSON.parse(requests[1].init?.body as string)).toEqual(execution);
-    expect(requests.every(({init})=>init?.credentials==='same-origin')).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url.endsWith('/tasks/owned-task')).toBe(true);
     expect(requests[0].init?.method).toBe('GET');
-    expect(requests[1].init?.method).toBe('POST');
+    expect(requests[0].init?.credentials).toBe('same-origin');
   } finally {globalThis.fetch=original;}
 });
 
@@ -128,8 +122,7 @@ test('all voice requests use same-origin cookies compatible with desktop wildcar
     await stopVoiceSession(scope);
     await wakeVoiceSession();
     await getVoiceDialogueSettings();
-    await saveVoiceDialogueModel({provider_id:'provider',model:'model'});
-    expect(modes).toEqual(Array(6).fill('same-origin'));
+    expect(modes).toEqual(Array(5).fill('same-origin'));
   } finally { off?.(); globalThis.fetch = original; }
 });
 

@@ -9,6 +9,8 @@ use nomifun_conversation::{ConversationService, IdempotentMessageDelivery, Publi
 
 use crate::voice_tasks::{TaskMutationError, TaskReceipt, VoiceTaskRuntime};
 use crate::voice_dialogue::VoiceDialogueCompleter;
+#[cfg(test)]
+use crate::voice_dialogue::VoiceDialogueRecorder;
 
 pub(crate) struct ConversationVoiceRuntime {
     pub conversation: ConversationService,
@@ -557,8 +559,12 @@ mod tests {
         let runtime: Arc<dyn VoiceTaskRuntime> = Arc::new(ConversationVoiceRuntime {
             conversation: state.service.clone(), registry: services.agent_runtime_registry.clone(), models:models.clone(), presets:None,
         });
-        let command = VoiceTaskCommand {command_id:"read-command".into(),session_id:"acoustic-session".into(),turn_id:"acoustic-turn".into(),goal:goal.clone(),record_id:None,binding_id:None};
+        let command = VoiceTaskCommand {command_id:"voice-acoustic-turn".into(),session_id:"acoustic-session".into(),turn_id:"acoustic-turn".into(),goal:goal.clone(),record_id:None,binding_id:None};
         let config = VoiceExecutionConfig {workspace:workspace.to_string_lossy().into(),model:Some(VoiceModelRef {provider_id,model:"voice-runtime-fixture".into()}),preset_id:None,session_mode:None};
+        let project = state.service.create(&services.authoritative_user_id, serde_json::from_value(serde_json::json!({
+            "type":"nomi", "name":"voice runtime project", "model":config.model,
+            "extra":{"workspace":config.workspace}
+        })).unwrap()).await.unwrap();
         let config_dir = services.data_dir.join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("voice_companion.json"), serde_json::to_vec(&serde_json::json!({"execution":config,"autostart":true})).unwrap()).unwrap();
@@ -567,10 +573,16 @@ mod tests {
         let builder=crate::voice_companion_manager::VoiceCompanionProcessManager::new(
             Arc::new(nomifun_voice_models::ModelManager::new(root.path().join("models"))),&services.data_dir,
         ).with_tasks(services.authoritative_user_id.to_string(),runtime.clone()).with_dialogue(models.clone()).with_replay_daemon(daemon_origin);
+        *builder.active_window_candidate().write().unwrap() = Some(project.conversation_id.clone());
         let recorder=Arc::new(crate::voice_companion_manager::ConversationVoiceDialogueRecorder::new(
             Arc::new(state.service.clone()),services.authoritative_user_id.to_string(),&services.data_dir,
-        ).with_target_config(builder.target_selection()).with_active_window_candidate(builder.active_window_candidate()).with_execution_runtime(runtime));
-        let manager=Arc::new(if from_worker || keyboard_queue {builder.with_recorder(recorder.clone())}else{builder});
+        ).with_target_config(builder.target_selection()).with_active_window_candidate(builder.active_window_candidate()).with_execution_runtime(runtime.clone()));
+        let manager=Arc::new(builder.with_recorder(recorder.clone()));
+        if !from_worker {
+            let request = nomifun_api_types::voice::VoiceDialogueRequest::scoped(&command.session_id,&command.turn_id,&command.goal);
+            let crate::voice_dialogue::VoiceDialoguePreflight::Ready {conversation_id} = recorder.preflight(&request).await.unwrap() else {panic!("new task must be ready")};
+            recorder.record_pair(&conversation_id,&request,&serde_json::json!({"intent_type":"agent_task","task_goal":command.goal,"spoken_ack":"working"}).to_string()).await.unwrap();
+        }
         let mut acoustic = None;
         let mut acoustic_worker = None;
         let mut daemon_server = None;
@@ -583,7 +595,7 @@ mod tests {
             use nomifun_audio::{voice_pipeline::{VoiceCapturePipeline,PipelineConfig},stt::FakeSttCallback};
             use voice_companion::replay_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,task_client::HostTaskClient,playback::{TestAudioSink,PlaybackPipeline}};
             let hosted = crate::voice_dialogue::VoiceDialogueBridge::start_with_recorder(models,
-                Arc::new(std::sync::RwLock::new(config.model.clone())),manager.replay_control_credential(),manager.private_task_routes(),Some(recorder)).await.unwrap();
+                Arc::new(std::sync::RwLock::new(config.model.clone())),manager.replay_control_credential(),manager.private_task_routes(),Some(recorder.clone())).await.unwrap();
             let router = Arc::new(OpenAiCompatibleVoiceRouter::with_completion(Arc::new(HostDialogueClient::new(hosted.endpoint.clone(),manager.replay_control_credential()).unwrap())));
             let task_client = Arc::new(HostTaskClient::new(hosted.endpoint.replace("/complete","/tasks"),manager.replay_control_credential()).unwrap());
             let (capture,producer) = VoiceCapturePipeline::new(PipelineConfig::default());
@@ -630,19 +642,22 @@ mod tests {
         let settings = app.clone().oneshot(axum::http::Request::builder().uri("/api/voice/companion/execution").body(axum::body::Body::empty()).unwrap()).await.unwrap();
         assert_eq!(settings.status(), axum::http::StatusCode::OK);
         let settings: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(settings.into_body(), 16_384).await.unwrap()).unwrap();
-        assert_eq!(settings["available"], true);
+        assert!(settings["requested"].is_null());
+        if !from_worker {assert_eq!(settings["available"], true);}
         assert_eq!(calls.load(Ordering::SeqCst), 0, "configuration reads cannot initialize task inference");
         let saved_config = std::fs::read(config_dir.join("voice_companion.json")).unwrap();
         std::fs::write(config_dir.join("voice_companion.json"),b"invalid-json").unwrap();
         let invalid = app.clone().oneshot(axum::http::Request::builder().uri("/api/voice/companion/execution").body(axum::body::Body::empty()).unwrap()).await.unwrap();
         let invalid:serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(invalid.into_body(),16_384).await.unwrap()).unwrap();
-        assert_eq!(invalid["available"],false);
-        assert_eq!(manager.snapshot().task_ready,false,"unreadable configuration must revoke cached readiness");
+        assert_eq!(invalid["available"],settings["available"],"retired global configuration cannot change bound readiness");
+        assert_eq!(manager.snapshot().task_ready,settings["available"].as_bool().unwrap());
         std::fs::write(config_dir.join("voice_companion.json"),saved_config).unwrap();
         let unavailable_preset = serde_json::json!({"workspace":workspace,"model":null,"preset_id":nomifun_common::generate_id()});
         let rejected = app.clone().oneshot(axum::http::Request::builder().method("POST").uri("/api/voice/companion/execution")
             .header("content-type","application/json").body(axum::body::Body::from(unavailable_preset.to_string())).unwrap()).await.unwrap();
-        assert_eq!(rejected.status(), axum::http::StatusCode::BAD_REQUEST, "an unresolved preset must not be reported as a ready runtime configuration");
+        assert_eq!(rejected.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED, "retired configuration writes must not change the Conversation");
+        let invalid_preset: VoiceExecutionConfig = serde_json::from_value(unavailable_preset).unwrap();
+        assert_eq!(runtime.resolve_configuration(&invalid_preset).await.unwrap_err(), "task_preset_unavailable");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         let command = if let Some((voice,producer)) = &acoustic {
             let input = if real_acoustics {
@@ -730,13 +745,18 @@ mod tests {
                 std::fs::write(&file_b, &marker_b).unwrap();
                 let goal_b = format!("读取 {} 并返回完整内容。", file_b.display());
                 let command_b = VoiceTaskCommand {
-                    command_id: "read-command-b".into(),
+                    command_id: "voice-acoustic-turn-b".into(),
                     session_id: "acoustic-session".into(),
                     turn_id: "acoustic-turn-b".into(),
                     goal: goal_b.clone(),
                     record_id: None,
                     binding_id: None,
                 };
+                if !keyboard_queue {
+                    let request = nomifun_api_types::voice::VoiceDialogueRequest::scoped(&command_b.session_id,&command_b.turn_id,&command_b.goal);
+                    let crate::voice_dialogue::VoiceDialoguePreflight::Ready {conversation_id} = recorder.preflight(&request).await.unwrap() else {panic!("queued task must be ready")};
+                    recorder.record_pair(&conversation_id,&request,&serde_json::json!({"intent_type":"agent_task","task_goal":command_b.goal,"spoken_ack":"queued"}).to_string()).await.unwrap();
+                }
                 let submit_b = VoiceTaskSubmitRequest {
                     instance_id: manager.snapshot().instance_id,
                     command: command_b.clone(),
@@ -753,7 +773,7 @@ mod tests {
                     ..Default::default()
                 });}
                 let (submit_path,submit_body)=if keyboard_queue {
-                    ("/api/voice/companion/messages",serde_json::json!({"conversation_id":accepted.task.conversation_id,"command_id":"read-command-b","text":goal_b}))
+                    ("/api/voice/companion/messages",serde_json::json!({"conversation_id":accepted.task.conversation_id,"command_id":"voice-acoustic-turn-b","text":goal_b}))
                 } else {("/api/voice/companion/tasks",serde_json::to_value(&submit_b).unwrap())};
                 let queued_resp = app.clone().oneshot(
                     axum::http::Request::builder()
@@ -763,10 +783,12 @@ mod tests {
                         .body(axum::body::Body::from(serde_json::to_vec(&submit_body).unwrap()))
                         .unwrap(),
                 ).await.unwrap();
-                assert_eq!(queued_resp.status(), axum::http::StatusCode::OK);
-                let delivery_b: VoiceTaskDelivery = serde_json::from_slice(&axum::body::to_bytes(queued_resp.into_body(), 32_768).await.unwrap()).unwrap();
+                let queued_status = queued_resp.status();
+                let queued_body = axum::body::to_bytes(queued_resp.into_body(), 32_768).await.unwrap();
+                assert_eq!(queued_status, axum::http::StatusCode::OK, "{}", String::from_utf8_lossy(&queued_body));
+                let delivery_b: VoiceTaskDelivery = serde_json::from_slice(&queued_body).unwrap();
                 assert_eq!(delivery_b.task.status, VoiceTaskStatus::Queued, "task B must be queued while task A is running");
-                assert_eq!(delivery_b.task.command_id, "read-command-b");
+                assert_eq!(delivery_b.task.command_id, "voice-acoustic-turn-b");
                 let b_msg_id = delivery_b.task.message_id.clone().expect("queued task B must retain stable message_id");
                 assert_eq!(delivery_b.task.conversation_id, accepted.task.conversation_id, "task B must share the workspace voice conversation");
 
@@ -810,7 +832,7 @@ mod tests {
                     loop {
                         let response = app.clone().oneshot(
                             axum::http::Request::builder()
-                                .uri("/api/voice/companion/tasks/read-command-b")
+                                .uri("/api/voice/companion/tasks/voice-acoustic-turn-b")
                                 .body(axum::body::Body::empty())
                                 .unwrap(),
                         ).await.unwrap();
@@ -862,7 +884,7 @@ mod tests {
                 }
             }).await;
             release_model.notify_waiters();
-            controlled.expect("spoken cancellation must reach the actual task");
+            controlled.unwrap_or_else(|e| panic!("spoken cancellation must reach the actual task: {e}; voice={:?}; host={:?}",voice.snapshot(),manager.snapshot()));
         }
         if oral_approval {
             let (voice,producer)=acoustic.as_ref().unwrap();
@@ -914,7 +936,8 @@ mod tests {
         if from_worker {
             assert_eq!(delivery_count, if voice_controls || keyboard_queue { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s) and each executed task delivery receipt");
         } else {
-            assert_eq!((creation_count,delivery_count),(1,if queued_drain { 2 } else { 1 }),"one voice command must create one conversation identity and one real send receipt");
+            assert_eq!(creation_count,1,"one workspace voice Conversation creation identity");
+            assert_eq!(delivery_count,if queued_drain {4}else{2},"one durable decision projection and one real runtime send per command");
         }
         eprintln!("voice_acceptance_evidence: {}",serde_json::json!({
             "scenario":format!("{scenario:?}"),"command_id":done.command_id,"session_id":done.session_id,"acoustic_turn_id":done.acoustic_turn_id,
