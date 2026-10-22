@@ -168,6 +168,40 @@ mod tests {
         assert_eq!(inventory.files[0].headings.len(), 40);
     }
 
+    /// h1 计数字段的信封兼容：零值不序列化（快照字节形状与 v1 完全一致），
+    /// 缺字段的旧快照读回默认 0——读侧不感知、不报错。
+    #[test]
+    fn triage_counter_fields_stay_backward_compatible() {
+        let empty_inventory = KbInventory {
+            bases: Vec::new(),
+            files: Vec::new(),
+            total_files: 0,
+            total_bytes: 0,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        };
+        let snapshot = CourseSourcePlanSnapshot::capture(
+            &empty_inventory,
+            &empty_triage(),
+            &SourcePlan::default(),
+            &SourceCoverage::default(),
+        );
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert!(
+            json["triage"].get("batch_repair_count").is_none(),
+            "零值不序列化，信封字节形状与 v1 一致：{json}"
+        );
+        assert!(
+            json["triage"].get("still_missing_count").is_none(),
+            "零值不序列化：{json}"
+        );
+        // 旧快照（缺新字段）原样读回：默认 0，不报错不伪造。
+        let parsed: CourseSourcePlanSnapshot =
+            serde_json::from_value(json).expect("缺字段的快照可读回");
+        assert_eq!(parsed.triage.batch_repair_count, 0);
+        assert_eq!(parsed.triage.still_missing_count, 0);
+    }
+
     /// 信封契约(票面验收):序列化恒为 JSON 对象(迁移 069 的 CHECK 只放行
     /// 对象)、`version:1`;1000 文件库的快照体积可控(截断生效,单文件
     /// ≈ 路径 + hash + 200 字 preview + 16 条标题 ≈ 1KB → 总量 < 2MB);
