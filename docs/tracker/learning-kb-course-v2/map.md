@@ -1,7 +1,7 @@
 # Map: 学习课程生成 v2——脏库/大教材的结构发现与分批展开
 
 <!-- wayfinder:map -->
-<!-- 状态：全票关闭（2026-10-22）。d1/g1 设计时关闭；t1–t5 实现后经两轴 code-review + 修复（cb414f454/19dc56f6b）收口。集成分支 feat/learn-kb-course-v2（未推送）。t4 迁移 069 以 Q14 原则同意 + 明示执行指令实施，推送前 owner 可否决。移交观察（t5 Resolution + 评审）：同内容对可能被规则+LLM 双层各排除一头（一跑复现 LinkedList 章丢失）；大书锚点偏窄（17/105 covered、85 uncertain）；provider SSE 一次挂起约 30 分钟无超时；check:dead-css 基线既有红（11 组漂移，需独立清理票）。 -->
+<!-- 状态：全票关闭（2026-10-22）。d1/g1 设计时关闭；t1–t5 实现后经两轴 code-review + 修复（cb414f454/19dc56f6b）收口。集成分支 feat/learn-kb-course-v2（未推送）。t4 迁移 069 以 Q14 原则同意 + 明示执行指令实施，推送前 owner 可否决。移交观察（t5 Resolution + 评审）：同内容对可能被规则+LLM 双层各排除一头（一跑复现 LinkedList 章丢失）；大书锚点偏窄（17/105 covered、85 uncertain）；provider SSE 一次挂起约 30 分钟无超时；check:dead-css 基线既有红（11 组漂移，需独立清理票）。2026-10-22 真机复验（learning-smoke-course-20261022-verify/，两库 EXIT=0）后，分诊批缺条目/章级 topic 滚入/canonical tie-break 三项已立后续票：../learning-course-v2-hardening/map.md。 -->
 
 ## Destination
 
