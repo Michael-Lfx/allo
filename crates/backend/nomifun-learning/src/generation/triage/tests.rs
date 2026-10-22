@@ -509,6 +509,152 @@ async fn truncated_batch_replies_split_half_and_still_cover_every_file() {
     );
 }
 
+// ── h1：批回包完整性（标签前缀回显 / 宽容解析 / 定向补判 / 单文件兜底）──────
+
+/// h1 根因（真机 run-1792650549242 整批回包）：模型把清单行「文件 」标签回显
+/// 进 path，其余形状完全合规、条数齐全。归一化匹配后整批一次命中，不再
+/// 拆半/单文件兜底/落 uncertain。
+#[tokio::test]
+async fn label_prefixed_path_echoes_are_normalized_back_to_requested_paths() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "回显库").await;
+    write_kb_file(
+        &root,
+        "01-前言.md",
+        "# 前言\n\n前言介绍本书背景和预备条件。\n",
+    );
+    write_kb_file(
+        &root,
+        "02-接口.md",
+        "# 接口\n\n本章讲接口设计与实现约定。\n",
+    );
+    write_kb_file(
+        &root,
+        "03-算法分析.md",
+        "# 算法分析\n\n本章讲复杂度分析与摊还分析。\n",
+    );
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            // 真机形状：每条 path 都带「文件 」标签前缀（原样摘自归档回包）。
+            let entries: Vec<(String, &str, f32, &str)> = paths
+                .iter()
+                .map(|path| (format!("文件 {path}"), "core", 0.9, "与学习目标直接相关"))
+                .collect();
+            let body = entries
+                .iter()
+                .map(|(path, role, confidence, reason)| {
+                    format!(
+                        "{{\"path\": \"{path}\", \"role\": \"{role}\", \"confidence\": {confidence}, \"reason\": \"{reason}\"}}"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!("{{\"files\": [{body}]}}"))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "数据结构入门", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 3, "带前缀回显的条目应全部命中请求集");
+    assert_eq!(report.counts.uncertain, 0, "前缀回显不再落 uncertain");
+    assert!(!report.degraded);
+    assert_eq!(
+        completer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "归一化后整批一次成功，不触发拆半或单文件兜底"
+    );
+    for path in ["01-前言.md", "02-接口.md", "03-算法分析.md"] {
+        let file = report.files.iter().find(|file| file.rel_path == path).unwrap();
+        assert_eq!(file.role, KbTriageRole::Core, "{path} 应按请求路径落判定");
+    }
+}
+
+/// 真机 call#6：单文件兜底批的回包 JSON 完整、判定合理，仅 path 带「文件 」
+/// 前缀——此前被当幻觉路径丢弃后落 uncertain（verify-clean 7 条 uncertain
+/// 的逐一来源）。归一化后应拿到判定。
+#[tokio::test]
+async fn single_file_prefixed_echo_replies_land_verdicts() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "单文件回显库").await;
+    write_kb_file(
+        &root,
+        "01-前言.md",
+        "# 前言\n\n前言介绍本书背景和预备条件。\n",
+    );
+    let completer = RespondingCompleter {
+        respond: |_paths: &[String]| {
+            // 原样摘自归档 call#6 回包（req=1，JSON 完整闭合）。
+            Ok(r#"{"files": [{"path": "文件 01-前言.md", "role": "prerequisite", "confidence": 0.9, "reason": "前言介绍本书背景和预备条件，是学习前的背景说明，非核心教学内容。"}]}"#.to_owned())
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "数据结构入门", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.prerequisite, 1, "单文件前缀回显应命中判定");
+    assert_eq!(report.counts.uncertain, 0);
+    let preface = &report.files[0];
+    assert_eq!(preface.role, KbTriageRole::Prerequisite);
+    assert_eq!(
+        completer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "一次调用即命中"
+    );
+}
+
+/// 真机 call#22：同一回包里 1 条精确、1 条带前缀的混合形态也应全部命中。
+#[tokio::test]
+async fn mixed_exact_and_prefixed_entries_all_land() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "混合回显库").await;
+    write_kb_file(&root, "16-爬取维基百科.md", "# 爬取维基百科\n\n爬虫流程与缓存策略。\n");
+    write_kb_file(&root, "17-布尔搜索.md", "# 布尔搜索\n\n布尔查询的解析与求值。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            // 第一条原样回显、第二条带「文件 」前缀（call#22 形态）。
+            let entries: Vec<(String, &str, f32, &str)> = paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| {
+                    let echoed = if index == 0 {
+                        path.clone()
+                    } else {
+                        format!("文件 {path}")
+                    };
+                    (echoed, "core", 0.85, "课程正文")
+                })
+                .collect();
+            let body = entries
+                .iter()
+                .map(|(path, role, confidence, reason)| {
+                    format!(
+                        "{{\"path\": \"{path}\", \"role\": \"{role}\", \"confidence\": {confidence}, \"reason\": \"{reason}\"}}"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!("{{\"files\": [{body}]}}"))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "搜索入门", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 2, "精确与带前缀条目都命中");
+    assert_eq!(report.counts.uncertain, 0);
+    assert_eq!(
+        completer.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
 #[tokio::test]
 async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;

@@ -1080,6 +1080,36 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
     }
 }
 
+/// 把模型回显的条目路径对回请求路径（h1 根因修复，确定性归一）：先原样
+/// 精确匹配；未命中再剥掉回显进 path 的清单标签前缀——真机实锤模型会把
+/// 清单行的「文件 」标签整个当成路径开头回显（如 `文件 01-前言.md`）。
+/// 标签判定从严：剥掉的前缀必须不含路径分隔符「/」（含「/」说明是另一个
+/// 路径，不是标签），且剩余部分必须唯一精确命中请求集；歧义或未命中一律
+/// 不收（保守语义：宁可走缺条目补判，不做模糊匹配）。
+fn resolve_requested_path<'a>(echoed: &str, requested: &HashSet<&'a str>) -> Option<&'a str> {
+    let echoed = echoed.trim();
+    if echoed.is_empty() {
+        return None;
+    }
+    if let Some(exact) = requested.get(echoed) {
+        return Some(*exact);
+    }
+    let mut matched: Vec<&'a str> = requested
+        .iter()
+        .filter(|candidate| {
+            let candidate = **candidate;
+            echoed.len() > candidate.len()
+                && echoed.ends_with(candidate)
+                && !echoed[..echoed.len() - candidate.len()].contains('/')
+        })
+        .map(|candidate| *candidate)
+        .collect();
+    match matched.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    }
+}
+
 /// 把模型回包映射回请求集（未知路径忽略；未知角色保守 uncertain；duplicate
 /// 判定必须有可核对的 duplicate_of——缺失或指向库外都降级 uncertain，评审 S1：
 /// 模型一句「重复」不再能整文件丢掉教学内容）。
@@ -1091,9 +1121,10 @@ fn map_llm_reply(
     let requested: HashSet<&str> = remaining.iter().map(|file| file.file.rel_path.as_str()).collect();
     let mut verdicts = HashMap::new();
     for entry in reply.files {
-        if !requested.contains(entry.path.as_str()) {
+        // 条目路径先做确定性归一（剥清单标签前缀回显），命中不了请求集才忽略。
+        let Some(rel_path) = resolve_requested_path(&entry.path, &requested) else {
             continue;
-        }
+        };
         let role = match entry.role.as_str() {
             "core" => KbTriageRole::Core,
             "prerequisite" => KbTriageRole::Prerequisite,
@@ -1104,7 +1135,7 @@ fn map_llm_reply(
             "uncertain" => KbTriageRole::Uncertain,
             unknown => {
                 verdicts.insert(
-                    entry.path.clone(),
+                    rel_path.to_owned(),
                     RuleVerdict {
                         role: KbTriageRole::Uncertain,
                         confidence: entry.confidence.clamp(0.0, 1.0),
@@ -1122,8 +1153,9 @@ fn map_llm_reply(
             entry.reason.trim().to_owned()
         };
         let confidence = entry.confidence.clamp(0.0, 1.0);
-        // duplicate 的 canonical 必须可核对（非空且在清点清单里）；其余
-        // 角色不携带 duplicate_of（台账只收重复副本条目）。
+        // duplicate 的 canonical 必须可核对（非空且在清点清单里；目标路径
+        // 同样做标签前缀归一）；其余角色不携带 duplicate_of（台账只收重复
+        // 副本条目）。
         let duplicate_of = (role == KbTriageRole::Duplicate)
             .then(|| {
                 entry
@@ -1131,7 +1163,7 @@ fn map_llm_reply(
                     .as_deref()
                     .map(str::trim)
                     .filter(|target| !target.is_empty())
-                    .filter(|target| known_paths.contains(target))
+                    .and_then(|target| resolve_requested_path(target, known_paths))
                     .map(str::to_owned)
             })
             .flatten();
@@ -1157,7 +1189,7 @@ fn map_llm_reply(
                     .then(|| "模型回报的重复副本（duplicate_of 可核对）".to_owned()),
             }
         };
-        verdicts.insert(entry.path.clone(), verdict);
+        verdicts.insert(rel_path.to_owned(), verdict);
     }
     verdicts
 }
