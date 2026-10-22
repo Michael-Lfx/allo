@@ -1148,7 +1148,7 @@ fn resolve_requested_path<'a>(echoed: &str, requested: &HashSet<&'a str>) -> Opt
     if let Some(exact) = requested.get(echoed) {
         return Some(*exact);
     }
-    let mut matched: Vec<&'a str> = requested
+    let matched: Vec<&'a str> = requested
         .iter()
         .filter(|candidate| {
             let candidate = **candidate;
