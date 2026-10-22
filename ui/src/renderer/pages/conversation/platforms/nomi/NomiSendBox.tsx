@@ -3,8 +3,16 @@
 import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
-import {sendVoiceKeyboardMessage} from '@common/adapter/voiceCompanion';
+import type { TChatConversation } from '@/common/config/storage';
+import { sendVoiceKeyboardMessage } from '@common/adapter/voiceCompanion';
 import VoiceConversationBar from '@renderer/pages/voiceSession/VoiceConversationBar';
+import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import { useSWRConfig } from 'swr';
+import {
+  dispatchNomiSend,
+  resolveVoiceConversationKind,
+  type ConversationVoiceKind,
+} from './nomiSendDispatch';
 import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
@@ -236,9 +244,14 @@ const NomiSendBox: React.FC<{
   hideModelSelector = false,
 }) => {
   const [workspacePath, setWorkspacePath] = useState('');
-  const [voiceConversation,setVoiceConversation]=useState<{id:string;voice:boolean}|null>(null);
-  const isVoiceConversation=voiceConversation?.id===conversation_id&&voiceConversation.voice;
-  const voiceSendAttempts=useRef(new Map<string,string>());
+  const [voiceConversation, setVoiceConversation] = useState<{
+    id: string;
+    kind: ConversationVoiceKind;
+  }>({ id: conversation_id, kind: 'unknown' });
+  const conversationVoiceKind =
+    voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown';
+  const isVoiceConversation = conversationVoiceKind === 'voice';
+  const voiceSendAttempts = useRef(new Map<string, string>());
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
     reasoning_effort
@@ -293,6 +306,7 @@ const NomiSendBox: React.FC<{
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
   const { t } = useTranslation();
+  const { cache } = useSWRConfig();
   const providerLabel = useModelSelectorProviderLabel();
   const { current_model } = modelSelection;
 
@@ -440,26 +454,51 @@ const NomiSendBox: React.FC<{
     await warmupConversationForPassiveMount(conversation_id);
   }, [conversation_id]);
 
-  useEffect(() => {
+  const resolveConversationKind = useCallback(
+    async (targetId: ConversationId): Promise<'voice' | 'ordinary'> => {
+      const { kind, workspace } = await resolveVoiceConversationKind({
+        targetId,
+        fetchConversation: getConversationOrNull,
+        getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
+      });
+      setVoiceConversation({ id: targetId, kind });
+      if (workspace) setWorkspacePath(workspace);
+      return kind;
+    },
+    [cache]
+  );
+
   useEffect(() => {
     let disposed = false;
-    void getConversationOrNull(conversation_id)
-      .then((res) => {
+    const cached = cache.get(`conversation/${conversation_id}`)?.data as TChatConversation | undefined;
+    if (cached && cached.id === conversation_id) {
+      const isVoice = Boolean(cached.extra && 'voice' in cached.extra && cached.extra.voice === true);
+      setVoiceConversation({ id: conversation_id, kind: isVoice ? 'voice' : 'ordinary' });
+      if (cached.extra?.workspace) {
+        setWorkspacePath(cached.extra.workspace);
+      }
+      return;
+    }
+    setVoiceConversation({ id: conversation_id, kind: 'unknown' });
+    void resolveVoiceConversationKind({
+      targetId: conversation_id,
+      fetchConversation: getConversationOrNull,
+      getCachedConversation: (id) => cache.get(`conversation/${id}`)?.data as TChatConversation | undefined,
+    })
+      .then(({ kind, workspace }) => {
         if (disposed) return;
-        const isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
-        setVoiceConversation({ id: conversation_id, voice: isVoice });
-        if (!res?.extra?.workspace) return;
-        setWorkspacePath(res.extra.workspace);
+        setVoiceConversation({ id: conversation_id, kind });
+        if (workspace) setWorkspacePath(workspace);
       })
       .catch(() => {
         if (!disposed) {
-          setVoiceConversation({ id: conversation_id, voice: false });
+          setVoiceConversation({ id: conversation_id, kind: 'unknown' });
         }
       });
     return () => {
       disposed = true;
     };
-  }, [conversation_id]);
+  }, [conversation_id, cache]);
 
   useEffect(() => {
     if (!conversationContext?.workspace) return;
@@ -752,7 +791,7 @@ const NomiSendBox: React.FC<{
     resetActiveExecution,
   } = useConversationCommandQueue({
     conversation_id: conversation_id,
-    enabled: voiceConversation?.id===conversation_id && !voiceConversation.voice,
+    enabled: conversationVoiceKind === 'ordinary',
     isBusy,
     isHydrated: hasHydratedRunningState,
     onExecute: executeCommand,
@@ -761,8 +800,11 @@ const NomiSendBox: React.FC<{
   // Handle initial message from Guid page — wait until model is ready
   useEffect(() => {
     if (!conversation_id || !current_model?.use_model) return;
-    if(voiceConversation?.id!==conversation_id)return;
-    if(isVoiceConversation){emitter.emit('conversation.transition.reveal',{conversation_id});return;}
+    if (conversationVoiceKind === 'unknown') return;
+    if (isVoiceConversation) {
+      emitter.emit('conversation.transition.reveal', { conversation_id });
+      return;
+    }
 
     const target = conversationTarget(conversation_id);
     const draftStorageKey = sessionStorageKey('draft', target);
@@ -894,47 +936,37 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
-
-    let isVoice = isVoiceConversation;
-    if (voiceConversation?.id !== conversation_id) {
-      const res = await getConversationOrNull(conversation_id).catch(() => null);
-      isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
-      setVoiceConversation({ id: conversation_id, voice: isVoice });
-    }
-
-    if (isVoice) {
-      if (filesToSend.length) throw new Error(t('voice.queue.plainTextOnly'));
-      const key = JSON.stringify([conversation_id, message]);
-      let commandId = voiceSendAttempts.current.get(key);
-      if (!commandId) {
-        commandId = uuid();
-        voiceSendAttempts.current.set(key, commandId);
-      }
-      await sendVoiceKeyboardMessage(conversation_id, commandId, message);
-      if (voiceSendAttempts.current.get(key) === commandId) voiceSendAttempts.current.delete(key);
-      return;
-    }
-
-    const queued = enqueue({ input: message, files: filesToSend, workspace_path: workspacePath });
-    if (!queued) {
-      // Queue validation/storage failure must reject the composer send so the
-      // SendBox restores the text while the attachment draft stays intact.
-      throw new Error('conversation command was not queued');
-    }
-    clearFiles();
-    emitter.emit('nomi.selected.file.clear');
+    await dispatchNomiSend({
+      conversationId: conversation_id,
+      conversationVoiceKind,
+      workspacePath,
+      filesToSend,
+      message,
+      voiceSendAttempts: voiceSendAttempts.current,
+      resolveConversationKind,
+      sendVoiceKeyboardMessage,
+      enqueue,
+      clearFiles,
+      emitFileClear: () => emitter.emit('nomi.selected.file.clear'),
+      notifyError: (msg) => Message.error(msg),
+      plainTextOnlyError: t('voice.queue.plainTextOnly'),
+      loadFailedError: t('conversation.loadFailed', '加载会话失败，请重试'),
+    });
   };
 
   const onSendWithSkillsHandler = useCallback(
     async (message: string, injectSkills: string[]) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
-      let isVoice = isVoiceConversation;
-      if (voiceConversation?.id !== conversation_id) {
-        const res = await getConversationOrNull(conversation_id).catch(() => null);
-        isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
-        setVoiceConversation({ id: conversation_id, voice: isVoice });
+      let kind = conversationVoiceKind;
+      if (kind === 'unknown') {
+        try {
+          kind = await resolveConversationKind(conversation_id);
+        } catch (err) {
+          Message.error(t('conversation.loadFailed', '加载会话失败，请重试'));
+          throw err;
+        }
       }
-      if (isVoice) throw new Error(t('voice.queue.plainTextOnly'));
+      if (kind === 'voice') throw new Error(t('voice.queue.plainTextOnly'));
 
       // The queue stores plain commands only. A selected Skill is an atomic
       // snapshot load for this turn, so reject it while a turn is busy and let
@@ -954,7 +986,18 @@ const NomiSendBox: React.FC<{
       clearFiles();
       emitter.emit('nomi.selected.file.clear');
     },
-    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, isVoiceConversation, voiceConversation, conversation_id, t, uploadFile]
+    [
+      atPath,
+      clearFiles,
+      conversation_id,
+      conversationVoiceKind,
+      executeCommand,
+      hasPendingCommands,
+      isBusy,
+      resolveConversationKind,
+      t,
+      uploadFile,
+    ]
   );
 
   // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
@@ -1989,7 +2032,7 @@ const NomiSendBox: React.FC<{
           setAtPath(items);
         }}
         loading={isBusy}
-        disabled={voiceConversation?.id!==conversation_id || requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
+        disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {

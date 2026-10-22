@@ -136,6 +136,7 @@
   "noAgentsAvailable": "No agents available",
   "noModelConfigured": "No model configured yet. Add a provider in the dialog, then send again.",
   "createFailed": "Failed to create conversation",
+  "loadFailed": "Failed to load conversation, please try again.",
   "skeleton": {
     "opening": "Opening conversation"
   },

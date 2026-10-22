@@ -1920,6 +1920,7 @@ export type I18nKey =
   | 'conversation.hoverCard.statusLabels.pending'
   | 'conversation.hoverCard.statusLabels.running'
   | 'conversation.hoverCard.workspace'
+  | 'conversation.loadFailed'
   | 'conversation.mcp.loaded'
   | 'conversation.mcp.managementHint'
   | 'conversation.mcp.openSettings'

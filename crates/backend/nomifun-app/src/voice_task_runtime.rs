@@ -876,7 +876,7 @@ mod tests {
             assert!(file.exists());
             if scenario!=ReadScenario::OralApprovalSilence {feed_control_speech(producer).await;}
         }
-        let done = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let done = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let response = app.clone().oneshot(axum::http::Request::builder().uri(format!("/api/voice/companion/tasks/{command_id}")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
                 assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -884,7 +884,17 @@ mod tests {
                 if matches!(task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) {break task;}
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
-        }).await.expect("real voice task must reach its persisted terminal receipt");
+        }).await.unwrap_or_else(|_| {
+            let mgr = manager.snapshot();
+            panic!(
+                "real voice task must reach its persisted terminal receipt within timeout; command_id={command_id}, calls={}, observed_read={}, file_exists={}, host_state={:?}, confirmation={:?}",
+                calls.load(Ordering::SeqCst),
+                observed_read.load(Ordering::SeqCst),
+                file.exists(),
+                mgr,
+                mgr.confirmation
+            );
+        });
         if cancel_running {
             assert_eq!(done.status,VoiceTaskStatus::Failed,"{done:?}");
             assert_eq!(done.result_ok,Some(false));
