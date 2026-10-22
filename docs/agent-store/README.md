@@ -306,6 +306,19 @@ flowchart TD
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
 
+## 本轮（2026-10-22 发布 `0.1.0-beta.12`）
+
+`0.1.0-beta.12` 三出口发布完成（npm 四包 / GitHub Release / 站点），内容 = `49` 的目录检索与使用提示（不换指纹）+ `50` 的四类实体多语言展示字段（`fp-17` 的连接器字段改名 + `fp-18` 的展示字段），两轮**同批发布**，指纹因此一次跨两级（`fp-16 → fp-18`）：
+
+1. **版本锁步**：`0.1.0-beta.12`（PR #359，merge `a547b1087`）；四包 `dist-tags.beta` 与 `versions` 均已转正，`latest` 不动（仍为 `0.1.0-beta.2`）；`check:release-sync` 绿（四 manifest + 8 pin + 站点 `release.json` 同值，站点双语文案 `56 / 83` 同值）。
+2. **同一份 exe 服务两个出口**（不变量 4）：`agent-store:build`（release + `static-webui`）产出 `C98542D6…C63222`（210,356,224 B）；`release:pack --expect-sha256` 通过，**并从 npm 下载 runtime tarball 解包回算**——包内 `vendor/flowy-agent-store.exe` 与本地 release exe 同哈希（SHA256 逐字节一致），构成不变量 4 的双向证据。
+3. **npm 发布**：`protocol → client → runtime-win32-x64 → sdk` 顺序上架，四包均 `tag=beta`；凭据用 `C:\Users\15165\Documents\flowy-npm-token.key` 经临时 `npm_config_userconfig` 注入（`npm whoami` = `starwaveai`），未改全局 `~/.npmrc`。注册表 `time`：client `08:27:17.696Z`、sdk `08:27:59.013Z`、protocol `08:28:26.860Z`、runtime `08:37:18.268Z`（runtime 的 tarball 80.9 MB / 解包 210,414,640 B，**异步处理约 10 分钟**才可见）。
+4. **GitHub Release**：`v0.1.0-beta.12` prerelease（`draft=false`），zip 81,054,305 B、容器 sha256 `cd529920d9aabd82…`，`release:publish` 的**下载回验一次通过**；资产直链 `https://github.com/szStarWave/agent-store-site/releases/download/v0.1.0-beta.12/flowy-agent-store-v0.1.0-beta.12-windows-x86_64.zip`。
+5. **站点上线**：站点仓 commit `e435a013`（PR #13，merge `95455333`）——`changelog` §2 新增 2.1 与版本表行、旧条目顺延重编号、§4 清空待发布批次；`upgrade` §2 表行 + 新增 §6.11 迁移步骤 + §8 口径更新；`release.json` 抬至同值。`check:docs-sync` 10 页 0 drift / `test:docs-sync` 16 / `check:release` 全绿。**EdgeOne 构建未触发**（需控制台手动），故站点线上仍是 beta.11 文案——登记为待办。
+6. **实施期两处修正**（随 PR #358、#359 落地）：`read_index` 不再把索引行 `name` 兜底进 `name_en`（否则技能 slug / 连接器中文名会污染 `display_name.en`，违反 `50` D6）；`AgentDetail` 的 `display_description` / `quick_prompts` 上移到 `AgentSummary`（与 beta.11 的 `tags` / `category_id` 同型）。
+7. **门禁口径**：`release:check` 第 1 环（`ui/` typecheck）与 CI 的 `Repo gates → Auth login typecheck + smoke` 仍是既有红（后者报 `Export named 'tauriUpdatePackageSnapshot' not found`，main run `39738241636` 同样红），按 runbook §7.8 逐环执行——`check:fingerprint`（`fp-18`，本仓 7 文件 10 处 + 站点 2 处）、`check:release-sync`、`check:market`（17/17）、`cd web && bun run typecheck && bun run test`（584 通过 / 1 skipped）、`cargo test -p nomifun-app-server`（192 通过）、站点 `check:release` 全绿。
+8. **既有观察（本次留下，需账号持有人处置）**：`runtime-win32-x64` 的版本历史里有一个**无任何 dist-tag / optionalDependency 引用**的 `0.1.0-beta.13`——它来自「runtime 异步处理期间误判为失败」后的一次重发；本次使用的 granular token 无 unpublish 权限（`403 …may not perform this action`），需在 npm 网页删除或长期忽略。`sdk` 的 optionalDependencies 全部指向 `0.1.0-beta.12`，安装链路不受影响。
+
 ## 本轮（2026-10-14 发布 `0.1.0-beta.11`）
 
 `0.1.0-beta.11` 三出口发布完成（npm 四包 / GitHub Release / 站点），内容 = `43` 的市场分类与标签透出（`fp-14 → fp-15`）+ `44` 的四个面补齐（`fp-15 → fp-16`、`pack_format 3`），两轮**同批发布**，指纹因此一次跨两级：
