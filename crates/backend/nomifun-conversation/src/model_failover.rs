@@ -53,6 +53,11 @@ fn validate_failover_config(config: &ModelFailoverConfig) -> Result<(), AppError
     Ok(())
 }
 
+/// 用户点名的牧马人模型在本轮钉住。失败后保持这个模型，调用方报出它自己的错误。
+pub fn keeps_failed_model(provider_id: &str) -> bool {
+    nomifun_common::is_herdsman_provider_id(provider_id)
+}
+
 /// 判定一个 `AgentErrorCode` 是否为「provider 故障」——即换个备用模型可能绕过的
 /// 单厂商失败(限流 / 5xx / 网络 / 配置)。
 ///
@@ -460,6 +465,12 @@ mod tests {
     }
 
     // ── 故障分类(全仓库唯一权威表;idmm 经 re-export 复用)──
+
+    #[test]
+    fn herdsman_selection_stays_on_the_failed_model() {
+        assert!(keeps_failed_model(nomifun_common::HERDSMAN_PROVIDER_ID));
+        assert!(!keeps_failed_model(P1));
+    }
 
     #[test]
     fn is_provider_fault_matches_known_codes() {

@@ -245,6 +245,10 @@ impl ConversationService {
                 return None;
             }
         };
+        // 用户本轮点名的牧马人模型不改派。本地失败留在这个模型上，由 send-loop 报出原始错误。
+        if crate::model_failover::keeps_failed_model(&failed.provider_id) {
+            return None;
+        }
         let providers = match provider_repo.list().await {
             Ok(providers) => providers,
             Err(e) => {

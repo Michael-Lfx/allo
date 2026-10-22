@@ -1,11 +1,12 @@
 //! Discover a local Herdsman engine and project it into the provider catalog.
 //!
-//! The engine publishes its OpenAI-compatible Token Router on a Windows named
-//! pipe. This service is the only writer of the reserved herdsman provider
-//! row. Each running local model becomes its own chat entry, and the request
-//! uses that model's name. Chat surfaces already resolve `provider_models`
-//! with task `chat`, so those entries show up everywhere a conversation picks
-//! a model.
+//! The engine publishes status on a Windows named pipe. This service is the
+//! only writer of the reserved herdsman provider row. Each running local model
+//! becomes its own chat entry, and the request uses that model's name on the
+//! engine's local OpenAI endpoint. The Token Router is not used: it can hand
+//! a named model to a cloud upstream. Chat surfaces already resolve
+//! `provider_models` with task `chat`, so those entries show up everywhere a
+//! conversation picks a model.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +23,6 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-const DEFAULT_TOKEN_ROUTER_ENDPOINT: &str = "http://127.0.0.1:16621/v1";
 #[cfg(windows)]
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 #[cfg(windows)]
@@ -360,7 +360,7 @@ struct HerdsmanStatus {
     #[serde(default)]
     endpoint: String,
     #[serde(default)]
-    token_router_endpoint: Option<String>,
+    openai_endpoint: Option<String>,
     #[serde(default)]
     token_router_api_key: Option<String>,
 }
@@ -441,14 +441,10 @@ fn parse_loopback_http(raw: &str) -> Option<reqwest::Url> {
     Some(url)
 }
 
-/// Normalize the Token Router base. An empty value uses the engine default.
-/// Non-loopback URLs are rejected so a status payload cannot redirect chat
-/// traffic off the machine.
-pub(crate) fn normalize_token_router_endpoint(raw: Option<&str>) -> Option<String> {
-    let input = raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_TOKEN_ROUTER_ENDPOINT);
+/// Normalize the local OpenAI base. Empty and non-loopback URLs are rejected
+/// so a status payload cannot redirect a named local model off the machine.
+fn normalize_loopback_endpoint(raw: Option<&str>) -> Option<String> {
+    let input = raw.map(str::trim).filter(|value| !value.is_empty())?;
     let mut url = parse_loopback_http(input)?;
     let path = url.path();
     if path.is_empty() || path == "/" {
@@ -496,9 +492,9 @@ fn is_running_chat_model(model: &HerdsmanModel) -> bool {
 }
 
 /// Selectable models are the engine's running text and multimodal models.
-/// The wire id is the model name, which is what the Token Router accepts.
-/// A failed poll must not call this with an empty stand-in; an empty success
-/// means nothing is currently running.
+/// The wire id is the model name, which is what the local OpenAI endpoint
+/// accepts. A failed poll must not call this with an empty stand-in; an empty
+/// success means nothing is currently running.
 fn running_models(models: &[HerdsmanModel]) -> Vec<RunningModel> {
     let mut by_id = std::collections::BTreeMap::<String, RunningModel>::new();
     for model in models.iter().filter(|model| is_running_chat_model(model)) {
@@ -526,7 +522,9 @@ fn running_models(models: &[HerdsmanModel]) -> Vec<RunningModel> {
 }
 
 fn online_projection_from_status(status: &HerdsmanStatus) -> Option<OnlineProjection> {
-    let base_url = normalize_token_router_endpoint(status.token_router_endpoint.as_deref())?;
+    // Named local models stay on the engine's OpenAI endpoint. The Token
+    // Router is a hybrid front door and can forward the same model name upstream.
+    let base_url = normalize_loopback_endpoint(status.openai_endpoint.as_deref())?;
     let api_key = sanitize_api_key(status.token_router_api_key.as_deref().unwrap_or(""))?;
     Some(OnlineProjection { base_url, api_key })
 }
@@ -679,7 +677,7 @@ mod windows {
 
     async fn apply_status(projector: &Projector, status: &HerdsmanStatus) {
         let Some(projection) = online_projection_from_status(status) else {
-            debug!("ignored herdsman status without a loopback token router");
+            debug!("ignored herdsman status without a loopback local endpoint");
             if let Err(error) = projector.project_offline().await {
                 warn!(%error, "failed to disable herdsman provider after a rejected status");
             }
@@ -707,21 +705,29 @@ mod tests {
     }
 
     #[test]
-    fn token_router_endpoint_defaults_and_rejects_remote_hosts() {
+    fn local_endpoint_requires_loopback_and_does_not_invent_a_router() {
+        assert!(normalize_loopback_endpoint(None).is_none());
+        assert!(normalize_loopback_endpoint(Some("  ")).is_none());
         assert_eq!(
-            normalize_token_router_endpoint(None).as_deref(),
-            Some(DEFAULT_TOKEN_ROUTER_ENDPOINT)
+            normalize_loopback_endpoint(Some("http://127.0.0.1:18080")).as_deref(),
+            Some("http://127.0.0.1:18080/v1")
         );
         assert_eq!(
-            normalize_token_router_endpoint(Some("http://127.0.0.1:16621")).as_deref(),
-            Some("http://127.0.0.1:16621/v1")
+            normalize_loopback_endpoint(Some("http://127.0.0.1:18080/v1/")).as_deref(),
+            Some("http://127.0.0.1:18080/v1")
         );
-        assert_eq!(
-            normalize_token_router_endpoint(Some("http://127.0.0.1:16621/v1/")).as_deref(),
-            Some("http://127.0.0.1:16621/v1")
+        assert!(normalize_loopback_endpoint(Some("http://192.168.1.8:18080/v1")).is_none());
+        assert!(normalize_loopback_endpoint(Some("file:///etc/passwd")).is_none());
+    }
+
+    #[test]
+    fn named_local_model_uses_the_openai_endpoint() {
+        let status = sample_status(
+            r#"{"endpoint":"http://127.0.0.1:9","openai_endpoint":"http://127.0.0.1:18080","token_router_endpoint":"http://127.0.0.1:16621/v1","token_router_api_key":"secret"}"#,
         );
-        assert!(normalize_token_router_endpoint(Some("http://192.168.1.8:16621/v1")).is_none());
-        assert!(normalize_token_router_endpoint(Some("file:///etc/passwd")).is_none());
+        let projection = online_projection_from_status(&status).unwrap();
+        assert_eq!(projection.base_url, "http://127.0.0.1:18080/v1");
+        assert_eq!(projection.api_key, "secret");
     }
 
     #[test]
@@ -764,11 +770,17 @@ mod tests {
     }
 
     #[test]
-    fn status_without_a_key_or_loopback_router_is_not_usable() {
-        let missing_key = sample_status(r#"{"endpoint":"http://127.0.0.1:9","token_router_endpoint":"http://127.0.0.1:16621/v1"}"#);
+    fn status_without_a_local_endpoint_or_key_is_not_usable() {
+        let router_only = sample_status(
+            r#"{"endpoint":"http://127.0.0.1:9","token_router_endpoint":"http://127.0.0.1:16621/v1","token_router_api_key":"secret"}"#,
+        );
+        assert!(online_projection_from_status(&router_only).is_none());
+        let missing_key = sample_status(
+            r#"{"endpoint":"http://127.0.0.1:9","openai_endpoint":"http://127.0.0.1:18080/v1"}"#,
+        );
         assert!(online_projection_from_status(&missing_key).is_none());
         let remote = sample_status(
-            r#"{"token_router_endpoint":"http://10.0.0.8:16621/v1","token_router_api_key":"secret"}"#,
+            r#"{"openai_endpoint":"http://10.0.0.8:18080/v1","token_router_api_key":"secret"}"#,
         );
         assert!(online_projection_from_status(&remote).is_none());
     }

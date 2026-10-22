@@ -474,6 +474,18 @@ fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
 }
 
 fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
+    // A named local model is served by the engine itself. A Token Router
+    // envelope means that front door failed the turn; the wrapped upstream
+    // billing text belongs to a cloud hop the user did not select.
+    if lower.contains("token_router_error") || lower.contains("token_router_e") {
+        return Some(provider_error(
+            "The selected local model failed",
+            AgentErrorCode::UserLlmProviderGatewayError,
+            true,
+            AgentErrorResolutionKind::Retry,
+            None,
+        ));
+    }
     if contains_any(
         lower,
         &[
@@ -1228,6 +1240,12 @@ mod tests {
 
     #[test]
     fn classifies_provider_billing_auth_and_rate_limit() {
+        assert_classification(
+            "Nomi agent error: Provider error: API error 502: {\"error\":{\"message\":\"Upstream request failed! code 402 Insufficient credits\",\"type\":\"token_router_error\"}}",
+            AgentErrorCode::UserLlmProviderGatewayError,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::Retry,
+        );
         assert_classification(
             "Nomi agent error: Provider error: API error 402: {\"error\":{\"message\":\"Insufficient Balance\"}}",
             AgentErrorCode::UserLlmProviderBillingRequired,
