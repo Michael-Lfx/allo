@@ -179,3 +179,137 @@ export function lessonProgressLine(
   }
   return null;
 }
+
+// ── t5 新管线（清点分诊 → 来源结构计划 → 分批展开）─────────────────────
+
+/** 新管线步骤条五段：准备 → 来源分诊 → 来源结构计划 → 课时展开 → 完成。
+ * 术语铁律：这里只谈「来源分诊/来源结构计划」，与学习图的
+ * Structure/Coverage Gauge 无关。 */
+export type ModernGenStep = 0 | 1 | 2 | 3 | 4;
+
+/** 事件流里是否观察到新管线的分诊阶段——决定步骤条用新标签还是旧
+ * （描述流/旧客户端走旧五段，零回归）。 */
+export function isModernPipeline(events: ILearningCourseGenerationEvent[]): boolean {
+  return events.some(
+    (event) => event.phase === 'triage_started' || event.phase === 'triage_completed'
+  );
+}
+
+/** 新管线的事件流折叠：triage_* → 1；source_plan_* → 2；coverage_ready /
+ * publishing → 3；completed → 4。空流退化到分诊中（等待提示可见）。 */
+export function deriveModernStep(events: ILearningCourseGenerationEvent[]): ModernGenStep {
+  let step: ModernGenStep = 0;
+  for (const event of events) {
+    if (event.phase === 'triage_started' || event.phase === 'triage_completed') {
+      step = Math.max(step, 1) as ModernGenStep;
+    } else if (
+      event.phase === 'source_plan_started' ||
+      event.phase === 'source_plan_ready'
+    ) {
+      step = Math.max(step, 2) as ModernGenStep;
+    } else if (event.phase === 'coverage_ready' || event.phase === 'publishing') {
+      step = Math.max(step, 3) as ModernGenStep;
+    } else if (event.phase === 'completed') {
+      step = Math.max(step, 4) as ModernGenStep;
+    }
+  }
+  if (events.length === 0) step = 1;
+  return step;
+}
+
+/** triage 计数（WS 帧 / DTO 摘要共用形状）的最小读数。 */
+export interface TriageCountsLike {
+  total: number;
+  core: number;
+  prerequisite: number;
+  practice: number;
+  mixed: number;
+  noise: number;
+  duplicate: number;
+  uncertain: number;
+}
+
+/** DTO 分诊摘要面（`total_files` 字段）→ 计数行/判定入参（`total` 字段）
+ * 的形状适配——WS 帧与 DTO 两个来源共用同一组读数函数。 */
+export function triageViewCounts(view: {
+  total_files: number;
+  core: number;
+  prerequisite: number;
+  practice: number;
+  mixed: number;
+  noise: number;
+  duplicate: number;
+  uncertain: number;
+}): TriageCountsLike {
+  return {
+    total: view.total_files,
+    core: view.core,
+    prerequisite: view.prerequisite,
+    practice: view.practice,
+    mixed: view.mixed,
+    noise: view.noise,
+    duplicate: view.duplicate,
+    uncertain: view.uncertain,
+  };
+}
+
+/** 分诊计数行：「扫描 N 文件 → core X / mixed Y / 跳过 Z / 重复 W /
+ * 不确定 U」。跳过 = noise + duplicate（两者都不进课程）。 */
+export function triageCountsLine(counts: TriageCountsLike, t: Translate): string {
+  return t('learning.genTriageLine', {
+    total: counts.total,
+    core: counts.core,
+    mixed: counts.mixed,
+    skipped: counts.noise + counts.duplicate,
+    duplicate: counts.duplicate,
+    uncertain: counts.uncertain,
+  });
+}
+
+/** uncertain 过多（空态/提醒文案的触发条件）：数量 ≥10，或超过 core
+ * （分诊结果被不确定淹没）——建议先整理知识库，不是硬失败。 */
+export function uncertainTooMany(counts: TriageCountsLike): boolean {
+  return counts.uncertain >= 10 || (counts.core > 0 && counts.uncertain > counts.core);
+}
+
+/** 成本门确认弹窗的读数行：文件数 / 批数 / 调用数 / 预计耗时（分钟为
+ * 粗估值，后端按调用数 × 经验常数折算）。 */
+export function estimateLines(
+  estimate: import('./types').CourseGenerationEstimateView,
+  t: Translate
+): string[] {
+  const minutes = Math.max(1, Math.round(estimate.estimated_seconds / 60));
+  return [
+    t('learning.costGateFiles', { count: estimate.total_files }),
+    t('learning.costGateBatches', { count: estimate.estimated_batches }),
+    t('learning.costGateCalls', { count: estimate.estimated_llm_calls }),
+    t('learning.costGateDuration', { minutes }),
+  ];
+}
+
+// ── t5 课程详情「来源覆盖」卡（SourceCoverage；不是学习图的 Coverage Gauge）──
+
+/** 覆盖卡三态：旧课程/描述流（列上 NULL）不显示空卡；未知快照版本显式
+ * 「不可用」（有文案不静默）；正常快照展开完整读数。 */
+export type SourceCoverageCardState = 'hidden' | 'unavailable' | 'ready';
+
+/** 覆盖卡的三态判定：`source_plan` 整体缺席 = hidden；`snapshot.available
+ * = false`（未知版本/坏形状，读侧降级）= unavailable；否则 ready。 */
+export function sourceCoverageState(
+  plan: import('./types').CourseSourcePlanView | null
+): SourceCoverageCardState {
+  if (!plan) return 'hidden';
+  return plan.snapshot.available ? 'ready' : 'unavailable';
+}
+
+/** 覆盖面的 topic 总数读数：covered + skipped + uncertain 标签数（topic
+ * 四态里 uncertain 只以标签列表出现，没有独立计数面）。 */
+export function coverageTopicTotals(coverage: {
+  topics_covered: number;
+  topics_skipped: number;
+  uncertain?: string[];
+}): { covered: number; skipped: number; total: number } {
+  const covered = coverage.topics_covered;
+  const skipped = coverage.topics_skipped;
+  return { covered, skipped, total: covered + skipped + (coverage.uncertain?.length ?? 0) };
+}

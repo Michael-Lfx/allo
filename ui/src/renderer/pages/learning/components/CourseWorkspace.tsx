@@ -23,6 +23,7 @@ import type {
   Section,
 } from '../types';
 import { lessonStatusTagColors } from '../model';
+import { CourseSourceCoverageCard } from './CourseSourceCoverageCard';
 import {
   contentColumnWidth,
   outlineWidthClass,
@@ -232,6 +233,14 @@ export function CourseWorkspace({
             </Tooltip>
           )}
         </div>
+
+        {/* 来源覆盖卡（t5）：来源计划快照的完整披露——topic 覆盖、mixed
+            部分进入、跳过/不确定/兜底与文件级诊断。旧课程/描述流列上
+            NULL 时组件自渲染 null（不显示空卡）；未知版本显式「不可用」。 */}
+        <CourseSourceCoverageCard
+          sourcePlan={course.source_plan}
+          detail={detail.source_plan_detail}
+        />
 
         {recommendedLesson && (
           <Card>

@@ -3,6 +3,14 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildSteps,
+  coverageTopicTotals,
+  deriveModernStep,
+  estimateLines,
+  isModernPipeline,
+  sourceCoverageState,
+  triageCountsLine,
+  triageViewCounts,
+  uncertainTooMany,
   canGoToStep,
   deriveStep,
   lessonStatusTagColors,
@@ -131,5 +139,166 @@ describe('deriveStep / lessonProgressLine', () => {
     );
     expect(lessonProgressLine({ phase: 'completed' } as never, t)).toBeNull();
     expect(lessonProgressLine({ phase: 'failed' } as never, t)).toBeNull();
+  });
+});
+
+// ── t5：新管线（清点分诊 → 来源结构计划 → 分批展开）的纯决策面 ──────────
+
+describe('t5 新管线步骤折叠', () => {
+  test('triage/source_plan/coverage 阶段推进到对应档', () => {
+    const base = { phase: 'triage_started' } as never;
+    expect(deriveModernStep([base])).toBe(1);
+    expect(
+      deriveModernStep([{ phase: 'triage_completed' } as never])
+    ).toBe(1);
+    expect(
+      deriveModernStep([
+        { phase: 'triage_completed' } as never,
+        { phase: 'source_plan_started' } as never,
+      ])
+    ).toBe(2);
+    expect(
+      deriveModernStep([
+        { phase: 'source_plan_ready', chapters: 3 } as never,
+      ])
+    ).toBe(2);
+    expect(
+      deriveModernStep([{ phase: 'coverage_ready' } as never])
+    ).toBe(3);
+    expect(
+      deriveModernStep([
+        { phase: 'coverage_ready' } as never,
+        { phase: 'publishing' } as never,
+      ])
+    ).toBe(3);
+    expect(
+      deriveModernStep([
+        { phase: 'coverage_ready' } as never,
+        { phase: 'completed' } as never,
+      ])
+    ).toBe(4);
+  });
+
+  test('空流退化到分诊中档（spinner 不挤掉等待提示）', () => {
+    expect(deriveModernStep([])).toBe(1);
+  });
+
+  test('新管线判定：看到 triage 阶段即切换新步骤条', () => {
+    expect(isModernPipeline([{ phase: 'triage_started' } as never])).toBe(true);
+    expect(isModernPipeline([{ phase: 'triage_completed' } as never])).toBe(true);
+    expect(
+      isModernPipeline([
+        { phase: 'started' } as never,
+        { phase: 'round', loop: 'generate' } as never,
+      ])
+    ).toBe(false);
+    expect(isModernPipeline([])).toBe(false);
+  });
+});
+
+describe('t5 分诊计数行与 uncertain 过多判定', () => {
+  const counts = {
+    total: 8,
+    core: 2,
+    prerequisite: 1,
+    practice: 1,
+    mixed: 1,
+    noise: 1,
+    duplicate: 1,
+    uncertain: 1,
+  };
+
+  test('扫描行：总数 + 五个关键角色读数', () => {
+    const line = triageCountsLine(counts, t);
+    expect(line).toContain('learning.genTriageLine');
+    expect(line).toContain('"total":8');
+    expect(line).toContain('"core":2');
+    expect(line).toContain('"mixed":1');
+    expect(line).toContain('"skipped":2');
+    expect(line).toContain('"duplicate":1');
+    expect(line).toContain('"uncertain":1');
+  });
+
+  test('uncertain 过多：数量 ≥10 或超过 core 时提醒整理知识库', () => {
+    expect(uncertainTooMany({ ...counts, uncertain: 10 })).toBe(true);
+    expect(uncertainTooMany({ ...counts, core: 1, uncertain: 5 })).toBe(true);
+    expect(uncertainTooMany(counts)).toBe(false);
+    expect(uncertainTooMany({ ...counts, uncertain: 9, core: 9 })).toBe(false);
+  });
+
+  test('DTO 分诊摘要（total_files 字段面）适配成计数行入参', () => {
+    expect(triageViewCounts({
+      total_files: 8,
+      core: 2,
+      prerequisite: 1,
+      practice: 1,
+      mixed: 1,
+      noise: 1,
+      duplicate: 1,
+      uncertain: 1,
+    })).toEqual(counts);
+  });
+});
+
+describe('t5 成本门读数行', () => {
+  test('文件/批数/调用/耗时四行齐全（分钟为粗估）', () => {
+    const estimate = {
+      total_files: 105,
+      estimated_batches: 6,
+      estimated_llm_calls: 10,
+      estimated_seconds: 600,
+      needs_confirm: true,
+      triage: {
+        total_files: 105,
+        core: 90,
+        prerequisite: 0,
+        practice: 0,
+        mixed: 5,
+        noise: 8,
+        duplicate: 2,
+        uncertain: 5,
+        degraded: true,
+        warnings: [],
+      },
+      skipped_examples: [
+        { path: 'license.md', role: 'noise', reason: 'metadata' },
+      ],
+    } as unknown as Parameters<typeof estimateLines>[0];
+    const lines = estimateLines(estimate, t);
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toContain('learning.costGateFiles');
+    expect(lines[1]).toContain('learning.costGateBatches');
+    expect(lines[2]).toContain('learning.costGateCalls');
+    expect(lines[3]).toContain('learning.costGateDuration');
+    expect(lines[3]).toContain('"minutes":10');
+  });
+});
+
+// ── t5：课程详情「来源覆盖」卡的三态判定与 topic 总数 ──────────────────────
+
+describe('t5 来源覆盖卡三态', () => {
+  test('null（旧课程/描述流）不显示空卡；available=false 显式不可用；正常快照 ready', () => {
+    expect(sourceCoverageState(null)).toBe('hidden');
+    expect(
+      sourceCoverageState({ snapshot: { version: null, available: false } } as never)
+    ).toBe('unavailable');
+    expect(
+      sourceCoverageState({ snapshot: { version: 1, available: true } } as never)
+    ).toBe('ready');
+  });
+
+  test('topic 总数 = covered + skipped + uncertain 标签数（四态里 uncertain 无计数面）', () => {
+    expect(coverageTopicTotals({ topics_covered: 3, topics_skipped: 1 } as never)).toEqual({
+      covered: 3,
+      skipped: 1,
+      total: 4,
+    });
+    expect(
+      coverageTopicTotals({
+        topics_covered: 3,
+        topics_skipped: 1,
+        uncertain: ['a', 'b'],
+      } as never)
+    ).toEqual({ covered: 3, skipped: 1, total: 6 });
   });
 });

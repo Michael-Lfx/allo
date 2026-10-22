@@ -108,6 +108,122 @@ export interface CourseSamplingBaseView {
   goal_fallback: boolean;
 }
 
+// ── t5：来源计划（SourcePlan）/ 来源覆盖（SourceCoverage）的读侧视图 ────
+// 术语铁律：这里只谈「来源结构计划 / 来源覆盖」，与学习图的
+// Structure / Coverage Gauge 是两回事，禁止混用。
+
+/** 来源计划快照的版本面：available=false = 未知版本/坏形状（读侧降级，
+ * 计数不可信置零；课程本身照常可学）。 */
+export interface CourseSourcePlanSnapshotView {
+  version: number | null;
+  available: boolean;
+}
+
+/** 分诊摘要：七角色计数（总数守恒：各角色之和 = total_files）+ degraded
+ * （规则分诊，未做 LLM 判定）。 */
+export interface CourseSourcePlanTriageView {
+  total_files: number;
+  core: number;
+  prerequisite: number;
+  practice: number;
+  mixed: number;
+  noise: number;
+  duplicate: number;
+  uncertain: number;
+  degraded: boolean;
+  warnings?: string[];
+}
+
+/** t2 计划一章的来源映射摘要（章 → 概念/课时/来源文件；零课时章显式
+ * skipped + 理由）。 */
+export interface CourseSourcePlanChapterSummaryView {
+  title: string;
+  concepts: number;
+  lessons: number;
+  skipped: boolean;
+  skip_reason: string | null;
+  source_files: number;
+}
+
+/** 计划摘要：章/概念/边计数 + 证据 gaps + 章节映射摘要。 */
+export interface CourseSourcePlanPlanView {
+  chapters: number;
+  concepts: number;
+  edges: number;
+  gaps?: string[];
+  chapter_summaries: CourseSourcePlanChapterSummaryView[];
+  warnings?: string[];
+}
+
+/** 被显式跳过的 topic 示例（label + 理由）。 */
+export interface CourseSourcePlanSkippedTopicView {
+  label: string;
+  reason: string | null;
+}
+
+/** 展开覆盖摘要：topic 四态 + 前置/练习去向 + 锚点不确定 + 兜底课时。 */
+export interface CourseSourcePlanCoverageView {
+  topics_covered: number;
+  topics_skipped: number;
+  prerequisite_topics: number;
+  practice_topics: number;
+  anchor_uncertain_topics: number;
+  uncertain?: string[];
+  skipped_examples?: CourseSourcePlanSkippedTopicView[];
+  fallback_lessons: number;
+  warnings?: string[];
+}
+
+/** 一条重复/翻译副本示例（path + 指向的 canonical + canonical 入选理由）。 */
+export interface CourseSourcePlanDuplicateExampleView {
+  path: string;
+  duplicate_of: string;
+  canonical_reason: string;
+}
+
+/** 重复面：计数（全量）+ 示例（≤20）。 */
+export interface CourseSourcePlanDuplicatesView {
+  count: number;
+  examples: CourseSourcePlanDuplicateExampleView[];
+}
+
+/** 来源计划快照的摘要视图（t5 细化分面）：列表/详情共用；旧课程/描述流
+ * 为 null（字段不出现，UI 不显示空卡）。 */
+export interface CourseSourcePlanView {
+  snapshot: CourseSourcePlanSnapshotView;
+  triage: CourseSourcePlanTriageView;
+  plan: CourseSourcePlanPlanView;
+  coverage: CourseSourcePlanCoverageView;
+  duplicates: CourseSourcePlanDuplicatesView;
+}
+
+/** 一条被排除出候选集的文件（noise/duplicate，path + 角色名 + 理由）。 */
+export interface CourseSourcePlanExcludedView {
+  path: string;
+  role: string;
+  reason: string;
+}
+
+/** 详情端点独有的诊断明细：全量 excluded/duplicates（限长 200）——列表
+ * 摘要只给计数/示例，详情页看完整「为什么没进课程」。 */
+export interface CourseSourcePlanDetailView {
+  excluded: CourseSourcePlanExcludedView[];
+  duplicates: CourseSourcePlanDuplicateExampleView[];
+}
+
+/** t5 成本门估算：提交建课前的一次规则分诊读数（零 LLM、degraded=true）。
+ * needs_confirm 由后端按 >40 文件或 >20 次预估调用判定（阈值单源）。 */
+export interface CourseGenerationEstimateView {
+  total_files: number;
+  estimated_batches: number;
+  estimated_llm_calls: number;
+  /** 粗估耗时（秒；按调用数 × 经验常数，仅供确认弹窗展示）。 */
+  estimated_seconds: number;
+  needs_confirm: boolean;
+  triage: CourseSourcePlanTriageView;
+  skipped_examples?: CourseSourcePlanExcludedView[];
+}
+
 export interface CourseSummary {
   id: string;
   title: string;
@@ -136,6 +252,9 @@ export interface CourseSummary {
   learning_goal: string | null;
   /** 目标感知采样的披露（t2）：无目标路径/旧课程为 null。 */
   sampling: CourseSamplingView | null;
+  /** 来源计划快照摘要（t5）：旧课程/描述流/未知版本降级见 snapshot.available；
+   * 列上 NULL 时为 null（字段不出现，UI 不显示空卡）。 */
+  source_plan: CourseSourcePlanView | null;
 }
 
 export interface Activity {
@@ -187,6 +306,9 @@ export interface CourseDetail {
   due_review_count: number;
   /** 仅 learning_graph 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009） */
   graph: LearningGraphView | null;
+  /** 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）；只挂详情
+   * 端点，旧课程/描述流为 null。 */
+  source_plan_detail?: CourseSourcePlanDetailView | null;
 }
 
 export interface AttemptResult {

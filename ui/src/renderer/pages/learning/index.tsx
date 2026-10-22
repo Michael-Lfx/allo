@@ -445,6 +445,8 @@ const LearningPage: React.FC = () => {
             onRetry={creation.retryGeneration}
             onCancel={() => void creation.cancelGeneration()}
             onStartLearning={creation.startLearning}
+            costGate={creation.costGate}
+            onDismissCostGate={creation.dismissCostGate}
           />
         </Suspense>
 

@@ -4,7 +4,12 @@ import { ipcBridge } from '@/common';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
 import { useLearningAutogenModel } from '../components/LearningModelSelector';
 import { learningApi } from '../api';
-import type { CourseDetail, GenerateCourseRequest, TeachingStyle } from '../types';
+import type {
+  CourseDetail,
+  CourseGenerationEstimateView,
+  GenerateCourseRequest,
+  TeachingStyle,
+} from '../types';
 import { errorMessage, type Translate } from '../utils';
 
 /** 一次建课的来源库上限（t4）：与后端 `COURSE_MAX_KNOWLEDGE_BASES` 同一口径
@@ -56,6 +61,12 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 挂起的生成请求随后以任意错误形态返回——据此呈现中性的「已取消」终态
   // 而非失败。取消动作与终态判定在同一 hook 内闭合，不依赖后端错误码。
   const cancelRequestedRef = useRef(false);
+  // t5 成本门：后端判定 needs_confirm（>40 文件或 >20 次预估调用）时挂起
+  // 提交，展示估算 + 规则分诊读数；「继续」放行原请求，「取消」丢弃。
+  const [costGate, setCostGate] = useState<{
+    estimate: CourseGenerationEstimateView;
+    proceed: () => void;
+  } | null>(null);
 
   const openGenerator = useCallback(async () => {
     setGenerateVisible(true);
@@ -173,13 +184,31 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
         );
         return;
       }
-      await generateCourse({
+      const request: GenerateCourseRequest = {
         knowledge_base_ids: selectedKnowledgeBaseIds,
         goal,
         domain: generationDomain.trim() || undefined,
         teaching_style: teachingStyle,
         ...modelFields,
-      });
+      };
+      // t5 成本门：低于阈值直接跑（不打扰）；超阈值先确认。估算接口失败
+      // （后端不可达等）不拦生成——fail-open，生成本身是用户主动发起的。
+      try {
+        const estimate = await learningApi.estimateGeneration(request);
+        if (estimate.needs_confirm) {
+          setCostGate({
+            estimate,
+            proceed: () => {
+              setCostGate(null);
+              void generateCourse(request);
+            },
+          });
+          return;
+        }
+      } catch {
+        // 估算不可得：照旧直接生成。
+      }
+      await generateCourse(request);
       return;
     }
     const description = creationDescription.trim();
@@ -284,6 +313,8 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
     graphBasis,
     setGraphBasis,
     generation,
+    costGate,
+    dismissCostGate: useCallback(() => setCostGate(null), []),
     openGenerator,
     openCreateForm,
     submitGeneration,

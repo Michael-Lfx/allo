@@ -1,13 +1,14 @@
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Message, Modal, Radio, Select, Tabs, Tag, Typography } from '@arco-design/web-react';
 import type { IKnowledgeBase } from '@/common/adapter/ipcBridge';
-import type { TeachingStyle } from '../types';
+import type { CourseGenerationEstimateView, TeachingStyle } from '../types';
 import { MAX_COURSE_KNOWLEDGE_BASES, type CourseGenerationState } from '../hooks/useCourseCreation';
 import { knowledgeBaseNames } from '../utils';
 import LearningModelSelector, {
   type LearningModelChoice,
 } from './LearningModelSelector';
 import { CourseGenerationProgress } from './CourseGenerationProgress';
+import { CourseCostGateModal } from './CourseCostGateModal';
 
 const { Text, Paragraph } = Typography;
 
@@ -45,6 +46,8 @@ export function CreateCourseDialog({
   onRetry,
   onCancel,
   onStartLearning,
+  costGate,
+  onDismissCostGate,
 }: {
   visible: boolean;
   busy: boolean;
@@ -79,6 +82,11 @@ export function CreateCourseDialog({
   onRetry: () => void;
   onCancel: () => void;
   onStartLearning: (courseId: string) => void;
+  /** t5 成本门：超阈值（>40 文件或 >20 次预估调用）时挂起的估算 + 放行
+   * 回调；null = 低于阈值/未触发，不打扰。 */
+  costGate: { estimate: CourseGenerationEstimateView; proceed: () => void } | null;
+  /** t5 成本门：取消确认（丢弃挂起的请求，回到表单）。 */
+  onDismissCostGate: () => void;
 }) {
   const { t } = useTranslation();
   const generating = generation !== null;
@@ -281,6 +289,15 @@ export function CreateCourseDialog({
             </div>
           </div>
         </div>
+      )}
+      {/* t5 成本门确认弹窗：估算 + 规则分诊读数，「继续」放行原请求、
+          「取消」丢弃。独立于生成进度视图（提交前确认，不是生成中）。 */}
+      {costGate && (
+        <CourseCostGateModal
+          estimate={costGate.estimate}
+          onConfirm={costGate.proceed}
+          onCancel={onDismissCostGate}
+        />
       )}
     </Modal>
   );
