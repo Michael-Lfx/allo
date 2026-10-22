@@ -165,6 +165,59 @@ impl VadBackend for EnergyVad {
 // Silero ONNX backend (feature = "silero-vad")
 // ---------------------------------------------------------------------------
 
+/// Installed companion VAD, using the same native engine as local ASR.
+/// Probability detection avoids rejecting speech solely because its RMS is low.
+#[cfg(feature = "local-stt")]
+pub struct SherpaVad {
+    detector: sherpa_onnx::VoiceActivityDetector,
+}
+
+#[cfg(feature = "local-stt")]
+impl SherpaVad {
+    pub fn load(model_dir: &std::path::Path) -> Result<Self, String> {
+        let path = model_dir.join("vad/silero_vad.onnx");
+        if !path.is_file() {
+            return Err("vad_model_missing".into());
+        }
+        let config = sherpa_onnx::VadModelConfig {
+            silero_vad: sherpa_onnx::SileroVadModelConfig {
+                model: Some(path.to_string_lossy().into_owned()),
+                threshold: 0.5,
+                min_silence_duration: 0.8,
+                min_speech_duration: 0.06,
+                window_size: 512,
+                max_speech_duration: 30.0,
+            },
+            sample_rate: 16000,
+            num_threads: 1,
+            provider: Some("cpu".into()),
+            ..Default::default()
+        };
+        let detector = sherpa_onnx::VoiceActivityDetector::create(&config, 32.0)
+            .ok_or_else(|| "vad_model_failed".to_string())?;
+        Ok(Self { detector })
+    }
+}
+
+#[cfg(feature = "local-stt")]
+impl VadBackend for SherpaVad {
+    fn process_frame(&mut self, samples: &[f32]) -> bool {
+        self.detector.accept_waveform(samples);
+        let active = self.detector.detected();
+        // The worker owns utterance PCM; do not keep a second segment queue.
+        while !self.detector.is_empty() {
+            self.detector.pop();
+        }
+        active
+    }
+    fn reset(&mut self) {
+        self.detector.reset();
+    }
+    fn is_speech_active(&self) -> bool {
+        self.detector.detected()
+    }
+}
+
 #[cfg(feature = "silero-vad")]
 mod silero {
     use super::{VadBackend, VadConfig};

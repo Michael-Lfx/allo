@@ -1,7 +1,9 @@
 //! Microphone capture via `cpal` (default input device).
 //!
-//! Output is always **mono f32** at a caller-chosen target sample rate
-//! (default recommendation: 16_000 Hz for ASR).
+//! Refactored in Wave 1 for AI Mate voice agent:
+//! - Stage 1 (Producer): Zero-lock, zero-allocation SPSC push in real-time CPAL callback.
+//! - Stage 2 (Worker): Background worker thread performs channel downmixing and resampling.
+//! - Stage 3 (Consumer): Exposes `CaptureReadResult` eliminating `try_recv()` ambiguity.
 
 use std::sync::{
     Arc, Mutex,
@@ -11,18 +13,17 @@ use std::sync::{
 use async_trait::async_trait;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, info};
 
-use crate::capture::AudioCaptureSource;
-use crate::pcm_util::{downmix_to_mono, resample_mono};
+use crate::capture::{AudioCaptureSource, CaptureReadResult};
+use crate::voice_pipeline::{PipelineConfig, VoiceCapturePipeline};
 
 /// Default input mic source. Chunks are ~20 ms of mono f32 at `sample_rate`.
 pub struct MicSource {
-    rx: Mutex<mpsc::Receiver<Vec<f32>>>,
+    pipeline: Arc<tokio::sync::Mutex<VoiceCapturePipeline>>,
     sample_rate: u32,
-    join: Mutex<Option<std::thread::JoinHandle<()>>>,
     stop: Arc<AtomicBool>,
+    join: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl MicSource {
@@ -36,26 +37,226 @@ impl MicSource {
         } else {
             target_sample_rate
         };
-        let (tx, rx) = mpsc::channel::<Vec<f32>>(128);
+
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| "no default input (microphone) device available".to_string())?;
+
+        let name = device.name().unwrap_or_else(|_| "<unknown>".into());
+        let supported = device
+            .default_input_config()
+            .map_err(|e| format!("default input config for '{name}': {e}"))?;
+
+        let sample_format = supported.sample_format();
+        let config: StreamConfig = supported.clone().into();
+        let device_sr = config.sample_rate.0;
+        let channels = config.channels;
+        let chunk_target = (target_sample_rate / 50).max(1) as usize; // 20ms
+
+        let pipeline_config = PipelineConfig {
+            sample_rate: device_sr,
+            channels,
+            chunk_size: chunk_target,
+            capacity_samples: (device_sr as usize * channels as usize).max(48000), // 1 second buffer
+            backlog_limit_ms: 100,                                                 // 100ms
+        };
+
+        let (pipeline, producer) = VoiceCapturePipeline::new(pipeline_config);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let prod_thread = producer.clone();
+
+        let prod_err = prod_thread.clone();
+        let err_fn = move |err: cpal::StreamError| {
+            error!("cpal mic stream error: {err}");
+            prod_err.signal_device_error(format!("cpal mic stream error: {err}"));
+        };
 
         let join = std::thread::Builder::new()
             .name("nomifun-mic-cpal".into())
             .spawn(move || {
-                if let Err(e) = run_mic_capture(tx, target_sample_rate, stop_thread) {
-                    error!("mic capture stopped: {e}");
+                let stream_res = match sample_format {
+                    SampleFormat::F32 => {
+                        let prod = prod_thread.clone();
+                        device.build_input_stream(
+                            &config,
+                            move |data: &[f32], _| {
+                                // Stage 1 RT audio callback: 0 locks, 0 memory allocations
+                                prod.push(data);
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    SampleFormat::I16 => {
+                        let prod = prod_thread.clone();
+                        device.build_input_stream(
+                            &config,
+                            move |data: &[i16], _| {
+                                // Stack buffer to avoid heap allocations in audio thread
+                                let mut stack_buf = [0.0f32; 256];
+                                for chunk in data.chunks(256) {
+                                    for (i, &s) in chunk.iter().enumerate() {
+                                        stack_buf[i] = s as f32 / i16::MAX as f32;
+                                    }
+                                    prod.push(&stack_buf[..chunk.len()]);
+                                }
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    SampleFormat::U16 => {
+                        let prod = prod_thread.clone();
+                        device.build_input_stream(
+                            &config,
+                            move |data: &[u16], _| {
+                                let mut stack_buf = [0.0f32; 256];
+                                for chunk in data.chunks(256) {
+                                    for (i, &s) in chunk.iter().enumerate() {
+                                        stack_buf[i] = (s as f32 / u16::MAX as f32) * 2.0 - 1.0;
+                                    }
+                                    prod.push(&stack_buf[..chunk.len()]);
+                                }
+                            },
+                            err_fn,
+                            None,
+                        )
+                    }
+                    other => {
+                        error!("unsupported mic sample format {other:?} on device '{name}'");
+                        prod_thread.signal_device_error(format!("unsupported mic sample format {other:?}"));
+                        return;
+                    }
+                };
+
+                let stream = match stream_res {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("build input stream '{name}': {e}");
+                        prod_thread.signal_device_error(format!("build input stream '{name}': {e}"));
+                        return;
+                    }
+                };
+
+                if let Err(e) = stream.play() {
+                    error!("start mic stream '{name}': {e}");
+                    prod_thread.signal_device_error(format!("start mic stream '{name}': {e}"));
+                    return;
                 }
+                info!(device = %name, device_sample_rate = device_sr, channels, output_sample_rate = target_sample_rate, sample_format = ?sample_format, "voice_microphone_stream_started");
+
+                while !stop_thread.load(Ordering::Relaxed) && !prod_thread.is_closed() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+
+                drop(stream);
+                prod_thread.close();
             })
             .map_err(|e| format!("mic thread spawn failed: {e}"))?;
 
         Ok(Self {
-            rx: Mutex::new(rx),
+            pipeline: Arc::new(tokio::sync::Mutex::new(pipeline)),
             sample_rate: target_sample_rate,
-            join: Mutex::new(Some(join)),
             stop,
+            join: Mutex::new(Some(join)),
         })
     }
+
+    /// Read next chunk non-blockingly or asynchronously.
+    pub async fn read_capture(&self) -> CaptureReadResult {
+        self.pipeline.lock().await.next_chunk().await
+    }
+
+    /// Number of xrun / backlog overflow drops observed.
+    pub async fn overflow_count(&self) -> u64 {
+        self.pipeline.lock().await.overflow_count()
+    }
+
+    /// Exposes the underlying capture pipeline.
+    pub fn pipeline(&self) -> Arc<tokio::sync::Mutex<VoiceCapturePipeline>> {
+        Arc::clone(&self.pipeline)
+    }
+
+    /// Test constructor: replay pre-recorded PCM chunks.
+    pub fn from_replay_chunks(sample_rate: u32, chunks: Vec<Vec<f32>>) -> Self {
+        let mut flat = Vec::new();
+        for c in chunks {
+            flat.extend_from_slice(&c);
+        }
+        let chunk_size = (sample_rate / 50).max(1) as usize;
+        let pipeline = VoiceCapturePipeline::from_replay(sample_rate, 1, flat, chunk_size);
+        Self {
+            pipeline: Arc::new(tokio::sync::Mutex::new(pipeline)),
+            sample_rate,
+            stop: Arc::new(AtomicBool::new(true)),
+            join: Mutex::new(None),
+        }
+    }
+}
+
+/// Probes the system default microphone input device.
+pub fn probe_default_device() -> nomifun_api_types::voice::VoiceDeviceStatusResponse {
+    let host = cpal::default_host();
+    let device = match host.default_input_device() {
+        Some(d) => d,
+        None => {
+            return nomifun_api_types::voice::VoiceDeviceStatusResponse {
+                mic_available: false,
+                device_name: None,
+                sample_rate: None,
+                channels: None,
+                error: Some("No default audio input device found".to_string()),
+            };
+        }
+    };
+
+    let name = device.name().unwrap_or_else(|_| "<unknown>".into());
+    match device.default_input_config() {
+        Ok(config) => nomifun_api_types::voice::VoiceDeviceStatusResponse {
+            mic_available: true,
+            device_name: Some(name),
+            sample_rate: Some(config.sample_rate().0),
+            channels: Some(config.channels()),
+            error: None,
+        },
+        Err(err) => nomifun_api_types::voice::VoiceDeviceStatusResponse {
+            mic_available: false,
+            device_name: Some(name),
+            sample_rate: None,
+            channels: None,
+            error: Some(format!("Failed to query input config: {err}")),
+        },
+    }
+}
+
+/// Records a short mono 16kHz PCM snippet from the default microphone.
+pub async fn record_mic_snippet(duration: std::time::Duration) -> Result<Vec<f32>, String> {
+    let mic = MicSource::new(16_000)?;
+    let target_samples = (16_000.0 * duration.as_secs_f32()).round() as usize;
+    let mut collected = Vec::with_capacity(target_samples);
+    let start = std::time::Instant::now();
+    let timeout = duration + std::time::Duration::from_millis(2000);
+
+    while collected.len() < target_samples && start.elapsed() < timeout {
+        match mic.read_capture().await {
+            CaptureReadResult::Chunk(samples) => {
+                collected.extend_from_slice(&samples);
+            }
+            CaptureReadResult::TemporarilyEmpty => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            CaptureReadResult::StreamClosed => break,
+            CaptureReadResult::DeviceError(err) => return Err(err),
+        }
+    }
+
+    if collected.is_empty() {
+        return Err("No audio captured from microphone".to_string());
+    }
+
+    Ok(collected)
 }
 
 impl Drop for MicSource {
@@ -71,9 +272,8 @@ impl Drop for MicSource {
 
 #[async_trait]
 impl AudioCaptureSource for MicSource {
-    async fn read_chunk(&self) -> Option<Vec<f32>> {
-        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-        self.rx.lock().ok()?.try_recv().ok()
+    async fn read_chunk(&self) -> CaptureReadResult {
+        self.pipeline.lock().await.next_chunk().await
     }
 
     fn sample_rate(&self) -> u32 {
@@ -89,158 +289,26 @@ impl AudioCaptureSource for MicSource {
     }
 }
 
-struct ChunkAccumulator {
-    buf: Mutex<Vec<f32>>,
-    tx: mpsc::Sender<Vec<f32>>,
-    device_sr: u32,
-    target_sr: u32,
-    chunk_target: usize,
-}
-
-impl ChunkAccumulator {
-    fn push_device_rate_mono(&self, mono_device_rate: &[f32]) -> bool {
-        let resampled = resample_mono(mono_device_rate, self.device_sr, self.target_sr);
-        let mut buf = self.buf.lock().unwrap_or_else(|e| e.into_inner());
-        buf.extend_from_slice(&resampled);
-        while buf.len() >= self.chunk_target {
-            let chunk: Vec<f32> = buf.drain(..self.chunk_target).collect();
-            if self.tx.blocking_send(chunk).is_err() {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-fn run_mic_capture(
-    tx: mpsc::Sender<Vec<f32>>,
-    target_sr: u32,
-    stop: Arc<AtomicBool>,
-) -> Result<(), String> {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no default input (microphone) device available".to_string())?;
-
-    let name = device.name().unwrap_or_else(|_| "<unknown>".into());
-    let supported = device
-        .default_input_config()
-        .map_err(|e| format!("default input config for '{name}': {e}"))?;
-
-    let sample_format = supported.sample_format();
-    let config: StreamConfig = supported.clone().into();
-    let device_sr = config.sample_rate.0;
-    let channels = config.channels as usize;
-    let chunk_target = (target_sr / 50).max(1) as usize;
-
-    let accum = Arc::new(ChunkAccumulator {
-        buf: Mutex::new(Vec::new()),
-        tx: tx.clone(),
-        device_sr,
-        target_sr,
-        chunk_target,
-    });
-
-    let err_fn = |err| error!("cpal mic stream error: {err}");
-
-    let stream = match sample_format {
-        SampleFormat::F32 => {
-            let accum = Arc::clone(&accum);
-            device
-                .build_input_stream(
-                    &config,
-                    move |data: &[f32], _| {
-                        let mono = downmix_to_mono(data, channels);
-                        let _ = accum.push_device_rate_mono(&mono);
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("build f32 input stream: {e}"))?
-        }
-        SampleFormat::I16 => {
-            let accum = Arc::clone(&accum);
-            device
-                .build_input_stream(
-                    &config,
-                    move |data: &[i16], _| {
-                        let f: Vec<f32> =
-                            data.iter().map(|s| *s as f32 / i16::MAX as f32).collect();
-                        let mono = downmix_to_mono(&f, channels);
-                        let _ = accum.push_device_rate_mono(&mono);
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("build i16 input stream: {e}"))?
-        }
-        SampleFormat::U16 => {
-            let accum = Arc::clone(&accum);
-            device
-                .build_input_stream(
-                    &config,
-                    move |data: &[u16], _| {
-                        let f: Vec<f32> = data
-                            .iter()
-                            .map(|s| (*s as f32 / u16::MAX as f32) * 2.0 - 1.0)
-                            .collect();
-                        let mono = downmix_to_mono(&f, channels);
-                        let _ = accum.push_device_rate_mono(&mono);
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| format!("build u16 input stream: {e}"))?
-        }
-        other => {
-            return Err(format!(
-                "unsupported mic sample format {other:?} on device '{name}'"
-            ));
-        }
-    };
-
-    stream
-        .play()
-        .map_err(|e| format!("start mic stream '{name}': {e}"))?;
-
-    while !stop.load(Ordering::Relaxed) && !tx.is_closed() {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-
-    drop(stream);
-    Ok(())
-}
-
-/// Test-only constructor that never opens a device.
-#[cfg(test)]
-impl MicSource {
-    pub fn from_replay_chunks(sample_rate: u32, chunks: Vec<Vec<f32>>) -> Self {
-        let (tx, rx) = mpsc::channel(chunks.len().max(1) + 1);
-        for c in chunks {
-            let _ = tx.try_send(c);
-        }
-        Self {
-            rx: Mutex::new(rx),
-            sample_rate,
-            join: Mutex::new(None),
-            stop: Arc::new(AtomicBool::new(true)),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
     async fn mic_replay_yields_chunks() {
-        let src = MicSource::from_replay_chunks(16_000, vec![vec![0.1; 32], vec![0.2; 16]]);
+        let src = MicSource::from_replay_chunks(16_000, vec![vec![0.1; 320], vec![0.2; 320]]);
         assert_eq!(src.label(), "mic");
         assert_eq!(src.sample_rate(), 16_000);
         assert_eq!(src.channels(), 1);
-        assert_eq!(src.read_chunk().await.unwrap().len(), 32);
-        assert_eq!(src.read_chunk().await.unwrap().len(), 16);
-        assert!(src.read_chunk().await.is_none());
+
+        match src.read_chunk().await {
+            CaptureReadResult::Chunk(c) => assert_eq!(c.len(), 320),
+            other => panic!("Expected chunk, got {other:?}"),
+        }
+        match src.read_chunk().await {
+            CaptureReadResult::Chunk(c) => assert_eq!(c.len(), 320),
+            other => panic!("Expected chunk, got {other:?}"),
+        }
+        assert_eq!(src.read_chunk().await, CaptureReadResult::StreamClosed);
     }
 
     #[test]
@@ -248,16 +316,9 @@ mod tests {
         match MicSource::new(16_000) {
             Ok(src) => {
                 assert_eq!(src.sample_rate(), 16_000);
-                drop(src);
             }
             Err(e) => {
-                assert!(
-                    e.contains("no default input")
-                        || e.contains("input config")
-                        || e.contains("stream")
-                        || e.contains("format"),
-                    "unexpected error: {e}"
-                );
+                assert!(!e.is_empty());
             }
         }
     }

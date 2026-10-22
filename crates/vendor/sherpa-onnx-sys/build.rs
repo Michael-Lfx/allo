@@ -63,6 +63,7 @@ fn try_main() -> Result<(), DynError> {
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_PACK");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
+    println!("cargo:rerun-if-env-changed=SHERPA_ONNX_BASE_URL");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     if env::var_os("DOCS_RS").is_some() {
@@ -144,8 +145,9 @@ fn download_prebuilt_libs(
     let cache_root = target_dir_from_out_dir(&out_dir)?.join("sherpa-onnx-prebuilt");
     let extracted_dir = cache_root.join(archive_stem);
     let lib_dir = extracted_dir.join("lib");
+    let completion_marker = cache_root.join(format!("{archive_stem}.complete"));
 
-    if lib_dir.is_dir() {
+    if completion_marker.is_file() && lib_dir.is_dir() {
         return Ok(lib_dir);
     }
 
@@ -166,20 +168,58 @@ fn download_prebuilt_libs(
             copy_file_atomically(&local_archive_path, &archive_path)?;
         } else {
             let version = env!("CARGO_PKG_VERSION");
-            let url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
-            eprintln!("Downloading sherpa-onnx libs from {url}");
+            let official_url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
+            let mut urls = Vec::new();
+            if let Ok(custom_base) = env::var("SHERPA_ONNX_BASE_URL") {
+                let custom_base = custom_base.trim_end_matches('/');
+                urls.push(format!("{custom_base}/v{version}/{archive_name}"));
+            }
+            urls.push(official_url.clone());
+            urls.push(format!("https://ghproxy.net/{official_url}"));
+            urls.push(format!("https://mirror.ghproxy.com/{official_url}"));
 
-            let response = ureq::builder()
+            let client = ureq::builder()
                 .try_proxy_from_env(true)
-                .build()
-                .get(&url)
-                .call()
-                .map_err(|e| format!("Failed to download sherpa-onnx archive from {url}: {e}"))?;
-            let mut reader = response.into_reader();
-            write_reader_atomically(&mut reader, &archive_path)?;
+                .timeout_connect(std::time::Duration::from_secs(10))
+                .build();
+
+            let mut last_err = None;
+            let mut downloaded = false;
+
+            for url in &urls {
+                eprintln!("Downloading sherpa-onnx libs from {url}");
+                match client.get(url).call() {
+                    Ok(response) => {
+                        let mut reader = response.into_reader();
+                        match write_reader_atomically(&mut reader, &archive_path) {
+                            Ok(()) => {
+                                downloaded = true;
+                                break;
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: failed writing stream from {url}: {e}");
+                                let _ = fs::remove_file(temp_path_for(&archive_path));
+                                let _ = fs::remove_file(&archive_path);
+                                last_err = Some(format!("Failed to write stream from {url}: {e}"));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to download from {url}: {e}");
+                        last_err = Some(format!("Failed to download sherpa-onnx archive from {url}: {e}"));
+                    }
+                }
+            }
+
+            if !downloaded {
+                return Err(last_err
+                    .unwrap_or_else(|| "No download URLs available for sherpa-onnx".to_string())
+                    .into());
+            }
         }
     }
 
+    let _ = fs::remove_file(&completion_marker);
     if extracted_dir.exists() {
         fs::remove_dir_all(&extracted_dir)?;
     }
@@ -194,6 +234,7 @@ fn download_prebuilt_libs(
     if let Err(err) = unpack_result {
         let _ = fs::remove_file(&archive_path);
         let _ = fs::remove_dir_all(&extracted_dir);
+        let _ = fs::remove_file(&completion_marker);
         return Err(format!(
             "Failed to unpack cached archive {}: {err}",
             archive_path.display()
@@ -209,6 +250,7 @@ fn download_prebuilt_libs(
         .into());
     }
 
+    File::create(&completion_marker)?;
     eprintln!("Downloaded sherpa-onnx libs to {}", extracted_dir.display());
 
     Ok(lib_dir)
@@ -220,6 +262,14 @@ fn archive_name(
     target_arch: &str,
 ) -> Result<String, DynError> {
     let version = env!("CARGO_PKG_VERSION");
+    let crt = if env::var("CARGO_CFG_TARGET_FEATURE")
+        .map(|features| features.split(',').any(|f| f == "crt-static"))
+        .unwrap_or(false)
+    {
+        "MT"
+    } else {
+        "MD"
+    };
 
     let name = match (link_mode, target_os, target_arch) {
         (LinkMode::Static, "linux", "x86_64") => {
@@ -235,7 +285,13 @@ fn archive_name(
             format!("sherpa-onnx-v{version}-osx-arm64-static-lib.tar.bz2")
         }
         (LinkMode::Static, "windows", "x86_64") => {
-            format!("sherpa-onnx-v{version}-win-x64-static-MT-Release-lib.tar.bz2")
+            format!("sherpa-onnx-v{version}-win-x64-static-{crt}-Release-lib.tar.bz2")
+        }
+        (LinkMode::Static, "windows", "aarch64") => {
+            format!("sherpa-onnx-v{version}-win-arm64-static-{crt}-Release-lib.tar.bz2")
+        }
+        (LinkMode::Static, "windows", "x86") => {
+            format!("sherpa-onnx-v{version}-win-x86-static-{crt}-Release-lib.tar.bz2")
         }
         (LinkMode::Shared, "linux", "x86_64") => {
             format!("sherpa-onnx-v{version}-linux-x64-shared-lib.tar.bz2")
@@ -250,7 +306,13 @@ fn archive_name(
             format!("sherpa-onnx-v{version}-osx-arm64-shared-lib.tar.bz2")
         }
         (LinkMode::Shared, "windows", "x86_64") => {
-            format!("sherpa-onnx-v{version}-win-x64-shared-MT-Release-lib.tar.bz2")
+            format!("sherpa-onnx-v{version}-win-x64-shared-{crt}-Release-lib.tar.bz2")
+        }
+        (LinkMode::Shared, "windows", "aarch64") => {
+            format!("sherpa-onnx-v{version}-win-arm64-shared-{crt}-Release-lib.tar.bz2")
+        }
+        (LinkMode::Shared, "windows", "x86") => {
+            format!("sherpa-onnx-v{version}-win-x86-shared-{crt}-Release-lib.tar.bz2")
         }
         _ => {
             return Err(format!(
@@ -295,7 +357,10 @@ fn target_dir_from_out_dir(out_dir: &Path) -> Result<PathBuf, DynError> {
 
     if let Some(target_dir) = out_dir
         .ancestors()
-        .find(|path| path.file_name() == Some(OsStr::new("target")))
+        .find(|path| {
+            let name = path.file_name();
+            name == Some(OsStr::new("target")) || name == Some(OsStr::new("build.noindex"))
+        })
     {
         return Ok(target_dir.to_path_buf());
     }

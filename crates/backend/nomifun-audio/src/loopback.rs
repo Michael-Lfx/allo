@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 
-use crate::capture::AudioCaptureSource;
+use crate::capture::{AudioCaptureSource, CaptureReadResult};
 
 /// Loopback capture source.  Wraps the platform-specific implementation.
 pub struct LoopbackSource {
@@ -34,7 +34,7 @@ impl LoopbackSource {
 
 #[async_trait]
 impl AudioCaptureSource for LoopbackSource {
-    async fn read_chunk(&self) -> Option<Vec<f32>> {
+    async fn read_chunk(&self) -> CaptureReadResult {
         self.inner.read_chunk().await
     }
 
@@ -80,7 +80,7 @@ mod platform {
     const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
     const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 
-    use crate::capture::AudioCaptureSource;
+    use crate::capture::{AudioCaptureSource, CaptureReadResult};
     use crate::pcm_util::{downmix_to_mono, resample_mono};
 
     pub struct WasapiLoopbackSource {
@@ -325,9 +325,19 @@ mod platform {
 
     #[async_trait]
     impl AudioCaptureSource for WasapiLoopbackSource {
-        async fn read_chunk(&self) -> Option<Vec<f32>> {
+        async fn read_chunk(&self) -> CaptureReadResult {
             tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-            self.buf.lock().ok()?.try_recv().ok()
+            let mut guard = match self.buf.lock() {
+                Ok(g) => g,
+                Err(e) => {
+                    return CaptureReadResult::DeviceError(format!("Loopback mutex poison: {e}"));
+                }
+            };
+            match guard.try_recv() {
+                Ok(chunk) => CaptureReadResult::Chunk(chunk),
+                Err(mpsc::error::TryRecvError::Empty) => CaptureReadResult::TemporarilyEmpty,
+                Err(mpsc::error::TryRecvError::Disconnected) => CaptureReadResult::StreamClosed,
+            }
         }
 
         fn sample_rate(&self) -> u32 {
@@ -353,7 +363,7 @@ mod platform {
     use async_trait::async_trait;
     use tracing::warn;
 
-    use crate::capture::AudioCaptureSource;
+    use crate::capture::{AudioCaptureSource, CaptureReadResult};
 
     struct UnsupportedLoopback {
         sample_rate: u32,
@@ -371,9 +381,9 @@ mod platform {
 
     #[async_trait]
     impl AudioCaptureSource for UnsupportedLoopback {
-        async fn read_chunk(&self) -> Option<Vec<f32>> {
+        async fn read_chunk(&self) -> CaptureReadResult {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            Some(vec![0.0f32; (self.sample_rate / 50).max(1) as usize])
+            CaptureReadResult::Chunk(vec![0.0f32; (self.sample_rate / 50).max(1) as usize])
         }
 
         fn sample_rate(&self) -> u32 {
@@ -403,12 +413,15 @@ mod tests {
             frame.is_ok(),
             "loopback source timed out producing first frame"
         );
-        // On Windows with no audio playing, chunks may be silence — still Some.
-        // try_recv may return None briefly; allow a few polls.
-        let mut got = frame.ok().and_then(|f| f);
+        // On Windows with no audio playing, chunks may be silence — still Chunk.
+        // try_recv may return TemporarilyEmpty briefly; allow a few polls.
+        let mut got = match frame.unwrap() {
+            CaptureReadResult::Chunk(c) => Some(c),
+            _ => None,
+        };
         if got.is_none() {
             for _ in 0..50 {
-                if let Some(c) = src.read_chunk().await {
+                if let CaptureReadResult::Chunk(c) = src.read_chunk().await {
                     got = Some(c);
                     break;
                 }
