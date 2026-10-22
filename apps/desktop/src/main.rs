@@ -97,6 +97,7 @@ mod companion_pointer;
 mod completion_toast;
 mod meeting_captions;
 mod meeting_tray;
+mod voice_session_window;
 mod system_notify;
 mod taskbar_badge;
 #[cfg(windows)]
@@ -2696,6 +2697,7 @@ fn complete_main_thread_setup(
     // window HIDES it (CloseRequested) instead of quitting; capture continues
     // while the process lives. Process exits only via tray Quit.
     meeting_tray::install_tray_and_shortcuts(&app)?;
+    voice_session_window::install(app.clone(), init_script.clone());
 
     // Desktop-companion windows are NOT created here anymore. They are
     // multi-companion and dynamic: the main window's useCompanionWindowsSync hook
@@ -3398,6 +3400,7 @@ fn main() -> std::process::ExitCode {
         .manage(taskbar_badge::TaskCompletionBadge::default())
         .manage(DownloadedUpdateState::default())
         .invoke_handler(tauri::generate_handler![
+            voice_session_window::report_voice_context,
             download_update,
             check_update,
             install_update,
