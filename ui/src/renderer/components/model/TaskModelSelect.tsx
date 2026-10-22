@@ -39,6 +39,10 @@ interface TaskModelSelectProps {
   hideHint?: boolean;
   /** Copy shown when the catalog has no model for this task at all. */
   emptyHint?: string;
+  /** Hide the provider selector and bind to the active/default provider */
+  hideProvider?: boolean;
+  /** Only render the voice selector (e.g. for simple companion voice setting) */
+  onlyVoice?: boolean;
 }
 
 /**
@@ -64,6 +68,8 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   disabled = false,
   hideHint = false,
   emptyHint,
+  hideProvider = false,
+  onlyVoice = false,
 }) => {
   const { t } = useTranslation();
   const { groups, isLoading } = useModelsForTask(task, traits);
@@ -89,11 +95,11 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
     isLoading,
   });
 
-  const providerId = draftProviderId;
-  const selectedModel = value?.provider_id === providerId ? value.model : null;
+  const providerId = draftProviderId ?? (hideProvider ? (value?.provider_id ?? state.providers[0]?.id ?? null) : null);
+  const selectedModel = value?.provider_id === providerId ? value.model : (hideProvider ? (value?.model ?? state.models[0] ?? null) : null);
   const currentPlatform = state.providers.find((p) => p.id === providerId)?.platform;
   const voices = voiceOptions ?? ttsVoiceOptionsFor(currentPlatform, providerId);
-  const selectedVoice = value?.provider_id === providerId ? (value.voice ?? null) : null;
+  const selectedVoice = value?.provider_id === providerId ? (value.voice ?? null) : (value?.voice ?? null);
 
   const hint =
     !state.anyModel && !isLoading
@@ -107,65 +113,71 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   return (
     <div className='flex min-w-0 flex-col items-end gap-4px'>
       <div className='flex min-w-0 flex-wrap items-center justify-end gap-6px'>
-        <NomiSelect
-          size={size}
-          contentFit
-          disabled={disabled}
-          placeholder={t('settings.taskModel.providerPlaceholder')}
-          value={providerId ?? undefined}
-          onChange={(next: ProviderId) => setDraftProviderId(next)}
-        >
-          {state.providerStale && providerId && (
-            <NomiSelect.Option key={providerId} value={providerId} disabled>
-              {t('settings.taskModel.unavailableOption', { model: providerId })}
-            </NomiSelect.Option>
-          )}
-          {state.providers.map((p) => (
-            <NomiSelect.Option key={p.id} value={p.id}>
-              {providerLabel(p)}
-            </NomiSelect.Option>
-          ))}
-        </NomiSelect>
-        <NomiSelect
-          size={size}
-          contentFit
-          disabled={disabled || providerId == null || state.providerStale}
-          placeholder={t('settings.taskModel.modelPlaceholder')}
-          value={selectedModel ?? undefined}
-          onChange={(model: string) => {
-            if (!providerId) return;
-            onChange({
-              provider_id: providerId,
-              model,
-              // Re-picking the model must keep a voice already chosen for this
-              // provider; only a provider switch resets it.
-              voice: value?.provider_id === providerId ? value.voice : null,
-            });
-          }}
-        >
-          {state.modelStale && selectedModel && (
-            <NomiSelect.Option key={selectedModel} value={selectedModel} disabled>
-              {t('settings.taskModel.unavailableOption', { model: selectedModel })}
-            </NomiSelect.Option>
-          )}
-          {state.models.map((m) => (
-            <NomiSelect.Option key={m} value={m}>
-              {m}
-            </NomiSelect.Option>
-          ))}
-        </NomiSelect>
+        {!onlyVoice && !hideProvider && (
+          <NomiSelect
+            size={size}
+            contentFit
+            disabled={disabled}
+            placeholder={t('settings.taskModel.providerPlaceholder')}
+            value={providerId ?? undefined}
+            onChange={(next: ProviderId) => setDraftProviderId(next)}
+          >
+            {state.providerStale && providerId && (
+              <NomiSelect.Option key={providerId} value={providerId} disabled>
+                {t('settings.taskModel.unavailableOption', { model: providerId })}
+              </NomiSelect.Option>
+            )}
+            {state.providers.map((p) => (
+              <NomiSelect.Option key={p.id} value={p.id}>
+                {providerLabel(p)}
+              </NomiSelect.Option>
+            ))}
+          </NomiSelect>
+        )}
+        {!onlyVoice && (
+          <NomiSelect
+            size={size}
+            contentFit
+            disabled={disabled || providerId == null || state.providerStale}
+            placeholder={t('settings.taskModel.modelPlaceholder')}
+            value={selectedModel ?? undefined}
+            onChange={(model: string) => {
+              if (!providerId) return;
+              onChange({
+                provider_id: providerId,
+                model,
+                // Re-picking the model must keep a voice already chosen for this
+                // provider; only a provider switch resets it.
+                voice: value?.provider_id === providerId ? value.voice : null,
+              });
+            }}
+          >
+            {state.modelStale && selectedModel && (
+              <NomiSelect.Option key={selectedModel} value={selectedModel} disabled>
+                {t('settings.taskModel.unavailableOption', { model: selectedModel })}
+              </NomiSelect.Option>
+            )}
+            {state.models.map((m) => (
+              <NomiSelect.Option key={m} value={m}>
+                {m}
+              </NomiSelect.Option>
+            ))}
+          </NomiSelect>
+        )}
         {withVoice && (
           <NomiSelect
             size={size}
             contentFit
             showSearch
             allowCreate
-            disabled={disabled || selectedModel == null}
+            disabled={disabled || (!onlyVoice && selectedModel == null)}
             placeholder={t('settings.taskModel.voicePlaceholder')}
             value={selectedVoice ?? undefined}
             onChange={(voice: string) => {
-              if (!providerId || !selectedModel) return;
-              onChange({ provider_id: providerId, model: selectedModel, voice: voice || null });
+              const activeProvider = providerId ?? state.providers[0]?.id;
+              const activeModel = selectedModel ?? state.models[0];
+              if (!activeProvider || !activeModel) return;
+              onChange({ provider_id: activeProvider, model: activeModel, voice: voice || null });
             }}
           >
             {voices.map((voice) => (

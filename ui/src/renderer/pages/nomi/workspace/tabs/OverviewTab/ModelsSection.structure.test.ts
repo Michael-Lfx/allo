@@ -11,88 +11,51 @@ import enNomi from '@/renderer/services/i18n/locales/en-US/nomi.json';
 
 const src = readFileSync(new URL('./ModelsSection.tsx', import.meta.url), 'utf8');
 
-const OVERVIEW_SLOT_KEYS = [
+const ESSENTIAL_SLOT_KEYS = [
   'mainChatModel',
-  'fallbackChatModel',
-  'fallbackChatModelHint',
-  'fallbackChatUnset',
-  'vadSlot',
-  'vadSlotHint',
-  'vadSensitivity',
-  'vadMinSilence',
-  'asrSlot',
-  'asrSlotHint',
-  'asrFallback',
-  'visionSlot',
-  'visionSlotHint',
-  'visionFallback',
   'ttsSlot',
   'ttsSlotHint',
   'ttsFallback',
 ] as const;
 
-describe('总览 model slots', () => {
-  test('renders one row per slot in the designed order', () => {
-    const order = [
-      'nomi.overview.mainChatModel',
-      'nomi.overview.fallbackChatModel',
-      'nomi.overview.vadSlot',
-      'nomi.overview.asrSlot',
-      'nomi.overview.visionSlot',
-      'nomi.overview.ttsSlot',
-    ];
-    const positions = order.map((key) => src.indexOf(`'${key}'`));
-    expect(positions.every((p) => p > 0)).toBe(true);
-    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+describe('总览 model slots (streamlined)', () => {
+  test('renders essential companion slots (chat model and speech voice)', () => {
+    expect(src.includes('nomi.overview.mainChatModel')).toBe(true);
+    expect(src.includes('nomi.overview.ttsSlot')).toBe(true);
   });
 
-  test('every model slot goes through the shared selector, none re-implements one', () => {
-    expect(src.match(/<TaskModelSelect/g)?.length).toBe(4);
-    expect(src.includes("task='chat'")).toBe(true);
-    expect(src.includes("task='speech_recognition'")).toBe(true);
-    expect(src.includes("task='speech_synthesis'")).toBe(true);
-    expect(src.includes("traits={['vision_input']}")).toBe(true);
+  test('hides technical clutter (VAD numeric inputs, separate vision slot, separate ASR, and fallback)', () => {
+    // VAD tuning removed from overview: uses system defaults
+    expect(src.includes('vadSlot')).toBe(false);
+    expect(src.includes('NomiInputNumber')).toBe(false);
+    // Standalone vision model removed: natively follows conversation context
+    expect(src.includes('visionSlot')).toBe(false);
+    // Standalone ASR model removed: managed by unified voice pipeline
+    expect(src.includes('asrSlot')).toBe(false);
+    // Cold disaster fallback removed from overview
+    expect(src.includes('fallbackChatModel')).toBe(false);
+  });
+
+  test('enables hideProvider to remove repetitive Flowy Cloud provider dropdowns', () => {
+    expect(src.includes('hideProvider')).toBe(true);
+  });
+
+  test('configures TTS for onlyVoice selection to choose voice directly without model noise', () => {
     expect(src.includes('withVoice')).toBe(true);
-    expect(src.includes('NomiSelect')).toBe(false);
+    expect(src.includes('onlyVoice')).toBe(true);
   });
 
-  test('the app-level "voice & perception" redirect row is gone', () => {
-    // The row existed because TTS/ASR/VAD/vision had no per-companion setting.
-    // They do now, so a redirect that sends the user away from the控件 would be
-    // actively misleading.
-    expect(src.includes('voicePerception')).toBe(false);
-    expect(src.includes('useNavigate')).toBe(false);
-    expect(src.includes('RowAction')).toBe(false);
-  });
-
-  test('an unset slot states its fallback instead of looking broken', () => {
-    for (const key of ['fallbackChatUnset', 'asrFallback', 'visionFallback', 'ttsFallback']) {
-      expect(src.includes(`nomi.overview.${key}`)).toBe(true);
-    }
-  });
-
-  test('the VAD row is two local parameters, not a model picker', () => {
-    expect(src.includes('NomiInputNumber')).toBe(true);
-    expect(src.includes('vad: { sensitivity')).toBe(true);
-    expect(src.includes('vad: { min_silence_ms')).toBe(true);
-    expect(src.includes('min={200}')).toBe(true);
-    expect(src.includes('max={3000}')).toBe(true);
-  });
-
-  test('copy exists in both locales and the retired keys are deleted', () => {
+  test('copy exists in both locales', () => {
     const overview = (locale: Record<string, unknown>) =>
       (locale as { overview: Record<string, string> }).overview;
     for (const [name, locale] of [
       ['zh-CN', zhNomi as unknown as Record<string, unknown>],
       ['en-US', enNomi as unknown as Record<string, unknown>],
     ] as const) {
-      for (const key of OVERVIEW_SLOT_KEYS) {
+      for (const key of ESSENTIAL_SLOT_KEYS) {
         expect(typeof overview(locale)[key]).toBe('string');
         expect(overview(locale)[key].trim().length > 0).toBe(true);
       }
-      expect(overview(locale).voicePerception).toBeUndefined();
-      expect(overview(locale).voicePerceptionHint).toBeUndefined();
-      expect(overview(locale).goModelSettings).toBeUndefined();
       expect(name.length > 0).toBe(true);
     }
   });
