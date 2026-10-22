@@ -61,6 +61,7 @@ fn inv_file(kb: &str, path: &str, headings: &[&str], preview: &str) -> KbInvento
         modified_at: None,
         content_hash: format!("hash-{path}"),
         headings: headings.iter().map(|h| (*h).to_owned()).collect(),
+        heading_levels: Vec::new(),
         preview: preview.chars().take(160).collect(),
         kind: KbFileKind::Markdown,
     }
@@ -151,6 +152,7 @@ fn ledger_topics(plan_chapters: &[PlannedChapter]) -> Vec<CoverageTopic> {
                 assigned_chapters: vec![ch.title.clone()],
                 status: TopicStatus::Covered,
                 reason: None,
+                level: None,
             });
         }
     }
@@ -658,6 +660,7 @@ async fn mixed_files_only_offer_the_chapters_anchored_segments() {
         assigned_chapters: Vec::new(),
         status: TopicStatus::Uncertain,
         reason: None,
+        level: None,
     });
     let completer = ExpandCompleter::new(|system, user| {
         assert!(system.contains("章节展开"));

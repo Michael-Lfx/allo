@@ -7594,6 +7594,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 modified_at: Some(1),
                 content_hash: "a".repeat(64),
                 headings: vec!["排序入门".to_owned()],
+                heading_levels: vec![1],
                 preview: "排序的基本概念。".to_owned(),
                 kind: KbFileKind::Markdown,
             }],
@@ -8064,6 +8065,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     modified_at: Some(1),
                     content_hash: "a".repeat(64),
                     headings: vec![format!("第{index}章")],
+                    heading_levels: vec![1],
                     preview: "预览。".to_owned(),
                     kind: KbFileKind::Markdown,
                 })

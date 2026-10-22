@@ -76,6 +76,10 @@ pub struct KbInventoryFile {
     /// H1-H3 标题（跳过代码围栏，条数/长度有上限，供分诊与 t2 复用）。
     #[serde(default)]
     pub headings: Vec<String>,
+    /// H1-H3 层级（与 `headings` 平行同长；1=H1、2=H2、3=H3。覆盖对账按
+    /// 同文件层级建父子滚入链；旧快照为空 → 滚入降级为现状三态）。
+    #[serde(default)]
+    pub heading_levels: Vec<u8>,
     /// 正文开头预览（清点只读一次正文，后续结构发现复用它，不重读全库）。
     #[serde(default)]
     pub preview: String,
@@ -323,6 +327,7 @@ pub async fn run_kb_triage(
                     modified_at: entry.modified_at,
                     content_hash: content_hash_hex(&content),
                     headings: analysis.headings,
+                    heading_levels: analysis.heading_levels,
                     preview: analysis.preview,
                     kind: KbFileKind::Markdown,
                 },
@@ -566,6 +571,8 @@ fn assign_namespaces(bases: &[(String, String)]) -> Vec<String> {
 /// 正文一次读出的全部分析信号（语言/布局键在扫描处单独计算）。
 struct ContentAnalysis {
     headings: Vec<String>,
+    /// 与 `headings` 平行的标题层级（1-3）。
+    heading_levels: Vec<u8>,
     preview: String,
     cjk_ratio: f32,
     is_empty: bool,
@@ -574,8 +581,10 @@ struct ContentAnalysis {
 
 fn analyze_content(content: &str) -> ContentAnalysis {
     let trimmed = content.trim();
+    let (headings, heading_levels) = extract_headings(content);
     ContentAnalysis {
-        headings: extract_headings(content),
+        headings,
+        heading_levels,
         preview: preview_of(trimmed),
         cjk_ratio: cjk_ratio(trimmed),
         is_empty: trimmed.is_empty(),
@@ -593,9 +602,11 @@ fn content_hash_hex(content: &str) -> String {
     hex
 }
 
-/// H1-H3 标题（跳过代码围栏内的 `#` 行；条数与单条长度有上限）。
-fn extract_headings(content: &str) -> Vec<String> {
+/// H1-H3 标题与对应层级（跳过代码围栏内的 `#` 行；条数与单条长度有上限；
+/// 两个向量平行同长，层级 1-3 供覆盖对账建父子滚入链）。
+fn extract_headings(content: &str) -> (Vec<String>, Vec<u8>) {
     let mut headings: Vec<String> = Vec::new();
+    let mut levels: Vec<u8> = Vec::new();
     let mut in_fence = false;
     for line in content.lines() {
         let trimmed = line.trim_start();
@@ -606,22 +617,23 @@ fn extract_headings(content: &str) -> Vec<String> {
         if in_fence {
             continue;
         }
-        let title = if let Some(rest) = trimmed.strip_prefix("### ") {
-            rest
+        let (level, title) = if let Some(rest) = trimmed.strip_prefix("### ") {
+            (3u8, rest)
         } else if let Some(rest) = trimmed.strip_prefix("## ") {
-            rest
+            (2u8, rest)
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
-            rest
+            (1u8, rest)
         } else {
             continue;
         };
         let title: String = title.trim().chars().take(TRIAGE_HEADING_MAX_CHARS).collect();
         headings.push(title);
+        levels.push(level);
         if headings.len() >= TRIAGE_HEADINGS_MAX {
             break;
         }
     }
-    headings
+    (headings, levels)
 }
 
 fn preview_of(trimmed: &str) -> String {

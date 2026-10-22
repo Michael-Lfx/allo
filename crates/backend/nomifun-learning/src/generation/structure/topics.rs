@@ -12,6 +12,9 @@ pub(crate) struct TopicSeed {
     pub label: String,
     pub paragraph: Option<usize>,
     pub heading: bool,
+    /// heading 层级(1-3;headingless 段落与 path 级为 None)。t3 覆盖对账
+    /// 按同文件层级建父子滚入链(父 topic 由被覆盖后代滚入)。
+    pub level: Option<u8>,
     pub anchor_uncertain: bool,
 }
 
@@ -32,11 +35,12 @@ pub(crate) struct SkippedTopic {
     pub reason: String,
 }
 
-/// 按定位顺序拆文件:heading(inventory 的 H1-H3)→ 段落序号(headingless,
-/// 需要正文)→ path 级单 topic(`anchor_uncertain` + warning)。
+/// 按定位顺序拆文件:heading(inventory 的 H1-H3 + 平行层级)→ 段落序号
+/// (headingless,需要正文)→ path 级单 topic(`anchor_uncertain` + warning)。
 pub(crate) fn split_file_topics(
     rel_path: &str,
     headings: &[String],
+    heading_levels: &[u8],
     content: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Vec<TopicSeed> {
@@ -49,6 +53,12 @@ pub(crate) fn split_file_topics(
                 label: heading.trim().to_owned(),
                 paragraph: None,
                 heading: true,
+                // 层级与标题平行;缺失或超出 1-3 的脏数据按无层级降级
+                // (不参与父子滚入,维持现状对账)。
+                level: heading_levels
+                    .get(index)
+                    .copied()
+                    .filter(|level| (1..=3).contains(level)),
                 anchor_uncertain: false,
             })
             .collect();
@@ -69,6 +79,7 @@ pub(crate) fn split_file_topics(
                     label: format!("第 {} 段", index + 1),
                     paragraph: Some(index + 1),
                     heading: false,
+                    level: None,
                     anchor_uncertain: false,
                 })
                 .collect();
@@ -82,6 +93,7 @@ pub(crate) fn split_file_topics(
         label: rel_path.rsplit('/').next().unwrap_or(rel_path).to_owned(),
         paragraph: None,
         heading: false,
+        level: None,
         anchor_uncertain: true,
     }]
 }
@@ -188,6 +200,7 @@ pub(crate) fn reconcile_coverage(
                 assigned_chapters: assigned,
                 status,
                 reason,
+                level: seed.level,
             });
         }
         let status = if covered_count > 0 {

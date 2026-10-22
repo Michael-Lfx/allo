@@ -109,6 +109,11 @@ async fn triage_inventories_every_markdown_file_and_degrades_to_core_without_a_c
         ["一元二次方程", "配方法", "判别式"],
         "H1-H3 标题（跳过围栏外噪声）"
     );
+    assert_eq!(
+        equations.heading_levels,
+        [1u8, 2, 2],
+        "标题层级与 headings 平行(H1 章 / H2 节),供覆盖对账建父子链"
+    );
     assert!(equations.preview.contains("完全平方"), "preview: {}", equations.preview);
     assert_eq!(equations.kind, KbFileKind::Markdown);
 
@@ -860,6 +865,7 @@ fn triage_prompt_labels_truncated_directory_trees_honestly() {
                     modified_at: None,
                     content_hash: format!("{index:064x}"),
                     headings: vec![format!("第{index}篇")],
+                    heading_levels: vec![1],
                     preview: "正文预览。".into(),
                     kind: KbFileKind::Markdown,
                 })
