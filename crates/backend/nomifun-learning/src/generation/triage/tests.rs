@@ -350,11 +350,17 @@ where
     }
 }
 
-/// 从批提示词里解析「待分诊文件清单」的路径（`- 文件 {path} :: …` 行）。
+/// 从批提示词的编号清单行解析路径（`{n}. {path} :: …` 行；目录树的
+/// `- {path}` 行不带编号，不会误命中）。
 fn prompt_paths(user: &str) -> Vec<String> {
     user.lines()
-        .filter_map(|line| line.strip_prefix("- 文件 "))
-        .map(|rest| rest.split(" ::").next().unwrap_or(rest).to_owned())
+        .filter_map(|line| {
+            let (number, rest) = line.split_once(". ")?;
+            if number.is_empty() || !number.chars().all(|char| char.is_ascii_digit()) {
+                return None;
+            }
+            Some(rest.split(" ::").next().unwrap_or(rest).to_owned())
+        })
         .collect()
 }
 
@@ -700,6 +706,48 @@ async fn synonym_entry_field_names_are_mapped() {
     assert_eq!(report.counts.core, 1, "rel_path/kind 字段名变体按同义词映射");
     assert_eq!(report.counts.practice, 1);
     assert_eq!(report.counts.uncertain, 0);
+}
+
+/// h1 提示词硬化：清单行带编号、不再使用可被回显的「文件 」标签（根因的
+/// 提示词侧修复）；明确「必须恰好返回 N 条、按清单顺序、path 原样回显、
+/// 遗漏任何文件都算失败」。
+#[tokio::test]
+async fn triage_prompts_number_files_and_demand_exact_coverage() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "提示词库").await;
+    write_kb_file(&root, "ch1.md", "# 核心章节\n\n本章讲排序算法的实现。\n");
+    write_kb_file(&root, "lab.md", "# 实验\n\n动手实现快速排序并测量耗时。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            Ok(reply_json(
+                &paths
+                    .iter()
+                    .map(|path| (path.as_str(), "core", 0.9, "课程正文"))
+                    .collect::<Vec<_>>(),
+            ))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, _report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会排序算法", Some(&completer)).await.unwrap();
+
+    let prompts = completer.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 1);
+    let prompt = &prompts[0];
+    assert!(prompt.contains("1. ch1.md ::"), "清单行带编号：{prompt}");
+    assert!(prompt.contains("2. lab.md ::"), "按输入顺序编号：{prompt}");
+    assert!(
+        !prompt.contains("- 文件 "),
+        "不再使用可被回显进 path 的「文件 」标签行：{prompt}"
+    );
+    assert!(prompt.contains("必须恰好返回 2 条判定"), "恰好 N 条契约：{prompt}");
+    assert!(prompt.contains("原样回显"), "path 原样回显契约：{prompt}");
+    assert!(prompt.contains("遗漏任何文件都算失败"), "遗漏即失败契约：{prompt}");
+    // 系统提示词与清单行格式同步硬化。
+    assert!(TRIAGE_SYSTEM.contains("遗漏任何文件都算失败"));
+    assert!(TRIAGE_SYSTEM.contains("原样回显"));
 }
 
 #[tokio::test]

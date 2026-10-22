@@ -1241,13 +1241,14 @@ fn triage_output_tokens(file_count: usize) -> u32 {
     (file_count as u32 * 150 + 512).min(16_384)
 }
 
-/// 分诊系统提示词（内联常量风格，中文，输出 JSON schema 明确）。
-const TRIAGE_SYSTEM: &str = r#"你是知识库课程化的分诊员。给定学习目标、库的目录树和一批文件清单（标题/预览/类型），为每个文件判定它在课程中的角色。
+/// 分诊系统提示词（内联常量风格，中文，输出 JSON schema 明确；h1 加入
+/// 「恰好 N 条 / 按清单顺序 / path 原样回显 / 遗漏即失败」的编号清单契约）。
+const TRIAGE_SYSTEM: &str = r#"你是知识库课程化的分诊员。给定学习目标、库的目录树和一批带编号的文件清单（标题/预览/类型），为每个文件判定它在课程中的角色。
 
 只输出一个 JSON 对象，形状如下：
 {
   "files": [
-    {"path": "清单中的原样路径", "role": "core", "confidence": 0.9, "reason": "一句话理由"}
+    {"path": "清单中该文件编号后面的原样路径", "role": "core", "confidence": 0.9, "reason": "一句话理由"}
   ]
 }
 role 只能取以下七值之一：
@@ -1260,7 +1261,9 @@ role 只能取以下七值之一：
 - uncertain：判不准。
 
 规则：
-- 必须为清单中的每一个 path 给出判定，不要发明清单外的路径。
+- 必须为清单中的每一个文件恰好返回一条判定：files 的条目数必须等于清单文件数，按清单顺序输出，遗漏任何文件都算失败。
+- path 必须原样回显清单中该文件编号后面的路径：从路径开头逐字复制，不要添加「文件」等清单标签或编号，也不要改写、增删路径中的任何字符。
+- 清单之外的文件一律不要判定（目录树只提供上下文，不是判定对象）。
 - confidence 是 0 到 1 的小数；判不准时给低置信并选 uncertain。
 - uncertain 是保守选项：宁可 uncertain 也不要把可能是教学内容的内容静默丢掉。
 - 每个文件都必须给出一句话 reason。
@@ -1303,10 +1306,18 @@ fn build_triage_user_prompt(
         .take(TRIAGE_TREE_MAX_FILES)
     {
         prompt.push_str(&format!("- {path}\n"));
-    }    prompt.push_str("\n待分诊文件清单：\n");
-    for file in files {
+    }
+    // h1 清单行硬化：每行带 1 起步的编号，路径紧跟编号之后（不再是
+    // `- 文件 {path}` 标签行——真机实锤模型会把「文件 」标签回显进 path）；
+    // 导语明确「恰好 N 条 / 按清单顺序 / path 原样回显 / 遗漏即失败」。
+    let count = files.len();
+    prompt.push_str(&format!(
+        "待分诊文件清单（共 {count} 个文件，编号 1 到 {count}；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径，不得添加「文件」等清单标签或编号，遗漏任何文件都算失败）：\n"
+    ));
+    for (index, file) in files.iter().enumerate() {
         prompt.push_str(&format!(
-            "- 文件 {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
+            "{}. {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
+            index + 1,
             file.file.rel_path,
             match file.file.kind {
                 KbFileKind::Markdown => "markdown",
