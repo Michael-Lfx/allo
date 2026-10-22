@@ -31,12 +31,6 @@ impl VoiceEventHub {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn announcement_is_speaking(&self,command_id:&str)->bool {
-        let state=self.state.lock().unwrap_or_else(|e|e.into_inner());
-        state.phase==VoiceSessionPhase::Speaking && state.turn_id.as_deref()==Some(format!("task-result-{command_id}").as_str())
-    }
-
     pub fn sender(&self) -> broadcast::Sender<VoiceCompanionEvent> {
         self.tx.clone()
     }

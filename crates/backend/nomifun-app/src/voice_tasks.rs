@@ -659,25 +659,6 @@ impl VoiceTaskService {
             false,
         ).await
     }
-    #[allow(dead_code)]
-    pub async fn submit_frozen(&self, command:VoiceTaskCommand, config:VoiceExecutionConfig,expected_preset:Option<Option<ResolvedPresetSnapshot>>)->Result<VoiceTaskDelivery,String> {
-        let preset_field = match expected_preset {
-            Some(inner) => FrozenField::Specified(inner),
-            None => FrozenField::Omitted,
-        };
-        self.submit_frozen_with_handoff_mode(
-            command,
-            config,
-            preset_field,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            true,
-            true,
-        ).await
-    }
 
     #[allow(dead_code)]
     pub async fn submit_frozen_with_handoff_queued(
