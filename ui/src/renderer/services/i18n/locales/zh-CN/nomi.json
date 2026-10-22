@@ -217,9 +217,9 @@
     "visionSlot": "视觉大模型",
     "visionSlotHint": "看图片、看摄像头画面时单独调用的模型。",
     "visionFallback": "未配置。主对话模型若本身能看图，就用主对话模型。",
-    "ttsSlot": "语音合成",
-    "ttsSlotHint": "把回复念出来的模型与音色。",
-    "ttsFallback": "未配置。使用「模型管理 → 语音」里的全局语音合成模型与音色。"
+    "ttsSlot": "声音音色",
+    "ttsSlotHint": "为当前桌宠定制说话音色。",
+    "ttsFallback": "未配置。使用「模型管理 → 语音」里的全局默认音色。"
   },
   "memories": {
     "kindAll": "全部类型",
