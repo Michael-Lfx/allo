@@ -3520,15 +3520,15 @@ mod tests {
     }
 
     #[test]
-    fn herdsman_token_router_uses_the_openai_client() {
+    fn herdsman_local_endpoint_uses_the_openai_client() {
         assert_eq!(map_nomi_provider("herdsman", None), "openai");
         let (base_url, compat) = resolve_nomi_url_and_compat(
             "herdsman",
-            "http://127.0.0.1:16621/v1",
+            "http://127.0.0.1:18080/v1",
             "openai",
             false,
         );
-        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:16621"));
+        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:18080"));
         assert!(compat.api_path.is_none());
     }
 
