@@ -99,6 +99,7 @@ mod tests {
             modified_at: Some(1),
             content_hash: "h".repeat(64),
             headings,
+            heading_levels: Vec::new(),
             preview,
             kind: KbFileKind::Markdown,
         }
@@ -112,6 +113,8 @@ mod tests {
             duplicates: Vec::new(),
             degraded: false,
             warnings: Vec::new(),
+            batch_repair_count: 0,
+            still_missing_count: 0,
         }
     }
 
@@ -164,6 +167,40 @@ mod tests {
         // 内存类型语义不改:t1 清点的原值原样保留(512 字/32 条口径)。
         assert_eq!(inventory.files[0].preview, long_preview);
         assert_eq!(inventory.files[0].headings.len(), 40);
+    }
+
+    /// h1 计数字段的信封兼容：零值不序列化（快照字节形状与 v1 完全一致），
+    /// 缺字段的旧快照读回默认 0——读侧不感知、不报错。
+    #[test]
+    fn triage_counter_fields_stay_backward_compatible() {
+        let empty_inventory = KbInventory {
+            bases: Vec::new(),
+            files: Vec::new(),
+            total_files: 0,
+            total_bytes: 0,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        };
+        let snapshot = CourseSourcePlanSnapshot::capture(
+            &empty_inventory,
+            &empty_triage(),
+            &SourcePlan::default(),
+            &SourceCoverage::default(),
+        );
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert!(
+            json["triage"].get("batch_repair_count").is_none(),
+            "零值不序列化，信封字节形状与 v1 一致：{json}"
+        );
+        assert!(
+            json["triage"].get("still_missing_count").is_none(),
+            "零值不序列化：{json}"
+        );
+        // 旧快照（缺新字段）原样读回：默认 0，不报错不伪造。
+        let parsed: CourseSourcePlanSnapshot =
+            serde_json::from_value(json).expect("缺字段的快照可读回");
+        assert_eq!(parsed.triage.batch_repair_count, 0);
+        assert_eq!(parsed.triage.still_missing_count, 0);
     }
 
     /// 信封契约(票面验收):序列化恒为 JSON 对象(迁移 069 的 CHECK 只放行

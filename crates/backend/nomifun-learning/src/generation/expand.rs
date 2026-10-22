@@ -17,7 +17,7 @@
 //! t4 落库)。`blueprint_json` 继续是最终 modules/lessons 快照。
 
 use super::structured_batch::{
-    structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure,
+    structured_batch, BatchAttempt, BatchPass, StructuredBatchError, StructuredBatchFailure,
 };
 use super::structure::topics as structure_topics;
 use super::*;
@@ -90,6 +90,10 @@ pub struct ExpansionTopicReport {
     pub status: TopicStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// 父子滚入覆盖:自身无课时锚点,由同文件后代 topic 的课时滚入
+    /// (计数口径:topics_covered 上升、uncertain 下降;后代缺口仍逐条可见)。
+    #[serde(default)]
+    pub rolled_up: bool,
 }
 
 /// 分批展开的覆盖校验报告(章节/主题级;可先内存/DTO,t4 落库)。
@@ -707,6 +711,7 @@ impl BatchAttempt<Vec<RawLesson>> for ExpandBatchAttempt<'_> {
     fn attempt<'s>(
         &'s self,
         slice: &'s [String],
+        _pass: BatchPass,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, Vec<RawLesson>>, StructuredBatchError>> + Send + 's>>
     {
         Box::pin(async move {
@@ -1049,6 +1054,54 @@ fn lesson_covers_topic(anchors: &[SourceAnchor], topic_anchor: &SourceAnchor) ->
     })
 }
 
+/// topic 重对账的中间态:`assigned` 是课时锚点直接命中的课时;`rolled_in`
+/// 是父子滚入从被覆盖后代借来的课时(直接命中优先,滚入只补章级缺口)。
+struct TopicReconciliation {
+    assigned: Vec<String>,
+    rolled_in: Vec<String>,
+}
+
+/// 同文件 heading 父子滚入:按定位锚 `rel_path` 分组、台账文档序维护
+/// 「未闭合祖先」栈——任一后代被课时直接覆盖,其全部祖先记滚入覆盖
+/// (covered + `rolled_up` + 后代课时标题,可回溯)。父名下零 covered
+/// 后代时不滚入(维持三态与警告,不产生新静默);层级缺失(段落/path 级
+/// topic、旧快照)不参与建链;滚入不跨文件(mixed 文件的噪声段仍逐段
+/// 披露)。
+fn roll_up_descendant_coverage(topics: &[CoverageTopic], reconciled: &mut [TopicReconciliation]) {
+    // rel_path → 未闭合祖先栈(台账下标;层级严格递增)。
+    let mut open: HashMap<&str, Vec<(usize, u8)>> = HashMap::new();
+    for (index, topic) in topics.iter().enumerate() {
+        let Some(level) = topic.level else {
+            // 无层级(段落/path 级 topic、旧快照):既不做祖先,也不滚入。
+            continue;
+        };
+        let Some(rel_path) = topic
+            .source_anchors
+            .first()
+            .map(|anchor| anchor.rel_path.as_str())
+        else {
+            continue;
+        };
+        let stack = open.entry(rel_path).or_default();
+        // 同层/更浅的标题已闭合:弹到最近更浅层(剩下的即祖先链)。
+        while stack.last().is_some_and(|(_, open_level)| *open_level >= level) {
+            stack.pop();
+        }
+        if !reconciled[index].assigned.is_empty() {
+            let covered_lessons = reconciled[index].assigned.clone();
+            for (ancestor, _) in stack.iter() {
+                let ancestor = &mut reconciled[*ancestor];
+                for lesson in &covered_lessons {
+                    if !ancestor.rolled_in.contains(lesson) {
+                        ancestor.rolled_in.push(lesson.clone());
+                    }
+                }
+            }
+        }
+        stack.push((index, level));
+    }
+}
+
 /// 分批展开编排入口(t3):按 [`SourcePlan::chapters`] 顺序逐章展开,确定性
 /// 合并为可导入 [`Blueprint`],并产出 [`SourceCoverage`] 覆盖报告。
 ///
@@ -1154,8 +1207,12 @@ pub async fn run_kb_expansion(
         )));
     }
 
-    // topic 级对账:plan 台账 × 课时锚点(covered / skipped+reason / uncertain)。
-    let mut topic_reports: Vec<ExpansionTopicReport> = Vec::new();
+    // topic 级对账:plan 台账 × 课时锚点(covered / skipped+reason /
+    // uncertain)。同文件 heading 父子滚入:任一后代被课时锚点覆盖 ⇒ 父
+    // topic 记 covered(rolled_up),消灭「章已覆盖却报未覆盖」的假警报;
+    // 后代各自状态保持,父名下零 covered 后代维持三态与警告(滚入只消灭
+    // 假警报,不产生新静默,也不跨文件)。
+    let mut reconciled: Vec<TopicReconciliation> = Vec::with_capacity(plan.coverage.topics.len());
     for topic in &plan.coverage.topics {
         let assigned: Vec<String> = lesson_reports
             .iter()
@@ -1167,7 +1224,16 @@ pub async fn run_kb_expansion(
             })
             .map(|lesson| lesson.title.clone())
             .collect();
-        let (status, reason) = if !assigned.is_empty() {
+        reconciled.push(TopicReconciliation {
+            assigned,
+            rolled_in: Vec::new(),
+        });
+    }
+    roll_up_descendant_coverage(&plan.coverage.topics, &mut reconciled);
+    let mut topic_reports: Vec<ExpansionTopicReport> = Vec::with_capacity(plan.coverage.topics.len());
+    for (topic, state) in plan.coverage.topics.iter().zip(reconciled.iter()) {
+        let rolled_up = state.assigned.is_empty() && !state.rolled_in.is_empty();
+        let (status, reason) = if !state.assigned.is_empty() || rolled_up {
             (TopicStatus::Covered, None)
         } else if topic.status == TopicStatus::Skipped {
             (
@@ -1177,6 +1243,13 @@ pub async fn run_kb_expansion(
         } else {
             warnings.push(format!("topic「{}」未被任何课时覆盖(缺口已披露,不静默丢)", topic.label));
             (TopicStatus::Uncertain, None)
+        };
+        // 直接命中的课时优先;滚入覆盖把后代的课时标题带给父 topic,保证
+        // 「为什么 covered」可回溯。
+        let assigned_lessons = if rolled_up {
+            &state.rolled_in
+        } else {
+            &state.assigned
         };
         topic_reports.push(ExpansionTopicReport {
             topic_id: topic.topic_id.clone(),
@@ -1189,9 +1262,10 @@ pub async fn run_kb_expansion(
                 snippet: None,
                 anchor_uncertain: false,
             }),
-            assigned_lessons: assigned,
+            assigned_lessons: assigned_lessons.clone(),
             status,
             reason,
+            rolled_up,
         });
     }
     // 未进任何章锚点集的候选文件也入台账(prerequisite/practice 归属可见)。

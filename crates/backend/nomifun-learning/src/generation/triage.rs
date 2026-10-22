@@ -9,7 +9,9 @@
 //! 本票不改 `generate_course` 主流程接线（t2/t3 的接缝）；交付的是可独立调用
 //! 的编排入口 [`run_kb_triage`]。
 
-use super::structured_batch::{structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure};
+use super::structured_batch::{
+    structured_batch, BatchAttempt, BatchPass, StructuredBatchError, StructuredBatchFailure,
+};
 use super::*;
 use futures::stream::{self, StreamExt};
 use std::future::Future;
@@ -76,6 +78,10 @@ pub struct KbInventoryFile {
     /// H1-H3 标题（跳过代码围栏，条数/长度有上限，供分诊与 t2 复用）。
     #[serde(default)]
     pub headings: Vec<String>,
+    /// H1-H3 层级（与 `headings` 平行同长；1=H1、2=H2、3=H3。覆盖对账按
+    /// 同文件层级建父子滚入链；旧快照为空 → 滚入降级为现状三态）。
+    #[serde(default)]
+    pub heading_levels: Vec<u8>,
     /// 正文开头预览（清点只读一次正文，后续结构发现复用它，不重读全库）。
     #[serde(default)]
     pub preview: String,
@@ -214,6 +220,21 @@ pub struct KbTriageReport {
     pub degraded: bool,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// 批补判次数（h1 披露读数）：拆半/缺条目子集的重发 LLM 调用次数，
+    /// 0 = 每批一次整批成功。向后兼容：旧快照缺字段读侧默认 0，零值不
+    /// 序列化（信封字节形状与 v1 完全一致）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub batch_repair_count: usize,
+    /// 仍缺条目数（h1 披露读数）：全部手段（整批/拆半/定向补判/单文件兜底）
+    /// 用尽后仍未拿到模型判定、保守落 uncertain 的文件数。口径同
+    /// skip_serializing_if 的向后兼容处理。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub still_missing_count: usize,
+}
+
+/// `skip_serializing_if` 用的零值判定（信封兼容：零值字段不落快照）。
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl KbTriageReport {
@@ -323,6 +344,7 @@ pub async fn run_kb_triage(
                     modified_at: entry.modified_at,
                     content_hash: content_hash_hex(&content),
                     headings: analysis.headings,
+                    heading_levels: analysis.heading_levels,
                     preview: analysis.preview,
                     kind: KbFileKind::Markdown,
                 },
@@ -380,6 +402,9 @@ pub async fn run_kb_triage(
     // LLM 分诊；无 completer 或调用失败 → 规则降级（非噪声全部 core）。
     let mut degraded_cause: Option<String> = None;
     let mut llm_verdicts: HashMap<String, RuleVerdict> = HashMap::new();
+    // h1 披露读数：补判次数（重发调用）与仍缺条目数（穷尽后保守 uncertain）。
+    let mut batch_repair_count = 0usize;
+    let mut still_missing_count = 0usize;
     match completer {
         None => {
             degraded_cause = Some("未配置模型（completer）".to_owned());
@@ -390,11 +415,13 @@ pub async fn run_kb_triage(
                     .iter()
                     .map(|file| (file.file.rel_path.as_str(), file))
                     .collect();
+                let repair_calls = std::sync::atomic::AtomicUsize::new(0);
                 let attempt = TriageBatchAttempt {
                     completer,
                     goal,
                     inventory: &inventory,
                     lookup: &lookup,
+                    repair_calls: &repair_calls,
                 };
                 let batch_ids: Vec<String> = remaining
                     .iter()
@@ -421,13 +448,16 @@ pub async fn run_kb_triage(
                             }
                             Err(StructuredBatchFailure::Parse(message)) => {
                                 // 单文件兜底仍失败 → uncertain + 理由，不丢。
+                                // message 自带可区分的失败语境（h1）：合法空回包
+                                // =模型显式无判定 vs 真解析失败（截断/坏 JSON）。
+                                still_missing_count += 1;
                                 llm_verdicts.insert(
                                     path,
                                     RuleVerdict {
                                         role: KbTriageRole::Uncertain,
                                         confidence: 0.2,
                                         reason: format!(
-                                            "单文件分诊仍解析失败，保守按 uncertain 保留：{message}"
+                                            "单文件分诊兜底仍未取得该文件的判定，保守按 uncertain 保留：{message}"
                                         ),
                                         duplicate_of: None,
                                         canonical_reason: None,
@@ -447,6 +477,8 @@ pub async fn run_kb_triage(
                         call_failed[0].1
                     ));
                 }
+                batch_repair_count =
+                    repair_calls.load(std::sync::atomic::Ordering::SeqCst);
             }
         }
     }
@@ -534,6 +566,8 @@ pub async fn run_kb_triage(
         duplicates,
         degraded,
         warnings,
+        batch_repair_count,
+        still_missing_count,
     };
     Ok((inventory, report))
 }
@@ -566,6 +600,8 @@ fn assign_namespaces(bases: &[(String, String)]) -> Vec<String> {
 /// 正文一次读出的全部分析信号（语言/布局键在扫描处单独计算）。
 struct ContentAnalysis {
     headings: Vec<String>,
+    /// 与 `headings` 平行的标题层级（1-3）。
+    heading_levels: Vec<u8>,
     preview: String,
     cjk_ratio: f32,
     is_empty: bool,
@@ -574,8 +610,10 @@ struct ContentAnalysis {
 
 fn analyze_content(content: &str) -> ContentAnalysis {
     let trimmed = content.trim();
+    let (headings, heading_levels) = extract_headings(content);
     ContentAnalysis {
-        headings: extract_headings(content),
+        headings,
+        heading_levels,
         preview: preview_of(trimmed),
         cjk_ratio: cjk_ratio(trimmed),
         is_empty: trimmed.is_empty(),
@@ -593,9 +631,11 @@ fn content_hash_hex(content: &str) -> String {
     hex
 }
 
-/// H1-H3 标题（跳过代码围栏内的 `#` 行；条数与单条长度有上限）。
-fn extract_headings(content: &str) -> Vec<String> {
+/// H1-H3 标题与对应层级（跳过代码围栏内的 `#` 行；条数与单条长度有上限；
+/// 两个向量平行同长，层级 1-3 供覆盖对账建父子滚入链）。
+fn extract_headings(content: &str) -> (Vec<String>, Vec<u8>) {
     let mut headings: Vec<String> = Vec::new();
+    let mut levels: Vec<u8> = Vec::new();
     let mut in_fence = false;
     for line in content.lines() {
         let trimmed = line.trim_start();
@@ -606,22 +646,23 @@ fn extract_headings(content: &str) -> Vec<String> {
         if in_fence {
             continue;
         }
-        let title = if let Some(rest) = trimmed.strip_prefix("### ") {
-            rest
+        let (level, title) = if let Some(rest) = trimmed.strip_prefix("### ") {
+            (3u8, rest)
         } else if let Some(rest) = trimmed.strip_prefix("## ") {
-            rest
+            (2u8, rest)
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
-            rest
+            (1u8, rest)
         } else {
             continue;
         };
         let title: String = title.trim().chars().take(TRIAGE_HEADING_MAX_CHARS).collect();
         headings.push(title);
+        levels.push(level);
         if headings.len() >= TRIAGE_HEADINGS_MAX {
             break;
         }
     }
-    headings
+    (headings, levels)
 }
 
 fn preview_of(trimmed: &str) -> String {
@@ -1134,15 +1175,22 @@ struct TriageBatchAttempt<'a> {
     goal: &'a str,
     inventory: &'a KbInventory,
     lookup: &'a HashMap<&'a str, &'a ScannedFile>,
+    /// 补判调用计数（拆半/缺条目子集的重发次数，h1 披露读数）。
+    repair_calls: &'a std::sync::atomic::AtomicUsize,
 }
 
 impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
     fn attempt<'s>(
         &'s self,
         slice: &'s [String],
+        pass: BatchPass,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, RuleVerdict>, StructuredBatchError>> + Send + 's>>
     {
         Box::pin(async move {
+            if pass == BatchPass::Repair {
+                self.repair_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let files: Vec<&ScannedFile> = slice
                 .iter()
                 .filter_map(|id| self.lookup.get(id.as_str()).copied())
@@ -1152,7 +1200,7 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                     "批内没有可分诊的文件（内部错误）".to_owned(),
                 ));
             }
-            let prompt = build_triage_user_prompt(self.goal, self.inventory, &files);
+            let prompt = build_triage_user_prompt(self.goal, self.inventory, &files, pass);
             let raw = self
                 .completer
                 .complete_json(
@@ -1164,8 +1212,15 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                 )
                 .await
                 .map_err(|error| StructuredBatchError::Call(error.to_string()))?;
-            let reply: TriageLlmReply =
-                parse_json_object(&raw).map_err(StructuredBatchError::Parse)?;
+            // 单文件批的解析失败带上显式语境（h1：与「合法空回包=模型显式
+            // 无判定」可区分）；多文件批的解析失败交给驱动层拆半，语境不变。
+            let reply: TriageLlmReply = parse_json_object(&raw).map_err(|error| {
+                if slice.len() == 1 {
+                    StructuredBatchError::Parse(format!("单文件回包解析失败：{error}"))
+                } else {
+                    StructuredBatchError::Parse(error)
+                }
+            })?;
             // duplicate 判定的 canonical 必须能对回全量清点（不只本批）。
             let known_paths: HashSet<&str> = self
                 .inventory
@@ -1173,8 +1228,49 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                 .iter()
                 .map(|file| file.rel_path.as_str())
                 .collect();
-            Ok(map_llm_reply(reply, &files, &known_paths))
+            let verdicts = map_llm_reply(reply, &files, &known_paths);
+            // 单文件批专门化（h1）：回包解析成功但没包含该文件的判定时，给出
+            // 可区别于解析失败的显式信息（合法空回包=模型显式无判定）——
+            // len==1 的切片只会走驱动层叶子，转成 Parse 错误不会影响部分覆盖
+            // 语义。
+            if slice.len() == 1 && !verdicts.contains_key(slice[0].as_str()) {
+                return Err(StructuredBatchError::Parse(
+                    "单文件回包未包含该文件的判定（合法空回包=模型显式无判定，非解析失败）"
+                        .to_owned(),
+                ));
+            }
+            Ok(verdicts)
         })
+    }
+}
+
+/// 把模型回显的条目路径对回请求路径（h1 根因修复，确定性归一）：先原样
+/// 精确匹配；未命中再剥掉回显进 path 的清单标签前缀——真机实锤模型会把
+/// 清单行的「文件 」标签整个当成路径开头回显（如 `文件 01-前言.md`）。
+/// 标签判定从严：剥掉的前缀必须不含路径分隔符「/」（含「/」说明是另一个
+/// 路径，不是标签），且剩余部分必须唯一精确命中请求集；歧义或未命中一律
+/// 不收（保守语义：宁可走缺条目补判，不做模糊匹配）。
+fn resolve_requested_path<'a>(echoed: &str, requested: &HashSet<&'a str>) -> Option<&'a str> {
+    let echoed = echoed.trim();
+    if echoed.is_empty() {
+        return None;
+    }
+    if let Some(exact) = requested.get(echoed) {
+        return Some(*exact);
+    }
+    let matched: Vec<&'a str> = requested
+        .iter()
+        .filter(|candidate| {
+            let candidate = **candidate;
+            echoed.len() > candidate.len()
+                && echoed.ends_with(candidate)
+                && !echoed[..echoed.len() - candidate.len()].contains('/')
+        })
+        .map(|candidate| *candidate)
+        .collect();
+    match matched.as_slice() {
+        [only] => Some(only),
+        _ => None,
     }
 }
 
@@ -1189,9 +1285,10 @@ fn map_llm_reply(
     let requested: HashSet<&str> = remaining.iter().map(|file| file.file.rel_path.as_str()).collect();
     let mut verdicts = HashMap::new();
     for entry in reply.files {
-        if !requested.contains(entry.path.as_str()) {
+        // 条目路径先做确定性归一（剥清单标签前缀回显），命中不了请求集才忽略。
+        let Some(rel_path) = resolve_requested_path(&entry.path, &requested) else {
             continue;
-        }
+        };
         let role = match entry.role.as_str() {
             "core" => KbTriageRole::Core,
             "prerequisite" => KbTriageRole::Prerequisite,
@@ -1202,7 +1299,7 @@ fn map_llm_reply(
             "uncertain" => KbTriageRole::Uncertain,
             unknown => {
                 verdicts.insert(
-                    entry.path.clone(),
+                    rel_path.to_owned(),
                     RuleVerdict {
                         role: KbTriageRole::Uncertain,
                         confidence: entry.confidence.clamp(0.0, 1.0),
@@ -1220,8 +1317,9 @@ fn map_llm_reply(
             entry.reason.trim().to_owned()
         };
         let confidence = entry.confidence.clamp(0.0, 1.0);
-        // duplicate 的 canonical 必须可核对（非空且在清点清单里）；其余
-        // 角色不携带 duplicate_of（台账只收重复副本条目）。
+        // duplicate 的 canonical 必须可核对（非空且在清点清单里；目标路径
+        // 同样做标签前缀归一）；其余角色不携带 duplicate_of（台账只收重复
+        // 副本条目）。
         let duplicate_of = (role == KbTriageRole::Duplicate)
             .then(|| {
                 entry
@@ -1229,7 +1327,7 @@ fn map_llm_reply(
                     .as_deref()
                     .map(str::trim)
                     .filter(|target| !target.is_empty())
-                    .filter(|target| known_paths.contains(target))
+                    .and_then(|target| resolve_requested_path(target, known_paths))
                     .map(str::to_owned)
             })
             .flatten();
@@ -1255,7 +1353,7 @@ fn map_llm_reply(
                     .then(|| "模型回报的重复副本（duplicate_of 可核对）".to_owned()),
             }
         };
-        verdicts.insert(entry.path.clone(), verdict);
+        verdicts.insert(rel_path.to_owned(), verdict);
     }
     verdicts
 }
@@ -1307,13 +1405,14 @@ fn triage_output_tokens(file_count: usize) -> u32 {
     (file_count as u32 * 150 + 512).min(16_384)
 }
 
-/// 分诊系统提示词（内联常量风格，中文，输出 JSON schema 明确）。
-const TRIAGE_SYSTEM: &str = r#"你是知识库课程化的分诊员。给定学习目标、库的目录树和一批文件清单（标题/预览/类型），为每个文件判定它在课程中的角色。
+/// 分诊系统提示词（内联常量风格，中文，输出 JSON schema 明确；h1 加入
+/// 「恰好 N 条 / 按清单顺序 / path 原样回显 / 遗漏即失败」的编号清单契约）。
+const TRIAGE_SYSTEM: &str = r#"你是知识库课程化的分诊员。给定学习目标、库的目录树和一批带编号的文件清单（标题/预览/类型），为每个文件判定它在课程中的角色。
 
 只输出一个 JSON 对象，形状如下：
 {
   "files": [
-    {"path": "清单中的原样路径", "role": "core", "confidence": 0.9, "reason": "一句话理由"}
+    {"path": "清单中该文件编号后面的原样路径", "role": "core", "confidence": 0.9, "reason": "一句话理由"}
   ]
 }
 role 只能取以下七值之一：
@@ -1326,17 +1425,21 @@ role 只能取以下七值之一：
 - uncertain：判不准。
 
 规则：
-- 必须为清单中的每一个 path 给出判定，不要发明清单外的路径。
+- 必须为清单中的每一个文件恰好返回一条判定：files 的条目数必须等于清单文件数，按清单顺序输出，遗漏任何文件都算失败。
+- path 必须原样回显清单中该文件编号后面的路径：从路径开头逐字复制，不要添加「文件」等清单标签或编号，也不要改写、增删路径中的任何字符。
+- 清单之外的文件一律不要判定（目录树只提供上下文，不是判定对象）。
 - confidence 是 0 到 1 的小数；判不准时给低置信并选 uncertain。
 - uncertain 是保守选项：宁可 uncertain 也不要把可能是教学内容的内容静默丢掉。
 - 每个文件都必须给出一句话 reason。
 - 只输出 JSON，不要 Markdown 围栏或解释。"#;
 
 /// 批提示词：目标 + README 摘录 + 目录树 + 每文件（路径/标题/预览/类型）。
+/// `pass` 决定清单导语（首发契约 vs 补判定向措辞，h1）。
 fn build_triage_user_prompt(
     goal: &str,
     inventory: &KbInventory,
     files: &[&ScannedFile],
+    pass: BatchPass,
 ) -> String {
     let mut prompt = String::new();
     let goal = goal.trim();
@@ -1369,10 +1472,28 @@ fn build_triage_user_prompt(
         .take(TRIAGE_TREE_MAX_FILES)
     {
         prompt.push_str(&format!("- {path}\n"));
-    }    prompt.push_str("\n待分诊文件清单：\n");
-    for file in files {
+    }
+    // h1 清单行硬化：每行带 1 起步的编号，路径紧跟编号之后（不再是
+    // `- 文件 {path}` 标签行——真机实锤模型会把「文件 」标签回显进 path）；
+    // 导语按语境区分：首发批声明「恰好 N 条 / 按清单顺序 / 原样回显 /
+    // 遗漏即失败」，补判重发换成「只判定以下 N 个文件」的定向措辞。
+    let count = files.len();
+    let lead_in = match pass {
+        BatchPass::Repair => format!(
+            "只判定以下 {count} 个文件（此前一次回包遗漏或解析失败，本次只补判清单内的文件，清单之外的文件一律不要判定；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径）：\n"
+        ),
+        BatchPass::Initial if count == 1 => {
+            "本次只判定 1 个文件（必须返回且只返回这 1 个文件的判定，path 原样回显编号后的路径）：\n".to_owned()
+        }
+        BatchPass::Initial => format!(
+            "待分诊文件清单（共 {count} 个文件，编号 1 到 {count}；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径，不得添加「文件」等清单标签或编号，遗漏任何文件都算失败）：\n"
+        ),
+    };
+    prompt.push_str(&lead_in);
+    for (index, file) in files.iter().enumerate() {
         prompt.push_str(&format!(
-            "- 文件 {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
+            "{}. {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
+            index + 1,
             file.file.rel_path,
             match file.file.kind {
                 KbFileKind::Markdown => "markdown",
@@ -1392,18 +1513,79 @@ fn readme_stem_of(citation_path: &str) -> bool {
         .is_some_and(|stem| stem.eq_ignore_ascii_case("readme"))
 }
 
-/// 模型回包的宽容反序列化形状。
-#[derive(Deserialize)]
+/// 模型回包的宽容反序列化形状（h1）：`{"files": […]}` 首选；files 的值也
+/// 接受「按 rel_path 为键的对象」；单文件批还接受「裸单条目对象」（根对象
+/// 本身就是判定，无 files 包裹）。
 struct TriageLlmReply {
-    #[serde(default)]
     files: Vec<TriageLlmFile>,
+}
+
+impl<'de> serde::Deserialize<'de> for TriageLlmReply {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let map = match value {
+            serde_json::Value::Object(map) => map,
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "回包不是 JSON 对象：{other}"
+                )))
+            }
+        };
+        if let Some(files) = map.get("files") {
+            let files = files_from_value(files.clone()).map_err(serde::de::Error::custom)?;
+            return Ok(TriageLlmReply { files });
+        }
+        // 裸单条目形状（单文件批的合理变体）：认得出条目字段才收，其余
+        // （别阶段的回包等）按契约不合法处理 → 驱动层拆半，不静默吞。
+        if ["path", "rel_path", "role", "kind"]
+            .iter()
+            .any(|key| map.contains_key(*key))
+        {
+            let entry: TriageLlmFile = serde_json::from_value(serde_json::Value::Object(map))
+                .map_err(serde::de::Error::custom)?;
+            return Ok(TriageLlmReply { files: vec![entry] });
+        }
+        Err(serde::de::Error::custom(
+            "回包既没有 files 字段，也不是可识别的单条目形状",
+        ))
+    }
+}
+
+/// `files` 字段值的宽容解析：首选数组形状；也接受「按 rel_path 为键、条目
+/// 为值」的对象形状（键回填条目缺失的 path）。其余形态报错 → 驱动层拆半。
+fn files_from_value(value: serde_json::Value) -> Result<Vec<TriageLlmFile>, String> {
+    match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .map(|item| serde_json::from_value(item).map_err(|error| error.to_string()))
+            .collect(),
+        serde_json::Value::Object(entries) => entries
+            .into_iter()
+            .map(|(path, item)| {
+                let mut entry: TriageLlmFile =
+                    serde_json::from_value(item).map_err(|error| error.to_string())?;
+                if entry.path.trim().is_empty() {
+                    entry.path = path;
+                }
+                Ok(entry)
+            })
+            .collect(),
+        other => Err(format!(
+            "files 字段既不是数组也不是按路径为键的对象：{other}"
+        )),
+    }
 }
 
 #[derive(Deserialize)]
 struct TriageLlmFile {
-    #[serde(default)]
+    /// 条目路径（`rel_path` 字段名变体按同义词映射，h1 宽容解析）。
+    #[serde(default, alias = "rel_path")]
     path: String,
-    #[serde(default)]
+    /// 角色判定的字段名变体 `kind` 同样映射。
+    #[serde(default, alias = "kind")]
     role: String,
     #[serde(default)]
     confidence: f32,

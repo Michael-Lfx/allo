@@ -226,6 +226,7 @@ fn heading_files_split_one_topic_per_inventory_heading() {
     let seeds = topics::split_file_topics(
         "notes/a.md",
         &["一元二次方程".to_owned(), "配方法".to_owned(), "判别式".to_owned()],
+        &[1, 2, 2],
         Some("正文"),
         &mut warnings,
     );
@@ -243,6 +244,7 @@ fn headingless_files_split_into_paragraph_topics() {
     let seeds = topics::split_file_topics(
         "plain.md",
         &[],
+        &[],
         Some("第一段讲动态规划。\n\n第二段讲状态转移方程。\n\n第三段讲滚动数组优化。"),
         &mut warnings,
     );
@@ -257,10 +259,61 @@ fn headingless_files_split_into_paragraph_topics() {
 #[test]
 fn unlocatable_content_falls_back_to_a_path_level_uncertain_topic() {
     let mut warnings = Vec::new();
-    let seeds = topics::split_file_topics("weird.md", &[], None, &mut warnings);
+    let seeds = topics::split_file_topics("weird.md", &[], &[], None, &mut warnings);
     assert_eq!(seeds.len(), 1);
     assert!(seeds[0].anchor_uncertain, "path 级兜底标 anchor_uncertain");
     assert!(warnings.len() == 1 && warnings[0].contains("weird.md"), "{warnings:?}");
+}
+
+/// h2 父子滚入的数据面:heading 层级与标题平行入种子;层级缺失(旧口径)
+/// 与段落/path 级 topic 无层级 → 不参与滚入,现状不变。
+#[test]
+fn heading_levels_flow_from_inventory_into_topic_seeds() {
+    let mut warnings = Vec::new();
+    let seeds = topics::split_file_topics(
+        "notes/a.md",
+        &["第三章 ArrayList".to_owned(), "3.1 划分方法".to_owned(), "3.2 复杂度".to_owned()],
+        &[1u8, 2, 2],
+        Some("正文"),
+        &mut warnings,
+    );
+    let levels: Vec<Option<u8>> = seeds.iter().map(|seed| seed.level).collect();
+    assert_eq!(levels, vec![Some(1), Some(2), Some(2)], "层级与标题平行");
+
+    let legacy = topics::split_file_topics(
+        "notes/a.md",
+        &["旧快照标题".to_owned()],
+        &[],
+        Some("正文"),
+        &mut warnings,
+    );
+    assert!(legacy.iter().all(|seed| seed.level.is_none()), "层级缺失按无层级降级");
+
+    let mut more = Vec::new();
+    let paragraphs =
+        topics::split_file_topics("plain.md", &[], &[], Some("第一段。\n\n第二段。"), &mut more);
+    assert!(
+        paragraphs.iter().all(|seed| seed.level.is_none()),
+        "段落 topic 无层级"
+    );
+}
+
+/// 台账保留层级:t3 覆盖对账按同文件层级建父子链,层级必须在 reconcile
+/// 后仍然可读。
+#[test]
+fn reconcile_carries_heading_levels_into_the_coverage_ledger() {
+    let mut warnings = Vec::new();
+    let seeds = topics::split_file_topics(
+        "notes/a.md",
+        &["第三章 ArrayList".to_owned(), "3.1 划分方法".to_owned()],
+        &[1u8, 2],
+        Some("正文"),
+        &mut warnings,
+    );
+    let files = vec![topic_file("notes/a.md", KbTriageRole::Core, seeds)];
+    let ledger = topics::reconcile_coverage(&files, &[], &[]);
+    let levels: Vec<Option<u8>> = ledger.topics.iter().map(|topic| topic.level).collect();
+    assert_eq!(levels, vec![Some(1), Some(2)], "台账保留层级供 t3 父子滚入");
 }
 
 // ── 覆盖对账 ───────────────────────────────────────────────────────────────
@@ -291,6 +344,7 @@ fn seed(label: &str, heading: bool) -> topics::TopicSeed {
         label: label.to_owned(),
         paragraph: if heading { None } else { Some(1) },
         heading,
+        level: None,
         anchor_uncertain: false,
     }
 }
@@ -368,6 +422,7 @@ fn paragraph_anchors_cover_only_their_own_paragraph_topic() {
                 label: "第 1 段".into(),
                 paragraph: Some(1),
                 heading: false,
+                level: None,
                 anchor_uncertain: false,
             },
             topics::TopicSeed {
@@ -375,6 +430,7 @@ fn paragraph_anchors_cover_only_their_own_paragraph_topic() {
                 label: "第 2 段".into(),
                 paragraph: Some(2),
                 heading: false,
+                level: None,
                 anchor_uncertain: false,
             },
         ],
@@ -662,6 +718,7 @@ fn plan_inventory() -> KbInventory {
                 modified_at: None,
                 content_hash: "a".repeat(64),
                 headings: vec!["排序算法".into(), "快速排序".into()],
+                heading_levels: vec![1, 2],
                 preview: "比较排序。".into(),
                 kind: KbFileKind::Markdown,
             },
@@ -672,6 +729,7 @@ fn plan_inventory() -> KbInventory {
                 modified_at: None,
                 content_hash: "b".repeat(64),
                 headings: vec![],
+                heading_levels: vec![],
                 preview: "无标题正文。".into(),
                 kind: KbFileKind::Markdown,
             },
@@ -834,6 +892,7 @@ async fn draft_plan_validates_chapter_anchors_against_the_full_inventory() {
                     modified_at: None,
                     content_hash: format!("{index:064x}"),
                     headings: vec![format!("第{index}篇")],
+                    heading_levels: vec![1],
                     preview: "正文预览。".into(),
                     kind: KbFileKind::Markdown,
                 })
@@ -1098,11 +1157,16 @@ fn triage_reply_json(paths: &[String]) -> String {
     )
 }
 
-/// 从分诊提示词解析待判文件路径(照 t1 测试的口径)。
+/// 从分诊提示词解析待判文件路径(照 t1 测试的口径:编号清单行 `{n}. {path}`)。
 fn prompt_file_paths(user: &str) -> Vec<String> {
     user.lines()
-        .filter_map(|line| line.strip_prefix("- 文件 "))
-        .map(|rest| rest.split(" ::").next().unwrap_or(rest).to_owned())
+        .filter_map(|line| {
+            let (number, rest) = line.split_once(". ")?;
+            if number.is_empty() || !number.chars().all(|char| char.is_ascii_digit()) {
+                return None;
+            }
+            Some(rest.split(" ::").next().unwrap_or(rest).to_owned())
+        })
         .collect()
 }
 
@@ -1219,6 +1283,25 @@ async fn clean_textbook_produces_a_usable_plan_in_book_order() {
     assert_eq!(completer.stage_count("draft"), 1);
     assert_eq!(completer.stage_count("critique"), 1);
     assert_eq!(completer.stage_count("revise"), 0);
+}
+
+/// 数据面:h2 父子滚入依赖 heading 层级从清点一路进台账——真机口径
+/// (`#`=1、`##`=2)经 t1 清点、t2 拆分后在 plan.coverage.topics 可读。
+#[tokio::test]
+async fn plan_topics_carry_heading_levels_for_the_rollup_chain() {
+    let (plan, _) = run_clean_textbook(clean_textbook_route, "学会排序与图").await;
+    let plan = plan.expect("干净教材应有可用计划");
+    let levels: HashMap<&str, Option<u8>> = plan
+        .coverage
+        .topics
+        .iter()
+        .map(|topic| (topic.label.as_str(), topic.level))
+        .collect();
+    assert_eq!(levels["排序入门"], Some(1), "ch01 的 H1");
+    assert_eq!(levels["比较排序"], Some(2), "ch01 的 H2");
+    assert_eq!(levels["快速排序"], Some(1), "ch02 只有 H1");
+    assert_eq!(levels["图的基础"], Some(1), "ch03 的 H1");
+    assert_eq!(levels["深度优先"], Some(2), "ch03 的 H2");
 }
 
 #[tokio::test]

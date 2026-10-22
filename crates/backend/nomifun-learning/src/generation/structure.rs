@@ -162,6 +162,10 @@ pub struct CoverageTopic {
     pub status: TopicStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// heading 层级(1-3;段落/path 级与旧快照为 None)。t3 覆盖对账按同
+    /// 文件层级建父子滚入链(父 topic 由被覆盖后代滚入,不跨文件)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
 }
 
 /// 单文件对账(角色来自 t1,章节归属由锚点聚合)。
@@ -1494,6 +1498,7 @@ pub async fn run_kb_structure(
         let seeds = topics::split_file_topics(
             &file.rel_path,
             &scanned.headings,
+            &scanned.heading_levels,
             content.as_deref(),
             &mut warnings,
         );

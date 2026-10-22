@@ -61,6 +61,7 @@ fn inv_file(kb: &str, path: &str, headings: &[&str], preview: &str) -> KbInvento
         modified_at: None,
         content_hash: format!("hash-{path}"),
         headings: headings.iter().map(|h| (*h).to_owned()).collect(),
+        heading_levels: Vec::new(),
         preview: preview.chars().take(160).collect(),
         kind: KbFileKind::Markdown,
     }
@@ -90,6 +91,8 @@ fn triage_report(kb: &str, files: &[(&str, KbTriageRole)]) -> KbTriageReport {
         duplicates: Vec::new(),
         degraded: false,
         warnings: Vec::new(),
+        batch_repair_count: 0,
+        still_missing_count: 0,
     };
     for (path, role) in files {
         report.files.push(KbTriageFile {
@@ -151,6 +154,7 @@ fn ledger_topics(plan_chapters: &[PlannedChapter]) -> Vec<CoverageTopic> {
                 assigned_chapters: vec![ch.title.clone()],
                 status: TopicStatus::Covered,
                 reason: None,
+                level: None,
             });
         }
     }
@@ -658,6 +662,7 @@ async fn mixed_files_only_offer_the_chapters_anchored_segments() {
         assigned_chapters: Vec::new(),
         status: TopicStatus::Uncertain,
         reason: None,
+        level: None,
     });
     let completer = ExpandCompleter::new(|system, user| {
         assert!(system.contains("章节展开"));
@@ -1024,4 +1029,211 @@ async fn chapters_beyond_forty_files_are_chunked_in_anchor_order() {
         "big00.md",
         "锚点序在首"
     );
+}
+
+// ── slice 6:覆盖对账父子滚入(h2)────────────────────────────────────────
+
+/// 带层级的台账 topic(h2 父子滚入夹具:level 1=章、2=节;t2 口径先记
+/// covered,t3 按课时锚点重对账)。
+fn leveled_topic(kb: &str, path: &str, heading: &str, level: u8) -> CoverageTopic {
+    CoverageTopic {
+        topic_id: format!("{path}#{heading}"),
+        label: heading.to_owned(),
+        source_anchors: vec![anchor(kb, path, Some(heading), None)],
+        assigned_chapters: Vec::new(),
+        status: TopicStatus::Covered,
+        reason: None,
+        level: Some(level),
+    }
+}
+
+/// h2 票面单测一:「H1 + 2×H2,一 H2 成课」——章级 H1 由被覆盖的子节滚入
+/// covered(rolled_up),不再发「未被任何课时覆盖」假警报;另一 H2 保持
+/// 自身状态(缺口逐条可见)。
+#[tokio::test]
+async fn chapter_topics_roll_up_coverage_from_covered_subsection_lessons() {
+    let (knowledge, _data_dir) = expand_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "教材库").await;
+    write_kb_file(
+        &root,
+        "ch01.md",
+        "# 第三章 ArrayList\n\n线性表与数组实现。\n\n## 3.1 划分方法\n\n把数组划分为逻辑段。\n\n## 3.2 复杂度\n\n均摊复杂度分析。\n",
+    );
+    let kb = kb_id.as_str().to_owned();
+    let inventory = single_base_inventory(
+        &kb,
+        vec![inv_file(
+            &kb,
+            "ch01.md",
+            &["第三章 ArrayList", "3.1 划分方法", "3.2 复杂度"],
+            "线性表与数组实现。",
+        )],
+    );
+    let triage = triage_report(&kb, &[("ch01.md", KbTriageRole::Core)]);
+    let mut plan = plan_fixture(
+        "学会数组实现",
+        vec![chapter(
+            "数组",
+            vec![
+                anchor(&kb, "ch01.md", Some("第三章 ArrayList"), None),
+                anchor(&kb, "ch01.md", Some("3.1 划分方法"), None),
+                anchor(&kb, "ch01.md", Some("3.2 复杂度"), None),
+            ],
+        )],
+    );
+    plan.coverage.topics = vec![
+        leveled_topic(&kb, "ch01.md", "第三章 ArrayList", 1),
+        leveled_topic(&kb, "ch01.md", "3.1 划分方法", 2),
+        leveled_topic(&kb, "ch01.md", "3.2 复杂度", 2),
+    ];
+    let completer = ExpandCompleter::new(|_system, user| {
+        assert!(user.contains("章节:「数组」"));
+        Ok(r#"{"sections": [{"title": "数组", "lessons": [
+            {"title": "划分 MyArrayList 的方法", "purpose": "掌握划分", "sources": ["ch01.md"], "anchor": "3.1 划分方法", "est": 20, "content_type": "concept"}
+        ]}]}"#
+            .to_owned())
+    });
+    let outcome = run_kb_expansion(&knowledge, &inventory, &triage, &plan, "学会数组实现", Some(&completer), None)
+        .await
+        .unwrap()
+        .expect("章内一节成课,展开成功");
+    let topic = |label: &str| {
+        outcome
+            .coverage
+            .topics
+            .iter()
+            .find(|t| t.label == label)
+            .unwrap_or_else(|| panic!("topic「{label}」应在台账里"))
+    };
+    let chapter_topic = topic("第三章 ArrayList");
+    assert_eq!(
+        chapter_topic.status,
+        TopicStatus::Covered,
+        "任一后代成课 → 章级 topic 滚入 covered: {:?}",
+        chapter_topic
+    );
+    assert!(chapter_topic.rolled_up, "滚入带 rolled_up 标记");
+    assert_eq!(
+        chapter_topic.assigned_lessons,
+        vec!["划分 MyArrayList 的方法".to_owned()],
+        "滚入覆盖可回溯到后代的课时"
+    );
+    let covered_sub = topic("3.1 划分方法");
+    assert_eq!(covered_sub.status, TopicStatus::Covered);
+    assert!(!covered_sub.rolled_up, "直接覆盖不带滚入标记");
+    let gap = topic("3.2 复杂度");
+    assert_eq!(gap.status, TopicStatus::Uncertain, "子缺口保持自身状态");
+    assert!(!gap.rolled_up);
+    assert!(
+        outcome
+            .coverage
+            .warnings
+            .iter()
+            .any(|w| w.contains("3.2 复杂度") && w.contains("未被任何课时覆盖")),
+        "子缺口警告逐条可见: {:?}",
+        outcome.coverage.warnings
+    );
+    assert!(
+        !outcome
+            .coverage
+            .warnings
+            .iter()
+            .any(|w| w.contains("第三章 ArrayList")),
+        "章级假警报消灭(章已由子节滚入覆盖): {:?}",
+        outcome.coverage.warnings
+    );
+}
+
+/// h2 票面单测二:「H1 无任何子成课且无 skip」——警告照发,维持现状三态;
+/// 同时钉住滚入不跨文件:后一个文件被覆盖的 H2 不是本章 H1 的后代。
+#[tokio::test]
+async fn zero_covered_descendants_keep_the_uncovered_warning() {
+    let (knowledge, _data_dir) = expand_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "教材库").await;
+    write_kb_file(
+        &root,
+        "ch01.md",
+        "# 第三章 ArrayList\n\n线性表与数组实现。\n\n## 3.1 划分方法\n\n把数组划分为逻辑段。\n\n## 3.2 复杂度\n\n均摊复杂度分析。\n",
+    );
+    // 以 H2 开头的补充文件:全局看像 ch01 章的子节,但不在同一文件——
+    // 跨文件滚入会把它误认作「第三章」的后代。
+    write_kb_file(&root, "ch02.md", "## 图的补充\n\n图遍历的补充说明。\n");
+    let kb = kb_id.as_str().to_owned();
+    let inventory = single_base_inventory(
+        &kb,
+        vec![
+            inv_file(
+                &kb,
+                "ch01.md",
+                &["第三章 ArrayList", "3.1 划分方法", "3.2 复杂度"],
+                "线性表与数组实现。",
+            ),
+            inv_file(&kb, "ch02.md", &["图的补充"], "图遍历的补充说明。"),
+        ],
+    );
+    let triage = triage_report(
+        &kb,
+        &[("ch01.md", KbTriageRole::Core), ("ch02.md", KbTriageRole::Core)],
+    );
+    // 只有 ch02 成课;ch01 的章/节全都没课时锚点,也没显式 skip。
+    let mut plan = plan_fixture(
+        "学会图遍历补充",
+        vec![chapter("图补充", vec![anchor(&kb, "ch02.md", Some("图的补充"), None)])],
+    );
+    plan.coverage.topics = vec![
+        leveled_topic(&kb, "ch01.md", "第三章 ArrayList", 1),
+        leveled_topic(&kb, "ch01.md", "3.1 划分方法", 2),
+        leveled_topic(&kb, "ch01.md", "3.2 复杂度", 2),
+        leveled_topic(&kb, "ch02.md", "图的补充", 2),
+    ];
+    let completer = ExpandCompleter::new(|_system, user| {
+        assert!(user.contains("章节:「图补充」"));
+        Ok(r#"{"sections": [{"title": "图补充", "lessons": [
+            {"title": "图的补充说明", "purpose": "补全图遍历", "sources": ["ch02.md"], "anchor": "图的补充", "est": 15, "content_type": "concept"}
+        ]}]}"#
+            .to_owned())
+    });
+    let outcome = run_kb_expansion(&knowledge, &inventory, &triage, &plan, "学会图遍历补充", Some(&completer), None)
+        .await
+        .unwrap()
+        .expect("另一文件的课时让课程非空");
+    let topic = |label: &str| {
+        outcome
+            .coverage
+            .topics
+            .iter()
+            .find(|t| t.label == label)
+            .unwrap_or_else(|| panic!("topic「{label}」应在台账里"))
+    };
+    let chapter_topic = topic("第三章 ArrayList");
+    assert_eq!(
+        chapter_topic.status,
+        TopicStatus::Uncertain,
+        "零 covered 后代 → 维持现状三态,不滚入: {:?}",
+        chapter_topic
+    );
+    assert!(!chapter_topic.rolled_up);
+    assert!(
+        outcome
+            .coverage
+            .warnings
+            .iter()
+            .any(|w| w.contains("第三章 ArrayList") && w.contains("未被任何课时覆盖")),
+        "真缺口的章级警告保留(滚入不产生新静默): {:?}",
+        outcome.coverage.warnings
+    );
+    for label in ["3.1 划分方法", "3.2 复杂度"] {
+        assert_eq!(topic(label).status, TopicStatus::Uncertain, "子缺口保持自身状态");
+        assert!(
+            outcome
+                .coverage
+                .warnings
+                .iter()
+                .any(|w| w.contains(label) && w.contains("未被任何课时覆盖")),
+            "子缺口警告逐条可见"
+        );
+    }
+    let supplement = topic("图的补充");
+    assert_eq!(supplement.status, TopicStatus::Covered, "另一文件的课时正常覆盖");
+    assert!(!supplement.rolled_up);
 }
