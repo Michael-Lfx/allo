@@ -898,7 +898,7 @@ fn rule_verdicts(scanned: &[ScannedFile], goal: &str) -> HashMap<String, RuleVer
     }
 
     // 3) 同 content_hash → duplicate（跨库全局口径；canonical：非翻译命名
-    //    优先 → 最新 mtime → 路径字典序兜底，全程确定性）。
+    //    优先 → 规整文件名评分 → 最新 mtime → 路径字典序兜底，全程确定性）。
     let mut hash_groups: HashMap<&str, Vec<usize>> = HashMap::new();
     for (index, file) in scanned.iter().enumerate() {
         if verdicts.contains_key(&file.file.rel_path) {
@@ -983,8 +983,8 @@ fn translation_canonical(
     newest_member(scanned, members).map(|index| (index, "同语言下最新修改时间".to_owned()))
 }
 
-/// 同 hash 组的 canonical：唯一非翻译命名成员优先，否则最新 mtime，否则
-/// 路径字典序兜底（确定性——永不返回 None）。
+/// 同 hash 组的 canonical：唯一非翻译命名成员优先，否则规整文件名评分，
+/// 同分落最新 mtime，再同分路径字典序兜底（确定性——永不返回 None）。
 fn hash_canonical(scanned: &[ScannedFile], members: &[usize]) -> (usize, String) {
     let untagged: Vec<usize> = members
         .iter()
@@ -998,15 +998,113 @@ fn hash_canonical(scanned: &[ScannedFile], members: &[usize]) -> (usize, String)
     } else {
         members
     };
-    if let Some(index) = newest_member(scanned, pool) {
+    // h3：规整度评分先行（数字章前缀 > 无前缀 > 备份/错位降权）。复制副本
+    // 的 mtime 系统性更新，纯 mtime 会把备份/错位文件选成正身；同分才落
+    // mtime，再同分保持路径字典序（全程零 LLM、可复现）。
+    let top_score = pool
+        .iter()
+        .map(|&index| regularity_score(&scanned[index].base_rel))
+        .max()
+        .unwrap_or(0);
+    let regular: Vec<usize> = pool
+        .iter()
+        .copied()
+        .filter(|&index| regularity_score(&scanned[index].base_rel) == top_score)
+        .collect();
+    if regular.len() == 1 {
+        return (regular[0], "规整文件名优先（数字章前缀且无备份/错位标记）".to_owned());
+    }
+    if let Some(index) = newest_member(scanned, &regular) {
         return (index, "同内容文件中最新修改时间".to_owned());
     }
-    let first = pool
+    let first = regular
         .iter()
         .copied()
         .min_by(|left, right| scanned[*left].file.rel_path.cmp(&scanned[*right].file.rel_path))
-        .unwrap_or(pool[0]);
+        .unwrap_or(regular[0]);
     (first, "路径字典序（确定性兜底）".to_owned())
+}
+
+/// 降权命中的 ASCII 词段（整段相等，避免误伤 golden/copyright 等正常词）。
+const DEMOTION_WORD_SEGMENTS: [&str; 5] = ["backup", "backups", "copy", "copies", "old"];
+
+/// 基名数字章前缀的「超序占位」阈值：前缀数值 ≥900（如 999-）视为错位
+/// 占位而非正常章号——`\d{1,3}` 序号体系下 900+ 的真实章序不现实，999
+/// 是常见的占位/错位约定。
+const MISFILED_PREFIX_MIN: u32 = 900;
+
+/// 文件名规整度评分（h3，零 LLM、确定性）：同语言同内容对在 mtime 之前
+/// 先按规整度分高下。评分（高 → 低）：
+/// - 2：干净的数字章前缀（基名 `^\d{1,3}-` 且数值 < 900）；
+/// - 1：无前缀且无降权标记；
+/// - 0：命中任一降权标记——路径含 备份/副本/剪藏/错位 字样或按非字母
+///   数字切段后出现整段 backup/copy/old（含复数）、版本段 `v数字`
+///   （如 report-v2）、占位段 `z数字`（如 z9-LinkedList），或基名前缀
+///   超序占位（≥900）。
+/// 降权标记扫描库内相对路径全段（`backup/report.md` 的目录信号也算），
+/// 前缀只看基名（目录名 `05-chapters/` 不冒充章号）。
+fn regularity_score(base_rel: &str) -> u8 {
+    let prefix = numeric_chapter_prefix(file_name_of(base_rel));
+    if has_demotion_marker(base_rel) || prefix.is_some_and(|value| value >= MISFILED_PREFIX_MIN) {
+        return 0;
+    }
+    if prefix.is_some() { 2 } else { 1 }
+}
+
+/// 库内相对路径的基名（最后一个 `/` 之后）。
+fn file_name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// 基名的数字章前缀（`05-LinkedList.md` → 5；`999-哈希.md` → 999；
+/// `z9-x.md` / `guide.md` → None——字母开头或无 `-` 分隔都不算）。
+fn numeric_chapter_prefix(file_name: &str) -> Option<u32> {
+    let digits = file_name
+        .as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits == 0 || digits > 3 {
+        return None;
+    }
+    if file_name.as_bytes().get(digits) != Some(&b'-') {
+        return None;
+    }
+    std::str::from_utf8(&file_name.as_bytes()[..digits])
+        .ok()?
+        .parse()
+        .ok()
+}
+
+/// 降权标记：CJK 字样（备份/副本/剪藏/错位）按子串匹配（中文词会连写），
+/// ASCII 词按切段整段匹配（整段相等，避免误伤）；版本段 `v数字` 与占位段
+/// `z数字` 按「字母 + 数字」段识别。
+fn has_demotion_marker(base_rel: &str) -> bool {
+    let lowered = base_rel.to_lowercase();
+    if ["备份", "副本", "剪藏", "错位"]
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
+        return true;
+    }
+    lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            DEMOTION_WORD_SEGMENTS.contains(&segment)
+                || is_letter_number_segment(segment, 'v')
+                || is_letter_number_segment(segment, 'z')
+        })
+}
+
+/// `v2` / `z9` 这类「指定字母 + 纯数字」段（版本段 v\d+、占位段 z\d+）。
+fn is_letter_number_segment(segment: &str, letter: char) -> bool {
+    let mut chars = segment.chars();
+    if chars.next() != Some(letter) {
+        return false;
+    }
+    let rest = chars.as_str();
+    !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// 唯一的最大 mtime 成员（None 视为最旧；并列返回 None——无法分新旧）。
