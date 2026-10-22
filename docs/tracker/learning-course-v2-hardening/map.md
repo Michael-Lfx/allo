@@ -1,7 +1,7 @@
 # Map: 学习课程 v2 管线硬化——复验暴露的三处系统性改进
 
 <!-- wayfinder:map -->
-<!-- 状态：立票（2026-10-22）。h1–h3 待认领；三票相互独立，可并行。 -->
+<!-- 状态：全票关闭（2026-10-22）。h1–h3 并行实施（各自 worktree/分支，合入序 h1→h2→h3）后经两轴 code-review + 修复（cc6389309：零值披露去重、atomic 导入、regularity 单遍、canonical_reason 分档文案）收口。集成分支 feat/learn-kb-course-v2（未推送，尖端 cc6389309）。真机复验 learning-smoke-course-20261022-hardening\（clean×2 + dirty，全 EXIT=0）：「单文件分诊仍解析失败」两库 7→0（dirty 余 2 uncertain 为「重复判定缺 duplicate_of」新形态，有理由保守保留）；章级覆盖噪音 clean 8→0 / dirty 7→1（杂记文件内真缺口）；canonical 05/11 当正身、课时 source 零 z9/999；`cargo test -p nomifun-learning` 464/0、`cargo check --workspace` 干净。课时数波动属大纲 LLM 抽签（clean {52,91} vs 基线 {83,85}、dirty 110 vs {75,77}，双向波动），非系统性回归；clean1 低课时连带 warnings 56（clean2=3）。移交观察：分诊角色裁量随抽签漂移（如 00-目录与阅读顺序.md 一跑 noise 一跑 core），元数据 topic 噪音随判定进入台账——属模型层质量，如持续可另立票。 -->
 
 ## Destination
 

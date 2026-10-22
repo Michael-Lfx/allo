@@ -2,8 +2,8 @@
 id: h3
 title: "重复对 canonical tie-break：规整文件名优先于 mtime,正身当 canonical"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -42,6 +42,19 @@ part_of: ../map.md
 - **单测**:`05-LinkedList.md` + `z9-LinkedList-备份.md`(同 hash,备份 mtime 更新)→ canonical=05;`11-哈希.md` + `999-错位-哈希.md` → canonical=11;两个都规整 → mtime;全同 → 稳定序。
 - **真机复验**:脏库重跑后 `dup_of` 指向 05/11,课时 source 不再出现 z9/999 路径;其余读数不劣化。
 - `cargo test -p nomifun-learning` 全绿;`cargo check --workspace` 干净。
+
+## Resolution（2026-10-22 关票）
+
+**交付**（分支 `learn-v2/h3-duplicate-canonical-tiebreak`，1 提交 `8458f71bb` + 合并 `4bd629e3c`，按票面建议最后合入）：`hash_canonical` 同语言同内容层新级联——规整度 → mtime → 路径字典序（逐级只对上一级平手子集生效；唯一无标签成员、翻译/README/语言前置层均不动）。
+
+- **规整度评分**（零 LLM、确定性）：数字章前缀 `^\d{1,3}-` 且值 <900 = 2 分；无前缀无标记 = 1 分；降权 = 0 分——CJK 子串 备份/副本/剪藏/错位；ASCII 段精确匹配 backup/backups/copy/copies/old、`v\d+`（版本）、`z\d+`（占位，如 z9-）；数字前缀 ≥900（999- 类超序占位）。段级精确匹配防 golden/copyright 误伤（CJK 连写故保持子串）。
+- 评审后（`cc6389309`）：`canonical_reason` 分档——数字前缀赢家「规整文件名优先（数字章前缀且无备份/错位标记）」，无前缀干净赢家「规整文件名优先（无备份/错位标记）」；`regularity_score` 改单遍装饰（选择序不变）。
+
+**测试**：442→448（+6：05+z9 备份更新 mtime→05、11+999→11、裸 `999-` 无标记也降权、05-guide.md 胜更新的干净 guide.md、同分→mtime、全平→字典序）；两个旧 mtime 优先测试改名并把备份 mtime 反转为更新，证明规整度覆盖 mtime 而非换文案；脏库守恒测试加 `canonical_reason` 断言。
+
+**真机复验**（dirty，同 h1 目录）：`dup_of` `z9-LinkedList-备份.md→05-LinkedList.md`、`999-错位-哈希.md→11-哈希.md` ✓；课时 source 零 z9/999 路径 ✓；翻译层 `04-ArrayList.en.md→04-ArrayList.md`（非翻译后缀原文优先）不受影响 ✓。
+
+**实施偏差**：超序前缀取「简单归入降权名单」路线（固定阈值 ≥900）而非按库内前缀分布对齐——小样本分布歧义、误伤真新章风险，已在 `MISFILED_PREFIX_MIN` 常量注释说明。
 
 ## 备注
 
