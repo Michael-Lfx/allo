@@ -1329,15 +1329,47 @@ fn readme_stem_of(citation_path: &str) -> bool {
 /// 模型回包的宽容反序列化形状。
 #[derive(Deserialize)]
 struct TriageLlmReply {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_files_entries")]
     files: Vec<TriageLlmFile>,
+}
+
+/// `files` 字段的宽容反序列化（h1）：首选数组形状；也接受「按 rel_path 为
+/// 键、条目为值」的对象形状（键回填条目缺失的 path）。其余形态（字符串、
+/// 数字等）按反序列化失败处理 → 驱动层拆半，不静默吞。
+fn deserialize_files_entries<'de, D>(deserializer: D) -> Result<Vec<TriageLlmFile>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .map(|item| serde_json::from_value(item).map_err(serde::de::Error::custom))
+            .collect(),
+        serde_json::Value::Object(entries) => entries
+            .into_iter()
+            .map(|(path, item)| {
+                let mut entry: TriageLlmFile =
+                    serde_json::from_value(item).map_err(serde::de::Error::custom)?;
+                if entry.path.trim().is_empty() {
+                    entry.path = path;
+                }
+                Ok(entry)
+            })
+            .collect(),
+        other => Err(serde::de::Error::custom(format!(
+            "files 字段既不是数组也不是按路径为键的对象：{other}"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
 struct TriageLlmFile {
-    #[serde(default)]
+    /// 条目路径（`rel_path` 字段名变体按同义词映射，h1 宽容解析）。
+    #[serde(default, alias = "rel_path")]
     path: String,
-    #[serde(default)]
+    /// 角色判定的字段名变体 `kind` 同样映射。
+    #[serde(default, alias = "kind")]
     role: String,
     #[serde(default)]
     confidence: f32,

@@ -655,6 +655,53 @@ async fn mixed_exact_and_prefixed_entries_all_land() {
     );
 }
 
+/// h1 宽容解析：除数组外，接受「files 的值是按 rel_path 为键的对象」形状
+/// （条目的 path 从键补齐）。真机未观察到该形态，但属协议变体的合理防御。
+#[tokio::test]
+async fn object_keyed_reply_shapes_are_parsed() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "对象形状库").await;
+    write_kb_file(&root, "ch1.md", "# 核心章节\n\n本章讲排序算法的实现。\n");
+    write_kb_file(&root, "lab.md", "# 实验\n\n动手实现快速排序并测量耗时。\n");
+    let completer = RespondingCompleter {
+        respond: |_paths: &[String]| {
+            Ok(r#"{"files": {"ch1.md": {"role": "core", "confidence": 0.9, "reason": "课程正文"}, "lab.md": {"role": "practice", "confidence": 0.85, "reason": "动手实验"}}}"#.to_owned())
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会排序算法", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 1, "对象按键形状的回包可解析");
+    assert_eq!(report.counts.practice, 1);
+    assert_eq!(report.counts.uncertain, 0);
+}
+
+/// h1 宽容解析：条目字段名的小差异按同义词映射（path/rel_path、role/kind）。
+#[tokio::test]
+async fn synonym_entry_field_names_are_mapped() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "同义字段库").await;
+    write_kb_file(&root, "ch1.md", "# 核心章节\n\n本章讲排序算法的实现。\n");
+    write_kb_file(&root, "lab.md", "# 实验\n\n动手实现快速排序并测量耗时。\n");
+    let completer = RespondingCompleter {
+        respond: |_paths: &[String]| {
+            Ok(r#"{"files": [{"rel_path": "ch1.md", "kind": "core", "confidence": 0.9, "reason": "课程正文"}, {"rel_path": "lab.md", "kind": "practice", "confidence": 0.85, "reason": "动手实验"}]}"#.to_owned())
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会排序算法", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 1, "rel_path/kind 字段名变体按同义词映射");
+    assert_eq!(report.counts.practice, 1);
+    assert_eq!(report.counts.uncertain, 0);
+}
+
 #[tokio::test]
 async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;
