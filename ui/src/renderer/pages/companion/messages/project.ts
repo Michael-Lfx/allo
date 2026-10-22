@@ -266,7 +266,7 @@ export function projectOrClear(live: Set<string>, next: PetMessage | null, idle:
 }
 
 /** Subscribe domain WS events and fold them onto the pet channel. */
-export function attachPetMessageProjectors(companionId: CompanionId | null): () => void {
+export function attachPetMessageProjectors(companionId: CompanionId | null, skipConversation: (id:string)=>boolean = ()=>false): () => void {
   const companionConversations = new Set<string>();
   const turnByConversation = new Map<string, string>();
   const live = new Set<string>();
@@ -276,6 +276,7 @@ export function attachPetMessageProjectors(companionId: CompanionId | null): () 
   const robotHref = companionId ? `/nomi?companion=${encodeURIComponent(companionId)}&tab=remote` : '/nomi';
   const unsubs = [
     ipcBridge.conversation.turnStarted.on((evt) => {
+      if(skipConversation(String(evt.conversation_id)))return;
       if (evt.companion) {
         companionConversations.add(String(evt.conversation_id));
         return;
@@ -284,11 +285,13 @@ export function attachPetMessageProjectors(companionId: CompanionId | null): () 
       emitDistinct(petMessageFromTurnStarted(evt));
     }),
     ipcBridge.conversation.responseStream.on((message) => {
+      if(skipConversation(String(message.conversation_id)))return;
       if (message.companion || companionConversations.has(String(message.conversation_id))) return;
       const turnId = message.turn_id ?? turnByConversation.get(String(message.conversation_id));
       emitDistinct(petMessageFromResponseStream(message, turnId));
     }),
     ipcBridge.conversation.turnCompleted.on((evt) => {
+      if(skipConversation(String(evt.conversation_id)))return;
       const cid = String(evt.conversation_id);
       if (companionConversations.has(cid)) return;
       turnByConversation.delete(cid);
