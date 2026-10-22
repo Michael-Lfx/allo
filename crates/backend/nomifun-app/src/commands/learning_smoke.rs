@@ -808,7 +808,7 @@ fn print_triage_readout(triage: &nomifun_learning::KbTriageReport) {
         for entry in &triage.excluded {
             println!(
                 "  - [{}] {} :: {}",
-                role_name(entry.role),
+                entry.role.as_str(),
                 entry.path,
                 entry.reason
             );
@@ -906,23 +906,10 @@ fn print_plan_readout(plan: &nomifun_learning::SourcePlan) {
     for entry in &ledger.excluded {
         println!(
             "  excluded: [{}] {} :: {}",
-            role_name(entry.role),
+            entry.role.as_str(),
             entry.rel_path,
             entry.reason
         );
-    }
-}
-
-fn role_name(role: nomifun_learning::KbTriageRole) -> &'static str {
-    use nomifun_learning::KbTriageRole;
-    match role {
-        KbTriageRole::Core => "core",
-        KbTriageRole::Prerequisite => "prerequisite",
-        KbTriageRole::Practice => "practice",
-        KbTriageRole::Mixed => "mixed",
-        KbTriageRole::Noise => "noise",
-        KbTriageRole::Duplicate => "duplicate",
-        KbTriageRole::Uncertain => "uncertain",
     }
 }
 

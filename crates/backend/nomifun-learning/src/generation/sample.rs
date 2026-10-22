@@ -485,19 +485,11 @@ fn sample_multi_base_blocking(
             .then_with(|| bases[*left].kb_id.cmp(&bases[*right].kb_id))
     });
     // 命名空间：库名清洗 + 同库序内消歧（重名库第二个起加 `~2`、`~3`…）。
-    let mut namespaces: Vec<String> = vec![String::new(); bases.len()];
-    let mut used = HashSet::new();
-    for index in &order {
-        let OwnedSampleBaseInput { kb_id, name, .. } = &bases[*index];
-        let base_ns = sanitize_namespace(name, kb_id);
-        let mut candidate = base_ns.clone();
-        let mut suffix = 2usize;
-        while !used.insert(candidate.clone()) {
-            candidate = format!("{base_ns}~{suffix}");
-            suffix += 1;
-        }
-        namespaces[*index] = candidate;
-    }
+    let pairs: Vec<(&str, &str)> = bases
+        .iter()
+        .map(|base| (base.kb_id.as_str(), base.name.as_str()))
+        .collect();
+    let namespaces = assign_namespaces(&pairs);
     let goal = goal.map(str::trim).filter(|goal| !goal.is_empty());
     let terms = goal.map(term_slices).unwrap_or_default();
     let select = |root: &Path, quota_files: usize, quota_bytes: usize| -> BaseSelection {
@@ -652,6 +644,35 @@ pub(super) fn sanitize_namespace(name: &str, kb_id: &str) -> String {
         return format!("kb-{}", kb_id.chars().take(8).collect::<String>());
     }
     cleaned
+}
+
+/// 多库命名空间分配的单一实现（t4;评审 T1 抽共享,采样侧与 t1 分诊共用）：
+/// 按（库名 trim, kb_id）字典序定库序——用户提交顺序不影响结果;库名清洗
+/// （`sanitize_namespace`）后同名库从第二个起加 `~2`、`~3`。入参是
+/// `(kb_id, 库名)` 对,返回值与入参同序（不是库序）。
+pub(super) fn assign_namespaces(bases: &[(&str, &str)]) -> Vec<String> {
+    let mut order: Vec<usize> = (0..bases.len()).collect();
+    order.sort_by(|left, right| {
+        bases[*left]
+            .1
+            .trim()
+            .cmp(bases[*right].1.trim())
+            .then_with(|| bases[*left].0.cmp(bases[*right].0))
+    });
+    let mut namespaces: Vec<String> = vec![String::new(); bases.len()];
+    let mut used = HashSet::new();
+    for index in order {
+        let (kb_id, name) = &bases[index];
+        let base_ns = sanitize_namespace(name, kb_id);
+        let mut candidate = base_ns.clone();
+        let mut suffix = 2usize;
+        while !used.insert(candidate.clone()) {
+            candidate = format!("{base_ns}~{suffix}");
+            suffix += 1;
+        }
+        namespaces[index] = candidate;
+    }
+    namespaces
 }
 
 /// 采样路径 → 来源库（t4）：`{namespace}/rel` 的命名空间命中披露里的库；
