@@ -11,7 +11,7 @@ Environments follow scene headings (location + time of day). Props stay few — 
 {format_instructions}
 
 [Guidelines]
-- Environments: one plate per distinct location+time from scene headings (e.g. "INT. COFFEE SHOP - NIGHT" and "INT. COFFEE SHOP - DAY" are different). Detailed EMPTY-SET description of the full architectural volume (architecture, era materials, lighting, weather, furniture, color palette) — never a close-up of a door, desk, or prop. Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
+- Environments: one plate per distinct location+time from scene headings (e.g. "INT. COFFEE SHOP - NIGHT" and "INT. COFFEE SHOP - DAY" are different). Detailed EMPTY-SET description of the full architectural volume — never a close-up of a door, desk, or prop. The description must be spatially readable and reusable: foreground, midground, and background; the entrance's screen side and type (画面左侧一扇铁门); floor material and wall material; 2–4 furnishings with fixed left/right and near/far positions (柜台在画面右侧，床在后景靠墙). Describe the room as vacant — never mention people, crowds, patrons, staff, or actions.
 - Props: only distinctive recurring objects that matter for recognition. Describe the object alone — never "a man holding X". Include a real-world size class (handheld / tabletop / furniture / vehicle) so later catalog plates keep true physical scale.
 - Cap: at most 12 environments (do not collapse the whole film to 5) and 5 props.
 - Match the language of the input text for names/descriptions.

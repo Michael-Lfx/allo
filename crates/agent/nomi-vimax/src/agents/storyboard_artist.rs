@@ -15,7 +15,7 @@ pub struct StoryboardArtist {
     /// Clip window of the session's video model — every duration rule in the
     /// prompts is sized from it instead of naming one vendor's numbers.
     clip: ClipBounds,
-    /// Unique named speakers one generated file can bind as `reference_audio`.
+    /// Unique named speakers one generated file keeps consistent in the written voice lock.
     max_voice_refs: usize,
 }
 
@@ -112,7 +112,8 @@ Do NOT pad filler holds. Pack related beats into the same row when speakers and 
             rows = repaired_rows;
         }
 
-        let issues = crate::drama::lint_storyboard_performance(&rows);
+        let mut issues = crate::drama::lint_storyboard_performance(&rows);
+        issues.extend(crate::drama::lint_storyboard_blocking(&rows));
         if issues.is_empty() {
             polish_storyboard_audio(&mut rows);
             return Ok(rows);
@@ -123,9 +124,13 @@ Do NOT pad filler holds. Pack related beats into the same row when speakers and 
         );
         let repair_user = format!(
             "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
-It has these performance defects — rewrite ONLY the flagged text so every emotion \
-becomes visible behavior (face/hands/blocking/props) and every filler hold becomes a \
-plot-advancing action:\n- {}\n\n\
+It has these performance or blocking defects — rewrite ONLY the flagged text so every emotion \
+becomes visible behavior (face/hands/blocking/props), every filler hold becomes a \
+plot-advancing action, and every flagged picture states shot size, screen side \
+(画面左侧/右侧/中央), facing, posture, who is closer to camera, and one set anchor \
+for every named person and every speaker in that beat. One face is one body: \
+do not leave a speaker as an unnamed extra, and do not give one face two seats. \
+Do not write 同上, 接上一帧, or 保持刚才的姿势:\n- {}\n\n\
 HARD RULES: return the SAME number of rows with the SAME idx / cam_idx / is_last, and \
 inside each row the SAME number of beats with the SAME beat cam_idx values. Do NOT add, \
 split, merge, or re-camera anything — only the wording of visual/audio descriptions may change.",
@@ -170,9 +175,9 @@ split, merge, or re-camera anything — only the wording of visual/audio descrip
             .await
     }
 
-    /// Decompose a shot; when `previous_lf_desc` is set, identity carries over.
-    /// `previous_cam_idx` decides whether first_frame resumes the pose (same
-    /// camera) or opens a new angle already in progress (a cut).
+    /// Decompose a shot. `previous_lf_desc` is the previous row's exit state in
+    /// text. It is restated as blocking, never copied as a pose to resume.
+    /// `previous_cam_idx` is unused: camera does not decide a frame resume.
     pub async fn decompose_visual_description_with_continuity(
         &self,
         brief: &ShotBriefDescription,
@@ -195,26 +200,16 @@ split, merge, or re-camera anything — only the wording of visual/audio descrip
             "{clip_duration_rules}",
             &crate::planning::clip_length_rules(self.clip),
         );
+        let _ = previous_cam_idx;
         let continuity_block = match previous_lf_desc.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(prev) => {
-                let same_take = previous_cam_idx.is_some_and(|cam| cam == brief.cam_idx);
-                let pose_rule = if same_take {
-                    "The first_frame description MUST open exactly where that last frame ended \
-(same composition, same body/prop positions, same screen-left/screen-right for each named person) \
-and the motion continues from there."
-                } else {
-                    "This shot is a CUT to a NEW camera. first_frame is a new angle/size with the action \
-already in progress — do NOT restage or replay the previous last-frame pose. Identity (cast, \
-wardrobe, lighting, set) still carries over. Keep each named person on the SAME screen side \
-(画面左侧/右侧) as the previous last frame unless THIS shot's visual_desc explicitly says 反打, \
-过肩, or reverse."
-                };
-                format!(
-                    "\n<PREVIOUS_SHOT_LAST_FRAME>\n{prev}\n</PREVIOUS_SHOT_LAST_FRAME>\n\
-CRITICAL CONTINUITY: This shot is timeline-adjacent to the previous shot in the SAME scene. \
-{pose_rule} Cross-scene continuity does NOT apply here.\n"
-                )
-            }
+            Some(prev) => format!(
+                "\n<PREVIOUS_SHOT_EXIT>\n{prev}\n</PREVIOUS_SHOT_EXIT>\n\
+CRITICAL CONTINUITY: The block above is the previous shot's EXIT STATE in text, not a frame to copy. \
+Restate identity (cast, wardrobe, lighting, set) in this shot's own first_frame. Write each person \
+again: 画面左侧/右侧/中央, facing, posture, who is closer to camera, and one fixed set anchor. \
+Keep screen side unless visual_desc explicitly says 反打, 过肩, or reverse. Do NOT resume the \
+previous pose and do NOT copy that shot's spoken line. The action is already in progress.\n"
+            ),
             None => String::new(),
         };
         let beats_block = packed_beats_block(brief);

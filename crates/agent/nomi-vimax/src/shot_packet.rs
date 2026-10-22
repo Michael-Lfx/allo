@@ -1031,6 +1031,8 @@ pub async fn promote_take(
     Ok(())
 }
 
+/// Marks later shots `continuity_stale`. The default renderer no longer chains
+/// tail frames, so retake and take-select do not call this.
 pub async fn mark_continuity_stale_after(
     scene_dir: &Path,
     after_idx: i32,
@@ -1122,7 +1124,6 @@ pub async fn prepare_retake(
             let _ = tokio::fs::remove_file(dir.join("video_last_frame.png")).await;
         }
     }
-    mark_continuity_stale_after(scene_dir, shot_idx).await?;
     let scene_final = scene_dir.join("final_video.mp4");
     if media_local::is_usable_video_file(&scene_final) {
         let _ = tokio::fs::remove_file(&scene_final).await;
