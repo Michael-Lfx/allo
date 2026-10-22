@@ -1098,11 +1098,16 @@ fn triage_reply_json(paths: &[String]) -> String {
     )
 }
 
-/// 从分诊提示词解析待判文件路径(照 t1 测试的口径)。
+/// 从分诊提示词解析待判文件路径(照 t1 测试的口径:编号清单行 `{n}. {path}`)。
 fn prompt_file_paths(user: &str) -> Vec<String> {
     user.lines()
-        .filter_map(|line| line.strip_prefix("- 文件 "))
-        .map(|rest| rest.split(" ::").next().unwrap_or(rest).to_owned())
+        .filter_map(|line| {
+            let (number, rest) = line.split_once(". ")?;
+            if number.is_empty() || !number.chars().all(|char| char.is_ascii_digit()) {
+                return None;
+            }
+            Some(rest.split(" ::").next().unwrap_or(rest).to_owned())
+        })
         .collect()
 }
 

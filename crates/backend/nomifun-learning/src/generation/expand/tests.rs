@@ -90,6 +90,8 @@ fn triage_report(kb: &str, files: &[(&str, KbTriageRole)]) -> KbTriageReport {
         duplicates: Vec::new(),
         degraded: false,
         warnings: Vec::new(),
+        batch_repair_count: 0,
+        still_missing_count: 0,
     };
     for (path, role) in files {
         report.files.push(KbTriageFile {

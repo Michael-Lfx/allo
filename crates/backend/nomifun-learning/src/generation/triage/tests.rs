@@ -869,6 +869,62 @@ async fn single_file_explicit_empty_is_distinguishable_from_parse_failure() {
     );
 }
 
+/// h1 计数披露：批补判次数（拆半/缺条目子集的重发次数）与仍缺条目数（全部
+/// 手段用尽仍未拿到模型判定的文件数）进分诊报告；补判成功时仍缺为 0，
+/// 补判穷尽时如实大于 0。
+#[tokio::test]
+async fn repair_and_still_missing_counts_are_disclosed() {
+    // 场景一：缺条目 → 定向补判成功 → 补判 1 次、仍缺 0。
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "计数库甲").await;
+    write_kb_file(&root, "ch1.md", "# 核心\n\n正文一。\n");
+    write_kb_file(&root, "notes.md", "# 备注\n\n补充说明。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            let omit_first_round = paths.len() > 1;
+            let covered: Vec<(&str, &str, f32, &str)> = paths
+                .iter()
+                .filter(|path| !(omit_first_round && path.as_str() == "notes.md"))
+                .map(|path| (path.as_str(), "core", 0.9, "课程正文"))
+                .collect();
+            Ok(reply_json(&covered))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会正文", Some(&completer)).await.unwrap();
+    assert_eq!(report.batch_repair_count, 1, "缺条目补判一次");
+    assert_eq!(report.still_missing_count, 0, "补判成功后仍缺为 0");
+
+    // 场景二：单文件兜底仍缺 → 补判 ≥1 次、仍缺 1 条（uncertain 语义不变）。
+    let (kb_id, root) = create_blank_base(&knowledge, "计数库乙").await;
+    write_kb_file(&root, "a.md", "# 甲\n\n正文甲。\n");
+    write_kb_file(&root, "ghost.md", "# 乙\n\n正文乙。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            // 回包永远只判 a.md：整批部分覆盖 → ghost.md 单文件补判仍缺。
+            let covered: Vec<(&str, &str, f32, &str)> = paths
+                .iter()
+                .filter(|path| path.as_str() == "a.md")
+                .map(|path| (path.as_str(), "core", 0.9, "课程正文"))
+                .collect();
+            Ok(reply_json(&covered))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会正文", Some(&completer)).await.unwrap();
+    assert_eq!(report.counts.uncertain, 1);
+    assert!(
+        report.batch_repair_count >= 1,
+        "单文件兜底计入补判次数：{}",
+        report.batch_repair_count
+    );
+    assert_eq!(report.still_missing_count, 1, "穷尽后仍缺如实披露");
+}
+
 #[tokio::test]
 async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;
