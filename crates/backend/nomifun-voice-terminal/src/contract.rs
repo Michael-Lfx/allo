@@ -117,6 +117,8 @@ pub enum AcousticEvent {
     ListenTimeout,
     /// Intent resolved to ignore (false wake)
     IntentIgnore,
+    /// Discard one invalid utterance while keeping the current connection open.
+    UtteranceIgnored,
     /// Intent resolved to chat (fast conversational response)
     IntentChat,
     /// Intent resolved to task_control (status query or cancel)
@@ -181,6 +183,11 @@ pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = 
         AcousticState::Deciding,
         AcousticEvent::IntentIgnore,
         AcousticState::Idle,
+    ),
+    (
+        AcousticState::Deciding,
+        AcousticEvent::UtteranceIgnored,
+        AcousticState::Listening,
     ),
     // 5. Deciding -> SpeakingFast on intent == chat
     (

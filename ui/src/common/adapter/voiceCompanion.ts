@@ -3,6 +3,7 @@ import { isTauriRuntime } from './tauriRuntime';
 
 export type VoicePhase = 'idle' | 'listening' | 'transcribing' | 'deciding' | 'synthesizing' | 'speaking' | 'follow_up' | 'text_follow_up' | 'awaiting_confirmation' | 'listening_confirm' | 'dispatching' | 'error';
 export interface VoiceSnapshot {
+  projected_turn_ids?: string[];
   binding?: {session_id:string;binding_id:string;conversation_id:string;workspace:string|null;memory_owner_companion_id?:string|null}|null;
   queue?: VoiceQueueItem[];
   task_progress?: {command_id:string;stage:string;health:string;last_event_at_ms:number|null;last_progress_at_ms:number|null}|null;
@@ -265,18 +266,36 @@ export async function stopVoiceSession(snapshot: VoiceSnapshot): Promise<void> {
   if (!response.ok) throw new Error('voice_stop_rejected');
 }
 
-export async function wakeVoiceSession(): Promise<void> {
+export async function wakeVoiceSession(signal?: AbortSignal): Promise<void> {
   const response = await fetch(`${getBaseUrl()}/api/voice/companion/wake`, {
-    method: 'POST', credentials: 'same-origin', headers: { ...buildBackendAuthHeaders('POST'), 'Content-Type': 'application/json' }, body: '{}',
+    method: 'POST', credentials: 'same-origin', headers: { ...buildBackendAuthHeaders('POST'), 'Content-Type': 'application/json' }, body: '{}', signal,
   });
   if (!response.ok) throw new Error('voice_wake_rejected');
 }
 
-export async function hideVoiceWindow(): Promise<void> {
-  if (isTauriRuntime()) {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await getCurrentWindow().hide();
+/** Explicit UI entry opens the frozen target; background wake never steals focus. */
+let openingConversation: Promise<void>|null=null;
+export function startVoiceConversation(): Promise<void> {
+  if(!openingConversation)openingConversation=enterVoiceConversation().finally(()=>{openingConversation=null;});
+  return openingConversation;
+}
+
+async function enterVoiceConversation(): Promise<void> {
+  const deadline=Date.now()+3000;
+  let woke=false;
+  while(Date.now()<deadline){
+    const response=await fetch(`${getBaseUrl()}/api/voice/companion/session`,{
+      credentials:'same-origin',headers:buildBackendAuthHeaders('GET'),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now())),
+    });
+    if(!response.ok)throw new Error('voice_snapshot_unavailable');
+    const snapshot=await response.json() as VoiceSnapshot;
+    if(snapshot.binding&&snapshot.session_id===snapshot.binding.session_id&&!snapshot.ended_reason&&snapshot.phase!=='idle'){
+      await openVoiceTask(snapshot.binding.conversation_id);return;
+    }
+    if(!woke){await wakeVoiceSession(AbortSignal.timeout(Math.max(1,deadline-Date.now())));woke=true;}
+    await new Promise(resolve=>setTimeout(resolve,100));
   }
+  throw new Error('voice_binding_unavailable');
 }
 
 export async function openVoiceTask(conversationId: string): Promise<void> {

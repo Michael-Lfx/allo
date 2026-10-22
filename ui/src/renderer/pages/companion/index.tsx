@@ -7,7 +7,7 @@ import { parseCompanionId, type CompanionId, type ConversationId } from '@/commo
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
-import { stopVoiceSession, wakeVoiceSession } from '@/common/adapter/voiceCompanion';
+import { openVoiceTask, startVoiceConversation, stopVoiceSession } from '@/common/adapter/voiceCompanion';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
 import { extractResponseTextChunk } from '@/common/chat/displayText';
@@ -157,9 +157,9 @@ const CompanionPage: React.FC = () => {
     setVoiceEntryFailed(false);
     try {
       if (voiceActive && voiceSnapshot) {
-        await stopVoiceSession(voiceSnapshot);
+        await openVoiceTask(voiceSnapshot.binding!.conversation_id);
       } else {
-        await wakeVoiceSession();
+        await startVoiceConversation();
       }
     } catch {
       setVoiceEntryFailed(true);
@@ -1866,7 +1866,7 @@ const CompanionPage: React.FC = () => {
       }
       void hideCompanion();
     },
-    [clearUnreadSuggestions, companionId, ensureThread, hideCompanion, openMainAt]
+    [clearUnreadSuggestions, companionId, ensureThread, hideCompanion, openMainAt, enterVoice]
   );
 
   const openNativeContextMenu = useCallback(async () => {
@@ -2025,10 +2025,13 @@ const CompanionPage: React.FC = () => {
               {unread > 99 ? '99+' : unread}
             </button>
           )}
-          <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
-          {(voiceActive||voiceEntryFailed)&&<p role={voiceEntryFailed?'alert':'status'} className='m-0 text-12px text-t-primary' data-companion-hit>
-            {voiceEntryFailed?t('voice.session.unavailable'):t('voice.session.phase.'+voiceSnapshot!.phase)}
-          </p>}
+          <div className='nomi-companion-status-slot'>
+            {voiceEntryFailed ? <p role='alert' className='nomi-companion-voice-error'>{t('voice.session.unavailable')}</p> :
+              <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />}
+            {voiceActive && <button type='button' className='nomi-companion-voice-stop' data-companion-hit
+              aria-label={t('voice.session.stop')} title={t('voice.session.stop')}
+              onClick={(event)=>{event.stopPropagation();void stopVoiceSession(voiceSnapshot!).catch(()=>setVoiceEntryFailed(true));}}>■</button>}
+          </div>
           <div
             ref={figureHitRef}
             className='nomi-companion-figure-hit'

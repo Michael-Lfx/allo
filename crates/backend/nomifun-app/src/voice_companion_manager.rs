@@ -195,6 +195,7 @@ pub struct ConversationVoiceDialogueRecorder {
     pub user_id: String,
     journal_path: PathBuf,
     journal_lock: Mutex<()>,
+    projected_turns: RwLock<std::collections::HashSet<String>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
 }
 
@@ -207,6 +208,7 @@ impl ConversationVoiceDialogueRecorder {
         Self {
             journal_path: data_dir.join("voice").join(format!("dialogue-{user_id}.json")),
             journal_lock: Mutex::new(()),
+            projected_turns: RwLock::new(std::collections::HashSet::new()),
             execution_runtime:None,
             conversation_service,
             companion_service: None,
@@ -520,6 +522,9 @@ impl ConversationVoiceDialogueRecorder {
 
 #[async_trait::async_trait]
 impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
+    fn is_projected(&self, turn_id: &str) -> bool {
+        self.projected_turns.read().unwrap_or_else(|e|e.into_inner()).contains(turn_id)
+    }
     async fn keyboard_configuration(&self, conversation_id:&str) -> Result<crate::voice_dialogue::FrozenVoiceExecution,String> {
         let conv = self.conversation_service.get(&self.user_id, conversation_id).await.map_err(|_|"binding_invalid")?;
         if conv.extra.get("voice").and_then(|v|v.as_bool()) != Some(true) {return Err("binding_invalid".into());}
@@ -567,6 +572,12 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             self.save_records(&records)?;
         }
         let binding=records.iter().find(|r|r.request.session_id.as_deref()==Some(session)).unwrap();
+        // Rehydrate the projection fence once at binding/preflight, never on audio events.
+        // A host restart must not show an already persisted turn as a live duplicate.
+        self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).extend(
+            records.iter().filter(|record| record.projected && record.request.session_id.as_deref()==Some(session))
+                .filter_map(|record| record.request.turn_id.clone())
+        );
         let conversation = self.conversation_service.get(&self.user_id,&binding.conversation_id).await
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok(Some(nomifun_api_types::voice::VoiceBindingSnapshot {
@@ -591,6 +602,9 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let mut records=self.read_records()?;
         if let Some(record)=records.iter().find(|r|r.request.voice_record_id==request.voice_record_id) {
             if record.request!=*request {return Err(VoiceDialogueRecorderError::Conflict);}
+            if record.projected {
+                if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+            }
             return match &record.output {
                 Some(content) if record.projected=>Ok(VoiceDialoguePreflight::Cached{content:content.clone()}),
                 Some(content)=>Ok(VoiceDialoguePreflight::Generated{conversation_id:record.conversation_id.clone(),content:content.clone()}),
@@ -656,13 +670,14 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         self.save_records(&records)?; // Never regenerate an answer when transcript projection fails.
 
         let decision=nomifun_api_types::voice::parse_voice_decision(assistant_content).map_err(|_|VoiceDialogueRecorderError::DecisionInvalid)?;
-        let understanding=decision.understood_request.as_deref();
-        let reply=decision.reply_tts.as_deref();
-        let display=match (understanding,reply) {
-            (Some(understanding),Some(reply))=>format!("{understanding}\n\n{reply}"),
-            (Some(text),None)|(None,Some(text))=>text.to_owned(),
-            _=>assistant_content.to_owned(),
-        };
+        if decision.intent_type == nomifun_api_types::voice::VoiceIntentType::Ignore {
+            records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
+            return self.save_records(&records);
+        }
+        let display = decision.reply_tts.as_deref()
+            .or(decision.spoken_ack.as_deref())
+            .or(decision.understood_request.as_deref())
+            .unwrap_or_default().to_owned();
 
         let current_epoch = self.conversation_service.conversation_repo()
             .get_turn_admission_state(&self.user_id, conversation_id).await
@@ -690,7 +705,9 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 Ok(_) => {
                     self.update_workspace_interaction(conversation_id, nomifun_common::now_ms())?;
                     records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
-                    return self.save_records(&records);
+                    self.save_records(&records)?;
+                    if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+                    return Ok(());
                 }
                 Err(nomifun_common::AppError::Conflict(ref msg)) if msg.contains("epoch") || msg.contains("revision") => {
                     return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
@@ -745,7 +762,9 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
 
         self.update_workspace_interaction(conversation_id, nomifun_common::now_ms())?;
         records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
-        self.save_records(&records)
+        self.save_records(&records)?;
+        if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+        Ok(())
     }
 
     async fn task_configuration(&self,command:&nomifun_api_types::voice::VoiceTaskCommand)->Result<Option<crate::voice_dialogue::FrozenVoiceExecution>,String> {
@@ -814,6 +833,8 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let prior_records: Vec<_> = records[..target_idx].iter().filter(|r| {
             r.conversation_id == record.conversation_id
                 && r.projected
+                && r.output.as_deref().and_then(|output| nomifun_api_types::voice::parse_voice_decision(output).ok())
+                    .is_some_and(|decision| decision.intent_type != nomifun_api_types::voice::VoiceIntentType::Ignore)
                 && (record.source_workspace.is_none() || r.source_workspace == record.source_workspace)
         }).collect();
 
@@ -1854,6 +1875,9 @@ impl VoiceCompanionProcessManager {
         source_snapshot.confirmation=snapshot.confirmation.clone();
         source_snapshot.task_ready = snapshot.task_ready;
         source_snapshot.task_error_code = snapshot.task_error_code.clone();
+        source_snapshot.projected_turn_ids = source_snapshot.conversation.iter()
+            .filter(|turn| self.dialogue_recorder.as_ref().is_some_and(|recorder|recorder.is_projected(&turn.turn_id)))
+            .map(|turn|turn.turn_id.clone()).collect();
         // Fresh daemon audio snapshots must not erase the last readable reply.
         // Session/turn identities still come exclusively from the new daemon.
         if source_snapshot.session_id.is_none() && source_snapshot.conversation.is_empty() {

@@ -80,17 +80,16 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     expect(recording).toContain(dictionary.session.recording);
     expect(recording).not.toContain(dictionary.session.startWithin.replace('{{seconds}}', '5'));
   });
-  test(`${locale}: transcript and ignored model decision remain visible after returning to idle`, async () => {
+  test(`${locale}: ignored input is replaced by the listening hint rather than model JSON`, async () => {
     const i18n = createInstance();
     await i18n.init({ lng: locale, resources: { [locale]: { translation: { voice: dictionary } } }, initImmediate: false });
-    const output = '{"intent_type":"ignore"}';
-    const snapshot = { phase: 'idle', conversation: [{ turn_id: 'ignored-turn', user_text: '实际识别原文', assistant_text: null, model_text: output }] } as VoiceSnapshot;
+    const snapshot = { phase: 'listening', user_text: null, conversation: [] } as unknown as VoiceSnapshot;
     const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceConversation snapshot={snapshot} /></I18nextProvider>);
-    expect(html).toContain('实际识别原文');
-    expect(html).toContain('ignore');
+    expect(html).not.toContain('实际识别原文');
+    expect(html).not.toContain('ignore');
     expect(html).toContain(dictionary.session.userText);
-    expect(html).toContain(dictionary.session.modelText);
-    expect(html).toContain('<details>');
+    expect(html).not.toContain(dictionary.session.modelText);
+    expect(html).toContain(dictionary.session.captureHint);
     expect(html).not.toContain('<details open');
     expect(html).not.toContain(dictionary.session.assistantText);
     expect(html).not.toContain(dictionary.session.understoodRequest);
@@ -106,7 +105,7 @@ for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
     ] } as VoiceSnapshot;
     const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceConversation snapshot={snapshot} /><VoiceErrorStatus error={{ stage: 'playback', code: 'tts_failed' }} /></I18nextProvider>);
     expect(html).toContain('VISIBLE-END');
-    expect(html).toContain('MODEL-END');
+    expect(html).not.toContain('MODEL-END');
     expect(html).toContain('earlier question');
     expect(html).toContain(dictionary.session.understoodRequest);
     expect(html).toContain('用户在询问天气状况。');

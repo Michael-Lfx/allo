@@ -168,6 +168,7 @@ pub struct FrozenVoiceExecution {
 
 #[async_trait]
 pub trait VoiceDialogueRecorder: Send + Sync {
+    fn is_projected(&self, _turn_id: &str) -> bool { false }
     async fn keyboard_configuration(&self, _conversation_id:&str) -> Result<FrozenVoiceExecution,String> {
         Err("binding_invalid".into())
     }

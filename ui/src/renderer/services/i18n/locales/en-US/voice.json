@@ -1,4 +1,5 @@
 {
+  "pet": { "more": "{{count}} more" },
   "execution": {
     "title": "Voice task execution",
     "description": "Tasks use a dedicated conversation and the existing local execution service. Writes, deletion and dangerous commands need approval for each call; unsupported tools and workspace escapes are denied.",
@@ -189,6 +190,7 @@
     "transcribingHint": "This utterance has been captured and is being transcribed locally.",
     "emptyHint": "No ASR transcript for this turn yet. Speak after waking or start again.",
     "replyPending": "The transcript is shown. Generating the understood request and reply.",
+    "newContent": "View new content",
     "userText": "You said",
     "understoodRequest": "What I understood",
     "assistantText": "Assistant reply",
@@ -311,6 +313,8 @@
     "inputDigit": "Pairing code digit {{index}}"
   },
   "diagnostics": {
+    "advancedTitle": "Acoustic Diagnostics & Troubleshooting",
+    "advancedDesc": "Troubleshoot microphone capture, wake word hits, and offline ASR telemetry",
     "sectionTitle": "Acoustic Diagnostics & Testing",
     "sectionDesc": "Inspect local microphone hardware and test offline SenseVoice transcription",
     "micDevice": "Microphone Device",

@@ -3,7 +3,7 @@ import { Button } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { cancelVoiceTask, confirmVoiceTask, getVoiceTask, openVoiceTask, type VoiceTaskSnapshot, type VoiceToolConfirmation } from '@common/adapter/voiceCompanion';
 
-export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmation }: {task:VoiceTaskSnapshot|null|undefined;errorCode:string|null|undefined;instanceId?:string;confirmation?:VoiceToolConfirmation|null}) {
+export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmation, showResult = true }: {task:VoiceTaskSnapshot|null|undefined;errorCode:string|null|undefined;instanceId?:string;confirmation?:VoiceToolConfirmation|null;showResult?:boolean}) {
   const { t } = useTranslation();
   const [openFailed,setOpenFailed] = useState<string|null>(null);
   const [pending,setPending] = useState<string|null>(null);
@@ -47,7 +47,7 @@ export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmat
     <h2 className='text-base font-semibold m-0'>{t('voice.task.title')}</h2>
     {task && <>
       <p role='status' className='m-0 text-t-secondary'>{t(`voice.task.status.${task.status}`)}</p>
-      {task.result_text && <p className='m-0 whitespace-pre-wrap break-words'>{task.result_text}</p>}
+      {showResult && task.result_text && <p className='m-0 whitespace-pre-wrap break-words'>{task.result_text}</p>}
       {confirmation && task.status==='accepted' && <section className='flex flex-col gap-2'>
         <h3 className='m-0 font-semibold'>{t('voice.task.confirmationTitle')}</h3>
         <p className='m-0 text-t-secondary'>{t('voice.task.confirmationHint')}</p>

@@ -122,6 +122,36 @@ impl AgentRuntimeRegistry for EmptyRegistry {
 const USER_ID: &str = "0190f5fe-7c00-7a00-8000-000000000001";
 
 #[tokio::test]
+async fn ignored_turns_leave_no_public_messages_and_do_not_displace_valid_handoff() {
+    let dir=tempfile::tempdir().unwrap();
+    let service=fixture_service().await;
+    let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path());
+    let valid=VoiceDialogueRequest::scoped("ignore-session","valid-turn","不是北京，是深圳，数量是2");
+    let VoiceDialoguePreflight::Ready{conversation_id}=recorder.preflight(&valid).await.unwrap() else {panic!("expected ready")};
+    recorder.record_pair(&conversation_id,&valid,r#"{"intent_type":"chat","understood_request":"用户纠正城市和数量","reply_tts":"好的，记住了。"}"#).await.unwrap();
+    let before=service.list_messages(USER_ID,&conversation_id,Default::default()).await.unwrap().items.len();
+    for index in 0..4 {
+        let ignored=VoiceDialogueRequest::scoped("ignore-session",&format!("noise-{index}"),"无效杂音不能成为需求");
+        recorder.preflight(&ignored).await.unwrap();
+        recorder.record_pair(&conversation_id,&ignored,r#"{"intent_type":"ignore"}"#).await.unwrap();
+    }
+    let messages=service.list_messages(USER_ID,&conversation_id,Default::default()).await.unwrap();
+    assert_eq!(messages.items.len(),before,"ignored raw text must not publish messages or trigger their memory collection");
+    assert!(recorder.is_projected("valid-turn"));
+    let restored=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path());
+    assert!(!restored.is_projected("valid-turn"));
+    restored.freeze_session("ignore-session").await.unwrap();
+    assert!(restored.is_projected("valid-turn"),"binding restore must retire persisted live previews without regenerating");
+    let next=VoiceDialogueRequest::scoped("ignore-session","task-turn","按刚才要求创建订单");
+    recorder.preflight(&next).await.unwrap();
+    recorder.record_pair(&conversation_id,&next,r#"{"intent_type":"agent_task","task_goal":"创建订单","spoken_ack":"正在处理"}"#).await.unwrap();
+    let command=nomifun_api_types::voice::VoiceTaskCommand {command_id:"ignore-handoff".into(),session_id:"ignore-session".into(),turn_id:"task-turn".into(),goal:"创建订单".into(),record_id:next.voice_record_id.clone(),binding_id:next.binding_id.clone()};
+    let handoff=recorder.task_configuration(&command).await.unwrap().unwrap().handoff_content.unwrap();
+    assert!(handoff.contains("深圳")&&handoff.contains("数量是2"));
+    assert!(!handoff.contains("无效杂音"));
+}
+
+#[tokio::test]
 async fn standalone_voice_conversation_pair_persistence_lifecycle() {
     let db = nomifun_db::init_database_memory_with_owner(
         nomifun_common::UserId::parse(USER_ID.to_owned()).expect("canonical fixture owner"),

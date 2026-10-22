@@ -652,6 +652,9 @@ pub enum VoiceReplyState {Streaming,Complete,Interrupted}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceSessionSnapshot {
+    /// Host-authoritative completed projections, used to retire live transcript placeholders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projected_turn_ids: Vec<String>,
     #[serde(default)]
     pub queue: Vec<VoiceQueueItem>,
     #[serde(default,skip_serializing_if="Option::is_none")]
