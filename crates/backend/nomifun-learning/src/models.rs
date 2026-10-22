@@ -1496,6 +1496,13 @@ pub struct CourseSourcePlanTriageView {
     pub warnings: Vec<String>,
 }
 
+/// h1 披露读数的零值抑制口径（单一实现，两处视图组装共用）：
+/// `batch_repair_count`/`still_missing_count` 为 0 时字段不序列化
+/// （`Option::is_none`，旧读侧无感知），非零才携带数值。
+pub(crate) fn disclosed(count: usize) -> Option<usize> {
+    (count > 0).then_some(count)
+}
+
 /// t2 计划的一章的来源映射摘要（章 → 概念数/课时数/来源文件数；零课时章
 /// 显式 skipped + reason——「为什么没进课程」在章节级也要能回答）。
 #[derive(Debug, Clone, Default, Serialize)]

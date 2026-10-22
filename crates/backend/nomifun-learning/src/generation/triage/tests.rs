@@ -206,8 +206,10 @@ async fn identical_content_files_pick_the_regular_name_over_a_newer_marked_copy(
     assert_eq!(duplicate.path, "archive/guide-old.md");
     assert_eq!(duplicate.duplicate_of, "guide.md");
     assert!(
-        duplicate.canonical_reason.contains("规整"),
-        "canonical_reason: {}",
+        duplicate
+            .canonical_reason
+            .contains("规整文件名优先（无备份/错位标记）"),
+        "无前缀干净胜者的 win 理由按实际依据措辞，不误称数字章前缀：{}",
         duplicate.canonical_reason
     );
     let excluded_paths: Vec<&str> = report.excluded.iter().map(|e| e.path.as_str()).collect();
@@ -235,8 +237,10 @@ async fn regular_chapter_prefix_beats_a_newer_backup_copy_as_canonical() {
     assert_eq!(duplicate.path, "z9-LinkedList-备份.md");
     assert_eq!(duplicate.duplicate_of, "05-LinkedList.md");
     assert!(
-        duplicate.canonical_reason.contains("规整"),
-        "canonical_reason: {}",
+        duplicate
+            .canonical_reason
+            .contains("规整文件名优先（数字章前缀且无备份/错位标记）"),
+        "数字章前缀胜者保留数字章前缀措辞：{}",
         duplicate.canonical_reason
     );
     let canonical = report
@@ -266,8 +270,10 @@ async fn regular_chapter_prefix_beats_a_newer_misfiled_copy_as_canonical() {
     assert_eq!(duplicate.path, "999-错位-哈希.md");
     assert_eq!(duplicate.duplicate_of, "11-哈希.md");
     assert!(
-        duplicate.canonical_reason.contains("规整"),
-        "canonical_reason: {}",
+        duplicate
+            .canonical_reason
+            .contains("规整文件名优先（数字章前缀且无备份/错位标记）"),
+        "数字章前缀胜者保留数字章前缀措辞：{}",
         duplicate.canonical_reason
     );
 }
@@ -290,8 +296,10 @@ async fn a_placeholder_sized_numeric_prefix_alone_is_demoted() {
     assert_eq!(duplicate.path, "999-哈希.md");
     assert_eq!(duplicate.duplicate_of, "11-哈希.md");
     assert!(
-        duplicate.canonical_reason.contains("规整"),
-        "canonical_reason: {}",
+        duplicate
+            .canonical_reason
+            .contains("规整文件名优先（数字章前缀且无备份/错位标记）"),
+        "数字章前缀胜者保留数字章前缀措辞：{}",
         duplicate.canonical_reason
     );
 }
@@ -314,8 +322,10 @@ async fn a_numbered_name_beats_an_equally_clean_unnumbered_copy() {
     assert_eq!(duplicate.path, "guide.md");
     assert_eq!(duplicate.duplicate_of, "05-guide.md");
     assert!(
-        duplicate.canonical_reason.contains("规整"),
-        "canonical_reason: {}",
+        duplicate
+            .canonical_reason
+            .contains("规整文件名优先（数字章前缀且无备份/错位标记）"),
+        "数字章前缀胜者保留数字章前缀措辞：{}",
         duplicate.canonical_reason
     );
 }
@@ -445,8 +455,8 @@ async fn canonical_picks_the_regular_original_over_a_newer_backup_copy() {
     assert!(
         by_path["backup/report.md"]
             .canonical_reason
-            .contains("规整"),
-        "canonical_reason: {}",
+            .contains("规整文件名优先（无备份/错位标记）"),
+        "无前缀干净胜者的 win 理由按实际依据措辞：{}",
         by_path["backup/report.md"].canonical_reason
     );
     let canonical = report.files.iter().find(|file| file.rel_path == "report.md").unwrap();
@@ -1236,8 +1246,10 @@ async fn dirty_kb_triage_conserves_every_file_and_accounts_for_each_exclusion() 
         .expect("同 hash 重复按规则标 duplicate");
     assert_eq!(old_copy.duplicate_of, "ch1.md");
     assert!(
-        old_copy.canonical_reason.contains("规整"),
-        "h3：同 hash 层按规整文件名选正身：{}",
+        old_copy
+            .canonical_reason
+            .contains("规整文件名优先（无备份/错位标记）"),
+        "h3：无前缀正身的 win 理由按实际依据措辞：{}",
         old_copy.canonical_reason
     );
 
