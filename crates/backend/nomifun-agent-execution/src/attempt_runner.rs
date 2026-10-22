@@ -1200,6 +1200,35 @@ mod tests {
     }
 
     #[test]
+    fn host_planned_attempts_stay_in_yolo_session_mode() {
+        // PR #353 made delegated engines fail closed when they have no approval
+        // channel. Host planned Attempts are a different path: they run behind
+        // the durable execution owner, so their runtime extra must keep the
+        // yolo session mode that grants the permissions the planner assigned.
+        // Lock that invariant down for every tool policy the planner can pick.
+        for policy in [
+            AgentToolPolicy::Full,
+            AgentToolPolicy::ReadOnly,
+            AgentToolPolicy::FilesShell,
+        ] {
+            let extra = build_agent_extra(
+                "brief",
+                Some("/workspace"),
+                Some("persona"),
+                &["skill".to_owned()],
+                &[],
+                policy,
+                false,
+            );
+            assert_eq!(
+                extra["session_mode"],
+                json!("yolo"),
+                "host planned Attempts must stay yolo for {policy:?}"
+            );
+        }
+    }
+
+    #[test]
     fn recursion_ceiling_removes_delegate_without_exposing_depth() {
         let extra = build_agent_extra(
             "brief",

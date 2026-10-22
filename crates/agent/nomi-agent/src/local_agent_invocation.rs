@@ -1390,6 +1390,65 @@ mod phase7_tests {
     }
 
     #[tokio::test]
+    async fn delegated_agent_writes_when_parent_session_auto_approves() {
+        // Positive control for PR #353: `deny_unconfirmed` must only remove the
+        // interactive fallback. A delegated child still inherits the parent's
+        // `tools.auto_approve` (yolo), so an approved write must land.
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("approved-write.txt");
+        let provider = SequenceProvider::from_turns(vec![
+            vec![
+                LlmEvent::ToolUse {
+                    id: "write-approved".to_owned(),
+                    name: "Write".to_owned(),
+                    input: serde_json::json!({
+                        "file_path": target,
+                        "content": "approved delegated write",
+                    }),
+                    extra: None,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta("written".to_owned()),
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage::default(),
+                },
+            ],
+            // A post-write continuation (verification/observation) may ask the
+            // provider again; keep an explicit terminal turn so the test pins
+            // the approval behavior rather than the harness loop count.
+            vec![
+                LlmEvent::TextDelta("written".to_owned()),
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ]);
+        let mut config = test_config();
+        config.tools.auto_approve = true;
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            config,
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(output.text, "written");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("auto-approved delegated write must land"),
+            "approved delegated write"
+        );
+    }
+
+    #[tokio::test]
     async fn delegated_agent_denies_an_unapproved_write_without_prompting() {
         let cwd = tempfile::tempdir().unwrap();
         let target = cwd.path().join("must-not-exist.txt");

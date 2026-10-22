@@ -87,6 +87,17 @@ describe('conversation execution canvas integration', () => {
 
     expect(layoutSource.includes('dispatchWorkspaceOpenPreviewTool(AGENT_EXECUTION_WORKSPACE_TAB')).toBe(true);
     expect(layoutSource.includes("'agentExecution.panel.open'")).toBe(true);
+    // The collaboration pane lives inside the workspace preview host, so every
+    // entry point must disappear when there is no workspace to host it.
+    expect(
+      layoutSource.includes(
+        'const collaborationAvailable = Boolean(execution.executionId) && workspaceEnabled',
+      ),
+    ).toBe(true);
+    expect(layoutSource.includes('{collaborationAvailable && (')).toBe(true);
+    expect(layoutSource.includes('if (!collaborationAvailable || !workspaceTarget) return;')).toBe(true);
+    expect(layoutSource.includes('available: collaborationAvailable')).toBe(true);
+    expect(layoutSource.includes('workspaceEnabled={workspaceEnabled}')).toBe(true);
     expect(panelSource.includes('embedded')).toBe(true);
     expect(panelCss.includes('.panelEmbedded')).toBe(true);
     expect(panelCss.includes('@media (max-width: 768px)')).toBe(true);

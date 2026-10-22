@@ -17,6 +17,7 @@ const { beforeEach, describe, expect, mock, test } = bunTest as typeof bunTest &
 
 mock.module('@/common/adapter/tauriUpdater', () => ({
   tauriUpdateCurrentVersion: async () => '1.5.8',
+  tauriUpdateCheck: async () => null,
 }));
 
 const {

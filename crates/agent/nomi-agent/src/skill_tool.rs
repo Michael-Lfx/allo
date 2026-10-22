@@ -994,6 +994,7 @@ mod permission_tests {
 
     use serde_json::json;
 
+    use nomi_protocol::events::ToolCategory;
     use nomi_skills::permissions::SkillPermissionChecker;
     use nomi_skills::types::{ExecutionContext, LoadedFrom, SkillMetadata, SkillSource};
 
@@ -1048,20 +1049,19 @@ mod permission_tests {
         );
     }
 
-    // P5-12: SkillTool returns informative message for a skill that needs approval.
-    #[tokio::test]
-    async fn p5_12_ask_skill_returns_approval_prompt() {
+    // P5-12: hook/script skills are Exec-gated before execute(). The host
+    // collects confirmation (or auto-approves) before the tool runs.
+    #[test]
+    fn p5_12_hook_skill_requires_host_approval_before_execution() {
         let checker = SkillPermissionChecker::new(vec![], vec![], false);
         let mut skill = make_skill("hooked", "body");
         skill.hooks_raw = Some(serde_json::json!({ "pre": "echo hi" }));
+        // The loader derives this from hooks_raw; keep the fixture consistent.
+        skill.requires_confirmation = true;
         let tool = SkillTool::new(Arc::new(vec![skill]), "/tmp".to_string(), checker);
-        let result = tool.execute(json!({"skill": "hooked"})).await;
-        assert!(result.is_error);
-        assert!(
-            result.content.contains("approval") || result.content.contains("approve"),
-            "content should mention approval: {}",
-            result.content
-        );
+        let input = json!({"skill": "hooked"});
+        assert_eq!(tool.category_for(&input), ToolCategory::Exec);
+        assert!(!tool.auto_approve_invocation(&input, ToolCategory::Exec));
     }
 }
 
