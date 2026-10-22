@@ -1,3 +1,5 @@
+> **2026-10-22 当前执行入口**：[本地 TTS 插话打断与继续输入](local-barge-in-only-plan-2026-10-22.zh.md)。用户已暂缓流式字幕、Zipformer 与额外纠错。本轮只核查代码并整理 B0–B3 与 BI-01–14，尚未实施；下方组合方案和历史记录保留。
+
 > **2026-10-22 本地实时字幕与自然打断计划**：[两遍 ASR、原文与理解分离、AEC 打断执行 Plan](local-streaming-barge-in-transcript-plan-2026-10-22.zh.md)。基于 `648277420` 核查；当前仍为句尾 SenseVoice 与半双工。新增 S0–S3 串行切片、16GB 资源门禁及 LS-01–17 验收；只更新文档，未实施、下载模型或启动设备。
 
 > **2026-10-22 页面/桌宠实施及联合验收**：[交互补充方案](voice-ui-pet-linkage-acceptance-plan-2026-10-22.zh.md) 与[执行辅导 §11](R1-R5-execution-coaching-2026-10-21.zh.md#voice-ui-pet-linkage)。补齐三视图职责、工作区/伙伴/任务身份、多宠单连接、24 个 VP 用例和串行 UI0–UI4。现有 96 项前端测试通过不代表桌宠语音联动已实现；TypeScript/桌面实测仍有明确门禁。下方历史记录保留。

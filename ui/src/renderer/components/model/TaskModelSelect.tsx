@@ -99,7 +99,8 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
   const selectedModel = value?.provider_id === providerId ? value.model : (hideProvider ? (value?.model ?? state.models[0] ?? null) : null);
   const currentPlatform = state.providers.find((p) => p.id === providerId)?.platform;
   const voices = voiceOptions ?? ttsVoiceOptionsFor(currentPlatform, providerId);
-  const selectedVoice = value?.provider_id === providerId ? (value.voice ?? null) : (value?.voice ?? null);
+  const selectedVoice =
+    hideProvider || value?.provider_id === providerId ? (value?.voice ?? null) : null;
 
   const hint =
     !state.anyModel && !isLoading
@@ -170,7 +171,12 @@ const TaskModelSelect: React.FC<TaskModelSelectProps> = ({
             contentFit
             showSearch
             allowCreate
-            disabled={disabled || (!onlyVoice && selectedModel == null)}
+            disabled={
+              disabled ||
+              (onlyVoice
+                ? selectedModel == null && state.models.length === 0
+                : selectedModel == null)
+            }
             placeholder={t('settings.taskModel.voicePlaceholder')}
             value={selectedVoice ?? undefined}
             onChange={(voice: string) => {
