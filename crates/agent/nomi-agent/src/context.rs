@@ -431,7 +431,7 @@ mod tests {
             "result should contain <system-reminder>"
         );
         assert!(
-            result.contains("The following skills are available for use with the Skill tool:"),
+            result.contains("The following skills are available for use with the Skill tool."),
             "result should contain skills header"
         );
         assert!(
@@ -508,7 +508,7 @@ mod tests {
             "custom prompt should appear"
         );
         assert!(
-            result.contains("The following skills are available for use with the Skill tool:"),
+            result.contains("The following skills are available for use with the Skill tool."),
             "skills reminder should also appear"
         );
     }
