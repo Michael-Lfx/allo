@@ -1,0 +1,14 @@
+[
+  {
+    "name": "ai-mate.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t2-preserve-ebf6a3d3-6589-419c-a6ff-13961fe13d72\\ai-mate.exe",
+    "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai-mate.exe",
+    "sha256": "30B2891600AD5B592C7003E90E0583EABF46062E449712CBA467B2EACED69B13"
+  },
+  {
+    "name": "Flowy.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t2-preserve-ebf6a3d3-6589-419c-a6ff-13961fe13d72\\Flowy.exe",
+    "destination": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.exe",
+    "sha256": "9FA145ACBDC186EDFB7687C3DF6E7BB0D59EDABE54E8BDC331314C2B9D0776B0"
+  }
+]

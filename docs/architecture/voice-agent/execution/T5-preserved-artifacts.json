@@ -1,0 +1,47 @@
+[
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\voice-staging\\debug\\Flowy.exe",
+    "sha256": "358ADA4D0A78763663A367AA032A0EE71AFB12D76292256B73F3BCE9F148AAFC"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\Flowy.pdb",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\voice-staging\\debug\\Flowy.pdb",
+    "sha256": "734B698C9155432A316852BA4C24D5FD8064421967C94DB9C0260E1C07A4CE1F"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai-mate.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\voice-staging\\debug\\ai-mate.exe",
+    "sha256": "6FE3B28AD73874EC2DEB4DE1EED38C5A388CBF0B59B336C01BA8418D1C0F1235"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\voice-staging\\debug\\ai_mate.pdb",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\voice-staging\\debug\\ai_mate.pdb",
+    "sha256": "8B36AF1F660CF4CE8E038AB8284152A355325C7BAD28D5C89707660387CB4DC2"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\debug\\Flowy.exe",
+    "sha256": "9FA145ACBDC186EDFB7687C3DF6E7BB0D59EDABE54E8BDC331314C2B9D0776B0"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\Flowy.pdb",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\debug\\Flowy.pdb",
+    "sha256": "E22FE2D25B5FB04D21E6E08A1CFF00F11062764A773E0AEC8F5D0C220C3047EC"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai-mate.exe",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\debug\\ai-mate.exe",
+    "sha256": "30B2891600AD5B592C7003E90E0583EABF46062E449712CBA467B2EACED69B13"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\target\\debug\\ai_mate.pdb",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\target\\debug\\ai_mate.pdb",
+    "sha256": "C1932CE1A4E6BFEDE4F164F365E7613422D3D7A2D43A25284F613EF49E654224"
+  },
+  {
+    "source": "D:\\workSpace\\git_clone_test\\allo\\build.noindex\\debug\\DirectML.dll",
+    "backup": "C:\\Users\\38788\\AppData\\Local\\Temp\\flowy-voice-t5-preserve-d1dc826e24c840f7a848606b8342a219\\build.noindex\\debug\\DirectML.dll",
+    "sha256": "9C9E6D822561C6C41B90E6994B3E8857CF1D66DBFB1E0C4C799C7C89B4E92DA1"
+  }
+]
