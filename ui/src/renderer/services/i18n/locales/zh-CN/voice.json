@@ -1,4 +1,5 @@
 {
+  "pet": { "more": "另有 {{count}} 项" },
   "execution": {
     "title": "语音任务执行",
     "description": "任务使用专属对话和既有本机执行服务；写入、删除与危险命令必须逐次确认，越出工作区或不支持的工具会被拒绝。",
@@ -189,6 +190,7 @@
     "transcribingHint": "已收集这句话，正在进行本地语音识别。",
     "emptyHint": "本轮还没有 ASR 原文。唤醒后开始说话，或点击再次开始。",
     "replyPending": "识别原文已显示，正在生成需求理解和回答。",
+    "newContent": "查看新内容",
     "userText": "你说的",
     "understoodRequest": "我理解的需求",
     "assistantText": "助手回复",
@@ -311,6 +313,8 @@
     "inputDigit": "第 {{index}} 位配对码"
   },
   "diagnostics": {
+    "advancedTitle": "声学诊断与故障排查",
+    "advancedDesc": "用于排查麦克风拾音、唤醒词及离线识别等底层状态",
     "sectionTitle": "声学诊断与测试",
     "sectionDesc": "检测本地麦克风硬件状态并测试 SenseVoice 离线语音转写",
     "micDevice": "麦克风设备",

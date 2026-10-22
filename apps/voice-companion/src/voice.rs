@@ -777,6 +777,21 @@ impl VoiceCompanionRuntime {
         }
     }
 
+    async fn discard_utterance(
+        driver: &Arc<Mutex<VoiceSessionDriver>>,
+        playback: &Arc<PlaybackPipeline>,
+        events: &Arc<VoiceEventHub>,
+        generation: u64,
+    ) {
+        let mut d = driver.lock().await;
+        if playback.generation_id() != generation { return; }
+        if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+            let _ = events.send(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None });
+            let _ = events.send(VoiceCompanionEvent::Listening);
+            let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+        }
+    }
+
     /// Internal helper to run ASR transcription, Qwen intent routing, TTS synthesis and FSM dispatch.
     async fn process_utterance(
         utterance_pcm: &[f32],
@@ -815,10 +830,8 @@ impl VoiceCompanionRuntime {
         );
         if text_opt.as_ref().is_none_or(|text| text.trim().is_empty()) {
             warn!("voice_asr_empty_result");
-            let _ = event_tx.send(VoiceCompanionEvent::Error {
-                stage: "asr".into(),
-                code: "asr_empty_result".into(),
-            });
+            Self::discard_utterance(driver, playback, event_tx, generation).await;
+            return;
         }
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
@@ -832,11 +845,8 @@ impl VoiceCompanionRuntime {
                 }
             }
             if clean_input.is_empty() {
-                let _ = event_tx.send(VoiceCompanionEvent::Error {
-                    stage: "asr".into(),
-                    code: "wake_only".into(),
-                });
-                None
+                Self::discard_utterance(driver, playback, event_tx, generation).await;
+                return;
             } else if let (Some(action), Some(_)) = (detect_task_control(&clean_input), task_client) {
                 // Local task control fast-path: query and cancellation remain local,
                 // zero dialogue model calls, fully functional even when model is offline.
@@ -1167,26 +1177,18 @@ impl VoiceCompanionRuntime {
             return;
         }
         if let Some(dec) = decision {
-            let _ = event_tx.send(VoiceCompanionEvent::IntentDecided {
-                intent: format!("{:?}", dec.intent_type),
-                reply: dec.reply_tts.clone().filter(|_| dec.intent_type == IntentType::Chat),
-                understood_request: dec.understood_request.clone(),
-            });
-            info!(intent = ?dec.intent_type, has_understanding = dec.understood_request.is_some(), "voice_intent_decided");
+            if dec.intent_type != IntentType::Ignore {
+                let _ = event_tx.send(VoiceCompanionEvent::IntentDecided {
+                    intent: format!("{:?}", dec.intent_type),
+                    reply: dec.reply_tts.clone().filter(|_| dec.intent_type == IntentType::Chat),
+                    understood_request: dec.understood_request.clone(),
+                });
+                info!(intent = ?dec.intent_type, has_understanding = dec.understood_request.is_some(), "voice_intent_decided");
+            }
             match dec.intent_type {
                 IntentType::Ignore => {
-                    let _ = d.handle_event(AcousticEvent::IntentIgnore);
                     drop(d);
-                    voice_feedback::play(playback, event_tx, VoiceCueKind::Sleep, generation).await;
-                    let has_pending = {
-                        let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
-                        p.front().is_some_and(|item| item.generation_id == generation)
-                    };
-                    if playback.generation_id() == generation && !has_pending {
-                        let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
-                            reason: VoiceSessionEndReason::NoIntent,
-                        });
-                    }
+                    Self::discard_utterance(driver, playback, event_tx, generation).await;
                 }
                 IntentType::Chat => {
                     let _ = d.handle_event(AcousticEvent::IntentChat);

@@ -208,7 +208,7 @@ impl VoiceSessionDriver {
         }
 
         let next = self.fsm.transition(event)?;
-        if event == AcousticEvent::WakeHit {
+        if matches!(event, AcousticEvent::WakeHit | AcousticEvent::UtteranceIgnored) {
             self.speech_started = false;
             self.listening_deadline = Some(self.now() + Duration::from_secs(180));
         } else if next == AcousticState::FollowUpListening && event == AcousticEvent::PlaybackDone {
@@ -355,5 +355,30 @@ impl VoiceSessionDriver {
 impl Default for VoiceSessionDriver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod ignored_utterance_tests {
+    use super::*;
+
+    #[test]
+    fn ignored_utterance_continues_until_inactivity_timeout_or_explicit_stop() {
+        let mut driver = VoiceSessionDriver::new();
+        driver.set_simulated_now(Instant::now());
+        driver.handle_event(AcousticEvent::WakeHit).unwrap();
+        driver.mark_speech_started();
+        driver.handle_event(AcousticEvent::SpeechEnd).unwrap();
+        assert_eq!(driver.handle_event(AcousticEvent::UtteranceIgnored), Ok(AcousticState::Listening));
+        driver.advance_time(Duration::from_millis(179_999));
+        assert_eq!(driver.check_watchdog().unwrap(), None);
+        driver.advance_time(Duration::from_millis(1));
+        assert_eq!(driver.check_watchdog().unwrap(), Some(AcousticState::Idle));
+        driver.handle_event(AcousticEvent::WakeHit).unwrap();
+        driver.handle_event(AcousticEvent::SpeechEnd).unwrap();
+        driver.handle_event(AcousticEvent::UtteranceIgnored).unwrap();
+        driver.reset();
+        assert_eq!(driver.current_state(), AcousticState::Idle);
+        assert_eq!(driver.remaining_listening_time(), None);
     }
 }

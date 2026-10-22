@@ -13,9 +13,10 @@ interface PetStatusToastProps {
 const PetStatusToast: React.FC<PetStatusToastProps> = ({ messages, onDismiss, onOpen }) => {
   const { t } = useTranslation();
   if (messages.length === 0) return null;
+  const primary = messages.find((message) => message.phase === 'waiting') ?? messages[0];
   return (
     <div className='nomi-pet-feed' data-companion-hit onMouseDown={(event) => event.stopPropagation()}>
-      {messages.map((message) => {
+      {[primary].map((message) => {
         const title = t(message.titleKey, message.titleParams);
         const source = t(`nomi.petMessage.sources.${message.source}` as I18nKey);
         const active = isActivePhase(message.phase);
@@ -34,9 +35,8 @@ const PetStatusToast: React.FC<PetStatusToastProps> = ({ messages, onDismiss, on
               }}
               title={message.detail || title}
             >
-              <span className='nomi-pet-chip__source'>{source}</span>
+              <span className='sr-only'>{source}</span>
               <span className='nomi-pet-chip__title'>{title}</span>
-              {message.detail ? <span className='nomi-pet-chip__detail'>{message.detail}</span> : null}
               {message.progress != null ? (
                 <span className='nomi-pet-chip__bar' aria-hidden='true'>
                   <span style={{ width: `${Math.round(Math.min(1, Math.max(0, message.progress)) * 100)}%` }} />
@@ -54,6 +54,7 @@ const PetStatusToast: React.FC<PetStatusToastProps> = ({ messages, onDismiss, on
           </div>
         );
       })}
+      {messages.length > 1 && <span className='nomi-pet-feed__more'>{t('voice.pet.more', {count: messages.length - 1})}</span>}
     </div>
   );
 };

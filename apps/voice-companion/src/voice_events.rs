@@ -221,31 +221,41 @@ impl VoiceEventHub {
                 understood_request,
                 ..
             } => {
-                if intent == "Chat" {
-                    if let (Some(user), Some(assistant)) = (&state.user_text, reply) {
-                        use nomifun_voice_terminal::router::ChatMessage;
-                        let mut context = self.context.lock().unwrap_or_else(|e| e.into_inner());
-                        context.push(ChatMessage {
-                            role: "user".into(),
-                            content: user.clone(),
-                        });
-                        context.push(ChatMessage {
-                            role: "assistant".into(),
-                            content: assistant.clone(),
-                        });
-                        if context.len() > 6 {
-                            context.drain(..2);
+                if intent == "Ignore" {
+                    let ignored_turn = state.turn_id.clone();
+                    state.conversation.retain(|turn| Some(&turn.turn_id) != ignored_turn.as_ref());
+                    state.user_text = None;
+                    state.assistant_text = None;
+                    state.understood_request = None;
+                    state.error = None;
+                    state.phase = Phase::Listening;
+                } else {
+                    if intent == "Chat" {
+                        if let (Some(user), Some(assistant)) = (&state.user_text, reply) {
+                            use nomifun_voice_terminal::router::ChatMessage;
+                            let mut context = self.context.lock().unwrap_or_else(|e| e.into_inner());
+                            context.push(ChatMessage {
+                                role: "user".into(),
+                                content: user.clone(),
+                            });
+                            context.push(ChatMessage {
+                                role: "assistant".into(),
+                                content: assistant.clone(),
+                            });
+                            if context.len() > 6 {
+                                context.drain(..2);
+                            }
                         }
                     }
-                }
-                state.understood_request = understood_request.clone();
-                if let Some(turn) = state.conversation.last_mut() {
-                    turn.understood_request = understood_request.clone();
-                }
-                state.assistant_text = reply.clone();
-                if let Some(turn) = state.conversation.last_mut() {
-                    turn.assistant_text = reply.clone();
-                    turn.reply_state=Some(nomifun_api_types::voice::VoiceReplyState::Complete);
+                    state.understood_request = understood_request.clone();
+                    if let Some(turn) = state.conversation.last_mut() {
+                        turn.understood_request = understood_request.clone();
+                    }
+                    state.assistant_text = reply.clone();
+                    if let Some(turn) = state.conversation.last_mut() {
+                        turn.assistant_text = reply.clone();
+                        turn.reply_state=Some(nomifun_api_types::voice::VoiceReplyState::Complete);
+                    }
                 }
             }
             VoiceCompanionEvent::TaskDispatching => {state.phase = Phase::Dispatching;}
@@ -366,6 +376,35 @@ impl VoiceEventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignored_input_is_removed_without_ending_or_erasing_valid_context() {
+        let hub = VoiceEventHub::new();
+        let mut events = hub.sender().subscribe();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into() }).unwrap();
+        let session = hub.snapshot().session_id;
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        hub.send(VoiceCompanionEvent::SpeechRecognized { text: "深圳，不是北京".into() }).unwrap();
+        hub.send(VoiceCompanionEvent::IntentDecided { intent: "Chat".into(), reply: Some("记住了。".into()), understood_request: None }).unwrap();
+        let context = hub.context();
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        hub.send(VoiceCompanionEvent::SpeechRecognized { text: "杂音".into() }).unwrap();
+        hub.send(VoiceCompanionEvent::ModelResponse { text: r#"{"intent_type":"ignore"}"#.into() }).unwrap();
+        hub.send(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }).unwrap();
+        let snapshot = hub.snapshot();
+        assert_eq!(snapshot.session_id, session);
+        assert_eq!(snapshot.phase, VoiceSessionPhase::Listening);
+        assert!(snapshot.ended_reason.is_none() && snapshot.user_text.is_none());
+        assert_eq!(snapshot.conversation.len(), 1);
+        assert_eq!(hub.context().iter().map(|message|&message.content).collect::<Vec<_>>(), context.iter().map(|message|&message.content).collect::<Vec<_>>());
+        let mut published = false;
+        while let Ok(event) = events.try_recv() {
+            if let VoiceCompanionEvent::Snapshot { snapshot } = event {
+                published |= snapshot.phase == VoiceSessionPhase::Listening && snapshot.conversation.len() == 1 && snapshot.user_text.is_none();
+            }
+        }
+        assert!(published, "ignored cleanup must be published to every view");
+    }
 
     #[test]
     fn partial_reply_and_its_error_stay_bound_to_the_failed_turn() {

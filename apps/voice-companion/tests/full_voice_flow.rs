@@ -81,6 +81,7 @@ mod flow {
     const UNDERSTOOD: &str = "用户向我问好，希望得到友好的聊天回应。";
     #[derive(Clone, Copy)]
     enum TtsMode {
+        IgnoreFirst,
         Audio,
         Empty,
         NetworkFailure,
@@ -190,8 +191,11 @@ mod flow {
                 let counted = counted.clone(); let captured_prompts = captured_prompts.clone(); async move {
                     assert_eq!(headers.get("x-ai-mate-control-token").unwrap(), "fixture-control");
                     assert!(body["prompt"].as_str().unwrap().contains("你好"));
-                    counted.fetch_add(1, Ordering::SeqCst);
+                    let index = counted.fetch_add(1, Ordering::SeqCst);
                     captured_prompts.lock().unwrap().push(body["prompt"].as_str().unwrap().to_owned());
+                    if matches!(mode, TtsMode::IgnoreFirst) && index == 0 {
+                        return axum::Json(serde_json::json!({"content":r#"{"intent_type":"ignore"}"#}));
+                    }
                     axum::Json(serde_json::json!({"content": serde_json::json!({"intent_type":"chat", "understood_request":UNDERSTOOD, "reply_tts":REPLY}).to_string()}))
                 }
             }));
@@ -913,6 +917,31 @@ mod flow {
             nomifun_api_types::voice::VoiceSessionPhase::Idle
         );
         assert_eq!(flow.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ignored_utterance_keeps_capture_for_the_next_sentence_without_a_second_wake() {
+        let flow = Flow::new(TtsMode::IgnoreFirst).await;
+        flow.utterance().await;
+        let session = flow.runtime.snapshot().session_id;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = flow.runtime.snapshot();
+                if flow.calls.load(Ordering::SeqCst) == 1 && snapshot.phase == nomifun_api_types::voice::VoiceSessionPhase::Listening && snapshot.user_text.is_none() { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(flow.runtime.snapshot().ended_reason.is_none());
+        assert!(flow.runtime.snapshot().conversation.is_empty());
+        assert!(!flow.feedback.lock().unwrap().iter().any(|cue|cue.kind == nomifun_api_types::voice::VoiceCueKind::Sleep));
+        flow.follow_up_utterance().await;
+        tokio::time::timeout(Duration::from_secs(5), flow.synthesis_requested.notified()).await.unwrap();
+        assert_eq!(flow.runtime.snapshot().session_id, session);
+        assert_eq!(flow.calls.load(Ordering::SeqCst), 2);
+        flow.release_synthesis.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), flow.sink.draining.notified()).await.unwrap();
+        flow.sink.consumed.notify_one();
+        flow.phase("follow_up").await;
     }
 
     #[tokio::test]

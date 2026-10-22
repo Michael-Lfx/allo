@@ -3,6 +3,39 @@ import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVo
 import { getVoiceFeedbackSettings, saveVoiceFeedback, previewVoiceFeedback } from './voiceCompanion';
 import * as voice from './voiceCompanion';
 
+test('explicit voice entry coalesces clicks, wakes once and opens only the frozen binding', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const location = { hash: '' };
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { location } });
+  const requests: string[] = [];
+  let reads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input); requests.push(url);
+    if (url.endsWith('/wake')) return Response.json({ success: true });
+    reads += 1;
+    return Response.json(reads === 1 ? { phase: 'idle' } : {
+      phase: 'listening', session_id: 'current', binding: { session_id: 'current', conversation_id: 'frozen-target' },
+    });
+  }) as typeof fetch;
+  try {
+    const first = voice.startVoiceConversation();
+    expect(voice.startVoiceConversation()).toBe(first);
+    await first;
+    expect(requests.filter(url => url.endsWith('/wake'))).toHaveLength(1);
+    expect(location.hash).toBe('/conversation/frozen-target');
+    expect(requests.some(url => url.includes('/tasks') || url.includes('/messages'))).toBe(false);
+    requests.length = 0;
+    await voice.startVoiceConversation();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].endsWith('/session')).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
 test('tool decisions carry actual approval identities and never grant permanent permission',async()=>{
   const original=globalThis.fetch;const requests:Array<{url:string;init?:RequestInit}>=[];
   const task={command_id:'command',conversation_id:'dedicated-conversation',message_id:'accepted-message'} as voice.VoiceTaskSnapshot;

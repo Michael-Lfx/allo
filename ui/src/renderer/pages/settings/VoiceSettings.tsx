@@ -6,21 +6,13 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Switch, Select } from '@arco-design/web-react';
+import { Button, Message, Switch } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Info } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
-import VoiceConversation from '@renderer/pages/voiceSession/VoiceConversation';
-import VoiceTaskStatus from '@renderer/pages/voiceSession/VoiceTaskStatus';
-import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
-import { getVoiceDialogueSettings, saveVoiceDialogueModel, type VoiceDialogueSettings } from '@common/adapter/voiceCompanion';
-import { useModelsForTask } from '@renderer/hooks/agent/useModelsForTask';
-import { useModelSelectorProviderLabel } from '@renderer/hooks/agent/useModelSelectorProviderLabel';
-import { voiceModelOptions } from './voiceModelOptions';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
-import VoiceExecutionSettingsSection from './VoiceExecutionSettings';
 import VoiceTargetSettingsSection from './VoiceTargetSettings';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
@@ -251,29 +243,6 @@ const VoiceSettings: React.FC = () => {
   const [failedDetail, setFailedDetail] = useState<FailedDetail | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceSnapshot | null>(null);
-  const {groups:chatGroups,isLoading:modelCatalogLoading}=useModelsForTask('chat');
-  const providerLabel=useModelSelectorProviderLabel();
-  const [dialogueSettings,setDialogueSettings]=useState<VoiceDialogueSettings|null>(null);
-  const [dialogueSaving,setDialogueSaving]=useState(false);
-  const [dialogueConfigError,setDialogueConfigError]=useState(false);
-  const [dialogueRefresh,setDialogueRefresh]=useState(0);
-  const dialogueOptions=voiceModelOptions(chatGroups);
-  const dialogueValue=dialogueSettings?.dialogue_model ? JSON.stringify([dialogueSettings.dialogue_model.provider_id,dialogueSettings.dialogue_model.model]) : 'default';
-  const staleDialogue=Boolean(dialogueSettings?.dialogue_model && !dialogueOptions.some((option)=>JSON.stringify([option.provider_id,option.model])===dialogueValue));
-  useEffect(()=>{
-    let disposed=false;
-    void getVoiceDialogueSettings().then((config)=>{if(!disposed){setDialogueSettings(config);setDialogueConfigError(false);}}).catch(()=>{if(!disposed)setDialogueConfigError(true);});
-    return ()=>{disposed=true;};
-  },[dialogueRefresh]);
-  const selectDialogue=async(value:string)=>{
-    setDialogueSaving(true);
-    try {
-      const choice=value==='default'?null:JSON.parse(value) as [string,string];
-      const updated=await saveVoiceDialogueModel(choice?{provider_id:choice[0],model:choice[1]}:null);
-      setDialogueSettings(updated);setDialogueConfigError(false);
-    } catch {setDialogueConfigError(true);}
-    finally {setDialogueSaving(false);}
-  };
   const [voiceSyncError, setVoiceSyncError] = useState<string | null>(null);
   const [voiceStatusRefresh, setVoiceStatusRefresh] = useState(0);
   const [waking, setWaking] = useState(false);
@@ -990,220 +959,198 @@ const VoiceSettings: React.FC = () => {
           </SettingsList>
         </SettingsSection>
 
-        {modelStatus === 'Ready' && (
-          <SettingsSection
-            title={t('voice.diagnostics.sectionTitle')}
-            description={t('voice.diagnostics.sectionDesc')}
-          >
-            <SettingsList>
-              <SettingsRow
-                label={t('voice.session.tryWake')}
-                description={serviceAvailability === 'ready' ? t('voice.session.tryWakeDescription') : serviceDescription}
-                controlLayout='actions'
-                control={<Button size='small' loading={waking} disabled={serviceAvailability !== 'ready' || asrRunning} onClick={() => {
-                  setWaking(true);
-                  void wakeVoiceSession().catch(() => Message.error(t('voice.session.unavailable'))).finally(() => setWaking(false));
-                }}>{t('voice.session.tryWake')}</Button>}
-              />
-              <div className='min-h-68px flex items-center'>
-                <div className='w-full'>
-                  <SettingsRow
-                    label={t('voice.diagnostics.micDevice')}
-                    description={
-                      micChecking
-                        ? t('voice.diagnostics.micDeviceChecking')
-                        : micStatus?.mic_available
-                          ? t('voice.diagnostics.micDetected', {
-                              name: micStatus.device_name || 'Default Input',
-                              rate: micStatus.sample_rate || 16000,
-                              channels: micStatus.channels || 1,
-                            })
-                          : micStatus?.error || t('voice.diagnostics.micNotFound')
-                    }
-                    controlLayout='actions'
-                    control={
-                      <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                        <Button
-                          size='small'
-                          loading={micChecking}
-                          onClick={fetchDeviceStatus}
-                        >
-                          {t('voice.diagnostics.micDeviceProbe')}
-                        </Button>
-                      </div>
-                    }
-                  />
-                </div>
-              </div>
-
-              <div className='min-h-68px flex items-center'>
-                <div className='w-full'>
-                  <SettingsRow
-                    label={t('voice.diagnostics.asrTest')}
-                    description={
-                      asrRunning
-                        ? (asrRecording
-                            ? t('voice.diagnostics.asrTestRecording')
-                            : t('voice.diagnostics.asrTestTranscribing'))
-                        : asrResult
-                          ? (asrResult.success
-                              ? t('voice.diagnostics.asrTestSuccess', {
-                                  text: asrResult.text,
-                                  duration: asrResult.duration_ms,
-                                })
-                              : t('voice.diagnostics.asrTestFailed', {
-                                  reason: asrResult.error || t('voice.errors.unknownError'),
-                                }))
-                          : t('voice.diagnostics.asrTestIdleDesc')
-                    }
-                    controlLayout='actions'
-                    control={
-                      <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
-                        <Button
-                          type='primary'
-                          size='small'
-                          loading={asrRunning}
-                          onClick={handleStartAsrTest}
-                        >
-                          {t('voice.diagnostics.asrTestBtn')}
-                        </Button>
-                      </div>
-                    }
-                  />
-                </div>
-              </div>
-            </SettingsList>
-          </SettingsSection>
-        )}
-
         <VoiceTargetSettingsSection />
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
-        <VoiceExecutionSettingsSection connected={voiceSnapshot?.connection === 'connected'} models={dialogueOptions.map((option) => {
-          const provider=chatGroups.find((group)=>group.provider.id===option.provider_id)?.provider;
-          return {...option,label:`${provider?providerLabel(provider):option.provider_id} · ${option.model}`};
-        })}/>
-        <VoiceTaskDiagnostics snapshot={voiceSnapshot} />
-            <VoiceTaskStatus task={voiceSnapshot?.task} errorCode={voiceSnapshot?.task_error_code} instanceId={voiceSnapshot?.instance_id} confirmation={voiceSnapshot?.confirmation} />
 
-        <SettingsSection title={t('voice.dialogue.title')} description={t('voice.dialogue.description')}>
-          <SettingsList><SettingsRow label={t('voice.dialogue.model')} description={dialogueConfigError ? t('voice.dialogue.failed') : dialogueSettings?.available ? t('voice.dialogue.selected',{model:dialogueSettings.effective_model?.model}) : t('voice.dialogue.unavailable')} controlLayout='field' control={
-            <div className='flex flex-col gap-2'>
-              <Select aria-label={t('voice.dialogue.model')} value={dialogueSettings?dialogueValue:undefined} placeholder={t('voice.dialogue.model')} disabled={!dialogueSettings||modelCatalogLoading||dialogueSaving} loading={dialogueSaving} onChange={(value:string)=>{void selectDialogue(value);}}>
-                <Select.Option value='default'>{t('voice.dialogue.default')}</Select.Option>
-                {staleDialogue && <Select.Option value={dialogueValue} disabled>{t('voice.dialogue.stale',{model:dialogueSettings?.dialogue_model?.model})}</Select.Option>}
-                {dialogueOptions.map((option)=>{const provider=chatGroups.find((group)=>group.provider.id===option.provider_id)?.provider;return <Select.Option key={JSON.stringify([option.provider_id,option.model])} value={JSON.stringify([option.provider_id,option.model])}>{provider?providerLabel(provider):option.provider_id} · {option.model}</Select.Option>;})}
-              </Select>
-              {dialogueConfigError && <Button size='small' onClick={()=>setDialogueRefresh((n)=>n+1)}>{t('voice.service.retrySync')}</Button>}
-            </div>
-          } /></SettingsList>
-        </SettingsSection>
-
-        {modelStatus === 'Ready' && voiceEnabled && (
+        {modelStatus === 'Ready' && (
           <SettingsSection
-            title={t('voice.dashboard.sectionTitle')}
-            description={t('voice.dashboard.sectionDesc')}
+            title={t('voice.diagnostics.advancedTitle')}
+            description={t('voice.diagnostics.advancedDesc')}
           >
-            <div className='flex flex-col gap-4 rounded-8px border border-solid border-[var(--border-base)] bg-fill-1 p-5 transition-colors'>
-              {/* Top Status & Live Badge Header */}
-              <div className='flex flex-wrap items-center justify-between gap-4 border-b border-b-solid border-[var(--border-base)] pb-4'>
-                <div className='flex items-center gap-3'>
-                  {/* Status Indicator Beacon */}
-                  <div className='relative flex items-center justify-center'>
-                    <div
-                      className={`h-3 w-3 rounded-full ${
-                        kwsLiveStatus === 'wake_hit'
-                          ? 'bg-success-6 animate-ping'
-                          : kwsLiveStatus === 'speech' || kwsLiveStatus === 'deciding'
-                            ? 'bg-warning-6 animate-pulse'
-                            : kwsLiveStatus === 'speaking' || kwsLiveStatus === 'follow_up'
-                              ? 'bg-primary-6 animate-pulse'
-                              : 'bg-primary-6'
-                      }`}
-                    />
-                    <div
-                      className={`absolute h-2 w-2 rounded-full ${
-                        kwsLiveStatus === 'wake_hit'
-                          ? 'bg-success-6'
-                          : kwsLiveStatus === 'speech' || kwsLiveStatus === 'deciding'
-                            ? 'bg-warning-6'
-                            : kwsLiveStatus === 'speaking' || kwsLiveStatus === 'follow_up'
-                              ? 'bg-primary-6'
-                              : 'bg-primary-6'
-                      }`}
-                    />
+            <details className='group rounded-8px border border-solid border-[var(--border-base)] bg-fill-1 p-4 transition-colors'>
+              <summary className='cursor-pointer select-none text-13px font-medium text-t-primary flex items-center justify-between'>
+                <span className='flex items-center gap-2'>
+                  <Info theme='outline' size='16' className='text-t-secondary' />
+                  <span>{t('voice.diagnostics.sectionTitle')}</span>
+                </span>
+                <span className='text-12px text-t-tertiary transition-transform group-open:rotate-180'>▼</span>
+              </summary>
+
+              <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
+                <SettingsList>
+                  <SettingsRow
+                    label={t('voice.session.tryWake')}
+                    description={serviceAvailability === 'ready' ? t('voice.session.tryWakeDescription') : serviceDescription}
+                    controlLayout='actions'
+                    control={<Button size='small' loading={waking} disabled={serviceAvailability !== 'ready' || asrRunning} onClick={() => {
+                      setWaking(true);
+                      void wakeVoiceSession().catch(() => Message.error(t('voice.session.unavailable'))).finally(() => setWaking(false));
+                    }}>{t('voice.session.tryWake')}</Button>}
+                  />
+                  <div className='min-h-68px flex items-center'>
+                    <div className='w-full'>
+                      <SettingsRow
+                        label={t('voice.diagnostics.micDevice')}
+                        description={
+                          micChecking
+                            ? t('voice.diagnostics.micDeviceChecking')
+                            : micStatus?.mic_available
+                              ? t('voice.diagnostics.micDetected', {
+                                  name: micStatus.device_name || 'Default Input',
+                                  rate: micStatus.sample_rate || 16000,
+                                  channels: micStatus.channels || 1,
+                                })
+                              : micStatus?.error || t('voice.diagnostics.micNotFound')
+                        }
+                        controlLayout='actions'
+                        control={
+                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                            <Button
+                              size='small'
+                              loading={micChecking}
+                              onClick={fetchDeviceStatus}
+                            >
+                              {t('voice.diagnostics.micDeviceProbe')}
+                            </Button>
+                          </div>
+                        }
+                      />
+                    </div>
                   </div>
 
-                  <div>
-                    <div className='text-14px font-medium text-t-primary'>
-                      {serviceAvailability === 'ready' && voiceSnapshot ? t(`voice.session.phase.${voiceSnapshot.phase}`) : t(`voice.service.${serviceAvailability}`)}
-                    </div>
-                    <div className='text-12px text-t-secondary'>
-                      {serviceDescription}
+                  <div className='min-h-68px flex items-center'>
+                    <div className='w-full'>
+                      <SettingsRow
+                        label={t('voice.diagnostics.asrTest')}
+                        description={
+                          asrRunning
+                            ? (asrRecording
+                                ? t('voice.diagnostics.asrTestRecording')
+                                : t('voice.diagnostics.asrTestTranscribing'))
+                            : asrResult
+                              ? (asrResult.success
+                                  ? t('voice.diagnostics.asrTestSuccess', {
+                                      text: asrResult.text,
+                                      duration: asrResult.duration_ms,
+                                    })
+                                  : t('voice.diagnostics.asrTestFailed', {
+                                      reason: asrResult.error || t('voice.errors.unknownError'),
+                                    }))
+                              : t('voice.diagnostics.asrTestIdleDesc')
+                        }
+                        controlLayout='actions'
+                        control={
+                          <div className='w-240px shrink-0 flex items-center justify-end font-variant-numeric tabular-nums'>
+                            <Button
+                              type='primary'
+                              size='small'
+                              loading={asrRunning}
+                              onClick={handleStartAsrTest}
+                            >
+                              {t('voice.diagnostics.asrTestBtn')}
+                            </Button>
+                          </div>
+                        }
+                      />
                     </div>
                   </div>
-                </div>
+                </SettingsList>
 
-                {(voiceSyncError || !voiceSnapshot) && <Button size='small' onClick={() => setVoiceStatusRefresh((value) => value + 1)}>{t('voice.service.retrySync')}</Button>}
-              </div>
-
-              <VoiceAudioStatus snapshot={voiceSnapshot} />
-              <section className='flex flex-col gap-2' aria-label={t('voice.dashboard.conversationTitle')}>
-                <h3 className='m-0 text-14px font-medium text-t-primary'>{t('voice.dashboard.conversationTitle')}</h3>
-                <div className='max-h-360px overflow-y-auto rounded-6px bg-fill-2 p-3 text-14px'>
-                  <VoiceConversation snapshot={voiceSnapshot} />
-                </div>
-              </section>
-              {/* Active Keywords & Pronunciation Tip Card */}
-              <div className='rounded-6px border border-solid border-primary-2 bg-fill-2 p-3.5 text-12px'>
-                <div className='flex items-center gap-2 font-medium text-primary-7'>
-                  <Info theme='filled' size='14' />
-                  <span>{t('voice.dashboard.tipTitle')}</span>
-                </div>
-                <div className='mt-1 text-t-secondary leading-relaxed'>
-                  {t('voice.dashboard.tipContent')}
-                </div>
-                <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-[var(--border-base)] text-11px text-t-tertiary'>
-                  <span className='font-medium text-t-secondary'>{t('voice.dashboard.activeKeywordsTitle')}:</span>
-                  <span>{t('voice.dashboard.activeKeywordsList')}</span>
-                </div>
-              </div>
-
-              {/* Real-time Activity Log Terminal */}
-              <div className='flex flex-col gap-2'>
-                <div className='flex items-center justify-between text-12px text-t-secondary'>
-                  <span className='font-medium text-t-primary'>{t('voice.dashboard.logTitle')}</span>
-                  <button
-                    type='button'
-                    className='text-11px text-t-tertiary hover:text-primary-6 transition-colors bg-transparent border-none cursor-pointer p-0'
-                    onClick={() => setDashboardLogs([])}
-                  >
-                    {t('voice.dashboard.clearLog')}
-                  </button>
-                </div>
-                <div className='max-h-160px min-h-80px flex flex-col gap-1.5 overflow-y-auto rounded-6px bg-fill-2 p-3 font-mono text-11px text-t-secondary'>
-                  {dashboardLogs.length === 0 ? (
-                    <div className='text-t-tertiary text-center py-2'>-</div>
-                  ) : (
-                    dashboardLogs.map((log) => (
-                      <div key={log.id} className='flex items-start gap-2 leading-tight'>
-                        <span className='text-t-tertiary shrink-0 select-none'>[{log.time}]</span>
-                        <span
-                          className={
-                            log.type === 'wake'
-                              ? 'text-success-6 font-semibold'
-                              : log.type === 'voice'
-                                ? 'text-warning-6'
-                                : 'text-t-secondary'
-                          }
-                        >
-                          {log.text}
-                        </span>
+                {voiceEnabled && (
+                  <div className='mt-2 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
+                    <div className='flex flex-wrap items-center justify-between gap-4'>
+                      <div className='flex items-center gap-3'>
+                        <div className='relative flex items-center justify-center'>
+                          <div
+                            className={`h-3 w-3 rounded-full ${
+                              kwsLiveStatus === 'wake_hit'
+                                ? 'bg-success-6 animate-ping'
+                                : kwsLiveStatus === 'speech' || kwsLiveStatus === 'deciding'
+                                  ? 'bg-warning-6 animate-pulse'
+                                  : kwsLiveStatus === 'speaking' || kwsLiveStatus === 'follow_up'
+                                    ? 'bg-primary-6 animate-pulse'
+                                    : 'bg-primary-6'
+                            }`}
+                          />
+                          <div
+                            className={`absolute h-2 w-2 rounded-full ${
+                              kwsLiveStatus === 'wake_hit'
+                                ? 'bg-success-6'
+                                : kwsLiveStatus === 'speech' || kwsLiveStatus === 'deciding'
+                                  ? 'bg-warning-6'
+                                  : kwsLiveStatus === 'speaking' || kwsLiveStatus === 'follow_up'
+                                    ? 'bg-primary-6'
+                                    : 'bg-primary-6'
+                            }`}
+                          />
+                        </div>
+                        <div>
+                          <div className='text-14px font-medium text-t-primary'>
+                            {serviceAvailability === 'ready' && voiceSnapshot ? t(`voice.session.phase.${voiceSnapshot.phase}`) : t(`voice.service.${serviceAvailability}`)}
+                          </div>
+                          <div className='text-12px text-t-secondary'>
+                            {serviceDescription}
+                          </div>
+                        </div>
                       </div>
-                    ))
-                  )}
-                </div>
+
+                      {(voiceSyncError || !voiceSnapshot) && <Button size='small' onClick={() => setVoiceStatusRefresh((value) => value + 1)}>{t('voice.service.retrySync')}</Button>}
+                    </div>
+
+                    <VoiceAudioStatus snapshot={voiceSnapshot} />
+
+                    <div className='rounded-6px border border-solid border-primary-2 bg-fill-2 p-3.5 text-12px'>
+                      <div className='flex items-center gap-2 font-medium text-primary-7'>
+                        <Info theme='filled' size='14' />
+                        <span>{t('voice.dashboard.tipTitle')}</span>
+                      </div>
+                      <div className='mt-1 text-t-secondary leading-relaxed'>
+                        {t('voice.dashboard.tipContent')}
+                      </div>
+                      <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-[var(--border-base)] text-11px text-t-tertiary'>
+                        <span className='font-medium text-t-secondary'>{t('voice.dashboard.activeKeywordsTitle')}:</span>
+                        <span>{t('voice.dashboard.activeKeywordsList')}</span>
+                      </div>
+                    </div>
+
+                    <div className='flex flex-col gap-2'>
+                      <div className='flex items-center justify-between text-12px text-t-secondary'>
+                        <span className='font-medium text-t-primary'>{t('voice.dashboard.logTitle')}</span>
+                        <button
+                          type='button'
+                          className='text-11px text-t-tertiary hover:text-primary-6 transition-colors bg-transparent border-none cursor-pointer p-0'
+                          onClick={() => setDashboardLogs([])}
+                        >
+                          {t('voice.dashboard.clearLog')}
+                        </button>
+                      </div>
+                      <div className='max-h-160px min-h-80px flex flex-col gap-1.5 overflow-y-auto rounded-6px bg-fill-2 p-3 font-mono text-11px text-t-secondary'>
+                        {dashboardLogs.length === 0 ? (
+                          <div className='text-t-tertiary text-center py-2'>-</div>
+                        ) : (
+                          dashboardLogs.map((log) => (
+                            <div key={log.id} className='flex items-start gap-2 leading-tight'>
+                              <span className='text-t-tertiary shrink-0 select-none'>[{log.time}]</span>
+                              <span
+                                className={
+                                  log.type === 'wake'
+                                    ? 'text-success-6 font-semibold'
+                                    : log.type === 'voice'
+                                      ? 'text-warning-6'
+                                      : 'text-t-secondary'
+                                }
+                              >
+                                {log.text}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            </details>
           </SettingsSection>
         )}
       </div>
