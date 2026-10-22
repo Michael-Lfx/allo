@@ -791,6 +791,84 @@ async fn partial_coverage_reasks_only_the_missing_subset_with_a_directed_prompt(
     );
 }
 
+/// h1 单文件批专门化：模型可能直接回「裸单条目对象」（根对象就是判定，
+/// 无 files 包裹）——单条目形状下可解析。
+#[tokio::test]
+async fn bare_single_entry_replies_parse_for_single_file_batches() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "裸对象库").await;
+    write_kb_file(&root, "ch1.md", "# 核心章节\n\n本章讲排序算法的实现。\n");
+    let completer = RespondingCompleter {
+        respond: |_paths: &[String]| {
+            Ok(r#"{"path": "ch1.md", "role": "core", "confidence": 0.9, "reason": "课程正文"}"#.to_owned())
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会排序算法", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 1, "裸单条目形状按单条目解析");
+    assert_eq!(report.counts.uncertain, 0);
+}
+
+/// h1 单文件兜底修复：「单文件批合法空回包（模型显式无判定）」与「解析
+/// 失败」在最终 uncertain 理由里必须可区分。
+#[tokio::test]
+async fn single_file_explicit_empty_is_distinguishable_from_parse_failure() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "空回包库").await;
+    write_kb_file(&root, "a.md", "# 甲\n\n正文甲。\n");
+    write_kb_file(&root, "empty.md", "# 乙\n\n正文乙。\n");
+    write_kb_file(&root, "broken.md", "# 丙\n\n正文丙。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            if paths.len() == 1 && paths[0] == "empty.md" {
+                // 合法空回包：JSON 完整，files 为空数组——模型显式不给判定。
+                return Ok(r#"{"files": []}"#.to_owned());
+            }
+            if paths.len() == 1 && paths[0] == "broken.md" {
+                // 解析失败：字符串中间硬截断。
+                return Ok("{\"files\": [{\"path\": \"broken.md\", \"ro".to_owned());
+            }
+            let covered: Vec<(&str, &str, f32, &str)> = paths
+                .iter()
+                .filter(|path| !matches!(path.as_str(), "empty.md" | "broken.md"))
+                .map(|path| (path.as_str(), "core", 0.9, "正常判定"))
+                .collect();
+            Ok(reply_json(&covered))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "单点失败", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.uncertain, 2, "两条兜底路径都保守 uncertain");
+    let empty = report
+        .files
+        .iter()
+        .find(|file| file.rel_path == "empty.md")
+        .unwrap();
+    assert!(
+        empty.reason.contains("显式无判定"),
+        "合法空回包要能看出是模型显式无判定：{}",
+        empty.reason
+    );
+    let broken = report
+        .files
+        .iter()
+        .find(|file| file.rel_path == "broken.md")
+        .unwrap();
+    assert!(
+        !broken.reason.contains("显式无判定") && broken.reason.contains("解析失败"),
+        "真解析失败要能看出是解析失败：{}",
+        broken.reason
+    );
+}
+
 #[tokio::test]
 async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;

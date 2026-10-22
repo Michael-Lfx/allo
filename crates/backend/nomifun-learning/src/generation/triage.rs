@@ -425,13 +425,15 @@ pub async fn run_kb_triage(
                             }
                             Err(StructuredBatchFailure::Parse(message)) => {
                                 // 单文件兜底仍失败 → uncertain + 理由，不丢。
+                                // message 自带可区分的失败语境（h1）：合法空回包
+                                // =模型显式无判定 vs 真解析失败（截断/坏 JSON）。
                                 llm_verdicts.insert(
                                     path,
                                     RuleVerdict {
                                         role: KbTriageRole::Uncertain,
                                         confidence: 0.2,
                                         reason: format!(
-                                            "单文件分诊仍解析失败，保守按 uncertain 保留：{message}"
+                                            "单文件分诊兜底仍未取得该文件的判定，保守按 uncertain 保留：{message}"
                                         ),
                                         duplicate_of: None,
                                         canonical_reason: None,
@@ -1077,8 +1079,15 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                 )
                 .await
                 .map_err(|error| StructuredBatchError::Call(error.to_string()))?;
-            let reply: TriageLlmReply =
-                parse_json_object(&raw).map_err(StructuredBatchError::Parse)?;
+            // 单文件批的解析失败带上显式语境（h1：与「合法空回包=模型显式
+            // 无判定」可区分）；多文件批的解析失败交给驱动层拆半，语境不变。
+            let reply: TriageLlmReply = parse_json_object(&raw).map_err(|error| {
+                if slice.len() == 1 {
+                    StructuredBatchError::Parse(format!("单文件回包解析失败：{error}"))
+                } else {
+                    StructuredBatchError::Parse(error)
+                }
+            })?;
             // duplicate 判定的 canonical 必须能对回全量清点（不只本批）。
             let known_paths: HashSet<&str> = self
                 .inventory
@@ -1086,7 +1095,18 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                 .iter()
                 .map(|file| file.rel_path.as_str())
                 .collect();
-            Ok(map_llm_reply(reply, &files, &known_paths))
+            let verdicts = map_llm_reply(reply, &files, &known_paths);
+            // 单文件批专门化（h1）：回包解析成功但没包含该文件的判定时，给出
+            // 可区别于解析失败的显式信息（合法空回包=模型显式无判定）——
+            // len==1 的切片只会走驱动层叶子，转成 Parse 错误不会影响部分覆盖
+            // 语义。
+            if slice.len() == 1 && !verdicts.contains_key(slice[0].as_str()) {
+                return Err(StructuredBatchError::Parse(
+                    "单文件回包未包含该文件的判定（合法空回包=模型显式无判定，非解析失败）"
+                        .to_owned(),
+                ));
+            }
+            Ok(verdicts)
         })
     }
 }
@@ -1360,40 +1380,69 @@ fn readme_stem_of(citation_path: &str) -> bool {
         .is_some_and(|stem| stem.eq_ignore_ascii_case("readme"))
 }
 
-/// 模型回包的宽容反序列化形状。
-#[derive(Deserialize)]
+/// 模型回包的宽容反序列化形状（h1）：`{"files": […]}` 首选；files 的值也
+/// 接受「按 rel_path 为键的对象」；单文件批还接受「裸单条目对象」（根对象
+/// 本身就是判定，无 files 包裹）。
 struct TriageLlmReply {
-    #[serde(default, deserialize_with = "deserialize_files_entries")]
     files: Vec<TriageLlmFile>,
 }
 
-/// `files` 字段的宽容反序列化（h1）：首选数组形状；也接受「按 rel_path 为
-/// 键、条目为值」的对象形状（键回填条目缺失的 path）。其余形态（字符串、
-/// 数字等）按反序列化失败处理 → 驱动层拆半，不静默吞。
-fn deserialize_files_entries<'de, D>(deserializer: D) -> Result<Vec<TriageLlmFile>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
+impl<'de> serde::Deserialize<'de> for TriageLlmReply {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let map = match value {
+            serde_json::Value::Object(map) => map,
+            other => {
+                return Err(serde::de::Error::custom(format!(
+                    "回包不是 JSON 对象：{other}"
+                )))
+            }
+        };
+        if let Some(files) = map.get("files") {
+            let files = files_from_value(files.clone()).map_err(serde::de::Error::custom)?;
+            return Ok(TriageLlmReply { files });
+        }
+        // 裸单条目形状（单文件批的合理变体）：认得出条目字段才收，其余
+        // （别阶段的回包等）按契约不合法处理 → 驱动层拆半，不静默吞。
+        if ["path", "rel_path", "role", "kind"]
+            .iter()
+            .any(|key| map.contains_key(*key))
+        {
+            let entry: TriageLlmFile = serde_json::from_value(serde_json::Value::Object(map))
+                .map_err(serde::de::Error::custom)?;
+            return Ok(TriageLlmReply { files: vec![entry] });
+        }
+        Err(serde::de::Error::custom(
+            "回包既没有 files 字段，也不是可识别的单条目形状",
+        ))
+    }
+}
+
+/// `files` 字段值的宽容解析：首选数组形状；也接受「按 rel_path 为键、条目
+/// 为值」的对象形状（键回填条目缺失的 path）。其余形态报错 → 驱动层拆半。
+fn files_from_value(value: serde_json::Value) -> Result<Vec<TriageLlmFile>, String> {
     match value {
         serde_json::Value::Array(items) => items
             .into_iter()
-            .map(|item| serde_json::from_value(item).map_err(serde::de::Error::custom))
+            .map(|item| serde_json::from_value(item).map_err(|error| error.to_string()))
             .collect(),
         serde_json::Value::Object(entries) => entries
             .into_iter()
             .map(|(path, item)| {
                 let mut entry: TriageLlmFile =
-                    serde_json::from_value(item).map_err(serde::de::Error::custom)?;
+                    serde_json::from_value(item).map_err(|error| error.to_string())?;
                 if entry.path.trim().is_empty() {
                     entry.path = path;
                 }
                 Ok(entry)
             })
             .collect(),
-        other => Err(serde::de::Error::custom(format!(
+        other => Err(format!(
             "files 字段既不是数组也不是按路径为键的对象：{other}"
-        ))),
+        )),
     }
 }
 
