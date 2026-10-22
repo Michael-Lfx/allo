@@ -141,11 +141,11 @@ pub enum AcousticEvent {
     TaskSummaryReady,
     /// Execution-time Tool Policy intercepted high-risk destructive action
     ToolPolicyIntercept,
-    /// Audio playback finished (enters 4s follow-up window)
+    /// Audio playback finished (enters 180s follow-up window)
     PlaybackDone,
-    /// Human speech follow-up detected within 4s window
+    /// Human speech follow-up detected within 180s window
     FollowUpSpeech,
-    /// 4-second follow-up window expired without speech
+    /// 180-second follow-up window expired without speech
     FollowUpTimeout,
 }
 
@@ -158,7 +158,7 @@ pub struct IllegalTransitionError {
 }
 
 /// Declarative legal transition table for Acoustic FSM.
-/// Contains all 20 canonical state transitions defined in interaction.zh.md §3.6.
+/// Includes recoverable ignored utterances as well as explicit abort transitions.
 pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = &[
     // 1. Idle -> Listening on wake word
     (
@@ -172,13 +172,13 @@ pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = 
         AcousticEvent::SpeechEnd,
         AcousticState::Deciding,
     ),
-    // 3. Listening -> Idle on 6s silence timeout
+    // 3. Listening -> Idle on 180s silence timeout
     (
         AcousticState::Listening,
         AcousticEvent::ListenTimeout,
         AcousticState::Idle,
     ),
-    // 4. Deciding -> Idle on intent == ignore
+    // 4. Deciding -> Idle on explicit abort (not a recoverable ignored utterance)
     (
         AcousticState::Deciding,
         AcousticEvent::IntentIgnore,
@@ -273,13 +273,13 @@ pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = 
         AcousticEvent::PlaybackDone,
         AcousticState::FollowUpListening,
     ),
-    // 19. FollowUpListening -> Deciding on follow-up speech within 4s
+    // 19. FollowUpListening -> Deciding on follow-up speech within 180s
     (
         AcousticState::FollowUpListening,
         AcousticEvent::FollowUpSpeech,
         AcousticState::Deciding,
     ),
-    // 20. FollowUpListening -> Idle on 4s follow-up timeout
+    // 20. FollowUpListening -> Idle on 180s follow-up timeout
     (
         AcousticState::FollowUpListening,
         AcousticEvent::FollowUpTimeout,

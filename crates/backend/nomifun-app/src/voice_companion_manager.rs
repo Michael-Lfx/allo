@@ -490,25 +490,7 @@ impl ConversationVoiceDialogueRecorder {
             .and_then(|v| v.as_str())
             .filter(|m| matches!(*m, "default" | "auto_edit" | "yolo"))
             .map(str::to_owned);
-        if conv.extra.get("is_default_voice").and_then(|v|v.as_bool())!=Some(true)
-            && let Some(workspace)=conv.extra.get("workspace").and_then(|v|v.as_str()).filter(|s|!s.is_empty()) {
-            let model=conv.model.as_ref().and_then(|model|serde_json::to_value(model).ok()).and_then(|value|serde_json::from_value::<VoiceModelRef>(value).ok());
-            return Ok(Some(VoiceExecutionConfig{workspace:workspace.into(),model,preset_id:conv.preset_id,session_mode}));
-        }
-        let config_path=self.journal_path.parent().and_then(Path::parent).unwrap().join("config").join("voice_companion.json");
-        let explicit = match std::fs::read(config_path) {
-            Ok(bytes)=> {
-                let root:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
-                serde_json::from_value(root.get("execution").cloned().unwrap_or(serde_json::Value::Null))
-                    .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
-            },
-            Err(e) if e.kind()==std::io::ErrorKind::NotFound=>None,
-            Err(e)=>return Err(VoiceDialogueRecorderError::WriteFailed(e.to_string())),
-        };
-        if let Some(config) = explicit {
-            return Ok(Some(config));
-        }
-        // Fallback: This conversation's own bound/managed workspace
+        // New bindings derive execution only from their target Conversation.
         if let Some(workspace) = conv.extra.get("workspace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
             let path = Path::new(workspace);
             if path.is_absolute() && path.is_dir() {
@@ -546,6 +528,18 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             VoiceDialogueRecorderError::BindingInvalid(msg) | VoiceDialogueRecorderError::WriteFailed(msg) => msg,
             _ => "execution_unconfigured".into(),
         })
+    }
+    async fn bound_execution(&self, session: &str) -> Result<Option<VoiceExecutionConfig>, String> {
+        let record = {
+            let _guard = self.journal_lock.lock().await;
+            self.read_records().map_err(|_| "configuration_read_failed")?.into_iter()
+                .find(|record| record.request.session_id.as_deref() == Some(session))
+        };
+        let Some(record) = record else { return Ok(None); };
+        let admission = self.conversation_service.conversation_repo()
+            .get_turn_admission_state(&self.user_id, &record.conversation_id).await.map_err(|_| "binding_invalid")?;
+        if admission.epoch != record.admission_epoch { return Err("binding_invalid".into()); }
+        Ok(record.execution)
     }
     async fn freeze_session(&self,session:&str)->Result<Option<nomifun_api_types::voice::VoiceBindingSnapshot>,VoiceDialogueRecorderError> {
         let _guard=self.journal_lock.lock().await;
@@ -952,7 +946,6 @@ pub struct VoiceCompanionProcessManager {
     task_projection_started: AtomicBool,
     dialogue_completer: Option<Arc<dyn VoiceDialogueCompleter>>,
     dialogue_recorder: Option<Arc<dyn VoiceDialogueRecorder>>,
-    dialogue_selection: Arc<RwLock<Option<VoiceModelRef>>>,
     target_selection: Arc<RwLock<VoiceTargetConfig>>,
     active_window_candidate: Arc<RwLock<Option<String>>>,
     companion_service: Option<Arc<CompanionService>>,
@@ -987,10 +980,6 @@ impl VoiceCompanionProcessManager {
 
     pub fn new(models_manager: Arc<nomifun_voice_models::ModelManager>, data_dir: &Path) -> Self {
         let config_path = data_dir.join("config").join("voice_companion.json");
-        let selection = std::fs::read(&config_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<VoiceDialogueConfig>(&bytes).ok())
-            .and_then(|config| config.dialogue_model);
         let target_config = std::fs::read(&config_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -1009,7 +998,6 @@ impl VoiceCompanionProcessManager {
             task_projection_started: AtomicBool::new(false),
             dialogue_completer: None,
             dialogue_recorder: None,
-            dialogue_selection: Arc::new(RwLock::new(selection)),
             target_selection: Arc::new(RwLock::new(target_config)),
             active_window_candidate: Arc::new(RwLock::new(None)),
             companion_service: None,
@@ -1154,46 +1142,26 @@ impl VoiceCompanionProcessManager {
         self
     }
 
-    fn requested_execution(&self) -> Result<Option<VoiceExecutionConfig>, String> {
-        let bytes = match std::fs::read(&self.config_path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err("configuration_read_failed".into()),
-        };
-        let root: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "configuration_invalid")?;
-        let root = root.as_object().ok_or("configuration_invalid")?;
-        match root.get("execution") {
-            None | Some(serde_json::Value::Null) => Ok(None),
-            Some(value) => serde_json::from_value(value.clone()).map(Some).map_err(|_| "execution_configuration_invalid".into()),
-        }
-    }
-
     async fn execution_settings(&self) -> VoiceExecutionSettings {
-        let (requested, read_error) = match self.requested_execution() {
-            Ok(requested) => (requested,None),
-            Err(code) => (None,Some(code)),
+        let session = self.snapshot().session_id;
+        let candidate = match &self.dialogue_recorder {
+            Some(recorder) => match session {
+                Some(session) => recorder.bound_execution(&session).await,
+                None => recorder.fallback_execution().await,
+            },
+            None => Ok(None),
         };
-        let fallback = if requested.is_none() && read_error.is_none() {
-            if let Some(recorder) = &self.dialogue_recorder {
-                recorder.fallback_execution().await.ok().flatten()
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let candidate = requested.as_ref().or(fallback.as_ref());
-        let resolution = match (read_error, candidate, &self.tasks) {
-            (Some(code), _, _) => Err(code),
-            (None, None, _) => Err("execution_unconfigured".into()),
-            (None, Some(_), None) => Err("runtime_unavailable".into()),
-            (None, Some(config), Some(tasks)) => tasks.resolve_configuration(config).await,
+        let resolution = match (candidate, &self.tasks) {
+            (Err(code), _) => Err(code),
+            (Ok(None), _) => Err("execution_unconfigured".into()),
+            (Ok(Some(_)), None) => Err("runtime_unavailable".into()),
+            (Ok(Some(config)), Some(tasks)) => tasks.resolve_configuration(&config).await,
         };
         let (effective, reason) = match resolution { Ok(config) => (Some(config),None), Err(code) => (None,Some(code)) };
         let settings = VoiceExecutionSettings {
             effective,
             available: reason.is_none(),
-            requested,
+            requested: None,
             reason_code: reason,
         };
         let mut snapshot = self.snapshot.write().unwrap_or_else(|error| error.into_inner());
@@ -1203,20 +1171,6 @@ impl VoiceCompanionProcessManager {
             let _ = self.events.send(snapshot.clone());
         }
         settings
-    }
-
-    async fn update_execution(&self, requested: Option<VoiceExecutionConfig>) -> Result<VoiceExecutionSettings, String> {
-        if let Some(config) = &requested {
-            crate::voice_task_runtime::validate_workspace(config)?;
-            if let Some(tasks) = &self.tasks {
-                tasks.resolve_configuration(config).await?;
-            } else if let (Some(model), Some(completer)) = (&config.model, &self.dialogue_completer) {
-                completer.resolve_model(Some(model)).await?;
-            }
-        }
-        let value = serde_json::to_value(requested).map_err(|_| "execution_configuration_invalid")?;
-        self.write_config_entry("execution", value)?;
-        Ok(self.execution_settings().await)
     }
 
     fn project_task(&self, task: VoiceTaskSnapshot) {
@@ -1544,21 +1498,9 @@ impl VoiceCompanionProcessManager {
             || !snapshot.enabled || snapshot.connection != VoiceConnectionState::Connected
             || self.revoked_sessions.read().unwrap_or_else(|error|error.into_inner()).contains(&request.command.session_id)
         { return Err("task_scope_changed".into()); }
-        let frozen = if let Some(recorder) = &self.dialogue_recorder {
-            Some(recorder.task_configuration(&request.command).await?.ok_or("binding_invalid")?)
-        } else {
-            None
-        };
-        let config = match &frozen {
-            Some(frozen) => frozen.config.clone(),
-            None => match self.requested_execution()? {
-                Some(config) => config,
-                None => match &self.dialogue_recorder {
-                    Some(rec) => rec.fallback_execution().await?.ok_or("execution_unconfigured")?,
-                    None => return Err("execution_unconfigured".into()),
-                },
-            },
-        };
+        let recorder = self.dialogue_recorder.as_ref().ok_or("binding_invalid")?;
+        let frozen = recorder.task_configuration(&request.command).await?.ok_or("binding_invalid")?;
+        let config = frozen.config;
         // Admission belongs to the host: dropping a voice request cannot cancel
         // an accepted task or abandon its durable delivery record.
         let manager = self.clone();
@@ -1567,12 +1509,12 @@ impl VoiceCompanionProcessManager {
         let session_id = request.command.session_id.clone();
         let turn_id = request.command.turn_id.clone();
         let tasks_ref = tasks.clone();
-        let handoff = frozen.as_ref().and_then(|f| f.handoff_content.clone());
-        let display_text = frozen.as_ref().and_then(|f| f.display_text.clone());
-        let target_conversation = frozen.as_ref().and_then(|f| f.conversation_id.clone());
-        let message_id = frozen.as_ref().and_then(|f| f.message_id.clone());
-        let voice_context_digest = frozen.as_ref().and_then(|f| f.voice_context_digest.clone());
-        let expected_preset = frozen.map(|f| f.preset);
+        let handoff = frozen.handoff_content;
+        let display_text = frozen.display_text;
+        let target_conversation = frozen.conversation_id;
+        let message_id = frozen.message_id;
+        let voice_context_digest = frozen.voice_context_digest;
+        let expected_preset = Some(frozen.preset);
         let handle = tokio::spawn(async move {
             match tasks.submit_frozen_with_handoff_queued_with_context(
                 request.command,
@@ -1664,44 +1606,27 @@ impl VoiceCompanionProcessManager {
     }
 
     async fn dialogue_settings(&self) -> VoiceDialogueSettings {
-        let choice = self
-            .dialogue_selection
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
         let effective = match &self.dialogue_completer {
-            Some(completer) => completer.resolve_model(choice.as_ref()).await.ok(),
+            Some(completer) => completer.resolve_model(None).await.ok(),
             None => None,
         };
         VoiceDialogueSettings {
             config: VoiceDialogueConfig {
-                dialogue_model: choice,
+                dialogue_model: None,
             },
             available: effective.is_some(),
             effective_model: effective,
         }
     }
 
-    async fn update_dialogue(
-        &self,
-        config: VoiceDialogueConfig,
-    ) -> Result<VoiceDialogueSettings, String> {
-        if let Some(choice) = &config.dialogue_model {
-            self.dialogue_completer
-                .as_ref()
-                .ok_or("model_unavailable")?
-                .resolve_model(Some(choice))
-                .await?;
-        }
-        self.write_config_entry(
-            "dialogue_model",
-            serde_json::to_value(&config.dialogue_model).map_err(|_| "configuration_invalid")?,
-        )?;
-        *self
-            .dialogue_selection
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = config.dialogue_model;
-        Ok(self.dialogue_settings().await)
+    async fn start_dialogue_bridge(self: &Arc<Self>) -> Result<VoiceDialogueBridge, String> {
+        VoiceDialogueBridge::start_with_recorder(
+            self.dialogue_completer.clone().ok_or("model_unavailable")?,
+            Arc::new(RwLock::new(None)),
+            self.control_token.clone(),
+            self.private_task_routes(),
+            self.dialogue_recorder.clone(),
+        ).await
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<VoiceSessionSnapshot> {
@@ -2277,17 +2202,11 @@ impl VoiceCompanionProcessManager {
         builder.env("AI_MATE_CONTROL_TOKEN", &self.control_token);
         builder.env("VOICE_COMPANION_FEEDBACK_CONFIG", &feedback_config);
         builder.env("AI_MATE_FEEDBACK_CONFIG", feedback_config);
-        if let Some(completer) = &self.dialogue_completer {
+        if self.dialogue_completer.is_some() {
             let mut bridge = self.dialogue_bridge.lock().await;
             if bridge.is_none() {
                 *bridge = Some(
-                    VoiceDialogueBridge::start_with_recorder(
-                        completer.clone(),
-                        self.dialogue_selection.clone(),
-                        self.control_token.clone(),
-                        self.private_task_routes(),
-                        self.dialogue_recorder.clone(),
-                    )
+                    self.start_dialogue_bridge()
                     .await?,
                 );
             }
@@ -2743,7 +2662,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
     manager.start_projection();
     manager.start_task_projection();
     axum::Router::new()
-        .route("/api/voice/companion/execution", get(companion_execution_handler).post(companion_update_execution_handler))
+        .route("/api/voice/companion/execution", get(companion_execution_handler))
         .route("/api/voice/companion/tasks", post(companion_submit_task_handler))
         .route("/api/voice/companion/messages", post(companion_keyboard_message_handler))
         .route("/api/voice/companion/tasks/{command_id}", get(companion_task_handler))
@@ -2754,7 +2673,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
         .route("/api/voice/companion/tasks/{command_id}/notification", get(companion_task_notification_handler))
         .route(
             "/api/voice/companion/config",
-            get(companion_config_handler).post(companion_update_config_handler),
+            get(companion_config_handler),
         )
         .route(
             "/api/voice/companion/feedback",
@@ -2824,17 +2743,6 @@ async fn companion_execution_handler(
     axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
 ) -> axum::Json<VoiceExecutionSettings> {
     axum::Json(manager.execution_settings().await)
-}
-
-async fn companion_update_execution_handler(
-    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
-    axum::Json(requested): axum::Json<Option<VoiceExecutionConfig>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    match manager.update_execution(requested).await {
-        Ok(settings) => axum::Json(settings).into_response(),
-        Err(code) => task_api_error(code),
-    }
 }
 
 fn task_api_error(code: String) -> axum::response::Response {
@@ -3018,21 +2926,6 @@ async fn companion_preview_feedback_handler(
         }
         Err(code) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(serde_json::json!({"code":code})),
-        )
-            .into_response(),
-    }
-}
-
-async fn companion_update_config_handler(
-    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
-    axum::Json(config): axum::Json<VoiceDialogueConfig>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    match manager.update_dialogue(config).await {
-        Ok(settings) => axum::Json(settings).into_response(),
-        Err(code) => (
-            axum::http::StatusCode::BAD_REQUEST,
             axum::Json(serde_json::json!({"code":code})),
         )
             .into_response(),
@@ -3289,16 +3182,6 @@ mod tests {
     async fn bv_09_foreground_3s_timeout_returns_unknown_without_cancelling_host_admission() {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("config");
-        std::fs::create_dir_all(&config_dir).unwrap();
-        std::fs::write(config_dir.join("voice_companion.json"), serde_json::to_vec(&serde_json::json!({
-            "autostart": true,
-            "execution": {
-                "workspace": dir.path().to_str().unwrap(),
-                "model": {"provider_id": "test-p", "model": "test-m"}
-            }
-        })).unwrap()).unwrap();
-
         struct SlowRuntime {
             created: Arc<std::sync::atomic::AtomicBool>,
         }
@@ -3355,11 +3238,25 @@ mod tests {
             async fn confirm(&self, _: &str, _: &str, _: &str, _: &str, _: &VoiceToolConfirmation, _: bool) -> Result<(), String> { Ok(()) }
         }
 
+        struct BoundRecorder(VoiceExecutionConfig);
+        #[async_trait::async_trait]
+        impl VoiceDialogueRecorder for BoundRecorder {
+            async fn task_configuration(&self, command: &nomifun_api_types::voice::VoiceTaskCommand) -> Result<Option<crate::voice_dialogue::FrozenVoiceExecution>, String> {
+                assert_eq!(command.session_id, "session-slow");
+                Ok(Some(crate::voice_dialogue::FrozenVoiceExecution {config:self.0.clone(),preset:None,conversation_id:Some("conv-slow".into()),message_id:Some("msg-slow".into()),handoff_content:None,display_text:Some(command.goal.clone()),voice_context_digest:None}))
+            }
+            async fn preflight(&self, _: &VoiceDialogueRequest) -> Result<crate::voice_dialogue::VoiceDialoguePreflight, VoiceDialogueRecorderError> { unreachable!() }
+            async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> { unreachable!() }
+        }
+        let recorder = Arc::new(BoundRecorder(VoiceExecutionConfig {
+            workspace:dir.path().to_string_lossy().into_owned(),model:Some(VoiceModelRef {provider_id:"test-p".into(),model:"test-m".into()}),preset_id:None,session_mode:None,
+        }));
         let created_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let runtime = Arc::new(SlowRuntime { created: created_flag.clone() });
         let manager = Arc::new(VoiceCompanionProcessManager::new(
             Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path(),
-        ).with_tasks("test-owner".into(), runtime));
+        ).with_tasks("test-owner".into(), runtime).with_recorder(recorder));
+        manager.write_autostart_config(true).unwrap();
 
         let generation = manager.generation.load(Ordering::Acquire);
         let instance_id = manager.snapshot().instance_id;
@@ -3403,33 +3300,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_configuration_preserves_other_preferences_and_rejects_implicit_workspaces() {
+    async fn retired_configuration_writes_are_rejected_and_legacy_values_are_ignored() {
         use tower::ServiceExt;
         let dir = tempfile::tempdir().unwrap();
-        let manager = Arc::new(VoiceCompanionProcessManager::new(
-            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path(),
-        ));
-        manager.write_config_entry("dialogue_model", serde_json::json!({"provider_id":"kept-provider", "model":"kept-chat"})).unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),dir.path()));
+        manager.write_config_entry("execution", serde_json::json!({"workspace":dir.path(),"model":{"provider_id":"old","model":"old"}})).unwrap();
         manager.write_config_entry("future", serde_json::json!({"keep":true})).unwrap();
-        let app = voice_companion_routes(manager.clone());
-        let config = serde_json::json!({"workspace":dir.path(), "model":{"provider_id":"requested-provider", "model":"requested-model"}, "preset_id":null, "api_key":"must-not-be-stored"});
-        let request = |body: &serde_json::Value| axum::http::Request::builder().method("POST").uri("/api/voice/companion/execution")
-            .header("content-type","application/json").body(axum::body::Body::from(body.to_string())).unwrap();
-        let response = app.clone().oneshot(request(&config)).await.unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let settings: serde_json::Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(),16_384).await.unwrap()).unwrap();
-        assert_eq!(settings["requested"]["workspace"], config["workspace"]);
-        assert_eq!(settings["available"],false);
-        assert_eq!(settings["reason_code"],"runtime_unavailable");
         let saved = std::fs::read(&manager.config_path).unwrap();
-        let root: serde_json::Value = serde_json::from_slice(&saved).unwrap();
-        assert_eq!(root["future"]["keep"],true);
-        assert_eq!(root["dialogue_model"]["model"],"kept-chat");
-        assert!(root["execution"].get("api_key").is_none());
-        let mut invalid = config;
-        invalid["workspace"] = "relative".into();
-        let rejected = app.oneshot(request(&invalid)).await.unwrap();
-        assert_eq!(rejected.status(),axum::http::StatusCode::BAD_REQUEST);
+        let app = voice_companion_routes(manager.clone());
+        for path in ["/api/voice/companion/execution", "/api/voice/companion/config"] {
+            let response = app.clone().oneshot(axum::http::Request::builder().method("POST").uri(path).header("content-type","application/json")
+                .body(axum::body::Body::from(r#"{"workspace":"relative","dialogue_model":null}"#)).unwrap()).await.unwrap();
+            assert_eq!(response.status(),axum::http::StatusCode::METHOD_NOT_ALLOWED);
+        }
+        let settings = manager.execution_settings().await;
+        assert!(settings.requested.is_none() && settings.effective.is_none() && !settings.available);
         assert_eq!(std::fs::read(&manager.config_path).unwrap(),saved);
         assert!(!manager.status().await.running);
     }
@@ -3459,45 +3344,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialogue_selection_and_enable_intent_preserve_each_other() {
+    async fn retired_dialogue_override_is_ignored_after_restart_and_preferences_are_preserved() {
         struct Models;
         #[async_trait::async_trait]
         impl VoiceDialogueCompleter for Models {
-            async fn resolve_model(
-                &self,
-                choice: Option<&VoiceModelRef>,
-            ) -> Result<VoiceModelRef, String> {
-                choice.cloned().ok_or_else(|| "model_unavailable".into())
+            async fn resolve_model(&self, choice: Option<&VoiceModelRef>) -> Result<VoiceModelRef,String> {
+                assert!(choice.is_none(), "production model resolution must be automatic");
+                Ok(VoiceModelRef {provider_id:"catalog".into(),model:"flash".into()})
             }
-            async fn complete(&self, _: &str, _: Option<&VoiceModelRef>) -> Result<String, String> {
-                unreachable!("configuration cannot invoke a model")
+            async fn complete(&self, _: &str, choice: Option<&VoiceModelRef>) -> Result<String,String> {
+                assert!(choice.is_none(), "actual bridge must not send the retired override");
+                Ok(r#"{"intent_type":"chat","reply_tts":"hello"}"#.into())
             }
         }
         let dir = tempfile::tempdir().unwrap();
-        let manager = VoiceCompanionProcessManager::new(
-            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
-            dir.path(),
-        )
-        .with_dialogue(Arc::new(Models));
-        manager.write_autostart_config(true).unwrap();
-        let selected = VoiceModelRef {
-            provider_id: "catalog-provider".into(),
-            model: "catalog-model".into(),
-        };
-        manager
-            .update_dialogue(VoiceDialogueConfig {
-                dialogue_model: Some(selected.clone()),
-            })
-            .await
-            .unwrap();
-        assert!(manager.read_autostart_config());
+        let path = dir.path().join("config/voice_companion.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = serde_json::json!({"provider_id":"deleted","model":"deleted"});
+        std::fs::write(&path,serde_json::json!({"dialogue_model":old,"future":true,"autostart":true}).to_string()).unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),dir.path()).with_dialogue(Arc::new(Models)));
+        let settings = manager.dialogue_settings().await;
+        assert!(settings.config.dialogue_model.is_none());
+        assert_eq!(settings.effective_model.unwrap().model,"flash");
+        let bridge = manager.start_dialogue_bridge().await.unwrap();
+        let response = reqwest::Client::builder().no_proxy().build().unwrap().post(&bridge.endpoint).header("x-ai-mate-control-token", &manager.control_token)
+            .json(&VoiceDialogueRequest::new("hello")).send().await.unwrap();
+        assert!(response.status().is_success(), "actual private completion route must use automatic selection");
+        assert!(response.text().await.unwrap().contains("hello"));
         manager.write_autostart_config(false).unwrap();
-        let saved: VoiceDialogueConfig =
-            serde_json::from_slice(&std::fs::read(&manager.config_path).unwrap()).unwrap();
-        assert_eq!(saved.dialogue_model, Some(selected));
-        let public = serde_json::to_string(&manager.dialogue_settings().await).unwrap();
-        assert!(!public.contains("token"));
-        assert!(!public.contains("api_key"));
+        let saved:serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["dialogue_model"],old);
+        assert_eq!(saved["future"],true);
+        assert_eq!(saved["autostart"],false);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 # 语音伴侣与本机 runtime · 接口契约
 
+> **2026-10-22 方案 A 修复契约**：新语音连接的执行目录、模型、预设和权限模式来自可信 Conversation 绑定；旧全局 `execution`、`dialogue_model` 不再作为新请求的配置来源。快回复继续自动解析可用快速模型，设置页仅展示有效模型。`GET /execution`、`GET /config` 保留诊断响应形状，其中 `requested` / `dialogue_model` 为 `null`；对应 POST 写入口退役并返回 405。已接受任务保留 journal/ledger 中的原冻结参数，不重绑定、不清理历史。下文旧 POST 契约为历史记录，以本补记为准。验证见 [本轮修复记录](plan-a-configuration-repair-2026-10-22.zh.md)。
+
 > **状态**：🔧 T1–T3 已接线；自动门禁见[实施记录](T0-T5-implementation-progress.zh.md)，安装和 Owner 验收单独记录。
 > **核心原则**：daemon 负责声学，宿主负责交付和产品状态，既有 runtime 执行本机任务。云账号提供模型访问凭据，文件和工作区始终在本机。
 

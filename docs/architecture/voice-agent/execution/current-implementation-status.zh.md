@@ -1,3 +1,4 @@
+> **2026-10-22 方案 A 复审修复**：[配置来源与状态机修复记录](plan-a-configuration-repair-2026-10-22.zh.md) 说明移除隐藏 execution/dialogue_model 覆盖、保留历史冻结交付、快模型只读展示及联合 feature 回归。快回复自动选模，执行任务继承可信 Conversation；不将定向通过等同全仓/硬件签核。以下历史全文保留。
 > **2026-10-22 语音交互优化**：[本轮实施与验证](voice-ui-polish-20261022/IMPLEMENTATION.zh.md) 记录 ignore 后继续倾听、正式会话实时原文/回复、桌宠独立状态区及调试弹窗移除；区分自动回归、隔离界面证据和仍需 Owner 验收的原生设备体验。以下历史全文保留。
 > **2026-10-22 独立复审后的修复状态**：后续审查发现“全部闭环”的历史结论超出证据。当前入口为 [复审修复记录](voice-repair-20261022/REPAIR-RESULTS.zh.md)：逐项记录状态/队列/归属/上下文/重放/持久化修复，并区分自动测试、真实 runtime 工具、隔离浏览器和 Owner/设备签核；不沿用 VP 全 Passed 或无依据的性能数值。以下历史全文保留。
 > **2026-10-21 F01–F08 彻底收口与验证状态**：按照 [15f9a70fc 独立复审报告](R1-R5-15f9a70fc-independent-review-2026-10-21.zh.md) 与 [统一方案 §10](R1-R5-execution-coaching-2026-10-21.zh.md#sensevoice-consolidated-execution)，8 项阻断问题（F01–F08）已全部彻底解决并闭环：

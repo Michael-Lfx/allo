@@ -181,6 +181,10 @@ pub trait VoiceDialogueRecorder: Send + Sync {
     async fn fallback_execution(&self) -> Result<Option<nomifun_api_types::voice::VoiceExecutionConfig>, String> {
         Ok(None)
     }
+    /// Read an existing session's frozen configuration without creating a binding.
+    async fn bound_execution(&self, _session: &str) -> Result<Option<nomifun_api_types::voice::VoiceExecutionConfig>, String> {
+        Ok(None)
+    }
     async fn preflight(
         &self,
         request: &VoiceDialogueRequest,

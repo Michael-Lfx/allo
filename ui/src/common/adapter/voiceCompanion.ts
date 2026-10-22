@@ -55,8 +55,6 @@ export interface VoiceSnapshot {
 }
 
 export interface VoiceModelRef { provider_id: string; model: string }
-export interface VoiceExecutionConfig { workspace: string; model: VoiceModelRef | null; preset_id: string | null }
-export interface VoiceExecutionSettings { requested: VoiceExecutionConfig | null; effective: VoiceExecutionConfig | null; available: boolean; reason_code: string | null }
 export interface VoiceTaskSnapshot {
   command_id: string;
   session_id: string;
@@ -108,8 +106,6 @@ async function voiceTaskRequest<T>(path: string, body?: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getVoiceExecutionSettings(): Promise<VoiceExecutionSettings> { return voiceTaskRequest('/execution'); }
-export function saveVoiceExecutionSettings(config: VoiceExecutionConfig | null): Promise<VoiceExecutionSettings> { return voiceTaskRequest('/execution', config); }
 export function getVoiceTask(commandId: string): Promise<VoiceTaskSnapshot> { return voiceTaskRequest(`/tasks/${encodeURIComponent(commandId)}`); }
 export function cancelVoiceTask(instanceId:string,task:VoiceTaskSnapshot):Promise<VoiceTaskSnapshot> {
   return voiceTaskRequest(`/tasks/${encodeURIComponent(task.command_id)}/cancel`,{
@@ -137,12 +133,7 @@ export function saveVoiceFeedback(patch: Partial<VoiceFeedbackConfig>): Promise<
 export async function previewVoiceFeedback(kind: VoicePreviewKind): Promise<void> { await feedbackRequest('/preview', {kind}); }
 export interface VoiceDialogueSettings { dialogue_model: VoiceModelRef | null; effective_model: VoiceModelRef | null; available: boolean }
 export async function getVoiceDialogueSettings(): Promise<VoiceDialogueSettings> {
-  const response = await fetch(`${getBaseUrl()}/api/voice/companion/config`,{headers:buildBackendAuthHeaders('GET'),credentials:'same-origin'});
-  if (!response.ok) throw new Error('voice_model_configuration_failed');
-  return response.json() as Promise<VoiceDialogueSettings>;
-}
-export async function saveVoiceDialogueModel(dialogue_model: VoiceModelRef | null): Promise<VoiceDialogueSettings> {
-  const response = await fetch(`${getBaseUrl()}/api/voice/companion/config`,{method:'POST',headers:{...buildBackendAuthHeaders('POST'),'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({dialogue_model})});
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/config`,{headers:buildBackendAuthHeaders('GET'),credentials:'same-origin',signal:AbortSignal.timeout(5000)});
   if (!response.ok) throw new Error('voice_model_configuration_failed');
   return response.json() as Promise<VoiceDialogueSettings>;
 }
