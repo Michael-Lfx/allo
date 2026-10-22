@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.6 - 2026-10-22
+
+- Pinning a local Herdsman model keeps inference on this machine and reports the local error instead of falling through to the cloud.
+- Short-drama shots constrain characters with written blocking so one reference face is not pasted onto two bodies.
+- Opening a collaboration task works again, and running sub-agents expose a read-only projection. Agent Store listings return localized display fields (`fp-18`), and catalog search matches multiple terms with highlight ranges plus usage hints.
+
 ## v1.6.5 - 2026-10-21
 
 - The app discovers a local Herdsman instance and lists its running models.
