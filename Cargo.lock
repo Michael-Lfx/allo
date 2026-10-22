@@ -8338,6 +8338,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "nomifun-voice-models"
+version = "1.6.5"
+dependencies = [
+ "axum",
+ "futures-util",
+ "hex",
+ "http-body-util",
+ "nomifun-api-types",
+ "nomifun-common",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "nomifun-voice-terminal"
+version = "1.6.5"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "jsonschema",
+ "nomifun-api-types",
+ "nomifun-audio",
+ "nomifun-common",
+ "reqwest 0.12.28",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sherpa-onnx",
+ "symphonia",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nomifun-web"
 version = "1.6.8"
 dependencies = [
