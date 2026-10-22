@@ -181,15 +181,17 @@ async fn rule_triage_sorts_metadata_empty_and_navigation_files_into_noise() {
     assert_eq!(report.candidates().len(), 1);
 }
 
+/// h3：同内容对里规整文件名（无备份/错位标记）优先于 mtime——即使旧名
+/// 副本（guide-old 带 old 标记）更新，canonical 仍是规整的 guide.md。
 #[tokio::test]
-async fn identical_content_files_keep_the_newest_as_canonical() {
+async fn identical_content_files_pick_the_regular_name_over_a_newer_marked_copy() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;
     let (kb_id, root) = create_blank_base(&knowledge, "项目文档").await;
     let content = "# 使用指南\n\n第一步安装依赖，第二步运行迁移。\n";
     write_kb_file(&root, "guide.md", content);
     write_kb_file(&root, "archive/guide-old.md", content);
-    set_mtime(&root, "archive/guide-old.md", at_secs(1_700_000_000));
-    set_mtime(&root, "guide.md", at_secs(1_700_100_000));
+    set_mtime(&root, "guide.md", at_secs(1_700_000_000));
+    set_mtime(&root, "archive/guide-old.md", at_secs(1_700_900_000));
 
     let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "上手该项目", None).await.unwrap();
 
@@ -199,12 +201,164 @@ async fn identical_content_files_keep_the_newest_as_canonical() {
     assert_eq!(duplicate.path, "archive/guide-old.md");
     assert_eq!(duplicate.duplicate_of, "guide.md");
     assert!(
-        duplicate.canonical_reason.contains("最新"),
+        duplicate.canonical_reason.contains("规整"),
         "canonical_reason: {}",
         duplicate.canonical_reason
     );
     let excluded_paths: Vec<&str> = report.excluded.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(excluded_paths, ["archive/guide-old.md"]);
+}
+
+/// h3 验收:数字章前缀的正身 vs mtime 更新的备份副本(z9-…-备份)——规整
+/// 文件名优先于 mtime,canonical 落在 05 而不是系统性更新的备份。
+#[tokio::test]
+async fn regular_chapter_prefix_beats_a_newer_backup_copy_as_canonical() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "算法讲义").await;
+    let content = "# 链表\n\n单链表与双链表的结构、插入与删除操作。\n";
+    write_kb_file(&root, "05-LinkedList.md", content);
+    write_kb_file(&root, "z9-LinkedList-备份.md", content);
+    set_mtime(&root, "05-LinkedList.md", at_secs(1_700_000_000));
+    set_mtime(&root, "z9-LinkedList-备份.md", at_secs(1_700_900_000));
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "数据结构入门", None).await.unwrap();
+
+    assert_eq!(report.counts.duplicate, 1);
+    assert_eq!(report.counts.core, 1, "正身 05 进候选");
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "z9-LinkedList-备份.md");
+    assert_eq!(duplicate.duplicate_of, "05-LinkedList.md");
+    assert!(
+        duplicate.canonical_reason.contains("规整"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+    let canonical = report
+        .files
+        .iter()
+        .find(|file| file.rel_path == "05-LinkedList.md")
+        .unwrap();
+    assert_eq!(canonical.role, KbTriageRole::Core);
+}
+
+/// h3 验收:错位超序副本(999-错位-…)即使 mtime 更新也不当正身,canonical
+/// 落在数字章前缀规整的 11。
+#[tokio::test]
+async fn regular_chapter_prefix_beats_a_newer_misfiled_copy_as_canonical() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "算法讲义乙").await;
+    let content = "# 哈希表\n\n哈希函数、冲突处理与负载均衡的取舍。\n";
+    write_kb_file(&root, "11-哈希.md", content);
+    write_kb_file(&root, "999-错位-哈希.md", content);
+    set_mtime(&root, "11-哈希.md", at_secs(1_700_000_000));
+    set_mtime(&root, "999-错位-哈希.md", at_secs(1_700_900_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "哈希入门", None).await.unwrap();
+
+    assert_eq!(report.counts.duplicate, 1);
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "999-错位-哈希.md");
+    assert_eq!(duplicate.duplicate_of, "11-哈希.md");
+    assert!(
+        duplicate.canonical_reason.contains("规整"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+}
+
+/// h3:超序占位前缀(≥900,如 999-)即使文件名不带备份/错位字样也降权
+/// ——数字章前缀的「规整」要落在正常序号范围内。
+#[tokio::test]
+async fn a_placeholder_sized_numeric_prefix_alone_is_demoted() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "算法讲义丙").await;
+    let content = "# 哈希表\n\n开放寻址与链地址法的实现对比。\n";
+    write_kb_file(&root, "11-哈希.md", content);
+    write_kb_file(&root, "999-哈希.md", content);
+    set_mtime(&root, "11-哈希.md", at_secs(1_700_000_000));
+    set_mtime(&root, "999-哈希.md", at_secs(1_700_900_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "哈希入门", None).await.unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "999-哈希.md");
+    assert_eq!(duplicate.duplicate_of, "11-哈希.md");
+    assert!(
+        duplicate.canonical_reason.contains("规整"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+}
+
+/// h3:数字章前缀对同样干净的无前缀名加成——即使无前缀副本 mtime 更新,
+/// 带规整章号的文件当正身。
+#[tokio::test]
+async fn a_numbered_name_beats_an_equally_clean_unnumbered_copy() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "指南库").await;
+    let content = "# 学习指南\n\n环境配置、依赖安装与首个示例。\n";
+    write_kb_file(&root, "05-guide.md", content);
+    write_kb_file(&root, "guide.md", content);
+    set_mtime(&root, "05-guide.md", at_secs(1_700_000_000));
+    set_mtime(&root, "guide.md", at_secs(1_700_900_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "上手指南", None).await.unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "guide.md");
+    assert_eq!(duplicate.duplicate_of, "05-guide.md");
+    assert!(
+        duplicate.canonical_reason.contains("规整"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+}
+
+/// h3:规整度同分(都无前缀、无降权标记)→ mtime 分高下,「最新」语义保留。
+#[tokio::test]
+async fn equally_regular_names_fall_back_to_newest_mtime() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "手册库").await;
+    let content = "# 部署手册\n\n蓝绿部署与回滚步骤。\n";
+    write_kb_file(&root, "guide.md", content);
+    write_kb_file(&root, "docs/manual.md", content);
+    set_mtime(&root, "guide.md", at_secs(1_700_000_000));
+    set_mtime(&root, "docs/manual.md", at_secs(1_700_900_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "部署入门", None).await.unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "guide.md");
+    assert_eq!(duplicate.duplicate_of, "docs/manual.md");
+    assert!(
+        duplicate.canonical_reason.contains("最新"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
+}
+
+/// h3:规整度与 mtime 全平手 → 路径字典序兜底(确定性,纯规则可复现)。
+#[tokio::test]
+async fn a_full_tie_falls_back_to_stable_path_order() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "笔记库").await;
+    let content = "# 备忘\n\n同一份笔记的两份拷贝,完全同文。\n";
+    write_kb_file(&root, "notes/b.md", content);
+    write_kb_file(&root, "notes/a.md", content);
+    set_mtime(&root, "notes/b.md", at_secs(1_700_000_000));
+    set_mtime(&root, "notes/a.md", at_secs(1_700_000_000));
+
+    let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "备忘速览", None).await.unwrap();
+
+    let duplicate = &report.duplicates[0];
+    assert_eq!(duplicate.path, "notes/b.md");
+    assert_eq!(duplicate.duplicate_of, "notes/a.md");
+    assert!(
+        duplicate.canonical_reason.contains("路径字典序"),
+        "canonical_reason: {}",
+        duplicate.canonical_reason
+    );
 }
 
 #[tokio::test]
@@ -258,16 +412,18 @@ async fn microsoft_layout_pairs_translations_and_orphans_stay_originals() {
     );
 }
 
+/// h3：翻译副本层照旧（非翻译后缀原文优先），同 hash 层改为规整文件名
+/// 优先——backup/ 目录副本即使 mtime 更新也不当正身。
 #[tokio::test]
-async fn canonical_picks_the_original_and_the_newest_among_old_copies() {
+async fn canonical_picks_the_regular_original_over_a_newer_backup_copy() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;
     let (kb_id, root) = create_blank_base(&knowledge, "报告库").await;
     let content = "# 季度报告\n\n收入、成本与留存的数据汇总正文。\n";
     write_kb_file(&root, "report.md", content);
     write_kb_file(&root, "backup/report.md", content);
     write_kb_file(&root, "report.en.md", "# Quarterly Report\n\nThe English translation of the quarterly report.\n");
-    set_mtime(&root, "backup/report.md", at_secs(1_700_000_000));
-    set_mtime(&root, "report.md", at_secs(1_700_200_000));
+    set_mtime(&root, "report.md", at_secs(1_700_000_000));
+    set_mtime(&root, "backup/report.md", at_secs(1_700_900_000));
 
     let (_inventory, report) = run_kb_triage(&knowledge, &[kb_id], "季度经营复盘", None).await.unwrap();
 
@@ -281,7 +437,13 @@ async fn canonical_picks_the_original_and_the_newest_among_old_copies() {
     assert_eq!(by_path["report.en.md"].duplicate_of, "report.md");
     assert!(by_path["report.en.md"].canonical_reason.contains("原文"));
     assert_eq!(by_path["backup/report.md"].duplicate_of, "report.md");
-    assert!(by_path["backup/report.md"].canonical_reason.contains("最新"));
+    assert!(
+        by_path["backup/report.md"]
+            .canonical_reason
+            .contains("规整"),
+        "canonical_reason: {}",
+        by_path["backup/report.md"].canonical_reason
+    );
     let canonical = report.files.iter().find(|file| file.rel_path == "report.md").unwrap();
     assert_eq!(canonical.role, KbTriageRole::Core);
 }
@@ -652,6 +814,11 @@ async fn dirty_kb_triage_conserves_every_file_and_accounts_for_each_exclusion() 
         .find(|dup| dup.path == "archive/ch1-old.md")
         .expect("同 hash 重复按规则标 duplicate");
     assert_eq!(old_copy.duplicate_of, "ch1.md");
+    assert!(
+        old_copy.canonical_reason.contains("规整"),
+        "h3：同 hash 层按规整文件名选正身：{}",
+        old_copy.canonical_reason
+    );
 
     // uncertain 保留并可见。
     let stub = report.files.iter().find(|file| file.rel_path == "stub.md").unwrap();
