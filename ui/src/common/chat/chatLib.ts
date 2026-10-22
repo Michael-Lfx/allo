@@ -41,6 +41,20 @@ export const parseConfirmationCorrelationId = (value: unknown): ConfirmationCorr
   return value as ConfirmationCorrelationId;
 };
 
+/** Voice approvals carry the exact pending registration in the existing opaque id. */
+export const confirmationSubmissionScope = (id: string, messageId: string | undefined, value: string) => {
+  const scoped = id.startsWith('voice:');
+  const parts = scoped ? id.split(':') : [];
+  if (scoped && (parts.length !== 4 || !parts[3] || !['proceed_once', 'cancel'].includes(value))) {
+    throw new TypeError('invalid scoped tool approval');
+  }
+  return {
+    msg_id: parseConfirmationCorrelationId(messageId ?? (scoped ? parts[3] : id)),
+    data: { value, ...(scoped ? { approval_id: id } : {}) },
+    always_allow: !scoped && value === 'proceed_always',
+  };
+};
+
 /**
  * @description 跟对话相关的消息类型申明 及相关处理
  */

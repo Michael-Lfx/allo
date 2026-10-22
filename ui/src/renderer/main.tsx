@@ -43,7 +43,7 @@ import { configService } from '@/common/config/configService';
 import { application } from '@/common/adapter/ipcBridge';
 import * as ipcBridgeModule from '@/common/adapter/ipcBridge';
 import { getBaseUrl, isHandledAuthExpiredHttpError, probeBackendTransport } from '@/common/adapter/httpBridge';
-import { getBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
+import { getBrowserStorageGeneration, hasBrowserStorageGeneration, setBrowserStorageGeneration } from '@/common/utils/browserStorageKey';
 configService.initialize().catch((err) => {
   console.error('Failed to initialize config:', err);
 });
@@ -294,7 +294,9 @@ const Main = () => {
       .then(async ([info]) => {
         let generationChanged = false;
         try {
-          generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+          if (hasBrowserStorageGeneration()) {
+            generationChanged = getBrowserStorageGeneration() !== info.storageGeneration;
+          }
         } catch {
           // The first authenticated bootstrap has no prior generation.
         }

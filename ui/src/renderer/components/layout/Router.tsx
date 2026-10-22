@@ -1,4 +1,5 @@
 import React, { Suspense, useEffect, useLayoutEffect } from 'react';
+import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
@@ -59,6 +60,7 @@ const CompanionPage = React.lazy(() => import('@renderer/pages/companion'));
 const MemoryPanelPage = React.lazy(() => import('@renderer/pages/memoryPanel'));
 const CompletionToastPage = React.lazy(() => import('@renderer/pages/completionToast'));
 const MeetingCaptionsPage = React.lazy(() => import('@renderer/pages/meetingCaptions'));
+const VoiceSessionPage = React.lazy(() => import('@renderer/pages/voiceSession'));
 const PoiSettings = React.lazy(() => import('@renderer/pages/settings/PoiSettings'));
 const LearningSettings = React.lazy(() => import('@renderer/pages/settings/LearningSettings'));
 const InsightsSettings = React.lazy(() => import('@renderer/pages/settings/InsightsSettings'));
@@ -69,6 +71,7 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const LinkPhonePage = React.lazy(() => import('@renderer/pages/link'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
+const VoiceSettings = React.lazy(() => import('@renderer/pages/settings/VoiceSettings'));
 const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
@@ -128,6 +131,7 @@ const withRouteFallback = (
 ) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
 
 const SessionShellRoute: React.FC = () => {
+  useVoiceContext();
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
@@ -320,6 +324,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
         <Route path='/nomi-memory-panel' element={withRouteFallback(MemoryPanelPage, { fullscreen: true })} />
         <Route path='/completion-toast' element={withRouteFallback(CompletionToastPage, { fullscreen: true })} />
         <Route path='/meeting-captions' element={withRouteFallback(MeetingCaptionsPage, { fullscreen: true })} />
+        <Route path='/voice-session' element={withRouteFallback(VoiceSessionPage, { fullscreen: true })} />
         {/* Isolated UI catalog — public so the first-cut preview works without login. */}
         <Route path='/test/beautiful-ui' element={withRouteFallback(BeautifulUiPreviewPage, { fullscreen: true })} />
         <Route path='/test/color-lab' element={withRouteFallback(ColorLabPage, { fullscreen: true })} />
@@ -370,6 +375,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/moa' element={withRouteFallback(MoaSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
+          <Route path='/settings/voice' element={withRouteFallback(VoiceSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           {/* Feature pages embedded inside Settings */}

@@ -3,6 +3,8 @@
 import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
+import {sendVoiceKeyboardMessage} from '@common/adapter/voiceCompanion';
+import VoiceConversationBar from '@renderer/pages/voiceSession/VoiceConversationBar';
 import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { uuid, uuidv7 } from '@/common/utils';
@@ -234,6 +236,9 @@ const NomiSendBox: React.FC<{
   hideModelSelector = false,
 }) => {
   const [workspacePath, setWorkspacePath] = useState('');
+  const [voiceConversation,setVoiceConversation]=useState<{id:string;voice:boolean}|null>(null);
+  const isVoiceConversation=voiceConversation?.id===conversation_id&&voiceConversation.voice;
+  const voiceSendAttempts=useRef(new Map<string,string>());
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
     reasoning_effort
@@ -433,6 +438,27 @@ const NomiSendBox: React.FC<{
   }, [conversation_id]);
   const prepareRuntimeForRead = useCallback(async () => {
     await warmupConversationForPassiveMount(conversation_id);
+  }, [conversation_id]);
+
+  useEffect(() => {
+  useEffect(() => {
+    let disposed = false;
+    void getConversationOrNull(conversation_id)
+      .then((res) => {
+        if (disposed) return;
+        const isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
+        setVoiceConversation({ id: conversation_id, voice: isVoice });
+        if (!res?.extra?.workspace) return;
+        setWorkspacePath(res.extra.workspace);
+      })
+      .catch(() => {
+        if (!disposed) {
+          setVoiceConversation({ id: conversation_id, voice: false });
+        }
+      });
+    return () => {
+      disposed = true;
+    };
   }, [conversation_id]);
 
   useEffect(() => {
@@ -726,7 +752,7 @@ const NomiSendBox: React.FC<{
     resetActiveExecution,
   } = useConversationCommandQueue({
     conversation_id: conversation_id,
-    enabled: true,
+    enabled: voiceConversation?.id===conversation_id && !voiceConversation.voice,
     isBusy,
     isHydrated: hasHydratedRunningState,
     onExecute: executeCommand,
@@ -735,6 +761,8 @@ const NomiSendBox: React.FC<{
   // Handle initial message from Guid page — wait until model is ready
   useEffect(() => {
     if (!conversation_id || !current_model?.use_model) return;
+    if(voiceConversation?.id!==conversation_id)return;
+    if(isVoiceConversation){emitter.emit('conversation.transition.reveal',{conversation_id});return;}
 
     const target = conversationTarget(conversation_id);
     const draftStorageKey = sessionStorageKey('draft', target);
@@ -854,6 +882,8 @@ const NomiSendBox: React.FC<{
     void processInitialMessage();
   }, [
     conversation_id,
+    voiceConversation,
+    isVoiceConversation,
     current_model?.use_model,
     executeCommand,
     modelSelection.isModelCatalogLoading,
@@ -864,6 +894,26 @@ const NomiSendBox: React.FC<{
 
   const onSendHandler = async (message: string) => {
     const filesToSend = collectSelectedFiles(uploadFile, atPath);
+
+    let isVoice = isVoiceConversation;
+    if (voiceConversation?.id !== conversation_id) {
+      const res = await getConversationOrNull(conversation_id).catch(() => null);
+      isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
+      setVoiceConversation({ id: conversation_id, voice: isVoice });
+    }
+
+    if (isVoice) {
+      if (filesToSend.length) throw new Error(t('voice.queue.plainTextOnly'));
+      const key = JSON.stringify([conversation_id, message]);
+      let commandId = voiceSendAttempts.current.get(key);
+      if (!commandId) {
+        commandId = uuid();
+        voiceSendAttempts.current.set(key, commandId);
+      }
+      await sendVoiceKeyboardMessage(conversation_id, commandId, message);
+      if (voiceSendAttempts.current.get(key) === commandId) voiceSendAttempts.current.delete(key);
+      return;
+    }
 
     const queued = enqueue({ input: message, files: filesToSend, workspace_path: workspacePath });
     if (!queued) {
@@ -878,6 +928,13 @@ const NomiSendBox: React.FC<{
   const onSendWithSkillsHandler = useCallback(
     async (message: string, injectSkills: string[]) => {
       const filesToSend = collectSelectedFiles(uploadFile, atPath);
+      let isVoice = isVoiceConversation;
+      if (voiceConversation?.id !== conversation_id) {
+        const res = await getConversationOrNull(conversation_id).catch(() => null);
+        isVoice = Boolean(res?.extra && 'voice' in res.extra && res.extra.voice === true);
+        setVoiceConversation({ id: conversation_id, voice: isVoice });
+      }
+      if (isVoice) throw new Error(t('voice.queue.plainTextOnly'));
 
       // The queue stores plain commands only. A selected Skill is an atomic
       // snapshot load for this turn, so reject it while a turn is busy and let
@@ -897,7 +954,7 @@ const NomiSendBox: React.FC<{
       clearFiles();
       emitter.emit('nomi.selected.file.clear');
     },
-    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, t, uploadFile]
+    [atPath, clearFiles, executeCommand, hasPendingCommands, isBusy, isVoiceConversation, voiceConversation, conversation_id, t, uploadFile]
   );
 
   // 编辑最近一条用户消息并截断重跑。每一个结果都先经过后端 receipt +
@@ -1852,7 +1909,7 @@ const NomiSendBox: React.FC<{
 
   return (
     <div className={CHAT_COMPOSER_WRAPPER_CLASSES}>
-      <CommandQueuePanel
+      {!isVoiceConversation&&<CommandQueuePanel
         items={queuedCommands}
         paused={isQueuePaused}
         interactionLocked={isQueueInteractionLocked}
@@ -1865,7 +1922,7 @@ const NomiSendBox: React.FC<{
         onReorder={reorder}
         onRemove={remove}
         onClear={clear}
-      />
+      />}
       {requiresConversationReset && (
         <Alert
           className='mb-8px'
@@ -1918,6 +1975,7 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
+      {isVoiceConversation&&<VoiceConversationBar conversationId={conversation_id}/>}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
@@ -1931,7 +1989,7 @@ const NomiSendBox: React.FC<{
           setAtPath(items);
         }}
         loading={isBusy}
-        disabled={requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
+        disabled={voiceConversation?.id!==conversation_id || requiresConversationReset || !current_model?.use_model || !modelSelection.isCurrentModelAvailable}
         placeholder={
           current_model?.use_model && modelSelection.isCurrentModelAvailable
             ? t('acp.sendbox.placeholder', {

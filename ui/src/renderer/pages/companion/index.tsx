@@ -7,6 +7,8 @@ import { parseCompanionId, type CompanionId, type ConversationId } from '@/commo
 import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
+import { stopVoiceSession, wakeVoiceSession } from '@/common/adapter/voiceCompanion';
+import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
 import { extractResponseTextChunk } from '@/common/chat/displayText';
 import MarkdownView from '@/renderer/components/Markdown';
@@ -147,6 +149,22 @@ const CompanionPage: React.FC = () => {
   const [unread, setUnread] = useState(0);
   const [suggestions, setSuggestions] = useState<ICompanionSuggestion[]>([]);
   const [input, setInput] = useState('');
+  const {snapshot:voiceSnapshot}=useVoiceSnapshot();
+  const [voiceEntryFailed,setVoiceEntryFailed]=useState(false);
+  const voiceOwned=Boolean(companionId&&voiceSnapshot?.binding?.memory_owner_companion_id===companionId);
+  const voiceActive=voiceOwned&&Boolean(voiceSnapshot?.session_id)&&!voiceSnapshot?.ended_reason&&voiceSnapshot?.phase!=='idle';
+  const enterVoice = useCallback(async () => {
+    setVoiceEntryFailed(false);
+    try {
+      if (voiceActive && voiceSnapshot) {
+        await stopVoiceSession(voiceSnapshot);
+      } else {
+        await wakeVoiceSession();
+      }
+    } catch {
+      setVoiceEntryFailed(true);
+    }
+  }, [voiceActive, voiceSnapshot]);
   const deliveryPendingRef = useRef(false);
   /** 光标是否停在伙伴交互区（由 useCompanionClickThrough 上报）：驱动「悬停才出现」的
    *  迷你输入条显隐 + 进出点击穿透命中集。替代纯 CSS :hover（穿透态下 webview 收不到
@@ -166,7 +184,7 @@ const CompanionPage: React.FC = () => {
   const [dragging, setDragging] = useState(false);
   const draggingRef = useRef(false);
   const quiet = Boolean(profile && inQuietHours(profile.appearance.quiet_start, profile.appearance.quiet_end));
-  const petFeed = useCompanionPetFeed({ companionId, mood, activity, quiet });
+  const petFeed = useCompanionPetFeed({ companionId, mood, activity, quiet, voice:voiceSnapshot });
   /** 立绘命中元素 ref：传给 CompanionAvatar→CustomFigure 挂 alpha 掩码。 */
   const figureHitRef = useRef<HTMLDivElement | null>(null);
   const unreadBadgeRef = useRef<HTMLButtonElement | null>(null);
@@ -1820,6 +1838,16 @@ const CompanionPage: React.FC = () => {
         })();
         return;
       }
+      if (action === 'open-voice') {
+        void (async () => {
+          try {
+            await enterVoice();
+          } catch (e) {
+            console.error('companion open voice session failed:', e);
+          }
+        })();
+        return;
+      }
       if (action === 'open-memories') {
         // Lands on the scope-aware Memories tab for this companion (shared +
         // its own private). Memories live in the companion domain now.
@@ -1998,11 +2026,18 @@ const CompanionPage: React.FC = () => {
             </button>
           )}
           <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
+          {(voiceActive||voiceEntryFailed)&&<p role={voiceEntryFailed?'alert':'status'} className='m-0 text-12px text-t-primary' data-companion-hit>
+            {voiceEntryFailed?t('voice.session.unavailable'):t('voice.session.phase.'+voiceSnapshot!.phase)}
+          </p>}
           <div
             ref={figureHitRef}
             className='nomi-companion-figure-hit'
             data-companion-hit
             onMouseDown={(e) => void startDrag(e)}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              void enterVoice();
+            }}
           >
             <CompanionAvatar
               character={profile?.character}
@@ -2083,6 +2118,33 @@ const CompanionPage: React.FC = () => {
                 </svg>
               )}
             </button>
+            <button
+              type='button'
+              className='nomi-companion-composer__voice'
+              title={t('nomi.companion.menuOpenVoice')}
+              aria-label={t('nomi.companion.menuOpenVoice')}
+              aria-pressed={voiceActive}
+              onClick={(e) => {
+                e.stopPropagation();
+                void enterVoice();
+              }}
+            >
+              <svg
+                width='16'
+                height='16'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                strokeLinecap='round'
+                strokeLinejoin='round'
+              >
+                <path d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z' />
+                <path d='M19 10v2a7 7 0 0 1-14 0v-2' />
+                <line x1='12' y1='19' x2='12' y2='23' />
+                <line x1='8' y1='23' x2='16' y2='23' />
+              </svg>
+            </button>
             <div className='spacer' />
             <button
               data-button-shape='pill'
@@ -2123,6 +2185,33 @@ const CompanionPage: React.FC = () => {
               if (e.key === 'Enter' && !isImeActive(e)) void sendChat();
             }}
           />
+          <button
+            type='button'
+            className='nomi-companion-iconbtn'
+            title={t('nomi.companion.menuOpenVoice')}
+            aria-label={t('nomi.companion.menuOpenVoice')}
+            aria-pressed={voiceActive}
+            onClick={(e) => {
+              e.stopPropagation();
+              void enterVoice();
+            }}
+          >
+            <svg
+              width='14'
+              height='14'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              strokeLinecap='round'
+              strokeLinejoin='round'
+            >
+              <path d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z' />
+              <path d='M19 10v2a7 7 0 0 1-14 0v-2' />
+              <line x1='12' y1='19' x2='12' y2='23' />
+              <line x1='8' y1='23' x2='16' y2='23' />
+            </svg>
+          </button>
           <div className='nomi-companion-iconbtn' title={t('nomi.companion.expand')} onClick={openComposer}>
             <svg
               width='14'

@@ -148,7 +148,12 @@ export default defineConfig(({ mode }) => {
   const wsTarget = `ws://127.0.0.1:${apiPort}`;
   // Same loopback host on both sides — keep the original Host header so the
   // backend's host-only session cookie maps cleanly back onto 127.0.0.1:5173.
-  const httpProxy = { target: apiTarget, changeOrigin: false };
+  const handleProxyError = (proxy: any) => {
+    proxy.on('error', (_err: any) => {
+      // Gracefully swallow proxy errors when backend is not listening or restarting
+    });
+  };
+  const httpProxy = { target: apiTarget, changeOrigin: false, configure: handleProxyError };
   const proxy = webdev
     ? {
         '/api': httpProxy,
@@ -156,7 +161,7 @@ export default defineConfig(({ mode }) => {
         '/logout': httpProxy,
         '/qr-login': httpProxy,
         '/health': httpProxy,
-        '/ws': { target: wsTarget, ws: true, changeOrigin: false },
+        '/ws': { target: wsTarget, ws: true, changeOrigin: false, configure: handleProxyError },
       }
     : undefined;
 
