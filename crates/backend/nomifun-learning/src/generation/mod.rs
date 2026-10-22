@@ -359,6 +359,8 @@ pub use self::triage::{
 };
 // t1 分诊批大小（t5 成本门估算按同一把尺估批数）。
 pub(crate) use self::triage::TRIAGE_BATCH_MAX_FILES;
+// t3 分批展开的单批文件上限（评审 S2:成本门按章拆批的同一把尺）。
+pub(crate) use self::expand::EXPANSION_BATCH_MAX_FILES;
 // 证据驱动的结构发现（t2）：SourcePlan 类型与编排入口经 lib.rs 再导出
 // （ai-agent 简报披露消费 brief_line；t3 分批展开/t4 落库消费类型）。
 pub use self::structure::run_kb_structure;

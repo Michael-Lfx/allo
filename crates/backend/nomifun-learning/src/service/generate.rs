@@ -37,6 +37,52 @@ fn outline_brief_topic(brief: &OutlineBrief) -> String {
     }
 }
 
+/// 内部 kill switch 的进程内 env 名（Q13,评审 S3）：置 off/0/false 禁用
+/// 「清点分诊 → 结构发现 → 展开」新管线,回退现状采样+大纲引擎。运维级
+/// 开关——不进 UI/用户配置面,默认(未设/其它值)新管线开启。
+pub(super) const SOURCE_PLAN_KILL_SWITCH_ENV: &str = "NOMI_LEARNING_SOURCE_PLAN";
+
+/// kill switch 命中判定（off/0/false;大小写与首尾空白宽容）。
+pub(super) fn is_source_plan_kill_switch_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false"
+    )
+}
+
+/// 新管线是否被内部 kill switch 禁用（进程内 env 读取;默认开启）。
+fn source_plan_pipeline_disabled() -> bool {
+    std::env::var(SOURCE_PLAN_KILL_SWITCH_ENV)
+        .map(|value| is_source_plan_kill_switch_value(&value))
+        .unwrap_or(false)
+}
+
+/// 展开批数估算（评审 S2:成本门按章估算,不再按文件数近似）——有 plan
+/// 时每章一批,单章锚点文件数超 [`EXPANSION_BATCH_MAX_FILES`] 才按文件数
+/// 拆批;无 plan（估算端不跑 LLM 结构发现）退保守上界 = 候选文件数（最坏
+/// 每个候选文件自成一章）,宁可高估不漏估（成本门的职责是拦住大库）。
+pub(super) fn estimate_expansion_batches(
+    plan: Option<&crate::generation::SourcePlan>,
+    candidate_files: usize,
+) -> usize {
+    let Some(plan) = plan.filter(|plan| !plan.chapters.is_empty()) else {
+        return candidate_files;
+    };
+    plan.chapters
+        .iter()
+        .map(|chapter| {
+            let files: HashSet<&str> = chapter
+                .source_anchors
+                .iter()
+                .map(|anchor| anchor.rel_path.as_str())
+                .collect();
+            files
+                .len()
+                .div_ceil(crate::generation::EXPANSION_BATCH_MAX_FILES)
+        })
+        .sum()
+}
+
 impl LearningService {
     /// Generate a course synchronously. Exactly one source must be set
     /// (knowledge base or free-text description) — enforced by
@@ -75,10 +121,20 @@ impl LearningService {
         let session = generate_id();
         let _task =
             self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
+        // t5(评审 S5):started 前导任何 triage/结构发现阶段帧——后续任何
+        // failed(分诊/展开/导入失败)都有 started 前缀,进度视图不会收到
+        // 无源 failed。
+        self.emit_course_event(serde_json::json!({
+            "phase": "started",
+            "kind": brief.kind(),
+        }));
         // t2 结构发现 + t3 分批展开(仅 KB 流 + 引擎路径):t1 清点/分诊 →
         // 证据驱动章节骨架 → **有可用 plan 时按章展开直接产 Blueprint(不再
         // 调大纲引擎)**;展开失败(非取消)→ 回退现行大纲引擎路径(degraded
         // 不阻断);无 completer/连续失败/零证据 → 无 plan,采样路径照旧。
+        // 内部 kill switch(Q13,评审 S3):`NOMI_LEARNING_SOURCE_PLAN` 置
+        // off/0/false 时不跑新管线,直接走现状采样+大纲引擎(行为等同现状;
+        // 运维开关,非用户可见 flag,默认新管线开启)。
         // 遗留 one-shot 兜底路径(无引擎)不跑结构发现——它无法兑现 plan 的
         // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
         let mut brief = brief;
@@ -90,7 +146,10 @@ impl LearningService {
             crate::generation::KbInventory,
             crate::generation::KbTriageReport,
         )> = None;
-        if brief.knowledge_base.is_some() && self.course_outline_engine().is_some() {
+        if brief.knowledge_base.is_some()
+            && self.course_outline_engine().is_some()
+            && !source_plan_pipeline_disabled()
+        {
             match self
                 .discover_kb_source_plan(&request, &brief, _task.token(), &_task)
                 .await
@@ -150,10 +209,7 @@ impl LearningService {
             .provider_id
             .as_ref()
             .zip(request.model.as_deref());
-        self.emit_course_event(serde_json::json!({
-            "phase": "started",
-            "kind": brief.kind(),
-        }));
+        // (started 帧已在任务登记后、结构发现前发出,评审 S5。)
         let (blueprint, expansion_coverage) = match expansion {
             // t3 分批展开产物:plan 权威骨架的确定性落地,直接进装配/导入
             //(跳过大纲引擎;失败时上面已回退 engine 路径)。coverage 保留
@@ -490,11 +546,12 @@ impl LearningService {
             + counts.duplicate
             + counts.uncertain;
         // LLM 分诊只批「规则未判定的文件」(噪声/重复已被规则排除);
-        // 展开按章分批,以候选文件数近似;结构阶段是常数次(查询/证据/
+        // 展开按章分批——估算端没有 plan(LLM 结构发现不进成本门),退
+        // 保守上界 = 候选文件数(评审 S2);结构阶段是常数次(查询/证据/
         // 草稿/评审)。
         let llm_files = counts.core + counts.prerequisite + counts.practice + counts.mixed + counts.uncertain;
         let triage_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
-        let expansion_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
+        let expansion_batches = estimate_expansion_batches(None, llm_files);
         let estimated_batches = triage_batches + expansion_batches;
         let estimated_llm_calls = estimated_batches + STRUCTURE_STAGE_CALLS;
         let estimated_seconds = u64::try_from(estimated_llm_calls)
