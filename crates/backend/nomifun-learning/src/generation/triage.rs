@@ -216,6 +216,21 @@ pub struct KbTriageReport {
     pub degraded: bool,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// 批补判次数（h1 披露读数）：拆半/缺条目子集的重发 LLM 调用次数，
+    /// 0 = 每批一次整批成功。向后兼容：旧快照缺字段读侧默认 0，零值不
+    /// 序列化（信封字节形状与 v1 完全一致）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub batch_repair_count: usize,
+    /// 仍缺条目数（h1 披露读数）：全部手段（整批/拆半/定向补判/单文件兜底）
+    /// 用尽后仍未拿到模型判定、保守落 uncertain 的文件数。口径同
+    /// skip_serializing_if 的向后兼容处理。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub still_missing_count: usize,
+}
+
+/// `skip_serializing_if` 用的零值判定（信封兼容：零值字段不落快照）。
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl KbTriageReport {
@@ -382,6 +397,9 @@ pub async fn run_kb_triage(
     // LLM 分诊；无 completer 或调用失败 → 规则降级（非噪声全部 core）。
     let mut degraded_cause: Option<String> = None;
     let mut llm_verdicts: HashMap<String, RuleVerdict> = HashMap::new();
+    // h1 披露读数：补判次数（重发调用）与仍缺条目数（穷尽后保守 uncertain）。
+    let mut batch_repair_count = 0usize;
+    let mut still_missing_count = 0usize;
     match completer {
         None => {
             degraded_cause = Some("未配置模型（completer）".to_owned());
@@ -427,6 +445,7 @@ pub async fn run_kb_triage(
                                 // 单文件兜底仍失败 → uncertain + 理由，不丢。
                                 // message 自带可区分的失败语境（h1）：合法空回包
                                 // =模型显式无判定 vs 真解析失败（截断/坏 JSON）。
+                                still_missing_count += 1;
                                 llm_verdicts.insert(
                                     path,
                                     RuleVerdict {
@@ -453,6 +472,8 @@ pub async fn run_kb_triage(
                         call_failed[0].1
                     ));
                 }
+                batch_repair_count =
+                    repair_calls.load(std::sync::atomic::Ordering::SeqCst);
             }
         }
     }
@@ -540,6 +561,8 @@ pub async fn run_kb_triage(
         duplicates,
         degraded,
         warnings,
+        batch_repair_count,
+        still_missing_count,
     };
     Ok((inventory, report))
 }

@@ -1474,6 +1474,7 @@ pub struct CourseSourcePlanSnapshotView {
 
 /// 快照里 t1 分诊的摘要面：七角色计数（总数守恒：各角色之和 =
 /// `total_files`）+ degraded（规则分诊，未做 LLM 判定）+ 警告（限长）。
+/// h1 新增补判/仍缺读数（可选序列化：零值不出现，旧读侧无感知）。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CourseSourcePlanTriageView {
     pub total_files: usize,
@@ -1485,6 +1486,12 @@ pub struct CourseSourcePlanTriageView {
     pub duplicate: usize,
     pub uncertain: usize,
     pub degraded: bool,
+    /// 批补判次数（拆半/缺条目子集的重发 LLM 调用次数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_repair_count: Option<usize>,
+    /// 仍缺条目数（穷尽补判后保守 uncertain 的文件数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_missing_count: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }

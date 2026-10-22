@@ -112,6 +112,8 @@ mod tests {
             duplicates: Vec::new(),
             degraded: false,
             warnings: Vec::new(),
+            batch_repair_count: 0,
+            still_missing_count: 0,
         }
     }
 
