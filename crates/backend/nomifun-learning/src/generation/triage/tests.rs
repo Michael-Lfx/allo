@@ -719,3 +719,201 @@ async fn multi_kb_triage_namespaces_paths_and_skips_deleted_bases() {
     assert_eq!(report.counts.core, 2, "两库正文都降级进 core");
     assert!(report.degraded);
 }
+
+// ── 评审修复:LLM duplicate 判定 + 大库目录树如实披露 ─────────────────────
+
+/// 评审修复 S1:LLM 判 duplicate 但给不出可核对的 duplicate_of(缺失或指向
+/// 库外)时,该文件保守降级 uncertain——可见、不进 excluded,不再是
+/// 「整文件静默排除」(冒烟实证的 LinkedList 章丢失根因)。
+#[tokio::test]
+async fn llm_duplicate_verdicts_without_a_resolvable_duplicate_of_stay_uncertain() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "重复判定库").await;
+    write_kb_file(
+        &root,
+        "original.md",
+        "# 原文\n\n链表章节正文:单链表与双链表的结构和实现。\n",
+    );
+    write_kb_file(
+        &root,
+        "no-evidence.md",
+        "# 旧版甲\n\n疑似旧版本正文甲:模型判 duplicate 但未给 duplicate_of。\n",
+    );
+    write_kb_file(
+        &root,
+        "ghost-evidence.md",
+        "# 旧版乙\n\n疑似旧版本正文乙:模型给的 duplicate_of 指向库外路径。\n",
+    );
+    write_kb_file(
+        &root,
+        "good-copy.md",
+        "# 旧版丙\n\n与原文重复的旧版本正文丙:duplicate_of 可核对。\n",
+    );
+
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            let entries: Vec<String> = paths
+                .iter()
+                .map(|path| match path.as_str() {
+                    "original.md" => {
+                        r#"{"path": "original.md", "role": "core", "confidence": 0.9, "reason": "课程正文"}"#.to_owned()
+                    }
+                    "no-evidence.md" => {
+                        r#"{"path": "no-evidence.md", "role": "duplicate", "confidence": 0.8, "reason": "疑似重复旧版"}"#.to_owned()
+                    }
+                    "ghost-evidence.md" => {
+                        r#"{"path": "ghost-evidence.md", "role": "duplicate", "confidence": 0.8, "reason": "疑似重复旧版", "duplicate_of": "ghost.md"}"#.to_owned()
+                    }
+                    "good-copy.md" => {
+                        r#"{"path": "good-copy.md", "role": "duplicate", "confidence": 0.85, "reason": "与原文重复", "duplicate_of": "original.md"}"#.to_owned()
+                    }
+                    other => format!(
+                        r#"{{"path": "{other}", "role": "uncertain", "confidence": 0.3, "reason": "未预期路径"}}"#
+                    ),
+                })
+                .collect();
+            Ok(format!("{{\"files\": [{}]}}", entries.join(", ")))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会链表", Some(&completer)).await.unwrap();
+
+    // 无 duplicate_of / 指向库外:保守 uncertain,可见、不排除。
+    for path in ["no-evidence.md", "ghost-evidence.md"] {
+        let file = report
+            .files
+            .iter()
+            .find(|file| file.rel_path == path)
+            .unwrap();
+        assert_eq!(
+            file.role,
+            KbTriageRole::Uncertain,
+            "{path}:无可核对的 duplicate_of 不得整文件排除"
+        );
+        assert!(
+            file.reason.contains("duplicate_of") && file.reason.contains("保守"),
+            "{path} reason: {}",
+            file.reason
+        );
+        assert!(file.duplicate_of.is_none(), "{path}:降级后不带 duplicate_of");
+        assert!(
+            report.candidates().iter().any(|file| file.rel_path == path),
+            "{path}:uncertain 保守保留进候选"
+        );
+        assert!(
+            !report.excluded.iter().any(|entry| entry.path == path),
+            "{path}:不进 excluded"
+        );
+    }
+    // 可核对的 duplicate_of:duplicate 判定照常成立。
+    let good = report
+        .files
+        .iter()
+        .find(|file| file.rel_path == "good-copy.md")
+        .unwrap();
+    assert_eq!(good.role, KbTriageRole::Duplicate);
+    assert_eq!(good.duplicate_of.as_deref(), Some("original.md"));
+    assert!(report.excluded.iter().any(|entry| entry.path == "good-copy.md"));
+    // 汇总不变量:excluded/duplicates 台账不出现无可核对 duplicate_of 的条目。
+    let ledger: Vec<&str> = report.duplicates.iter().map(|dup| dup.path.as_str()).collect();
+    assert_eq!(ledger, ["good-copy.md"], "duplicates 台账只收可核对条目");
+    for entry in &report.excluded {
+        if entry.role == KbTriageRole::Duplicate {
+            let duplicate_of = &report
+                .files
+                .iter()
+                .find(|file| file.rel_path == entry.path)
+                .unwrap()
+                .duplicate_of;
+            assert!(
+                duplicate_of.as_deref().is_some_and(|target| !target.trim().is_empty()),
+                "excluded 里的 duplicate({})必须带可核对的 duplicate_of",
+                entry.path
+            );
+        }
+    }
+    assert_eq!(report.counts.duplicate, 1);
+    assert_eq!(report.counts.uncertain, 2);
+    assert_eq!(report.counts.core, 1);
+}
+
+/// 评审修复 S4:分诊目录树超上限时如实标「截断,仅显示前 N/共 M」,不再
+/// 声称「全部清点文件」;未超上限时保持全量声称。
+#[test]
+fn triage_prompt_labels_truncated_directory_trees_honestly() {
+    fn synthetic_inventory(count: usize) -> KbInventory {
+        KbInventory {
+            bases: vec![KbInventoryBase {
+                kb_id: "kb-1".into(),
+                name: "大库".into(),
+                namespace: String::new(),
+                total_files: count,
+            }],
+            files: (0..count)
+                .map(|index| KbInventoryFile {
+                    rel_path: format!("f{index:03}.md"),
+                    kb_id: "kb-1".into(),
+                    size: 10,
+                    modified_at: None,
+                    content_hash: format!("{index:064x}"),
+                    headings: vec![format!("第{index}篇")],
+                    preview: "正文预览。".into(),
+                    kind: KbFileKind::Markdown,
+                })
+                .collect(),
+            total_files: count,
+            total_bytes: 0,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        }
+    }
+    fn first_scanned(inventory: &KbInventory) -> Vec<ScannedFile> {
+        inventory
+            .files
+            .iter()
+            .map(|file| ScannedFile {
+                file: file.clone(),
+                base_rel: file.rel_path.clone(),
+                langless_key: file.rel_path.clone(),
+                lang_tag: None,
+                cjk_ratio: 0.5,
+                is_empty: false,
+                pure_navigation: false,
+            })
+            .take(1)
+            .collect()
+    }
+
+    // ≤400:全量清单,声称「全部清点文件」。
+    let small = synthetic_inventory(400);
+    let batch = first_scanned(&small);
+    let batch_refs: Vec<&ScannedFile> = batch.iter().collect();
+    let prompt = build_triage_user_prompt("学会全部内容", &small, &batch_refs);
+    assert!(
+        prompt.contains("目录树（全部清点文件）"),
+        "未超上限保持全量声称:{prompt}"
+    );
+    assert!(prompt.contains("- f399.md"), "第 400 条在列:{prompt}");
+
+    // >400:如实标注截断与总数,不再声称全部。
+    let large = synthetic_inventory(401);
+    let batch = first_scanned(&large);
+    let batch_refs: Vec<&ScannedFile> = batch.iter().collect();
+    let prompt = build_triage_user_prompt("学会全部内容", &large, &batch_refs);
+    assert!(
+        prompt.contains("截断") && prompt.contains("共 401"),
+        "截断必须如实披露:{prompt}"
+    );
+    assert!(
+        !prompt.contains("目录树（全部清点文件）"),
+        "不再声称全部:{prompt}"
+    );
+    assert!(prompt.contains("- f399.md"), "前 400 条仍在:{prompt}");
+    assert!(
+        !prompt.contains("- f400.md"),
+        "第 401 条如实不显示(仅计数披露):{prompt}"
+    );
+}

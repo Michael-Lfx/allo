@@ -33,3 +33,5 @@ walkdir.workspace = true
 tokio.workspace = true
 nomifun-realtime.workspace = true
 tempfile.workspace = true
+# kill-switch 测试改进程内 env(serial 互斥,防止与并行跑新管线的测试互扰)。
+serial_test.workspace = true

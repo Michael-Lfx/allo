@@ -965,7 +965,9 @@ pub(crate) async fn draft_plan(
         ));
     }
     prompt.push_str("\n文件与标题清单(source_anchors/skipped_topics 只能用这里的原样文本):\n");
-    for file in inventory.files.iter().take(300) {
+    // 章锚点 validSet = 全量 inventory 文件集合(评审 S4:集合判断无成本,
+    // 不截 300——>300 文件库的尾章锚点不再被 validSet 误拒)。
+    for file in &inventory.files {
         if file.headings.is_empty() {
             prompt.push_str(&format!("- {} :: (无标题,按段落序号锚定)\n", file.rel_path));
         } else {

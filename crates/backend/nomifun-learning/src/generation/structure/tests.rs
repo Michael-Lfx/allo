@@ -813,6 +813,96 @@ async fn draft_plan_carries_revision_feedback_when_given() {
     assert!(prompts[0].1.contains("漏锚点"), "{}", prompts[0].1);
 }
 
+/// 评审修复 S4:章锚点 validSet = 全量 inventory 文件集合(集合判断无成本,
+/// 不截 300)——>300 文件库的尾章锚点不被误拒,提示词的「文件与标题清单」
+/// 也列出全部文件(模型看得到尾文件才锚得到)。
+#[tokio::test]
+async fn draft_plan_validates_chapter_anchors_against_the_full_inventory() {
+    fn wide_inventory(count: usize) -> KbInventory {
+        KbInventory {
+            bases: vec![KbInventoryBase {
+                kb_id: "kb-1".into(),
+                name: "大库".into(),
+                namespace: String::new(),
+                total_files: count,
+            }],
+            files: (0..count)
+                .map(|index| KbInventoryFile {
+                    rel_path: format!("f{index:03}.md"),
+                    kb_id: "kb-1".into(),
+                    size: 10,
+                    modified_at: None,
+                    content_hash: format!("{index:064x}"),
+                    headings: vec![format!("第{index}篇")],
+                    preview: "正文预览。".into(),
+                    kind: KbFileKind::Markdown,
+                })
+                .collect(),
+            total_files: count,
+            total_bytes: 0,
+            skipped_hidden: 0,
+            scan_scope: KbScanScope::Markdown,
+        }
+    }
+
+    let inventory = wide_inventory(320);
+    let tail_reply = r#"{
+      "concepts": [{"id": "c1", "label": "主题", "description": "", "weight": 0.5}],
+      "edges": [],
+      "chapters": [
+        {
+          "title": "尾章",
+          "summary": "尾部章节",
+          "covers": ["c1"],
+          "source_anchors": [
+            {"path": "f319.md", "heading": "第319篇", "snippet": "尾部证据"}
+          ],
+          "content_type": "concept"
+        }
+      ],
+      "skipped_topics": []
+    }"#;
+    let completer = StageCompleter::new(move |_system, _user| Ok(tail_reply.to_owned()));
+    let draft = draft_plan(
+        &completer,
+        "学会全部内容",
+        &plan_digest(),
+        &plan_chunks(),
+        &inventory,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // 锚点对账:第 320 个文件(下标 319)的章锚点不被 validSet 误拒。
+    assert_eq!(draft.chapters.len(), 1);
+    let anchors = &draft.chapters[0].source_anchors;
+    assert_eq!(
+        anchors.len(),
+        1,
+        ">300 文件库的尾章锚点不被 validSet 误拒:{anchors:?}"
+    );
+    assert_eq!(anchors[0].rel_path, "f319.md");
+    assert!(!anchors[0].anchor_uncertain, "标题在原文里,精确锚");
+    assert!(
+        !draft.warnings.iter().any(|warning| warning.contains("不在清点清单")),
+        "尾文件不是幻觉路径:{:?}",
+        draft.warnings
+    );
+
+    // 提示词面:文件与标题清单列出全部 320 个文件(不再截 300)。
+    let prompts = completer.prompts.lock().unwrap();
+    let user = &prompts[0].1;
+    assert!(
+        user.contains("- f000.md :: 第0篇"),
+        "首文件在清单:{user}"
+    );
+    assert!(
+        user.contains("- f319.md :: 第319篇"),
+        "尾文件进 validSet 清单:{user}"
+    );
+}
+
 #[tokio::test]
 async fn critique_plan_normalizes_categories_and_reports_findings() {
     let completer = StageCompleter::new(|system, _user| {

@@ -35,6 +35,8 @@ const TRIAGE_DEGRADED_CONFIDENCE: f32 = 0.25;
 pub(crate) const TRIAGE_BATCH_MAX_FILES: usize = 40;
 /// 分诊 LLM 调用并发上限（票面建议 ≤4）。
 pub(crate) const TRIAGE_BATCH_CONCURRENCY: usize = 4;
+/// 分诊提示词的目录树上限（提示词面有界;超限如实标注截断,评审 S4）。
+const TRIAGE_TREE_MAX_FILES: usize = 400;
 
 /// 清点扫描范围（v1 只有 Markdown 文档面；PDF/Word/图片后续单独立票）。
 /// 如实披露、不静默忽略。
@@ -430,6 +432,10 @@ pub async fn run_kb_triage(
 
     // 汇总报告：文件序 = 清点序（守恒：counts 之和 == files.len() ==
     // inventory.total_files）。
+    let known_paths: HashSet<&str> = scanned
+        .iter()
+        .map(|file| file.file.rel_path.as_str())
+        .collect();
     let mut files: Vec<KbTriageFile> = Vec::with_capacity(total_files);
     let mut counts = KbTriageCounts::default();
     let mut excluded: Vec<KbTriageExclusion> = Vec::new();
@@ -449,6 +455,26 @@ pub async fn run_kb_triage(
                     canonical_reason: None,
                 },
             });
+        // 汇总不变量（评审 S1）：excluded/duplicates 台账不出现无可核对
+        // duplicate_of 的 duplicate——canonical 缺失或不在库内一律保守
+        // 降级 uncertain（规则路径的 duplicate_of 恒可核对,守卫只兜异常）。
+        let verdict = if verdict.role == KbTriageRole::Duplicate
+            && !verdict
+                .duplicate_of
+                .as_deref()
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .is_some_and(|target| known_paths.contains(target))
+        {
+            let missing_target = verdict
+                .duplicate_of
+                .as_deref()
+                .map(str::trim)
+                .filter(|target| !target.is_empty());
+            unresolvable_duplicate_verdict(verdict.confidence, &verdict.reason, missing_target)
+        } else {
+            verdict
+        };
         if let Some(duplicate_of) = &verdict.duplicate_of {
             duplicates.push(KbTriageDuplicate {
                 path: file.file.rel_path.clone(),
@@ -1033,15 +1059,25 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                 .map_err(|error| StructuredBatchError::Call(error.to_string()))?;
             let reply: TriageLlmReply =
                 parse_json_object(&raw).map_err(StructuredBatchError::Parse)?;
-            Ok(map_llm_reply(reply, &files))
+            // duplicate 判定的 canonical 必须能对回全量清点（不只本批）。
+            let known_paths: HashSet<&str> = self
+                .inventory
+                .files
+                .iter()
+                .map(|file| file.rel_path.as_str())
+                .collect();
+            Ok(map_llm_reply(reply, &files, &known_paths))
         })
     }
 }
 
-/// 把模型回包映射回请求集（未知路径忽略；未知角色保守 uncertain）。
+/// 把模型回包映射回请求集（未知路径忽略；未知角色保守 uncertain；duplicate
+/// 判定必须有可核对的 duplicate_of——缺失或指向库外都降级 uncertain，评审 S1：
+/// 模型一句「重复」不再能整文件丢掉教学内容）。
 fn map_llm_reply(
     reply: TriageLlmReply,
     remaining: &[&ScannedFile],
+    known_paths: &HashSet<&str>,
 ) -> HashMap<String, RuleVerdict> {
     let requested: HashSet<&str> = remaining.iter().map(|file| file.file.rel_path.as_str()).collect();
     let mut verdicts = HashMap::new();
@@ -1076,18 +1112,75 @@ fn map_llm_reply(
         } else {
             entry.reason.trim().to_owned()
         };
-        verdicts.insert(
-            entry.path.clone(),
+        let confidence = entry.confidence.clamp(0.0, 1.0);
+        // duplicate 的 canonical 必须可核对（非空且在清点清单里）；其余
+        // 角色不携带 duplicate_of（台账只收重复副本条目）。
+        let duplicate_of = (role == KbTriageRole::Duplicate)
+            .then(|| {
+                entry
+                    .duplicate_of
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                    .filter(|target| known_paths.contains(target))
+                    .map(str::to_owned)
+            })
+            .flatten();
+        let verdict = if role == KbTriageRole::Duplicate && duplicate_of.is_none() {
+            let missing = entry
+                .duplicate_of
+                .as_deref()
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .unwrap_or_default();
+            unresolvable_duplicate_verdict(
+                confidence,
+                &reason,
+                (!missing.is_empty()).then_some(missing),
+            )
+        } else {
             RuleVerdict {
                 role,
-                confidence: entry.confidence.clamp(0.0, 1.0),
+                confidence,
                 reason,
-                duplicate_of: None,
-                canonical_reason: None,
-            },
-        );
+                duplicate_of,
+                canonical_reason: (role == KbTriageRole::Duplicate)
+                    .then(|| "模型回报的重复副本（duplicate_of 可核对）".to_owned()),
+            }
+        };
+        verdicts.insert(entry.path.clone(), verdict);
     }
     verdicts
+}
+
+/// 无可核对 duplicate_of 的 duplicate 判定的保守降级（评审 S1）：整文件
+/// 排除需要可核对的 canonical 证据——缺证据时按 uncertain 保留（冒烟实证
+/// 的「LinkedList 章丢失」根因：模型判 duplicate 却指不出重复对象，直接
+/// 排除把唯一正文丢了）。
+fn unresolvable_duplicate_verdict(
+    confidence: f32,
+    original_reason: &str,
+    missing_target: Option<&str>,
+) -> RuleVerdict {
+    let target_note = match missing_target {
+        Some(target) => format!("duplicate_of「{target}」不在清点清单"),
+        None => "未给出 duplicate_of".to_owned(),
+    };
+    let reason = if original_reason.trim().is_empty() {
+        format!("重复判定缺少可核对的 duplicate_of（{target_note}），保守保留")
+    } else {
+        format!(
+            "重复判定缺少可核对的 duplicate_of（{target_note}；模型理由：{}），保守保留",
+            original_reason.trim()
+        )
+    };
+    RuleVerdict {
+        role: KbTriageRole::Uncertain,
+        confidence: confidence.min(0.5),
+        reason,
+        duplicate_of: None,
+        canonical_reason: None,
+    }
 }
 
 /// 降级兜底：非噪声文件全部 core（翻译/重复仍按规则标记——它们根本不进
@@ -1152,11 +1245,24 @@ fn build_triage_user_prompt(
     {
         prompt.push_str(&format!("README 摘录（{}/…）：{}\n\n", readme.rel_path, readme.preview));
     }
-    prompt.push_str("目录树（全部清点文件）：\n");
-    for path in inventory.files.iter().map(|file| file.rel_path.as_str()).take(400) {
-        prompt.push_str(&format!("- {path}\n"));
+    // 目录树超上限时如实标注截断与总数（评审 S4:提示词面有界,但不再
+    // 声称「全部」——大库的分诊员知道自己没看到完整目录）。
+    let total = inventory.files.len();
+    if total > TRIAGE_TREE_MAX_FILES {
+        prompt.push_str(&format!(
+            "目录树（截断，仅显示前 {TRIAGE_TREE_MAX_FILES}/共 {total} 个文件）：\n"
+        ));
+    } else {
+        prompt.push_str("目录树（全部清点文件）：\n");
     }
-    prompt.push_str("\n待分诊文件清单：\n");
+    for path in inventory
+        .files
+        .iter()
+        .map(|file| file.rel_path.as_str())
+        .take(TRIAGE_TREE_MAX_FILES)
+    {
+        prompt.push_str(&format!("- {path}\n"));
+    }    prompt.push_str("\n待分诊文件清单：\n");
     for file in files {
         prompt.push_str(&format!(
             "- 文件 {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
@@ -1196,6 +1302,9 @@ struct TriageLlmFile {
     confidence: f32,
     #[serde(default)]
     reason: String,
+    /// duplicate 判定的 canonical 引用路径（可核对才成立,评审 S1）。
+    #[serde(default)]
+    duplicate_of: Option<String>,
 }
 
 #[cfg(test)]

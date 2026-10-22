@@ -4050,6 +4050,7 @@ async fn structure_wiring_service_with(
 /// 可用计划,但 t3 章节展开调用失败 → 回退大纲引擎路径,计划仍进简报
 /// (引擎在章节内尊重骨架);建课不阻断,采样清单(co_read 面)原样保留。
 #[tokio::test]
+#[serial_test::serial]
 async fn kb_flow_attaches_a_usable_source_plan_to_the_brief() {
     let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service(false).await;
     let engine = Arc::new(RecordingOutlineEngine {
@@ -4089,6 +4090,7 @@ async fn kb_flow_attaches_a_usable_source_plan_to_the_brief() {
 
 /// t2 回退：草稿连续失败 → 简报无计划，回退现行采样路径，建课不阻断。
 #[tokio::test]
+#[serial_test::serial]
 async fn kb_flow_falls_back_to_sampling_when_structure_discovery_fails() {
     let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service(true).await;
     let engine = Arc::new(RecordingOutlineEngine {
@@ -4124,6 +4126,7 @@ async fn kb_flow_falls_back_to_sampling_when_structure_discovery_fails() {
 /// t3 接线:可用 plan → 分批展开直接产 Blueprint(大纲引擎不被调用),
 /// 课时来自展开回包、来源可回溯、快照落库。
 #[tokio::test]
+#[serial_test::serial]
 async fn kb_flow_expands_a_usable_plan_without_calling_the_outline_engine() {
     let (service, _knowledge, _router, owner_id, kb_id) = structure_wiring_service_with(false, true).await;
     let engine = Arc::new(RecordingOutlineEngine {
@@ -7753,6 +7756,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     /// t4 接线:建课走了「计划 → 展开」管线 → 落库点组装 v1 信封
     /// (inventory/triage/plan/coverage 四件套)写 course_source_plan_json。
     #[tokio::test]
+    #[serial_test::serial]
     async fn kb_flow_persists_the_source_plan_snapshot_when_expansion_succeeds() {
         let (service, _knowledge, _router, owner_id, kb_id) =
             structure_wiring_service_with(false, true).await;
@@ -8572,10 +8576,12 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     /// t5 WS:新管线的阶段事件按序发出(triage → source_plan → coverage),
     /// 帧载荷带读数;started/completed 等既有 phase 不变、顺序不打乱。
     #[tokio::test]
+    #[serial_test::serial]
     async fn kb_pipeline_emits_triage_source_plan_and_coverage_phases() {
         let (_detail, phases, payloads, _owner) = run_kb_course_with_capture(false, true).await;
 
         let position = |phase: &str| phases.iter().position(|p| p == phase);
+        let started = position("started").expect("started 保留");
         let triage_started = position("triage_started").expect("triage_started 必须发出");
         let triage_completed =
             position("triage_completed").expect("triage_completed 必须发出");
@@ -8584,16 +8590,23 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         let source_plan_ready =
             position("source_plan_ready").expect("source_plan_ready 必须发出");
         let coverage_ready = position("coverage_ready").expect("coverage_ready 必须发出");
-        let started = position("started").expect("started 保留");
         let publishing = position("publishing").expect("publishing 保留");
         let completed = position("completed").expect("completed 保留");
+        assert_eq!(
+            phases.first().map(String::as_str),
+            Some("started"),
+            "started 是首帧(评审修复 S5:任何后续 failed 都有 started 前缀):{phases:?}"
+        );
+        assert!(
+            started < triage_started,
+            "started 前导任何分诊/结构发现阶段帧"
+        );
         assert!(triage_started < triage_completed, "分诊先始后终");
         assert!(
             triage_completed < source_plan_started && source_plan_started < source_plan_ready,
             "计划阶段在分诊之后"
         );
         assert!(source_plan_ready < coverage_ready, "覆盖读数在计划之后");
-        assert!(coverage_ready < started, "旧 phase 顺序不因新阶段打乱");
         assert!(started < publishing && publishing < completed);
 
         // 帧载荷:triage_completed 带七角色计数 + degraded;source_plan_ready
@@ -8622,6 +8635,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
     /// t5 WS:回退路径(展开失败 → 大纲引擎)只发 triage/plan 阶段事件,无
     /// coverage_ready;描述流零 triage 事件(旧客户端行为不变)。
     #[tokio::test]
+    #[serial_test::serial]
     async fn fallback_and_description_flows_do_not_emit_coverage_ready() {
         let (_detail, phases, _payloads, _owner) = run_kb_course_with_capture(false, false).await;
         assert!(
@@ -8785,6 +8799,167 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             .unwrap();
         assert!(!estimate.needs_confirm);
         assert_eq!(estimate.triage.total_files, 0);
+    }
+
+    /// 评审修复 S2:成本门按章估算展开批数——有 plan 每章一批(单章锚点
+    /// 文件超 EXPANSION_BATCH_MAX_FILES 才按文件数拆批),多章少文件的库
+    /// 估算 ≥ 章数;无 plan(估算端不跑 LLM 结构发现)退保守上界 = 候选
+    /// 文件数(最坏每个候选文件自成一章)。
+    #[test]
+    fn expansion_batch_estimate_counts_one_batch_per_chapter() {
+        use super::generate::estimate_expansion_batches;
+
+        fn anchored_chapter(title: &str, files: &[&str]) -> crate::generation::PlannedChapter {
+            crate::generation::PlannedChapter {
+                title: title.to_owned(),
+                summary: String::new(),
+                learning_objectives: Vec::new(),
+                covers: Vec::new(),
+                prerequisites: Vec::new(),
+                source_anchors: files
+                    .iter()
+                    .map(|path| crate::generation::SourceAnchor {
+                        kb_id: "kb-1".into(),
+                        rel_path: (*path).to_owned(),
+                        heading_or_anchor: None,
+                        paragraph: None,
+                        snippet: None,
+                        anchor_uncertain: false,
+                    })
+                    .collect(),
+                content_type: crate::generation::ChapterContentType::Concept,
+            }
+        }
+
+        // 多章少文件:8 章 × 2 文件(候选 16)→ 每章一批 = 8 ≥ 章数(旧口径
+        // ceil(16/40)=1 把 7 个批次漏掉,成本门失真)。
+        let chapters: Vec<_> = (0..8)
+            .map(|index| anchored_chapter(&format!("第{index}章"), &["a.md", "b.md"]))
+            .collect();
+        let plan = crate::generation::SourcePlan {
+            chapters,
+            ..Default::default()
+        };
+        assert!(
+            estimate_expansion_batches(Some(&plan), 16) >= 8,
+            "多章少文件的库估算 ≥ 章数"
+        );
+        assert_eq!(estimate_expansion_batches(Some(&plan), 16), 8);
+
+        // 单章锚点文件超批上限(41 > 40)→ 按文件数拆成 2 批。
+        let wide: Vec<String> = (0..41).map(|index| format!("f{index:02}.md")).collect();
+        let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
+        let plan = crate::generation::SourcePlan {
+            chapters: vec![anchored_chapter("大章", &wide_refs)],
+            ..Default::default()
+        };
+        assert_eq!(estimate_expansion_batches(Some(&plan), 41), 2);
+
+        // 无 plan:保守上界 = 候选文件数。
+        assert_eq!(estimate_expansion_batches(None, 16), 16);
+    }
+
+    /// 评审修复 S3(内部 kill switch,Q13):`NOMI_LEARNING_SOURCE_PLAN` 取
+    /// off/0/false(大小写/首尾空白宽容)命中关闭;其余取值(含未设)新
+    /// 管线保持开启。内部运维开关,不进 UI/用户配置面。
+    #[test]
+    fn source_plan_kill_switch_matches_off_zero_false_only() {
+        use super::generate::is_source_plan_kill_switch_value;
+        for value in ["off", "OFF", "Off", "0", "false", "False", " off "] {
+            assert!(is_source_plan_kill_switch_value(value), "{value:?} 命中关闭");
+        }
+        for value in ["on", "1", "true", "yes", "", " disable"] {
+            assert!(!is_source_plan_kill_switch_value(value), "{value:?} 不关闭");
+        }
+    }
+
+    /// 评审修复 S3:设 kill switch env 后 generate_course 不跑「清点分诊 →
+    /// 结构发现 → 展开」新管线——零 triage/source_plan/coverage WS 帧、
+    /// completer 零调用,直接走现行采样 + 大纲引擎,课程照建。env 是进程
+    /// 全局态:`#[serial]` 与其它跑新管线的测试互斥,guard 落回原值。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn source_plan_kill_switch_falls_back_to_the_sampling_pipeline() {
+        struct KillSwitchRestore(Option<String>);
+        impl Drop for KillSwitchRestore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe {
+                        std::env::set_var(super::generate::SOURCE_PLAN_KILL_SWITCH_ENV, value)
+                    },
+                    None => unsafe {
+                        std::env::remove_var(super::generate::SOURCE_PLAN_KILL_SWITCH_ENV)
+                    },
+                }
+            }
+        }
+        let previous =
+            std::env::var(super::generate::SOURCE_PLAN_KILL_SWITCH_ENV).ok();
+        unsafe {
+            std::env::set_var(super::generate::SOURCE_PLAN_KILL_SWITCH_ENV, "off");
+        }
+        let _restore = KillSwitchRestore(previous);
+
+        let (service, _knowledge, router, owner_id, kb_id) = structure_wiring_service(false).await;
+        let events = Arc::new(CapturingBroadcaster::default());
+        service.set_event_sink(LearningEventEmitter::new(
+            events.clone(),
+            Arc::from(owner_id.as_str()),
+        ));
+        let engine = Arc::new(RecordingOutlineEngine {
+            briefs: Mutex::new(Vec::new()),
+        });
+        service.set_course_outline_engine(engine.clone());
+        let detail = service
+            .generate_course(
+                &owner_id,
+                GenerateCourseRequest {
+                    course_kind: crate::models::CourseKind::Traditional,
+                    teaching_style: None,
+                    knowledge_base_id: Some(kb_id.clone()),
+                    description: None,
+                    domain: None,
+                    provider_id: None,
+                    model: None,
+                    mode: crate::models::CourseGenerationMode::OnDemand,
+                    goal: Some("学会排序".into()),
+                    proficiency_statement: None,
+                    learner_basis: None,
+                    knowledge_base_ids: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // 课程照建,走现行采样 + 大纲引擎路径。
+        assert_eq!(detail.course.total_lessons, 1, "kill switch 下建课不阻断");
+        let brief = engine.briefs.lock().unwrap().first().cloned().unwrap();
+        assert!(
+            brief.source_plan.is_none(),
+            "kill switch:不跑结构发现,简报无计划"
+        );
+        assert!(!brief.samples.is_empty(), "采样清单照常(现状采样)");
+        assert_eq!(
+            router.calls.load(AtomicOrdering::SeqCst),
+            0,
+            "t1/t2/t3 的 completer 调用一次都不发生"
+        );
+
+        // WS 帧:零结构发现阶段帧;started/completed 照常。
+        let captured = events.events.lock().unwrap();
+        let course_phases: Vec<String> = captured
+            .iter()
+            .filter(|(name, _)| name == "learning.course-generation")
+            .map(|(_, payload)| payload["phase"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert!(
+            !course_phases.iter().any(|phase| phase.starts_with("triage")
+                || phase.starts_with("source_plan")
+                || phase.starts_with("coverage")),
+            "kill switch:不产生 triage WS 帧,实际 {course_phases:?}"
+        );
+        assert!(course_phases.iter().any(|phase| phase == "started"));
+        assert!(course_phases.iter().any(|phase| phase == "completed"));
     }
 
     /// t4 事务性:导入中途失败(快照列违反 069 CHECK——非对象 JSON 在
