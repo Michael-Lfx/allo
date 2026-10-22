@@ -3754,11 +3754,13 @@ impl CompanionStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        let Some(row) = row else { return Ok(None) };
-        let companion_id: String = row.get("companion_id");
-        CompanionId::try_from(companion_id.as_str())
-            .map_err(|error| invalid_disk_id("thread companion id", &companion_id, error))?;
-        Ok(Some(companion_id))
+        if let Some(row) = row {
+            let companion_id: String = row.get("companion_id");
+            CompanionId::try_from(companion_id.as_str())
+                .map_err(|error| invalid_disk_id("thread companion id", &companion_id, error))?;
+            return Ok(Some(companion_id));
+        }
+        Ok(None)
     }
 
     pub async fn is_companion_thread(&self, conversation_id: &str) -> Result<bool, AppError> {

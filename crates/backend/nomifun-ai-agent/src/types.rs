@@ -391,6 +391,8 @@ pub struct NomiResolvedConfig {
     pub session_directory: PathBuf,
     /// Session mode (default, auto_edit, yolo).
     pub session_mode: Option<String>,
+    /// Frozen workspace restriction for trusted voice-owned Conversations.
+    pub voice_workspace: Option<PathBuf>,
     /// Session-scoped MCP servers to inject.
     pub extra_mcp_servers: HashMap<String, nomi_config::config::McpServerConfig>,
     /// Process-local guards for renewable loopback MCP capabilities. These are

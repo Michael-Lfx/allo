@@ -1,0 +1,16 @@
+[Unit]
+Description=Flowy Voice Companion Daemon
+After=network.target sound.target
+
+[Service]
+Type=notify
+User=voicecompanion
+Group=voicecompanion
+WorkingDirectory=/var/lib/voice-companion
+ExecStart=/usr/local/bin/voice-companion --config /etc/voice-companion/config.toml
+Restart=always
+RestartSec=5s
+WatchdogSec=30s
+
+[Install]
+WantedBy=multi-user.target

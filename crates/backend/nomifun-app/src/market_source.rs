@@ -608,7 +608,6 @@ pub fn promote(staging: &Path, live_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     /// D4 ① must not change the marker rule: identical response headers have to
     /// keep producing the same `resolved_revision`, otherwise switching to raw

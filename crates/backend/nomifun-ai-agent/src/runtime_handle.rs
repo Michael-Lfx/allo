@@ -402,6 +402,13 @@ impl AgentRuntimeHandle {
         }
     }
 
+    pub fn pending_voice_confirmations(&self) -> Vec<nomifun_api_types::voice::VoiceToolConfirmation> {
+        match self {
+            Self::Nomi(manager) => manager.pending_voice_confirmations(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Submit a confirmation response for a pending tool call.
     pub fn confirm(
         &self,

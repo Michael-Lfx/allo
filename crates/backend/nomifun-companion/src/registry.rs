@@ -505,6 +505,22 @@ impl CompanionRegistry {
         Ok(profile)
     }
 
+    /// Publish the first-run appearance in the same durable profile write as
+    /// the identity. A failed save leaves the roster empty and retryable.
+    pub async fn create_default_if_empty(&self) -> Result<Option<CompanionProfileConfig>, AppError> {
+        let mut watermark = self.watermark.write().await;
+        let mut companions = self.inner.write().await;
+        if !companions.is_empty() { return Ok(None); }
+        let seq = *watermark + 1;
+        let mut profile = CompanionProfileConfig::new("Flowy", "bolt", seq);
+        profile.appearance.companion_enabled = true;
+        self.advance_watermark(&mut watermark, seq)?;
+        profile.save(&self.companions_dir.join(&profile.companion_id))
+            .map_err(|e| AppError::Internal(format!("save default companion profile: {e}")))?;
+        companions.insert(profile.companion_id.clone(), profile.clone());
+        Ok(Some(profile))
+    }
+
     /// Durably advance the watermark to `seq` (never backwards) before
     /// publishing the entity that consumes that number.
     fn advance_watermark(
@@ -1009,6 +1025,22 @@ mod tests {
         let reg2 = registry(dir.path());
         let fourth = reg2.create("四号", "boo").await.unwrap();
         assert_eq!(fourth.seq, 4);
+    }
+
+    #[tokio::test]
+    async fn failed_default_creation_is_retryable_and_never_publishes_a_hidden_profile() {
+        let dir=tempfile::tempdir().unwrap();
+        let companions_dir=dir.path().join("companions");
+        std::fs::write(&companions_dir,"block profile saves").unwrap();
+        let reg=CompanionRegistry {companions_dir:companions_dir.clone(),shared_dir:dir.path().join("shared"),
+            watermark:RwLock::new(0),inner:RwLock::new(HashMap::new()),provider_repo:None,provider_lifecycle:None};
+        assert!(reg.create_default_if_empty().await.is_err());
+        assert!(reg.list().await.is_empty());
+        std::fs::remove_file(companions_dir).unwrap();
+        let profile=reg.create_default_if_empty().await.unwrap().unwrap();
+        assert!(profile.appearance.companion_enabled);
+        assert_eq!(profile.seq,2);
+        assert!(reg.create_default_if_empty().await.unwrap().is_none());
     }
 
     #[tokio::test]
