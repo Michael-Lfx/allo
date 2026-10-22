@@ -1183,8 +1183,6 @@ impl AgentCatalogProvider for FakeAgentCatalog {
             background: None,
             isolation: None,
             permission_mode_ignored: false,
-            display_description: None,
-            quick_prompts: vec![],
             default_init_prompt: None,
             expert_type: None,
         })
@@ -1391,6 +1389,9 @@ mod tests {
             required_connectors: vec![],
             avatar_url: None,
             tags: vec![],
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -1406,6 +1407,10 @@ mod tests {
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         }
     }
 

@@ -42,6 +42,7 @@ flowchart TD
         A31["31-SDK入口命名"]
         A35["35-SDK导出助手"]
         A49["49-目录检索与使用提示"]
+        A50["50-四类实体多语言展示"]
     end
 
     subgraph D4["4. 研发计划与工程门禁"]
@@ -155,6 +156,7 @@ flowchart TD
 | [`47-connector-auth-mode-field-semantics.zh.md`](file:///c:/workspace/allo/docs/agent-store/47-connector-auth-mode-field-semantics.zh.md) | 第二阶段：协议 `auth_mode` 改名 `auth_transport`（形状归形状、声明归 `credential.mode`），`fp-16` → `fp-17`、12 层落点矩阵、不双写靠指纹强制两端同步、TC-S2-001~008 | ✅ 已实施（2026-10-15；指纹门禁与跨仓站点已同步） |
 | [`48-allo-connector-market-token-auth.zh.md`](file:///c:/workspace/allo/docs/agent-store/48-allo-connector-market-token-auth.zh.md) | 方案 C：allo 自有连接器市场源（token 型授权）——自有市场布局与 `market/add` 接入、`mcp.json` + `token-schema.json` 契约草案、凭据链路时序、header 口径先验证后发布闸门、D1~D6 决策、TC-C1~C8 验收、R1~R6 风险登记 | 🔧 部分实现（2026-10-16；两条条目 GitHub/百度网盘已落地，落点分别为 header 与 SSE 查询参数，均从 zip 源实测安装、未填即 fail-closed；托管形态改为 zip + ModelScope，真实端点接受性待真 token） |
 | [`49-store-search-and-suggestions.zh.md`](file:///c:/workspace/allo/docs/agent-store/49-store-search-and-suggestions.zh.md) | 目录检索与使用提示：多词 AND 匹配口径、`matchStoreItem` 字段级命中区间（供高亮）、`searchWithHits` / `searchInstalled` / `listStatus`（透出 `markets_pending`）、预取取代缓存、三档排序、**四类 × 两面的提示词接入**（`plugin.json.quickPrompts` 优先 + 索引行 `examples_*` 回落，P1 零 wire；详情面 P2 待定）、D1~D12 决策、TC-1~TC-19 验收 | 🔧 P1 已实施（2026-10-21；client 三方法 + 宿主 `examples → quick_prompts` 回落 + 商店卡片/抽屉提示；详情面 P2 与发布同步待做） |
+| [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。

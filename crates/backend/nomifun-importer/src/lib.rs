@@ -25,8 +25,8 @@ pub use install::{
     InstallError, InstallerConfig, InstallerService, InstalledSkillLocation, MaterializeOutcome,
 };
 pub use manifest::{
-    CliManifest, LocalizedText, ManifestError, MarketManifest, ParsedManifest, PluginManifest,
-    TeamInfo, platform_summary, read_plugin_display, validate_relative_path,
+    CliManifest, DisplayFields, LocalizedText, ManifestError, MarketManifest, ParsedManifest,
+    PluginManifest, TeamInfo, platform_summary, read_plugin_display, validate_relative_path,
 };
 pub use models::{
     CompatTriple, Component, SourceKind, component_id, sanitize_slug,

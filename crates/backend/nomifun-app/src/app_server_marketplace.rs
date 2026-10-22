@@ -1199,7 +1199,7 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // payload so the installed-skill catalog shows what the store shows.
         // Plugin imports keep their `plugin.json` tags.
         .with_declared_version(Some(facts.version.clone()))
-        .with_index_tags(facts.index_info.as_ref().map(|info| info.tags.clone()));
+        .with_index_display(facts.index_info.as_ref().map(|info| info.display()));
         self.importer
             .run_import(&request)
             .await

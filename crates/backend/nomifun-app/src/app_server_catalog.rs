@@ -13,7 +13,7 @@ use nomifun_api_types::{
     AppServerCompatibilityStatus, AppServerConnectorCredential, AppServerConnectorDetail,
     AppServerConnectorProbeResult, AppServerConnectorStatus, AppServerConnectorStatusView,
     AppServerConnectorSummary, AppServerCredentialMode, AppServerConnectorTool,
-    AppServerLocalizedText, AppServerModelList, AppServerModelSummary, AppServerOAuthStartResult,
+    AppServerModelList, AppServerModelSummary, AppServerOAuthStartResult,
     AppServerOAuthStatusView, AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult,
     McpToolResponse, McpTransport, oauth_state,
 };
@@ -69,13 +69,22 @@ impl AppServerSkillCatalog {
         assets.avatar_for_snapshot_slug(&snapshot_id, Some(&slug)).await
     }
 
-    /// Localized tags for one skill: marketplace products read the tags their
-    /// market index row declared (stamped into the snapshot payload, `44`);
-    /// builtin / user skills have none.
-    async fn tags_for(&self, location: &str) -> Option<Vec<AppServerLocalizedText>> {
-        let assets = self.assets.as_ref()?;
-        let (snapshot_id, slug) = managed_snapshot_provenance(&self.paths, Path::new(location))?;
-        assets.tags_for_skill(&snapshot_id, Some(&slug)).await
+    /// Display metadata for one skill (`50` §3.5): marketplace products read
+    /// what their index row declared (stamped into the snapshot payload);
+    /// builtin / user skills have none, and `SKILL.md` declares one language
+    /// only.
+    async fn display_for(&self, location: &str) -> nomifun_importer::DisplayFields {
+        let Some(assets) = self.assets.as_ref() else {
+            return nomifun_importer::DisplayFields::default();
+        };
+        let Some((snapshot_id, slug)) = managed_snapshot_provenance(&self.paths, Path::new(location))
+        else {
+            return nomifun_importer::DisplayFields::default();
+        };
+        assets
+            .display_for_skill(&snapshot_id, Some(&slug))
+            .await
+            .unwrap_or_default()
     }
 }
 
@@ -84,7 +93,7 @@ fn skill_summary(
     origin: SkillOrigin,
     writable: bool,
     avatar_url: Option<String>,
-    tags: Vec<AppServerLocalizedText>,
+    display: nomifun_importer::DisplayFields,
 ) -> AppServerSkillSummary {
     let (source, compatibility) = match item.source {
         SkillSource::Builtin => ("builtin", AppServerCompatibilityStatus::Compatible),
@@ -109,7 +118,24 @@ fn skill_summary(
         enabled: true,
         required_connectors: Vec::new(),
         avatar_url,
-        tags,
+        tags: display
+            .tags
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
+        display_name: display
+            .name
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        display_description: display
+            .description
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        quick_prompts: display
+            .prompts
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
     }
 }
 
@@ -141,8 +167,8 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
             let writable =
                 skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
             let avatar_url = self.avatar_for(&item.location).await;
-            let tags = self.tags_for(&item.location).await.unwrap_or_default();
-            out.push(skill_summary(item, origin, writable, avatar_url, tags));
+            let display = self.display_for(&item.location).await;
+            out.push(skill_summary(item, origin, writable, avatar_url, display));
         }
         Ok(out)
     }
@@ -158,7 +184,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         let writable =
             skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
         let avatar_url = self.avatar_for(&item.location).await;
-        let tags = self.tags_for(&item.location).await.unwrap_or_default();
+        let display = self.display_for(&item.location).await;
         // Public body is a bounded, trimmed summary. Internal routing rules,
         // credentials and the full raw Markdown stay behind the seam.
         //
@@ -172,7 +198,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         .map(|body| body.trim().chars().take(1200).collect::<String>())
         .filter(|body| !body.is_empty());
         Ok(AppServerSkillDetail {
-            summary: skill_summary(item, origin, writable, avatar_url, tags),
+            summary: skill_summary(item, origin, writable, avatar_url, display),
             mode: "store-agent".into(),
             invocation_policy: "model-auto".into(),
             instructions_summary,
@@ -265,6 +291,7 @@ fn connector_summary(
     last_test: McpServerStatus,
     avatar_url: Option<String>,
     credential: Option<&AppServerConnectorCredential>,
+    display: &nomifun_importer::DisplayFields,
 ) -> AppServerConnectorSummary {
     let (kind, transport_summary) = transport_kind(transport);
     let needs_auth = needs_auth_for(credential, transport);
@@ -282,6 +309,26 @@ fn connector_summary(
         // below depends on it, so attaching it afterwards was an ordering bug
         // that let the transport guess outvote the declaration.
         credential: credential.cloned(),
+        // Display-only additions (`50` §3.1). They never feed `status`, `kind`
+        // or the tool namespace — those read `name` and the declaration.
+        display_name: display
+            .name
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        display_description: display
+            .description
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        tags: display
+            .tags
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
+        quick_prompts: display
+            .prompts
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
     }
 }
 
@@ -334,16 +381,22 @@ impl AppServerConnectorCatalog {
         self
     }
 
-    /// The `credential` block for one server, as `principal` sees it.
-    async fn credential_block(
+    /// The `credential` block and the display metadata for one server, from a
+    /// single component read (`50` §3.5).
+    async fn credential_and_display(
         &self,
         mcp_server_id: &str,
         server: &nomifun_api_types::McpServerResponse,
         principal: Option<&str>,
-    ) -> Option<nomifun_api_types::AppServerConnectorCredential> {
-        let reader = self.credentials.as_ref()?;
+    ) -> (
+        Option<nomifun_api_types::AppServerConnectorCredential>,
+        nomifun_importer::DisplayFields,
+    ) {
+        let Some(reader) = self.credentials.as_ref() else {
+            return (None, nomifun_importer::DisplayFields::default());
+        };
         reader
-            .describe(
+            .describe_with_display(
                 mcp_server_id,
                 &server.transport,
                 server.last_test_status,
@@ -408,7 +461,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
                 Some(assets) => assets.avatar_for_mcp_server(&id).await,
                 None => None,
             };
-            let credential = self.credential_block(&id, &server, principal).await;
+            let (credential, display) = self.credential_and_display(&id, &server, principal).await;
             out.push(connector_summary(
                 id.clone(),
                 server.name.clone(),
@@ -418,6 +471,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
                 server.last_test_status,
                 avatar_url,
                 credential.as_ref(),
+                &display,
             ));
         }
         Ok(out)
@@ -437,7 +491,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             Some(assets) => assets.avatar_for_mcp_server(&connector_id).await,
             None => None,
         };
-        let credential = self.credential_block(&connector_id, &server, principal).await;
+        let (credential, display) = self.credential_and_display(&connector_id, &server, principal).await;
         let needs_auth = needs_auth_for(credential.as_ref(), &transport);
         let summary = connector_summary(
             connector_id.clone(),
@@ -448,6 +502,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             server.last_test_status,
             avatar_url,
             credential.as_ref(),
+            &display,
         );
         let auth_status = if needs_auth {
             match self.pending_auth_view(&transport) {
@@ -483,7 +538,8 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         let connector_id = server.mcp_server_id.as_str().to_owned();
         // Borrowed before the transport moves out below: the credential block
         // reads the whole server row (its `values` live inside the transport).
-        let credential = self.credential_block(&connector_id, &server, principal).await;
+        let (credential, _display) =
+            self.credential_and_display(&connector_id, &server, principal).await;
         let transport = server.transport;
         let needs_auth = needs_auth_for(credential.as_ref(), &transport);
         let authenticated = if needs_auth {
