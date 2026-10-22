@@ -402,6 +402,10 @@ pub enum LearningSmokeCommand {
     /// 感知采样 → 双循环大纲 → 导入课程 →（可选）生成课时正文。机械判据
     /// = 课程落库、课时来源可解析、采样披露可读；章节覆盖/顺序作为负优化
     /// 读数打印，不单独判红。无凭据临时库如实失败。
+    ///
+    /// t5 变体：`--triage-only` 只跑清点+分诊（EXIT=0 即便有 warning）；
+    /// `--plan-only` 跑分诊+结构计划；`--report-json` 把 triage/plan/
+    /// coverage 落 JSON 便于对账（full 档落的是库里的快照信封）。
     Course {
         /// 知识库目录（递归读取 *.md；相对路径即库内路径）。
         #[arg(long)]
@@ -415,6 +419,16 @@ pub enum LearningSmokeCommand {
         /// 生成正文的课时数（0 = 只生成大纲；缺省 1）。
         #[arg(long, default_value_t = 1)]
         lessons: usize,
+        /// 只跑清点+分诊（打印 counts/排除理由/uncertain；有 warning 也
+        /// EXIT=0——读数面非门禁）。
+        #[arg(long, conflicts_with = "plan_only")]
+        triage_only: bool,
+        /// 跑分诊+结构计划（打印 chapters/coverage 台账/gaps）。
+        #[arg(long)]
+        plan_only: bool,
+        /// 把 triage/plan/coverage 落 JSON 报告（可选，便于对账）。
+        #[arg(long)]
+        report_json: Option<PathBuf>,
         /// SQLite 库路径（缺省从零临时库）。
         #[arg(long)]
         db: Option<PathBuf>,
@@ -620,6 +634,78 @@ mod tests {
             rendered.contains(env!("CARGO_PKG_VERSION")),
             "version output should contain package version {}, got: {rendered:?}",
             env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn learning_smoke_course_parses_triage_plan_and_report_flags() {
+        // --triage-only + --report-json:只跑清点+分诊,报告落盘。
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "course",
+            "--dir",
+            "/kb-dirty",
+            "--goal",
+            "学会排序",
+            "--triage-only",
+            "--report-json",
+            "/tmp/report.json",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        let super::LearningSmokeCommand::Course {
+            dir,
+            goal,
+            triage_only,
+            plan_only,
+            report_json,
+            ..
+        } = command
+        else {
+            panic!("expected course");
+        };
+        assert_eq!(dir, PathBuf::from("/kb-dirty"));
+        assert_eq!(goal, "学会排序");
+        assert!(triage_only);
+        assert!(!plan_only);
+        assert_eq!(report_json, Some(PathBuf::from("/tmp/report.json")));
+
+        // --plan-only 单独成档;两旗同开是用法错误(拒绝歧义)。
+        let cli = Cli::try_parse_from([
+            "nomicore",
+            "learning-smoke",
+            "course",
+            "--dir",
+            "/kb",
+            "--goal",
+            "g",
+            "--plan-only",
+        ])
+        .unwrap();
+        let Command::LearningSmoke { command } = cli.command.expect("subcommand required") else {
+            panic!("expected learning-smoke");
+        };
+        assert!(matches!(
+            command,
+            super::LearningSmokeCommand::Course { plan_only: true, triage_only: false, .. }
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "nomicore",
+                "learning-smoke",
+                "course",
+                "--dir",
+                "/kb",
+                "--goal",
+                "g",
+                "--triage-only",
+                "--plan-only",
+            ])
+            .is_err(),
+            "--triage-only 与 --plan-only 互斥"
         );
     }
 

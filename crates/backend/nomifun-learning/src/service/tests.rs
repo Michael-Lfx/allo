@@ -8605,6 +8605,10 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             triage_frame["degraded"].is_boolean(),
             "degraded 必须显式携带(规则分诊可见)"
         );
+        // 有界示例(≤10):进度视图可展开跳过理由/duplicate_of/uncertain。
+        assert!(triage_frame["excluded"].is_array());
+        assert!(triage_frame["duplicates"].is_array());
+        assert!(triage_frame["uncertain"].is_array());
         let plan_frame = &payloads[source_plan_ready];
         assert!(plan_frame["chapters"].as_u64().unwrap_or(0) >= 1);
         assert!(plan_frame["concepts"].is_u64());
