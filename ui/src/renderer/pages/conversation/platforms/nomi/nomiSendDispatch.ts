@@ -1,5 +1,7 @@
 import type { ConversationId } from '@/common/types/ids';
 import type { TChatConversation } from '@/common/config/storage';
+import type { VoiceTaskSnapshot } from '@/common/adapter/voiceCompanion';
+import type { ConversationCommandQueueItem } from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
 import { uuid } from '@/common/utils';
 
 export type ConversationVoiceKind = 'unknown' | 'voice' | 'ordinary';
@@ -43,8 +45,14 @@ export interface NomiSendDispatchDependencies {
   message: string;
   voiceSendAttempts: Map<string, string>;
   resolveConversationKind: (conversationId: ConversationId) => Promise<'voice' | 'ordinary'>;
-  sendVoiceKeyboardMessage: (conversationId: ConversationId, commandId: string, message: string) => Promise<void>;
-  enqueue: (item: { input: string; files: string[]; workspace_path?: string }) => boolean;
+  sendVoiceKeyboardMessage: (
+    conversationId: ConversationId,
+    commandId: string,
+    message: string
+  ) => Promise<{ task: VoiceTaskSnapshot }>;
+  enqueue: (
+    item: { input: string; files: string[]; workspace_path?: string }
+  ) => Promise<ConversationCommandQueueItem | null> | ConversationCommandQueueItem | null;
   clearFiles: () => void;
   emitFileClear: () => void;
   notifyError: (message: string) => void;
@@ -81,7 +89,7 @@ export async function dispatchNomiSend(deps: NomiSendDispatchDependencies): Prom
     return;
   }
 
-  const queued = deps.enqueue({
+  const queued = await deps.enqueue({
     input: deps.message,
     files: deps.filesToSend,
     workspace_path: deps.workspacePath,

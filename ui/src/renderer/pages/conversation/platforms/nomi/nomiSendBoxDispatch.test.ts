@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { parseConversationId } from '@/common/types/ids';
 import type { TChatConversation } from '@/common/config/storage';
+import type { VoiceTaskSnapshot } from '@/common/adapter/voiceCompanion';
+import type { ConversationCommandQueueItem } from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
 import {
   dispatchNomiSend,
   resolveVoiceConversationKind,
@@ -11,10 +13,30 @@ import {
 const voiceConvId = parseConversationId('019b0000-0000-7000-8000-000000000001');
 const ordinaryConvId = parseConversationId('019b0000-0000-7000-8000-000000000002');
 
+const mockTaskSnapshot = (commandId: string): VoiceTaskSnapshot => ({
+  command_id: commandId,
+  session_id: 'test-session',
+  acoustic_turn_id: 'test-turn',
+  conversation_id: voiceConvId,
+  message_id: 'test-msg',
+  runtime_turn_id: null,
+  status: 'accepted',
+  result_ok: null,
+  result_text: null,
+  error_code: null,
+});
+
+const mockQueueItem = (input: string, files: string[]): ConversationCommandQueueItem => ({
+  id: '019b0000-0000-7000-8000-000000000099',
+  input,
+  files,
+  created_at: Date.now(),
+});
+
 describe('nomi send box dispatch behavior', () => {
   test('voice conversation initial metadata failure keeps unknown, rejects ordinary queue, and sends once upon retry', async () => {
     let metadataAttempt = 0;
-    const fetchMock = async (id: string): Promise<TChatConversation | null> => {
+    const fetchMock = async (_id: string): Promise<TChatConversation | null> => {
       metadataAttempt += 1;
       if (metadataAttempt === 1) {
         throw new Error('500 Internal Server Error: metadata fetch failed');
@@ -31,19 +53,20 @@ describe('nomi send box dispatch behavior', () => {
     let lastHostCommandId = '';
     let lastHostMessage = '';
     const sendVoiceKeyboardMessage = async (
-      convId: string,
+      _convId: string,
       cmdId: string,
       msg: string
-    ) => {
+    ): Promise<{ task: VoiceTaskSnapshot }> => {
       hostSendCount += 1;
       lastHostCommandId = cmdId;
       lastHostMessage = msg;
+      return { task: mockTaskSnapshot(cmdId) };
     };
 
     let ordinaryQueueCount = 0;
     const enqueue = (_item: { input: string; files: string[]; workspace_path?: string }) => {
       ordinaryQueueCount += 1;
-      return true;
+      return mockQueueItem(_item.input, _item.files);
     };
 
     let fileClearCount = 0;
@@ -137,12 +160,10 @@ describe('nomi send box dispatch behavior', () => {
         });
         return kind;
       },
-      sendVoiceKeyboardMessage: async () => {
-        hostSendCount += 1;
-      },
+      sendVoiceKeyboardMessage: async (convId, cmdId) => ({ task: mockTaskSnapshot(cmdId) }),
       enqueue: (item) => {
         queuedItems.push(item);
-        return true;
+        return mockQueueItem(item.input, item.files);
       },
       clearFiles: () => {
         fileClearCount += 1;
@@ -165,6 +186,96 @@ describe('nomi send box dispatch behavior', () => {
     expect(fileClearCount).toBe(1);
   });
 
+  test('unknown to ordinary transition recovers seamlessly and enqueues on first send without requiring repeated send', async () => {
+    // Model the exact production scenario:
+    // Initial render: conversationVoiceKind is 'unknown', enabled is false, initialEnqueue returns null.
+    // User sends -> resolveConversationKind succeeds as 'ordinary'.
+    // State updates -> safeEnqueue defers to enabled render -> enabled enqueue succeeds.
+    let enabledInRender = false;
+    const pendingDrains: Array<{
+      item: { input: string; files: string[]; workspace_path?: string };
+      resolve: (res: ConversationCommandQueueItem | null) => void;
+      reject: (err: unknown) => void;
+    }> = [];
+
+    const simulatedQueueEnqueue = (item: { input: string; files: string[]; workspace_path?: string }) => {
+      if (!enabledInRender) {
+        return null;
+      }
+      return mockQueueItem(item.input, item.files);
+    };
+
+    const safeEnqueue = async (item: { input: string; files: string[]; workspace_path?: string }) => {
+      if (enabledInRender) {
+        const direct = simulatedQueueEnqueue(item);
+        if (direct) return direct;
+      }
+      return new Promise<ConversationCommandQueueItem | null>((resolve, reject) => {
+        pendingDrains.push({ item, resolve, reject });
+      });
+    };
+
+    let hostSendCount = 0;
+    let fileClearCount = 0;
+    let kindState: ConversationVoiceKind = 'unknown';
+
+    const fetchMock = async (_id: string): Promise<TChatConversation | null> => ({
+      id: ordinaryConvId,
+      name: 'Ordinary Session',
+      type: 'nomi',
+      extra: { voice: false, workspace: 'D:/workspace/ordinary' },
+    } as unknown as TChatConversation);
+
+    const resolveConversationKind = async (targetId: typeof ordinaryConvId) => {
+      const { kind } = await resolveVoiceConversationKind({
+        targetId,
+        fetchConversation: fetchMock,
+      });
+      // Simulate state update triggering re-render where kind becomes ordinary and enabled becomes true
+      kindState = kind;
+      setTimeout(() => {
+        enabledInRender = true;
+        // Simulate useEffect([conversationVoiceKind, enqueue]) draining pending items
+        while (pendingDrains.length > 0) {
+          const entry = pendingDrains.shift()!;
+          const res = simulatedQueueEnqueue(entry.item);
+          entry.resolve(res);
+        }
+      }, 10);
+      return kind;
+    };
+
+    const deps: NomiSendDispatchDependencies = {
+      conversationId: ordinaryConvId,
+      conversationVoiceKind: kindState,
+      workspacePath: 'D:/workspace/ordinary',
+      filesToSend: [],
+      message: '首次恢复直接入队',
+      voiceSendAttempts: new Map(),
+      resolveConversationKind,
+      sendVoiceKeyboardMessage: async (convId, cmdId) => {
+        hostSendCount += 1;
+        return { task: mockTaskSnapshot(cmdId) };
+      },
+      enqueue: safeEnqueue,
+      clearFiles: () => {
+        fileClearCount += 1;
+      },
+      emitFileClear: () => {},
+      notifyError: () => {},
+      plainTextOnlyError: '语音会话仅支持纯文本消息',
+      loadFailedError: '加载会话失败，请重试',
+    };
+
+    // The user sends ONCE while in unknown state. It MUST NOT throw and MUST enqueue!
+    await dispatchNomiSend(deps);
+
+    expect(hostSendCount).toBe(0);
+    expect(fileClearCount).toBe(1);
+    expect(kindState).toBe('ordinary');
+    expect(enabledInRender).toBe(true);
+  });
+
   test('voice conversation rejects attachments and preserves drafts without queueing or sending', async () => {
     let hostSendCount = 0;
     let ordinaryQueueCount = 0;
@@ -177,12 +288,13 @@ describe('nomi send box dispatch behavior', () => {
       message: '测试语音附带文件',
       voiceSendAttempts: new Map(),
       resolveConversationKind: async () => 'voice',
-      sendVoiceKeyboardMessage: async () => {
+      sendVoiceKeyboardMessage: async (convId, cmdId) => {
         hostSendCount += 1;
+        return { task: mockTaskSnapshot(cmdId) };
       },
-      enqueue: () => {
+      enqueue: (item) => {
         ordinaryQueueCount += 1;
-        return true;
+        return mockQueueItem(item.input, item.files);
       },
       clearFiles: () => {},
       emitFileClear: () => {},
@@ -239,12 +351,13 @@ describe('nomi send box dispatch behavior', () => {
       _convId: string,
       cmdId: string,
       _msg: string
-    ) => {
+    ): Promise<{ task: VoiceTaskSnapshot }> => {
       attemptCount += 1;
       usedCommandIds.push(cmdId);
       if (attemptCount === 1) {
         throw new Error('Transport timeout during initial send');
       }
+      return { task: mockTaskSnapshot(cmdId) };
     };
 
     const deps: NomiSendDispatchDependencies = {
@@ -256,7 +369,7 @@ describe('nomi send box dispatch behavior', () => {
       voiceSendAttempts: attempts,
       resolveConversationKind: async () => 'voice',
       sendVoiceKeyboardMessage,
-      enqueue: () => true,
+      enqueue: (item) => mockQueueItem(item.input, item.files),
       clearFiles: () => {},
       emitFileClear: () => {},
       notifyError: () => {},
