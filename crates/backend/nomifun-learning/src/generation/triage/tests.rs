@@ -750,6 +750,47 @@ async fn triage_prompts_number_files_and_demand_exact_coverage() {
     assert!(TRIAGE_SYSTEM.contains("原样回显"));
 }
 
+/// h1 定向补判：整批部分覆盖时只对缺失子集重发，且补判提示词换成
+/// 「只判定以下 N 个文件」的定向措辞（不再原样重发同形状全批提示词）。
+#[tokio::test]
+async fn partial_coverage_reasks_only_the_missing_subset_with_a_directed_prompt() {
+    let (knowledge, _data_dir) = triage_knowledge_service().await;
+    let (kb_id, root) = create_blank_base(&knowledge, "补判库").await;
+    write_kb_file(&root, "ch1.md", "# 核心章节\n\n本章讲排序算法的实现。\n");
+    write_kb_file(&root, "lab.md", "# 实验\n\n动手实现快速排序并测量耗时。\n");
+    write_kb_file(&root, "notes.md", "# 备注\n\n补充说明与延伸阅读。\n");
+    let completer = RespondingCompleter {
+        respond: |paths: &[String]| {
+            // 首批（3 文件）只回 2/3 条（模拟真机「数组缺 k 条」）；定向
+            // 补判批只来缺失的那 1 个文件，回满。
+            let omit_first_round = paths.len() > 1;
+            let covered: Vec<(&str, &str, f32, &str)> = paths
+                .iter()
+                .filter(|path| !(omit_first_round && path.as_str() == "notes.md"))
+                .map(|path| (path.as_str(), "core", 0.9, "课程正文"))
+                .collect();
+            Ok(reply_json(&covered))
+        },
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        prompts: std::sync::Mutex::new(Vec::new()),
+    };
+
+    let (_inventory, report) =
+        run_kb_triage(&knowledge, &[kb_id], "学会排序算法", Some(&completer)).await.unwrap();
+
+    assert_eq!(report.counts.core, 3, "缺失子集经定向补判后全覆盖");
+    assert_eq!(report.counts.uncertain, 0);
+    let prompts = completer.prompts.lock().unwrap().clone();
+    assert_eq!(prompts.len(), 2, "首批 + 补判批各一次调用");
+    assert_eq!(prompt_paths(&prompts[0]), ["ch1.md", "lab.md", "notes.md"]);
+    assert_eq!(prompt_paths(&prompts[1]), ["notes.md"], "补判批只含缺失子集");
+    assert!(
+        prompts[1].contains("只判定以下 1 个文件"),
+        "补判批用定向措辞：{}",
+        prompts[1]
+    );
+}
+
 #[tokio::test]
 async fn a_single_file_that_never_parses_becomes_uncertain_without_dropping() {
     let (knowledge, _data_dir) = triage_knowledge_service().await;
@@ -1132,7 +1173,7 @@ fn triage_prompt_labels_truncated_directory_trees_honestly() {
     let small = synthetic_inventory(400);
     let batch = first_scanned(&small);
     let batch_refs: Vec<&ScannedFile> = batch.iter().collect();
-    let prompt = build_triage_user_prompt("学会全部内容", &small, &batch_refs);
+    let prompt = build_triage_user_prompt("学会全部内容", &small, &batch_refs, BatchPass::Initial);
     assert!(
         prompt.contains("目录树（全部清点文件）"),
         "未超上限保持全量声称:{prompt}"
@@ -1143,7 +1184,7 @@ fn triage_prompt_labels_truncated_directory_trees_honestly() {
     let large = synthetic_inventory(401);
     let batch = first_scanned(&large);
     let batch_refs: Vec<&ScannedFile> = batch.iter().collect();
-    let prompt = build_triage_user_prompt("学会全部内容", &large, &batch_refs);
+    let prompt = build_triage_user_prompt("学会全部内容", &large, &batch_refs, BatchPass::Initial);
     assert!(
         prompt.contains("截断") && prompt.contains("共 401"),
         "截断必须如实披露:{prompt}"

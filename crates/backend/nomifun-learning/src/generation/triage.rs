@@ -9,7 +9,9 @@
 //! 本票不改 `generate_course` 主流程接线（t2/t3 的接缝）；交付的是可独立调用
 //! 的编排入口 [`run_kb_triage`]。
 
-use super::structured_batch::{structured_batch, BatchAttempt, StructuredBatchError, StructuredBatchFailure};
+use super::structured_batch::{
+    structured_batch, BatchAttempt, BatchPass, StructuredBatchError, StructuredBatchFailure,
+};
 use super::*;
 use futures::stream::{self, StreamExt};
 use std::future::Future;
@@ -390,11 +392,13 @@ pub async fn run_kb_triage(
                     .iter()
                     .map(|file| (file.file.rel_path.as_str(), file))
                     .collect();
+                let repair_calls = std::sync::atomic::AtomicUsize::new(0);
                 let attempt = TriageBatchAttempt {
                     completer,
                     goal,
                     inventory: &inventory,
                     lookup: &lookup,
+                    repair_calls: &repair_calls,
                 };
                 let batch_ids: Vec<String> = remaining
                     .iter()
@@ -1036,15 +1040,22 @@ struct TriageBatchAttempt<'a> {
     goal: &'a str,
     inventory: &'a KbInventory,
     lookup: &'a HashMap<&'a str, &'a ScannedFile>,
+    /// 补判调用计数（拆半/缺条目子集的重发次数，h1 披露读数）。
+    repair_calls: &'a std::sync::atomic::AtomicUsize,
 }
 
 impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
     fn attempt<'s>(
         &'s self,
         slice: &'s [String],
+        pass: BatchPass,
     ) -> Pin<Box<dyn Future<Output = Result<HashMap<String, RuleVerdict>, StructuredBatchError>> + Send + 's>>
     {
         Box::pin(async move {
+            if pass == BatchPass::Repair {
+                self.repair_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let files: Vec<&ScannedFile> = slice
                 .iter()
                 .filter_map(|id| self.lookup.get(id.as_str()).copied())
@@ -1054,7 +1065,7 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
                     "批内没有可分诊的文件（内部错误）".to_owned(),
                 ));
             }
-            let prompt = build_triage_user_prompt(self.goal, self.inventory, &files);
+            let prompt = build_triage_user_prompt(self.goal, self.inventory, &files, pass);
             let raw = self
                 .completer
                 .complete_json(
@@ -1270,10 +1281,12 @@ role 只能取以下七值之一：
 - 只输出 JSON，不要 Markdown 围栏或解释。"#;
 
 /// 批提示词：目标 + README 摘录 + 目录树 + 每文件（路径/标题/预览/类型）。
+/// `pass` 决定清单导语（首发契约 vs 补判定向措辞，h1）。
 fn build_triage_user_prompt(
     goal: &str,
     inventory: &KbInventory,
     files: &[&ScannedFile],
+    pass: BatchPass,
 ) -> String {
     let mut prompt = String::new();
     let goal = goal.trim();
@@ -1309,11 +1322,21 @@ fn build_triage_user_prompt(
     }
     // h1 清单行硬化：每行带 1 起步的编号，路径紧跟编号之后（不再是
     // `- 文件 {path}` 标签行——真机实锤模型会把「文件 」标签回显进 path）；
-    // 导语明确「恰好 N 条 / 按清单顺序 / path 原样回显 / 遗漏即失败」。
+    // 导语按语境区分：首发批声明「恰好 N 条 / 按清单顺序 / 原样回显 /
+    // 遗漏即失败」，补判重发换成「只判定以下 N 个文件」的定向措辞。
     let count = files.len();
-    prompt.push_str(&format!(
-        "待分诊文件清单（共 {count} 个文件，编号 1 到 {count}；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径，不得添加「文件」等清单标签或编号，遗漏任何文件都算失败）：\n"
-    ));
+    let lead_in = match pass {
+        BatchPass::Repair => format!(
+            "只判定以下 {count} 个文件（此前一次回包遗漏或解析失败，本次只补判清单内的文件，清单之外的文件一律不要判定；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径）：\n"
+        ),
+        BatchPass::Initial if count == 1 => {
+            "本次只判定 1 个文件（必须返回且只返回这 1 个文件的判定，path 原样回显编号后的路径）：\n".to_owned()
+        }
+        BatchPass::Initial => format!(
+            "待分诊文件清单（共 {count} 个文件，编号 1 到 {count}；必须恰好返回 {count} 条判定，按清单顺序，path 原样回显编号后的路径，不得添加「文件」等清单标签或编号，遗漏任何文件都算失败）：\n"
+        ),
+    };
+    prompt.push_str(&lead_in);
     for (index, file) in files.iter().enumerate() {
         prompt.push_str(&format!(
             "{}. {} :: 类型 {} :: 标题 [{}] :: 预览 {}\n",
