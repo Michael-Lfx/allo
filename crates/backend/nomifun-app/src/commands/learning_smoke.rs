@@ -55,10 +55,28 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             goal,
             name,
             lessons,
+            triage_only,
+            plan_only,
+            report_json,
             db,
             provider,
             model,
-        } => run_course(cli, dir, goal, name, lessons, db, provider, model).await,
+        } => {
+            run_course(
+                cli,
+                dir,
+                goal,
+                name,
+                lessons,
+                triage_only,
+                plan_only,
+                report_json,
+                db,
+                provider,
+                model,
+            )
+            .await
+        }
         LearningSmokeCommand::Mount {
             db,
             provider,
@@ -349,6 +367,9 @@ async fn run_course(
     goal: String,
     name: Option<String>,
     lessons: usize,
+    triage_only: bool,
+    plan_only: bool,
+    report_json: Option<PathBuf>,
     db: Option<PathBuf>,
     provider: Option<String>,
     model: Option<String>,
@@ -393,6 +414,24 @@ async fn run_course(
         total_bytes
     );
 
+    // t5 变体：--triage-only / --plan-only 不建课,直接跑清点(分诊[/结构
+    // 计划])并打印读数;报告(可选)按档位落 triage[/plan]。
+    if triage_only || plan_only {
+        let completer: Arc<dyn LearningCompleter> = _archiving
+            .clone()
+            .map(|archiving| archiving as Arc<dyn LearningCompleter>)
+            .unwrap_or_else(|| _live.clone());
+        return run_course_stage_reports(
+            &wiring,
+            completer,
+            &kb_id,
+            goal.trim(),
+            plan_only,
+            report_json.as_deref(),
+        )
+        .await;
+    }
+
     let uploaded_paths: BTreeSet<String> =
         files.iter().map(|(path, _)| path.clone()).collect();
     let provider_id = provider
@@ -429,6 +468,32 @@ async fn run_course(
         detail.modules.len(),
         detail.course.total_lessons
     );
+    // t5 报告（可选）：full 档落的是库里的快照信封（triage/plan/coverage
+    // 四件套原样），便于与 --triage-only/--plan-only 档对账；回退/描述流
+    // 建的课没有信封——如实写 null,不伪造。
+    if let Some(report_path) = report_json.as_deref() {
+        let snapshot_json: Option<String> = nomifun_db::sqlx::query_scalar(
+            "SELECT course_source_plan_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(detail.course.id.as_str())
+        .fetch_optional(&wiring.pool)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to read course source plan: {error}"))?
+        .flatten();
+        let report = match snapshot_json.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+            Some(Ok(envelope)) => envelope,
+            Some(Err(error)) => {
+                return Err(anyhow::anyhow!("course source plan snapshot unreadable: {error}"))
+            }
+            None => serde_json::json!({
+                "course_id": detail.course.id.as_str(),
+                "source_plan": serde_json::Value::Null,
+                "note": "course built without the plan pipeline (fallback or description flow)",
+            }),
+        };
+        write_course_report(Some(report_path), &report)?;
+        println!("report: {}", report_path.display());
+    }
     match detail.course.sampling.as_ref() {
         Some(sampling) => {
             println!(
@@ -659,6 +724,280 @@ async fn run_course(
 
     println!("\nEXIT=0");
     Ok(ExitCode::SUCCESS)
+}
+
+// ── t5 冒烟变体：--triage-only / --plan-only / --report-json ─────────────
+
+/// t5 冒烟变体：清点+分诊（--triage-only）或再跑结构计划（--plan-only），
+/// 打印 counts/排除理由/uncertain/chapters/coverage 台账/gaps。读数面非
+/// 门禁：triage 档有 warning 也 EXIT=0（票面）；plan 档计划不可用 EXIT=2
+/// （该档的目的就是看计划）。
+async fn run_course_stage_reports(
+    wiring: &SmokeWiring,
+    completer: Arc<dyn LearningCompleter>,
+    kb_id: &str,
+    goal: &str,
+    plan_only: bool,
+    report_json: Option<&Path>,
+) -> Result<ExitCode> {
+    let kb_id: nomifun_common::KnowledgeBaseId = kb_id
+        .parse()
+        .map_err(|error| anyhow::anyhow!("invalid kb id: {error}"))?;
+    let (inventory, triage) =
+        nomifun_learning::run_kb_triage(&wiring.knowledge, &[kb_id.clone()], goal, Some(completer.as_ref()))
+            .await
+            .map_err(|error| anyhow::anyhow!("triage failed: {error}"))?;
+    print_triage_readout(&triage);
+    let mut report = course_report_json(&triage, None);
+    if plan_only {
+        let plan = nomifun_learning::run_kb_structure(
+            &wiring.knowledge,
+            &inventory,
+            &triage,
+            goal,
+            Some(completer.as_ref()),
+            None,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("structure discovery failed: {error}"))?;
+        match plan.filter(|plan| plan.is_usable()) {
+            Some(plan) => {
+                print_plan_readout(&plan);
+                report = course_report_json(&triage, Some(&plan));
+            }
+            None => {
+                eprintln!("structure plan unusable (no chapters / degraded empty)");
+                write_course_report(report_json, &report)?;
+                return Ok(ExitCode::from(2));
+            }
+        }
+    }
+    write_course_report(report_json, &report)?;
+    println!("\nEXIT=0");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 分诊读数：七角色计数 + degraded + 排除/重复/uncertain 逐条理由——
+/// 「跳过与不确定可见」是无头冒烟的第一读数。
+fn print_triage_readout(triage: &nomifun_learning::KbTriageReport) {
+    use nomifun_learning::KbTriageRole;
+    let counts = &triage.counts;
+    let total = counts.core
+        + counts.prerequisite
+        + counts.practice
+        + counts.mixed
+        + counts.noise
+        + counts.duplicate
+        + counts.uncertain;
+    println!(
+        "triage: total={total} core={} prerequisite={} practice={} mixed={} noise={} duplicate={} uncertain={} degraded={}",
+        counts.core,
+        counts.prerequisite,
+        counts.practice,
+        counts.mixed,
+        counts.noise,
+        counts.duplicate,
+        counts.uncertain,
+        triage.degraded
+    );
+    for warning in &triage.warnings {
+        println!("  warning: {warning}");
+    }
+    if !triage.excluded.is_empty() {
+        println!("excluded ({}):", triage.excluded.len());
+        for entry in &triage.excluded {
+            println!(
+                "  - [{}] {} :: {}",
+                role_name(entry.role),
+                entry.path,
+                entry.reason
+            );
+        }
+    }
+    if !triage.duplicates.is_empty() {
+        println!("duplicates ({}):", triage.duplicates.len());
+        for duplicate in &triage.duplicates {
+            println!(
+                "  - {} -> {} ({})",
+                duplicate.path, duplicate.duplicate_of, duplicate.canonical_reason
+            );
+        }
+    }
+    let uncertain: Vec<&nomifun_learning::KbTriageFile> = triage
+        .files
+        .iter()
+        .filter(|file| file.role == KbTriageRole::Uncertain)
+        .collect();
+    if !uncertain.is_empty() {
+        println!("uncertain ({}):", uncertain.len());
+        for file in uncertain {
+            println!("  - {} :: {}", file.rel_path, file.reason);
+        }
+    }
+}
+
+/// 结构计划读数：章/概念/边 + 逐章锚点 + 覆盖台账 + gaps。
+fn print_plan_readout(plan: &nomifun_learning::SourcePlan) {
+    use nomifun_learning::{FileCoverageStatus, TopicStatus};
+    println!(
+        "plan: chapters={} concepts={} edges={} degraded={} warnings={}",
+        plan.chapters.len(),
+        plan.concept_graph.nodes.len(),
+        plan.concept_graph.edges.len(),
+        plan.degraded,
+        plan.warnings.len()
+    );
+    for (index, chapter) in plan.chapters.iter().enumerate() {
+        println!(
+            "  {}. {} — anchors={} covers={} type={:?}",
+            index + 1,
+            chapter.title,
+            chapter.source_anchors.len(),
+            chapter.covers.len(),
+            chapter.content_type
+        );
+    }
+    if !plan.evidence.gaps.is_empty() {
+        println!("gaps ({}):", plan.evidence.gaps.len());
+        for gap in &plan.evidence.gaps {
+            println!("  - {gap}");
+        }
+    }
+    let ledger = &plan.coverage;
+    let covered = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Covered)
+        .count();
+    let skipped = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Skipped)
+        .count();
+    let uncertain = ledger
+        .topics
+        .iter()
+        .filter(|topic| topic.status == TopicStatus::Uncertain)
+        .count();
+    println!(
+        "coverage ledger: topics covered={covered} skipped={skipped} uncertain={uncertain}; files covered={} partial={} skipped={} uncertain={}; excluded={}",
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Covered)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Partial)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Skipped)
+            .count(),
+        ledger
+            .files
+            .iter()
+            .filter(|file| file.status == FileCoverageStatus::Uncertain)
+            .count(),
+        ledger.excluded.len()
+    );
+    for entry in &ledger.excluded {
+        println!(
+            "  excluded: [{}] {} :: {}",
+            role_name(entry.role),
+            entry.rel_path,
+            entry.reason
+        );
+    }
+}
+
+fn role_name(role: nomifun_learning::KbTriageRole) -> &'static str {
+    use nomifun_learning::KbTriageRole;
+    match role {
+        KbTriageRole::Core => "core",
+        KbTriageRole::Prerequisite => "prerequisite",
+        KbTriageRole::Practice => "practice",
+        KbTriageRole::Mixed => "mixed",
+        KbTriageRole::Noise => "noise",
+        KbTriageRole::Duplicate => "duplicate",
+        KbTriageRole::Uncertain => "uncertain",
+    }
+}
+
+/// 报告 JSON：triage 档 `{triage}`，plan 档 `{triage, plan}`（t1/t2 类型
+/// 原样序列化,字段形状与库内信封一致,便于对账）。
+fn course_report_json(
+    triage: &nomifun_learning::KbTriageReport,
+    plan: Option<&nomifun_learning::SourcePlan>,
+) -> serde_json::Value {
+    let mut report = serde_json::json!({ "triage": triage });
+    if let Some(plan) = plan {
+        report["plan"] = serde_json::json!(plan);
+    }
+    report
+}
+
+/// 报告落盘（pretty JSON；建父目录）。路径缺席 = 调用方没要报告,no-op。
+fn write_course_report(path: Option<&Path>, report: &serde_json::Value) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create report dir {}", parent.display()))?;
+    }
+    let body = serde_json::to_string_pretty(report).context("serialize course report")?;
+    std::fs::write(path, body).with_context(|| format!("write report {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod course_report_tests {
+    use super::course_report_json;
+    use nomifun_learning::{KbTriageCounts, KbTriageReport};
+
+    fn triage_fixture() -> KbTriageReport {
+        KbTriageReport {
+            files: Vec::new(),
+            counts: KbTriageCounts {
+                core: 2,
+                noise: 1,
+                ..KbTriageCounts::default()
+            },
+            excluded: Vec::new(),
+            duplicates: Vec::new(),
+            degraded: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    /// triage 档只有 triage 面;plan 档带 plan 面(章/概念/覆盖台账原样)。
+    #[test]
+    fn course_report_carries_triage_and_optional_plan() {
+        let triage_only = course_report_json(&triage_fixture(), None);
+        assert!(triage_only.get("triage").is_some(), "triage 档必须有 triage 面");
+        assert!(
+            triage_only.get("plan").is_none(),
+            "triage 档不带 plan 面"
+        );
+        assert_eq!(triage_only["triage"]["counts"]["core"], serde_json::json!(2));
+
+        let mut plan = nomifun_learning::SourcePlan::default();
+        plan.chapters = vec![nomifun_learning::PlannedChapter {
+            title: "排序入门".to_owned(),
+            summary: String::new(),
+            learning_objectives: Vec::new(),
+            covers: Vec::new(),
+            prerequisites: Vec::new(),
+            source_anchors: Vec::new(),
+            content_type: nomifun_learning::ChapterContentType::Concept,
+        }];
+        let with_plan = course_report_json(&triage_fixture(), Some(&plan));
+        assert_eq!(with_plan["plan"]["chapters"].as_array().unwrap().len(), 1);
+        assert!(with_plan["triage"].is_object(), "triage 面恒在");
+    }
 }
 
 /// `learning-smoke structure`：从零（或 --db）立一门最小学习图课程，跑结构

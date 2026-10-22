@@ -19,6 +19,8 @@ const STRUCTURE_STAGE_CALLS: usize = 4;
 const ESTIMATE_SECONDS_PER_CALL: u64 = 10;
 /// 估算跳过摘要限长(噪声/重复示例,确认弹窗够用)。
 const ESTIMATE_SKIPPED_EXAMPLES_MAX: usize = 10;
+/// triage_completed 帧的有界示例数(跳过/重复/uncertain;进度视图展开用)。
+const TRIAGE_FRAME_EXAMPLES_MAX: usize = 10;
 
 /// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
 /// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
@@ -334,6 +336,27 @@ impl LearningService {
                 "uncertain": counts.uncertain,
             },
             "degraded": triage.degraded,
+            // 有界示例(≤10):进度视图的「可展开跳过理由/duplicate_of/
+            // uncertain 列表」;全量在课程详情的诊断明细里。
+            "excluded": triage.excluded.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|entry| serde_json::json!({
+                    "path": entry.path, "role": entry.role, "reason": entry.reason,
+                }))
+                .collect::<Vec<_>>(),
+            "duplicates": triage.duplicates.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|duplicate| serde_json::json!({
+                    "path": duplicate.path,
+                    "duplicate_of": duplicate.duplicate_of,
+                    "canonical_reason": duplicate.canonical_reason,
+                }))
+                .collect::<Vec<_>>(),
+            "uncertain": triage.files.iter()
+                .filter(|file| file.role == crate::generation::KbTriageRole::Uncertain)
+                .take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|file| serde_json::json!({
+                    "path": file.rel_path, "reason": file.reason,
+                }))
+                .collect::<Vec<_>>(),
         }));
         task.set_step("source_plan", "正在从证据规划章节骨架…");
         self.emit_course_event(serde_json::json!({
