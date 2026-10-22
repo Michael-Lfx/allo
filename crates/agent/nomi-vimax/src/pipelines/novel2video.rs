@@ -349,8 +349,8 @@ impl Novel2VideoPipeline {
 
         let mut pending = 0usize;
         let mut total_scenes = 0usize;
-        // Film-order continuity across events/scenes: next scene's first shot
-        // match-cuts from the previous scene's last video_last_frame.
+        // Scenes are independent generations. The previous scene's tail frame
+        // is not passed into the next scene.
         let mut reel = SceneReel::new();
         for event in &events {
             let scenes_dir = self
@@ -378,7 +378,7 @@ impl Novel2VideoPipeline {
                             event.index, scene.index
                         ),
                     );
-                    reel.push(scene_final, &scene_work).await;
+                    reel.push(scene_final);
                     continue;
                 }
                 pending += 1;
@@ -398,10 +398,10 @@ impl Novel2VideoPipeline {
                         user_requirement,
                         style,
                         progress.clone(),
-                        reel.tail_frame(),
+                        None,
                     )
                     .await?;
-                reel.push(video, &scene_work).await;
+                reel.push(video);
             }
         }
         if pending > 0 && pending < total_scenes {

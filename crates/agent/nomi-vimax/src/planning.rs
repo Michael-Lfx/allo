@@ -1151,18 +1151,18 @@ or shorten — never rush (吞字)."
 /// never drop a script line.
 pub fn voice_ref_slot_rules(max_speakers: usize) -> String {
     if max_speakers == 0 {
-        return "This video model has no reference_audio speaker cap. Still SPLIT a row when \
-spoken payload cannot finish inside the clip window. Never drop, paraphrase, or skip a script line."
+        return "SPLIT a row when spoken payload cannot finish inside the clip window. Never drop, \
+paraphrase, or skip a script line. Voice identity is the written voice description, not a reference audio clip."
             .into();
     }
     format!(
-        "VOICE-REF SLOTS (hard): this model binds at most {max_speakers} reference_audio clip(s) \
-per generated file. A storyboard row may have at most {max_speakers} uniquely NAMED speaking \
-characters (e.g. 李薇：「…」 / Alice: \"…\"). Silent on-screen people do not count. If more people \
+        "SPEAKING VOICES (hard): one generated file keeps at most {max_speakers} uniquely NAMED \
+speaking characters consistent by the written voice description (e.g. 李薇：「…」 / Alice: \"…\"). \
+Do not request or rely on reference audio. Silent on-screen people do not count. If more people \
 speak, emit ANOTHER row in story order and keep EVERY line — never drop, summarize, or merge \
 distinct script lines to squeeze them in. Reverse / insert / push-in of the SAME speakers stays \
 in one row as CUT TO (continuity). Pack related beats into one row when speakers AND speech still \
-fit; split only to protect voice identity / lip-sync or to avoid 吞字."
+fit; split only so each speaker's written voice stays distinct or to avoid 吞字."
     )
 }
 
@@ -1303,28 +1303,37 @@ Do NOT invent a new music style per shot — abrupt BGM changes between cuts are
     )
 }
 
-/// Continuity rules the renderer can actually deliver.
+/// Continuity the renderer can actually deliver.
 ///
-/// The renderer feeds shot N's last frame to shot N+1 as reference Image 1.
-/// Telling the LLM that *every* pair must "open from the previous ending state"
-/// makes each new shot re-stage that pose before it moves, which reads as a
-/// stutter at the splice. Identity continuity always holds; **compositional**
-/// continuity is only correct when the camera does not change.
+/// Adjacent rows are separate video files. The next file does not receive the
+/// previous clip's last frame. Identity, screen axis, and prop exit state are
+/// restated in that row's own blocking sentence.
 fn shot_continuity_lines() -> String {
     "         - SHOT CONTINUITY — these rules apply BETWEEN storyboard rows (file splices), \
 not as a reason to add a row. Camera moves inside a row are CUT TO in that row's visual_desc.\n\
            * IDENTITY (always): cast faces, wardrobe, hair, props, set dressing, time of day, \
 weather, and lighting mood carry over unchanged between adjacent shots unless the story explicitly \
 changes them. A plot prop named in visual_desc must have a start state and an exit state; the next \
-row opens on that exit unless the story changes it.\n\
-           * SAME opening cam_idx = SAME TAKE into the next *row*: that next file continues this \
-row's exit framing — open exactly where this row ended and move on from there. Keep each named \
-person on the SAME screen side (left/right).\n\
-           * NEW opening cam_idx = A CUT into the next *row*: do NOT replay or re-describe this \
-row's ending pose, and do NOT copy this row's 「」 line into the next audio_desc. Open on the next action already in progress from the new angle. Keep the \
-180-degree axis: who is screen-left vs screen-right MUST match the previous row unless THIS row \
-explicitly writes 反打 / 过肩 / reverse as an in-file CUT TO. Flipping left/right across a file \
+row restates that exit in its own blocking sentence unless the story changes it.\n\
+           * BLOCKING (every row, self-contained): the first sentence re-establishes space against \
+the empty location plate. For each visible person and each person who speaks write screen side (画面左侧 / 画面右侧 / 画面中央), \
+facing (面向左 / 面向右 / 面向镜头 / 背对镜头), posture, who is closer to camera, and one fixed set \
+anchor (门内一步、柜台左侧、床尾、窗前). Name foreground / midground / background for the subject and \
+the nearest furnishing. Do NOT write 同上, 接上一帧, 从上一镜末尾接着, or \"same as the previous shot\". \
+When the axis has not changed, the next row rewrites the geography in full \
+(\"仍在画面左侧、面向右、站在铁门内侧\").\n\
+           * AXIS: who is screen-left vs screen-right stays the same across a file splice unless THIS \
+row explicitly writes 反打 / 过肩 / reverse as an in-file CUT TO. Flipping left/right across a file \
 splice looks like a teleport.\n\
+           * ACTION: open with the action already in progress. Do NOT replay or re-describe the \
+previous row's ending pose, and do NOT copy this row's 「」 line into the next audio_desc.\n\
+           * IN-FILE AXIS: beats inside one row share one generated video. A later beat that is not \
+反打/过肩 repeats the same screen side, facing, depth, and who is closer, and the cut is hard \
+(no dissolve, nobody walks or flashes to a new spot). A reverse writes 反打 and restates the new \
+sides; the left/right swap is the new camera, not a person running across the set. When the people \
+in frame change, restate who enters and who leaves, each with their own screen side; do not keep \
+the previous beat's sides. One reference face is one body, and a person who speaks in the beat \
+must be placed, not left as an unnamed extra.\n\
            * A reverse angle of the SAME beat is NOT a new row — pack it in this row as CUT TO.\n"
         .to_string()
 }
@@ -1333,11 +1342,10 @@ fn cross_scene_opening_line(scene_idx: usize, scene_count: usize) -> String {
     if scene_idx == 0 || scene_count <= 1 {
         return String::new();
     }
-    "         - CROSS-SCENE OPENING: This is NOT the first scene. Carry cast identity / wardrobe / \
-lighting mood from the previous scene when the story is consistent (camera or location may change). \
-The renderer feeds the previous ending frame as continuity Image 1 for IDENTITY only — do NOT restage \
-or replay that pose as the opening picture. Start the new scene's action already in progress. \
-Re-staging the previous last frame is what makes the scene join look frozen.\n"
+    "         - CROSS-SCENE OPENING: This is NOT the first scene. Restate cast identity, wardrobe, \
+and lighting mood in this scene's own blocking sentences when the story is consistent (camera or \
+location may change). Do not refer to a previous frame. Start the new scene's action already in \
+progress, and rewrite screen side, facing, and the new location's set anchors in full.\n"
         .into()
 }
 
@@ -2453,8 +2461,9 @@ mod tests {
     fn continuity_block_separates_identity_from_composition() {
         let s = shot_continuity_lines();
         assert!(s.contains("IDENTITY (always)"));
-        assert!(s.contains("SAME opening cam_idx") || s.contains("SAME cam_idx"));
-        assert!(s.contains("NEW opening cam_idx") || s.contains("NEW cam_idx"));
+        assert!(s.contains("BLOCKING"));
+        assert!(s.contains("画面左侧"));
+        assert!(s.contains("set anchor") || s.contains("门内一步"));
         assert!(
             s.contains("BETWEEN storyboard rows") || s.contains("file splices"),
             "cam_idx rules must not be a reason to add a row: {s}"
@@ -2462,6 +2471,14 @@ mod tests {
         assert!(
             s.contains("do NOT replay") || s.contains("Do NOT replay"),
             "a cut must not re-stage the previous ending pose: {s}"
+        );
+        assert!(
+            !s.contains("SAME opening cam_idx"),
+            "same camera must not resume a tail frame: {s}"
+        );
+        assert!(
+            !s.to_ascii_lowercase().contains("last frame"),
+            "tail-frame resume leftover: {s}"
         );
     }
 
