@@ -136,6 +136,7 @@
   "noAgentsAvailable": "没有可用的 Agent",
   "noModelConfigured": "还没有可用模型。请在弹窗中添加供应商，完成后即可发送。",
   "createFailed": "创建会话失败",
+  "loadFailed": "加载会话失败，请重试",
   "skeleton": {
     "opening": "正在打开对话"
   },
