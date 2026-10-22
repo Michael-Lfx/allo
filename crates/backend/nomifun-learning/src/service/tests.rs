@@ -7601,6 +7601,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 modified_at: Some(1),
                 content_hash: "a".repeat(64),
                 headings: vec!["排序入门".to_owned()],
+                heading_levels: vec![1],
                 preview: "排序的基本概念。".to_owned(),
                 kind: KbFileKind::Markdown,
             }],
@@ -7672,6 +7673,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 assigned_lessons: vec!["排序入门".to_owned()],
                 status: TopicStatus::Covered,
                 reason: None,
+                rolled_up: false,
             }],
             warnings: Vec::new(),
             degraded: false,
@@ -8073,6 +8075,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     modified_at: Some(1),
                     content_hash: "a".repeat(64),
                     headings: vec![format!("第{index}章")],
+                    heading_levels: vec![1],
                     preview: "预览。".to_owned(),
                     kind: KbFileKind::Markdown,
                 })
@@ -8273,6 +8276,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: vec!["排序入门".to_owned()],
                     status: TopicStatus::Covered,
                     reason: None,
+                    rolled_up: false,
                 },
                 ExpansionTopicReport {
                     topic_id: "t2".to_owned(),
@@ -8281,6 +8285,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: vec!["前置课".to_owned()],
                     status: TopicStatus::Covered,
                     reason: None,
+                    rolled_up: false,
                 },
                 ExpansionTopicReport {
                     topic_id: "t3".to_owned(),
@@ -8289,6 +8294,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: vec!["练习课".to_owned()],
                     status: TopicStatus::Covered,
                     reason: None,
+                    rolled_up: false,
                 },
                 ExpansionTopicReport {
                     topic_id: "t4".to_owned(),
@@ -8297,6 +8303,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: Vec::new(),
                     status: TopicStatus::Skipped,
                     reason: Some("非教学内容".to_owned()),
+                    rolled_up: false,
                 },
                 ExpansionTopicReport {
                     topic_id: "t5".to_owned(),
@@ -8305,6 +8312,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: Vec::new(),
                     status: TopicStatus::Uncertain,
                     reason: None,
+                    rolled_up: false,
                 },
                 ExpansionTopicReport {
                     topic_id: "t6".to_owned(),
@@ -8313,6 +8321,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     assigned_lessons: vec!["练习课".to_owned()],
                     status: TopicStatus::Covered,
                     reason: None,
+                    rolled_up: false,
                 },
             ],
             warnings: vec!["覆盖警告".to_owned()],
@@ -8489,6 +8498,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                 assigned_lessons: Vec::new(),
                 status: crate::generation::TopicStatus::Skipped,
                 reason: Some("无教学价值".to_owned()),
+                rolled_up: false,
             });
         }
         for index in 0..205 {

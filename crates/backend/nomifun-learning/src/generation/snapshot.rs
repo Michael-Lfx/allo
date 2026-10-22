@@ -99,6 +99,7 @@ mod tests {
             modified_at: Some(1),
             content_hash: "h".repeat(64),
             headings,
+            heading_levels: Vec::new(),
             preview,
             kind: KbFileKind::Markdown,
         }
