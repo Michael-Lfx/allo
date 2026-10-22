@@ -87,7 +87,7 @@ const AppearanceSection: React.FC<AppearanceSectionProps> = ({
             description={t('nomi.overview.wallpaperRoomHint')}
             footer={
               <div
-                className='relative h-88px rd-10px overflow-hidden border border-solid border-border-2'
+                className='relative h-88px rd-10px overflow-hidden border border-solid border-[var(--color-border-2)]'
                 style={{ background: wallpaperAnalysis.seedHex }}
               >
                 {wallpaperScene.url ? (

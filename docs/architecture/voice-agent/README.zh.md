@@ -1,5 +1,7 @@
 # voice-agent 文档目录 (AI Mate Voice Agent Docs)
 
+> **2026-10-22 本地语音演进计划**：[实时字幕、最终转写与自然打断](execution/local-streaming-barge-in-transcript-plan-2026-10-22.zh.md)。推荐实验验证双语流式预览加 SenseVoice 最终识别，LLM 理解不覆盖用户原话；先项目外实验，再 S1 字幕、S2 打断、S3 联合验收。当前仅方案，不宣称已支持全双工或严格离线。
+
 > **2026-10-22 页面与桌宠联合验收补充**：[语音页面、工作区会话与桌宠联动方案](execution/voice-ui-pet-linkage-acceptance-plan-2026-10-22.zh.md)。固定 c308b0158 核查：Flowy/Bolt 初始化和最后伙伴删除保护已有代码，但新装默认显示、桌宠统一语音按钮、主会话连续语音态和可视队列尚未闭环；新增 UI0–UI4、24 个 VP 验收用例及 Qoder 0.4.8 静态复核。定向前端 96/96、i18n/theme 通过，TypeScript 仍有 60 条未归因错误；浏览器/Tauri/设备未签核。本轮只更新文档，不将后端测试等同界面联动完成。
 
 > **2026-10-21 R1 进度与后续实施**：[R1–R5 串行执行辅导](execution/R1-R5-execution-coaching-2026-10-21.zh.md)。含当前修复核验、策略/采集缺口及每片代码入口、边界、测试与命令；最新审查见 [R1 §9](execution/R1-voice-message-task-execution-plan-2026-10-20.zh.md)。历史正文保留，局部编译通过不等于 R1 全流程完成。
