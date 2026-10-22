@@ -16,6 +16,7 @@ use super::*;
 use futures::stream::{self, StreamExt};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
@@ -415,7 +416,7 @@ pub async fn run_kb_triage(
                     .iter()
                     .map(|file| (file.file.rel_path.as_str(), file))
                     .collect();
-                let repair_calls = std::sync::atomic::AtomicUsize::new(0);
+                let repair_calls = AtomicUsize::new(0);
                 let attempt = TriageBatchAttempt {
                     completer,
                     goal,
@@ -477,8 +478,7 @@ pub async fn run_kb_triage(
                         call_failed[0].1
                     ));
                 }
-                batch_repair_count =
-                    repair_calls.load(std::sync::atomic::Ordering::SeqCst);
+                batch_repair_count = repair_calls.load(Ordering::SeqCst);
             }
         }
     }
@@ -1041,19 +1041,27 @@ fn hash_canonical(scanned: &[ScannedFile], members: &[usize]) -> (usize, String)
     };
     // h3：规整度评分先行（数字章前缀 > 无前缀 > 备份/错位降权）。复制副本
     // 的 mtime 系统性更新，纯 mtime 会把备份/错位文件选成正身；同分才落
-    // mtime，再同分保持路径字典序（全程零 LLM、可复现）。
-    let top_score = pool
+    // mtime，再同分保持路径字典序（全程零 LLM、可复现）。评分每成员只算
+    // 一次（装饰 (score, index) 后取最大再筛同分）。
+    let scored: Vec<(u8, usize)> = pool
         .iter()
-        .map(|&index| regularity_score(&scanned[index].base_rel))
-        .max()
-        .unwrap_or(0);
-    let regular: Vec<usize> = pool
+        .map(|&index| (regularity_score(&scanned[index].base_rel), index))
+        .collect();
+    let top_score = scored.iter().map(|&(score, _)| score).max().unwrap_or(0);
+    let regular: Vec<usize> = scored
         .iter()
-        .copied()
-        .filter(|&index| regularity_score(&scanned[index].base_rel) == top_score)
+        .filter(|&&(score, _)| score == top_score)
+        .map(|&(_, index)| index)
         .collect();
     if regular.len() == 1 {
-        return (regular[0], "规整文件名优先（数字章前缀且无备份/错位标记）".to_owned());
+        // win 理由按胜者的实际依据措辞：数字章前缀的规整（评分 2）与无
+        // 前缀的干净命名（评分 1）分开表述——不对无前缀胜者误称数字章前缀。
+        let reason = if top_score >= 2 {
+            "规整文件名优先（数字章前缀且无备份/错位标记）"
+        } else {
+            "规整文件名优先（无备份/错位标记）"
+        };
+        return (regular[0], reason.to_owned());
     }
     if let Some(index) = newest_member(scanned, &regular) {
         return (index, "同内容文件中最新修改时间".to_owned());
@@ -1176,7 +1184,7 @@ struct TriageBatchAttempt<'a> {
     inventory: &'a KbInventory,
     lookup: &'a HashMap<&'a str, &'a ScannedFile>,
     /// 补判调用计数（拆半/缺条目子集的重发次数，h1 披露读数）。
-    repair_calls: &'a std::sync::atomic::AtomicUsize,
+    repair_calls: &'a AtomicUsize,
 }
 
 impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
@@ -1188,8 +1196,7 @@ impl BatchAttempt<RuleVerdict> for TriageBatchAttempt<'_> {
     {
         Box::pin(async move {
             if pass == BatchPass::Repair {
-                self.repair_calls
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.repair_calls.fetch_add(1, Ordering::SeqCst);
             }
             let files: Vec<&ScannedFile> = slice
                 .iter()

@@ -1156,10 +1156,8 @@ fn parse_source_plan_view(raw: Option<&str>) -> Option<crate::models::CourseSour
         duplicate: counts.duplicate,
         uncertain: counts.uncertain,
         degraded: snapshot.triage.degraded,
-        batch_repair_count: (snapshot.triage.batch_repair_count > 0)
-            .then_some(snapshot.triage.batch_repair_count),
-        still_missing_count: (snapshot.triage.still_missing_count > 0)
-            .then_some(snapshot.triage.still_missing_count),
+        batch_repair_count: crate::models::disclosed(snapshot.triage.batch_repair_count),
+        still_missing_count: crate::models::disclosed(snapshot.triage.still_missing_count),
         warnings: snapshot
             .triage
             .warnings

@@ -575,10 +575,8 @@ impl LearningService {
                 duplicate: counts.duplicate,
                 uncertain: counts.uncertain,
                 degraded: triage.degraded,
-                batch_repair_count: (triage.batch_repair_count > 0)
-                    .then_some(triage.batch_repair_count),
-                still_missing_count: (triage.still_missing_count > 0)
-                    .then_some(triage.still_missing_count),
+                batch_repair_count: crate::models::disclosed(triage.batch_repair_count),
+                still_missing_count: crate::models::disclosed(triage.still_missing_count),
                 warnings: triage
                     .warnings
                     .iter()
