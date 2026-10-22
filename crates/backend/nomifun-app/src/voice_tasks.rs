@@ -680,32 +680,6 @@ impl VoiceTaskService {
     }
 
     #[allow(dead_code)]
-    pub async fn submit_frozen_with_handoff(
-        &self,
-        command: VoiceTaskCommand,
-        config: VoiceExecutionConfig,
-        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
-        handoff_content: Option<String>,
-    ) -> Result<VoiceTaskDelivery, String> {
-        let preset_field = match expected_preset {
-            Some(inner) => FrozenField::Specified(inner),
-            None => FrozenField::Omitted,
-        };
-        self.submit_frozen_with_handoff_mode(
-            command,
-            config,
-            preset_field,
-            FrozenField::Specified(handoff_content),
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            FrozenField::Omitted,
-            true,
-            true,
-        ).await
-    }
-
-    #[allow(dead_code)]
     pub async fn submit_frozen_with_handoff_queued(
         &self,
         command: VoiceTaskCommand,
@@ -727,39 +701,6 @@ impl VoiceTaskService {
             FrozenField::Specified(display_text),
             FrozenField::Specified(target_conversation),
             FrozenField::Omitted,
-            FrozenField::Omitted,
-            true,
-            true,
-        ).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn submit_frozen_with_handoff_queued_with_message_id(
-        &self,
-        command: VoiceTaskCommand,
-        config: VoiceExecutionConfig,
-        expected_preset: Option<Option<ResolvedPresetSnapshot>>,
-        handoff_content: Option<String>,
-        display_text: Option<String>,
-        target_conversation: Option<String>,
-        message_id: Option<String>,
-    ) -> Result<VoiceTaskDelivery, String> {
-        let preset_field = match expected_preset {
-            Some(inner) => FrozenField::Specified(inner),
-            None => FrozenField::Omitted,
-        };
-        let msg_field = match message_id {
-            Some(mid) => FrozenField::Specified(Some(mid)),
-            None => FrozenField::Omitted,
-        };
-        self.submit_frozen_with_handoff_mode(
-            command,
-            config,
-            preset_field,
-            FrozenField::Specified(handoff_content),
-            FrozenField::Specified(display_text),
-            FrozenField::Specified(target_conversation),
-            msg_field,
             FrozenField::Omitted,
             true,
             true,
@@ -1673,7 +1614,7 @@ mod tests {
         let tasks = service(path.clone(), runtime.clone());
         let handoff = "来源：语音委派\n用户原文：查下北京天气\n任务目标：inspect workspace";
         let delivery = tasks
-            .submit_frozen_with_handoff(command(), config(), None, Some(handoff.to_string()))
+            .submit_frozen_with_handoff_queued(command(), config(), None, Some(handoff.to_string()), None, None)
             .await
             .unwrap();
         assert!(delivery.freshly_accepted);

@@ -278,7 +278,7 @@ impl ConversationVoiceDialogueRecorder {
         Ok(())
     }
 
-    async fn resolve_target_conversation(&self, candidate: Option<String>, config: VoiceTargetConfig)
+    async fn resolve_target_conversation(&self, candidate: Option<String>, _config: VoiceTargetConfig)
         -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         let now = nomifun_common::now_ms();
         let (candidate_workspace, source_id) = if let Some(id) = candidate {
@@ -420,18 +420,6 @@ impl ConversationVoiceDialogueRecorder {
             }
         }
 
-        if config.mode == VoiceTargetMode::Companion && let (Some(id), Some(companions)) = (&config.companion_id, &self.companion_service) {
-            if companions.get_companion(id).await.is_ok() {
-                let conversation = match companions.companion_active_thread(id).await {
-                    Ok(Some(thread)) => Some(thread),
-                    Ok(None) => Some(companions.create_companion_thread(id, None).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.conversation_id),
-                    Err(e) => return Err(VoiceDialogueRecorderError::WriteFailed(e.to_string())),
-                };
-                if let Some(conversation) = conversation {
-                    return Ok((conversation.clone(), source_id.or(Some(conversation))));
-                }
-            }
-        }
         let memory_owner = match &self.companion_service {Some(companions)=>companions.default_companion_id().await,None=>None};
         let home = self.conversation_service.ensure_default_voice_conversation_with_owner(&self.user_id,memory_owner.as_deref()).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok((home, source_id))
