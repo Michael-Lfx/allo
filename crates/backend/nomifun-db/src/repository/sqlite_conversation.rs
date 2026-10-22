@@ -16,7 +16,7 @@ use crate::models::{
 use crate::repository::bind::{BindValue, bind_value, bind_value_as};
 use crate::repository::conversation::{
     ConversationDeliveryReceiptClaim, ConversationFilters, ConversationMessageProjection,
-    ConversationSkillLoadCommit, EditResubmitStateSnapshot,
+    ConversationPairProjection, ConversationSkillLoadCommit, EditResubmitStateSnapshot,
     ConversationRowUpdate, ConversationTurnAdmissionState, IConversationRepository, MessageDayBucket,
     MessageRowUpdate, MessageSearchRow,
     MAX_UNSETTLED_TURN_ADMISSION_PAGE_SIZE,
@@ -2428,7 +2428,7 @@ impl IConversationRepository for SqliteConversationRepository {
                       NULL, ?, 'turn', ?, 'accepted', ?, ? \
                FROM conversations conversation \
               WHERE conversation.conversation_id = ? AND conversation.user_id = ? \
-             ON CONFLICT(operation_id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )
         .bind(operation_id)
         .bind(candidate_message_id)
@@ -2474,6 +2474,18 @@ impl IConversationRepository for SqliteConversationRepository {
             if admitted.rows_affected() != 1 {
                 return Err(DbError::ConversationTurnAdmissionConflict);
             }
+        } else if sqlx::query_scalar::<_, String>(
+            "SELECT operation_id FROM conversation_delivery_receipts \
+             WHERE message_id = ? LIMIT 1",
+        )
+        .bind(candidate_message_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some_and(|owner| owner != operation_id)
+        {
+            return Err(DbError::Conflict(
+                "voice bound message is already admitted by another turn".to_owned(),
+            ));
         }
         let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
             "SELECT * FROM conversation_delivery_receipts WHERE operation_id = ?",
@@ -3900,6 +3912,7 @@ impl IConversationRepository for SqliteConversationRepository {
         request_payload: &str,
         message: &MessageRow,
         now: i64,
+        expected_admission_epoch: Option<i64>,
     ) -> Result<ConversationMessageProjection, DbError> {
         let valid_content = serde_json::from_str::<serde_json::Value>(&message.content)
             .is_ok_and(|value| value.is_object());
@@ -3937,6 +3950,19 @@ impl IConversationRepository for SqliteConversationRepository {
         .await?;
         if owned.rows_affected() == 0 {
             return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let epoch: i64 = sqlx::query_scalar(
+                "SELECT admission_epoch FROM conversations WHERE conversation_id = ? AND user_id = ?",
+            )
+            .bind(conversation_id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if epoch != expected_epoch {
+                return Err(DbError::Conflict("voice_message_epoch_changed".into()));
+            }
         }
 
         // Claim the operation directly in its terminal state. The message is
@@ -4039,6 +4065,233 @@ impl IConversationRepository for SqliteConversationRepository {
         Ok(ConversationMessageProjection {
             inserted: false,
             message: persisted,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn project_dialogue_pair_idempotent(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        kind: &str,
+        request_payload: &str,
+        user_message: Option<&MessageRow>,
+        assistant_message: &MessageRow,
+        now: i64,
+        expected_admission_epoch: i64,
+    ) -> Result<ConversationPairProjection, DbError> {
+        let valid_assistant_content = serde_json::from_str::<serde_json::Value>(&assistant_message.content)
+            .is_ok_and(|value| value.is_object());
+        if operation_id.trim().is_empty()
+            || kind != "projection"
+            || request_payload.trim().is_empty()
+            || MessageId::parse(&assistant_message.message_id).is_err()
+            || assistant_message.content.trim().is_empty()
+            || !valid_assistant_content
+            || assistant_message.r#type != "text"
+            || assistant_message.position.as_deref() != Some("left")
+            || assistant_message.status.as_deref() != Some("finish")
+            || assistant_message.hidden
+            || assistant_message.msg_id.as_deref() != Some(assistant_message.message_id.as_str())
+            || assistant_message.conversation_id != conversation_id
+        {
+            return Err(DbError::Conflict(
+                "dialogue pair projection requires one stable finished left-side text assistant message"
+                    .to_owned(),
+            ));
+        }
+
+        if let Some(user_msg) = user_message {
+            let valid_user_content = serde_json::from_str::<serde_json::Value>(&user_msg.content)
+                .is_ok_and(|value| value.is_object());
+            if MessageId::parse(&user_msg.message_id).is_err()
+                || user_msg.content.trim().is_empty()
+                || !valid_user_content
+                || user_msg.r#type != "text"
+                || user_msg.position.as_deref() != Some("right")
+                || user_msg.status.as_deref() != Some("finish")
+                || user_msg.hidden
+                || user_msg.msg_id.as_deref() != Some(user_msg.message_id.as_str())
+                || user_msg.conversation_id != conversation_id
+            {
+                return Err(DbError::Conflict(
+                    "dialogue pair projection user message must be a valid right-side text message"
+                        .to_owned(),
+                ));
+            }
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let owned = sqlx::query(
+            "UPDATE conversations SET updated_at = updated_at \
+             WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(conversation_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if owned.rows_affected() == 0 {
+            return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        let (epoch,active,status):(i64,Option<String>,Option<String>)=sqlx::query_as(
+            "SELECT admission_epoch,active_turn_operation_id,status FROM conversations WHERE conversation_id = ? AND user_id = ?")
+            .bind(conversation_id).bind(user_id).fetch_one(&mut *tx).await?;
+        if epoch != expected_admission_epoch {
+            return Err(DbError::Conflict("Voice target admission epoch changed".into()));
+        }
+        if active.is_some() || status.as_deref() == Some("running") {
+            return Err(DbError::Conflict("Voice target is busy".into()));
+        }
+        // Claim the operation directly in its terminal state. Both messages and receipt
+        // commit in the same transaction or neither commits.
+        let claim = sqlx::query(
+            "INSERT INTO conversation_delivery_receipts (\
+                operation_id, message_id, conversation_id, projected_conversation_id, \
+                projected_message_id, user_id, kind, request_payload, status, result_ok, \
+                result_text, result_error, created_at, updated_at, completed_at\
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', 1, ?, NULL, ?, ?, ?) \
+             ON CONFLICT(operation_id) DO NOTHING",
+        )
+        .bind(operation_id)
+        .bind(&assistant_message.message_id)
+        .bind(conversation_id)
+        .bind(conversation_id)
+        .bind(&assistant_message.message_id)
+        .bind(user_id)
+        .bind(kind)
+        .bind(request_payload)
+        .bind(&assistant_message.content)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        if claim.rows_affected() == 1 {
+            let persisted_user = if let Some(user_msg) = user_message {
+                sqlx::query(
+                    "INSERT INTO messages \
+                        (message_id, conversation_id, msg_id, type, content, position, \
+                         status, hidden, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&user_msg.message_id)
+                .bind(&user_msg.conversation_id)
+                .bind(&user_msg.msg_id)
+                .bind(&user_msg.r#type)
+                .bind(&user_msg.content)
+                .bind(&user_msg.position)
+                .bind(&user_msg.status)
+                .bind(user_msg.hidden)
+                .bind(user_msg.created_at)
+                .execute(&mut *tx)
+                .await?;
+
+                Some(
+                    sqlx::query_as::<_, MessageRow>(
+                        "SELECT * FROM messages WHERE message_id = ? AND conversation_id = ?",
+                    )
+                    .bind(&user_msg.message_id)
+                    .bind(conversation_id)
+                    .fetch_one(&mut *tx)
+                    .await?,
+                )
+            } else {
+                None
+            };
+
+            sqlx::query(
+                "INSERT INTO messages \
+                    (message_id, conversation_id, msg_id, type, content, position, \
+                     status, hidden, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&assistant_message.message_id)
+            .bind(&assistant_message.conversation_id)
+            .bind(&assistant_message.msg_id)
+            .bind(&assistant_message.r#type)
+            .bind(&assistant_message.content)
+            .bind(&assistant_message.position)
+            .bind(&assistant_message.status)
+            .bind(assistant_message.hidden)
+            .bind(assistant_message.created_at)
+            .execute(&mut *tx)
+            .await?;
+
+            let persisted_assistant = sqlx::query_as::<_, MessageRow>(
+                "SELECT * FROM messages WHERE message_id = ? AND conversation_id = ?",
+            )
+            .bind(&assistant_message.message_id)
+            .bind(conversation_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ? AND user_id = ?",
+            )
+            .bind(now)
+            .bind(conversation_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+            tx.commit().await?;
+            return Ok(ConversationPairProjection {
+                inserted: true,
+                user_message: persisted_user,
+                assistant_message: persisted_assistant,
+            });
+        }
+
+        let receipt = sqlx::query_as::<_, ConversationDeliveryReceiptRow>(
+            "SELECT * FROM conversation_delivery_receipts WHERE operation_id = ?",
+        )
+        .bind(operation_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if receipt.user_id != user_id
+            || receipt.conversation_id != conversation_id
+            || receipt.kind != kind
+            || receipt.request_payload != request_payload
+        {
+            return Err(DbError::Conflict(
+                "conversation projection operation identity was reused".to_owned(),
+            ));
+        }
+
+        let message_id = Some(receipt.message_id.as_str()).filter(|_| {
+            receipt.status == "completed"
+                && receipt.result_ok == Some(true)
+                && receipt.result_error.is_none()
+        });
+        let Some(message_id) = message_id else {
+            return Err(DbError::Conflict(
+                "conversation projection operation is not a completed message projection"
+                    .to_owned(),
+            ));
+        };
+
+        let persisted_assistant = sqlx::query_as::<_, MessageRow>(
+            "SELECT * FROM messages WHERE message_id = ? AND conversation_id = ?",
+        )
+        .bind(message_id)
+        .bind(conversation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            DbError::Conflict(
+                "conversation projection receipt has no durable message".to_owned(),
+            )
+        })?;
+
+        tx.commit().await?;
+        Ok(ConversationPairProjection {
+            inserted: false,
+            user_message: None,
+            assistant_message: persisted_assistant,
         })
     }
 
@@ -5135,6 +5388,54 @@ impl IConversationRepository for SqliteConversationRepository {
         .bind(conversation_id)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    async fn insert_message_with_epoch(
+        &self,
+        message: &MessageRow,
+        user_id: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        let owned = sqlx::query(
+            "UPDATE conversations SET updated_at = updated_at \
+             WHERE conversation_id = ? AND user_id = ?",
+        )
+        .bind(&message.conversation_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        if owned.rows_affected() == 0 {
+            return Err(DbError::NotFound("conversation".to_owned()));
+        }
+
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let epoch: i64 = sqlx::query_scalar(
+                "SELECT admission_epoch FROM conversations WHERE conversation_id = ? AND user_id = ?",
+            )
+            .bind(&message.conversation_id)
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if epoch != expected_epoch {
+                return Err(DbError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
+
+        if let Some(msg_id) = message.msg_id.as_deref()
+            && msg_id != message.message_id
+        {
+            lock_message_parent(
+                &mut tx,
+                &message.conversation_id,
+                msg_id,
+                "Message parent",
+            )
+            .await?;
+        }
+        insert_message_row(&mut tx, message).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn insert_message(&self, message: &MessageRow) -> Result<(), DbError> {

@@ -40,7 +40,7 @@ use nomifun_api_types::{
     ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest, KnowledgeMountInfo, ListConversationsQuery,
     ListMessagesQuery, McpServerId, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
     ExecutionModelPool, ExecutionModelRef, ResolvedPresetSnapshot, SendMessageRequest, SessionMcpServer, SessionMcpTransport, SkillCatalogSource, SkillId, UpdateConversationArtifactRequest,
-    UpdateConversationRequest, WebSocketMessage,
+    UpdateConversationRequest, VoiceBoundMessageRequest, WebSocketMessage,
 };
 use nomifun_common::{
     AgentExecutionTemplateId, AgentKillReason, AgentType, AppError, CompanionId, ConversationId, ConversationSource,
@@ -54,7 +54,7 @@ use nomifun_db::models::{
 use nomifun_db::{
     AgentExecutionTurnAuthority, ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IConversationRepository, IMcpServerRepository, MessageDayBucket, SaveRuntimeStateParams,
-    ConversationSkillLoadCommit, ConversationTurnAdmissionState, RequirementConversationTurnAuthority, SortOrder,
+    ConversationPairProjection, ConversationSkillLoadCommit, ConversationTurnAdmissionState, RequirementConversationTurnAuthority, SortOrder,
     TurnLifecycleTransition, TurnReceiptCompletion,
 };
 use nomifun_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
@@ -873,6 +873,20 @@ struct PublicTurnDeliveryPayload {
     hidden: bool,
     origin: Option<String>,
     channel_platform: Option<String>,
+    #[serde(default)]
+    display_text: Option<String>,
+    #[serde(default)]
+    existing_message_id: Option<String>,
+    #[serde(default)]
+    voice_context_digest: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BoundVoiceMessage {
+    message_id: String,
+    display_text: String,
+    voice_context_digest: Option<String>,
+    expected_admission_epoch: i64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -2915,6 +2929,40 @@ impl ConversationService {
             "channel_platform": &req.channel_platform,
         })
         .to_string()
+    }
+
+    fn turn_delivery_request_payload_with_bound(
+        req: &SendMessageRequest,
+        bound: Option<&BoundVoiceMessage>,
+    ) -> String {
+        let mut payload = serde_json::json!({
+            "content": &req.content,
+            "files": &req.files,
+            "inject_skills": &req.inject_skills,
+            "hidden": req.hidden,
+            "origin": &req.origin,
+            "channel_platform": &req.channel_platform,
+        });
+        if let Some(bound) = bound {
+            let object = payload
+                .as_object_mut()
+                .expect("turn delivery payload is an object");
+            object.insert(
+                "display_text".to_owned(),
+                serde_json::Value::String(bound.display_text.clone()),
+            );
+            object.insert(
+                "existing_message_id".to_owned(),
+                serde_json::Value::String(bound.message_id.clone()),
+            );
+            if let Some(digest) = &bound.voice_context_digest {
+                object.insert(
+                    "voice_context_digest".to_owned(),
+                    serde_json::Value::String(digest.clone()),
+                );
+            }
+        }
+        payload.to_string()
     }
 
     fn truncated_continuation_request_payload(
@@ -5756,7 +5804,7 @@ impl ConversationService {
         user_id: &str,
         req: CreateConversationRequest,
     ) -> Result<ConversationResponse, AppError> {
-        self.create_inner(user_id, req, None, None).await
+        self.create_inner(user_id, req, None, None, None).await
     }
 
     /// Trusted in-process create with a durable operation identity.  This is
@@ -5768,7 +5816,179 @@ impl ConversationService {
         req: CreateConversationRequest,
         creation_key: &str,
     ) -> Result<ConversationResponse, AppError> {
-        self.create_inner(user_id, req, None, Some(creation_key)).await
+        self.create_inner(user_id, req, None, Some(creation_key), None).await
+    }
+
+    /// Trusted voice entry: the frozen workspace marker can only be stamped
+    /// here and is rejected from public create/update payloads.
+    pub async fn create_voice_idempotent(&self,user_id:&str,mut req:CreateConversationRequest,creation_key:&str,workspace:&str,preset_snapshot:Option<ResolvedPresetSnapshot>)->Result<ConversationResponse,AppError> {
+        req.preset_id=None;
+        req.preset_overrides=None;
+        self.create_inner(user_id,req,preset_snapshot,Some(creation_key),Some(workspace)).await
+    }
+
+    /// Read-only recovery of a trusted voice creation. This never creates,
+    /// initializes a runtime, or submits a turn when an acknowledgement is lost.
+    pub async fn voice_conversation_by_creation_key(&self,user_id:&str,creation_key:&str) -> Result<Option<String>,AppError> {
+        let Some(row)=self.conversation_repo.find_by_creation_key(user_id,creation_key).await? else {return Ok(None);};
+        let conversation=self.get(user_id,&row.conversation_id).await?;
+        if conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).is_none() {
+            return Err(AppError::Conflict("voice_creation_scope_changed".into()));
+        }
+        Ok(Some(row.conversation_id))
+    }
+
+    pub async fn ensure_voice_task_policy(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        workspace: &str,
+        model: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        preset_snapshot: Option<&ResolvedPresetSnapshot>,
+        session_mode: Option<&str>,
+    ) -> Result<(), AppError> {
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let row = self
+            .conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let canonical = nomifun_common::paths::canonicalize_simplified(std::path::Path::new(workspace))
+            .map_err(|_| AppError::BadRequest("voice_workspace_invalid".into()))?;
+        if !canonical.is_dir() {
+            return Err(AppError::BadRequest("voice_workspace_invalid".into()));
+        }
+        let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+        if !extra.is_object() {
+            return Err(AppError::Conflict("voice_conversation_extra_invalid".into()));
+        }
+        if let Some(existing) = extra.get("voice_task_workspace").and_then(serde_json::Value::as_str) {
+            if !nomifun_common::paths::paths_equivalent(std::path::Path::new(existing), &canonical) {
+                return Err(AppError::Conflict("voice_task_workspace_changed".into()));
+            }
+        }
+        let mut update = ConversationRowUpdate::default();
+        let mut needs_update = false;
+
+        let canonical_str = canonical.to_string_lossy().into_owned();
+        let is_default = extra.get("is_default_voice").and_then(serde_json::Value::as_bool) == Some(true);
+
+        if extra.get("voice").and_then(serde_json::Value::as_bool) != Some(true)
+            || extra.get("voice_task_workspace").and_then(serde_json::Value::as_str) != Some(&canonical_str)
+            || (session_mode.is_some() && extra.get("session_mode").and_then(serde_json::Value::as_str) != session_mode)
+            || extra.as_object().is_some_and(|obj| obj.contains_key(TEMP_WORKSPACE_ID_EXTRA_KEY))
+        {
+            if let Some(obj) = extra.as_object_mut() {
+                if let Some(token) = obj.remove(TEMP_WORKSPACE_ID_EXTRA_KEY) {
+                    obj.insert(RETIRED_TEMP_WORKSPACE_ID_EXTRA_KEY.to_owned(), token);
+                }
+            }
+            extra["voice"] = serde_json::Value::Bool(true);
+            extra["workspace"] = serde_json::Value::String(canonical_str.clone());
+            extra["voice_task_workspace"] = serde_json::Value::String(canonical_str);
+            if let Some(mode) = session_mode {
+                extra["session_mode"] = serde_json::Value::String(mode.to_owned());
+            }
+            update.extra = Some(extra.to_string());
+            needs_update = true;
+        }
+
+        if (row.model.is_none() || is_default) && let Some(model) = model {
+            let pm = nomifun_common::ProviderWithModel {
+                provider_id: nomifun_common::ProviderId::try_from(model.provider_id.as_str())
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?.to_string(),
+                model: model.model.clone(),
+                use_model: None,
+            };
+            let serialized = serde_json::to_string(&pm).map_err(|e| AppError::Internal(e.to_string()))?;
+            if row.model.as_deref() != Some(&serialized) {
+                update.model = Some(Some(serialized));
+                needs_update = true;
+            }
+        }
+
+        if row.preset_id.is_none() || is_default {
+            if let Some(snapshot) = preset_snapshot {
+                let serialized = serde_json::to_string(snapshot).map_err(|e| AppError::Internal(e.to_string()))?;
+                if row.preset_id.as_deref() != Some(&snapshot.preset_id)
+                    || row.preset_revision != Some(snapshot.preset_revision)
+                    || row.preset_snapshot.as_deref() != Some(&serialized)
+                {
+                    update.preset_id = Some(Some(snapshot.preset_id.clone()));
+                    update.preset_revision = Some(Some(snapshot.preset_revision));
+                    update.preset_snapshot = Some(Some(serialized));
+                    needs_update = true;
+                }
+            } else if is_default && row.preset_id.is_some() {
+                update.preset_id = Some(None);
+                update.preset_revision = Some(None);
+                update.preset_snapshot = Some(None);
+                needs_update = true;
+            }
+        }
+
+        if needs_update {
+            update.updated_at = Some(now_ms());
+            self.conversation_repo.update(conversation_key, &update).await?;
+        }
+        Ok(())
+    }
+    /// Idempotently ensures the default standalone voice conversation ("语音助手") exists
+    /// for the given user, returning its canonical conversation ID.
+    pub async fn ensure_default_voice_conversation(&self, user_id: &str) -> Result<String, AppError> {
+        self.ensure_default_voice_conversation_with_owner(user_id, None).await
+    }
+
+    pub async fn ensure_default_voice_conversation_with_owner(&self, user_id: &str, owner: Option<&str>) -> Result<String, AppError> {
+        let owner = owner.map(CompanionId::try_from).transpose()
+            .map_err(|e|AppError::BadRequest(format!("invalid voice memory owner: {e}")))?;
+        let creation_key = match &owner {
+            Some(owner) => format!("voice:default:{user_id}:{owner}"),
+            None => format!("voice:default:{user_id}"),
+        };
+        if let Some(existing) = self.conversation_repo.find_by_creation_key(user_id, &creation_key).await? {
+            return Ok(existing.conversation_id);
+        }
+        let req = CreateConversationRequest {
+            name: Some("语音助手".to_owned()),
+            r#type: AgentType::Nomi,
+            extra: serde_json::json!({ "is_default_voice": true, "voice": true, "memory_owner_companion_id": owner }),
+            source: Some(ConversationSource::Nomifun),
+            model: None,
+            preset_id: None,
+            preset_overrides: None,
+            delegation_policy: DelegationPolicy::Disabled,
+            execution_model_pool: None,
+            decision_policy: DecisionPolicy::default(),
+            execution_template_id: None,
+            channel_chat_id: None,
+        };
+        let response = self.create_idempotent(user_id, req, &creation_key).await?;
+        Ok(response.conversation_id)
+    }
+
+    /// Checks whether a conversation is currently busy (processing a turn, executing autowork, or in running status).
+    pub async fn is_conversation_busy(&self, user_id: &str, conversation_id: &str) -> Result<bool, AppError> {
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let row = self
+            .conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+        let admission = self
+            .conversation_repo
+            .get_turn_admission_state(user_id, conversation_key)
+            .await?;
+        let runtime = self.runtime_registry.get_runtime(conversation_key);
+        let is_busy = row.status.as_deref() == Some("running")
+            || admission.active_operation_id.is_some()
+            || self.runtime_state.has_active_turn(conversation_key)
+            || runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.status() == Some(ConversationStatus::Running));
+        Ok(is_busy)
     }
 
     /// Trusted in-process creation path for long-lived consumers that already
@@ -5783,7 +6003,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         req.preset_id = None;
         req.preset_overrides = None;
-        self.create_inner(user_id, req, Some(snapshot), None).await
+        self.create_inner(user_id, req, Some(snapshot), None, None).await
     }
 
     /// Snapshot-preserving counterpart of [`Self::create_idempotent`].
@@ -5796,7 +6016,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         req.preset_id = None;
         req.preset_overrides = None;
-        self.create_inner(user_id, req, Some(snapshot), Some(creation_key))
+        self.create_inner(user_id, req, Some(snapshot), Some(creation_key), None)
             .await
     }
 
@@ -5826,8 +6046,29 @@ impl ConversationService {
         mut req: CreateConversationRequest,
         trusted_snapshot: Option<nomifun_api_types::ResolvedPresetSnapshot>,
         creation_key: Option<&str>,
+        voice_workspace: Option<&str>,
     ) -> Result<ConversationResponse, AppError> {
         reject_backend_owned_lifecycle_extra_keys(&req.extra)?;
+        if let Some(workspace) = voice_workspace {
+            if !req.extra.is_object() || !std::path::Path::new(workspace).is_absolute() {
+                return Err(AppError::BadRequest("voice_workspace_invalid".into()));
+            }
+            if req.r#type != AgentType::Nomi || !self.execution_authority(user_id).controls_host() {
+                return Err(AppError::Forbidden("voice_task_requires_owner_nomi_runtime".into()));
+            }
+            let canonical=nomifun_common::paths::canonicalize_simplified(std::path::Path::new(workspace)).map_err(|_| AppError::BadRequest("voice_workspace_invalid".into()))?;
+            if !canonical.is_dir() {return Err(AppError::BadRequest("voice_workspace_invalid".into()));}
+            req.extra["voice_task_workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
+            req.extra["workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
+            let mode = req
+                .extra
+                .get("session_mode")
+                .and_then(serde_json::Value::as_str)
+                .filter(|m| matches!(*m, "default" | "auto_edit" | "yolo"))
+                .unwrap_or("default");
+            req.extra["session_mode"] = serde_json::Value::String(mode.into());
+            req.delegation_policy=DelegationPolicy::Disabled;
+        }
         let authority = self.execution_authority(user_id);
         if !authority.controls_host() {
             if req.r#type != AgentType::Nomi {
@@ -5980,6 +6221,10 @@ impl ConversationService {
                 obj.insert("exclude_auto_inject_skills".into(), serde_json::to_value(&snapshot.excluded_auto_skills).unwrap_or_default());
                 obj.insert("preset_knowledge_binding".into(), serde_json::Value::Bool(true));
             }
+        }
+
+        if voice_workspace.is_some() && req.r#type != AgentType::Nomi {
+            return Err(AppError::BadRequest("voice_preset_requires_nomi_runtime".into()));
         }
 
         // Nomi has exactly one model source: the typed top-level `model`.
@@ -8716,6 +8961,28 @@ impl ConversationService {
         Ok(agent.get_confirmations())
     }
 
+    async fn voice_task_operation(&self,user_id:&str,conversation_id:&str,send_key:&str,message_id:&str)->Result<Option<String>,AppError> {
+        let conversation=self.get(user_id,conversation_id).await?;
+        if !self.execution_authority(user_id).controls_host() || conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).is_none(){return Err(AppError::Forbidden("voice_task_policy_missing".into()));}
+        match self.public_turn_delivery_state(user_id,conversation_id,send_key).await? {
+            PublicTurnDeliveryState::Accepted {message_id:accepted} if accepted==message_id=>Ok(Some(Self::public_turn_operation_id(user_id,conversation_id,send_key))),
+            PublicTurnDeliveryState::Completed(value) if value.message_id==message_id=>Ok(None),
+            _=>Err(AppError::Conflict("voice_task_message_scope_changed".into())),
+        }
+    }
+
+    pub async fn list_voice_tool_confirmations(&self,user_id:&str,conversation_id:&str,send_key:&str,message_id:&str,runtime_registry:&Arc<dyn AgentRuntimeRegistry>)->Result<Vec<nomifun_api_types::voice::VoiceToolConfirmation>,AppError> {
+        let Some(operation)=self.voice_task_operation(user_id,conversation_id,send_key,message_id).await?else{return Ok(Vec::new());};
+        self.runtime_state.with_public_turn_scope(conversation_id,user_id,&operation,||Ok(runtime_registry.get_runtime(conversation_id).map(|agent|agent.pending_voice_confirmations()).unwrap_or_default()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn confirm_voice_tool_call(&self,user_id:&str,conversation_id:&str,send_key:&str,message_id:&str,call_id:&str,req:ConfirmRequest,runtime_registry:&Arc<dyn AgentRuntimeRegistry>)->Result<(),AppError> {
+        if req.always_allow{return Err(AppError::BadRequest("voice_approval_must_be_once".into()));}
+        let operation=self.voice_task_operation(user_id,conversation_id,send_key,message_id).await?.ok_or_else(||AppError::Conflict("voice_task_message_scope_changed".into()))?;
+        self.runtime_state.with_public_turn_scope(conversation_id,user_id,&operation,||self.confirm_active_tool_call(user_id,conversation_id,call_id,req,runtime_registry))
+    }
+
     /// Confirm a pending tool call.
     ///
     /// Sends the confirmation result to the agent and broadcasts a
@@ -8734,6 +9001,10 @@ impl ConversationService {
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
 
+        self.confirm_active_tool_call(user_id,conversation_id,call_id,req,runtime_registry)
+    }
+
+    fn confirm_active_tool_call(&self,user_id:&str,conversation_id:&str,call_id:&str,req:ConfirmRequest,runtime_registry:&Arc<dyn AgentRuntimeRegistry>)->Result<(),AppError> {
         let agent = runtime_registry
             .get_runtime(conversation_id)
             .ok_or_else(|| AppError::NotFound("No active agent for this conversation".into()))?;
@@ -8813,6 +9084,7 @@ impl ConversationService {
             None,
             None,
             None,
+            None,
         )
         .await
         .map(|(message_id, _turn_id)| message_id)
@@ -8835,6 +9107,7 @@ impl ConversationService {
             MessageSendAuthority::OwnerInteractive,
             None,
             Some(lease),
+            None,
             None,
             None,
             None,
@@ -8985,6 +9258,357 @@ impl ConversationService {
         .await
     }
 
+    /// Host-only admission for a runtime turn whose visible user message was
+    /// already projected into a voice Conversation. The message id and public
+    /// text are verified before the existing send path runs; the hidden model
+    /// input stays in `request.content` and never becomes the user's public
+    /// message.
+    pub async fn send_voice_bound_message(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        idempotency_key: &str,
+        bound: VoiceBoundMessageRequest,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+    ) -> Result<IdempotentMessageDelivery, AppError> {
+        validate_public_idempotency_key(idempotency_key)?;
+        let VoiceBoundMessageRequest {
+            message_id,
+            display_text,
+            command_id,
+            expected_admission_epoch,
+            expected_workspace,
+            voice_context_digest,
+            content: model_input,
+            files,
+            inject_skills,
+            hidden,
+            origin,
+            channel_platform,
+        } = bound;
+        let request = SendMessageRequest {
+            content: model_input,
+            files,
+            inject_skills,
+            hidden,
+            origin,
+            channel_platform,
+        };
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let _initial = self
+            .conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+        let runtime_build_lease =
+            self.begin_public_runtime_preparation(conversation_key, user_id)?;
+        let row = self
+            .conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+        let is_voice = extra
+            .get("voice")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            || extra
+                .get("is_default_voice")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+        if !is_voice {
+            return Err(AppError::Forbidden(
+                "voice_bound_message_requires_voice_conversation".to_owned(),
+            ));
+        }
+        let policy_workspace = extra
+            .get("voice_task_workspace")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::Forbidden("voice_bound_message_requires_voice_task_policy".to_owned())
+            })?;
+        let expected_path = Path::new(&expected_workspace);
+        let policy_path = Path::new(policy_workspace);
+        if !expected_path.is_absolute()
+            || !expected_path.is_dir()
+            || !nomifun_common::paths::paths_equivalent(expected_path, policy_path)
+        {
+            return Err(AppError::Conflict(
+                "voice_bound_message_workspace_changed".to_owned(),
+            ));
+        }
+
+        let message = self
+            .conversation_repo
+            .get_message(conversation_key, &message_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Voice message {message_id} was not found"))
+            })?;
+        if message.r#type != "text"
+            || message.position.as_deref() != Some("right")
+            || message.hidden
+        {
+            return Err(AppError::Conflict(
+                "voice_bound_message_is_not_a_visible_user_message".to_owned(),
+            ));
+        }
+        let content: serde_json::Value = serde_json::from_str(&message.content)
+            .map_err(|_| AppError::Conflict("voice_bound_message_content_invalid".to_owned()))?;
+        let public_text = content
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                AppError::Conflict("voice_bound_message_content_invalid".to_owned())
+            })?;
+        if public_text != display_text
+            || !Self::message_has_public_text(&message.content, &display_text, &command_id)
+        {
+            return Err(AppError::Conflict(
+                "voice_bound_message_text_changed".to_owned(),
+            ));
+        }
+        let operation_id =
+            Self::public_turn_operation_id(user_id, conversation_key, idempotency_key);
+        let existing_receipt = self
+            .conversation_repo
+            .get_delivery_receipt(user_id, conversation_key, &operation_id)
+            .await?;
+        let current_epoch = self
+            .conversation_repo
+            .get_turn_admission_state(user_id, conversation_key)
+            .await?
+            .epoch;
+        if current_epoch != expected_admission_epoch && existing_receipt.is_none() {
+            return Err(AppError::Conflict(
+                "voice_bound_message_epoch_changed".to_owned(),
+            ));
+        }
+        let bound = BoundVoiceMessage {
+            message_id: message.message_id,
+            display_text,
+            voice_context_digest,
+            expected_admission_epoch,
+        };
+        self.send_message_idempotent_with_bound_lease(
+            user_id,
+            conversation_id,
+            &operation_id,
+            request,
+            runtime_registry,
+            MessageSendAuthority::OwnerInteractive,
+            None,
+            None,
+            runtime_build_lease,
+            true,
+            false,
+            None,
+            None,
+            None,
+            Some(bound),
+        )
+        .await
+    }
+
+    fn broadcast_voice_user_message(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        display_text: &str,
+        created_at: i64,
+        memory_owner_companion_id: Option<&CompanionId>,
+    ) {
+        self.user_events.send_to_user(
+            user_id,
+            WebSocketMessage::new(
+                "message.userCreated",
+                serde_json::json!({
+                    "conversation_id": conversation_id,
+                    "msg_id": message_id,
+                    "content": display_text,
+                    "position": "right",
+                    "status": "finish",
+                    "hidden": false,
+                    "origin": serde_json::Value::Null,
+                    "companion": false,
+                    "companion_id": serde_json::Value::Null,
+                    "voice": true,
+                    "memory_owner_companion_id": memory_owner_companion_id,
+                    "channel_platform": serde_json::Value::Null,
+                    "created_at": created_at,
+                }),
+            ),
+        );
+    }
+
+    /// Append a visible voice user message without admitting a runtime turn.
+    /// This is the busy-safe projection used while another turn is running.
+    /// The caller owns the stable message id and must later bind it through
+    /// `send_voice_bound_message` before execution.
+    pub async fn append_voice_message(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        display_text: &str,
+        command_id: &str,
+    ) -> Result<(), AppError> {
+        self.append_voice_message_with_epoch(user_id, conversation_id, message_id, display_text, command_id, None).await
+    }
+
+    pub async fn append_voice_message_with_epoch(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        display_text: &str,
+        command_id: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<(), AppError> {
+        MessageId::parse(message_id)
+            .map_err(|error| AppError::BadRequest(format!("invalid voice message id: {error}")))?;
+        if display_text.trim().is_empty() {
+            return Err(AppError::BadRequest("voice_message_text_empty".to_owned()));
+        }
+        if command_id.trim().is_empty() {
+            return Err(AppError::BadRequest("voice_message_command_empty".to_owned()));
+        }
+        let conversation_key = parse_conv_id(conversation_id)?;
+        let projection_token = CancellationToken::new();
+        let _projection_guard = self.runtime_state.acquire_preparation_gate(conversation_key, &projection_token).await?;
+        let row = self
+            .conversation_repo
+            .get(conversation_key)
+            .await?
+            .filter(|row| row.user_id == user_id)
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Conversation {conversation_id} not found"))
+            })?;
+        let memory_owner = voice_memory_owner_from_extra(&row.extra)?;
+        if let Some(expected_epoch) = expected_admission_epoch {
+            let current_epoch = self
+                .conversation_repo
+                .get_turn_admission_state(user_id, conversation_key)
+                .await?
+                .epoch;
+            if current_epoch != expected_epoch {
+                return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+            }
+        }
+        if let Some(existing) = self
+            .conversation_repo
+            .get_message(conversation_key, message_id)
+            .await?
+        {
+            if existing.r#type != "text"
+                || existing.position.as_deref() != Some("right")
+                || existing.hidden
+                || !Self::message_has_public_text(&existing.content, display_text, command_id)
+            {
+                return Err(AppError::Conflict(
+                    "voice_message_already_exists".to_owned(),
+                ));
+            }
+            let desired_content = serde_json::json!({ "content": display_text, "voice_command_id": command_id }).to_string();
+            if existing.content != desired_content {
+                let updates = nomifun_db::MessageRowUpdate {
+                    content: Some(desired_content),
+                    ..Default::default()
+                };
+                let _ = self.conversation_repo.update_message(message_id, &updates).await;
+            }
+            self.broadcast_voice_user_message(
+                user_id,
+                &existing.conversation_id,
+                message_id,
+                display_text,
+                existing.created_at,
+                memory_owner.as_ref(),
+            );
+            return Ok(());
+        }
+        let message = MessageRow {
+            id: 0,
+            message_id: message_id.to_owned(),
+            conversation_id: conversation_key.to_string(),
+            msg_id: Some(message_id.to_owned()),
+            r#type: "text".into(),
+            content: serde_json::json!({ "content": display_text, "voice_command_id": command_id }).to_string(),
+            position: Some("right".into()),
+            status: Some("finish".into()),
+            hidden: false,
+            created_at: now_ms(),
+        };
+        if let Err(error) = self.conversation_repo.insert_message_with_epoch(&message, user_id, expected_admission_epoch).await {
+            match &error {
+                nomifun_db::DbError::Conflict(msg) if msg == "voice_message_epoch_changed" => {
+                    return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+                }
+                nomifun_db::DbError::Conflict(msg) if msg == "Voice target is busy" => {
+                    return Err(AppError::Conflict("Voice target is busy".into()));
+                }
+                _ => {}
+            }
+            // A concurrent append may have won the unique message identity.
+            // Re-read and absorb only the exact same public text.
+            if let Some(existing) = self
+                .conversation_repo
+                .get_message(conversation_key, message_id)
+                .await?
+                .filter(|existing| Self::message_has_public_text(&existing.content, display_text, command_id))
+            {
+                if let Some(expected_epoch) = expected_admission_epoch {
+                    let current_epoch = self
+                        .conversation_repo
+                        .get_turn_admission_state(user_id, conversation_key)
+                        .await?
+                        .epoch;
+                    if current_epoch != expected_epoch {
+                        return Err(AppError::Conflict("voice_message_epoch_changed".into()));
+                    }
+                }
+                self.broadcast_voice_user_message(
+                    user_id,
+                    &existing.conversation_id,
+                    message_id,
+                    display_text,
+                    existing.created_at,
+                    memory_owner.as_ref(),
+                );
+                return Ok(());
+            }
+            return Err(error.into());
+        }
+        self.broadcast_voice_user_message(
+            user_id,
+            &message.conversation_id,
+            message_id,
+            display_text,
+            message.created_at,
+            memory_owner.as_ref(),
+        );
+        Ok(())
+    }
+
+    fn message_has_public_text(content: &str, display_text: &str, command_id: &str) -> bool {
+        serde_json::from_str::<serde_json::Value>(content)
+            .ok()
+            .is_some_and(|value| {
+                value.get("content").and_then(serde_json::Value::as_str) == Some(display_text)
+                    && value
+                        .get("voice_command_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_none_or(|cmd| cmd == command_id)
+            })
+    }
     /// Starts one explicit continuation of the latest retryable interrupted turn.
     ///
     /// Eligible failures are truncation, request-budget exhaustion, and retryable
@@ -9886,6 +10510,46 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         operation_id: &str,
+        req: SendMessageRequest,
+        runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
+        send_authority: MessageSendAuthority,
+        execution_authority: Option<AgentExecutionTurnAuthority>,
+        autowork_authority: Option<RequirementConversationTurnAuthority>,
+        runtime_build_lease: RuntimeBuildLease,
+        promote_before_execution: bool,
+        initial_delivery: bool,
+        truncated_continuation: Option<TruncatedContinuationAdmission>,
+        runtime_preparation: Option<BackgroundTurnRuntimePreparation>,
+        runtime_observer: Option<
+            oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
+        >,
+    ) -> Result<IdempotentMessageDelivery, AppError> {
+        self.send_message_idempotent_with_bound_lease(
+            user_id,
+            conversation_id,
+            operation_id,
+            req,
+            runtime_registry,
+            send_authority,
+            execution_authority,
+            autowork_authority,
+            runtime_build_lease,
+            promote_before_execution,
+            initial_delivery,
+            truncated_continuation,
+            runtime_preparation,
+            runtime_observer,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_message_idempotent_with_bound_lease(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
         mut req: SendMessageRequest,
         runtime_registry: &Arc<dyn AgentRuntimeRegistry>,
         send_authority: MessageSendAuthority,
@@ -9899,6 +10563,7 @@ impl ConversationService {
         runtime_observer: Option<
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
+        bound_message: Option<BoundVoiceMessage>,
     ) -> Result<IdempotentMessageDelivery, AppError> {
         if promote_before_execution {
             runtime_build_lease.ensure_active()?;
@@ -9952,7 +10617,10 @@ impl ConversationService {
             (None, None, Some(admission)) => {
                 Self::truncated_continuation_request_payload(&req, admission)
             }
-            (None, None, None) => Self::turn_delivery_request_payload(&req),
+            (None, None, None) => Self::turn_delivery_request_payload_with_bound(
+                &req,
+                bound_message.as_ref(),
+            ),
             _ => unreachable!("conflicting authority rejected above"),
         };
         // Every existing receipt is an at-most-once execution boundary across
@@ -10148,16 +10816,24 @@ impl ConversationService {
         // The repository consumes it with the receipt INSERT and Running
         // transition in one transaction, so reset/stop/reopen races cannot
         // admit a request prepared against an older aggregate generation.
-        let expected_admission_epoch = self
-            .conversation_repo
-            .get_turn_admission_state(user_id, conversation_key)
-            .await?
-            .epoch;
+        let expected_admission_epoch = match bound_message.as_ref() {
+            Some(bound) => bound.expected_admission_epoch,
+            None => {
+                self.conversation_repo
+                    .get_turn_admission_state(user_id, conversation_key)
+                    .await?
+                    .epoch
+            }
+        };
         let expected_admitted_epoch = expected_admission_epoch
             .checked_add(1)
             .ok_or_else(|| {
                 AppError::Conflict("Conversation admission epoch is exhausted".to_owned())
             })?;
+        let candidate_message_id = bound_message
+            .as_ref()
+            .map(|bound| bound.message_id.clone())
+            .unwrap_or_else(|| MessageId::new().into_string());
         let operation_guard_key =
             Self::durable_operation_key(user_id, conversation_key, operation_id);
         let guard_generation = self
@@ -10167,7 +10843,6 @@ impl ConversationService {
         let mut public_admission_custodian = None;
         let mut execution_admission_custodian = None;
         let claim = if let Some(authority) = execution_authority.as_ref() {
-            let candidate_message_id = MessageId::new().into_string();
             let owner = Arc::new(AtomicU8::new(ADMISSION_CUSTODIAN_REQUEST_OWNER));
             execution_admission_custodian = Some(ExecutionTurnAdmissionCustodian {
                 boundary: Arc::clone(&self.execution_conversation_boundary),
@@ -10206,7 +10881,6 @@ impl ConversationService {
                 }
             }
         } else {
-            let candidate_message_id = MessageId::new().into_string();
             let owner = Arc::new(AtomicU8::new(ADMISSION_CUSTODIAN_REQUEST_OWNER));
             public_admission_custodian = Some(PublicTurnAdmissionCustodian {
                 repo: Arc::clone(&self.conversation_repo),
@@ -10416,6 +11090,7 @@ impl ConversationService {
                 runtime_preparation,
                 runtime_observer,
                 Some(prepared_skill_snapshots),
+                bound_message,
             )
             .await
         {
@@ -10518,7 +11193,21 @@ impl ConversationService {
         content: &str,
         origin: &str,
     ) -> Result<String, AppError> {
+        self.project_assistant_message_idempotent_with_epoch(user_id, conversation_id, operation_id, content, origin, None).await
+    }
+
+    pub async fn project_assistant_message_idempotent_with_epoch(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        content: &str,
+        origin: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<String, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
+        let projection_token = CancellationToken::new();
+        let _projection_guard = self.runtime_state.acquire_preparation_gate(conversation_id, &projection_token).await?;
         let operation_id = operation_id.trim();
         let content = content.trim();
         let origin = origin.trim();
@@ -10567,8 +11256,18 @@ impl ConversationService {
                 &request_payload,
                 &candidate,
                 created_at,
+                expected_admission_epoch,
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                nomifun_db::DbError::Conflict(ref msg) if msg == "voice_message_epoch_changed" => {
+                    AppError::Conflict("voice_message_epoch_changed".into())
+                }
+                nomifun_db::DbError::Conflict(ref msg) if msg == "Voice target is busy" => {
+                    AppError::Conflict("Voice target is busy".into())
+                }
+                other => AppError::from(other),
+            })?;
         let conversation = self
             .conversation_repo
             .get(conversation_id)
@@ -10607,6 +11306,204 @@ impl ConversationService {
             ),
         );
         Ok(row.message_id)
+    }
+
+    /// Project a completed voice dialogue turn (raw user speech and assistant reply)
+    /// atomically into a Conversation under a stable receiver-side operation identity.
+    pub async fn project_voice_dialogue_pair(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        raw_user_text: Option<&str>,
+        assistant_text: &str,
+        origin: &str,
+        expected_admission_epoch: i64,
+    ) -> Result<ConversationPairProjection, AppError> {
+        self.project_voice_dialogue_pair_with_user_msg_id(
+            user_id,
+            conversation_id,
+            operation_id,
+            raw_user_text,
+            assistant_text,
+            origin,
+            expected_admission_epoch,
+            None,
+        )
+        .await
+    }
+
+    /// Variation of `project_voice_dialogue_pair` that permits preserving a pre-assigned
+    /// stable user message id (e.g. from a queued voice task).
+    pub async fn project_voice_dialogue_pair_with_user_msg_id(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        operation_id: &str,
+        raw_user_text: Option<&str>,
+        assistant_text: &str,
+        origin: &str,
+        expected_admission_epoch: i64,
+        user_message_id: Option<&str>,
+    ) -> Result<ConversationPairProjection, AppError> {
+        let conversation_id = parse_conv_id(conversation_id)?;
+        let token=CancellationToken::new();
+        let _guard=self.runtime_state.acquire_preparation_gate(conversation_id,&token).await?;
+        if self.is_conversation_busy(user_id,conversation_id).await? {
+            return Err(AppError::Conflict("Voice target is busy".into()));
+        }
+        let operation_id = operation_id.trim();
+        let assistant_text = assistant_text.trim();
+        let origin = origin.trim();
+        if operation_id.is_empty() {
+            return Err(AppError::BadRequest(
+                "voice dialogue projection operation id must not be empty".to_owned(),
+            ));
+        }
+        if assistant_text.is_empty() {
+            return Err(AppError::BadRequest(
+                "voice dialogue projection content must not be empty".to_owned(),
+            ));
+        }
+        let now = now_ms();
+        let request_payload = serde_json::json!({
+            "raw_user_text": raw_user_text,
+            "origin": origin,
+        })
+        .to_string();
+
+        let user_candidate = raw_user_text.filter(|t| !t.trim().is_empty()).map(|text| {
+            let msg_id = user_message_id
+                .and_then(|id| MessageId::parse(id).ok().map(|m| m.into_string()))
+                .unwrap_or_else(|| MessageId::new().into_string());
+            MessageRow {
+                id: 0,
+                message_id: msg_id.clone(),
+                conversation_id: conversation_id.to_owned(),
+                msg_id: Some(msg_id),
+                r#type: "text".to_owned(),
+                content: serde_json::json!({ "content": text }).to_string(),
+                position: Some("right".to_owned()),
+                status: Some("finish".to_owned()),
+                hidden: false,
+                created_at: now,
+            }
+        });
+
+        let assistant_msg_id = MessageId::new().into_string();
+        let assistant_candidate = MessageRow {
+            id: 0,
+            message_id: assistant_msg_id.clone(),
+            conversation_id: conversation_id.to_owned(),
+            msg_id: Some(assistant_msg_id),
+            r#type: "text".to_owned(),
+            content: serde_json::json!({ "content": assistant_text }).to_string(),
+            position: Some("left".to_owned()),
+            status: Some("finish".to_owned()),
+            hidden: false,
+            created_at: now.saturating_add(1),
+        };
+
+        let projection = self
+            .conversation_repo
+            .project_dialogue_pair_idempotent(
+                user_id,
+                conversation_id,
+                operation_id,
+                "projection",
+                &request_payload,
+                user_candidate.as_ref(),
+                &assistant_candidate,
+                now,
+                expected_admission_epoch,
+            )
+            .await?;
+
+        {
+            let conversation = self
+                .conversation_repo
+                .get(conversation_id)
+                .await?
+                .filter(|c| c.user_id == user_id)
+                .ok_or_else(|| AppError::NotFound(format!("conversation {conversation_id}")))?;
+            let (companion, companion_id, channel_platform) =
+                companion_context_from_extra(&conversation.extra)?;
+
+            if let Some(user_row) = &projection.user_message {
+                let memory_owner = voice_memory_owner_from_extra(&conversation.extra)?;
+                self.broadcast_voice_user_message(
+                    user_id,
+                    conversation_id,
+                    &user_row.message_id,
+                    raw_user_text.unwrap_or_default(),
+                    user_row.created_at,
+                    memory_owner.as_ref(),
+                );
+                let user_data = serde_json::from_str::<serde_json::Value>(&user_row.content)
+                    .unwrap_or_else(|_| serde_json::json!({ "content": user_row.content }));
+                self.user_events.send_to_user(
+                    user_id,
+                    WebSocketMessage::new(
+                        "message.stream",
+                        serde_json::json!({
+                            "conversation_id": user_row.conversation_id,
+                            "msg_id": user_row.msg_id.as_deref().unwrap_or(&user_row.message_id),
+                            "type": "content",
+                            "data": user_data,
+                            "position": user_row.position,
+                            "status": user_row.status,
+                            "hidden": user_row.hidden,
+                            "replace": true,
+                            "stream_complete": true,
+                            "origin": origin,
+                            "companion": companion,
+                            "companion_id": companion_id,
+                            "channel_platform": channel_platform,
+                            "created_at": user_row.created_at,
+                        }),
+                    ),
+                );
+            }
+
+            let asst_row = &projection.assistant_message;
+            let asst_data = serde_json::from_str::<serde_json::Value>(&asst_row.content)
+                .unwrap_or_else(|_| serde_json::json!({ "content": asst_row.content }));
+            self.user_events.send_to_user(
+                user_id,
+                WebSocketMessage::new(
+                    "message.stream",
+                    serde_json::json!({
+                        "conversation_id": asst_row.conversation_id,
+                        "msg_id": asst_row.msg_id.as_deref().unwrap_or(&asst_row.message_id),
+                        "type": "content",
+                        "data": asst_data,
+                        "position": asst_row.position,
+                        "status": asst_row.status,
+                        "hidden": asst_row.hidden,
+                        "replace": true,
+                        "stream_complete": true,
+                        "origin": origin,
+                        "companion": companion,
+                        "companion_id": companion_id,
+                        "channel_platform": channel_platform,
+                        "created_at": asst_row.created_at,
+                    }),
+                ),
+            );
+
+            self.user_events.send_to_user(
+                user_id,
+                WebSocketMessage::new(
+                    "conversation.listChanged",
+                    serde_json::json!({
+                        "action": "updated",
+                        "conversation_id": conversation_id,
+                    }),
+                ),
+            );
+        }
+
+        Ok(projection)
     }
 
     pub(crate) async fn idempotent_delivery_result(
@@ -10667,6 +11564,7 @@ impl ConversationService {
             oneshot::Sender<(AgentRuntimeHandle, broadcast::Receiver<AgentStreamEvent>)>,
         >,
         preloaded_skill_snapshots: Option<PreparedSkillSnapshots>,
+        bound_message: Option<BoundVoiceMessage>,
     ) -> Result<(String, Option<String>), AppError> {
         let public_cancellable = send_authority.public_cancellable();
         // Snapshot before the first await. A stop racing this request advances
@@ -10873,19 +11771,41 @@ impl ConversationService {
             .is_active_execution_attempt_conversation(user_id, &row.conversation_id)
             .await?;
 
-        let user_msg_id = durable_delivery
+        let public_text = bound_message
             .as_ref()
-            .map(|delivery| delivery.message_id.clone())
+            .map(|bound| bound.display_text.clone())
+            .unwrap_or_else(|| req.content.clone());
+        let user_msg_id = bound_message
+            .as_ref()
+            .map(|bound| bound.message_id.clone())
+            .or_else(|| {
+                durable_delivery
+                    .as_ref()
+                    .map(|delivery| delivery.message_id.clone())
+            })
             .unwrap_or_else(Self::mint_msg_id);
         let existing_user_message = self
             .conversation_repo
             .get_message(&row.conversation_id, &user_msg_id)
             .await?;
         if let Some(existing) = existing_user_message.as_ref() {
-            let expected_content = serde_json::json!({ "content": &req.content }).to_string();
+            let same_public_text = if bound_message.is_some() {
+                serde_json::from_str::<serde_json::Value>(&existing.content)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("content")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    == Some(public_text.as_str())
+            } else {
+                existing.content == serde_json::json!({ "content": &public_text }).to_string()
+            };
             if existing.position.as_deref() != Some("right")
                 || existing.r#type != "text"
-                || existing.content != expected_content
+                || !same_public_text
             {
                 return Err(AppError::Conflict(
                     "internal message operation id was reused with different content".to_owned(),
@@ -10894,7 +11814,9 @@ impl ConversationService {
             // The first delivery is still owned by this live process.  Returning
             // the stable message identity lets the caller await that turn
             // instead of racing a duplicate model invocation.
-            if self.runtime_summary_for(conversation_id).await.is_processing {
+            if bound_message.is_none()
+                && self.runtime_summary_for(conversation_id).await.is_processing
+            {
                 // No fresh wire turn was minted on this observer path.
                 return Ok((user_msg_id, None));
             }
@@ -11263,7 +12185,7 @@ impl ConversationService {
             conversation_id: conversation_id.to_owned(),
             msg_id: Some(user_msg_id.clone()),
             r#type: "text".into(),
-            content: serde_json::json!({ "content": req.content }).to_string(),
+            content: serde_json::json!({ "content": &public_text }).to_string(),
             position: Some("right".into()),
             status: Some("finish".into()),
             hidden: req.hidden,
@@ -11323,7 +12245,7 @@ impl ConversationService {
             let title_service = self.clone();
             let title_conversation_id = conversation_id.to_owned();
             let title_user_message_id = user_msg_id.clone();
-            let title_user_content = req.content.clone();
+            let title_user_content = public_text.clone();
             let title_session_model = runtime_options.model.clone();
             let title_billing_turn_id = first_turn_msg_id.clone();
             tokio::spawn(async move {
@@ -11377,7 +12299,7 @@ impl ConversationService {
         }
 
         if !load_only {
-            self.on_user_message_lifecycle(conversation_id, &req.content, &row)
+            self.on_user_message_lifecycle(conversation_id, &public_text, &row)
                 .await;
         }
 
@@ -11389,7 +12311,7 @@ impl ConversationService {
                     serde_json::json!({
                     "conversation_id": user_msg.conversation_id,
                     "msg_id": &user_msg_id,
-                    "content": &req.content,
+                    "content": &public_text,
                     "position": "right",
                     "status": "finish",
                     "hidden": req.hidden,
@@ -13488,7 +14410,7 @@ impl ConversationService {
             conversation_id: conv_id.to_owned(),
             msg_id: Some(user_msg_id.clone()),
             r#type: "text".into(),
-            content: serde_json::json!({ "content": req.content }).to_string(),
+            content: serde_json::json!({ "content": &req.content }).to_string(),
             position: Some("right".into()),
             status: Some("finish".into()),
             hidden: req.hidden,
@@ -14179,6 +15101,7 @@ impl ConversationService {
                 None,
                 None,
                 None,
+                None,
             )
             .await
         {
@@ -14323,6 +15246,32 @@ impl ConversationService {
         .await
     }
 
+    /// Stop only the admitted message belonging to a voice delivery. The stop
+    /// fence is installed atomically with message verification; a later manual
+    /// turn in the same details conversation can never become its target.
+    pub async fn cancel_voice_turn(&self,user_id:&str,conversation_id:&str,send_key:&str,message_id:&str,runtime_registry:&Arc<dyn AgentRuntimeRegistry>) -> Result<(),AppError> {
+        let conversation=self.get(user_id,conversation_id).await?;
+        if !self.execution_authority(user_id).controls_host() || conversation.extra.get("voice_task_workspace").and_then(serde_json::Value::as_str).is_none() {
+            return Err(AppError::Forbidden("voice_task_policy_missing".into()));
+        }
+        match self.public_turn_delivery_state(user_id,conversation_id,send_key).await? {
+            PublicTurnDeliveryState::Completed(value) if value.message_id==message_id => return Ok(()),
+            PublicTurnDeliveryState::Accepted {message_id:accepted} if accepted==message_id => {},
+            _ => return Err(AppError::Conflict("voice_task_message_scope_changed".into())),
+        }
+        let operation_id=Self::public_turn_operation_id(user_id,conversation_id,send_key);
+        let admission=self.runtime_state.begin_public_turn_stop(conversation_id,user_id,&operation_id);
+        // Propagate an exact-scope rejection before recording a user stop.
+        let admission=admission?;
+        self.note_user_cancel(conversation_id);
+        let completion=self.spawn_turn_stop_cleanup_admitted(user_id.into(),conversation_id.into(),runtime_registry.clone(),true,false,AgentKillReason::UserCancelled,Ok(admission));
+        match tokio::time::timeout(CANCEL_HANDLER_GRACE,completion).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::Internal("voice task stop worker exited".into())),
+            Err(_) => Err(AppError::Timeout("voice task cancellation is still pending".into())),
+        }
+    }
+
     /// Cancel an Agent Execution attempt without classifying infrastructure
     /// cleanup (pause/replan/recovery/cancel) as a direct user stop.
     pub async fn cancel_for_execution(
@@ -14358,13 +15307,21 @@ impl ConversationService {
         deletion_owned: bool,
         kill_reason: AgentKillReason,
     ) -> oneshot::Receiver<Result<(), AppError>> {
-        let (result_tx, result_rx) = oneshot::channel();
         let stop_admission = if deletion_owned {
             self.runtime_state
                 .begin_conversation_stop_for_deletion(&conversation_id)
         } else {
             self.runtime_state.begin_conversation_stop(&conversation_id)
         };
+        self.spawn_turn_stop_cleanup_admitted(user_id,conversation_id,runtime_registry,publish_completion,deletion_owned,kill_reason,stop_admission)
+    }
+
+    fn spawn_turn_stop_cleanup_admitted(
+        &self,user_id:String,conversation_id:String,runtime_registry:Arc<dyn AgentRuntimeRegistry>,publish_completion:bool,deletion_owned:bool,
+        kill_reason: AgentKillReason,
+        stop_admission:Result<Option<crate::runtime_state::ConversationStopGuard>,AppError>,
+    ) -> oneshot::Receiver<Result<(),AppError>> {
+        let (result_tx,result_rx)=oneshot::channel();
         let stop_guard = match stop_admission {
             Ok(Some(guard)) => guard,
             Ok(None) => {
@@ -17068,7 +18025,8 @@ fn reject_execution_policy_extra_keys(extra: &serde_json::Value) -> Result<(), A
 /// Reject instead of silently stripping them so every caller gets an explicit
 /// failure and no partial PATCH can make an injected fence indistinguishable
 /// from a backend reservation after restart.
-pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 12] = [
+pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 13] = [
+    "voice_task_workspace",
     "_edit_resubmit_fence",
     "active_turn_operation_id",
     "admission_epoch",
@@ -17215,16 +18173,33 @@ fn parse_message_cursor(cursor: &str) -> Result<(i64, String), AppError> {
 /// collector, the companion window's remote-turn bubble) can recognize companion
 /// conversations — including Channel Agent sessions that never register in
 /// the companion-side thread table — straight off the wire.
+fn voice_memory_owner_from_extra(extra: &str) -> Result<Option<CompanionId>, AppError> {
+    let value: serde_json::Value = serde_json::from_str(extra)
+        .map_err(|error| AppError::Internal(format!("invalid conversation extra JSON: {error}")))?;
+    let owner=value.get("memory_owner_companion_id").filter(|value| !value.is_null()).or_else(|| {
+        // Explicit legacy companion-session targets already have a trusted
+        // owner. Ordinary/voice workspaces must never infer one from that key.
+        (value.get("companion_session").and_then(|v|v.as_bool())==Some(true))
+            .then(||value.get("companion_id").filter(|v|!v.is_null())).flatten()
+    });
+    match owner {
+        None => Ok(None),
+        Some(value) => {
+            let raw = value.as_str().ok_or_else(|| AppError::Internal("invalid voice memory owner".into()))?;
+            CompanionId::parse(raw).map(Some).map_err(|_| AppError::Internal("invalid voice memory owner".into()))
+        }
+    }
+}
+
 fn companion_context_from_extra(
     extra: &str,
 ) -> Result<(bool, Option<CompanionId>, Option<String>), AppError> {
     let value: serde_json::Value = serde_json::from_str(extra)
         .map_err(|error| AppError::Internal(format!("invalid conversation extra JSON: {error}")))?;
-    let companion = value
-        .get("companion_session")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let companion_id = match value.get("companion_id") {
+    let companion_id_val = value
+        .get("companion_id")
+        .filter(|v| !v.is_null());
+    let companion_id = match companion_id_val {
         None => None,
         Some(value) => {
             let raw = value.as_str().ok_or_else(|| {
@@ -17238,7 +18213,11 @@ fn companion_context_from_extra(
             )
         }
     };
-    let channel_platform = match value.get("channel_platform") {
+    let companion = value
+        .get("companion_session")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let channel_platform = match value.get("channel_platform").filter(|v| !v.is_null()) {
         None => None,
         Some(value) => {
             let raw = value.as_str().ok_or_else(|| {
@@ -17444,6 +18423,19 @@ mod tests {
     const PROVIDER_ID_1: &str = "0190f5fe-7c00-7a00-8000-000000000001";
     const PROVIDER_ID_2: &str = "0190f5fe-7c00-7a00-8000-000000000002";
     const RUNTIME_PRESET_ID: &str = "0190f5fe-7c00-7a00-8000-000000000003";
+
+    #[test]
+    fn voice_memory_owner_is_separate_from_companion_session_with_explicit_legacy_support() {
+        let workspace=json!({"voice":true,"memory_owner_companion_id":PROVIDER_ID_1,"companion_id":null}).to_string();
+        assert_eq!(voice_memory_owner_from_extra(&workspace).unwrap().unwrap().as_str(),PROVIDER_ID_1);
+        assert_eq!(companion_context_from_extra(&workspace).unwrap(),(false,None,None));
+        let legacy=json!({"companion_session":true,"companion_id":PROVIDER_ID_1}).to_string();
+        assert_eq!(voice_memory_owner_from_extra(&legacy).unwrap().unwrap().as_str(),PROVIDER_ID_1);
+        let unowned=json!({"voice":true,"companion_id":PROVIDER_ID_1}).to_string();
+        assert!(voice_memory_owner_from_extra(&unowned).unwrap().is_none());
+        let invalid=json!({"companion_session":true,"companion_id":PROVIDER_ID_1,"memory_owner_companion_id":"bad-owner"}).to_string();
+        assert!(voice_memory_owner_from_extra(&invalid).is_err());
+    }
 
     #[test]
     fn reasoning_effort_change_only_marks_real_nomi_value_changes() {

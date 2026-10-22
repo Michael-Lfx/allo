@@ -4172,6 +4172,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &message,
             now,
+            None,
         )
         .await
         .unwrap();
@@ -4190,6 +4191,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &replay_candidate,
             now + 1,
+            None,
         )
         .await
         .unwrap();
@@ -4217,6 +4219,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &invalid_shape,
             now + 2,
+            None,
         )
         .await
         .unwrap_err();
@@ -4231,6 +4234,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &replay_candidate,
             now + 2,
+            None,
         )
         .await
         .unwrap_err();
@@ -4245,6 +4249,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             r#"{"execution_id":"exec_1","summary":"different"}"#,
             &message,
             now + 2,
+            None,
         )
         .await
         .unwrap_err();
@@ -4259,6 +4264,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &message,
             now + 3,
+            None,
         )
         .await
         .unwrap_err();
@@ -4275,6 +4281,7 @@ async fn assistant_message_projection_is_atomic_idempotent_and_owner_scoped() {
             request,
             &missing_message,
             now + 4,
+            None,
         )
         .await
         .unwrap_err();
@@ -6749,4 +6756,204 @@ async fn delivery_notify_failed_marking_applies_only_to_taken_rows() {
     .await
     .unwrap();
     assert_eq!(state, "failed");
+}
+
+#[tokio::test]
+async fn dialogue_pair_projection_persists_pair_atomically_and_idempotently() {
+    let (repo, _db) = setup().await;
+    let conv = make_conversation("pair-projection");
+    let conv_id = repo.create(&conv).await.unwrap();
+
+    let user_msg_id = MessageId::new().into_string();
+    let asst_msg_id = MessageId::new().into_string();
+    let op_id = "voice-record:0190f5fe-pair-test";
+    let now = nomifun_common::now_ms();
+    let payload = serde_json::json!({
+        "raw_user_text": "今天天气怎么样",
+        "origin": "voice_companion",
+    })
+    .to_string();
+
+    let user_msg = MessageRow {
+        id: 0,
+        message_id: user_msg_id.clone(),
+        conversation_id: conv_id.clone(),
+        msg_id: Some(user_msg_id.clone()),
+        r#type: "text".to_owned(),
+        content: serde_json::json!({ "content": "今天天气怎么样" }).to_string(),
+        position: Some("right".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: now,
+    };
+
+    let asst_msg = MessageRow {
+        id: 0,
+        message_id: asst_msg_id.clone(),
+        conversation_id: conv_id.clone(),
+        msg_id: Some(asst_msg_id.clone()),
+        r#type: "text".to_owned(),
+        content: serde_json::json!({ "content": "今天天气晴朗，气温20度。" }).to_string(),
+        position: Some("left".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: now + 1,
+    };
+
+    // First projection: should insert pair atomically
+    let first = repo
+        .project_dialogue_pair_idempotent(
+            USER_ID,
+            &conv_id,
+            op_id,
+            "projection",
+            &payload,
+            Some(&user_msg),
+            &asst_msg,
+            now,
+            0,
+        )
+        .await
+        .expect("initial pair projection must succeed");
+    assert!(first.inserted, "first projection must be marked inserted");
+    assert_eq!(
+        first.user_message.as_ref().unwrap().message_id,
+        user_msg_id
+    );
+    assert_eq!(first.assistant_message.message_id, asst_msg_id);
+
+    // Verify messages exist in database
+    let msgs = repo.get_messages(&conv_id, 1, 10, SortOrder::Asc).await.unwrap();
+    assert_eq!(msgs.items.len(), 2, "must have exactly 2 messages in conversation");
+
+    // Second projection (replay with identical payload): idempotent, inserted == false, no new messages
+    let second = repo
+        .project_dialogue_pair_idempotent(
+            USER_ID,
+            &conv_id,
+            op_id,
+            "projection",
+            &payload,
+            Some(&user_msg),
+            &asst_msg,
+            now,
+            0,
+        )
+        .await
+        .expect("replay must succeed");
+    assert!(!second.inserted, "replay must not be marked inserted");
+    assert_eq!(second.assistant_message.message_id, asst_msg_id);
+
+    let msgs_after = repo.get_messages(&conv_id, 1, 10, SortOrder::Asc).await.unwrap();
+    assert_eq!(msgs_after.items.len(), 2, "replay must not create duplicate messages");
+
+    // Third projection with changed payload: must return DbError::Conflict
+    let changed_payload = serde_json::json!({
+        "raw_user_text": "今天下雨吗",
+        "origin": "voice_companion",
+    })
+    .to_string();
+    let conflict_err = repo
+        .project_dialogue_pair_idempotent(
+            USER_ID,
+            &conv_id,
+            op_id,
+            "projection",
+            &changed_payload,
+            Some(&user_msg),
+            &asst_msg,
+            now,
+            0,
+        )
+        .await;
+    assert!(
+        matches!(conflict_err, Err(nomifun_db::DbError::Conflict(_))),
+        "reusing operation_id with changed payload must result in Conflict"
+    );
+
+    // Clearing advances the aggregate epoch. A late generated pair cannot resurrect either message.
+    repo.clear_terminal_conversation_messages(USER_ID,&conv_id,now+10).await.unwrap();
+    let stale=repo.project_dialogue_pair_idempotent(USER_ID,&conv_id,"voice-late-after-clear","projection",&payload,Some(&user_msg),&asst_msg,now+11,0).await;
+    assert!(matches!(stale,Err(nomifun_db::DbError::Conflict(_))));
+    assert_eq!(repo.get_messages(&conv_id,1,10,SortOrder::Asc).await.unwrap().items.len(),0);
+    assert!(repo.get_delivery_receipt(USER_ID,&conv_id,"voice-late-after-clear").await.unwrap().is_none(),"receipt and messages must both roll back");
+
+    // Non-existent conversation: must return DbError::NotFound
+    let mut missing_asst = asst_msg.clone();
+    missing_asst.conversation_id = "0190f5fe-7c00-7a00-8000-999999999999".into();
+    let not_found_err = repo
+        .project_dialogue_pair_idempotent(
+            USER_ID,
+            "0190f5fe-7c00-7a00-8000-999999999999",
+            "voice-record:new-op",
+            "projection",
+            &payload,
+            None,
+            &missing_asst,
+            now,
+            0,
+        )
+        .await;
+    assert!(
+        matches!(not_found_err, Err(nomifun_db::DbError::NotFound(_))),
+        "non-existent conversation must return NotFound"
+    );
+}
+
+#[tokio::test]
+async fn test_c02_epoch_transaction_boundary_rejects_stale_epoch() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("c02-epoch-boundary");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let conv_id = conversation.conversation_id.clone();
+    let now = nomifun_common::now_ms();
+
+    let state = repo.get_turn_admission_state(USER_ID, &conv_id).await.unwrap();
+    let initial_epoch = state.epoch;
+
+    // 1. Initial write with exact epoch succeeds
+    let valid_user_msg = make_message(&conv_id, "first user speech");
+    repo.insert_message_with_epoch(&valid_user_msg, USER_ID, Some(initial_epoch)).await.unwrap();
+    assert_eq!(repo.get_messages(&conv_id, 1, 10, SortOrder::Asc).await.unwrap().items.len(), 1);
+
+    // 2. User clears conversation -> increments admission_epoch
+    repo.clear_terminal_conversation_messages(USER_ID, &conv_id, now + 1).await.unwrap();
+    let new_state = repo.get_turn_admission_state(USER_ID, &conv_id).await.unwrap();
+    assert!(new_state.epoch > initial_epoch, "clearing conversation must increment epoch");
+
+    // 3. insert_message_with_epoch with stale epoch fails atomically inside transaction
+    let ghost_user_msg = make_message(&conv_id, "ghost user message");
+    let err_insert = repo.insert_message_with_epoch(&ghost_user_msg, USER_ID, Some(initial_epoch)).await.unwrap_err();
+    assert!(matches!(err_insert, nomifun_db::DbError::Conflict(ref msg) if msg == "voice_message_epoch_changed"));
+
+    // 4. project_assistant_message_with_receipt with stale epoch fails atomically inside transaction
+    let asst_mid = nomifun_common::generate_id();
+    let ghost_asst_msg = MessageRow {
+        id: 0,
+        message_id: asst_mid.clone(),
+        conversation_id: conv_id.clone(),
+        msg_id: Some(asst_mid),
+        r#type: "text".to_owned(),
+        content: serde_json::json!({ "content": "ghost assistant reply" }).to_string(),
+        position: Some("left".to_owned()),
+        status: Some("finish".to_owned()),
+        hidden: false,
+        created_at: now + 2,
+    };
+    let payload = serde_json::json!({ "content": "ghost assistant reply", "origin": "projection" }).to_string();
+    let err_project = repo.project_assistant_message_with_receipt(
+        USER_ID,
+        &conv_id,
+        "op-ghost-projection",
+        "projection",
+        &payload,
+        &ghost_asst_msg,
+        now + 2,
+        Some(initial_epoch),
+    ).await.unwrap_err();
+    assert!(matches!(err_project, nomifun_db::DbError::Conflict(ref msg) if msg == "voice_message_epoch_changed"));
+
+    // 5. Verify no phantom messages or receipts exist in DB
+    assert_eq!(repo.get_messages(&conv_id, 1, 10, SortOrder::Asc).await.unwrap().items.len(), 0);
+    assert!(repo.get_delivery_receipt(USER_ID, &conv_id, "op-ghost-projection").await.unwrap().is_none());
 }

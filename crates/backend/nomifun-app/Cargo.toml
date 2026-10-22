@@ -21,6 +21,10 @@ name = "delivery_notify_integration"
 path = "tests/delivery_notify_integration.rs"
 
 [[test]]
+name = "voice_dialogue_integration"
+path = "tests/voice_dialogue_integration.rs"
+
+[[test]]
 name = "webui_lan_smoke"
 path = "tests/webui_lan_smoke.rs"
 
@@ -198,7 +202,7 @@ name = "connector_tools_e2e"
 path = "tests/connector_tools_e2e.rs"
 
 [features]
-default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot", "bedrock", "silero-vad"]
+default = ["telegram", "lark", "dingtalk", "weixin", "wecom", "discord", "matrix", "mattermost", "slack", "twitch", "nostr", "qqbot", "bedrock", "silero-vad", "local-stt"]
 telegram = ["nomifun-channel/telegram"]
 lark = ["nomifun-channel/lark"]
 dingtalk = ["nomifun-channel/dingtalk"]
@@ -247,6 +251,8 @@ bedrock = ["nomifun-system/bedrock"]
 # Silero VAD (ONNX Runtime) for the voice pipeline. Desktop keeps it on;
 # headless hosts (agent-store) turn it off and fall back to the energy VAD.
 silero-vad = ["nomifun-robot/silero-vad"]
+# Local SenseVoice ASR (sherpa-onnx) for the voice pipeline. Desktop keeps it on.
+local-stt = ["nomifun-audio/local-stt"]
 
 [dependencies]
 nomifun-common.workspace = true
@@ -296,6 +302,8 @@ nomifun-secret = { workspace = true, features = ["web"] }
 nomifun-terminal.workspace = true
 nomifun-ssh.workspace = true
 nomifun-audio.workspace = true
+nomifun-voice-models.workspace = true
+nomi-process-runtime.workspace = true
 nomifun-preset.workspace = true
 nomifun-runtime.workspace = true
 nomifun-net.workspace = true
@@ -325,6 +333,7 @@ git2.workspace = true
 rmcp = { version = "3.5", features = ["server", "transport-io", "schemars"] }
 anyhow.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 # Network-interface enumeration for desktop LAN-IP detection (WebUI remote access).
 if-addrs = "0.13"
@@ -346,7 +355,6 @@ nomi-browser = { workspace = true, optional = true }
 # engine. Only the browser-use feature pulls this dependency.
 nomi-browser-engine = { workspace = true, optional = true }
 nomi-config.workspace = true
-nomi-process-runtime.workspace = true
 nomifun-browser-platform = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 nomi-tools = { workspace = true, optional = true }
@@ -369,6 +377,7 @@ windows-sys = { workspace = true, features = [
 junction = "1"
 
 [dev-dependencies]
+voice-companion = { path = "../../../apps/voice-companion", features = ["voice-skeleton"] }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 nomifun-api-types.workspace = true
 nomifun-realtime.workspace = true
