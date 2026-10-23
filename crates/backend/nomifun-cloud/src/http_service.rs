@@ -86,6 +86,28 @@ impl CloudService {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    /// Best-effort upsert of a paired phone. No-ops when the PC is signed out.
+    pub async fn try_register_link_device(&self, body: crate::flowy::LinkDeviceUpsert) {
+        let mgr = match self.auth_manager() {
+            Ok(manager) => manager,
+            Err(_) => return,
+        };
+        if let Err(error) = mgr.api().register_link_device(mgr.session(), &body).await {
+            tracing::debug!(%error, "link device cloud upsert skipped");
+        }
+    }
+
+    /// Records a body-free wake. No-ops when the PC is signed out.
+    pub async fn try_notify_link_wake(&self, device_id: &str, body: serde_json::Value) {
+        let mgr = match self.auth_manager() {
+            Ok(manager) => manager,
+            Err(_) => return,
+        };
+        if let Err(error) = mgr.api().notify_link_device(mgr.session(), device_id, &body).await {
+            tracing::debug!(%error, "link wake notify skipped");
+        }
+    }
+
     pub fn server_settings(&self) -> nomifun_api_types::CloudServerSettingsResponse {
         let cfg = self.gateway_config();
         nomifun_api_types::CloudServerSettingsResponse {

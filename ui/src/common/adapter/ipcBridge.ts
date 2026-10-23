@@ -3195,6 +3195,35 @@ export const webui = {
   },
 };
 
+export const link = {
+  openPairing: httpPost<{
+    nonce: string;
+    expiresAtMs: number;
+    port: number;
+    url?: string | null;
+    fingerprint?: string;
+  }, void>('/api/link/pairing-sessions'),
+  pending: httpGet<{
+    items: Array<{
+      nonce: string;
+      displayName: string;
+      platform: string;
+      appVersion: string;
+    }>;
+  }, void>('/api/link/pair/pending'),
+  decide: httpPost<{ status: string }, { nonce: string; allow: boolean }>('/api/link/pair/decide', (params) => ({
+    nonce: params.nonce,
+    allow: params.allow,
+  })),
+  stepUpPending: httpGet<{
+    items: Array<{ id: string; method: string; path: string }>;
+  }, void>('/api/link/step-up/pending'),
+  stepUpDecide: httpPost<{ status: string }, { id: string; allow: boolean }>('/api/link/step-up/decide', (params) => ({
+    id: params.id,
+    allow: params.allow,
+  })),
+};
+
 // ---------------------------------------------------------------------------
 // Cron — routed to /api/cron/*
 // ---------------------------------------------------------------------------

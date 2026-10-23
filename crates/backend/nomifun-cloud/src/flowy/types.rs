@@ -362,6 +362,25 @@ pub struct PresenceHeartbeatRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkDeviceUpsert {
+    pub device_id: String,
+    pub host_fingerprint: String,
+    pub display_name: String,
+    pub platform: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_enabled: Option<bool>,
+    pub app_version: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PresenceHeartbeatData {
+    #[serde(default)]
+    pub revoked_device_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BindEmailCodeRequest {
     pub email: String,
 }
