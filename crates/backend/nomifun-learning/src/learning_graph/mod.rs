@@ -702,7 +702,9 @@ pub struct ReviewProblem {
     pub advice: String,
 }
 
-const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构门之后对生长批次做最后一次语义兜底审查。结构门（机器，已通过）保证过：名字都能解析、每条 assumes 都被既往批次的已教账覆盖（同批兄弟的 teaches 与本批铸名不算供给）、批量与标题合法。你只查结构门查不了的概念面问题。
+/// 评审提示词的装配面（k07）：判据①按开关取新版（挂号子查）或旧版（off
+/// 臂）；其余段落共用一份常量——零第二份全文。
+const CONCEPT_REVIEW_HEAD: &str = r#"你是一名概念评审员：在结构门之后对生长批次做最后一次语义兜底审查。结构门（机器，已通过）保证过：名字都能解析、每条 assumes 都被既往批次的已教账覆盖（同批兄弟的 teaches 与本批铸名不算供给）、批量与标题合法。你只查结构门查不了的概念面问题。
 
 【先读材料，再下结论】
 - 本批节点同批落地、没有学习先后，因此批内互不依赖：节点只许依赖既往批次已教的概念，学习者可能从本批任意节点起步。凡以「批内先后顺序」为由的问题一律不成立——同批无顺序，但同批也无互相依赖。
@@ -710,8 +712,25 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 - 事实以材料为准：【已教概念账】【花名册】与待批 JSON 里的 mints 是全部事实源——名单里有的就是有，没有的才是没有；不要凭印象断言「某概念没人教过」。
 
 【判据——逐节点核对四条】
-1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
-2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
+"#;
+
+/// 判据①（k07 新版，learnhub #127 e1f111c 的挂号子查结构化）：先框定
+/// 「登记表外名词」，再逐词核对出处三源（allo 四入口：含本节点 assumes），
+/// 点名批内提名不算出处与内嵌上位词在审；含糊词按概念处理。
+const CRITERION_ONE_V2: &str = r#"1. 挂号充分（子查：登记表外名词）：
+   - **框定**：节点标题与 purpose，以及随批 mints 的 canonical 与 new_aliases 的名字及定义里出现的每个领域名词，都是待查的「登记表外名词」——名单里已有的名字不算登记表外。
+   - **出处核对（四入口）**：每个登记表外名词，须能落到以下之一——①已教（已教账里的正名或别名）、②本节点 teaches（本节点自教）、③本节点 assumes、④课程外通用常识。「简单」不等于常识——课程内的基础概念也要挂号；既像常识又像本课概念的两可词，按概念处理（要求挂号）。四处皆无 = 挂号缺失，打回并指名该名词。
+   - **批内提名本身不是出处**：某名词只有本批其它节点的 teaches 或本批铸名供给、而本节点不自教、也不在已教账/assumes 里，就是隐藏的批内先后（同批互不供给），照打——不要接受「批内兄弟会教」作为出处。
+   - **概念名内嵌的上位词同样在审**：提名叫「研磨度的校准」，「研磨度」自己未在册、无人教、又非常识 = 挂号缺失，与显式名词同罪；名字里的每个构成词都要各自落到出处。
+   - purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
+   - **修法（与覆盖法同款）**：缺的前提可补挂 assumes（已教可覆盖）；本节点能承载就并入 teaches 自教；都不可行则移出本批，下批再装。
+"#;
+
+/// 判据①（k07 旧版，off 臂原样）：改版前的并句措辞，逐字保留。
+const CRITERION_ONE_V1: &str = r#"1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
+"#;
+
+const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
 
@@ -739,6 +758,35 @@ const CONCEPT_REVIEW_SYSTEM: &str = r#"你是一名概念评审员：在结构�
 - 通过：{ "verdict": "pass" }（有复用裁决时附带 "reuse" 数组，见【复用裁决】；有数据缺陷观察时附带 "findings" 数组）
 - 打回：{ "verdict": "reject", "problems": [ { "node": "节点标题", "field": "teaches|assumes|mints|title|difficulty", "issue": "问题是什么，指名具体概念", "advice": "一条可执行的修复提示" } ] }（数据缺陷观察同样可附 "findings" 数组）
 问题按严重度降序，至多 8 条；每条都必须是你能从材料确认的硬伤，issue 写清缺的是什么概念；一条硬伤都没有就 pass，绝不为了「显得尽责」凑问题。只输出 JSON，不要任何解释。"#;
+
+/// 评审判据①新版的运维开关（k07）：置 off/0/false 退回改版前的并句措辞
+/// （off 臂；判据②③④与 findings 通道两臂相同）。
+pub const REVIEW_V2_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_V2";
+
+/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_review_v2_disabled_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false"
+    )
+}
+
+/// 判据①新版是否开启（未设/其它值 = 开启）。
+fn review_v2_enabled() -> bool {
+    std::env::var(REVIEW_V2_SWITCH_ENV)
+        .map(|value| !is_review_v2_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 评审系统提示词（k07 开关装配）：头段 + 判据①（新/旧）+ 尾段。
+pub(crate) fn concept_review_system() -> String {
+    let criterion = if review_v2_enabled() {
+        CRITERION_ONE_V2
+    } else {
+        CRITERION_ONE_V1
+    };
+    format!("{CONCEPT_REVIEW_HEAD}{criterion}{CONCEPT_REVIEW_TAIL}")
+}
 
 /// 评审产出（j04 扩权）：问题条 + 复用裁决。fails-open 降级 = 两者皆空。
 /// j09 findings warn 通道：数据缺陷观察不打回只留痕，与 problems 阻断通道
@@ -818,10 +866,11 @@ pub(crate) async fn concept_review(
         context.render()
     );
     // JSON 接缝 + thinking ON（g4：全部生成面统一）。
+    let system = concept_review_system();
     let raw = match crate::generation::complete_json_coach(
         completer,
         model_override,
-        CONCEPT_REVIEW_SYSTEM,
+        &system,
         &user,
         crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
         None,
@@ -1478,6 +1527,103 @@ mod tests {
         assert_eq!(review.reuse.len(), 1, "{review:?}");
         assert_eq!(review.reuse[0].name, "二进制数");
         assert_eq!(review.reuse[0].concept_id, "01a1442d-2338-7a40-a4bd-fe50a0a64a83");
+    }
+
+    /// k07 开关两臂：on 臂判据①为子查结构（登记表外名词/批内提名不算
+    /// 出处/内嵌上位词在审/两可词按概念处理）；off 臂逐字回到旧并句措辞。
+    /// env 是进程全局态：`#[serial]` 与其它评审判据测试互斥。
+    #[test]
+    #[serial_test::serial]
+    fn concept_review_system_switch_selects_the_criterion_one_wording() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(REVIEW_V2_SWITCH_ENV, value) },
+                    None => unsafe { std::env::remove_var(REVIEW_V2_SWITCH_ENV) },
+                }
+            }
+        }
+        let previous = std::env::var(REVIEW_V2_SWITCH_ENV).ok();
+        let _restore = Restore(previous);
+
+        unsafe { std::env::set_var(REVIEW_V2_SWITCH_ENV, "on") };
+        let system = concept_review_system();
+        for phrase in [
+            "登记表外名词",
+            "批内提名本身不是出处",
+            "内嵌的上位词同样在审",
+            "按概念处理",
+            "修法",
+        ] {
+            assert!(system.contains(phrase), "on 臂缺「{phrase}」");
+        }
+        assert!(!system.contains("三处皆无的名词"), "on 臂不出现旧并句");
+
+        unsafe { std::env::set_var(REVIEW_V2_SWITCH_ENV, "off") };
+        let legacy = concept_review_system();
+        assert!(legacy.contains("三处皆无的名词"), "off 臂是新版");
+        assert!(!legacy.contains("批内提名本身不是出处"));
+        assert!(!legacy.contains("内嵌的上位词同样在审"));
+        // 开关取值判定只认 off/0/false。
+        for value in ["off", "OFF", "0", "false", " False "] {
+            assert!(is_review_v2_disabled_value(value));
+        }
+        for value in ["on", "1", "true", "", "disable"] {
+            assert!(!is_review_v2_disabled_value(value));
+        }
+    }
+
+    /// k07 挂号 finding 走通 j09 warn 留痕通道的解析面：pass 结论附带的
+    /// findings（挂号类 issue）原样透出，不阻断批次。
+    #[tokio::test]
+    async fn concept_review_passes_registration_findings_through() {
+        struct Fixed(std::sync::Mutex<Option<String>>);
+        #[async_trait::async_trait]
+        impl LearningCompleter for Fixed {
+            async fn complete(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+            ) -> Result<String, nomifun_common::AppError> {
+                unreachable!("review only uses the json seam")
+            }
+            async fn complete_json_with_thinking(
+                &self,
+                _: Option<(&str, &str)>,
+                _: &str,
+                _: &str,
+                _: u32,
+                _: Option<f32>,
+            ) -> Result<String, nomifun_common::AppError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .ok_or_else(|| nomifun_common::AppError::Internal("script exhausted".into()))
+            }
+        }
+        let reply = serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "findings": [{
+                "node": "校准研磨度",
+                "field": "mints",
+                "issue": "概念名内嵌的上位词「研磨度」未在册、无人教，按概念处理属挂号缺失（疑似数据面缺概念）",
+                "advice": "补教「研磨度」或把该节点并入已教概念"
+            }]
+        });
+        let completer = Fixed(std::sync::Mutex::new(Some(
+            serde_json::to_string(&reply).unwrap(),
+        )));
+        let batch = batch_of(vec![node("校准研磨度", vec![], vec![])]);
+        let review = concept_review(&completer, None, &batch, &CoachContext::default(), "").await;
+        assert!(review.problems.is_empty(), "pass 不阻断：{review:?}");
+        assert_eq!(review.findings.len(), 1, "{review:?}");
+        assert!(review.findings[0].issue.contains("内嵌的上位词"));
+        assert_eq!(review.findings[0].node, "校准研磨度");
     }
 
     #[test]
