@@ -1,8 +1,8 @@
 ---
 contract: learning-structure-artifacts
-version: "1.4"
+version: "1.5"
 date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
@@ -259,6 +259,20 @@ est，1 est 分钟 = 1 分钟专注学习）。
 
 金样随批重生成（`LEARNING_UPDATE_GOLDEN=1`），围栏 FENCE_DEV_FACE 与条款覆盖
 短语断言同批更新。
+
+### 8.3 内容纪律 R10–R13（v1.5，k05）
+
+learnhub ldata1 战役的四条同族写作纪律落两管线写作面（**零机械门**，发现面 =
+写作面条款 + 真机对照卡）：
+
+- **R10 具象替身先**、**R11 受众语域**、**R12 表述工具在场**、**R13 断言-例子
+  一致**：传统管线 = `CONTENT_DISCIPLINE_BLOCK` 追加块；图管线 = agent 系统
+  提示词成色段同义条款；节大纲加情境取向句。
+- allo 无课程宪章 audience 字段（B 组产品裁决），R11 措辞锚定既有输入面（课程
+  声明非低龄受众时情境取该受众生活域），不加新向导字段、不改 DB。
+- 运维开关 `NOMI_LEARNING_CONTENT_DISCIPLINE_V2=off` 退回 j07 后提示词。
+- R12 观察读数（记号样 token 计数）为可选增强，本批未建（机械检测面与
+  R12/R13 同留雾区）。
 
 ## 9 挂载事实层（st.mount.*，j08 三轮 g1「结构转活文档·上」）
 
