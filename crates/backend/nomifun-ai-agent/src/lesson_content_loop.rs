@@ -54,6 +54,18 @@ pub(crate) const WIRE: WireConfig = WireConfig {
     lesson_stream: true,
 };
 
+/// 写作成色 V2（k05，learnhub ldata1 的 R10–R13；域中立措辞，零新机械
+/// 门）：抽象对象首讲具象替身 / 例子情境取受众生活域 / 正式表述的记号术语
+/// 在已知集内 / 断言-例子数字一致。与 nomifun-learning 的
+/// `CONTENT_DISCIPLINE_V2_BLOCK` 同义（两处手写各随其提示词风格），开关
+/// `NOMI_LEARNING_CONTENT_DISCIPLINE_V2=off` 时整块不装配。
+const CONTENT_DISCIPLINE_V2_CN: &str = "
+- 具象替身先（R10）：抽象对象（结构、记号、运算）首讲时，先给一个具象替身——几何图像、动作隐喻、或具体情境里摸得到的量——让随后的规则与性质能借替身解释；关键规则配一句「为什么如此」的语义说明，不让学习者靠裸符号死记。
+- 受众语域（R11）：课程声明面向成人、职场等非低龄受众时，例子与情境的人物、场景取该受众的生活域——不幼态、不写低龄课堂情境；讲法保留实物与教具，情境不锁龄。
+- 表述工具在场（R12）：规则正式表述所用的记号与术语，须在已知集内（本节点 teaches ∪ assumes），或本节正文已先行正式引入——不在已知集的记号与术语不即兴使用：换自然语言表述，或在正文内先正式引入再用。
+- 断言-例子一致（R13）：为后果类断言配的例子里，数字必须能实际推出该断言（漏数例报数应少于总数、重复例应多于总数）；操作型演示每一步的中间结果逐一验算，只核对终态不算验算。
+";
+
 /// Generation-loop system prompt. The sectioned contract (ADR-0002) drives
 /// the rounds: plan the manifest once, then one tool call per section body
 /// (the model's attention stays on one learnable unit), then the activities
@@ -62,6 +74,11 @@ pub(crate) const WIRE: WireConfig = WireConfig {
 /// 函数从 owner 表格生成（ADR-0002 追加决策：唯一事实源，禁止手写字面量）。
 static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
     let section_ranges = section_range_rules();
+    let discipline_v2 = if nomifun_learning::content_discipline_v2_enabled() {
+        CONTENT_DISCIPLINE_V2_CN
+    } else {
+        ""
+    };
     let visual_menu = visual_menu_text();
     let prose_budgets = prose_budget_rules();
     format!(
@@ -82,7 +99,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 档位决定内容形态：标到「知道」的概念做认识性介绍，标到「会用」以应用示范为主，标到「能教」才给完整推导与反例；没有档位声明的课时按节任务命名的内容形态把握深浅。
 - 汇合渐隐：前置众多（≥4 条前置声明或前置节）的节点是汇合处——例题逐级添加新要素，不一次性堆满全部要素。
 - 对照要真对照：比较必须落在可核查的维度（适用范围、代价、失败形态），不写「X 更好」式的空对照。
-- 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。
+- 例题密度：一节课的正文配 3-6 个递进例题（由易到难，最后一题触及边界情形）；节型已拆分例题节时按节承担，不重复堆叠。{discipline_v2}
 
 【活动契约】
 - 3-10 个活动：至少 2 个客观题（single_choice / true_false / fill_in_blank / multi_choice / numeric / ordering / matching）+ 至少 1 个 AI 批改题（reflection 反思；open_question 开放综合题至多 1 道），反思+开放合计 ≤3。
@@ -1162,6 +1179,25 @@ mod tests {
         let mut plain = lesson_context();
         plain.clear_grounding();
         assert!(!lesson_user_text(&plain).contains("时长预算"), "传统路径无预算行");
+    }
+
+    /// k05：写作成色四条新纪律（R10 具象替身 / R11 受众语域 / R12 表述工具
+    /// 在场 / R13 断言-例子一致）进图管线系统提示词（默认开；off 臂由
+    /// nomifun-learning 的开关测试锁装配函数）。
+    #[test]
+    fn lesson_agent_system_prompt_carries_content_discipline_v2() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        for phrase in [
+            "具象替身先（R10）",
+            "受众语域（R11）",
+            "表述工具在场（R12）",
+            "断言-例子一致（R13）",
+        ] {
+            assert!(system.contains(phrase), "system prompt missing「{phrase}」");
+        }
+        // j07 基线条款仍在（回归护栏）。
+        assert!(system.contains("先推后练"));
+        assert!(system.contains("对照要真对照"));
     }
 
     /// k03：写作面的自报条款进系统提示词（规划后对照预算、超容才写、

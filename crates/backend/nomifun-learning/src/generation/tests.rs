@@ -1314,3 +1314,74 @@ fn qb_similarity_switch_values_are_strict() {
         assert!(!super::activities::is_qb_similarity_disabled_value(value));
     }
 }
+
+// ── k05：内容纪律 R10–R13（开关臂）──
+
+/// 四条新条款的开关生效：on 臂装配文本四条全在（传统写作面三条 body
+/// prompt + 规划面情境句）；off 臂逐条不在（= j07 后提示词）。
+#[test]
+#[serial_test::serial]
+fn content_discipline_v2_switch_adds_and_removes_the_four_clauses() {
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe {
+                    std::env::set_var(
+                        super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV,
+                        value,
+                    )
+                },
+                None => unsafe {
+                    std::env::remove_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV)
+                },
+            }
+        }
+    }
+    let previous =
+        std::env::var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV).ok();
+    let _restore = Restore(previous);
+
+    let phrases = [
+        "Concrete stand-in first (R10)",
+        "Audience register (R11)",
+        "Vocabulary stays inside the known set (R12)",
+        "Assertion-example consistency (R13)",
+    ];
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "on") };
+    let block = super::lesson::content_discipline_block();
+    for phrase in phrases {
+        assert!(block.contains(phrase), "on 臂缺「{phrase}」");
+    }
+    let body = super::lesson::section_body_standard();
+    for phrase in phrases {
+        assert!(body.contains(phrase), "写作面装配缺「{phrase}」");
+    }
+    assert!(
+        super::lesson::section_outline_system().contains("plan example scenarios from that audience"),
+        "规划面情境取向句在场"
+    );
+
+    unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "off") };
+    let legacy = super::lesson::content_discipline_block();
+    for phrase in phrases {
+        assert!(!legacy.contains(phrase), "off 臂仍出现「{phrase}」");
+    }
+    assert!(legacy.contains("Derive before drilling"), "j07 基线条款保留");
+    assert!(
+        !super::lesson::section_body_standard().contains("Concrete stand-in first (R10)"),
+        "off 臂写作面不装新条款"
+    );
+    assert!(
+        !super::lesson::section_outline_system().contains("plan example scenarios from that audience"),
+        "off 臂规划面不装情境句"
+    );
+
+    for value in ["off", "OFF", "0", "false", " False "] {
+        assert!(super::lesson::is_content_discipline_v2_disabled_value(value));
+    }
+    for value in ["on", "1", "true", "", "disable"] {
+        assert!(!super::lesson::is_content_discipline_v2_disabled_value(value));
+    }
+}

@@ -2313,6 +2313,29 @@ async fn run_content(
         println!(
             "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_calls={capacity_note_calls}"
         );
+        // k05 读数面（非门禁）：四条纪律短语在存档里的在场性（off 臂 0）。
+        let discipline_hits = [
+            "具象替身先（R10）",
+            "受众语域（R11）",
+            "表述工具在场（R12）",
+            "断言-例子一致（R13）",
+        ]
+        .iter()
+        .map(|phrase| {
+            (
+                *phrase,
+                calls.lines().filter(|line| line.contains(phrase)).count(),
+            )
+        })
+        .collect::<Vec<_>>();
+        println!(
+            "content_discipline read-out: {}",
+            discipline_hits
+                .iter()
+                .map(|(phrase, count)| format!("{phrase}={count}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
     }
     println!(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",

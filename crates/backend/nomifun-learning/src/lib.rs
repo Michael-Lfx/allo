@@ -35,6 +35,10 @@ pub use generation::{
 };
 pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
 pub use generation::{
+    CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
+    is_content_discipline_v2_disabled_value,
+};
+pub use generation::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
     run_kb_triage,
