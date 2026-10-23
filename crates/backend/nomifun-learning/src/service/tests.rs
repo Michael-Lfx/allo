@@ -174,6 +174,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 activities: Vec::new(),
                 sections: Vec::new(),
                 degraded_keys: Vec::new(),
+                capacity_note: None,
             })
         }
 

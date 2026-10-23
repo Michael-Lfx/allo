@@ -24,8 +24,10 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine, LessonDraftView,
-    LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp, LessonPatchReport,
+    EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext,
+    LessonContentAgentEngine, LessonDraftView, LessonExcerpt, LessonGenerationContext,
+    LessonInspectView, LessonOp, LessonPatchReport, est_budget_enabled,
+    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
 };
 
 pub use generation::{
