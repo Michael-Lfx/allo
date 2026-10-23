@@ -39,11 +39,24 @@ linker = "rust-lld.exe"
 # every rebuild (~3 CPU-seconds each, measured). Final binaries still land in
 # target/, so no tool or script path changes. On Windows/Linux it is just a
 # directory name; cargo older than the build-dir stabilization ignores the key
-# and falls back to target/. Stale artifacts in build.noindex are pruned by
-# the self-cleaning preflight (scripts/prune-build.mjs) that runs at the
-# start of every dev/build/test entry point. NOTE: first build after pulling
-# this rebuilds intermediates into the new location — run `cargo clean` once
-# to reclaim the orphaned old target/ contents.
+# and falls back to target/. NOTE: first build after pulling this rebuilds
+# intermediates into the new location — run `cargo clean` once to reclaim the
+# orphaned old target/ contents.
+#
+# Nothing prunes this directory automatically: `dev`, test and default build
+# entry points deliberately leave the cargo cache alone (a preflight there
+# would invalidate the incremental graph). Reclaiming space is an explicit,
+# manual step — `bun run build:inspect` → `bun run build:gc` → (only if a cold
+# rebuild is acceptable) `bun run build:clean`. `build:gc` enforces the size cap
+# through `cargo sweep --maxsize`, so `cargo-sweep` is a hard prerequisite:
+#
+#   cargo install cargo-sweep --locked
+#
+# Without it the cap is unenforceable and only old incremental units get
+# evicted — deps/ (the rlib/pdb/exe/rmeta generations that actually bloat this
+# directory) stays untouched. Measured drift on a machine without cargo-sweep:
+# build.noindex reached 183G before anyone noticed, versus ~26G after one
+# `build:gc` pass.
 [build]
 build-dir = "{workspace-root}/build.noindex"
 incremental = true

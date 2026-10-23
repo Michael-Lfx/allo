@@ -100,8 +100,8 @@ Vite 是否仍监听 5173、`cargo`/`rustc`/Tauri 是否残留，再查看 super
 | `bun run help --check` | 根脚本帮助文本。 |
 | `bun run build:ui` | 生产 Vite 构建。 |
 | `bun run build` | 当前 OS 的 Tauri 桌面包。 |
-| `bun run build:inspect` | 只读检查 `build.noindex`、`target` 和活跃开发会话。 |
-| `bun run build:gc` | 停止开发会话后，显式回收可证明不用的历史构建产物。 |
+| `bun run build:inspect` | 只读检查 `build.noindex`、`target`、活跃开发会话与 `cargo-sweep` 是否可用。 |
+| `bun run build:gc` | 停止开发会话后，显式回收可证明不用的历史构建产物；依赖 `cargo-sweep`。 |
 | `bun run build:clean` | 显式破坏性清理；会导致下一次 Rust 冷编译。 |
 
 提交前常用组合：
@@ -118,6 +118,37 @@ bun run help --check
 先运行 `bun run build:inspect`，确认没有活跃 dev session，再选择 `build:gc`；只有
 明确接受冷编译时才运行 `build:clean`。清理命令超时后不要再次并发启动，先监控原进程
 并核对 `git status --short --branch`。
+
+### 构建缓存体量
+
+`build:gc` 通过 `cargo sweep --maxsize` 执行体积上限，所以 `cargo-sweep` 是硬前提：
+
+```bash
+cargo install cargo-sweep --locked
+```
+
+未安装时上限无法执行——`--gc` 只能淘汰旧的 incremental 单元，而 `deps/`（真正的体积来源：
+rlib / pdb / exe / rmeta 的历史代次）完全不动。实测漂移：没有 `cargo-sweep` 的机器上
+`build.noindex` 长到 183G 才被发现，执行一次 `build:gc` 后降到 26G。
+
+量级参考（Windows，本仓库实测）：
+
+| 形态 | 体积 |
+| --- | --- |
+| 仅 dev 依赖（一次 `build:gc` 之后） | ~26G |
+| 全量 `cargo test` 一代产物 | 数十 G（289 个集成测试文件 → 372 个测试可执行目标；重的那批每个约 280MB exe + 290MB pdb） |
+| 累积多个历史代次（未清扫） | 150G+ |
+
+因此清理不是"跑一次就永久干净"：源码、feature、profile 或依赖一变，cargo 就生成一套新哈希
+产物，旧的一套继续保留。跑完重型测试后体积回升属预期，重复 `build:inspect` → `build:gc` 即可。
+
+若只是临时跑重 e2e 且不想让这批体积污染日常 dev 缓存，可给那次运行单独指定构建目录：
+
+```bash
+CARGO_TARGET_DIR=build.noindex-e2e cargo test -p <crate> --tests
+```
+
+用完删掉该目录——它不在现有 `.gitignore` 规则里，留在工作树会变成未跟踪目录。
 
 ## 后端 CLI
 

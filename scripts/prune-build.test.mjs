@@ -21,3 +21,22 @@ describe('build cache entry points', () => {
     expect(pruneSource).toContain('assertNoActiveDevSession(BUILD_DIR);');
   });
 });
+
+describe('build cache cap enforcement', () => {
+  test('the cap is enforced through cargo-sweep and says so when it is missing', () => {
+    // `build:gc` can only bound the cache with cargo-sweep; the incremental-only
+    // fallback never touches deps/, which is where a bloated cache lives.
+    expect(pruneSource).toContain('cargo install cargo-sweep --locked');
+    expect(pruneSource).toContain('cargo-sweep is not installed');
+    expect(pruneSource).toContain('deps/ (the bulk) is left untouched');
+    expect(pruneSource).toContain('cargo-sweep MISSING');
+  });
+
+  test('the sweep is allowed to finish instead of dying on a short timeout', () => {
+    // A 160G+ sweep needs minutes; a 60s timeout killed it mid-delete and the
+    // run still exited 0, leaving the cache half-trimmed and unexplained.
+    expect(pruneSource).toContain('CARGO_SWEEP_TIMEOUT_MS');
+    expect(pruneSource).not.toContain('timeout: 60_000');
+    expect(pruneSource).toContain('the sweep was interrupted');
+  });
+});
