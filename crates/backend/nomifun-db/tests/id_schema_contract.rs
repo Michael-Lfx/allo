@@ -137,11 +137,12 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // 073 终点锚退役:-learning_course_endpoints;080 XP 结算账本:
     // +learning_xp_events;081 挂载事实层:+learning_structure_mounts/
     // +learning_structure_findings;082 修补审计:+learning_structure_repairs;
-    // 083 quiz 回合:+learning_quiz_rounds。
+    // 083 quiz 回合:+learning_quiz_rounds;070 学习维护水位（四轮吸收 k02）:
+    // +learning_maintenance_state。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张；主分支 066/067 的
     // Skill 选择与固定三表：+conversation_skill_pins/+skill_invocation_overrides/
     // +skill_selection_event。
-    assert_eq!(tables.len(), 122);
+    assert_eq!(tables.len(), 123);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
