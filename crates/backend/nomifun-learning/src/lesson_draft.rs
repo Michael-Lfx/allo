@@ -1008,7 +1008,7 @@ fn audit_findings(
     }
 
     // ── Per-activity rules (shape), position-aware ──
-    let mut seen_prompts: HashSet<String> = HashSet::new();
+    let mut seen_prompts: Vec<String> = Vec::new();
     for (position, activity) in activities.iter().enumerate() {
         let at = format!("activity at position {position}");
         if activity.prompt.trim().is_empty() {
@@ -1019,13 +1019,34 @@ fn audit_findings(
         if let Err(error) = activity.validate_shape((3, 5), true) {
             findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
         }
-        // Duplicate prompts (normalized) are redundant retrieval work.
-        let normalized = activity.prompt.trim().to_lowercase();
-        if !normalized.is_empty() && !seen_prompts.insert(normalized) {
-            findings.push(warning(
-                "activity_prompt_duplicate",
-                format!("{at}: duplicates an earlier activity's prompt"),
-            ));
+        // 重复题面（k04 升级）：三口径相似度 ≥0.7 命中即点名命中对与
+        // 分值；开关 off 臂退回规范化精确相等（旧观察口径）。
+        let prompt = activity.prompt.trim().to_owned();
+        if !prompt.is_empty() {
+            let hit = if crate::generation::qb_similarity_enabled() {
+                crate::generation::similarity_hit(&prompt, &seen_prompts)
+                    .map(|(previous, score)| (previous.to_owned(), Some(score)))
+            } else {
+                let normalized = crate::generation::normalize_prompt(&prompt);
+                seen_prompts
+                    .iter()
+                    .find(|previous| crate::generation::normalize_prompt(previous) == normalized)
+                    .map(|previous| (previous.clone(), None))
+            };
+            if let Some((previous, score)) = hit {
+                let detail = match score {
+                    Some(score) => format!(
+                        "（相似度 {score:.2}，对照「{}」）",
+                        previous.chars().take(40).collect::<String>()
+                    ),
+                    None => String::new(),
+                };
+                findings.push(warning(
+                    "activity_prompt_duplicate",
+                    format!("{at}: duplicates an earlier activity's prompt{detail}"),
+                ));
+            }
+            seen_prompts.push(prompt);
         }
     }
 

@@ -1160,3 +1160,157 @@ fn blueprint_validation_keeps_the_sampled_path_contract_under_namespaces() {
     let error = validate_blueprint(&blueprint("别的库/docs/intro.md"), &samples).unwrap_err();
     assert!(error.contains("unsampled source path"), "{error}");
 }
+
+// ── k04：题面相似度防雷同机械门（trigram 三口径 0.7） ──
+
+fn activity_with_prompt(prompt: &str) -> ActivityPack {
+    ActivityPack {
+        kind: ActivityKind::TrueFalse,
+        prompt: prompt.into(),
+        options: Vec::new(),
+        answer: json!(true),
+        explanation: "e".into(),
+        distractors: Vec::new(),
+        tol: None,
+        section_key: None,
+        difficulty: None,
+        evidence: Some("「证据回引」".into()),
+    }
+}
+
+/// ①同题换数：归一化后不相等、trigram 命中——新门红（拒），旧门绿（放过）。
+#[test]
+fn stem_similarity_rejects_same_question_with_new_numbers_that_the_legacy_gate_missed() {
+    let existing = "小明有3个苹果，又买了5个，现在一共有多少个苹果？";
+    let regenerated = "小明有4个苹果，又买了6个，现在一共有多少个苹果？";
+    let score = crate::learning_graph::defnear::stem_similarity(existing, regenerated);
+    assert!(
+        score >= crate::learning_graph::defnear::STEM_SIMILARITY_THRESHOLD,
+        "换数题应命中三口径门，实际 {score:.3}"
+    );
+    let pool = vec![existing.to_owned()];
+    assert!(similarity_hit(regenerated, &pool).is_some(), "新门红：换数题被拦");
+    assert!(
+        legacy_duplicate_hit(regenerated, &pool).is_none(),
+        "旧门绿：换数题原本漏过（升级有效性的反证）"
+    );
+}
+
+/// ②异考法绿：同主题不同考法不误伤（相似度低于阈值）。
+#[test]
+fn stem_similarity_keeps_different_question_angles_apart() {
+    let pool = vec!["极限的定义是什么？".to_owned()];
+    assert!(
+        similarity_hit("用极限证明函数在一点连续需要哪些步骤？", &pool).is_none(),
+        "异考法不命中"
+    );
+    assert!(
+        crate::learning_graph::defnear::stem_similarity("极限的定义是什么？", "用极限证明函数在一点连续需要哪些步骤？")
+            < crate::learning_graph::defnear::STEM_SIMILARITY_THRESHOLD
+    );
+}
+
+/// ③池装饰剥除：`### `/`- ` 等 Markdown 装饰不稀释包含命中（归一化剥标点）。
+#[test]
+fn stem_similarity_strips_pool_decoration() {
+    let plain = "下列关于导数的说法正确的是？";
+    for decorated in [
+        "### 下列关于导数的说法正确的是？",
+        "- 下列关于导数的说法正确的是？",
+        "**下列关于导数的说法正确的是？**",
+    ] {
+        let score = crate::learning_graph::defnear::stem_similarity(plain, decorated);
+        assert!(score >= 0.999, "{decorated} → {score:.3}");
+    }
+}
+
+/// ④题级丢弃：批内 3 题撞 1 → 剔 1 留 2，留痕带命中对与分值；批内兄弟
+/// 也互查（第二道与第一道雷同同样被剔）。
+#[test]
+fn filter_novel_activities_drops_duplicates_item_by_item_with_trace() {
+    let batch = vec![
+        activity_with_prompt("小明有3个苹果，又买了5个，现在一共有多少个苹果？"),
+        activity_with_prompt("小明有4个苹果，又买了6个，现在一共有多少个苹果？"),
+        activity_with_prompt("简述导数的几何意义。"),
+    ];
+    let (kept, dropped) = filter_novel_activities(batch, &[]);
+    assert_eq!(kept.len(), 2, "撞题被剔，其余留下");
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].score, dropped[0].score.max(0.7));
+    assert!(dropped[0].prompt.contains("4个苹果"), "留痕指名被剔题面");
+    assert!(dropped[0].hit_prompt.contains("3个苹果"), "留痕指名命中题面");
+
+    // 既有池（跨批）+ 批内互查：池中已有题面同样执法。
+    let existing = vec!["简述导数的几何意义。".to_owned()];
+    let (kept, dropped) = filter_novel_activities(
+        vec![activity_with_prompt("简述导数的几何意义是什么？")],
+        &existing,
+    );
+    assert!(kept.is_empty());
+    assert_eq!(dropped.len(), 1);
+}
+
+/// ⑤off 臂（旧门）对同一批：换数题原样放过（旧行为臂可复现）。
+#[test]
+fn legacy_gate_lets_the_number_swapped_question_through() {
+    let pool = vec!["小明有3个苹果，又买了5个，现在一共有多少个苹果？".to_owned()];
+    assert!(
+        legacy_duplicate_hit("小明有4个苹果，又买了6个，现在一共有多少个苹果？", &pool)
+            .is_none()
+    );
+}
+
+/// ⑥地板破 → 整稿回灌带指名：三题地板、batch 全撞池 → 重试消息逐条点名
+/// 丢弃条目（ScriptedCompleter 第二答仍坏则如实报错，消息含指名）。
+#[tokio::test]
+async fn floor_break_feeds_the_dropped_items_back_by_name() {
+    let pool_question = "小明有3个苹果，又买了5个，现在一共有多少个苹果？";
+    let dup = activity_with_prompt("小明有4个苹果，又买了6个，现在一共有多少个苹果？");
+    let response = json!({
+        "estimated_minutes": 15,
+        "activities": [dup.clone(), dup.clone(), dup.clone()],
+    });
+    let completer = ScriptedCompleter::new(vec![
+        response.to_string(),
+        response.to_string(),
+    ]);
+    let error = super::activities::generate_lesson_activities(
+        &completer,
+        None,
+        &format!("Existing questions:\n1. [true_false] {pool_question}"),
+    )
+    .await
+    .expect_err("全撞 + 地板破 = 如实失败");
+    assert!(error.contains("相似度"), "回灌消息带命中分值：{error}");
+    assert!(
+        error.contains("expected at least 3"),
+        "地板破的原始理由在场：{error}"
+    );
+    assert!(
+        error.contains("4个苹果"),
+        "回灌消息逐条指名被剔题面：{error}"
+    );
+    assert_eq!(completer.calls().len(), 2, "恰好两次尝试（既有回路）");
+}
+
+/// ⑦平手确定性：同分取先入池者。
+#[test]
+fn similarity_hit_ties_take_the_first_pool_entry() {
+    let pool = vec![
+        "计算长方形的面积，已知长和宽。".to_owned(),
+        "计算长方形面积已知长和宽".to_owned(),
+    ];
+    let (hit, _) = similarity_hit("计算长方形的面积已知长和宽", &pool).expect("命中");
+    assert_eq!(hit, pool[0], "平手取先入池者");
+}
+
+/// 旧课时包兼容：开关判定只认 off/0/false（默认开）。
+#[test]
+fn qb_similarity_switch_values_are_strict() {
+    for value in ["off", "OFF", "0", "false", " False "] {
+        assert!(super::activities::is_qb_similarity_disabled_value(value));
+    }
+    for value in ["on", "1", "true", "", "disable"] {
+        assert!(!super::activities::is_qb_similarity_disabled_value(value));
+    }
+}

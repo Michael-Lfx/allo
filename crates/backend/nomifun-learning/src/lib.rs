@@ -33,6 +33,7 @@ pub use lesson_draft::{
 pub use generation::{
     Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
 };
+pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
 pub use generation::{
     KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
     KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,

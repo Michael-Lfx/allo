@@ -322,10 +322,19 @@ pub(crate) struct ActivitiesOutput {
     est: i64,
     #[serde(default)]
     activities: Vec<ActivityPack>,
+    /// 题级丢弃留痕（k04）：批内雷同题被剔除后逐条留痕；空 = 无丢弃。
+    /// 只进报告面与观察日志，不影响发布。
+    #[serde(skip)]
+    dropped: Vec<self::activities::DroppedActivity>,
 }
 
 
-pub(crate) use self::activities::{ExistingLessonQuestion, generate_lesson_activity};
+pub(crate) use self::activities::{
+    ExistingLessonQuestion, filter_novel_activities, generate_lesson_activity,
+    legacy_duplicate_hit, qb_similarity_enabled, similarity_hit,
+};
+pub use self::activities::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+pub(crate) use self::parser::normalize_prompt;
 pub(crate) use self::assemble::assemble_outline_pack;
 pub(crate) use self::blueprint::{
     build_blueprint_prompt, build_description_blueprint_prompt, generate_blueprint,
