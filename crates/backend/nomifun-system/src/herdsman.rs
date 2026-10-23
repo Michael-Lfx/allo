@@ -430,13 +430,18 @@ fn is_loopback_host(host: &str) -> bool {
 }
 
 fn parse_loopback_http(raw: &str) -> Option<reqwest::Url> {
-    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    let mut url = reqwest::Url::parse(raw.trim()).ok()?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return None;
     }
-    let host = url.host_str()?;
-    if !is_loopback_host(host) {
+    let host = url.host_str()?.to_ascii_lowercase();
+    if !is_loopback_host(&host) {
         return None;
+    }
+    // Herdsman publishes the listen address `0.0.0.0`. That host is not a
+    // dial target on Windows, so model polling and chat both use loopback.
+    if host == "0.0.0.0" {
+        url.set_host(Some("127.0.0.1")).ok()?;
     }
     Some(url)
 }
@@ -718,6 +723,22 @@ mod tests {
         );
         assert!(normalize_loopback_endpoint(Some("http://192.168.1.8:18080/v1")).is_none());
         assert!(normalize_loopback_endpoint(Some("file:///etc/passwd")).is_none());
+        assert_eq!(
+            normalize_loopback_endpoint(Some("http://0.0.0.0:8080/v1")).as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+    }
+
+    #[test]
+    fn model_poll_dials_loopback_when_herdsman_publishes_unspecified_host() {
+        assert_eq!(
+            models_url("http://0.0.0.0:8080").as_deref(),
+            Some("http://127.0.0.1:8080/api/v1/models")
+        );
+        assert_eq!(
+            models_url("http://127.0.0.1:8080").as_deref(),
+            Some("http://127.0.0.1:8080/api/v1/models")
+        );
     }
 
     #[test]
