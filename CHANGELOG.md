@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.8 - 2026-10-23
+
+- Local Herdsman connections use `127.0.0.1` when the daemon listens on `0.0.0.0`, so the client can actually dial it.
+
 ## v1.6.7 - 2026-10-23
 
 - Link a phone from profile: the desktop hosts a TLS pairing listener, and a QR code opens a LAN page the phone can reach. Wakes carry no message body.
