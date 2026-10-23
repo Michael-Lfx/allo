@@ -10,6 +10,7 @@ import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import CompanionAccessTokenPanel from '@/renderer/components/layout/Sider/CompanionAccessTokenPanel';
 import WebuiControlPanel from '@/renderer/components/layout/Sider/WebuiControlPanel';
 import LinkPairingPanel from '@/renderer/pages/openCapabilities/LinkPairingPanel';
+import BrowserAccessPanel from '@/renderer/pages/link/BrowserAccessPanel';
 import { WorkspaceFolderSelect } from '@/renderer/components/workspace';
 import { useWebuiServer } from '@/renderer/hooks/context/WebuiServerContext';
 import RegisterKnowledgeButton from '@/renderer/pages/terminal/RegisterKnowledgeButton';
@@ -297,11 +298,21 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
               icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
               title={t('settings.openCapabilities.linkTitle', { defaultValue: 'Flowy 手机版' })}
               description={t('settings.openCapabilities.linkDesc', {
-                defaultValue: '手机扫码后会在这台电脑上请求允许。允许之前，手机拿不到登录。对话正文不经过云端。',
+                defaultValue: '不安装 App 时用微信或其他扫码工具打开网页。安装手机版时扫配对码，允许之前手机拿不到登录。',
               })}
             />
-            <div className='mt-14px'>
-              <LinkPairingPanel />
+            <div className='mt-14px flex flex-col gap-16px'>
+              <BrowserAccessPanel />
+              <div className='border-t border-t-solid border-arco-2' />
+              <div>
+                <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 Flowy 手机版' })}</div>
+                <div className='mt-4px mb-14px text-13px text-t-secondary leading-relaxed'>
+                  {t('settings.link.appDesc', {
+                    defaultValue: '安装 App 后扫描配对码。允许之前，手机拿不到登录。对话正文不经过云端。',
+                  })}
+                </div>
+                <LinkPairingPanel />
+              </div>
             </div>
           </section>
         </Tabs.TabPane>

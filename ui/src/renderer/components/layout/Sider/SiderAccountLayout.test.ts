@@ -59,3 +59,19 @@ describe('desktop companion user-menu entry', () => {
     expect(footerSource.includes('onOpenCompanion')).toBe(true);
   });
 });
+
+describe('connect phone user-menu entry', () => {
+  test('opens /link from the avatar menu after the companion row', () => {
+    const menuSection = userMenuSource.slice(userMenuSource.indexOf('const menuContent'));
+    const companionIndex = menuSection.indexOf('nomi.siderTitle');
+    const linkIndex = menuSection.indexOf('common.userMenu.connectPhone');
+    const languageIndex = menuSection.indexOf('common.userMenu.language');
+
+    expect(linkIndex).toBeGreaterThan(companionIndex);
+    expect(languageIndex).toBeGreaterThan(linkIndex);
+    expect(userMenuSource.includes('onOpenLink')).toBe(true);
+    expect(siderSource.includes("navTo('/link')")).toBe(true);
+    expect(siderSource.includes('onOpenLink={handleLinkClick}')).toBe(true);
+    expect(footerSource.includes('onOpenLink={onOpenLink}')).toBe(true);
+  });
+});
