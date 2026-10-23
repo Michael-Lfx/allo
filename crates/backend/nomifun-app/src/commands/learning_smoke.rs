@@ -87,6 +87,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_repair(cli, db, provider, model).await,
+        LearningSmokeCommand::Maintenance {
+            db,
+            provider,
+            model,
+        } => run_maintenance(cli, db, provider, model).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -2464,28 +2469,10 @@ async fn run_mount(
 /// 机械判据：①**盘面复验**——回合后从磁盘重读结构快照，独立跑全量 gd.*
 /// validator（零放宽）②**级联标记**——结构已改（old≠new hash）时挂载必
 /// 须判 stale，否则 EXIT=3。读数面非门禁；无凭据临时库如实失败。
-async fn run_repair(
-    cli: &Cli,
-    db: Option<PathBuf>,
-    provider: Option<String>,
-    model: Option<String>,
-) -> Result<ExitCode> {
-    if provider.is_some() != model.is_some() {
-        anyhow::bail!("--provider and --model must be provided together");
-    }
-    let (wiring, _archiving, _live) =
-        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
-    let owner = wiring.owner.clone();
-    let service = wiring.service.clone();
-    let pool = wiring.pool.clone();
-
-    // 种子：全量合法 gd.* 盘面（t1 修法 1——对齐 structure_contract 金样形状：
-    // 6 主干 × 42 块、八标量键齐、gaps/quality 齐、门口 G1 地形对账）+ 一条
-    // findings 留痕（触发门槛）。旧的最小种子（2 块、零 frontmatter）从两条
-    // 路都是死路：非空 ops 应用后全量复核必拒、noop 盘面原样复验必拒——种
-    // 子合法化后 applied（修补 op 应用后仍合法）与 noop（盘面没动）都可行。
-    let course_id = nomifun_common::LearningCourseId::new().into_string();
-    let now = nomifun_common::now_ms();
+/// 合法结构种子信封（修补/维护两档共用；t1 修法 1 的 6 主干 × 42 块盘面，
+/// 逐项过 gd.* 全量 validator——回合无论 applied 还是 noop 都不会被条款门
+/// 误杀）。
+fn valid_structure_seed_envelope(goal: &str, now: i64) -> serde_json::Value {
     let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
     let stages = ["入门", "进阶", "高级"];
     let mut blocks = Vec::new();
@@ -2502,21 +2489,21 @@ async fn run_repair(
         }
     }
     let structure = serde_json::json!({
-        "goal": "修补冒烟目标",
+        "goal": goal,
         "goal_type": "capability",
         "proficiency_statement": "达成后能独立复述本结构的修补判据",
         "domain_type": "理论",
         "form_reference": "Flowy 学习结构模板 v1",
         "source_tier": "名录",
         "generated_by": "learning-smoke-seed",
-        "disclaimer": "冒烟种子为静态合法盘面，仅供修补回合验证",
+        "disclaimer": "冒烟种子为静态合法盘面，仅供回合验证",
         "domain": {
-            "core_definition": "修补冒烟的合法结构基线",
+            "core_definition": "冒烟课程的合法结构基线",
             "includes": ["结构判据", "修补操作", "留痕通道"],
             "excludes": ["真实课程内容", "学习者数据", "生产库"],
             "prerequisite_doors": ["G1"],
             "audience": "冒烟操作者",
-            "scenarios": ["修补回合验证", "盘面复验"],
+            "scenarios": ["回合验证", "盘面复验"],
             "granularity": "每块一个可独立教学的主题",
         },
         "spines": spine_names.iter().map(|spine| serde_json::json!({
@@ -2544,12 +2531,12 @@ async fn run_repair(
             { "check": "盲区已标注", "status": "met" },
         ],
     });
-    let envelope = serde_json::json!({
+    serde_json::json!({
         "version": 1,
         "generated_at": now,
         "structure": structure,
         "terrain": {
-            "goal": "修补冒烟目标",
+            "goal": goal,
             "learner_basis_assumed": "已具备结构判据的基线认识",
             "generated_by": "learning-smoke-seed",
             "disclaimer": "冒烟种子地形，仅供门口对账",
@@ -2557,7 +2544,32 @@ async fn run_repair(
                 { "id": "G1", "criterion": "能读懂结构快照的块与边", "kind": "hard" },
             ],
         },
-    });
+    })
+}
+
+async fn run_repair(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    let (wiring, _archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), false).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+
+    // 种子：全量合法 gd.* 盘面（t1 修法 1——对齐 structure_contract 金样形状：
+    // 6 主干 × 42 块、八标量键齐、gaps/quality 齐、门口 G1 地形对账）+ 一条
+    // findings 留痕（触发门槛）。旧的最小种子（2 块、零 frontmatter）从两条
+    // 路都是死路：非空 ops 应用后全量复核必拒、noop 盘面原样复验必拒——种
+    // 子合法化后 applied（修补 op 应用后仍合法）与 noop（盘面没动）都可行。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let now = nomifun_common::now_ms();
+    let envelope = valid_structure_seed_envelope("修补冒烟目标", now);
     sqlx::query(
         "INSERT INTO learning_courses \
          (course_id, title, description, domain, version, course_kind, learning_goal, \
@@ -2645,5 +2657,250 @@ async fn run_repair(
     }
     let _ = new_hash;
     println!("OK  course={course_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke maintenance`（k02）：自动维护回合冒烟。种子 = 一门合法盘面
+/// 图课程（两条 findings 留痕、无挂载行）+ 一门归档课（enabled = 0，同带留痕）。
+/// 机械判据：
+/// ① 纯读 needs 判定正确（未消费 2、待挂集非空、stale）；
+/// ② 回合 1 消费留痕并推进水位（applied/noop —— 依赖凭据，无凭据如实非零）；
+/// ③ 回合 2 零工作：idle = 1、零课程行动、观测存档零新增 LLM 行；
+/// ④ 归档课不在扫描面（scanned 只含启用课，归档课 eligible = false）；
+/// ⑤ 设置两键读侧生效（写入后 maintenance_settings 反射）。
+async fn run_maintenance(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 挂载回合可能被 tick 触发：需要 completer 链（archiving 供零 LLM 判据）。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子 A：启用课（合法盘面 + 2 条留痕 + 无挂载行）。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let envelope = valid_structure_seed_envelope("维护冒烟目标", now);
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '维护冒烟', '', 'general', 1, 'learning_graph', '维护冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '维护节点', '', 'p', 0, 15)",
+    )
+    .bind(nomifun_common::LearningLessonId::new().into_string())
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+    for (index, issue) in ["留痕一：缺一条对照边", "留痕二：块粒度偏粗"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO learning_structure_findings \
+             (ts, course_id, source, node, field, issue, advice) \
+             VALUES (?, ?, 'concept-review', '', '', ?, '按建议修补')",
+        )
+        .bind(now + index as i64)
+        .bind(&course_id)
+        .bind(*issue)
+        .execute(&pool)
+        .await?;
+    }
+
+    // 种子 B：归档课（enabled = 0）——同带留痕，必须不在扫描面。
+    let archived_id = nomifun_common::LearningCourseId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, enabled, created_at, updated_at) \
+         VALUES (?, '归档维护课', '', 'general', 1, 'learning_graph', '维护冒烟目标', '', ?, 0, ?, ?)",
+    )
+    .bind(&archived_id)
+    .bind(serde_json::to_string(&envelope)?.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_structure_findings \
+         (ts, course_id, source, node, field, issue, advice) \
+         VALUES (?, ?, 'concept-review', '', '', '归档课留痕', '不应被扫')",
+    )
+    .bind(now)
+    .bind(&archived_id)
+    .execute(&pool)
+    .await?;
+
+    // ⑤ 设置两键读侧生效。
+    for (key, value) in [
+        ("learning.maintenanceAutoEnabled", "true"),
+        ("learning.maintenanceIntervalMinutes", "45"),
+    ] {
+        sqlx::query(
+            "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(now)
+        .execute(&pool)
+        .await?;
+    }
+    let settings = service.maintenance_settings().await;
+    println!(
+        "settings read-out: enabled={} interval_minutes={}",
+        settings.enabled, settings.interval_minutes
+    );
+    anyhow::ensure!(settings.enabled, "maintenanceAutoEnabled must read back true");
+    anyhow::ensure!(
+        settings.interval_minutes == 45,
+        "maintenanceIntervalMinutes must read back 45, got {}",
+        settings.interval_minutes
+    );
+
+    // ① 纯读 needs 判定（零 LLM）。
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let archived = nomifun_common::LearningCourseId::parse(&archived_id)?;
+    let needs = service.maintenance_needs(&course).await?;
+    println!(
+        "needs read-out: eligible={} unconsumed_findings={} pending_mounts={} mounts_stale={} needs_repair={} needs_mount={}",
+        needs.eligible,
+        needs.unconsumed_findings,
+        needs.pending_mounts,
+        needs.mounts_stale,
+        needs.needs_repair,
+        needs.needs_mount
+    );
+    anyhow::ensure!(needs.eligible, "seeded course must be eligible");
+    anyhow::ensure!(
+        needs.unconsumed_findings == 2,
+        "expected 2 unconsumed findings, got {}",
+        needs.unconsumed_findings
+    );
+    anyhow::ensure!(needs.mounts_stale, "no mount row = stale");
+    anyhow::ensure!(needs.needs_repair && needs.needs_mount);
+    let archived_needs = service.maintenance_needs(&archived).await?;
+    anyhow::ensure!(!archived_needs.eligible, "archived course must not be eligible");
+
+    // ② 回合 1（真管线；无凭据如实非零——mount/repair 档先例）。
+    println!("[1/2] maintenance tick (real pipeline)…");
+    let first = match service.run_maintenance_tick(&owner, None).await {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("maintenance tick FAILED: {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "tick read-out: scanned={} idle={} worked={}",
+        first.scanned,
+        first.idle,
+        first.courses.len()
+    );
+    anyhow::ensure!(
+        first.scanned == 1,
+        "archived course must not be scanned (scanned={})",
+        first.scanned
+    );
+    anyhow::ensure!(
+        first.courses.len() == 1,
+        "expected one course to be worked, got {}",
+        first.courses.len()
+    );
+    let outcome = &first.courses[0];
+    println!(
+        "course read-out: repair={:?} mount={:?} skipped_busy={} error={:?}",
+        outcome.repair, outcome.mount, outcome.skipped_busy, outcome.error
+    );
+    if let Some(error) = outcome.error.as_deref() {
+        eprintln!("maintenance round FAILED for course: {error}");
+        return Ok(ExitCode::from(2));
+    }
+    anyhow::ensure!(
+        outcome.error.is_none(),
+        "first tick must not record an error"
+    );
+    anyhow::ensure!(
+        outcome.repair.as_deref() == Some("applied") || outcome.repair.as_deref() == Some("noop"),
+        "repair must run to applied|noop, got {:?}",
+        outcome.repair
+    );
+    let watermark: Option<i64> = sqlx::query_scalar(
+        "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_optional(&pool)
+    .await?;
+    anyhow::ensure!(
+        watermark == Some(2),
+        "watermark must advance to the max consumed finding id (got {watermark:?})"
+    );
+
+    // ③ 回合 2：零工作零 LLM 零写（观测存档行数不变 = 零 LLM）。
+    println!("[2/2] second tick (expect idle, zero LLM)…");
+    let archive_lines = |archiving: &Option<Arc<ArchivingCompleter>>| {
+        archiving
+            .as_ref()
+            .and_then(|completer| {
+                std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).ok()
+            })
+            .map(|content| content.lines().count())
+            .unwrap_or(0)
+    };
+    let before = archive_lines(&archiving);
+    let second = service.run_maintenance_tick(&owner, None).await?;
+    let after = archive_lines(&archiving);
+    println!(
+        "tick2 read-out: scanned={} idle={} worked={} llm_calls_before={before} llm_calls_after={after}",
+        second.scanned,
+        second.idle,
+        second.courses.len()
+    );
+    anyhow::ensure!(
+        second.courses.is_empty(),
+        "second tick must be zero-work (got {} courses)",
+        second.courses.len()
+    );
+    anyhow::ensure!(second.idle >= 1, "second tick must count the course as idle");
+    anyhow::ensure!(
+        after == before,
+        "second tick must issue zero LLM calls ({before} -> {after})"
+    );
+    let watermark_after: Option<i64> = sqlx::query_scalar(
+        "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_optional(&pool)
+    .await?;
+    anyhow::ensure!(
+        watermark_after == watermark,
+        "second tick must not write the watermark"
+    );
+
+    println!("OK  course={course_id} archived={archived_id}");
     Ok(ExitCode::SUCCESS)
 }

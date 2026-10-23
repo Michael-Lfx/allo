@@ -232,6 +232,26 @@ fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), AppError> 
             )),
         };
     }
+    // k02 自动维护：开关是布尔、间隔 30..=10080 分钟（learnhub 同界；越界
+    // 写入拒绝，读侧回退缺省 360——单源注记在 nomifun-learning
+    // `DEFAULT_MAINTENANCE_INTERVAL_MINUTES`）。
+    if key == "learning.maintenanceAutoEnabled" {
+        return match value.as_bool() {
+            Some(_) => Ok(()),
+            None => Err(AppError::BadRequest(
+                "learning.maintenanceAutoEnabled must be a boolean".into(),
+            )),
+        };
+    }
+    if key == "learning.maintenanceIntervalMinutes" {
+        return match value.as_i64() {
+            Some(minutes) if (30..=10080).contains(&minutes) => Ok(()),
+            _ => Err(AppError::BadRequest(
+                "learning.maintenanceIntervalMinutes must be an integer between 30 and 10080"
+                    .into(),
+            )),
+        };
+    }
     Ok(())
 }
 
@@ -290,6 +310,23 @@ mod tests {
         assert!(validate_value("learning.dailyXpGoal", &json!("40")).is_err());
         // 其它键不设值域门。
         assert!(validate_value("theme", &json!(0)).is_ok());
+    }
+
+    /// k02：自动维护两键——开关必须是布尔、间隔 30..=10080（越界拒绝）；
+    /// 读侧回退缺省在 nomifun-learning 的单测里锁。
+    #[test]
+    fn validate_value_gates_maintenance_switch_and_interval() {
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(true)).is_ok());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(false)).is_ok());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!("true")).is_err());
+        assert!(validate_value("learning.maintenanceAutoEnabled", &json!(1)).is_err());
+
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(30)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(360)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(10080)).is_ok());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(29)).is_err());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(10081)).is_err());
+        assert!(validate_value("learning.maintenanceIntervalMinutes", &json!("360")).is_err());
     }
 
     #[tokio::test]

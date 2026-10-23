@@ -89,6 +89,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_structure_findings",
     "learning_structure_mounts",
     "learning_structure_repairs",
+    "learning_maintenance_state",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -937,6 +938,9 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 修补审计（migration 068 的修补段）：结构编辑的历史档案——课程删除后审计行
     // 保留（KeepHistory，出处不追删）。
     historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
+    // 维护水位（migration 070）：findings 消费记账是派生面——随课删
+    // （Cascade；留痕本身仍 KeepHistory 保留）。
+    historical_text_ref!("learning_maintenance_state", "course_id" => "learning_courses", "course_id", false, "idx_learning_maintenance_state_course", Cascade),
     // quiz 回合（migration 068 的 quiz 段）：学习者行为历史——用户删除随账（Cascade）；
     // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
     // 行为历史不追删）。

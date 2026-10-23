@@ -2732,6 +2732,92 @@ pub fn warm_default_marketplaces(state: &AppServerRouterState) {
 static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 学习自动维护调度器：每进程一枚（k02）。
+static LEARNING_MAINTENANCE_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 学习维护调度器的唤醒步长（不是间隔本身——间隔每醒重读设置，改设置
+/// 无需重启；learnhub maintenance.rs sleep-then-work 同构）。
+const LEARNING_MAINTENANCE_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 学习域自动维护回合调度（k02，learnhub ADR-0028 / maintenance.rs）：
+/// 定时醒来 → 重读设置 → 到期则跑**一轮**维护（先修补后挂载、纯读判定、
+/// 零工作不提交）。单轮在途由「本任务 await 回合」保证；回合内部逐课在
+/// 生成槽上串行（busy = 跳过该课含挂载）。
+///
+/// 两枚开关都生效：`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册调度器；
+/// `learning.maintenanceAutoEnabled=false` 运行期关（设置页/配置写入即生效）。
+pub fn start_learning_auto_maintenance(
+    service: std::sync::Arc<nomifun_learning::LearningService>,
+    pool: nomifun_db::sqlx::SqlitePool,
+) {
+    use std::sync::atomic::Ordering;
+    let disabled = std::env::var("NOMI_LEARNING_AUTO_MAINTENANCE")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "false"
+            )
+        })
+        .unwrap_or(false);
+    if disabled {
+        return;
+    }
+    if LEARNING_MAINTENANCE_STARTED.swap(true, Ordering::SeqCst) {
+        return; // already scheduling
+    }
+    tokio::spawn(async move {
+        // 首轮不立即跑：启动流量留给预热，先等一个缺省间隔。
+        let mut last_run = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(LEARNING_MAINTENANCE_TICK).await;
+            // 每醒重读设置：开关/间隔改动下个周期生效。
+            let settings = service.maintenance_settings().await;
+            if !settings.enabled {
+                last_run = std::time::Instant::now();
+                continue;
+            }
+            let due = std::time::Duration::from_secs(settings.interval_minutes as u64 * 60);
+            if last_run.elapsed() < due {
+                continue;
+            }
+            // 单轮在途：本任务 await 回合，不会重入。
+            let owner = match nomifun_db::installation_owner_id(&pool).await {
+                Ok(owner) => owner,
+                Err(error) => {
+                    tracing::warn!(%error, "learning maintenance: owner resolution failed; tick skipped");
+                    last_run = std::time::Instant::now();
+                    continue;
+                }
+            };
+            let user_id = match nomifun_common::UserId::parse(&owner) {
+                Ok(user_id) => user_id,
+                Err(error) => {
+                    tracing::warn!(%error, "learning maintenance: owner id invalid; tick skipped");
+                    last_run = std::time::Instant::now();
+                    continue;
+                }
+            };
+            match service.run_maintenance_tick(&user_id, None).await {
+                Ok(report) => {
+                    if !report.courses.is_empty() {
+                        tracing::info!(
+                            scanned = report.scanned,
+                            idle = report.idle,
+                            worked = report.courses.len(),
+                            "learning auto maintenance tick"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "learning auto maintenance tick failed");
+                }
+            }
+            last_run = std::time::Instant::now();
+        }
+    });
+}
+
 /// How often the scheduler wakes up to ask whether a sweep is due (doc `37`
 /// §3.3).
 ///

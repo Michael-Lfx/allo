@@ -466,6 +466,21 @@ pub enum LearningSmokeCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// 自动维护回合冒烟（k02）：种一门图课程 + 两条 findings + 无挂载行，
+    /// 跑两轮 `run_maintenance_tick`——判据 = 纯读 needs 读数、回合 1 消费
+    /// 留痕并推进水位、回合 2 零工作零 LLM（skipped）、归档课不在扫描面。
+    /// 无凭据时回合 1 如实非零（mount/repair 档先例）。
+    Maintenance {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 结构生成冒烟：立一门最小学习图课程，跑双产物管线（gd.* 契约门 +
     /// 门口对账 + structure_json 落列），机械判据自检（失败非零退出）。
     Structure {

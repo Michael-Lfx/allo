@@ -16,6 +16,9 @@ const DEFAULT_DESIRED_RETENTION = 0.9;
 const DEFAULT_REVIEW_SESSION_LIMIT = 30;
 const DEFAULT_DIAGNOSTIC_LIMIT = 10;
 const DEFAULT_DAILY_XP_GOAL = 40;
+/** k02：自动维护缺省值（后端单源 `DEFAULT_MAINTENANCE_*` 同值）。 */
+const DEFAULT_MAINTENANCE_ENABLED = true;
+const DEFAULT_MAINTENANCE_INTERVAL_MINUTES = 360;
 
 const LearningSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -24,6 +27,12 @@ const LearningSettings: React.FC = () => {
   const [reviewSessionLimit, setReviewSessionLimit] = useConfig('learning.reviewSessionLimit');
   const [diagnosticLimit, setDiagnosticLimit] = useConfig('learning.diagnosticLimit');
   const [dailyXpGoal, setDailyXpGoal] = useConfig('learning.dailyXpGoal');
+  const [maintenanceAutoEnabled, setMaintenanceAutoEnabled] = useConfig(
+    'learning.maintenanceAutoEnabled'
+  );
+  const [maintenanceIntervalMinutes, setMaintenanceIntervalMinutes] = useConfig(
+    'learning.maintenanceIntervalMinutes'
+  );
   // 内容宽度偏好与学习页头部按钮共用同一条读写路径（同一个键、同一套归一化），
   // 避免两个入口写出两种存档形态。
   const { wide: wideContent, setWide: setWideContent } = useWideContentLayout();
@@ -148,6 +157,31 @@ const LearningSettings: React.FC = () => {
                 max={50}
                 value={diagnosticLimit ?? DEFAULT_DIAGNOSTIC_LIMIT}
                 onChange={(value) => value != null && void setDiagnosticLimit(Number(value))}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.maintenanceAutoEnabled')}
+              description={t('learning.settings.maintenanceAutoEnabledHint')}
+              controlLayout='field'
+            >
+              <Switch
+                checked={maintenanceAutoEnabled ?? DEFAULT_MAINTENANCE_ENABLED}
+                onChange={(value) => void setMaintenanceAutoEnabled(value)}
+              />
+            </PreferenceRow>
+            <PreferenceRow
+              label={t('learning.settings.maintenanceIntervalMinutes')}
+              description={t('learning.settings.maintenanceIntervalMinutesHint')}
+              controlLayout='field'
+            >
+              <InputNumber
+                className='w-full sm:w-180px'
+                min={30}
+                max={10080}
+                value={maintenanceIntervalMinutes ?? DEFAULT_MAINTENANCE_INTERVAL_MINUTES}
+                onChange={(value) =>
+                  value != null && void setMaintenanceIntervalMinutes(Number(value))
+                }
               />
             </PreferenceRow>
         </SettingsList>

@@ -9045,3 +9045,354 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
             assert_eq!(count, 0, "{table} 零残留");
         }
     }
+
+    // ── k02：findings 消费水位 + 自动维护回合 ──
+
+    /// 种子：一门图课程（结构一块）+ 一个模块 + 一个节点；可选 findings 行。
+    /// 返回 (service, user_id, course_id)。
+    async fn seed_maintenance_course(
+        findings: usize,
+        enabled: i64,
+        completer: Arc<dyn LearningCompleter>,
+    ) -> (LearningService, UserId, LearningCourseId) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id.clone()).unwrap();
+        let service = LearningService::new(database.pool().clone());
+        service.set_generation_dependencies(
+            Arc::new(KnowledgeService::new(
+                Arc::new(nomifun_db::SqliteKnowledgeRepository::new(
+                    database.pool().clone(),
+                )),
+                std::env::temp_dir().join("maintenance-test-kb").as_path(),
+                nomifun_knowledge::KnowledgeEventEmitter::new(
+                    Arc::new(NoopBroadcaster),
+                    Arc::from(owner_id.as_str()),
+                ),
+            )),
+            completer,
+        );
+        let now = now_ms();
+        let course_id = LearningCourseId::new().into_string();
+        let module_id = LearningModuleId::new().into_string();
+        let envelope = json!({
+            "version": 1,
+            "generated_at": now,
+            "structure": {
+                "goal": "g",
+                "spines": [{ "name": "主干一", "definition": "d", "key_points": [], "instance": "i" }],
+                "blocks": [
+                    { "name": "块一", "slug": "block-01", "spine": "主干一", "stage": "入门", "note": "n" }
+                ],
+                "edges": []
+            },
+            "terrain": { "doors": [] },
+        });
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, course_kind, learning_goal, \
+              learning_scope, structure_json, enabled, created_at, updated_at) \
+             VALUES (?, '维护课程', '', 'general', 1, 'learning_graph', 'g', '', ?, ?, ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(serde_json::to_string(&envelope).unwrap())
+        .bind(enabled)
+        .bind(now)
+        .bind(now)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+             VALUES (?, ?, '学习图', '', 0)",
+        )
+        .bind(&module_id)
+        .bind(&course_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+             VALUES (?, ?, '节点一', '', 'p', 0, 10)",
+        )
+        .bind(LearningLessonId::new().into_string())
+        .bind(&module_id)
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        for index in 0..findings {
+            sqlx::query(
+                "INSERT INTO learning_structure_findings \
+                 (ts, course_id, source, node, field, issue, advice) \
+                 VALUES (?, ?, 'concept-review', '块一', 'definition', ?, '建议')",
+            )
+            .bind(now_ms() + index as i64)
+            .bind(&course_id)
+            .bind(format!("留痕 {index}"))
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        (service, user_id, course)
+    }
+
+    async fn maintenance_watermark(service: &LearningService, course: &LearningCourseId) -> Option<i64> {
+        sqlx::query_scalar(
+            "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+        )
+        .bind(course.as_str())
+        .fetch_optional(service.pool_for_tests())
+        .await
+        .unwrap()
+    }
+
+    /// 水位推进（红绿）：applied/noop 回合推进到本回合读到的最大 id；二回合
+    /// 输入为空 → skipped 零 LLM 零写；归档课不在扫描面。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn maintenance_watermark_advances_on_success_and_second_round_skips() {
+        let completer = ScriptedCompleter::new(r#"{"ops": []}"#, false);
+        let calls = completer.clone();
+        let (service, user_id, course) =
+            seed_maintenance_course(2, 1, completer).await;
+
+        let first = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(first.status, "noop", "空 ops = noop（已消费留痕）");
+        assert_eq!(calls.calls.load(AtomicOrdering::SeqCst), 1);
+        let watermark = maintenance_watermark(&service, &course).await.expect("水位落行");
+        assert_eq!(watermark, 2, "水位 = 本回合读到的最大 findings id");
+
+        let second = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(second.status, "skipped");
+        assert_eq!(
+            calls.calls.load(AtomicOrdering::SeqCst),
+            1,
+            "二回合零 LLM：留痕已消费"
+        );
+
+        // needs 判定：未消费 = 0；无挂载行 → stale（needs_repair 由 stale 点亮）。
+        let needs = service.maintenance_needs(&course).await.unwrap();
+        assert!(needs.eligible);
+        assert_eq!(needs.unconsumed_findings, 0);
+        assert!(needs.mounts_stale);
+        assert_eq!(needs.pending_mounts, 1);
+
+        // 归档课不在扫描面：enabled = 0 的课程不进 tick 扫描。
+        let (archived_service, archived_user, archived_course) =
+            seed_maintenance_course(1, 0, ScriptedCompleter::new(r#"{"ops": []}"#, false)).await;
+        let report = archived_service
+            .run_maintenance_tick(&archived_user, None)
+            .await
+            .unwrap();
+        assert_eq!(report.scanned, 0, "归档课不扫");
+        assert!(report.courses.is_empty());
+        let needs = archived_service
+            .maintenance_needs(&archived_course)
+            .await
+            .unwrap();
+        assert!(!needs.eligible);
+    }
+
+    /// 失败回合不推水位：completer 报错 → 留痕仍是下次输入。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn failed_repair_round_does_not_advance_the_watermark() {
+        let (service, user_id, course) =
+            seed_maintenance_course(2, 1, ScriptedCompleter::new("{}", true)).await;
+        let error = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("生成通道不可用"), "{error}");
+        assert_eq!(maintenance_watermark(&service, &course).await, None);
+        let needs = service.maintenance_needs(&course).await.unwrap();
+        assert_eq!(needs.unconsumed_findings, 2, "失败回合的留痕仍是输入");
+        assert!(needs.needs_repair);
+    }
+
+    /// 水位越界钳制：手工写超 MAX(id) → 读侧钳到 max（不炸、不误消费）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn out_of_range_watermark_is_clamped_to_max_finding_id() {
+        let completer = ScriptedCompleter::new(r#"{"ops": []}"#, false);
+        let calls = completer.clone();
+        let (service, user_id, course) =
+            seed_maintenance_course(1, 1, completer).await;
+        sqlx::query(
+            "INSERT INTO learning_maintenance_state (course_id, findings_watermark, updated_at) \
+             VALUES (?, 999999, ?)",
+        )
+        .bind(course.as_str())
+        .bind(now_ms())
+        .execute(service.pool_for_tests())
+        .await
+        .unwrap();
+        // 钳制后 = MAX(id) = 1 → 无未消费留痕 → skipped 零 LLM。
+        let needs = service.maintenance_needs(&course).await.unwrap();
+        assert_eq!(needs.unconsumed_findings, 0);
+        let summary = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "skipped");
+        assert_eq!(calls.calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    /// off 臂：`NOMI_LEARNING_FINDINGS_WATERMARK=off` → 读全量、不推水位
+    /// （二回合重读同一批留痕）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn watermark_switch_off_reads_everything_and_never_advances() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe {
+                        std::env::set_var(
+                            super::learning_graph::FINDINGS_WATERMARK_SWITCH_ENV,
+                            value,
+                        )
+                    },
+                    None => unsafe {
+                        std::env::remove_var(
+                            super::learning_graph::FINDINGS_WATERMARK_SWITCH_ENV,
+                        )
+                    },
+                }
+            }
+        }
+        let previous =
+            std::env::var(super::learning_graph::FINDINGS_WATERMARK_SWITCH_ENV).ok();
+        unsafe {
+            std::env::set_var(
+                super::learning_graph::FINDINGS_WATERMARK_SWITCH_ENV,
+                "off",
+            );
+        }
+        let _restore = Restore(previous);
+
+        let completer = ScriptedCompleter::new(r#"{"ops": []}"#, false);
+        let calls = completer.clone();
+        let (service, user_id, course) = seed_maintenance_course(1, 1, completer).await;
+        let first = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(first.status, "noop");
+        assert_eq!(
+            maintenance_watermark(&service, &course).await,
+            None,
+            "off 臂不推水位"
+        );
+        let second = service
+            .run_structure_repair(&user_id, &course, None)
+            .await
+            .unwrap();
+        assert_eq!(second.status, "noop", "off 臂二回合仍全量重读");
+        assert_eq!(calls.calls.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    /// 维护回合端到端：先修补（noop）后挂载（mounted）、水位推进；二回合
+    /// 零工作（挂载就绪、留痕已消费）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn maintenance_tick_runs_repair_then_mount_and_then_idles() {
+        let mount_artifact = json!({
+            "mounts": [
+                { "node": "节点一", "blocks": ["block-01"], "reason": "同主题" }
+            ],
+            "note": "n"
+        })
+        .to_string();
+        let completer =
+            SequencedCompleter::new(vec![r#"{"ops": []}"#.to_owned(), mount_artifact]);
+        let calls = completer.clone();
+        let (service, user_id, course) = seed_maintenance_course(1, 1, completer).await;
+
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.scanned, 1);
+        assert_eq!(report.courses.len(), 1);
+        let outcome = &report.courses[0];
+        assert_eq!(outcome.course_id, course.as_str());
+        assert_eq!(outcome.repair.as_deref(), Some("noop"));
+        assert_eq!(outcome.mount.as_deref(), Some("mounted"));
+        assert!(outcome.error.is_none());
+        assert_eq!(calls.call_count(), 2, "修补 + 挂载各一次 LLM");
+        assert_eq!(
+            maintenance_watermark(&service, &course).await,
+            Some(1),
+            "成功回合推进水位"
+        );
+
+        // 二回合：留痕已消费、挂载就绪 → 零工作零 LLM。
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.scanned, 1);
+        assert_eq!(report.idle, 1);
+        assert!(report.courses.is_empty(), "零工作不提交");
+        assert_eq!(calls.call_count(), 2, "二回合零 LLM");
+    }
+
+    /// 设置读侧：缺省开/360；写入生效；越界/坏值回退缺省（写侧拒绝在
+    /// nomifun-system 的单测里锁）。
+    #[tokio::test]
+    async fn maintenance_settings_default_and_overrides() {
+        let (service, _user, _course) =
+            seed_maintenance_course(0, 1, ScriptedCompleter::new("{}", false)).await;
+        let settings = service.maintenance_settings().await;
+        assert_eq!(
+            (settings.enabled, settings.interval_minutes),
+            (
+                super::learning_graph::DEFAULT_MAINTENANCE_ENABLED,
+                super::learning_graph::DEFAULT_MAINTENANCE_INTERVAL_MINUTES
+            )
+        );
+
+        for (key, value) in [
+            ("learning.maintenanceAutoEnabled", "false"),
+            ("learning.maintenanceIntervalMinutes", "60"),
+        ] {
+            sqlx::query(
+                "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(key)
+            .bind(value)
+            .bind(now_ms())
+            .execute(service.pool_for_tests())
+            .await
+            .unwrap();
+        }
+        let settings = service.maintenance_settings().await;
+        assert!(!settings.enabled);
+        assert_eq!(settings.interval_minutes, 60);
+
+        // 越界 → 回退缺省 360；坏布尔 → 回退缺省开。
+        for (key, value) in [
+            ("learning.maintenanceAutoEnabled", "17"),
+            ("learning.maintenanceIntervalMinutes", "5"),
+        ] {
+            sqlx::query("UPDATE client_preferences SET value = ? WHERE key = ?")
+                .bind(value)
+                .bind(key)
+                .execute(service.pool_for_tests())
+                .await
+                .unwrap();
+        }
+        let settings = service.maintenance_settings().await;
+        assert!(settings.enabled);
+        assert_eq!(
+            settings.interval_minutes,
+            super::learning_graph::DEFAULT_MAINTENANCE_INTERVAL_MINUTES
+        );
+    }
+

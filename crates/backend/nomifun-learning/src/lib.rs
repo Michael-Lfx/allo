@@ -77,6 +77,14 @@ pub use models::{
     VISUAL_OPTIONS, XpCalendar, XpCalendarDay, XpReading,
 };
 pub use models::{
+    MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
+};
+pub use service::{
+    DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
+    FINDINGS_WATERMARK_SWITCH_ENV, MAINTENANCE_INTERVAL_MINUTES,
+    is_findings_watermark_disabled_value,
+};
+pub use models::{
     PRACTICE_BODY_TARGET_CHARS, prose_budget_rules, section_range_rules, visual_distribution,
     visual_menu_text,
 };

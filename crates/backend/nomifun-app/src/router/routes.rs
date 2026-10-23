@@ -1251,6 +1251,12 @@ pub fn create_router_with_all_state(
         // auto_update_interval_hours` is declared, and even then only official
         // sources are polled. Same runtime guard as the warm-up above.
         nomifun_app_server::start_marketplace_auto_update(&app_server_state);
+        // k02: 学习域自动维护回合（findings 水位消费 + 先修补后挂载）。默认
+        // 开、间隔 360 分钟；`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册。
+        nomifun_app_server::start_learning_auto_maintenance(
+            services.learning_service.clone(),
+            services.database.pool().clone(),
+        );
     }
     // Display assets (avatars / market icons) are referenced by plain
     // `<img>` tags and must not sit behind the owner auth middleware.

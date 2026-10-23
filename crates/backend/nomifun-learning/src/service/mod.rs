@@ -495,6 +495,11 @@ struct AgentCourseJobEntry {
 
 mod checkin;
 mod learning_graph;
+pub use learning_graph::{
+    DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
+    FINDINGS_WATERMARK_SWITCH_ENV, MAINTENANCE_INTERVAL_MINUTES,
+    is_findings_watermark_disabled_value,
+};
 mod course;
 mod course_outline;
 mod diagnostic;

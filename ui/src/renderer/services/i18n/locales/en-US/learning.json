@@ -367,6 +367,10 @@
     "diagnosticLimitHint": "Maximum questions sampled per knowledge diagnostic",
     "dailyXpGoal": "Daily XP goal",
     "dailyXpGoalHint": "Daily effort target in XP (1 XP ≈ one focused minute); the day completes on reaching it (1–1000, default 40)",
+    "maintenanceAutoEnabled": "Automatic maintenance",
+    "maintenanceAutoEnabledHint": "Periodically consume structure-review findings and mount pending nodes (repair first, then mount; no model calls when there is no work)",
+    "maintenanceIntervalMinutes": "Maintenance interval (minutes)",
+    "maintenanceIntervalMinutesHint": "How often the automatic maintenance round runs (30–10080, default 360)",
     "wideContent": "Wide layout",
     "wideContentHint": "When off, the content column is centered with a width cap (course list and outline workspace 1200px, learning graph 1400px); when on, content fills the page and the lesson reading area becomes a full-width bordered panel with lines up to about 1040px. Shared by all three learning views.",
     "saved": "Saved"

@@ -7134,6 +7134,7 @@ dependencies = [
  "nomifun-conversation",
  "nomifun-db",
  "nomifun-extension",
+ "nomifun-learning",
  "nomifun-models-dev",
  "nomifun-preset",
  "nomifun-realtime",
