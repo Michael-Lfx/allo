@@ -728,7 +728,8 @@ impl LearningService {
         request: &GenerateLessonRequest,
     ) -> Result<LessonView, AppError> {
         let lesson = sqlx::query(
-            "SELECT l.title, l.purpose, l.position, m.title AS module_title \
+            "SELECT l.title, l.purpose, l.position, l.estimated_minutes, \
+                    m.title AS module_title \
              FROM learning_lessons l JOIN learning_modules m ON m.module_id = l.module_id \
              WHERE l.lesson_id = ?",
         )
@@ -739,6 +740,8 @@ impl LearningService {
         let lesson_title: String = lesson.try_get("title").map_err(internal)?;
         let purpose: String = lesson.try_get("purpose").map_err(internal)?;
         let lesson_position: i64 = lesson.try_get("position").map_err(internal)?;
+        // 结构阶段给的节点尺寸锚（k03）：列 NOT NULL DEFAULT 10，恒有值。
+        let estimated_minutes: i64 = lesson.try_get("estimated_minutes").map_err(internal)?;
         let module_title: String = lesson.try_get("module_title").map_err(internal)?;
 
         let course = sqlx::query(
@@ -786,6 +789,7 @@ impl LearningService {
                 prerequisite_path: topology.prerequisite_path,
                 upcoming_nodes: topology.upcoming_nodes,
                 concept_faces: topology.concept_faces,
+                est_minutes: Some(estimated_minutes),
             }),
             // 学习图节点的目标在 graph.goal；本字段只承载传统课程目标。
             goal: None,
@@ -1489,6 +1493,16 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         output: &LessonOutput,
     ) -> Result<(), AppError> {
+        // 超容自报（k03）：观察行，非门禁——如实留痕便于真机对照卡与事后
+        // 盘点（learnhub over_capacity 日志行同款）。
+        if let Some(note) = output.capacity_note.as_deref() {
+            tracing::warn!(
+                lesson_id = lesson_id.as_str(),
+                estimated_minutes = output.estimated_minutes,
+                capacity_note = note,
+                "over_capacity"
+            );
+        }
         let now = now_ms();
         let mut transaction = self.pool.begin().await.map_err(internal)?;
         // 分节输出：节清单整体替换（幂等重生成语义），summary 存拼装文本

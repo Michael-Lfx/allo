@@ -2143,12 +2143,11 @@ async fn run_content(
     if provider.is_some() != model.is_some() {
         anyhow::bail!("--provider and --model must be provided together");
     }
-    let (wiring, _archiving, _live) =
+    let (wiring, archiving, _live) =
         wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
     let owner = wiring.owner.clone();
     let service = wiring.service.clone();
     let now = nomifun_common::now_ms();
-
     // 最小两节点课程：L1 教 α；L2 assumes α（引用名 Alpha）teaches β；
     // β 带活跃别名「贝塔系数」。概念面投影的数据源全部真实落库。
     let course_id = nomifun_common::LearningCourseId::new().into_string();
@@ -2287,6 +2286,20 @@ async fn run_content(
         joined.contains("历史波动率"),
         joined.contains("贝塔系数"),
     );
+    // k03 读数面（非门禁）：预算行与超容自报在观测存档里的在场性——双臂
+    // 对照的机械读数（off 臂预算行 0）。
+    if let Some(archive) = archiving.as_ref() {
+        let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+            .unwrap_or_default();
+        let budget_line_calls = calls.lines().filter(|line| line.contains("时长预算")).count();
+        let capacity_note_calls = calls
+            .lines()
+            .filter(|line| line.contains("capacity_note"))
+            .count();
+        println!(
+            "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_calls={capacity_note_calls}"
+        );
+    }
     println!(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
         cli.data_dir.display()

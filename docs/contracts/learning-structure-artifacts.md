@@ -1,8 +1,8 @@
 ---
 contract: learning-structure-artifacts
-version: "1.2"
+version: "1.3"
 date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
@@ -226,6 +226,20 @@ est 命名统一（二轮 g1 第 6 项）同批落地：`ng.nodes.minutes` → `
 `ProposedNode.est`、DTO/前端镜像键 `est`；**DB 列 `learning_lessons.estimated_minutes`
 保留旧名**（SQLite 无列注释机制，语义注记住本条与本批 DTO 文档注释：列语义 =
 est，1 est 分钟 = 1 分钟专注学习）。
+
+### 8.1 课时输入面随批注记（v1.3，k03）
+
+四轮吸收 k03（learnhub #154）把 est 接进课时生成输入面——**只读不改结构契约**：
+
+- **时长预算行**（图节点课时提示词的图语义段）：`- 时长预算：{est} 分钟（节点尺寸
+  锚——规划与写作两阶段对照此预算）`。数据源 = 挂载/生成时落库的
+  `learning_lessons.estimated_minutes`（NOT NULL DEFAULT 10，恒注入；learnhub 的
+  `est = None → 整行省略`分支在 allo 不适用）。属 §0 豁免注记的「回执标量读侧」口径。
+- **超容自报 `capacity_note`**（计划工具 `ls_set_section_manifest` 的可选键 →
+  `LessonOutput.capacity_note` → 审计观察条 `over_capacity` + 日志行）：出现时只查
+  非空字符串、空白串按缺席裁 `None`，**零内容拦截、永不退稿**；不超容不写（缺席
+  合法）。传统课时管线不消费该键（其机械预算已足够）。
+- 运维开关 `NOMI_LEARNING_EST_BUDGET=off` 关闭预算行与自报键（旧行为臂）。
 
 ## 9 挂载事实层（st.mount.*，j08 三轮 g1「结构转活文档·上」）
 

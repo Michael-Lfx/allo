@@ -273,6 +273,10 @@ pub struct LessonOutput {
     /// 的节)——课时终态仍算成功,但降级事实经事件与日志可见。
     #[serde(default)]
     pub degraded_keys: Vec<String>,
+    /// 超容自报（k03）：规划阶段对照时长预算的如实留痕，透传到报告面与
+    /// 观察条；`None` = 未自报（缺席合法）。零内容拦截。
+    #[serde(default)]
+    pub capacity_note: Option<String>,
 }
 
 impl LessonOutput {

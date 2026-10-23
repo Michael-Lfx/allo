@@ -73,6 +73,7 @@ static GENERATE_LESSON_AGENT_SYSTEM: LazyLock<String> = LazyLock::new(|| {
 - 可视化为主、文字为辅是硬规则：概念/例题节的正文必须以至少一个可视化块（$$公式$$、```svg、```jsxgraph、```mermaid、对比表格）承载核心讲解，文字只作旁注；短段落、枚举用列表/表格、不写过渡废话。纯文字的概念/例题节会被质检门拒绝。
 - 再逐节调用 ls_set_section_body 写正文：一次调用只写一节，body 直接以该节 `## ` 标题行开头（标题照抄清单），不要 JSON、不要包裹围栏、节内禁止 ### 子标题、不要自设练习环节（题目由题库承载）。
 - 篇幅：{prose_budgets}；演示节由可视化块（```svg / ```jsxgraph / ```mermaid / $$数学$$）承载主要信息、旁注同预算；summary 是要点清单；practice 只写能力目标与作答引导（≤{PRACTICE_BODY_TARGET_CHARS} 字，不写题）。
+- 时长预算：用户消息里有「时长预算」行时，规划节清单与逐节写作都对照它——节容量按预算铺；节清单定稿后对照预算粗估一遍，明显超容才在 ls_set_section_manifest 的 capacity_note 里如实写一句（超在哪个节、大概多多少；不超容不写），超容自报只留痕、不改安排、不压缩讲解深度。
 - 可视化优先：内容真正需要图示时才画，每个图必须自足完整（viewBox、命名点、坐标刻度、说明文字，svg 文本 ≥12px、无脚本无外链）；图形块不计入篇幅。
 - 与前一节已写正文自然衔接：不重复它讲过的内容；只写本节任务命中的范围，不越界讲后续节/课时。
 
@@ -507,6 +508,15 @@ fn audit_report(
 /// (`context.graph` = Some) swap the outline/brief sections for
 /// graph-scoped sections: goal, the degree statement, the concept-web
 /// prerequisite summary, and the downstream nodes (ADR-0009).
+/// 图课时的「时长预算」行（k03）：开关关闭或无 est 时不注入。抽成纯函数
+/// 让开/关两臂在同一进程内可测（env 是进程全局态，单测不碰）。
+fn graph_budget_line(enabled: bool, est_minutes: Option<i64>) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    est_minutes.map(nomifun_learning::render_est_budget_line)
+}
+
 fn lesson_user_text(context: &LessonGenerationContext) -> String {
     let mut text = String::new();
     text.push_str(&format!("课程：{}\n", context.course_title.trim()));
@@ -518,6 +528,13 @@ fn lesson_user_text(context: &LessonGenerationContext) -> String {
                 graph.goal.trim(),
                 graph.degree_statement.trim()
             ));
+            // 时长预算（k03，learnhub #154）：结构阶段估的节点尺寸锚——
+            // 规划节容量与写作都对照它；allo 图节点列恒有值。
+            if let Some(line) =
+                graph_budget_line(nomifun_learning::est_budget_enabled(), graph.est_minutes)
+            {
+                text.push_str(&line);
+            }
         }
         None if !context.outline_tree.is_empty() => {
             text.push_str(&format!(
@@ -734,7 +751,7 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "ls_set_section_manifest".into(),
         description: format!(
-            "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：{visual_menu}）。节数{section_ranges}；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。"
+            "规划课时的分节清单（整组替换）：sections 数组，每节带 section_key（s1、s2……）、kind（concept/example/demo/summary/practice）、title（带类型前缀）、points（一句话要点）、visual（可视化形态：{visual_menu}）。节数{section_ranges}；最后一节必须是练习节（恰好 1 个）；重规划时已写正文按 key 保留。可选 capacity_note：节清单定稿后对照「时长预算」粗估明显超容时如实写一句（不超容不写）。"
         ),
         input_schema: serde_json::json!({
             "type": "object",
@@ -755,6 +772,10 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                         },
                         "required": ["section_key", "kind", "title", "visual"]
                     }
+                },
+                "capacity_note": {
+                    "type": "string",
+                    "description": "可选超容自报：对照「时长预算」粗估明显超容时如实写一句；不超容留空（缺席合法，永不影响发布）"
                 }
             },
             "required": ["sections"]
@@ -769,11 +790,20 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
                     .unwrap_or(serde_json::Value::Null);
                 let sections: Vec<nomifun_learning::SectionPack> = serde_json::from_value(sections)
                     .map_err(|error| format!("ls_set_section_manifest: sections 必须是节清单数组——{error}"))?;
+                // 超容自报（k03）：形状条款只查非空——空白/非字符串按缺席
+                // 裁成 None，恶劣值不退稿。
+                let capacity_note = input
+                    .get("capacity_note")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
                 let report = ctx
                     .service
                     .patch_lesson_draft(
                         &draft_id,
-                        vec![nomifun_learning::LessonOp::SetSectionManifest { sections }],
+                        vec![nomifun_learning::LessonOp::SetSectionManifest {
+                            sections,
+                            capacity_note,
+                        }],
                     )
                     .map_err(|error| error.to_string())?;
                 Ok(json_compact(&report))
@@ -1042,6 +1072,7 @@ mod tests {
             prerequisite_path: "1. 什么是衍生品 — 先建立衍生品框架\n".into(),
             upcoming_nodes: "- 期权定价基础（为理解希腊字母铺垫）\n".into(),
             concept_faces: None,
+            est_minutes: Some(20),
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("学习图节点"));
@@ -1065,6 +1096,7 @@ mod tests {
             prerequisite_path: String::new(),
             upcoming_nodes: String::new(),
             concept_faces: None,
+            est_minutes: Some(15),
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("从零讲起"));
@@ -1088,6 +1120,7 @@ mod tests {
                 ref_names: vec![("Delta".into(), "德尔塔".into())],
                 aliases: vec![("衍生品".into(), vec!["衍生工具".into()])],
             }),
+            est_minutes: Some(20),
         });
         let text = lesson_user_text(&context);
         assert!(text.contains("概念面"));
@@ -1102,6 +1135,44 @@ mod tests {
         plain.clear_grounding();
         let text = lesson_user_text(&plain);
         assert!(!text.contains("概念面"));
+    }
+
+    /// k03：图路径注入「时长预算」行（est 值在场）；开关关闭或无 est 时
+    /// 整行省略；传统路径不出现该行。
+    #[test]
+    fn graph_budget_line_renders_est_and_respects_the_switch() {
+        let enabled = graph_budget_line(true, Some(20)).expect("on 臂注入");
+        assert!(enabled.contains("时长预算：20 分钟"), "{enabled}");
+        assert!(graph_budget_line(false, Some(20)).is_none(), "off 臂省略整行");
+        assert!(graph_budget_line(true, None).is_none(), "无 est 省略整行");
+
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+        });
+        let text = lesson_user_text(&context);
+        assert!(text.contains("时长预算：20 分钟"), "{text}");
+
+        let mut plain = lesson_context();
+        plain.clear_grounding();
+        assert!(!lesson_user_text(&plain).contains("时长预算"), "传统路径无预算行");
+    }
+
+    /// k03：写作面的自报条款进系统提示词（规划后对照预算、超容才写、
+    /// 只留痕不改安排）。
+    #[test]
+    fn lesson_agent_system_prompt_carries_the_capacity_note_clause() {
+        let system = GENERATE_LESSON_AGENT_SYSTEM.as_str();
+        assert!(system.contains("时长预算"), "{system}");
+        assert!(system.contains("capacity_note"), "{system}");
+        assert!(system.contains("明显超容才"), "{system}");
+        assert!(system.contains("不改安排"), "{system}");
     }
 
     /// The user turn embeds the outline tree and the adjacent-lesson
@@ -1518,6 +1589,7 @@ mod tests {
                             { "section_key": "s2", "kind": "practice", "title": "练习：期权判断", "points": "判断题自测", "visual": "无" }
                         ]))
                         .unwrap(),
+                        capacity_note: None,
                     },
                     LessonOp::SetSectionBody {
                         section_key: "s1".into(),
@@ -1622,6 +1694,7 @@ mod tests {
                 pack("s3", SectionKind::Summary, "无"),
             ],
             degraded_keys: Vec::new(),
+            capacity_note: None,
         };
         let frame = <LiveLessonContentAgentEngine as FlowCycle>::publish_frame(
             &output,

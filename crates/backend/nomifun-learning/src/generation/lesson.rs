@@ -355,6 +355,8 @@ pub(crate) async fn generate_lesson(
         activities: activities.activities,
         degraded_keys,
         sections,
+        // 传统管线无 capacity_note 契约（机械预算已足够，k03 范围注记）。
+        capacity_note: None,
     })
 }
 
