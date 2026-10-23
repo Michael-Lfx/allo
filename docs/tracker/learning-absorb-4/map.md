@@ -1,7 +1,12 @@
 # Map: 四轮吸收——learnhub 7f57fc0 之后机制面六项 + Mindmap 修复
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-10-23）。前沿 = k01–k07 全部 open。 -->
+<!-- 状态：已到达目的地（2026-10-23）——k01–k07 全部关闭（k01 f3be14438、
+     k02 3e3b67126、k03 b4259de0e、k04 8b86d0a63、k05 cd28da39e、
+     k06 170ebaa70、k07 092a09d63；读数面 dd95ebe83）。机械闸全绿
+     （learning 488 / db 迁移 + v3 契约 / ai-agent 17 / typecheck 学习面
+     零错误 / i18n 门），双臂真机十臂全 EXIT 0——对照卡见
+     [assets/verification-cards.md](assets/verification-cards.md)。 -->
 <!-- 前情：一轮 i01–i08 / 二三轮 j01–j10 / quiz 线 q1–q3 全部关闭并推送
       （tip 354b98a45）；传统课程 kb 线 t1–t5 + hardening h1–h3 关闭于
       feat/learn-kb-course-v2（tip 644d58f94 未推送）。本波吸收 learnhub
@@ -73,15 +78,17 @@ R10–R13（k05）、分解/地形/tier 提示词升级（k06）、评审判据�
 
 ## Tickets
 
-| 票 | 标题 | 依赖 |
-|---|---|---|
-| k01 | Mindmap 负坐标翼裁剪修复（两翼中心对称 + dy 补偿） | 无（独立小修先行） |
-| k02 | findings 消费水位 + 定时自动维护回合 | 无 |
-| k03 | est 时长预算行进图课时提示词 + 超容自报 capacity_note | 无 |
-| k04 | 题面相似度防雷同机械门（trigram 三口径 0.7） | 无 |
-| k05 | 内容纪律 R10/R11/R12/R13 织入两管线 | k03（同文件序） |
-| k06 | 分解/地形提示词升级 + tier 深度本位自省 | 无 |
-| k07 | 评审判据①挂号子查结构化 | 无 |
+| 票 | 标题 | 依赖 | 状态 |
+|---|---|---|---|
+| k01 | Mindmap 负坐标翼裁剪修复（两翼中心对称 + dy 补偿） | 无（独立小修先行） | 已关 `f3be14438` |
+| k02 | findings 消费水位 + 定时自动维护回合 | 无 | 已关 `3e3b67126`（迁移 070） |
+| k03 | est 时长预算行进图课时提示词 + 超容自报 capacity_note | 无 | 已关 `b4259de0e` |
+| k04 | 题面相似度防雷同机械门（trigram 三口径 0.7） | 无 | 已关 `8b86d0a63` |
+| k05 | 内容纪律 R10/R11/R12/R13 织入两管线 | k03（同文件序） | 已关 `cd28da39e` |
+| k06 | 分解/地形提示词升级 + tier 深度本位自省 | 无 | 已关 `170ebaa70` |
+| k07 | 评审判据①挂号子查结构化 | 无 | 已关 `092a09d63` |
+
+双臂真机对照卡：[assets/verification-cards.md](assets/verification-cards.md)。
 
 ## Not yet specified（雾区，供后续波）
 

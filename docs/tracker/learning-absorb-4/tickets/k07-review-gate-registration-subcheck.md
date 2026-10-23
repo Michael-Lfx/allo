@@ -2,8 +2,8 @@
 id: k07
 title: "评审判据①挂号子查结构化——登记表外名词三源出处、批内提名不算、内嵌上位词在审"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -75,3 +75,23 @@ part_of: ../map.md
 
 learnhub 病历实证该盲区代价：真课「有理数」级盲区直通放行。allo 对照卡的
 fixture 选择优先复刻该形态（目标领域含「X 的 Y」式内嵌上位词概念）。
+
+## Resolution
+
+**已关（2026-10-23，`092a09d63`）**。
+
+- **判据①子查结构化**：评审系统提示词拆为 HEAD + 判据① + TAIL 三段装配
+  （`concept_review_system()`）。新版判据①：先框定「登记表外名词」（标题/
+  purpose/mints 名与定义）→ 逐词落四入口出处（已教含别名 / 本节点 teaches /
+  本节点 assumes / 课程外通用常识）→ **批内提名本身不是出处**（照打）→
+  **概念名内嵌上位词同样在审** → 两可词按概念处理 → 修法复用覆盖法。出处集合
+  与旧措辞语义一致（allo 含 assumes 入口），差异仅新增两项点名。
+- **开关**：`NOMI_LEARNING_REVIEW_V2=off` → 旧并句措辞逐字保留（off 臂）。
+- **单测**：两臂短语断言（off 含旧「三处皆无的名词」、无新三条；on 反之）+
+  开关取值；pass 结论附挂号类 findings 走通 j09 warn 解析通道（不阻断）。
+- **双臂（开关臂）**：grow `--batches 2`，on EXIT 0 / 9 节点 / 存档评审提示词
+  含 V2 子查（1 次）、旧并句 0 次；off EXIT 0 / 10 节点 / V2 0 次、旧并句 2 次。
+  两臂评审 findings 均 0（批次干净、fixture 对内嵌上位词无区分度——如实记录，
+  不硬造；learnhub 病历「有理数」形态未复现）。读数见
+  [verification-cards.md](../assets/verification-cards.md) §k07。
+- 非目标遵办：不做机械字面扫描/机械门；判据②③④与 findings 生产/消费面零改动。

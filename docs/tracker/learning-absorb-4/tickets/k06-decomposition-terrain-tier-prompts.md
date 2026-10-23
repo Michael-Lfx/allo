@@ -2,8 +2,8 @@
 id: k06
 title: "分解/地形提示词升级——assumes 逻辑前提判别、块链连续性自检、门语义措辞、tier 深度本位自省"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -88,3 +88,29 @@ part_of: ../map.md
 learnhub 载体边病历（carrier-edge-vs-prerequisite，78 块/12 干/103 边）证明
 该痛点真实存在——allo 若真机跑出同类载体边误连 assumes，对照卡里如实记录
 即为本票价值证据。
+
+## Resolution
+
+**已关（2026-10-23，`170ebaa70`）**。
+
+- **goal-decomposition.md**：新增两条——「assumes 只连逻辑前提（判据句：抽掉前置
+  后继定义/推导无法进行；练习载体与讲解通道不配 assumes，走 contrasts 或不连）」
+  与「块链连续性自检（逐主干沿 assumes 链走；无承接的中间环节补块或写进 gaps）」。
+  allo 契约键位以 `gd.*` 为准（gaps/contrasts 沿用既有）。
+- **prerequisite-terrain.md**：新增门语义——硬前置 = 不可自检豁免、不是进入闸门；
+  首门在真实起步地板；措辞不得写成「须在进入课程前具备」。
+- **COACH_SYSTEM 档位段**：加深度本位自省（教学深度本身为准、不对照动词字面；
+  操作训练全标 know = 低估、至少 apply；首教形式化的「写」只是认识步时 know
+  如实）。
+- **金样三闸**：`LEARNING_UPDATE_GOLDEN=1` 重生成两份金样；围栏 FENCE_DEV_FACE
+  零违禁；条款覆盖短语断言新增 4+3 条；新增「装配面无重复段落」测试。7 项全绿。
+- **契约注记**：`learning-structure-artifacts.md` v1.4 §8.2（零机械条款改动）。
+- **双臂（版本臂，跨构建）**：旧 tip 二进制 vs 新二进制，同 goal 同凭据。
+  - old：EXIT 0（首跑 flash 超时重试后通过），8 主干/52 块/93 边（assumes 63/
+    composes 20/contrasts 10）/gaps 4/doors 7。
+  - new：EXIT 0，9 主干/54 块/83 边（assumes 65/13/5）/gaps 5/doors 7。
+  - 人读：assumes 抽样均为逻辑前提、主干链未见悬空、门措辞零「进课前」短语
+    （两臂）——本轮 fixture 两臂均合法，差异主要在条款写入与金样锁定，产物
+    统计差异如实记录不作优劣判定。读数见
+    [verification-cards.md](../assets/verification-cards.md) §k06。
+- 非目标遵办：不建 assumes/块链机械校验、不动挂载/修补资产、不引门口梯队。

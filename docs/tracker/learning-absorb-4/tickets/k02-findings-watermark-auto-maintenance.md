@@ -2,8 +2,8 @@
 id: k02
 title: "findings 消费水位 + 定时自动维护回合（先修补后挂载、零工作不提交、归档课不扫）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -102,3 +102,36 @@ part_of: ../map.md
 - 挂载观察（mount observations）的派生触发（j09：仅在挂载行存在时派生）不动；
   本票只加 findings 水位与调度。
 - 调度器对 web 与 desktop 两宿主同一生效（app-server 共用）。
+
+## Resolution
+
+**已关（2026-10-23，`3e3b67126`）**。
+
+- **迁移 070**：`learning_maintenance_state(id PK AUTOINCREMENT, course_id UNIQUE,
+  findings_watermark INTEGER NOT NULL DEFAULT 0 CHECK ≥0, updated_at)`。列名由
+  `findings_consumed_id` 改为 `findings_watermark`——v3 契约只支持 TEXT 逻辑
+  引用，`_id` 后缀会被判为关系列；语义不变。注册 `PRODUCT_TABLES` + 逻辑引用
+  （Cascade，留痕本身 KeepHistory）；迁移测试 + `validate_id_schema_contract`
+  全绿。
+- **水位化读侧**：`run_structure_repair` 只读 `id > watermark ORDER BY id`；
+  applied/noop 推进到本回合最大 id（钳制 `MAX(id)`，只升不降 upsert）；
+  failed/skipped/cancelled 不推；off 臂（`NOMI_LEARNING_FINDINGS_WATERMARK=off`）
+  读全量且不推。
+- **needs 纯读**：`maintenance_needs`（eligible + unconsumed_findings +
+  pending_mounts + mounts_stale + needs_repair/needs_mount），归档/软删/非图/
+  无结构 = ineligible。
+- **回合与调度**：`run_maintenance_tick`（先修补后挂载、修补失败/在途跳过该课
+  含挂载、修补后重判定、零工作不提交）；app-server
+  `start_learning_auto_maintenance`（30s 唤醒、每醒重读设置、单轮在途、
+  `NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册），在 routes 启动处接线。
+- **设置**：`learning.maintenanceAutoEnabled`（bool 缺省开）+
+  `learning.maintenanceIntervalMinutes`（30..=10080 缺省 360）；写侧拒绝、读侧
+  回退；设置页两控件 + i18n 双语；`gen:i18n`/`check:i18n` 过。
+- **smoke `maintenance` 档**：新 CLI/命令；判据按开关分支（on：水位推进 +
+  二回合零工作零 LLM；off：不推水位 + 二回合重跑）。
+- **双臂（开关臂）**：on `watermark=Some(2)`、tick2 idle=1 worked=0、LLM 2→2；
+  off `watermark=None`、tick2 worked=1、LLM 2→3；两臂 EXIT 0、归档课
+  scanned 恒 1。读数见 [verification-cards.md](../assets/verification-cards.md) §k02。
+- **单测**：水位推进/二回合 skipped/失败不推/越界钳制/off 臂/端到端 tick/
+  设置回退（learning 483→488 全绿）+ db 迁移/契约测试。
+- 非目标遵办：GUI「跑维护回合」按钮未做（map 雾区）。
