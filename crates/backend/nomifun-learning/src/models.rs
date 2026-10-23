@@ -2370,6 +2370,64 @@ pub struct StructureRepairSummary {
     pub skipped: bool,
 }
 
+/// 维护需求的纯读判定（k02，learnhub ADR-0028 `maintenance_needs` 同构）：
+/// 零 LLM——只回答「这一课要不要修补/挂载」。归档/软删/非图课程/无结构 =
+/// `eligible = false`（不在扫描面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceNeedsView {
+    pub eligible: bool,
+    /// 未消费 findings 条数（水位之后的留痕）。
+    pub unconsumed_findings: i64,
+    /// 待挂节点数（未评估 ∪ 失效 slug；stale 时 = 全部现存节点）。
+    pub pending_mounts: usize,
+    /// 结构 hash 与挂载行不一致（无挂载行 = stale）。
+    pub mounts_stale: bool,
+    pub needs_repair: bool,
+    pub needs_mount: bool,
+}
+
+impl MaintenanceNeedsView {
+    /// 无需求（零工作）——调度器据此跳过该课，零任务零 LLM。
+    pub fn is_idle(&self) -> bool {
+        !self.needs_repair && !self.needs_mount
+    }
+}
+
+/// 一课在一个维护回合里的结果（k02）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceCourseOutcome {
+    pub course_id: String,
+    /// 回合前判定（修补后重新判定一次，见 `recheck`）。
+    pub needs: MaintenanceNeedsView,
+    /// 修补回合终态（applied/noop/skipped）；未跑 = None。
+    pub repair: Option<String>,
+    /// 挂载回合终态（mounted/skipped）；未跑 = None。
+    pub mount: Option<String>,
+    /// 修补改了结构 → 本回合内重判定后补挂。
+    pub recheck: Option<MaintenanceNeedsView>,
+    /// 因生成槽在途/失败跳过该课（含挂载）。
+    pub skipped_busy: bool,
+    /// 失败如实记（不吞）。
+    pub error: Option<String>,
+}
+
+/// 一次自动维护回合的报告（k02）：零工作 = courses 空。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MaintenanceTickReport {
+    /// 扫描的合格课程数（enabled + 未删 + 图课程 + 有结构）。
+    pub scanned: usize,
+    /// 无需求被跳过的课程数（零工作）。
+    pub idle: usize,
+    pub courses: Vec<MaintenanceCourseOutcome>,
+}
+
+/// 维护设置（k02）：缺省开、间隔 360 分钟；越界/坏值读侧回退缺省。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MaintenanceSettings {
+    pub enabled: bool,
+    pub interval_minutes: i64,
+}
+
 /// Memory-health dashboard: one snapshot over the active card pool and the
 /// review log, in review-day semantics (02:00 rollover).
 #[derive(Debug, Clone, Serialize)]

@@ -12,6 +12,31 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
+/// findings 消费水位的运维开关（k02，learnhub #146/#147）：置 off/0/false
+/// 时修补回合读全量留痕且不推水位（旧行为臂）。
+pub const FINDINGS_WATERMARK_SWITCH_ENV: &str = "NOMI_LEARNING_FINDINGS_WATERMARK";
+
+/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_findings_watermark_disabled_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false"
+    )
+}
+
+/// 水位机制是否开启（未设/其它值 = 开启）。
+fn findings_watermark_enabled() -> bool {
+    std::env::var(FINDINGS_WATERMARK_SWITCH_ENV)
+        .map(|value| !is_findings_watermark_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 自动维护设置缺省与边界（learnhub `infra/settings.rs` 同量级：缺省开、
+/// 360 分钟、30..=10080；越界读侧回退缺省不报错）。
+pub const DEFAULT_MAINTENANCE_ENABLED: bool = true;
+pub const DEFAULT_MAINTENANCE_INTERVAL_MINUTES: i64 = 360;
+pub const MAINTENANCE_INTERVAL_MINUTES: std::ops::RangeInclusive<i64> = 30..=10080;
+
 /// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
 /// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
 /// 并非"两次即弃"的语义。
@@ -659,21 +684,31 @@ impl LearningService {
             .to_owned();
         let old_hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
 
-        // 触发面：findings 行 + 挂载观察。
-        let finding_rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-            "SELECT source, node, field, issue, advice FROM learning_structure_findings \
-             WHERE course_id = ? ORDER BY ts, id",
+        // 触发面：findings 行（k02 水位化——只读未消费留痕）+ 挂载观察。
+        // off 臂 = 水位恒 0 读全量且不推（旧行为）。
+        let watermark_enabled = findings_watermark_enabled();
+        let watermark = if watermark_enabled {
+            self.findings_watermark(course_id).await?
+        } else {
+            0
+        };
+        let finding_rows: Vec<(i64, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, source, node, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? AND id > ? ORDER BY id",
         )
         .bind(course_id.as_str())
+        .bind(watermark)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
+        // 本回合消费上界 = 本回合读到的最大 id（成功终态才推进）。
+        let consumed_through = finding_rows.last().map(|row| row.0);
         let findings_text = if finding_rows.is_empty() {
             "（无留痕）".to_owned()
         } else {
             finding_rows
                 .iter()
-                .map(|(source, node, field, issue, advice)| {
+                .map(|(_, source, node, field, issue, advice)| {
                     format!(
                         "- [{source}] {node}.{field}: {issue}（建议：{advice}）",
                         node = node.trim(),
@@ -895,6 +930,13 @@ impl LearningService {
         // 无修补动作是合法结论，但没发生的事不造档案）。
         let applied: Vec<String> = ops.iter().map(|op| op.label()).collect();
         let mounts_stale = old_hash != new_hash;
+        // 水位推进（k02）：applied/noop 才算本回合读到的留痕已消费；失败
+        // 路径在函数前面已 return，skipped 路径没有可推进的留痕。
+        if watermark_enabled {
+            if let Some(through) = consumed_through {
+                self.advance_findings_watermark(course_id, through).await?;
+            }
+        }
         task.finish_done(if noop {
             "修补完成：本轮无修补动作（noop）".to_owned()
         } else {
@@ -959,6 +1001,321 @@ impl LearningService {
                 );
             }
         }
+    }
+
+    // ── 维护水位 + 自动维护回合（k02）────────────────────────────────────
+
+    /// 当前消费水位（钳制到本课 findings 的 MAX(id)，越界不阻断）。
+    async fn findings_watermark(&self, course_id: &LearningCourseId) -> Result<i64, AppError> {
+        let stored: Option<i64> = sqlx::query_scalar(
+            "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let max_id: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(stored.unwrap_or(0).clamp(0, max_id))
+    }
+
+    /// 推进消费水位（只升不降：`max(旧值, 新值)` 的原子 upsert；钳制到
+    /// MAX(id)）。成功回合才调用。
+    async fn advance_findings_watermark(
+        &self,
+        course_id: &LearningCourseId,
+        through_id: i64,
+    ) -> Result<(), AppError> {
+        let max_id: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let through = through_id.clamp(0, max_id);
+        sqlx::query(
+            "INSERT INTO learning_maintenance_state \
+             (course_id, findings_watermark, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(course_id) DO UPDATE SET \
+             findings_watermark = MAX(findings_watermark, excluded.findings_watermark), \
+             updated_at = excluded.updated_at",
+        )
+        .bind(course_id.as_str())
+        .bind(through)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    /// 维护需求纯读判定（k02 `maintenance_needs`）：零 LLM。归档/软删/非图
+    /// 课程/无结构 = `eligible = false`（不在扫描面）。
+    pub async fn maintenance_needs(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::MaintenanceNeedsView, AppError> {
+        let course: Option<(String, Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT course_kind, deleted_at, enabled, structure_json \
+             FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let ineligible = crate::models::MaintenanceNeedsView {
+            eligible: false,
+            unconsumed_findings: 0,
+            pending_mounts: 0,
+            mounts_stale: false,
+            needs_repair: false,
+            needs_mount: false,
+        };
+        let Some((course_kind, deleted_at, enabled, structure_json)) = course else {
+            return Ok(ineligible);
+        };
+        let Some(structure_raw) = structure_json.filter(|raw| !raw.trim().is_empty()) else {
+            return Ok(ineligible);
+        };
+        if deleted_at.is_some() || enabled == 0 || course_kind != "learning_graph" {
+            return Ok(ineligible);
+        }
+
+        // 未消费留痕（水位之后的条数；off 臂 = 全量）。
+        let watermark = if findings_watermark_enabled() {
+            self.findings_watermark(course_id).await?
+        } else {
+            0
+        };
+        let unconsumed_findings: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_structure_findings \
+             WHERE course_id = ? AND id > ?",
+        )
+        .bind(course_id.as_str())
+        .bind(watermark)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // 挂载面：待挂集（未评估 ∪ 失效 slug）+ stale（hash 失配/无挂载行）。
+        let hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
+        let node_titles: Vec<String> = sqlx::query_scalar(
+            "SELECT l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mount_row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let envelope: serde_json::Value =
+            serde_json::from_str(&structure_raw).map_err(internal)?;
+        let block_slugs: std::collections::HashSet<String> = envelope
+            .pointer("/structure/blocks")
+            .and_then(|value| value.as_array())
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("slug")?.as_str())
+                    .filter(|slug| !slug.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (existing, mounts_stale) = match &mount_row {
+            Some((mounts_json, stored_hash)) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(mounts_json).unwrap_or(serde_json::Value::Null);
+                (
+                    crate::learning_graph::mounting::parse_mount_entries(&value),
+                    (*stored_hash as u64) != hash,
+                )
+            }
+            None => (Vec::new(), true),
+        };
+        let pending_mounts = if mounts_stale {
+            node_titles.len()
+        } else {
+            crate::learning_graph::mounting::pending_nodes(
+                &node_titles,
+                &existing,
+                &block_slugs,
+            )
+            .len()
+        };
+
+        Ok(crate::models::MaintenanceNeedsView {
+            eligible: true,
+            unconsumed_findings,
+            pending_mounts,
+            mounts_stale,
+            needs_repair: unconsumed_findings > 0 || mounts_stale,
+            needs_mount: pending_mounts > 0 || mounts_stale,
+        })
+    }
+
+    /// 自动维护设置（k02）：`learning.maintenanceAutoEnabled` +
+    /// `learning.maintenanceIntervalMinutes`。缺省开 / 360 分钟；越界或坏值
+    /// 读侧回退缺省（dailyXpGoal 同款）。
+    pub async fn maintenance_settings(&self) -> crate::models::MaintenanceSettings {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value FROM client_preferences \
+             WHERE key IN ('learning.maintenanceAutoEnabled', \
+                           'learning.maintenanceIntervalMinutes')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        let mut settings = crate::models::MaintenanceSettings {
+            enabled: DEFAULT_MAINTENANCE_ENABLED,
+            interval_minutes: DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
+        };
+        for (key, value) in rows {
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+            match key.as_str() {
+                "learning.maintenanceAutoEnabled" => {
+                    settings.enabled = match parsed {
+                        serde_json::Value::Bool(flag) => flag,
+                        serde_json::Value::String(text) => {
+                            match text.trim().to_ascii_lowercase().as_str() {
+                                "true" | "1" | "yes" => true,
+                                "false" | "0" | "no" => false,
+                                _ => DEFAULT_MAINTENANCE_ENABLED,
+                            }
+                        }
+                        serde_json::Value::Number(number) => match number.as_i64() {
+                            Some(1) => true,
+                            Some(0) => false,
+                            _ => DEFAULT_MAINTENANCE_ENABLED,
+                        },
+                        _ => DEFAULT_MAINTENANCE_ENABLED,
+                    };
+                }
+                "learning.maintenanceIntervalMinutes" => {
+                    settings.interval_minutes = parsed
+                        .as_i64()
+                        .filter(|minutes| MAINTENANCE_INTERVAL_MINUTES.contains(minutes))
+                        .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL_MINUTES);
+                }
+                _ => {}
+            }
+        }
+        settings
+    }
+
+    /// 一次自动维护回合（k02，learnhub `tick_with` 同构）：逐 enabled 图
+    /// 课程纯读判定 → **先修补后挂载**；busy/失败跳过该课（含挂载）；
+    /// 零工作 = 零任务零 LLM。归档课（enabled=0）与软删课不在扫描面。
+    /// findings 水位是 `findings.readings` 的消费侧；调度器（app-server）
+    /// 负责节奏与开关，本函数只跑一轮。
+    pub async fn run_maintenance_tick(
+        &self,
+        user_id: &UserId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::MaintenanceTickReport, AppError> {
+        let course_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT course_id FROM learning_courses \
+             WHERE deleted_at IS NULL AND enabled = 1 \
+             AND course_kind = 'learning_graph' \
+             AND structure_json IS NOT NULL AND trim(structure_json) <> '' \
+             ORDER BY course_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut report = crate::models::MaintenanceTickReport {
+            scanned: course_ids.len(),
+            idle: 0,
+            courses: Vec::new(),
+        };
+        for raw in course_ids {
+            let Ok(course_id) = LearningCourseId::parse(&raw) else {
+                continue;
+            };
+            let needs = match self.maintenance_needs(&course_id).await {
+                Ok(needs) => needs,
+                Err(error) => {
+                    report.courses.push(crate::models::MaintenanceCourseOutcome {
+                        course_id: raw,
+                        needs: crate::models::MaintenanceNeedsView {
+                            eligible: false,
+                            unconsumed_findings: 0,
+                            pending_mounts: 0,
+                            mounts_stale: false,
+                            needs_repair: false,
+                            needs_mount: false,
+                        },
+                        repair: None,
+                        mount: None,
+                        recheck: None,
+                        skipped_busy: false,
+                        error: Some(error.to_string()),
+                    });
+                    continue;
+                }
+            };
+            if needs.is_idle() {
+                report.idle += 1;
+                continue;
+            }
+            let mut outcome = crate::models::MaintenanceCourseOutcome {
+                course_id: raw,
+                needs: needs.clone(),
+                repair: None,
+                mount: None,
+                recheck: None,
+                skipped_busy: false,
+                error: None,
+            };
+            // 先修补：失败/在途 = 跳过该课含挂载（不掩错）。
+            if needs.needs_repair {
+                match self
+                    .run_structure_repair(user_id, &course_id, model_override)
+                    .await
+                {
+                    Ok(summary) => outcome.repair = Some(summary.status),
+                    Err(error) => {
+                        outcome.skipped_busy = matches!(error, AppError::Conflict(_));
+                        outcome.error = Some(error.to_string());
+                        report.courses.push(outcome);
+                        continue;
+                    }
+                }
+                // 修补可能改了结构 → 重判定（挂载 stale 随之点亮）。
+                outcome.recheck = Some(self.maintenance_needs(&course_id).await?);
+            }
+            let after = outcome.recheck.as_ref().unwrap_or(&needs);
+            if after.needs_mount {
+                match self
+                    .run_structure_mount(user_id, &course_id, model_override)
+                    .await
+                {
+                    Ok(summary) => outcome.mount = Some(summary.status),
+                    Err(error) => {
+                        outcome.error = Some(error.to_string());
+                        report.courses.push(outcome);
+                        continue;
+                    }
+                }
+            }
+            report.courses.push(outcome);
+        }
+        Ok(report)
     }
 
     /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未

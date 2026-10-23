@@ -367,6 +367,10 @@
     "diagnosticLimitHint": "单次知识诊断抽取的题目上限",
     "dailyXpGoal": "每日 XP 目标",
     "dailyXpGoalHint": "每日努力目标（1 XP ≈ 1 分钟专注）；达标即记当日完成（1–1000，默认 40）",
+    "maintenanceAutoEnabled": "自动维护",
+    "maintenanceAutoEnabledHint": "定时消费结构评审留痕并补挂节点（先修补后挂载；零工作不跑模型）",
+    "maintenanceIntervalMinutes": "维护间隔（分钟）",
+    "maintenanceIntervalMinutesHint": "自动维护回合的间隔（30–10080，默认 360）",
     "wideContent": "满宽布局",
     "wideContentHint": "关闭时内容列居中限宽（课程列表与大纲工作区 1200px、学习图 1400px）；开启后内容撑满页面，课时阅读区变成占满整行的边框面板，正文行宽放宽到约 1040px。三个学习视图共用这一设置。",
     "saved": "已保存"

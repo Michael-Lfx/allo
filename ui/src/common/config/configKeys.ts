@@ -172,6 +172,10 @@ export type ConfigKeyMap = {
   // out-of-range writes are rejected by the backend). Read by the backend
   // learning service for the daily XP gauge (j05 打卡计数口径退役).
   'learning.dailyXpGoal': number | undefined;
+  // 自动维护回合（k02）：开关（缺省开）+ 间隔分钟（30..=10080，缺省 360；
+  // 越界写入被后端拒绝、读侧回退缺省）。后端学习服务读取。
+  'learning.maintenanceAutoEnabled': boolean | undefined;
+  'learning.maintenanceIntervalMinutes': number | undefined;
   // Local-time offset in minutes east of UTC for review-day boundaries
   // (02:00 rollover), reported by the frontend on startup as
   // `-Date().getTimezoneOffset()`. Read by the backend learning service.
