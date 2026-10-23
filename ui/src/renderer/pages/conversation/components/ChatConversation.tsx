@@ -238,6 +238,7 @@ const NomiConversationLayout: React.FC<{
       workspaceExtraTabs={workspaceExtraTabs}
     >
       <NomiChat
+        isVoiceConversation={'voice' in conversation.extra && conversation.extra.voice === true}
         conversation_id={conversation.id}
         workspace={conversation.extra.workspace}
         modelSelection={modelSelection}

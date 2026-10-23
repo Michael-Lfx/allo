@@ -11,8 +11,8 @@ import {
   type TExecutionModelPool,
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
-import { resolveLocaleKey, uuidv7 } from '@/common/utils';
-import { startVoiceCall, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { resolveLocaleKey } from '@/common/utils';
+import { startVoiceCallIntent, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
 import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
 
@@ -286,17 +286,18 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+  useEffect(() => {
+    const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
+    report();
+    window.addEventListener('focus', report);
+    return () => window.removeEventListener('focus', report);
+  }, [guidInput.dir]);
 
   // --- Voice Call entry state & handler ---
   const { snapshot: voiceSnapshot } = useVoiceSnapshot();
   const isVoiceActive =
     Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
-  const activeVoiceWorkspace = voiceSnapshot?.binding?.workspace;
-  const voiceWorkspaceLabel = activeVoiceWorkspace
-    ? activeVoiceWorkspace.split(/[\\/]/).filter(Boolean).at(-1) || activeVoiceWorkspace
-    : undefined;
-
   const handleStartVoiceCall = useCallback(async () => {
     if (isVoiceConnecting) return;
     if (isVoiceActive && voiceSnapshot?.binding?.conversation_id) {
@@ -323,10 +324,8 @@ const GuidPage: React.FC = () => {
         ? { kind: 'workspace', workspace: guidInput.dir.trim() }
         : { kind: 'default_workspace' };
 
-      const res = await startVoiceCall({
-        request_id: uuidv7(),
-        target,
-      });
+      const res = await startVoiceCallIntent(target,
+        isNomiAgent ? agentSelection.selectedMode as 'default' | 'auto_edit' | 'yolo' : undefined);
 
       await navigate(`/conversation/${encodeURIComponent(res.conversation_id)}`);
     } catch (err: unknown) {
@@ -340,7 +339,7 @@ const GuidPage: React.FC = () => {
     } finally {
       setIsVoiceConnecting(false);
     }
-  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, navigate, t]);
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, agentSelection.selectedMode, navigate, t]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
@@ -1157,9 +1156,12 @@ const GuidPage: React.FC = () => {
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
-  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds);
+  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds) || guidInput.files.length > 0;
   const actionRowNode = (
     <GuidActionRow
+      onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
+      isVoiceConnecting={isVoiceConnecting}
+      voiceCallLabel={t(isVoiceActive ? 'voice.entry.openActive' : 'voice.entry.start')}
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
       modelSelectorIsChat={isGeminiMode}
@@ -1312,11 +1314,6 @@ const GuidPage: React.FC = () => {
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
-                  onStartVoiceCall={handleStartVoiceCall}
-                  isVoiceConnecting={isVoiceConnecting}
-                  isVoiceActive={isVoiceActive}
-                  voiceWorkspaceLabel={voiceWorkspaceLabel}
-                  voiceButtonTestId='guid-start-voice-call'
                 />
               }
             />

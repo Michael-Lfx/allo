@@ -1,3 +1,9 @@
+> **2026-10-23 恢复补充修复（最新阅读入口）**：[RECOVERY-REPAIR](voice-call-ux-handoff-2026-10-23/RECOVERY-REPAIR.zh.md) 已修复再次复审 F1–F3：明确 daemon 拒绝后可新请求重试，未绑定停止/自然结束可退休，旧停止及预约清理按 request 身份隔离。宿主 voice 87、真实 Conversation 集成 26、前端 104 项通过；桌面 feature 编译及 UI 生产构建通过。全仓基线及未完成项目仍单列，不将本轮恢复修复等同整个语音方案验收。下文均保留为历次事实。
+
+> **2026-10-23 独立复审后修复状态（当前阅读入口）**：[通话交互修复记录](voice-call-ux-handoff-2026-10-23/REPAIR-RESULTS.zh.md) 对应 R1–R4：迟到唤醒按 request_id 绑定原目标、未知启动按真实回执恢复、主停止键按 command 精确取消、外会话执行期间保留本页队列。正式集成 26、宿主 86、扩展伴侣 101、前端 101 项通过；不将其解释为全方案签核。下方“全旅程/全部闭环”为历史执行者声明；UX4 伙伴音色冻结、非 Nomi 工作区借用、原生硬件/窗口验收仍未完成。最新完整命令、构建与门禁结果见修复记录。
+
+> **2026-10-23 最新执行中状态（进行中，全旅程核心已落地并完成联合编译）**：基线已提交 `93e0ecac8`，工作树包含 UX1–UX4 核心与防线加固代码（尚未提交）。YOLO 优先级/preferredMode 校验、工作区绑定防漂移、单主按钮、message_id 接替、owner 桌宠文字 FIFO 与启动缓存淘汰防线（128 项上限/过期 reservation 接替）已全部闭环。实跑证据：宿主 voice 单测 85 通过、conversation 9 通过、前端定向 83 通过、桌面 feature 全图编译 `cargo check -p Flowy` exit 0、前端生产构建 `bun run build:ui` exit 0。物理硬件音频与原生多屏 DPI 待实机验收；详见 [本轮交接](voice-call-ux-handoff-2026-10-23/HANDOFF.zh.md) 及 [PROGRESS](voice-call-ux-handoff-2026-10-23/PROGRESS.md)。
+
 > **2026-10-23 通话入口核查及待实施方案**：[通话入口与桌宠感知](voice-call-entry-pet-presence-plan-2026-10-23.zh.md)。当前首页缺少连续通话入口，语音会话仍使用独立 bar 开始按钮；桌宠显示由持久偏好控制，Bolt 尚未消费 `motion`。本轮只整理带目标启动、固定电话主操作、临时桌宠呈现与动作覆盖的执行合同，U0–U4/CP-01–16 未实施、未签核。
 
 > **2026-10-23 授权决策更新（待实施）**：[通话方案 §0](voice-call-entry-pet-presence-plan-2026-10-23.zh.md#0-2026-10-23-授权默认值修订用户已确认待代码实施) 明确语音新会话默认 YOLO，用户显式选择及保存偏好优先；已有有效会话模式不覆盖。撤销语音缺失模式单独写 `default` 的设计，要求标签、持久化、runtime 与冻结任务一致；AUTH-01–06 尚待代码实施与验证。

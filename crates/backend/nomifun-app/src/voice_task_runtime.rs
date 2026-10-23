@@ -75,6 +75,8 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
             effective.model = Some(default_model);
         }
         validate_workspace(&effective)?;
+        effective.session_mode = Some(self.conversation.resolve_voice_session_mode(effective.session_mode.as_deref())
+            .await.map_err(|_| "task_session_mode_invalid")?);
         let mut preset_snapshot=None;
         effective.workspace = nomifun_common::paths::canonicalize_simplified(Path::new(&effective.workspace)).map_err(|_| "task_workspace_invalid")?.to_string_lossy().into_owned();
         if let Some(preset_id) = &effective.preset_id {
@@ -104,7 +106,8 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
         }
         validate_workspace(config).map_err(TaskMutationError::Rejected)?;
         let canonical=nomifun_common::paths::canonicalize_simplified(Path::new(&config.workspace)).map_err(|_| TaskMutationError::Rejected("task_workspace_invalid".into()))?;
-        let mode = config.session_mode.as_deref().unwrap_or("default");
+        let mode = self.conversation.resolve_voice_session_mode(config.session_mode.as_deref()).await
+            .map_err(|error| mutation_error(error,"task_session_mode_invalid","task_creation_failed"))?;
         let request:CreateConversationRequest=serde_json::from_value(serde_json::json!({
             "type":"nomi", "name":"语音任务", "model":config.model,
             "delegation_policy":"disabled",
@@ -187,12 +190,12 @@ impl VoiceTaskRuntime for ConversationVoiceRuntime {
                 return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
             }
 
-            let frozen_mode = frozen.session_mode.as_deref().unwrap_or("default");
+            let frozen_mode = frozen.session_mode.as_deref().unwrap_or("yolo");
             let actual_session_mode = conversation
                 .extra
                 .get("session_mode")
                 .and_then(|v| v.as_str())
-                .unwrap_or("default");
+                .unwrap_or("yolo");
             if frozen_mode != actual_session_mode {
                 return Err(TaskMutationError::Rejected("task_execution_config_conflict".into()));
             }
@@ -516,6 +519,13 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
         let database = nomifun_db::init_database_memory().await.unwrap();
         let database_pool = database.pool().clone();
+        if approval {
+            // These cases exercise explicit per-tool approval, not the new-user YOLO default.
+            nomifun_db::IClientPreferenceRepository::upsert_batch(
+                &nomifun_db::SqliteClientPreferenceRepository::new(database_pool.clone()),
+                &[("nomi.config", r#"{"preferredMode":"default"}"#)],
+            ).await.unwrap();
+        }
         let services = crate::AppServices::from_config(database, &crate::AppConfig {
             data_dir: root.path().join("data"), work_dir: workspace.clone(), ..Default::default()
         }).await.unwrap();
@@ -573,7 +583,7 @@ mod tests {
         let builder=crate::voice_companion_manager::VoiceCompanionProcessManager::new(
             Arc::new(nomifun_voice_models::ModelManager::new(root.path().join("models"))),&services.data_dir,
         ).with_tasks(services.authoritative_user_id.to_string(),runtime.clone()).with_dialogue(models.clone()).with_replay_daemon(daemon_origin);
-        *builder.active_window_candidate().write().unwrap() = Some(project.conversation_id.clone());
+        builder.set_candidate_conversation(Some(project.conversation_id.clone()));
         let recorder=Arc::new(crate::voice_companion_manager::ConversationVoiceDialogueRecorder::new(
             Arc::new(state.service.clone()),services.authoritative_user_id.to_string(),&services.data_dir,
         ).with_target_config(builder.target_selection()).with_active_window_candidate(builder.active_window_candidate()).with_execution_runtime(runtime.clone()));

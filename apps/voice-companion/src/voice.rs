@@ -207,6 +207,14 @@ impl Drop for VoiceCompanionRuntime {
 }
 
 impl VoiceCompanionRuntime {
+    fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider) {
+        if let Some(diagnostic) = tts.diagnostic("") {
+            let scope = events.snapshot();
+            let _ = events.send(VoiceCompanionEvent::TtsSource {
+                session_id: scope.session_id, turn_id: scope.turn_id, diagnostic,
+            });
+        }
+    }
     /// Assembles the complete voice pipeline with capture, playback, session driver, and router.
     pub fn assemble(model_manager: Arc<ModelManager>, oobe_manager: Arc<OobeManager>) -> Self {
         let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::new(16_000) {
@@ -603,6 +611,10 @@ impl VoiceCompanionRuntime {
     }
 
     pub async fn handle_wake_keyword(&self, keyword: &str) -> Result<(), VoiceWakeError> {
+        self.handle_wake_request(keyword, None).await
+    }
+
+    pub async fn handle_wake_request(&self, keyword: &str, request_id: Option<&str>) -> Result<(), VoiceWakeError> {
         if !self.oobe_manager.is_paired().await {
             warn!("Wake received but device is not yet paired via OOBE");
             let _ = self.playback.play_earcon(EarconKind::Alert).await;
@@ -622,7 +634,7 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
-        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword).await
+        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id).await
     }
 
     async fn accept_wake(
@@ -630,6 +642,7 @@ impl VoiceCompanionRuntime {
         playback: &Arc<PlaybackPipeline>,
         events: &Arc<VoiceEventHub>,
         keyword: &str,
+        request_id: Option<&str>,
     ) -> Result<(), VoiceWakeError> {
         let mut d = driver.lock().await;
         let next = d
@@ -643,6 +656,7 @@ impl VoiceCompanionRuntime {
         info!(state = ?next, "Wake accepted");
         let _ = events.send(VoiceCompanionEvent::WakeHit {
             keyword: keyword.to_string(),
+            request_id: request_id.map(str::to_owned),
         });
         let _ = events.send(VoiceCompanionEvent::Listening);
         drop(d);
@@ -684,6 +698,7 @@ impl VoiceCompanionRuntime {
         let started = std::time::Instant::now();
         let result = playback
             .speak_text_for_generation(tts.as_ref(), reply_text, "", generation, || {
+                Self::report_tts_source(event_tx, tts.as_ref());
                 let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
                 });
@@ -924,11 +939,12 @@ impl VoiceCompanionRuntime {
                 let (speech_tx, speech_rx) = tokio::sync::mpsc::channel::<String>(4);
                 let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
-                let req = nomifun_api_types::voice::VoiceDialogueRequest::scoped(
+                let mut req = nomifun_api_types::voice::VoiceDialogueRequest::scoped(
                     scope.session_id.as_deref().unwrap_or(""),
                     scope.turn_id.as_deref().unwrap_or(""),
                     &clean_input,
                 );
+                req.call_request_id = scope.call_request_id.clone();
 
                 let mut router_guard = AbortOnDrop(Some(tokio::spawn({
                     let router = router.clone();
@@ -950,12 +966,14 @@ impl VoiceCompanionRuntime {
                     let on_started = {
                         let event_tx = event_tx.clone();
                         let first_speech_text = first_speech_text.clone();
+                        let source_tts = tts.clone();
                         let stream_start = started;
                         move || {
                             let text = first_speech_text.lock().unwrap().clone().unwrap_or_default();
                             let ttfa_ms = stream_start.elapsed().as_millis() as u64;
                             info!(session_id=?latency_scope.0,turn_id=?latency_scope.1,from_model_start_ms=ttfa_ms,
                                 text_chars = text.chars().count(), "voice_first_audio_started");
+                            Self::report_tts_source(&event_tx, source_tts.as_ref());
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text });
                         }
                     };
@@ -1996,7 +2014,7 @@ impl VoiceCompanionRuntime {
                                 warn!("Wake received but voice models are not yet installed");
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
                             } else {
-                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword)
+                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None)
                                     .await
                                     .is_ok()
                                 {

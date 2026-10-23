@@ -13,7 +13,6 @@ import { subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
-import VoiceTargetSettingsSection from './VoiceTargetSettings';
 import VoiceDialogueStatusSection from './VoiceDialogueStatus';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
@@ -960,9 +959,16 @@ const VoiceSettings: React.FC = () => {
           </SettingsList>
         </SettingsSection>
 
-        <VoiceTargetSettingsSection />
         <VoiceDialogueStatusSection />
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
+        <p className='m-0 text-12px text-t-secondary' role='status'>
+          {voiceSnapshot?.tts ? t('voice.presentation.ttsActual', {
+            provider: voiceSnapshot.tts.provider,
+            voice: voiceSnapshot.tts.voice ?? '—',
+            location: t(voiceSnapshot.tts.online ? 'voice.presentation.online' : 'voice.presentation.local'),
+          }) : t('voice.presentation.ttsUnknown')}
+          {voiceSnapshot?.tts?.fallback_reason && ` · ${t('voice.presentation.ttsFallback')}`}
+        </p>
 
         {modelStatus === 'Ready' && (
           <SettingsSection

@@ -871,14 +871,16 @@ const MessageItem: React.FC<{ message: TMessage; highlighted?: boolean; hideActi
 const MessageList: React.FC<{
   className?: string;
   emptySlot?: React.ReactNode;
+  liveMessages?: TMessage[];
   /** Windowed-history paging (nomi surfaces): prepend the next older message
    *  window when the user scrolls to the top. Omitted on chats that still load
    *  their whole transcript at once. */
   onLoadOlder?: () => void | Promise<void>;
   hasMoreOlder?: boolean;
   loadingOlder?: boolean;
-}> = ({ emptySlot, onLoadOlder, hasMoreOlder, loadingOlder }) => {
-  const list = useMessageList();
+}> = ({ emptySlot, liveMessages, onLoadOlder, hasMoreOlder, loadingOlder }) => {
+  const persistedList = useMessageList();
+  const list = useMemo(() => liveMessages?.length ? [...persistedList, ...liveMessages] : persistedList, [persistedList, liveMessages]);
   const isMessageListLoading = useMessageListLoading();
   const loadedConversationId = useMessageListLoadedId();
   const artifacts = useConversationArtifacts();

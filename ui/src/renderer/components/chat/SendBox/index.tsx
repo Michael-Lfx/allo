@@ -245,6 +245,7 @@ const SendBox: React.FC<{
   skillChips?: ComposerSkillChip[];
   onSkillChipsChange?: (skills: ComposerSkillChip[]) => void;
   onStop?: () => Promise<void>;
+  stopPending?: boolean;
   /** When provided AND a turn is running AND there is a draft, a secondary
    *  "steer now" action is offered alongside the (enqueue) send button. */
   onSteer?: (message: string) => Promise<void>;
@@ -311,6 +312,7 @@ const SendBox: React.FC<{
   skillChips = [],
   onSkillChipsChange,
   onStop,
+  stopPending = false,
   onSteer,
   steerAvailable,
   onEditResubmit,
@@ -2196,6 +2198,7 @@ const SendBox: React.FC<{
     if (
       !onStop ||
       isStoppingRef.current ||
+      stopPending ||
       stopHandoffGateRef.current.shouldIgnoreStop(clickDetail)
     ) return;
     isStoppingRef.current = true;
@@ -2254,7 +2257,7 @@ const SendBox: React.FC<{
         onSpeechTranscript={handleSpeechTranscript}
         showStop={isProcessing}
         onStop={stopHandler}
-        stopPending={isStopping}
+        stopPending={isStopping || stopPending}
         showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
         steerAvailable={steerAvailable}
         onSteer={steerMessageHandler}

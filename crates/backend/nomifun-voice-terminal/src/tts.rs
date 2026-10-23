@@ -63,6 +63,7 @@ pub fn parse_retry_after(
 
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
+    fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> { None }
     /// Stream audio chunk synthesis. Returns an async Receiver for byte buffers.
     async fn synthesize_stream(
         &self,
@@ -127,6 +128,12 @@ impl Default for EdgeTtsProvider {
 
 #[async_trait]
 impl TtsProvider for EdgeTtsProvider {
+    fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
+            provider: "edge".into(), voice: Some(if voice.is_empty() { self.default_voice.clone() } else { voice.into() }),
+            online: true, fallback_reason: None,
+        })
+    }
     async fn synthesize_stream(
         &self,
         text: &str,
@@ -939,6 +946,12 @@ impl SherpaOfflineTtsProvider {
 #[cfg(feature = "local-tts")]
 #[async_trait]
 impl TtsProvider for SherpaOfflineTtsProvider {
+    fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
+            provider: "sherpa".into(), voice: Some(if voice.is_empty() { self.config.sid.to_string() } else { voice.into() }),
+            online: false, fallback_reason: None,
+        })
+    }
     async fn synthesize_stream(
         &self,
         text: &str,
@@ -1038,6 +1051,7 @@ impl TtsProvider for SherpaOfflineTtsProvider {
 pub struct FallbackTtsProvider {
     primary: std::sync::Arc<dyn TtsProvider>,
     fallback: std::sync::Arc<dyn TtsProvider>,
+    selected: std::sync::Arc<std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTtsDiagnostic>>>,
 }
 
 impl FallbackTtsProvider {
@@ -1045,7 +1059,7 @@ impl FallbackTtsProvider {
         primary: std::sync::Arc<dyn TtsProvider>,
         fallback: std::sync::Arc<dyn TtsProvider>,
     ) -> Self {
-        Self { primary, fallback }
+        Self { primary, fallback, selected: Default::default() }
     }
 
     pub fn primary(&self) -> &std::sync::Arc<dyn TtsProvider> {
@@ -1059,19 +1073,30 @@ impl FallbackTtsProvider {
 
 #[async_trait]
 impl TtsProvider for FallbackTtsProvider {
+    fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        self.selected.lock().unwrap_or_else(|e|e.into_inner()).clone()
+    }
     async fn synthesize_stream(
         &self,
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
         match self.primary.synthesize_stream(text, voice).await {
-            Ok(rx) => Ok(rx),
+            Ok(rx) => {
+                *self.selected.lock().unwrap_or_else(|e|e.into_inner()) = self.primary.diagnostic(voice);
+                Ok(rx)
+            },
             Err(primary_err) => {
                 tracing::warn!(
                     error = %primary_err,
                     "primary_tts_failed_attempting_fallback"
                 );
-                self.fallback.synthesize_stream(text, voice).await
+                let result = self.fallback.synthesize_stream(text, voice).await;
+                let diagnostic = result.as_ref().ok().and_then(|_|self.fallback.diagnostic(voice)).map(|mut diagnostic| {
+                    diagnostic.fallback_reason = Some("primary_synthesis_failed".into()); diagnostic
+                });
+                *self.selected.lock().unwrap_or_else(|e|e.into_inner()) = diagnostic;
+                result
             }
         }
     }

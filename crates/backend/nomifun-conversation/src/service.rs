@@ -5881,7 +5881,44 @@ impl ConversationService {
         self.ensure_default_voice_conversation_with_owner(user_id, None).await
     }
 
+    pub async fn resolve_voice_session_mode(&self, explicit: Option<&str>) -> Result<String, AppError> {
+        let mode = if let Some(mode) = explicit {
+            Some(mode.to_owned())
+        } else {
+            let repo = self.failover_client_prefs.read().ok().and_then(|slot| slot.clone());
+            if let Some(repo) = repo {
+                let rows = repo.get_by_keys(&["nomi.config"]).await
+                    .map_err(|error| AppError::Internal(format!("voice mode preference unavailable: {error}")))?;
+                let parsed = rows.into_iter().find(|row| row.key == "nomi.config")
+                    .map(|row| serde_json::from_str::<serde_json::Value>(&row.value)
+                        .map_err(|_| AppError::Internal("invalid Nomi preference JSON".into())))
+                    .transpose()?;
+                if let Some(config) = parsed {
+                    if let Some(pref) = config.get("preferredMode") {
+                        if let Some(s) = pref.as_str() {
+                            Some(s.to_owned())
+                        } else {
+                            return Err(AppError::BadRequest("voice_session_mode_invalid".into()));
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else { None }
+        };
+        match mode.as_deref().unwrap_or("yolo") {
+            mode @ ("default" | "auto_edit" | "yolo") => Ok(mode.to_owned()),
+            _ => Err(AppError::BadRequest("voice_session_mode_invalid".into())),
+        }
+    }
+
     pub async fn ensure_default_voice_conversation_with_owner(&self, user_id: &str, owner: Option<&str>) -> Result<String, AppError> {
+        self.ensure_default_voice_conversation_with_mode(user_id, owner, None).await
+    }
+
+    pub async fn ensure_default_voice_conversation_with_mode(&self, user_id: &str, owner: Option<&str>, mode: Option<&str>) -> Result<String, AppError> {
         let owner = owner.map(CompanionId::try_from).transpose()
             .map_err(|e|AppError::BadRequest(format!("invalid voice memory owner: {e}")))?;
         let creation_key = match &owner {
@@ -5891,10 +5928,11 @@ impl ConversationService {
         if let Some(existing) = self.conversation_repo.find_by_creation_key(user_id, &creation_key).await? {
             return Ok(existing.conversation_id);
         }
+        let mode = self.resolve_voice_session_mode(mode).await?;
         let req = CreateConversationRequest {
             name: Some("语音助手".to_owned()),
             r#type: AgentType::Nomi,
-            extra: serde_json::json!({ "is_default_voice": true, "voice": true, "memory_owner_companion_id": owner }),
+            extra: serde_json::json!({ "is_default_voice": true, "voice": true, "memory_owner_companion_id": owner, "session_mode": mode }),
             source: Some(ConversationSource::Nomifun),
             model: None,
             preset_id: None,
@@ -6001,12 +6039,10 @@ impl ConversationService {
             if !canonical.is_dir() {return Err(AppError::BadRequest("voice_workspace_invalid".into()));}
             req.extra["voice_task_workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
             req.extra["workspace"]=serde_json::Value::String(canonical.to_string_lossy().into_owned());
-            let mode = req
-                .extra
-                .get("session_mode")
-                .and_then(serde_json::Value::as_str)
-                .filter(|m| matches!(*m, "default" | "auto_edit" | "yolo"))
-                .unwrap_or("default");
+            if req.extra.get("session_mode").is_some_and(|value| !value.is_string()) {
+                return Err(AppError::BadRequest("voice_session_mode_invalid".into()));
+            }
+            let mode = self.resolve_voice_session_mode(req.extra.get("session_mode").and_then(serde_json::Value::as_str)).await?;
             req.extra["session_mode"] = serde_json::Value::String(mode.into());
             req.delegation_policy=DelegationPolicy::Disabled;
         }

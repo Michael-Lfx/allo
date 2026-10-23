@@ -17,6 +17,18 @@ test('durable receipts retire live placeholders; volume changes cannot reopen th
   expect(liveVoiceTurn(completed,'voice')).toBeNull();
   expect(liveVoiceTurn({...completed,seq:99,audio:{rms_milli:42} as VoiceSnapshot['audio']},'voice')).toBeNull();
 });
+
+test('projection receipt alone never hides text before matching durable message rows are visible',()=>{
+  const projected={...snapshot,projected_turn_ids:['a','b'],conversation:[{
+    ...snapshot.conversation![1], user_message_id:'user-b', assistant_message_id:'assistant-b',
+  }]};
+  expect(liveVoiceTurn(projected,'voice')?.user_text).toBe('即时转写');
+  const userVisible=liveVoiceTurn(projected,'voice',new Set(['user-b']));
+  expect(userVisible?.user_text).toBeNull();
+  expect(userVisible?.assistant_text).toBe('第一句');
+  expect(liveVoiceTurn(projected,'voice',new Set(['user-b','assistant-b']))).toBeNull();
+  expect(liveVoiceTurn(projected,'other',new Set())).toBeNull();
+});
 test('ignored cleanup leaves no transcript while the connection continues listening',()=>{
   expect(liveVoiceTurn({...snapshot,phase:'listening',conversation:[],user_text:null,assistant_text:null},'voice')).toBeNull();
 });

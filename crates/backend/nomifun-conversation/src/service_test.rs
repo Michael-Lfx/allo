@@ -3625,7 +3625,6 @@ async fn voice_creation_stamps_an_immutable_workspace_and_reuses_the_creation_id
     for (mode, expected) in [
         ("default", "default"),
         ("auto_edit", "auto_edit"),
-        ("unsupported-mode", "default"),
     ] {
         let mut candidate = request();
         candidate.extra["session_mode"] = json!(mode);
@@ -3645,11 +3644,38 @@ async fn voice_creation_stamps_an_immutable_workspace_and_reuses_the_creation_id
         assert_eq!(extra["session_mode"], expected, "mode: {mode}");
     }
     let mut forged = request();
+    forged.extra["session_mode"] = json!("unsupported-mode");
+    assert!(matches!(service.create_voice_idempotent(PROJECTION_OWNER, forged, "voice-create:invalid-mode", workspace.path().to_str().unwrap(), None).await, Err(AppError::BadRequest(_))));
+    let mut implicit = request();
+    implicit.extra.as_object_mut().unwrap().remove("session_mode");
+    let created = service.create_voice_idempotent(PROJECTION_OWNER, implicit, "voice-create:yolo-default", workspace.path().to_str().unwrap(), None).await.unwrap();
+    assert_eq!(created.extra["session_mode"], "yolo");
+    let mut forged = request();
     forged.extra["voice_task_workspace"] = json!(workspace.path());
     assert!(matches!(service.create(PROJECTION_OWNER, forged).await, Err(AppError::BadRequest(_))));
     let patch: UpdateConversationRequest = serde_json::from_value(json!({"extra": {"voice_task_workspace": null}})).unwrap();
     let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
     assert!(matches!(service.update(PROJECTION_OWNER, &first.conversation_id, patch, &runtime_registry).await, Err(AppError::BadRequest(_))));
+}
+
+#[tokio::test]
+async fn voice_mode_uses_explicit_then_saved_preference_then_yolo() {
+    let (service, _, _, _) = make_service();
+    assert_eq!(service.resolve_voice_session_mode(None).await.unwrap(), "yolo");
+    service.with_failover_deps(Arc::new(StubProviderRepo::new(vec![])), Arc::new(StubProviderModelRepo::new(vec![])), Arc::new(FixedClientPrefRepo {
+        preferences: vec![ClientPreference { id: 1, key: "nomi.config".into(),
+            value: json!({"preferredMode":"auto_edit"}).to_string(), updated_at: 1 }],
+    }));
+    assert_eq!(service.resolve_voice_session_mode(None).await.unwrap(), "auto_edit");
+    assert_eq!(service.resolve_voice_session_mode(Some("default")).await.unwrap(), "default");
+    assert_eq!(service.resolve_voice_session_mode(Some("yolo")).await.unwrap(), "yolo");
+    assert!(service.resolve_voice_session_mode(Some("invalid")).await.is_err());
+
+    service.with_failover_deps(Arc::new(StubProviderRepo::new(vec![])), Arc::new(StubProviderModelRepo::new(vec![])), Arc::new(FixedClientPrefRepo {
+        preferences: vec![ClientPreference { id: 1, key: "nomi.config".into(),
+            value: json!({"preferredMode": 123}).to_string(), updated_at: 1 }],
+    }));
+    assert!(service.resolve_voice_session_mode(None).await.is_err());
 }
 
 #[tokio::test]

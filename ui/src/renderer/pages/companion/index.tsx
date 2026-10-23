@@ -8,6 +8,7 @@ import { browserStorageKey } from '@/common/utils/browserStorageKey';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { isTauriRuntime } from '@/common/adapter/tauriRuntime';
 import { openVoiceTask, startVoiceConversation, stopVoiceSession } from '@/common/adapter/voiceCompanion';
+import VoicePetInput from './VoicePetInput';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import type { ICompanionProfile, ICompanionSuggestion, IResponseMessage } from '@/common/adapter/ipcBridge';
 import { extractResponseTextChunk } from '@/common/chat/displayText';
@@ -333,7 +334,7 @@ const CompanionPage: React.FC = () => {
   );
 
   // Apply native window visibility/position from the companion's profile (desktop shell only).
-  const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean }) => {
+  const applyWindowState = useCallback(async (cfg: ICompanionProfile, opts?: { skipPosition?: boolean; strict?: boolean }) => {
     if (!isTauriRuntime()) return;
     try {
       const { getCurrentWindow, PhysicalPosition, availableMonitors } = await import('@tauri-apps/api/window');
@@ -385,6 +386,7 @@ const CompanionPage: React.FC = () => {
       }
     } catch (e) {
       console.error('companion window state apply failed:', e);
+      if (opts?.strict) throw e;
     }
   }, []);
 
@@ -394,7 +396,7 @@ const CompanionPage: React.FC = () => {
   // ordinary restores do not fight a live drag. Must run AFTER
   // applyWindowState's show(): before the first orderFront macOS reports
   // scaleFactor 1.0 and every physical-px computation here would be wrong.
-  const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left' }) => {
+  const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left'; strict?: boolean }) => {
     const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
     if (!isTauriRuntime() || !effectiveVisible) return;
     // An expanded surface owns the native rectangle until it closes. Config
@@ -439,6 +441,7 @@ const CompanionPage: React.FC = () => {
       lastLocalMoveAt.current = Date.now();
     } catch (e) {
       console.error('companion desk size apply failed:', e);
+      if (opts?.strict) throw e;
     }
   }, []);
 
@@ -716,22 +719,32 @@ const CompanionPage: React.FC = () => {
     }
     const init = async (attempt: number) => {
       try {
-        const [withStatus, news] = await Promise.all([
-          ipcBridge.companion.getCompanion.invoke({ companion_id: companionId }),
-          ipcBridge.companion.listSuggestions.invoke({ status: 'new', limit: 50 }),
-        ]);
+        const withStatus = await ipcBridge.companion.getCompanion.invoke({ companion_id: companionId });
+        void ipcBridge.companion.listSuggestions.invoke({ status:'new', limit:50 }).then(news => {
+          if(!disposed){setUnread(news.total);setSuggestions(news.items);}
+        }).catch(() => {});
         if (disposed) return;
         setProfile(withStatus);
         setMood((withStatus.status?.mood as RabbitMood) || 'content');
-        setUnread(news.total);
-        setSuggestions(news.items);
-        await applyWindowState(withStatus);
-        await applyDeskSize(withStatus, { anchor: 'top-left' });
+        await applyWindowState(withStatus, {strict:true});
+        await applyDeskSize(withStatus, { anchor: 'top-left', strict:true });
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (!disposed) {
+          await Promise.race([
+            Promise.all(Array.from(document.images).map(image => image.decode?.().catch(() => {}))),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('pet_asset_timeout')), 3000)),
+          ]);
+          if (disposed) return;
+          document.documentElement.dataset.flowyPetReady = 'true';
+          document.getElementById('flowy-pet-boot')?.remove();
+        }
       } catch (e) {
         console.error('companion init failed:', e);
         // Without a loaded profile the companion stays invisible forever — retry.
         if (!disposed && attempt < INIT_MAX_RETRIES) {
           retryTimer = setTimeout(() => void init(attempt + 1), INIT_RETRY_MS);
+        } else if (!disposed && isTauriRuntime()) {
+          void import('@tauri-apps/api/event').then(({emitTo}) => emitTo('main','companion-boot-error',companionId)).catch(() => {});
         }
       }
     };
@@ -2099,7 +2112,7 @@ const CompanionPage: React.FC = () => {
           </div>
         </div>
       </div>
-      {composerOpen ? (
+      {voiceActive&&voiceSnapshot?.binding ? <VoicePetInput key={voiceSnapshot.binding.conversation_id} conversationId={voiceSnapshot.binding.conversation_id} workspace={voiceSnapshot.binding.workspace}/> : composerOpen ? (
         <div
           className={`nomi-companion-composer ${dragOver ? 'is-dragover' : ''}`}
           data-companion-hit

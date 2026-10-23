@@ -248,6 +248,7 @@ pub async fn voice_events_handler(
 #[derive(serde::Deserialize)]
 pub struct VoiceWakeRequest {
     pub keyword: Option<String>,
+    pub request_id: Option<String>,
 }
 
 /// `POST /api/voice/wake`: External wake trigger (e.g. from desktop cascade recognizer).
@@ -257,14 +258,15 @@ pub async fn voice_wake_handler(
 ) -> impl IntoResponse {
     let kw = payload.keyword.unwrap_or_else(|| "Hey Flowy".to_string());
     if let Some(ref rt) = state.voice_runtime {
-        match rt.handle_wake_keyword(&kw).await {
+        match rt.handle_wake_request(&kw, payload.request_id.as_deref()).await {
             Ok(()) => (
                 StatusCode::OK,
                 Json(json!({"success": true, "keyword": kw})),
             )
                 .into_response(),
             Err(crate::voice::VoiceWakeError::Busy) if rt.snapshot().session_id.is_some()
-                && rt.snapshot().ended_reason.is_none() => (
+                && rt.snapshot().ended_reason.is_none()
+                && rt.snapshot().call_request_id.as_deref() == payload.request_id.as_deref() => (
                     StatusCode::OK,
                     Json(json!({"success":true,"already_active":true})),
                 ).into_response(),

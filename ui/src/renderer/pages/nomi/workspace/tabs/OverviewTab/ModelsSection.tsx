@@ -52,11 +52,7 @@ const ModelsSection: React.FC<ModelsSectionProps> = ({ companion, status, compan
 
         <NomiSettingRow
           title={t('nomi.overview.ttsSlot')}
-          description={
-            profile.voice.tts?.voice
-              ? t('nomi.overview.ttsSlotHint')
-              : t('nomi.overview.ttsFallback')
-          }
+          description={t('voice.presentation.ttsScope')}
           controls={
             <TaskModelSelect
               task='speech_synthesis'
