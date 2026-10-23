@@ -136,6 +136,44 @@ pub fn bounded_edit_close(a: &str, b: &str) -> bool {
     }
 }
 
+/// 题面防雷同阈值（learnhub #148 `VARIANT_SIMILARITY_THRESHOLD` 同值）。
+pub const STEM_SIMILARITY_THRESHOLD: f64 = 0.7;
+
+/// 题面 / 名字相似度（k04，learnhub nearname `similarity` 同构）：三口径
+/// 取最大——字符 trigram Jaccard、trigram 包含度（交集 gram / 短串 gram）、
+/// 子串包含度（短串字数 / 长串字数）。子串分量兜底「同题换数」以外最典型
+/// 的「概念名 + 修饰语」形态；<3 字符整串作单 gram（[`trigrams`] 同律）。
+/// 铸名近形与题面防雷同从此同一函数——零第二实现。
+pub fn stem_similarity(a: &str, b: &str) -> f64 {
+    let (a, b) = (normalize(a), normalize(b));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let (grams_a, grams_b) = (trigrams(&a), trigrams(&b));
+    let (small, large) = if grams_a.len() <= grams_b.len() {
+        (&grams_a, &grams_b)
+    } else {
+        (&grams_b, &grams_a)
+    };
+    let intersection = small.iter().filter(|gram| large.contains(gram)).count();
+    let mut score = 0.0;
+    if intersection > 0 {
+        let containment = intersection as f64 / small.len() as f64;
+        let jaccard =
+            intersection as f64 / (grams_a.len() + grams_b.len() - intersection) as f64;
+        score = containment.max(jaccard);
+    }
+    if a.contains(b.as_str()) || b.contains(a.as_str()) {
+        let (short, long) = if a.chars().count() <= b.chars().count() {
+            (&a, &b)
+        } else {
+            (&b, &a)
+        };
+        score = score.max(short.chars().count() as f64 / long.chars().count() as f64);
+    }
+    score
+}
+
 /// 词面共享分（二元组交集计数；词面补位的排序键）。
 fn word_face_score(a: &str, b: &str) -> usize {
     let bigrams = |text: &str| -> Vec<String> {

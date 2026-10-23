@@ -1700,6 +1700,8 @@ async fn run_quiz(
         anyhow::bail!("--provider and --model must be provided together");
     }
     let k = nomifun_learning::QUIZ_TRIGGER_SETTLEMENTS;
+    // k04：读数从零开始（进程内计数器，多次运行同一进程时不吃陈旧数）。
+    nomifun_learning::qb_readings::reset();
     // 变式站的 LLM 调用落观测档案（structure 冒烟同纪律）：挂 ArchivingCompleter。
     let (wiring, _archiving, _live) =
         wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
@@ -1847,6 +1849,13 @@ async fn run_quiz(
     let is_variant =
         |item: &serde_json::Value| item.get("origin").and_then(|v| v.as_str()) == Some("variant");
     let variant_count = plan_items.iter().filter(|item| is_variant(item)).count();
+    // k04 读数行（非门禁）：题面防雷同门的确定性计数器——off 臂 sim_hits
+    // 与 dropped 恒 0（门不在），on 臂为门实际命中数。
+    let qb = nomifun_learning::qb_readings::snapshot();
+    println!(
+        "qb_similarity read-out: pools={k} pool_checks={} sim_hits={} dropped={} retries={} variants_generated={variant_count}",
+        qb.pool_checks, qb.sim_hits, qb.dropped, qb.retries
+    );
     let variants_present = variant_count > 0;
     // 每条计划项的判分底：bank 题 = 种子 config（answer "B"）；变式题 =
     // payload.config_json 的 answer（判底随计划行内下发，不回库）。

@@ -17,7 +17,7 @@ pub(crate) fn strip_code_fences(raw: &str) -> String {
 
 /// Normalize a question prompt for duplicate comparison: lowercase and
 /// collapse all whitespace runs into single spaces.
-pub(super) fn normalize_prompt(text: &str) -> String {
+pub(crate) fn normalize_prompt(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

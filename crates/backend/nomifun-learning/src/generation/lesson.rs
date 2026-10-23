@@ -348,6 +348,16 @@ pub(crate) async fn generate_lesson(
     );
     let activities =
         generate_lesson_activities(completer, model_override, &activities_prompt).await?;
+    // 题级丢弃留痕（k04）：雷同题被剔后逐行进观察日志（报告面）。
+    for dropped in &activities.dropped {
+        tracing::warn!(
+            target: "nomifun_learning",
+            prompt = %dropped.prompt,
+            hit_prompt = %dropped.hit_prompt,
+            score = dropped.score,
+            "activity prompt dropped as duplicate"
+        );
+    }
 
     Ok(LessonOutput {
         summary: assembled,
