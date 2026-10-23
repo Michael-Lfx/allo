@@ -1,5 +1,7 @@
 {
-  "pet": { "more": "{{count}} more" },
+  "pet": {
+    "more": "{{count}} more"
+  },
   "execution": {
     "title": "Voice task execution",
     "description": "Tasks use a dedicated conversation and the existing local execution service. Writes, deletion and dangerous commands need approval for each call; unsupported tools and workspace escapes are denied.",
@@ -417,5 +419,17 @@
     "returnVoiceCall": "Return to Call",
     "returnVoiceCallWorkspace": "Return to Call ({{workspace}})",
     "callConflictActive": "Another voice call is already active; switched to active call"
+  },
+  "presentation": {
+    "petBootFailed": "The desktop pet could not finish loading. Retry from pet settings.",
+    "inputTarget": "Voice chat · {{workspace}}",
+    "inputPlaceholder": "Add to the current voice task…",
+    "sendFailed": "Delivery is unconfirmed. Your text is kept. Retry or open the voice chat to check.",
+    "ttsScope": "This voice applies to companion chat and robot speech. Calls use the speech capabilities shown in Voice settings.",
+    "ttsActual": "Latest synthesis: {{provider}} · {{voice}} · {{location}}",
+    "ttsUnknown": "Call synthesis source appears after the first playback. Companion voices are not used for calls yet.",
+    "ttsFallback": "Fallback synthesis selected",
+    "online": "Online",
+    "local": "Local"
   }
 }

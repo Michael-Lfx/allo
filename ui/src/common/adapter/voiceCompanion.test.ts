@@ -3,32 +3,126 @@ import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVo
 import { getVoiceFeedbackSettings, saveVoiceFeedback, previewVoiceFeedback } from './voiceCompanion';
 import * as voice from './voiceCompanion';
 
-test('explicit voice entry coalesces clicks, wakes once and opens only the frozen binding', async () => {
+test('a definite wake rejection allows a fresh request while an unknown 503 retains its identity', async () => {
+  const original=globalThis.fetch;
+  const requests:Array<{request_id:string}>=[];
+  let responseCode='daemon_wake_rejected';
+  globalThis.fetch=(async(_input:RequestInfo|URL,init?:RequestInit)=>{
+    const request=JSON.parse(String(init?.body));requests.push(request);
+    return responseCode ? Response.json({code:responseCode},{status:503}) : Response.json({request_id:request.request_id,status:'ready',conversation_id:'voice-p'});
+  }) as typeof fetch;
+  try {
+    expect(await voice.startVoiceCallIntent({kind:'current_selection'}).then(()=>null,error=>(error as Error).message)).toBe('daemon_wake_rejected');
+    responseCode='daemon_wake_timeout';
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('daemon_wake_timeout');
+    expect(requests[1].request_id).not.toBe(requests[0].request_id);
+    expect(await voice.startVoiceCallIntent({kind:'workspace',workspace:'D:/q'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    responseCode='';
+    expect((await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'})).status).toBe('ready');
+    expect(requests[2].request_id).toBe(requests[1].request_id);
+  } finally {globalThis.fetch=original;}
+});
+
+test('an unbound start is retired only by its own successful stop', async () => {
+  const original=globalThis.fetch;
+  const requests:Array<{request_id:string}>=[];
+  let failStop=true;
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    if(String(input).endsWith('/session/stop'))return Response.json({success:!failStop},{status:failStop?409:200});
+    const request=JSON.parse(String(init?.body));requests.push(request);
+    if(requests.length===1)throw new TypeError('response_lost');
+    return Response.json({request_id:request.request_id,status:'ready',conversation_id:'voice-p'});
+  }) as typeof fetch;
+  try {
+    expect(await voice.startVoiceCallIntent({kind:'workspace',workspace:'D:/p'}).then(()=>null,error=>(error as Error).message)).toBe('response_lost');
+    const scope={instance_id:'host',session_id:'session-before-bind',turn_id:null,call_request_id:requests[0].request_id,binding:null} as VoiceSnapshot;
+    expect(await stopVoiceSession(scope).then(()=>null,error=>(error as Error).message)).toBe('voice_stop_rejected');
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    failStop=false;
+    await stopVoiceSession({...scope,call_request_id:'old-request'});
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    await stopVoiceSession(scope);
+    expect((await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'})).status).toBe('ready');
+    expect(requests).toHaveLength(2);
+    expect(requests[1].request_id).not.toBe(requests[0].request_id);
+  } finally {globalThis.fetch=original;}
+});
+
+test('an unbound natural end retires its exact pending request without treating an idle snapshot as success', async () => {
+  const original=globalThis.fetch;
+  let requestId='';let starts=0;
+  let emit:ReadableStreamDefaultController<Uint8Array>|undefined;
+  const scope=()=>({instance_id:'host',seq:1,session_id:'session-before-bind',turn_id:null,call_request_id:requestId,binding:null,phase:'idle',ended_reason:null} as VoiceSnapshot);
+  globalThis.fetch=(async(input:RequestInfo|URL,init?:RequestInit)=>{
+    if(String(input).endsWith('/events'))return new Response(new ReadableStream<Uint8Array>({start(controller){emit=controller;}}));
+    if(String(input).endsWith('/session'))return Response.json(scope());
+    const request=JSON.parse(String(init?.body));starts++;requestId=request.request_id;
+    if(starts===1)throw new TypeError('response_lost');
+    return Response.json({request_id:request.request_id,status:'ready',conversation_id:'voice-p'});
+  }) as typeof fetch;
+  let off:(()=>void)|undefined;
+  try {
+    expect(await voice.startVoiceCallIntent({kind:'current_selection'}).then(()=>null,error=>(error as Error).message)).toBe('response_lost');
+    let observeEnd:()=>void=()=>{};
+    const ended=new Promise<void>(resolve=>{observeEnd=resolve;});
+    off=await subscribeVoiceSession(snapshot=>{if(snapshot.seq===2)observeEnd();},false);
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    emit!.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({type:'Snapshot',payload:{snapshot:{...scope(),seq:2,ended_reason:'follow_up_silence'}}})}\n\n`));
+    await ended;
+    expect((await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'})).status).toBe('ready');
+    expect(starts).toBe(2);
+  } finally {off?.();globalThis.fetch=original;}
+});
+
+test('a lost start response is reconciled by its confirmed session stop, allowing a fresh entry', async () => {
+  const original = globalThis.fetch;
+  let lostRequestId = '';
+  const starts: Array<{request_id:string;target:unknown}> = [];
+  globalThis.fetch = (async (input:RequestInfo|URL, init?:RequestInit) => {
+    if(String(input).endsWith('/session/stop')) return Response.json({success:true});
+    const request=JSON.parse(String(init?.body));starts.push(request);
+    if(starts.length===1){lostRequestId=request.request_id;throw new TypeError('response_lost');}
+    return Response.json({request_id:request.request_id,status:'ready',conversation_id:'voice-p',session_id:'new-session'});
+  }) as typeof fetch;
+  try {
+    expect(await voice.startVoiceCallIntent({kind:'workspace',workspace:'D:/project-p'},'yolo').then(()=>null,error=>(error as Error).message)).toBe('response_lost');
+    const scope={instance_id:'host',session_id:'bound-session',turn_id:'turn',call_request_id:lostRequestId,
+      binding:{session_id:'bound-session',binding_id:'binding',conversation_id:'voice-p',workspace:'D:/project-p'}} as VoiceSnapshot;
+    await stopVoiceSession({...scope,call_request_id:'older-request'});
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    expect(starts.length).toBe(1);
+    await stopVoiceSession(scope);
+    const next=await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'});
+    expect(next.status).toBe('ready');expect(starts.length).toBe(2);
+    expect(starts[1].request_id).not.toBe(starts[0].request_id);
+  } finally {globalThis.fetch=original;}
+});
+
+test('explicit voice entry coalesces clicks through the host start contract and opens only its frozen target', async () => {
   const originalFetch = globalThis.fetch;
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const location = { hash: '' };
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { location } });
   const requests: string[] = [];
-  let reads = 0;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  const bodies: unknown[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input); requests.push(url);
-    if (url.endsWith('/wake')) return Response.json({ success: true });
-    reads += 1;
-    return Response.json(reads === 1 ? { phase: 'idle' } : {
-      phase: 'listening', session_id: 'current', binding: { session_id: 'current', conversation_id: 'frozen-target' },
-    });
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ request_id:'request', status:bodies.length===1?'starting':'ready', conversation_id:'frozen-target', session_id:null });
   }) as typeof fetch;
   try {
     const first = voice.startVoiceConversation();
     expect(voice.startVoiceConversation()).toBe(first);
     await first;
-    expect(requests.filter(url => url.endsWith('/wake'))).toHaveLength(1);
+    expect(requests.filter(url => url.endsWith('/session/start'))).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({target:{kind:'current_selection'}});
     expect(location.hash).toBe('/conversation/frozen-target');
     expect(requests.some(url => url.includes('/tasks') || url.includes('/messages'))).toBe(false);
     requests.length = 0;
     await voice.startVoiceConversation();
     expect(requests).toHaveLength(1);
-    expect(requests[0].endsWith('/session')).toBe(true);
+    expect(requests[0].endsWith('/session/start')).toBe(true);
+    expect((bodies[0] as {request_id:string}).request_id).toBe((bodies[1] as {request_id:string}).request_id);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);

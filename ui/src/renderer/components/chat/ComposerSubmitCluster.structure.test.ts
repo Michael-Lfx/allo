@@ -102,7 +102,9 @@ describe('ComposerSubmitCluster', () => {
     expect(source.includes('PhoneCall')).toBe(true);
     expect(source.includes('PhoneOff')).toBe(true);
     expect(source.includes('const hideSpeech = isVoiceConversation || speechHidden || !ready || !available')).toBe(true);
-    expect(source.includes('const effectiveShowSendButton = isVoiceConversation ? hasDraft : showSendButton')).toBe(true);
+    expect(source.includes('const effectiveShowSendButton = isVoiceConversation ? hasDraft && !showStopButton && !isVoiceConnecting : showSendButton')).toBe(true);
+    expect(source.includes('const showPhoneButton = isVoiceConversation && !showStopButton && (!hasDraft || isVoiceConnecting)')).toBe(true);
+    expect(source.includes("status='danger'")).toBe(true);
     expect(source.includes('sendbox-phone-call-button')).toBe(true);
     expect(source.includes('sendbox-phone-hangup-button')).toBe(true);
   });

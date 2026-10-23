@@ -15,7 +15,7 @@ use nomifun_ai_agent::AgentRuntimeRegistry;
 use nomifun_api_types::CreateConversationRequest;
 use nomifun_api_types::voice::VoiceDialogueRequest;
 use nomifun_app::voice_companion_manager::{
-    ConversationVoiceDialogueRecorder, VoiceCompanionProcessManager,
+    ConversationVoiceDialogueRecorder, VoiceCompanionProcessManager, VoiceWindowContext,
 };
 use nomifun_app::voice_dialogue::{
     VoiceCallReservation, VoiceDialoguePreflight, VoiceDialogueRecorder, VoiceDialogueRecorderError,
@@ -127,30 +127,30 @@ async fn new_bindings_ignore_retired_global_execution_and_recovery_keeps_the_fro
     let unrelated = tempfile::tempdir().unwrap();
     let service = fixture_service().await;
     let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
-    let initial = recorder.freeze_session("before-retired-config").await.unwrap().unwrap();
+    let initial = recorder.freeze_session("before-retired-config", None).await.unwrap().unwrap();
     let config_dir = dir.path().join("config");
     std::fs::create_dir_all(&config_dir).unwrap();
     let config_path = config_dir.join("voice_companion.json");
     let legacy = serde_json::json!({"execution":{"workspace":unrelated.path(),"model":null,"preset_id":null},
         "dialogue_model":{"provider_id":"deleted-provider","model":"deleted-model"},"autostart":false});
     std::fs::write(&config_path, legacy.to_string()).unwrap();
-    let fresh = recorder.freeze_session("after-retired-config").await.unwrap().unwrap();
+    let fresh = recorder.freeze_session("after-retired-config", None).await.unwrap().unwrap();
     assert_eq!(fresh.workspace, initial.workspace, "a new default binding must ignore the retired global workspace");
     assert_ne!(fresh.workspace.as_deref(), unrelated.path().to_str());
     let restored = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
-    assert_eq!(restored.freeze_session("before-retired-config").await.unwrap().unwrap().workspace, initial.workspace);
+    assert_eq!(restored.freeze_session("before-retired-config", None).await.unwrap().unwrap().workspace, initial.workspace);
     assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(&config_path).unwrap()).unwrap(), legacy,
         "resolving a binding must not rewrite other preferences or historical configuration");
     let malformed = serde_json::json!({"execution":"retired malformed value","autostart":false});
     std::fs::write(&config_path, malformed.to_string()).unwrap();
-    assert_eq!(restored.freeze_session("malformed-retired-config").await.unwrap().unwrap().workspace, initial.workspace);
+    assert_eq!(restored.freeze_session("malformed-retired-config", None).await.unwrap().unwrap().workspace, initial.workspace);
     // Existing journals may still contain an old accepted task's frozen directory.
     let journal_path = dir.path().join("voice").join(format!("dialogue-{USER_ID}.json"));
     let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_path).unwrap()).unwrap();
     journal[0]["execution"]["workspace"] = unrelated.path().to_string_lossy().into_owned().into();
     std::fs::write(&journal_path,journal.to_string()).unwrap();
     let recovered = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
-    assert_eq!(recovered.freeze_session("before-retired-config").await.unwrap().unwrap().workspace.as_deref(), unrelated.path().to_str(),
+    assert_eq!(recovered.freeze_session("before-retired-config", None).await.unwrap().unwrap().workspace.as_deref(), unrelated.path().to_str(),
         "recovery must preserve old frozen parameters rather than retroactively rebind them");
 }
 
@@ -173,7 +173,7 @@ async fn ignored_turns_leave_no_public_messages_and_do_not_displace_valid_handof
     assert!(recorder.is_projected("valid-turn"));
     let restored=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path());
     assert!(!restored.is_projected("valid-turn"));
-    restored.freeze_session("ignore-session").await.unwrap();
+    restored.freeze_session("ignore-session", None).await.unwrap();
     assert!(restored.is_projected("valid-turn"),"binding restore must retire persisted live previews without regenerating");
     let next=VoiceDialogueRequest::scoped("ignore-session","task-turn","按刚才要求创建订单");
     recorder.preflight(&next).await.unwrap();
@@ -328,7 +328,7 @@ async fn bv_02_explicit_binding_resolution_and_validation() {
     let err = recorder.preflight(&req_invalid).await.unwrap_err();
     assert!(matches!(err, VoiceDialogueRecorderError::BindingInvalid(_)));
 
-    // 2. Explicit binding to valid conversation resolves to that conversation
+    // A normal chat supplies selection context, but must not be converted into a voice chat.
     let req: CreateConversationRequest = serde_json::from_value(serde_json::json!({
         "type": "nomi",
         "name": "项目对话",
@@ -338,11 +338,13 @@ async fn bv_02_explicit_binding_resolution_and_validation() {
     let existing_conv_id = existing.conversation_id;
 
     let req_valid = VoiceDialogueRequest::scoped("valid-session", "valid-turn", "你好");
-    *recorder.active_window_candidate.write().unwrap()=Some(existing_conv_id.clone());
+    recorder.active_window_candidate.write().unwrap().conversation_id=Some(existing_conv_id.clone());
     let preflight = recorder.preflight(&req_valid).await.unwrap();
     match preflight {
         VoiceDialoguePreflight::Ready { conversation_id } => {
-            assert_eq!(conversation_id, existing_conv_id);
+            assert_ne!(conversation_id, existing_conv_id);
+            assert_eq!(conversation_svc.get(user_id,&conversation_id).await.unwrap().extra["voice"],true);
+            assert!(conversation_svc.list_messages(user_id,&existing_conv_id,Default::default()).await.unwrap().items.is_empty());
         }
         _ => panic!("expected Ready"),
     }
@@ -378,7 +380,7 @@ async fn bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conver
     let candidate = conversation_svc.create(user_id, req).await.unwrap();
     let candidate_conv_id = candidate.conversation_id;
 
-    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(candidate_conv_id.clone())));
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(candidate_conv_id.clone()), ..Default::default() }));
     let journal_dir = tempfile::tempdir().unwrap();
     let recorder = ConversationVoiceDialogueRecorder::new(
         conversation_svc.clone(),
@@ -387,15 +389,11 @@ async fn bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conver
     )
     .with_active_window_candidate(candidate.clone());
 
-    // When candidate is idle: preflight resolves to candidate
+    // With no explicit project, both idle and busy ordinary chats use the separate default voice chat.
     let req = VoiceDialogueRequest::scoped("session-idle", "turn-idle", "你好");
     let preflight = recorder.preflight(&req).await.unwrap();
-    assert_eq!(
-        preflight,
-        VoiceDialoguePreflight::Ready {
-            conversation_id: candidate_conv_id.clone()
-        }
-    );
+    let VoiceDialoguePreflight::Ready {conversation_id:idle_voice_id} = preflight else {panic!("expected Ready")};
+    assert_ne!(idle_voice_id,candidate_conv_id);
 
     // Now mark candidate conversation as running/busy
     sqlx::query("UPDATE conversations SET active_turn_operation_id = 'turn-test-busy' WHERE conversation_id = ?")
@@ -410,6 +408,7 @@ async fn bv_03_busy_active_candidate_degrades_gracefully_to_default_voice_conver
     match preflight_busy {
         VoiceDialoguePreflight::Ready { conversation_id } => {
             assert_ne!(conversation_id, candidate_conv_id);
+            assert_eq!(conversation_id,idle_voice_id);
             let row = conv_repo.get(&conversation_id).await.unwrap().unwrap();
             assert_eq!(row.name, "语音助手");
         }
@@ -459,7 +458,7 @@ async fn bv_03_busy_workspace_candidate_preserves_workspace_voice_conversation()
         .await
         .unwrap();
 
-    let candidate_holder = std::sync::Arc::new(std::sync::RwLock::new(Some(candidate_conv_id.clone())));
+    let candidate_holder = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(candidate_conv_id.clone()), ..Default::default() }));
     let journal_dir = tempfile::tempdir().unwrap();
     let recorder = ConversationVoiceDialogueRecorder::new(
         conversation_svc.clone(),
@@ -484,7 +483,7 @@ async fn bv_03_busy_workspace_candidate_preserves_workspace_voice_conversation()
 }
 
 #[tokio::test]
-async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
+async fn bv_04_voice_target_becoming_busy_during_generation_preserves_append() {
     let db = nomifun_db::init_database_memory_with_owner(
         nomifun_common::UserId::parse(USER_ID.to_owned()).expect("canonical fixture owner"),
     )
@@ -510,8 +509,8 @@ async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
         "name": "目标对话",
         "extra": {},
     })).unwrap();
-    let target = conversation_svc.create(user_id, req).await.unwrap();
-    let target_conv_id = target.conversation_id;
+    let _ordinary = conversation_svc.create(user_id, req).await.unwrap();
+    let target_conv_id = conversation_svc.ensure_default_voice_conversation(user_id).await.unwrap();
 
     let journal_dir = tempfile::tempdir().unwrap();
     let recorder = ConversationVoiceDialogueRecorder::new(
@@ -521,7 +520,7 @@ async fn bv_04_target_becoming_busy_during_generation_rejects_record_pair() {
     );
 
     let req = VoiceDialogueRequest::scoped("session-busy", "turn-busy", "处理中");
-    *recorder.active_window_candidate.write().unwrap()=Some(target_conv_id.clone());
+    recorder.active_window_candidate.write().unwrap().conversation_id=Some(target_conv_id.clone());
 
     // Preflight when idle succeeds
     let preflight = recorder.preflight(&req).await.unwrap();
@@ -605,7 +604,7 @@ async fn production_router_records_raw_input_before_one_generation_and_replays_t
     let replay=router.route_scoped(&scope,"你好，请介绍你自己",None,&[]).await;
     assert_eq!(replay.0.unwrap(),first.0.unwrap());assert_eq!(replay.1,first.1);
     assert_eq!(completer.calls.load(std::sync::atomic::Ordering::SeqCst),1);
-    let binding=recorder.freeze_session("joint-session").await.unwrap().unwrap();
+    let binding=recorder.freeze_session("joint-session", None).await.unwrap().unwrap();
     let messages=service.list_messages(USER_ID,&binding.conversation_id,Default::default()).await.unwrap();
     assert_eq!(messages.items.len(),2);
     assert!(messages.items.iter().any(|m|m.content["content"]=="你好，请介绍你自己"));
@@ -653,12 +652,12 @@ async fn a_wake_binding_freezes_the_project_and_its_execution_workspace_across_n
     let dir=tempfile::tempdir().unwrap();let workspace_a=tempfile::tempdir().unwrap();let workspace_b=tempfile::tempdir().unwrap();let service=fixture_service_with_models(&["project-a","project-b"]).await;
     let create=|workspace:&std::path::Path,model:&str|serde_json::from_value::<CreateConversationRequest>(serde_json::json!({"type":"nomi","name":"本地项目","model":{"provider_id":USER_ID,"model":model},"extra":{"workspace":workspace.to_string_lossy()}})).unwrap();
     let a=service.create(USER_ID,create(workspace_a.path(),"project-a")).await.unwrap();let b=service.create(USER_ID,create(workspace_b.path(),"project-b")).await.unwrap();
-    let candidate=Arc::new(std::sync::RwLock::new(Some(a.conversation_id.clone())));
+    let candidate=Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(a.conversation_id.clone()), ..Default::default() }));
     let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()).with_active_window_candidate(candidate.clone());
-    let frozen=recorder.freeze_session("frozen-session").await.unwrap().unwrap();
+    let frozen=recorder.freeze_session("frozen-session", None).await.unwrap().unwrap();
     let bound_conv=frozen.conversation_id.clone();
     assert_ne!(bound_conv, a.conversation_id, "must resolve to workspace dedicated voice conversation per C03");
-    *candidate.write().unwrap()=Some(b.conversation_id.clone());
+    candidate.write().unwrap().conversation_id=Some(b.conversation_id.clone());
     let request=VoiceDialogueRequest::scoped("frozen-session","frozen-turn","读取这个项目");
     assert_eq!(recorder.preflight(&request).await.unwrap(),VoiceDialoguePreflight::Ready{conversation_id:bound_conv.clone()});
     recorder.record_pair(&bound_conv,&request,r#"{"intent_type":"agent_task","understood_request":"读取当前项目。","task_goal":"读取项目A","spoken_ack":"未接受前不能播出"}"#).await.unwrap();
@@ -688,7 +687,7 @@ async fn a_post_generation_projection_failure_returns_text_and_retry_never_calls
     let scope=VoiceDialogueRequest::scoped("projection-session","projection-turn","你好，请介绍你自己");
     let r=router.clone();let req=scope.clone();let first=tokio::spawn(async move{r.route_scoped(&req,"你好，请介绍你自己",None,&[]).await});
     tokio::time::timeout(std::time::Duration::from_secs(3),completer.entered.notified()).await.unwrap();
-    let binding=recorder.freeze_session("projection-session").await.unwrap().unwrap();
+    let binding=recorder.freeze_session("projection-session", None).await.unwrap().unwrap();
     service.conversation_repo().clear_terminal_conversation_messages(USER_ID,&binding.conversation_id,nomifun_common::now_ms()).await.unwrap();
     completer.release.notify_one();let first=first.await.unwrap();
     assert!(matches!(first.0,Err(RouteError::Record{ref code,..}) if code=="binding_invalid" || code=="binding_busy"));
@@ -727,7 +726,7 @@ async fn fallback_execution_resolves_valid_workspace_without_separate_voice_conf
     );
 
     // 3. Freezing a session without explicit binding or voice_companion.json uses default voice workspace
-    let frozen = recorder.freeze_session("fallback-session").await.unwrap().unwrap();
+    let frozen = recorder.freeze_session("fallback-session", None).await.unwrap().unwrap();
     assert_eq!(
         frozen.workspace.as_deref(),
         Some(fallback.workspace.as_str())
@@ -761,7 +760,7 @@ async fn review_standalone_binding_must_not_borrow_an_unselected_project() {
         .await
         .unwrap();
     let recorder = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
-    let binding = recorder.freeze_session("review-home").await.unwrap().unwrap();
+    let binding = recorder.freeze_session("review-home", None).await.unwrap().unwrap();
     assert_eq!(binding.conversation_id, home);
     assert_eq!(
         binding.workspace.as_deref(),
@@ -958,7 +957,7 @@ async fn test_c03_workspace_routing_and_isolation() {
         "extra": { "workspace": ws_path.clone() },
     })).unwrap()).await.unwrap();
 
-    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(chat1.conversation_id.clone())));
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(chat1.conversation_id.clone()), ..Default::default() }));
     let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
         .with_active_window_candidate(candidate.clone());
 
@@ -977,7 +976,7 @@ async fn test_c03_workspace_routing_and_isolation() {
     recorder.record_pair(&voice_conv_id1, &req1, r#"{"intent_type":"chat","understood_request":"查看项目","reply_tts":"好的"}"#).await.unwrap();
 
     // Switch candidate to chat2
-    *candidate.write().unwrap() = Some(chat2.conversation_id.clone());
+    candidate.write().unwrap().conversation_id = Some(chat2.conversation_id.clone());
 
     // Call preflight with chat2 as candidate
     let req2 = VoiceDialogueRequest::scoped("c03-session-2", "turn-2", "项目里有什么文件");
@@ -1011,7 +1010,7 @@ async fn test_c04_corrupted_registry_and_crash_recovery() {
         "extra": { "workspace": ws_path.clone() },
     })).unwrap()).await.unwrap();
 
-    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(chat.conversation_id.clone())));
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(chat.conversation_id.clone()), ..Default::default() }));
     let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
         .with_active_window_candidate(candidate.clone());
     let sessions_path = dir.path().join("voice").join(format!("workspace-sessions-{USER_ID}.json"));
@@ -1144,7 +1143,7 @@ async fn workspace_interaction_registry_failure_keeps_generated_reply_retryable_
     let workspace=tempfile::tempdir().unwrap();
     let service=fixture_service().await;
     let source=service.create(USER_ID,serde_json::from_value(serde_json::json!({"type":"nomi","extra":{"workspace":workspace.path()}})).unwrap()).await.unwrap();
-    let candidate=Arc::new(std::sync::RwLock::new(Some(source.conversation_id)));
+    let candidate=Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(source.conversation_id), ..Default::default() }));
     let recorder=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path()).with_active_window_candidate(candidate);
     let request=VoiceDialogueRequest::scoped("registry-failure-session","registry-failure-turn","你好");
     let conversation=match recorder.preflight(&request).await.unwrap(){VoiceDialoguePreflight::Ready{conversation_id}=>conversation_id,_=>panic!("ready")};
@@ -1184,7 +1183,7 @@ async fn voice_dialogue_and_assistant_projection_share_a_timeline_without_pollut
         "extra": { "workspace": ws_path.clone() },
     })).unwrap()).await.unwrap();
 
-    let candidate = std::sync::Arc::new(std::sync::RwLock::new(Some(normal_chat.conversation_id.clone())));
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext { conversation_id: Some(normal_chat.conversation_id.clone()), ..Default::default() }));
     let recorder = std::sync::Arc::new(
         ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
             .with_active_window_candidate(candidate.clone())
@@ -1257,7 +1256,7 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
         "extra": { "workspace": ws_q_path.clone() },
     })).unwrap()).await.unwrap();
 
-    let candidate = std::sync::Arc::new(std::sync::RwLock::new(None));
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext::default()));
     let recorder = std::sync::Arc::new(
         ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
             .with_active_window_candidate(candidate.clone())
@@ -1265,7 +1264,7 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
 
     // 2. Start call on Workspace P: target resolves to a dedicated voice conversation for P
     let target_p = nomifun_api_types::voice::VoiceCallTarget::Workspace { workspace: ws_p_path.clone() };
-    let (conv_p_id, memory_owner) = recorder.resolve_call_target(&target_p).await.unwrap();
+    let (conv_p_id, memory_owner) = recorder.resolve_call_target(&target_p, None).await.unwrap();
 
     // Host freezes reservation for P
     recorder.set_call_reservation(Some(VoiceCallReservation {
@@ -1277,11 +1276,11 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
     }));
 
     // 3. User navigates to window Q before session ready
-    *candidate.write().unwrap() = Some(chat_q.conversation_id.clone());
+    candidate.write().unwrap().conversation_id = Some(chat_q.conversation_id.clone());
 
     // 4. Session arrives and freezes
     let session_p = "session-p-ready";
-    let binding_p = recorder.freeze_session(session_p).await.unwrap().expect("binding should be created");
+    let binding_p = recorder.freeze_session(session_p, Some("req-p-1")).await.unwrap().expect("binding should be created");
 
     // R01 assertion: binding MUST be for P, NEVER polluted by navigation to Q!
     assert_eq!(binding_p.conversation_id, conv_p_id, "session MUST bind to frozen target P, not active candidate Q");
@@ -1301,7 +1300,7 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
     let target_explicit = nomifun_api_types::voice::VoiceCallTarget::VoiceConversation {
         conversation_id: old_voice_conv.conversation_id.clone(),
     };
-    let (resolved_explicit_id, owner_explicit) = recorder.resolve_call_target(&target_explicit).await.unwrap();
+    let (resolved_explicit_id, owner_explicit) = recorder.resolve_call_target(&target_explicit, None).await.unwrap();
     assert_eq!(resolved_explicit_id, old_voice_conv.conversation_id);
     assert_eq!(owner_explicit.as_deref(), Some("flowy-bolt"));
 
@@ -1314,20 +1313,32 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
     }));
 
     let session_explicit = "session-explicit-ready";
-    let binding_explicit = recorder.freeze_session(session_explicit).await.unwrap().expect("binding should be created");
+    let binding_explicit = recorder.freeze_session(session_explicit, Some("req-explicit-1")).await.unwrap().expect("binding should be created");
     assert_eq!(binding_explicit.conversation_id, old_voice_conv.conversation_id, "explicit voice conversation binds verbatim without rotation");
     assert!(recorder.current_call_reservation().is_none(), "reservation consumed only after successful persistence");
 
-    // 6. Test late session binding (F2: late session arrives within reservation window)
+    // A late receipt after the UI timeout still belongs to its original target.
     let session_late = "session-late-ready";
     recorder.set_call_reservation(Some(VoiceCallReservation {
         request_id: "req-late-1".into(),
         target: target_explicit.clone(),
         conversation_id: old_voice_conv.conversation_id.clone(),
         memory_owner: None,
-        reserved_at_epoch_ms: chrono::Utc::now().timestamp_millis() - 3000,
+        reserved_at_epoch_ms: chrono::Utc::now().timestamp_millis() - 11_000,
     }));
-    let binding_late = recorder.freeze_session(session_late).await.unwrap().expect("binding should be created");
-    assert_eq!(binding_late.conversation_id, old_voice_conv.conversation_id, "late session within reservation TTL binds to frozen target");
+    let binding_late = recorder.freeze_session(session_late, Some("req-late-1")).await.unwrap().expect("binding should be created");
+    assert_eq!(binding_late.conversation_id, old_voice_conv.conversation_id, "an expired UI wait must never rebind the receipt to project Q");
     assert!(recorder.current_call_reservation().is_none(), "reservation consumed on success");
+
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id:"req-newer".into(),target:target_explicit,conversation_id:conv_p_id,
+        memory_owner:None,reserved_at_epoch_ms:chrono::Utc::now().timestamp_millis(),
+    }));
+    assert!(matches!(recorder.freeze_session("old-session",Some("req-late-1")).await,Err(VoiceDialogueRecorderError::BindingInvalid(_))));
+    assert!(matches!(recorder.freeze_session("unrelated-kws",None).await,Err(VoiceDialogueRecorderError::BindingInvalid(_))));
+    assert_eq!(recorder.current_call_reservation().unwrap().request_id,"req-newer","old or uncorrelated wakes cannot consume a newer reservation");
+    assert!(recorder.take_call_reservation("req-late-1").is_none());
+    assert_eq!(recorder.current_call_reservation().unwrap().request_id,"req-newer","stale cleanup must not consume the newer reservation");
+    assert_eq!(recorder.take_call_reservation("req-newer").unwrap().request_id,"req-newer");
+    assert!(recorder.current_call_reservation().is_none());
 }

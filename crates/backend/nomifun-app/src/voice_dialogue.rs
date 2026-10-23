@@ -178,17 +178,19 @@ pub struct VoiceCallReservation {
 #[async_trait]
 pub trait VoiceDialogueRecorder: Send + Sync {
     fn set_call_reservation(&self, _reservation: Option<VoiceCallReservation>) {}
-    fn take_call_reservation(&self) -> Option<VoiceCallReservation> { None }
+    fn take_call_reservation(&self, _request_id: &str) -> Option<VoiceCallReservation> { None }
     fn current_call_reservation(&self) -> Option<VoiceCallReservation> { None }
     fn is_projected(&self, _turn_id: &str) -> bool { false }
+    fn projected_message_ids(&self, _turn_id: &str) -> Option<(Option<String>, String)> { None }
     async fn keyboard_configuration(&self, _conversation_id:&str) -> Result<FrozenVoiceExecution,String> {
         Err("binding_invalid".into())
     }
-    async fn freeze_session(&self,_session_id:&str)->Result<Option<nomifun_api_types::voice::VoiceBindingSnapshot>,VoiceDialogueRecorderError> {Ok(None)}
+    async fn freeze_session(&self,_session_id:&str,_call_request_id:Option<&str>)->Result<Option<nomifun_api_types::voice::VoiceBindingSnapshot>,VoiceDialogueRecorderError> {Ok(None)}
 
     async fn resolve_call_target(
         &self,
         _target: &nomifun_api_types::voice::VoiceCallTarget,
+        _session_mode: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         Err(VoiceDialogueRecorderError::BindingInvalid("recorder_unavailable".into()))
     }

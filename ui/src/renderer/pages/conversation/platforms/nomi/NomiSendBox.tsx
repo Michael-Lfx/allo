@@ -5,9 +5,10 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { sendVoiceKeyboardMessage, startVoiceCall, stopVoiceSession } from '@common/adapter/voiceCompanion';
+import { sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import VoiceConversationBar from '@renderer/pages/voiceSession/VoiceConversationBar';
+import {stopDisplayedVoiceTask} from '@renderer/pages/voiceSession/stopVoiceTask';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { useSWRConfig } from 'swr';
 import {
@@ -380,10 +381,7 @@ const NomiSendBox: React.FC<{
     }
     setIsVoiceConnecting(true);
     try {
-      await startVoiceCall({
-        request_id: uuidv7(),
-        target: { kind: 'voice_conversation', conversation_id },
-      });
+      await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id });
     } catch (err: unknown) {
       const errorObj = err as { code?: string; active_conversation_id?: string } | undefined;
       if (errorObj?.code === 'voice_call_conflict') {
@@ -587,11 +585,21 @@ const NomiSendBox: React.FC<{
   const updateMessageList = useUpdateMessageList();
   const { setSendBoxHandler } = usePreviewContext();
   const [isStopping, setIsStopping] = useState(false);
+  const [voiceStopTarget,setVoiceStopTarget]=useState<{command:string;instance:string;seq:number}|null>(null);
+  const voiceTask = voiceSnapshot?.task?.conversation_id===conversation_id ? voiceSnapshot.task : null;
+  useEffect(()=>{
+    if(!voiceStopTarget || !voiceSnapshot)return;
+    const observed=voiceSnapshot.task;
+    if(voiceSnapshot.instance_id!==voiceStopTarget.instance || (voiceSnapshot.seq>voiceStopTarget.seq && observed &&
+      (observed.command_id!==voiceStopTarget.command || observed.status==='completed'||observed.status==='failed'))){setVoiceStopTarget(null);}
+  },[voiceStopTarget,voiceSnapshot]);
+  const voiceStopPending=isVoiceConversation && (voiceStopTarget!==null || voiceTask?.status==='cancelling');
   const [editTargetChangedNotice, setEditTargetChangedNotice] = useState(false);
   const showStrongBusy =
     running ||
     presentation.showStop ||
     isStopping ||
+    voiceStopPending ||
     presentation.phase === 'local_pending' ||
     presentation.phase === 'accepted';
   const isBusy = showStrongBusy;
@@ -620,6 +628,7 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     setIsStopping(false);
+    setVoiceStopTarget(null);
     setEditTargetChangedNotice(false);
   }, [conversation_id]);
 
@@ -1959,6 +1968,20 @@ const NomiSendBox: React.FC<{
   // Stop conversation handler
   const handleStop = async (): Promise<void> => {
     if (isStopping) return;
+    if(isVoiceConversation){
+      const generation=lifecycleGenerationRef.current;
+      const snapshot=voiceSnapshot;
+      if(!snapshot?.task || snapshot.task.conversation_id!==conversation_id){Message.error(t('voice.task.scopeChanged'));return;}
+      setIsStopping(true);
+      if(snapshot.task.status==='accepted')setVoiceStopTarget({command:snapshot.task.command_id,instance:snapshot.instance_id,seq:snapshot.seq});
+      try {
+        const result=await stopDisplayedVoiceTask(conversation_id,snapshot);
+        if(mountedRef.current && lifecycleGenerationRef.current===generation && (result.status==='completed'||result.status==='failed'))setVoiceStopTarget(null);
+      } catch {
+        if(mountedRef.current && lifecycleGenerationRef.current===generation){setVoiceStopTarget(null);Message.error(t('voice.task.controlUnknown'));}
+      } finally {if(mountedRef.current && lifecycleGenerationRef.current===generation)setIsStopping(false);}
+      return;
+    }
     const stopAttempt = beginStopAttempt();
     setIsStopping(true);
     resetState();
@@ -2138,7 +2161,7 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
-      {isVoiceConversation&&<VoiceConversationBar conversationId={conversation_id}/>}
+      {isVoiceConversation&&<VoiceConversationBar conversationId={conversation_id} showHangup={Boolean(content.trim())||uploadFile.length>0||isBusy}/>}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
@@ -2167,6 +2190,7 @@ const NomiSendBox: React.FC<{
             : t('conversation.chat.noModelSelected')
         }
         onStop={handleStop}
+        stopPending={voiceStopPending}
         onClearContext={handleClearContext}
         className='z-10'
         onFilesAdded={handleNomiFilesAdded}

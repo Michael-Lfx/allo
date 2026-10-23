@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, test as it } from 'bun:test';
 import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
 
 describe('Guid Draft Skills preservation and roundtrip (F4, CP-03)', () => {

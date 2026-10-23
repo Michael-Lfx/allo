@@ -2863,6 +2863,15 @@ fn reconcile_companion_windows(
     hide_memory_panel: bool,
     memory_panel: memory_panel_window::MemoryPanelWindowState,
 ) -> Result<(), String> {
+    // The window may show for liveness, but its content stays transparent until profile/geometry paint.
+    let init_script = format!("{init_script}\n{}", r#"
+      const petBootStyle = document.createElement('style');
+      petBootStyle.id = 'flowy-pet-boot';
+      petBootStyle.textContent = 'html,body,#root{background:transparent!important}#root{opacity:0}';
+      const mountPetBootStyle = () => { if (document.documentElement?.dataset.flowyPetReady !== 'true' && !petBootStyle.isConnected) document.documentElement?.appendChild(petBootStyle); };
+      mountPetBootStyle();
+      document.addEventListener('DOMContentLoaded', mountPetBootStyle, {once:true});
+    "#);
     use std::collections::HashSet;
 
     if hide_memory_panel {

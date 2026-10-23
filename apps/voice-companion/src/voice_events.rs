@@ -109,6 +109,11 @@ impl VoiceEventHub {
             return self.tx.send(event);
         }
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if let VoiceCompanionEvent::TtsSource {session_id, turn_id, ..} = &event {
+            if state.session_id != *session_id || state.turn_id != *turn_id || state.ended_reason.is_some() {
+                return Ok(0);
+            }
+        }
         if let VoiceCompanionEvent::Feedback { diagnostic } = &event {
             if diagnostic.status != nomifun_api_types::voice::VoiceCueStatus::Pending
                 && state
@@ -132,6 +137,7 @@ impl VoiceEventHub {
             }
         }
         match &event {
+            VoiceCompanionEvent::TtsSource {diagnostic, ..} => { state.tts = Some(diagnostic.clone()); }
             VoiceCompanionEvent::SessionEnded { reason } => {
                 self.context
                     .lock()
@@ -162,13 +168,15 @@ impl VoiceEventHub {
                 state.dialogue_ready = *dialogue_ready;
                 state.playback_ready = *playback_ready;
             }
-            VoiceCompanionEvent::WakeHit { .. } => {
+            VoiceCompanionEvent::WakeHit { request_id, .. } => {
                 self.context
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clear();
                 state.ended_reason = None;
+                state.call_request_id = request_id.clone();
                 state.feedback = None;
+                state.tts = None;
                 state.session_id = Some(nomifun_common::generate_id());
                 state.turn_id = None;
                 state.user_text = None;
@@ -394,10 +402,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wake_identity_is_published_atomically_and_not_inherited_by_kws() {
+        let hub=VoiceEventHub::new();
+        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:Some("start-p".into())});
+        let first=hub.snapshot();
+        assert_eq!(first.call_request_id.as_deref(),Some("start-p"));
+        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:None});
+        assert_ne!(hub.snapshot().session_id,first.session_id);
+        assert!(hub.snapshot().call_request_id.is_none());
+    }
+
+    #[test]
     fn ignored_input_is_removed_without_ending_or_erasing_valid_context() {
         let hub = VoiceEventHub::new();
         let mut events = hub.sender().subscribe();
-        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into() }).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
         let session = hub.snapshot().session_id;
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         hub.send(VoiceCompanionEvent::SpeechRecognized { text: "深圳，不是北京".into() }).unwrap();
@@ -425,14 +444,14 @@ mod tests {
     #[test]
     fn partial_reply_and_its_error_stay_bound_to_the_failed_turn() {
         let hub=VoiceEventHub::new();let _listener=hub.sender().subscribe();
-        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into()}).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         hub.send(VoiceCompanionEvent::SpeechRecognized{text:"问题".into()}).unwrap();
         hub.send(VoiceCompanionEvent::ReplySentence{text:"第一句。".into(),understood_request:Some("需求".into())}).unwrap();
         assert!(hub.context().is_empty(),"partial generation must not enter completed context");
         assert_eq!(hub.snapshot().conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Streaming));
         hub.send(VoiceCompanionEvent::Error{stage:"dialogue".into(),code:"model_timeout".into()}).unwrap();
-        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into()}).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         let snap=hub.snapshot();assert!(snap.error.is_none());
         assert_eq!(snap.conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Interrupted));
@@ -470,6 +489,7 @@ mod tests {
             let hub = VoiceEventHub::new();
             let _listener = hub.sender().subscribe();
             hub.send(VoiceCompanionEvent::WakeHit {
+                request_id: None,
                 keyword: "Hey Flowy".into(),
             })
             .unwrap();

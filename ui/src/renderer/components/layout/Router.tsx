@@ -2,6 +2,8 @@ import React, { Suspense, useEffect, useLayoutEffect } from 'react';
 import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
+import {AppMessage as Message} from '@renderer/components/notifications';
+import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
 import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
@@ -239,6 +241,15 @@ const TrayLabelsMount: React.FC = () => {
 // Inert outside the Tauri desktop shell.
 const CompanionNavigateListener: React.FC = () => {
   const navigate = useNavigate();
+  const {t}=useTranslation();
+  useEffect(()=>{
+    if(!isTauriRuntime())return;
+    let disposed=false;let off:(()=>void)|undefined;
+    void import('@tauri-apps/api/event').then(({listen})=>listen('companion-boot-error',()=>{
+      Message.error(t('voice.presentation.petBootFailed'));
+    })).then(stop=>{if(disposed)stop();else off=stop;}).catch(()=>{});
+    return()=>{disposed=true;off?.();};
+  },[t]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;

@@ -108,12 +108,12 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
 
   const sendDisabled = disabled || isUploading || !hasDraft;
   const showStopButton = showStop && Boolean(onStop);
-  const showPhoneButton = Boolean(isVoiceConversation);
+  const showPhoneButton = isVoiceConversation && !showStopButton && (!hasDraft || isVoiceConnecting);
 
   // A running conversation replaces Send with Stop. Outside that state, Send
   // remains visible and is disabled until the draft is valid.
   const showSendButton = !autoWorkMode && !showStopButton;
-  const effectiveShowSendButton = isVoiceConversation ? hasDraft : showSendButton;
+  const effectiveShowSendButton = isVoiceConversation ? hasDraft && !showStopButton && !isVoiceConnecting : showSendButton;
   const showSteerButton = showSteer && !showStopButton;
   const effectiveShowSteerButton = !isVoiceConversation && showSteerButton;
   const showAutoWorkButton = !isVoiceConversation && autoWorkMode;
@@ -218,6 +218,8 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               shape='circle'
               type='primary'
               loading={isVoiceConnecting}
+              status='danger'
+              disabled={isVoiceConnecting}
               className='send-button-custom sendbox-phone-hangup-button'
               icon={<PhoneOff theme='filled' size='14' fill='white' strokeWidth={4} />}
               onClick={onStopVoiceCall}

@@ -3,6 +3,8 @@ import { isTauriRuntime } from './tauriRuntime';
 
 export type VoicePhase = 'idle' | 'listening' | 'transcribing' | 'deciding' | 'synthesizing' | 'speaking' | 'follow_up' | 'text_follow_up' | 'awaiting_confirmation' | 'listening_confirm' | 'dispatching' | 'error';
 export interface VoiceSnapshot {
+  call_request_id?: string | null;
+  tts?: {provider:string;voice:string|null;online:boolean;fallback_reason:string|null}|null;
   projected_turn_ids?: string[];
   binding?: {session_id:string;binding_id:string;conversation_id:string;workspace:string|null;memory_owner_companion_id?:string|null}|null;
   queue?: VoiceQueueItem[];
@@ -38,7 +40,7 @@ export interface VoiceSnapshot {
   playback_ready: boolean;
   listening_deadline_ms?: number | null;
   follow_up_deadline_ms?: number | null;
-  conversation?: Array<{ turn_id: string; user_text: string | null; understood_request?: string | null; assistant_text: string | null; model_text: string | null; reply_state?: 'streaming' | 'complete' | 'interrupted' | null; error?: VoiceSnapshot['error'] }>;
+  conversation?: Array<{ turn_id: string; user_message_id?: string | null; assistant_message_id?: string | null; user_text: string | null; understood_request?: string | null; assistant_text: string | null; model_text: string | null; reply_state?: 'streaming' | 'complete' | 'interrupted' | null; error?: VoiceSnapshot['error'] }>;
   audio?: {
     rms_milli: number;
     peak_milli: number;
@@ -159,6 +161,7 @@ export function createSnapshotConsumer(onSnapshot: (snapshot: VoiceSnapshot) => 
 export async function subscribeVoiceSession(onSnapshot: (snapshot: VoiceSnapshot) => void, useNativeEvents = isTauriRuntime(), onSyncError?: (code: string | null) => void): Promise<() => void> {
   let current: VoiceSnapshot | null = null;
   const consume = createSnapshotConsumer((snapshot) => {
+    reconcilePendingCall(snapshot);
     current = snapshot;
     onSyncError?.(null);
     onSnapshot(snapshot);
@@ -257,6 +260,7 @@ export async function stopVoiceSession(snapshot: VoiceSnapshot): Promise<void> {
     body: JSON.stringify({ instance_id: snapshot.instance_id, session_id: snapshot.session_id, turn_id: snapshot.turn_id }),
   });
   if (!response.ok) throw new Error('voice_stop_rejected');
+  reconcilePendingCall(snapshot, true);
 }
 
 export async function wakeVoiceSession(signal?: AbortSignal): Promise<void> {
@@ -269,11 +273,13 @@ export async function wakeVoiceSession(signal?: AbortSignal): Promise<void> {
 export type VoiceCallTarget =
   | { kind: 'voice_conversation'; conversation_id: string }
   | { kind: 'workspace'; workspace: string }
-  | { kind: 'default_workspace' };
+  | { kind: 'default_workspace' }
+  | { kind: 'current_selection' };
 
 export interface VoiceCallStartRequest {
   request_id: string;
   target: VoiceCallTarget;
+  session_mode?: 'default' | 'auto_edit' | 'yolo';
 }
 
 export interface VoiceCallStartResponse {
@@ -301,6 +307,7 @@ export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceC
     };
     const conflictErr = new Error(errorBody.message || 'voice_call_conflict');
     Object.assign(conflictErr, {
+      status: response.status,
       code: errorBody.code || 'voice_call_conflict',
       active_conversation_id: errorBody.active_conversation_id,
     });
@@ -308,9 +315,35 @@ export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceC
   }
   if (!response.ok) {
     const err = (await response.json().catch(() => null)) as { code?: string } | null;
-    throw new Error(err?.code || 'voice_call_failed');
+    throw Object.assign(new Error(err?.code || 'voice_call_failed'), { code: err?.code, status: response.status });
   }
   return response.json() as Promise<VoiceCallStartResponse>;
+}
+
+let pendingCallIntent: {request:VoiceCallStartRequest; inFlight:Promise<VoiceCallStartResponse>|null} | null = null;
+function reconcilePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): void {
+  if (pendingCallIntent && snapshot.call_request_id === pendingCallIntent.request.request_id &&
+      snapshot.session_id && (stopConfirmed || snapshot.ended_reason || snapshot.binding?.session_id === snapshot.session_id)) {
+    pendingCallIntent = null;
+  }
+}
+/** One unresolved start owns its target and mode, including across renderer route changes. */
+export function startVoiceCallIntent(target:VoiceCallTarget, session_mode?:VoiceCallStartRequest['session_mode']):Promise<VoiceCallStartResponse> {
+  if (pendingCallIntent && (JSON.stringify(pendingCallIntent.request.target)!==JSON.stringify(target) || pendingCallIntent.request.session_mode!==session_mode)) {
+    return Promise.reject(Object.assign(new Error('voice_call_starting'),{code:'voice_call_starting'}));
+  }
+  const intent: NonNullable<typeof pendingCallIntent> = pendingCallIntent ??= {request:{request_id:crypto.randomUUID(),target,session_mode},inFlight:null};
+  if (!intent.inFlight) intent.inFlight = startVoiceCall(intent.request).then(result=>{
+    if(result.status!=='starting' && pendingCallIntent===intent) pendingCallIntent=null;
+    return result;
+  }).catch(error=>{
+    const known = error as {status?:number;code?:string};
+    if ((known.status && known.status<500) || known.code==='daemon_wake_rejected' || known.code==='voice_call_already_stopped' || known.code==='voice_call_conflict') {
+      if(pendingCallIntent===intent)pendingCallIntent=null;
+    }
+    throw error;
+  }).finally(()=>{intent.inFlight=null;});
+  return intent.inFlight;
 }
 
 /** Explicit UI entry opens the frozen target; background wake never steals focus. */
@@ -321,21 +354,17 @@ export function startVoiceConversation(): Promise<void> {
 }
 
 async function enterVoiceConversation(): Promise<void> {
-  const deadline=Date.now()+3000;
-  let woke=false;
-  while(Date.now()<deadline){
-    const response=await fetch(`${getBaseUrl()}/api/voice/companion/session`,{
-      credentials:'same-origin',headers:buildBackendAuthHeaders('GET'),signal:AbortSignal.timeout(Math.max(1,deadline-Date.now())),
-    });
-    if(!response.ok)throw new Error('voice_snapshot_unavailable');
-    const snapshot=await response.json() as VoiceSnapshot;
-    if(snapshot.binding&&snapshot.session_id===snapshot.binding.session_id&&!snapshot.ended_reason&&snapshot.phase!=='idle'){
-      await openVoiceTask(snapshot.binding.conversation_id);return;
+  try {
+    const result = await startVoiceCallIntent({ kind: 'current_selection' });
+    await openVoiceTask(result.conversation_id);
+  } catch (error) {
+    const conflict = error as { code?: string; status?: number; active_conversation_id?: string };
+    if (conflict.active_conversation_id && (conflict.code === 'voice_call_conflict' || conflict.code === 'voice_call_starting')) {
+      await openVoiceTask(conflict.active_conversation_id);
+      return;
     }
-    if(!woke){await wakeVoiceSession(AbortSignal.timeout(Math.max(1,deadline-Date.now())));woke=true;}
-    await new Promise(resolve=>setTimeout(resolve,100));
+    throw error;
   }
-  throw new Error('voice_binding_unavailable');
 }
 
 export async function openVoiceTask(conversationId: string): Promise<void> {
@@ -357,8 +386,9 @@ export const getVoiceTargetSettings=():Promise<VoiceTargetSettings>=>voiceTaskRe
 export const saveVoiceTargetSettings=(config:VoiceTargetConfig):Promise<VoiceTargetSettings>=>voiceTaskRequest('/target',config);
 export const getVoiceNotification=(commandId:string):Promise<VoiceTaskNotification>=>voiceTaskRequest('/tasks/'+encodeURIComponent(commandId)+'/notification');
 export const replayVoiceResult=(snapshot:VoiceSnapshot,replayId:string):Promise<{success:boolean}>=>voiceTaskRequest('/tasks/'+encodeURIComponent(snapshot.task!.command_id)+'/replay',{instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id,replay_id:replayId});
-export async function reportVoiceCandidate(conversationId:string|null):Promise<void> {
+let voiceContextSequence = Date.now();
+export async function reportVoiceCandidate(conversationId:string|null, workspace:string|null=null):Promise<void> {
   if(!isTauriRuntime())return;
   const {invoke}=await import('@tauri-apps/api/core');
-  await invoke('report_voice_context',{conversationId});
+  await invoke('report_voice_context',{conversationId,workspace,sequence:++voiceContextSequence});
 }

@@ -5,7 +5,7 @@ import {createInstance} from 'i18next';
 import {I18nextProvider} from 'react-i18next';
 import VoiceTaskDiagnostics from './VoiceTaskDiagnostics';
 import VoiceErrorStatus from './VoiceErrorStatus';
-import VoiceTargetSettings from '../settings/VoiceTargetSettings';
+import {readFileSync} from 'node:fs';
 import zh from '@renderer/services/i18n/locales/zh-CN/voice.json';
 import en from '@renderer/services/i18n/locales/en-US/voice.json';
 import type {VoiceSnapshot} from '@common/adapter/voiceCompanion';
@@ -29,9 +29,9 @@ for(const [locale,dict] of [['zh-CN',zh],['en-US',en]] as const){
     const empty=renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceErrorStatus error={{stage:'task',code:'task_not_found'}}/></I18nextProvider>);
     expect(empty).toContain(dict.task.noActive);
   });
-  test(locale+': standalone target does not require creating a pet',async()=>{
-    const i18n=createInstance();await i18n.init({lng:locale,resources:{[locale]:{translation:{voice:dict}}},initImmediate:false});
-    const html=renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceTargetSettings/></I18nextProvider>);
-    expect(html).toContain(dict.target.title);expect(html).toContain(dict.target.hint);expect(html).not.toContain('voice.');
+  test(locale+': retired independent target selector is absent from voice settings',()=>{
+    const source=readFileSync(new URL('../settings/VoiceSettings.tsx',import.meta.url),'utf8');
+    expect(source).not.toContain('VoiceTargetSettings');
+    expect(dict.presentation.ttsScope.length).toBeGreaterThan(0);
   });
 }

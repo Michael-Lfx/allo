@@ -392,6 +392,8 @@ impl VoiceDecisionStream {
 fn voice_stream_disabled(value:&bool)->bool {!value}
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceDialogueRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_request_id: Option<String>,
     #[serde(default,skip_serializing_if="voice_stream_disabled")]
     pub stream: bool,
 
@@ -524,12 +526,15 @@ pub enum VoiceCallTarget {
     VoiceConversation { conversation_id: String },
     Workspace { workspace: String },
     DefaultWorkspace,
+    CurrentSelection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceCallStartRequest {
     pub request_id: String,
     pub target: VoiceCallTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -672,9 +677,22 @@ pub struct VoiceAudioDiagnostics {
     pub utterance_peak_milli: u16,
 }
 
+/// Synthesis provider selected for the latest scoped attempt; this is not a playback receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceTtsDiagnostic {
+    pub provider: String,
+    pub voice: Option<String>,
+    pub online: bool,
+    pub fallback_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceConversationTurn {
     pub turn_id: String,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub user_message_id: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub assistant_message_id: Option<String>,
     pub user_text: Option<String>,
     #[serde(default)]
     pub understood_request: Option<String>,
@@ -692,6 +710,10 @@ pub enum VoiceReplyState {Streaming,Complete,Interrupted}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceSessionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_request_id: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub tts: Option<VoiceTtsDiagnostic>,
     /// Host-authoritative completed projections, used to retire live transcript placeholders.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_turn_ids: Vec<String>,
@@ -742,6 +764,7 @@ pub struct VoiceSessionSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum VoiceCompanionEvent {
+    TtsSource { session_id: Option<String>, turn_id: Option<String>, diagnostic: VoiceTtsDiagnostic },
     SessionEnded {
         reason: VoiceSessionEndReason,
     },
@@ -768,6 +791,8 @@ pub enum VoiceCompanionEvent {
     },
     WakeHit {
         keyword: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     Listening,
     ListeningReady {

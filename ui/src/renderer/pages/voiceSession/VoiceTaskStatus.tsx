@@ -3,7 +3,7 @@ import { Button } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { cancelVoiceTask, confirmVoiceTask, getVoiceTask, openVoiceTask, type VoiceTaskSnapshot, type VoiceToolConfirmation } from '@common/adapter/voiceCompanion';
 
-export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmation, showResult = true }: {task:VoiceTaskSnapshot|null|undefined;errorCode:string|null|undefined;instanceId?:string;confirmation?:VoiceToolConfirmation|null;showResult?:boolean}) {
+export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmation, showResult = true, currentConversationId, compact = false }: {task:VoiceTaskSnapshot|null|undefined;errorCode:string|null|undefined;instanceId?:string;confirmation?:VoiceToolConfirmation|null;showResult?:boolean;currentConversationId?:string;compact?:boolean}) {
   const { t } = useTranslation();
   const [openFailed,setOpenFailed] = useState<string|null>(null);
   const [pending,setPending] = useState<string|null>(null);
@@ -34,7 +34,7 @@ export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmat
     catch(cause) {if(currentScope.current===requestScope)setControlError({scope:requestScope,code:cause instanceof Error?cause.message:'task_control_unknown'});}
     finally {setPending((value) => value===requestScope?null:value);}
   };
-  const canCancel=task && !['completed','failed'].includes(task.status) && task.conversation_id && task.message_id;
+  const canCancel=task && task.status === 'accepted' && task.conversation_id && task.message_id;
   const decide=async(approved:boolean)=>{
     if(!task || !instanceId || !confirmation || Date.now()>=confirmation.expires_at_ms)return;
     const requestScope=scope;setPending(requestScope);setControlError(null);
@@ -44,7 +44,7 @@ export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmat
   };
   if (!task && !errorCode) return null;
   return <article className='flex flex-col gap-2'>
-    <h2 className='text-base font-semibold m-0'>{t('voice.task.title')}</h2>
+    {!compact && <h2 className='text-base font-semibold m-0'>{t('voice.task.title')}</h2>}
     {task && <>
       <p role='status' className='m-0 text-t-secondary'>{t(`voice.task.status.${task.status}`)}</p>
       {showResult && task.result_text && <p className='m-0 whitespace-pre-wrap break-words'>{task.result_text}</p>}
@@ -62,8 +62,8 @@ export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmat
         </div>
       </section>}
       <div className='flex flex-wrap gap-3'>
-        {task.conversation_id && <Button onClick={() => {void openVoiceTask(task.conversation_id!).catch(() => {if(currentScope.current===scope)setOpenFailed(scope);});}}>{t('voice.task.open')}</Button>}
-        {instanceId && <Button disabled={pending===scope} onClick={() => {void control(false);}}>{t('voice.task.refresh')}</Button>}
+        {task.conversation_id && task.conversation_id !== currentConversationId && <Button onClick={() => {void openVoiceTask(task.conversation_id!).catch(() => {if(currentScope.current===scope)setOpenFailed(scope);});}}>{t('voice.task.open')}</Button>}
+        {instanceId && (!compact || task.status === 'unknown') && <Button disabled={pending===scope} onClick={() => {void control(false);}}>{t('voice.task.refresh')}</Button>}
         {instanceId && canCancel && <Button status='danger' disabled={pending===scope} onClick={() => {void control(true);}}>{t('voice.task.cancel')}</Button>}
       </div>
     </>}

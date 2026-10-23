@@ -1,5 +1,7 @@
 {
-  "pet": { "more": "另有 {{count}} 项" },
+  "pet": {
+    "more": "另有 {{count}} 项"
+  },
   "execution": {
     "title": "语音任务执行",
     "description": "任务使用专属对话和既有本机执行服务；写入、删除与危险命令必须逐次确认，越出工作区或不支持的工具会被拒绝。",
@@ -417,5 +419,17 @@
     "returnVoiceCall": "返回通话",
     "returnVoiceCallWorkspace": "返回通话 ({{workspace}})",
     "callConflictActive": "当前已有正在进行的语音通话，已为您切换"
+  },
+  "presentation": {
+    "petBootFailed": "桌宠暂未加载完成，请在桌宠设置中重试。",
+    "inputTarget": "语音会话 · {{workspace}}",
+    "inputPlaceholder": "补充到当前语音任务…",
+    "sendFailed": "发送未确认，文字已保留。请重试或打开语音会话核对。",
+    "ttsScope": "此音色用于伙伴聊天与机器人语音；通话使用语音设置中显示的合成能力。",
+    "ttsActual": "最近合成来源：{{provider}} · {{voice}} · {{location}}",
+    "ttsUnknown": "通话合成来源将在首次播报后显示；伙伴音色目前不用于通话。",
+    "ttsFallback": "已切换备用合成来源",
+    "online": "在线",
+    "local": "本地"
   }
 }

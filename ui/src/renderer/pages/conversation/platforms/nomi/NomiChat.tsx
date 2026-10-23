@@ -24,6 +24,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import SessionSkillModeBar from '@/renderer/pages/conversation/components/SessionSkillModeBar';
 import NomiSendBox from './NomiSendBox';
+import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
+import {buildVoiceLiveMessages} from '@renderer/pages/voiceSession/liveVoiceTurn';
+import {useMessageList} from '@renderer/pages/conversation/Messages/hooks';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useNomiMessage } from './useNomiMessage';
 import type { NomiModelSelection } from './useNomiModelSelection';
@@ -33,6 +36,7 @@ const NomiChat: React.FC<{
   workspace: string;
   modelSelection: NomiModelSelection;
   session_mode?: string;
+  isVoiceConversation?: boolean;
   reasoning_effort?: string;
   cron_job_id?: CronJobId;
   hideSendBox?: boolean;
@@ -51,6 +55,7 @@ const NomiChat: React.FC<{
   workspace,
   modelSelection,
   session_mode,
+  isVoiceConversation = false,
   reasoning_effort,
   cron_job_id,
   hideSendBox,
@@ -68,6 +73,9 @@ const NomiChat: React.FC<{
   // companion's single session (which also absorbs every IM-channel turn and can
   // grow without bound), so a one-shot 10k fetch would crush the API/DOM.
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
+  const {snapshot:voiceSnapshot} = useVoiceSnapshot(isVoiceConversation);
+  const persistedMessages = useMessageList();
+  const liveMessages = useMemo(() => buildVoiceLiveMessages(voiceSnapshot, conversation_id, persistedMessages), [voiceSnapshot, conversation_id, persistedMessages]);
   usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
   const [dynamicModes, setDynamicModes] = useState<AgentModeOption[]>([]);
   const turnActivity = useNomiMessage(conversation_id, {
@@ -129,6 +137,7 @@ const NomiChat: React.FC<{
         <div className={CHAT_CONTENT_COLUMN_CLASSES}>
           <FlexFullContainer>
             <MessageList
+              liveMessages={liveMessages}
               className='flex-1'
               emptySlot={resolvedEmptySlot}
               onLoadOlder={historyPaging.loadOlder}
