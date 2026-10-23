@@ -10,7 +10,10 @@ mod scheduler;
 mod settle;
 mod service;
 mod state;
+mod switches;
 mod tutorial;
+
+pub use switches::is_off_switch_value;
 
 pub use completer::LearningCompleter;
 

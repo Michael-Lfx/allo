@@ -2753,12 +2753,7 @@ pub fn start_learning_auto_maintenance(
 ) {
     use std::sync::atomic::Ordering;
     let disabled = std::env::var("NOMI_LEARNING_AUTO_MAINTENANCE")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "off" | "0" | "false"
-            )
-        })
+        .map(|value| nomifun_learning::is_off_switch_value(&value))
         .unwrap_or(false);
     if disabled {
         return;

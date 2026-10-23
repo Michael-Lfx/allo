@@ -35,10 +35,7 @@ pub const EST_BUDGET_SWITCH_ENV: &str = "NOMI_LEARNING_EST_BUDGET";
 
 /// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
 pub fn is_est_budget_disabled_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false"
-    )
+    crate::is_off_switch_value(value)
 }
 
 /// 时长预算机制是否开启（未设/其它值 = 开启）。
@@ -1530,6 +1527,7 @@ mod tests {
     /// capacity_note 形状三态：缺席合法 / 非空通过（trim 保留）/ 空白串
     /// 按空裁成 None——恶劣值永不退稿。
     #[test]
+    #[serial_test::serial]
     fn capacity_note_shape_is_non_empty_string_or_absent() {
         assert_eq!(normalize_capacity_note(None), None, "缺席合法");
         assert_eq!(
@@ -1610,6 +1608,7 @@ mod tests {
     /// 透传：inspect 投影与 to_output 报告面都带自报；旧课时包（无键）
     /// 反序列化兼容为 None。
     #[test]
+    #[serial_test::serial]
     fn capacity_note_projects_to_inspect_and_output_and_old_packages_still_parse() {
         let mut draft = LessonDraft::new(context());
         draft.apply_ops(vec![LessonOp::SetSectionManifest {

@@ -765,10 +765,7 @@ pub const REVIEW_V2_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_V2";
 
 /// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
 pub fn is_review_v2_disabled_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false"
-    )
+    crate::is_off_switch_value(value)
 }
 
 /// 判据①新版是否开启（未设/其它值 = 开启）。
@@ -1565,6 +1562,14 @@ mod tests {
         assert!(legacy.contains("三处皆无的名词"), "off 臂是新版");
         assert!(!legacy.contains("批内提名本身不是出处"));
         assert!(!legacy.contains("内嵌的上位词同样在审"));
+        // 换臂只动判据①：②③④与 findings 通道两臂同文。
+        for prompt in [&system, &legacy] {
+            assert!(prompt.contains("前提足够"), "判据②不随开关变");
+            assert!(prompt.contains("批内兄弟节点教出的概念不算已教"));
+            assert!(prompt.contains("命名与内涵一致"), "判据③不随开关变");
+            assert!(prompt.contains("难度诚实"), "判据④不随开关变");
+            assert!(prompt.contains("findings——数据缺陷留痕"), "findings 通道不动");
+        }
         // 开关取值判定只认 off/0/false。
         for value in ["off", "OFF", "0", "false", " False "] {
             assert!(is_review_v2_disabled_value(value));

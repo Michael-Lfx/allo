@@ -9342,6 +9342,39 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
         assert_eq!(calls.call_count(), 2, "二回合零 LLM");
     }
 
+    /// 在途/失败跳过该课含挂载（k02）：修补槽被占 → 本回合 skipped_busy、
+    /// 不触挂载、不推水位、零 LLM。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn maintenance_tick_skips_a_busy_course_including_mount() {
+        let completer = ScriptedCompleter::new(r#"{"ops": []}"#, false);
+        let calls = completer.clone();
+        let (service, user_id, course) = seed_maintenance_course(1, 1, completer).await;
+        // 手动占用修补槽（同 learning-repair-{course} key）。
+        let slot = service
+            .acquire_generation_slot(
+                &user_id,
+                format!("learning-repair-{}", course.as_str()),
+            )
+            .expect("slot acquired");
+
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.courses.len(), 1);
+        let outcome = &report.courses[0];
+        assert!(outcome.skipped_busy, "busy must be recorded: {outcome:?}");
+        assert!(outcome.repair.is_none());
+        assert!(outcome.mount.is_none(), "busy skips the mount too");
+        assert!(outcome.error.is_some());
+        assert_eq!(calls.calls.load(AtomicOrdering::SeqCst), 0, "零 LLM");
+        assert_eq!(maintenance_watermark(&service, &course).await, None);
+
+        drop(slot);
+        // 释放后下一回合正常推进。
+        let report = service.run_maintenance_tick(&user_id, None).await.unwrap();
+        assert_eq!(report.courses.len(), 1);
+        assert!(!report.courses[0].skipped_busy);
+    }
+
     /// 设置读侧：缺省开/360；写入生效；越界/坏值回退缺省（写侧拒绝在
     /// nomifun-system 的单测里锁）。
     #[tokio::test]

@@ -8,10 +8,7 @@ pub const QB_SIMILARITY_SWITCH_ENV: &str = "NOMI_LEARNING_QB_SIMILARITY";
 
 /// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
 pub fn is_qb_similarity_disabled_value(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false"
-    )
+    crate::is_off_switch_value(value)
 }
 
 /// 三口径相似度门是否开启（未设/其它值 = 开启）。
