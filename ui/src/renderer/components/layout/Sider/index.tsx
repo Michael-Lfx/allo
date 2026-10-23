@@ -399,6 +399,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     setOptimisticBar2Module(null);
     navTo('/knowledge');
   };
+  const handleLinkClick = () => {
+    navTo('/link');
+  };
+
   const handleNomiClick = () => {
     setOptimisticBar2Module('companions');
     handleSelectHistoryTab('companions');
@@ -759,6 +763,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
           showEditNickname={showLogout}
           onLogout={handleLogout}
           onOpenCompanion={handleNomiClick}
+          onOpenLink={handleLinkClick}
           onSettingsClick={handleSettingsClick}
         />
       </div>

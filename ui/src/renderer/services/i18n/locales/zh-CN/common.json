@@ -200,6 +200,7 @@
     "creditsBalance": "积分余额",
     "language": "语言",
     "changeSkin": "换肤",
+    "connectPhone": "连接手机",
     "contactSupport": "联系客服",
     "contactSupportWithUnread": "联系客服，{{count}} 条未读回复",
     "logout": "退出登录",

@@ -7,7 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Input, Modal, Popover, Tooltip } from '@arco-design/web-react';
-import { Check, Edit, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
+import { Check, Edit, Iphone, Logout, Message, Peoples, Right, Theme, Translate, User } from '@icon-park/react';
 import classNames from 'classnames';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
@@ -41,6 +41,7 @@ interface SiderUserMenuProps {
   showEditNickname?: boolean;
   onLogout?: () => void;
   onOpenCompanion?: () => void;
+  onOpenLink?: () => void;
 }
 
 const menuRowClass =
@@ -56,6 +57,7 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
   showEditNickname = false,
   onLogout,
   onOpenCompanion,
+  onOpenLink,
 }) => {
   const { t, i18n } = useTranslation();
   const { openSupportChat, hasUnread, unreadCount } = useSupportChat();
@@ -106,6 +108,13 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
     setSkinVisible(false);
     setLanguageVisible(false);
     onOpenCompanion?.();
+  };
+
+  const handleOpenLink = () => {
+    setMenuVisible(false);
+    setSkinVisible(false);
+    setLanguageVisible(false);
+    onOpenLink?.();
   };
 
   const handleOpenNickname = () => {
@@ -226,6 +235,15 @@ const SiderUserMenu: React.FC<SiderUserMenuProps> = ({
         <button type='button' className={menuRowClass} onClick={handleOpenCompanion}>
           <Peoples theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
           <span className='flex-1 text-12px text-t-primary'>{t('nomi.siderTitle')}</span>
+        </button>
+      )}
+
+      {onOpenLink && (
+        <button type='button' className={menuRowClass} onClick={handleOpenLink}>
+          <Iphone theme='outline' size='14' fill='currentColor' className='shrink-0 text-t-secondary' />
+          <span className='flex-1 text-12px text-t-primary'>
+            {t('common.userMenu.connectPhone', { defaultValue: '连接手机' })}
+          </span>
         </button>
       )}
 

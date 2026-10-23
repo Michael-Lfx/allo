@@ -200,6 +200,7 @@
     "creditsBalance": "Credits",
     "language": "Language",
     "changeSkin": "Appearance",
+    "connectPhone": "Connect phone",
     "contactSupport": "Contact support",
     "contactSupportWithUnread": "Contact support, {{count}} unread replies",
     "logout": "Sign out",

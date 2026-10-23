@@ -591,11 +591,11 @@ async fn qr_login_page() -> Html<&'static str> {
 }
 
 const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QR Login - Nomi</title>
+<title>正在打开 Flowy</title>
 <style>
   body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
          align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
@@ -608,8 +608,8 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
 </head>
 <body>
 <div class="card">
-  <h1>Nomi</h1>
-  <p id="status" class="status">Processing login...</p>
+  <h1>Flowy</h1>
+  <p id="status" class="status">正在登录这台电脑…</p>
 </div>
 <script>
 (function() {
@@ -617,7 +617,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
   var params = new URLSearchParams(window.location.search);
   var token = params.get('token');
   if (!token) {
-    el.textContent = 'Error: No token provided';
+    el.textContent = '这张码里没有登录信息';
     el.className = 'status error';
     return;
   }
@@ -634,7 +634,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
       window.location.replace('/#/guid');
     })
     .catch(function(err) {
-      el.textContent = 'Login succeeded, but WebUI app shell is not reachable: ' + err.message;
+      el.textContent = '网页没有加载完整：WebUI app shell is not reachable: ' + err.message;
       el.className = 'status error';
     });
   }
@@ -647,7 +647,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
   .then(function(r) { return r.json(); })
   .then(function(data) {
     if (data.success) {
-      el.textContent = 'Login successful! Redirecting...';
+      el.textContent = '已登录，正在打开';
       el.className = 'status success';
       try {
         sessionStorage.setItem('nomifun:qr-login-resume', JSON.stringify({
@@ -657,12 +657,12 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
       } catch (e) {}
       setTimeout(verifyAppShellThenRedirect, 600);
     } else {
-      el.textContent = 'Login failed: ' + (data.error || 'Unknown error');
+      el.textContent = '登录没有完成：' + (data.error || '未知原因');
       el.className = 'status error';
     }
   })
   .catch(function(err) {
-    el.textContent = 'Error: ' + err.message;
+    el.textContent = '登录没有完成：' + err.message;
     el.className = 'status error';
   });
 })();
