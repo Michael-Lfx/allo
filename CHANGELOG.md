@@ -5,6 +5,10 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.7 - 2026-10-23
+
+- Link a phone from profile: the desktop hosts a TLS pairing listener, and a QR code opens a LAN page the phone can reach. Wakes carry no message body.
+
 ## v1.6.6 - 2026-10-22
 
 - Pinning a local Herdsman model keeps inference on this machine and reports the local error instead of falling through to the cloud.
