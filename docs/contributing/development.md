@@ -135,6 +135,19 @@ So a sweep is not permanent: any change in source, features, profile or
 dependencies makes cargo emit a new set of hashed artifacts and keeps the old set.
 Growth after a heavy test run is expected — repeat `build:inspect` → `build:gc`.
 
+The default 28G cap matches the **daily dev working set** (26.2G measured right
+after a sweep); one full `cargo test` generation is disposable. When you need to
+keep that generation across a heavy test loop, raise the cap for one run with
+`--cap` — it drives both `cargo sweep --maxsize` and the residual warning
+threshold:
+
+```bash
+bun run build:gc --cap 80    # trim to 80G for this run; default untouched
+bun run build:gc             # back to the default 28G afterwards
+```
+
+`--cap` only accepts a positive number; anything else warns and falls back to 28G.
+
 To run heavy e2e suites without polluting the daily dev cache, give that run its
 own build directory:
 

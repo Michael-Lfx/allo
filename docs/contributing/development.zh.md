@@ -142,6 +142,17 @@ rlib / pdb / exe / rmeta 的历史代次）完全不动。实测漂移：没有 
 因此清理不是"跑一次就永久干净"：源码、feature、profile 或依赖一变，cargo 就生成一套新哈希
 产物，旧的一套继续保留。跑完重型测试后体积回升属预期，重复 `build:inspect` → `build:gc` 即可。
 
+默认上限 28G 对齐的是**日常 dev 工作集**（实测清扫后 26.2G），而全量 `cargo test` 那一代是一次性
+产物。需要在一个重测试循环里保住这一代时，用 `--cap` 临时抬高本次清扫上限（它会同时作用于
+`cargo sweep --maxsize` 和残留告警阈值）：
+
+```bash
+bun run build:gc --cap 80    # 本轮按 80G 裁剪，不动默认值
+bun run build:gc             # 收工后回到默认 28G
+```
+
+`--cap` 只接受正数，非法值会 WARN 并回落到 28G。
+
 若只是临时跑重 e2e 且不想让这批体积污染日常 dev 缓存，可给那次运行单独指定构建目录：
 
 ```bash

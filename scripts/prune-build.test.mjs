@@ -39,4 +39,14 @@ describe('build cache cap enforcement', () => {
     expect(pruneSource).not.toContain('timeout: 60_000');
     expect(pruneSource).toContain('the sweep was interrupted');
   });
+
+  test('--cap drives the sweep cap, not just the warning threshold', () => {
+    // `--cap 80` used to change only the residual warning threshold while the
+    // sweep kept trimming to the hard-coded constant, so the flag looked
+    // accepted and did nothing. One resolved value must feed both.
+    expect(pruneSource).toContain('const BUILD_CAP_GB = capIsValid ? capValue : BUILD_MAXSIZE_GB;');
+    expect(pruneSource).toContain("cargoSweepMaxsize(BUILD_DIR, BUILD_CAP_GB, 'build.noindex')");
+    expect(pruneSource).not.toContain('const CAP_GB');
+    expect(pruneSource).toContain('--cap needs a positive number of GB');
+  });
 });

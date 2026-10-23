@@ -61,7 +61,8 @@
  *   bun scripts/prune-build.mjs --pre       # release pre-step (stale bundle + junk)
  *   bun scripts/prune-build.mjs --post      # release post-step (bounded cleanup)
  *   bun scripts/prune-build.mjs --release   # destructive cleanup (`bun run clean`)
- *   bun scripts/prune-build.mjs --cap 40    # override hard cap (GB)
+ *   bun scripts/prune-build.mjs --cap 80    # raise the build.noindex cap to 80G
+ *                                           # for this run (heavy test loop)
  */
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
@@ -83,6 +84,9 @@ const KEEP_BUNDLES_ENV = 'NOMI_PRUNE_KEEP_BUNDLES';
 // The full cross-platform dependency baseline is currently ~17G before the
 // useful incremental cache. Leave room for one warm debug working set while
 // bounding the old feature/target units that previously grew beyond 80G.
+// A dev-only working set measures ~26G on Windows, so 28G keeps the daily loop
+// warm; a full `cargo test` generation is far larger and is meant to be
+// disposable. Override per run with `--cap <GB>`.
 const BUILD_MAXSIZE_GB = 28;
 const TARGET_MAXSIZE_GB = 5; // cargo-sweep trims target/ back under this
 const BUILD_INCREMENTAL_BUDGET_GB = 8;
@@ -96,8 +100,16 @@ const isInspect = args.includes('--inspect');
 const isGc = args.includes('--gc');
 const isPre = args.includes('--pre');
 const isPost = args.includes('--post');
+/**
+ * `--cap <GB>` overrides the build.noindex size cap for this run: the value fed
+ * to `cargo sweep --maxsize` AND the threshold the residual warning compares
+ * against. It used to change only the warning threshold while the sweep kept
+ * trimming to the constant, so `--cap 80` looked accepted and did nothing.
+ */
 const capIdx = args.indexOf('--cap');
-const CAP_GB = capIdx >= 0 && args[capIdx + 1] ? Number(args[capIdx + 1]) : 36;
+const capValue = capIdx >= 0 ? Number(args[capIdx + 1]) : NaN;
+const capIsValid = Number.isFinite(capValue) && capValue > 0;
+const BUILD_CAP_GB = capIsValid ? capValue : BUILD_MAXSIZE_GB;
 
 const TAG = '[prune-build]';
 
@@ -142,9 +154,9 @@ function fmtGB(gb) {
 function inspectBuildCache() {
   const buildGB = dirSizeGB(BUILD_DIR);
   const targetGB = dirSizeGB(TARGET_DIR);
-  const overCap = buildGB > BUILD_MAXSIZE_GB || targetGB > TARGET_MAXSIZE_GB;
+  const overCap = buildGB > BUILD_CAP_GB || targetGB > TARGET_MAXSIZE_GB;
   log(`inspect: build.noindex=${fmtGB(buildGB)}, target=${fmtGB(targetGB)}`);
-  log(`inspect: caps build.noindex=${BUILD_MAXSIZE_GB}G, target=${TARGET_MAXSIZE_GB}G`);
+  log(`inspect: caps build.noindex=${BUILD_CAP_GB}G, target=${TARGET_MAXSIZE_GB}G`);
   const haveSweep = cargoSweepInstalled();
   log(haveSweep
     ? 'inspect: cargo-sweep installed — caps are enforceable'
@@ -558,18 +570,18 @@ function boundedCleanup(initialSizes) {
   rmDir(join(BUILD_DIR, 'tmp'), 'build.noindex/tmp');
 
   const haveSweep = cargoSweepInstalled();
-  const overCap = initialSizes.buildGB > BUILD_MAXSIZE_GB || initialSizes.targetGB > TARGET_MAXSIZE_GB;
+  const overCap = initialSizes.buildGB > BUILD_CAP_GB || initialSizes.targetGB > TARGET_MAXSIZE_GB;
   if (!haveSweep && overCap) {
     // The incremental-only fallback below is NOT a cap: it never touches deps/,
     // which is where a bloated cache lives (rlib/pdb/exe/rmeta generations).
     log('WARN: cargo-sweep is not installed — the size caps cannot be enforced.');
-    log(`WARN: caps build.noindex=${BUILD_MAXSIZE_GB}G / target=${TARGET_MAXSIZE_GB}G, `
+    log(`WARN: caps build.noindex=${BUILD_CAP_GB}G / target=${TARGET_MAXSIZE_GB}G, `
       + `current build.noindex=${fmtGB(initialSizes.buildGB)} / target=${fmtGB(initialSizes.targetGB)}.`);
     log('WARN: the fallback only evicts old incremental units; deps/ (the bulk) is left untouched.');
     log('WARN: fix with `cargo install cargo-sweep --locked`, then re-run `bun run build:gc`.');
   }
-  if (initialSizes.buildGB > BUILD_MAXSIZE_GB) {
-    if (haveSweep) cargoSweepMaxsize(BUILD_DIR, BUILD_MAXSIZE_GB, 'build.noindex');
+  if (initialSizes.buildGB > BUILD_CAP_GB) {
+    if (haveSweep) cargoSweepMaxsize(BUILD_DIR, BUILD_CAP_GB, 'build.noindex');
     else trimIncrementalUnitsToBudget(
       incrementalCacheDirsUnder(BUILD_DIR),
       BUILD_INCREMENTAL_BUDGET_GB,
@@ -589,18 +601,22 @@ function boundedCleanup(initialSizes) {
   // This avoids repeatedly walking hundreds of thousands of files on Windows.
   let buildGB = dirSizeGB(BUILD_DIR);
   let targetGB = dirSizeGB(TARGET_DIR);
-  if (buildGB > CAP_GB) {
-    log(`WARN: build.noindex remains ${fmtGB(buildGB)} > cap ${CAP_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
+  if (buildGB > BUILD_CAP_GB) {
+    log(`WARN: build.noindex remains ${fmtGB(buildGB)} > cap ${BUILD_CAP_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
   }
 
-  if (targetGB > CAP_GB) {
-    log(`WARN: target remains ${fmtGB(targetGB)} > cap ${CAP_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
+  if (targetGB > TARGET_MAXSIZE_GB) {
+    log(`WARN: target remains ${fmtGB(targetGB)} > cap ${TARGET_MAXSIZE_GB}G; run explicit 'bun run build:clean' if a cold rebuild is acceptable`);
   }
   return { buildGB, targetGB };
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 try {
+  if (capIdx >= 0 && !capIsValid) {
+    log(`WARN: --cap needs a positive number of GB (got ${JSON.stringify(args[capIdx + 1])}); `
+      + `falling back to ${BUILD_MAXSIZE_GB}G.`);
+  }
   const beforeSizes = { buildGB: dirSizeGB(BUILD_DIR), targetGB: dirSizeGB(TARGET_DIR) };
   const beforeGB = beforeSizes.buildGB + beforeSizes.targetGB;
   const mode = isInspect ? ' [inspect]' : isGc ? ' [gc]' : isPre ? ' [pre]' : isPost ? ' [post]' : isClean ? ' [clean]' : '';
