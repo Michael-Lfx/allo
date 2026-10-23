@@ -11,7 +11,10 @@ import {
   type TExecutionModelPool,
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
-import { resolveLocaleKey } from '@/common/utils';
+import { resolveLocaleKey, uuidv7 } from '@/common/utils';
+import { startVoiceCall, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
@@ -150,7 +153,33 @@ const GuidPage: React.FC = () => {
 
   // Explicit Skill selections are scoped to this draft. Preset bindings are
   // resolved separately by the backend when the conversation is created.
-  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>([]);
+  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>(() => {
+    const raw = useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.skillChips;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((s): s is { skillId: string; name: string; source?: string; avatar?: string } =>
+        Boolean(s && typeof s.skillId === 'string' && typeof s.name === 'string')
+      )
+      .map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source || '',
+        ...(s.avatar ? { avatar: s.avatar } : {}),
+      }));
+  });
+
+  const homeSkillChipsRef = useRef(homeSkillChips);
+  useEffect(() => {
+    homeSkillChipsRef.current = homeSkillChips;
+    useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+      skillChips: homeSkillChips.map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source,
+        avatar: s.avatar,
+      })),
+    });
+  }, [homeSkillChips]);
   const homeTokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
   const [homeTokenInputState, setHomeTokenInputState] = useState<ComposerTokenInputState>({
     projection: '',
@@ -257,6 +286,61 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+
+  // --- Voice Call entry state & handler ---
+  const { snapshot: voiceSnapshot } = useVoiceSnapshot();
+  const isVoiceActive =
+    Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
+  const activeVoiceWorkspace = voiceSnapshot?.binding?.workspace;
+  const voiceWorkspaceLabel = activeVoiceWorkspace
+    ? activeVoiceWorkspace.split(/[\\/]/).filter(Boolean).at(-1) || activeVoiceWorkspace
+    : undefined;
+
+  const handleStartVoiceCall = useCallback(async () => {
+    if (isVoiceConnecting) return;
+    if (isVoiceActive && voiceSnapshot?.binding?.conversation_id) {
+      await navigate(`/conversation/${encodeURIComponent(voiceSnapshot.binding.conversation_id)}`);
+      return;
+    }
+
+    setIsVoiceConnecting(true);
+    try {
+      const currentSkills = homeSkillChipsRef.current;
+      useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+        text: guidInput.input,
+        files: guidInput.files,
+        dir: guidInput.dir,
+        skillChips: currentSkills.map((s) => ({
+          skillId: s.skillId,
+          name: s.name,
+          source: s.source,
+          avatar: s.avatar,
+        })),
+      });
+
+      const target: VoiceCallTarget = guidInput.dir?.trim()
+        ? { kind: 'workspace', workspace: guidInput.dir.trim() }
+        : { kind: 'default_workspace' };
+
+      const res = await startVoiceCall({
+        request_id: uuidv7(),
+        target,
+      });
+
+      await navigate(`/conversation/${encodeURIComponent(res.conversation_id)}`);
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string; active_conversation_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_conflict' && errorObj?.active_conversation_id) {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+        await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+      } else {
+        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+      }
+    } finally {
+      setIsVoiceConnecting(false);
+    }
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, navigate, t]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
@@ -1228,6 +1312,11 @@ const GuidPage: React.FC = () => {
                   onFree={() => {
                     agentSelection.setSelectedAgentKey(agentSelection.defaultAgentKey);
                   }}
+                  onStartVoiceCall={handleStartVoiceCall}
+                  isVoiceConnecting={isVoiceConnecting}
+                  isVoiceActive={isVoiceActive}
+                  voiceWorkspaceLabel={voiceWorkspaceLabel}
+                  voiceButtonTestId='guid-start-voice-call'
                 />
               }
             />

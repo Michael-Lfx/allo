@@ -114,6 +114,8 @@
     "stale": "不可用的模型：{{model}}"
   },
   "audio": {
+    "halfDuplex": "半双工：本地回声消除尚未就绪，播报时自动插话已关闭。",
+    "bargeInTest": "插话控制测试：仅用于无回声测试音频。",
     "turnFailed": "这一轮语音处理发生异常，已停止并保留文字。请再次开始说话。",
     "wakeOnly": "ASR 只识别到唤醒词，没有后续问题。请再次开始并说出完整问题。",
     "captureNoPcm": "六秒内没有收到麦克风音频，已结束本次倾听。请检查输入设备后重试。",
@@ -200,6 +202,12 @@
     "connecting": "正在连接语音服务…",
     "unavailable": "语音服务暂不可用，请检查语音设置。",
     "stop": "停止语音",
+    "startCall": "开始通话",
+    "hangup": "挂断通话",
+    "sendText": "发送文字",
+    "voiceCallActive": "正在语音通话",
+    "startFailed": "启动语音通话失败",
+    "stopFailed": "挂断语音通话失败",
     "tryWake": "试用唤醒",
     "tryWakeDescription": "手动触发一次唤醒并打开语音窗口，无需说唤醒词。请在六秒内开始说话；静默会退出。本操作不测试唤醒词识别。",
     "phase": {
@@ -383,6 +391,8 @@
     "workspace": "工作区"
   },
   "notification": {
+    "interrupted": "播报已中断，文字结果已保留",
+    "muted": "播报已静音，文字结果已保留",
     "title": "结果播报",
     "pending": "等待播报",
     "dispatched": "已发送，等待实际播放回执",
@@ -401,6 +411,11 @@
   },
   "entry": {
     "start": "开始语音对话",
-    "openActive": "返回当前语音会话"
+    "openActive": "返回当前语音会话",
+    "voiceCall": "语音通话",
+    "voiceConnecting": "连接中…",
+    "returnVoiceCall": "返回通话",
+    "returnVoiceCallWorkspace": "返回通话 ({{workspace}})",
+    "callConflictActive": "当前已有正在进行的语音通话，已为您切换"
   }
 }

@@ -16,12 +16,21 @@ import { createPersistStorage } from './persistStorage';
  * through JSON: persisted attachment/workspace values may be stale by the time
  * they are rehydrated, so consumers must treat them as hints.
  */
+export interface ComposerSkillChipDraft {
+  skillId: string;
+  name: string;
+  source?: string;
+  avatar?: string;
+}
+
 export interface ComposerDraft {
   text: string;
   /** Attachment paths chosen in the composer. */
   files: string[];
   /** Explicitly selected workspace directory, or '' for none. */
   dir: string;
+  /** Selected skill chips saved with the draft. */
+  skillChips?: ComposerSkillChipDraft[];
   updatedAt: number;
 }
 
@@ -47,9 +56,22 @@ function normalizeDraft(raw: unknown): ComposerDraft | null {
   const text = typeof value.text === 'string' ? value.text.slice(0, MAX_TEXT_LENGTH) : '';
   const files = Array.isArray(value.files) ? value.files.filter((file): file is string => typeof file === 'string').slice(0, MAX_FILES) : [];
   const dir = typeof value.dir === 'string' ? value.dir : '';
+  const skillChips = Array.isArray(value.skillChips)
+    ? value.skillChips
+        .filter(
+          (chip): chip is ComposerSkillChipDraft =>
+            Boolean(chip && typeof chip === 'object' && typeof chip.skillId === 'string' && typeof chip.name === 'string')
+        )
+        .map((chip) => ({
+          skillId: chip.skillId,
+          name: chip.name,
+          source: typeof chip.source === 'string' ? chip.source : undefined,
+          avatar: typeof chip.avatar === 'string' ? chip.avatar : undefined,
+        }))
+    : undefined;
   const updatedAt = typeof value.updatedAt === 'number' ? value.updatedAt : 0;
-  if (!text && files.length === 0 && !dir) return null;
-  return { text, files, dir, updatedAt };
+  if (!text && files.length === 0 && !dir && (!skillChips || skillChips.length === 0)) return null;
+  return { text, files, dir, skillChips, updatedAt };
 }
 
 /** Keep only the most-recently-updated drafts once the cap is exceeded. */
@@ -73,6 +95,7 @@ export const useComposerDraftStore = create<ComposerDraftState>()(
             text: partial.text ?? previous?.text ?? '',
             files: partial.files ?? previous?.files ?? [],
             dir: partial.dir ?? previous?.dir ?? '',
+            skillChips: partial.skillChips ?? previous?.skillChips,
             updatedAt: Date.now(),
           };
           const normalized = normalizeDraft(next);

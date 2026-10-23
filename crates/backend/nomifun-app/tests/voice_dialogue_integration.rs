@@ -18,7 +18,7 @@ use nomifun_app::voice_companion_manager::{
     ConversationVoiceDialogueRecorder, VoiceCompanionProcessManager,
 };
 use nomifun_app::voice_dialogue::{
-    VoiceDialoguePreflight, VoiceDialogueRecorder, VoiceDialogueRecorderError,
+    VoiceCallReservation, VoiceDialoguePreflight, VoiceDialogueRecorder, VoiceDialogueRecorderError,
 };
 use nomifun_common::{AgentKillReason, AppError, TimestampMs};
 use nomifun_conversation::ConversationService;
@@ -1239,4 +1239,95 @@ async fn voice_dialogue_and_assistant_projection_share_a_timeline_without_pollut
     assert!(voice_msgs.items.iter().any(|m| m.content["content"] == "请读取 test_doc.txt 的内容并告诉我"));
     assert!(voice_msgs.items.iter().any(|m| m.content["content"].as_str().is_some_and(|c| c.contains("正在为您读取文件"))));
     assert!(voice_msgs.items.iter().any(|m| m.content["content"].as_str().is_some_and(|c| c.contains(&random_nonce))));
+}
+
+#[tokio::test]
+async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports_explicit_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_p_dir = tempfile::tempdir().unwrap();
+    let ws_p_path = ws_p_dir.path().to_string_lossy().to_string();
+    let ws_q_dir = tempfile::tempdir().unwrap();
+    let ws_q_path = ws_q_dir.path().to_string_lossy().to_string();
+
+    // 1. Create chat in workspace Q
+    let chat_q = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "Q 聊天",
+        "extra": { "workspace": ws_q_path.clone() },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(None));
+    let recorder = std::sync::Arc::new(
+        ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+            .with_active_window_candidate(candidate.clone())
+    );
+
+    // 2. Start call on Workspace P: target resolves to a dedicated voice conversation for P
+    let target_p = nomifun_api_types::voice::VoiceCallTarget::Workspace { workspace: ws_p_path.clone() };
+    let (conv_p_id, memory_owner) = recorder.resolve_call_target(&target_p).await.unwrap();
+
+    // Host freezes reservation for P
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "req-p-1".into(),
+        target: target_p,
+        conversation_id: conv_p_id.clone(),
+        memory_owner,
+        reserved_at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+    }));
+
+    // 3. User navigates to window Q before session ready
+    *candidate.write().unwrap() = Some(chat_q.conversation_id.clone());
+
+    // 4. Session arrives and freezes
+    let session_p = "session-p-ready";
+    let binding_p = recorder.freeze_session(session_p).await.unwrap().expect("binding should be created");
+
+    // R01 assertion: binding MUST be for P, NEVER polluted by navigation to Q!
+    assert_eq!(binding_p.conversation_id, conv_p_id, "session MUST bind to frozen target P, not active candidate Q");
+    assert_ne!(binding_p.conversation_id, chat_q.conversation_id);
+
+    // 5. Test explicit old voice conversation target
+    let old_voice_conv = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "旧语音会话",
+        "extra": {
+            "voice": true,
+            "workspace": ws_p_path.clone(),
+            "memory_owner_companion_id": "flowy-bolt",
+        },
+    })).unwrap()).await.unwrap();
+
+    let target_explicit = nomifun_api_types::voice::VoiceCallTarget::VoiceConversation {
+        conversation_id: old_voice_conv.conversation_id.clone(),
+    };
+    let (resolved_explicit_id, owner_explicit) = recorder.resolve_call_target(&target_explicit).await.unwrap();
+    assert_eq!(resolved_explicit_id, old_voice_conv.conversation_id);
+    assert_eq!(owner_explicit.as_deref(), Some("flowy-bolt"));
+
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "req-explicit-1".into(),
+        target: target_explicit.clone(),
+        conversation_id: old_voice_conv.conversation_id.clone(),
+        memory_owner: owner_explicit,
+        reserved_at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+    }));
+
+    let session_explicit = "session-explicit-ready";
+    let binding_explicit = recorder.freeze_session(session_explicit).await.unwrap().expect("binding should be created");
+    assert_eq!(binding_explicit.conversation_id, old_voice_conv.conversation_id, "explicit voice conversation binds verbatim without rotation");
+    assert!(recorder.current_call_reservation().is_none(), "reservation consumed only after successful persistence");
+
+    // 6. Test late session binding (F2: late session arrives within reservation window)
+    let session_late = "session-late-ready";
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "req-late-1".into(),
+        target: target_explicit.clone(),
+        conversation_id: old_voice_conv.conversation_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: chrono::Utc::now().timestamp_millis() - 3000,
+    }));
+    let binding_late = recorder.freeze_session(session_late).await.unwrap().expect("binding should be created");
+    assert_eq!(binding_late.conversation_id, old_voice_conv.conversation_id, "late session within reservation TTL binds to frozen target");
+    assert!(recorder.current_call_reservation().is_none(), "reservation consumed on success");
 }

@@ -147,3 +147,16 @@ expect(html).toContain(locale==='zh-CN'?'回答未完成':'Answer incomplete');e
 const streaming=renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceConversation snapshot={{...snapshot,turn_id:'partial',conversation:[{...snapshot.conversation![0],reply_state:'streaming',error:null}]}}/></I18nextProvider>);
 expect(streaming).toContain(locale==='zh-CN'?'仍在生成':'Still generating');
 });}
+for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
+  test(`${locale}: unavailable AEC is shown as half duplex in both themes`, async () => {
+    const i18n=createInstance();
+    await i18n.init({lng:locale,resources:{[locale]:{translation:{voice:dictionary}}},initImmediate:false});
+    for(const theme of ['light','dark']) {
+      const snapshot={audio:{barge_in_ready:false,barge_in_reason:'aec_unavailable'}} as unknown as VoiceSnapshot;
+      const html=renderToStaticMarkup(<div data-theme={theme}><I18nextProvider i18n={i18n}><VoiceAudioStatus snapshot={snapshot}/></I18nextProvider></div>);
+      expect(html).toContain(dictionary.audio.halfDuplex);
+      expect(html).not.toContain(dictionary.audio.bargeInTest);
+      expect(html).not.toContain('voice.audio.');
+    }
+  });
+}

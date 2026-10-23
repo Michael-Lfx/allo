@@ -32,4 +32,15 @@ describe('Guid composer entry strip', () => {
     expect(styles.includes('min-height: 32px')).toBe(true);
     expect(styles.includes('height: 28px')).toBe(true);
   });
+
+  test('renders voice call pill button with connecting and active states', () => {
+    const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
+
+    expect(source.includes('onStartVoiceCall')).toBe(true);
+    expect(source.includes('isVoiceConnecting')).toBe(true);
+    expect(source.includes('isVoiceActive')).toBe(true);
+    expect(source.includes('voiceWorkspaceLabel')).toBe(true);
+    expect(source.includes('Headset')).toBe(true);
+    expect(source.includes('voiceButtonTestId')).toBe(true);
+  });
 });

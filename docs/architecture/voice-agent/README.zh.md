@@ -1,4 +1,10 @@
+> **2026-10-23 通话入口与桌宠感知方案**：[首页语音入口、固定通话键与桌宠临时呈现](execution/voice-call-entry-pet-presence-plan-2026-10-23.zh.md)。已核查当前代码及 AIRI / Open-LLM-VTuber 公开实现，新增 U0–U4 和 CP-01–16；仅文档，业务未实施。生产仍为半双工，旧方案/验证记录保留。
+
+> **2026-10-23 当前修复事实**：[独立审查修复与回归记录](execution/local-barge-in-review-repair-2026-10-23.zh.md)。旧流输出阻塞、审批停止/新唤醒清理、播报回执和中断投影已修复；生产 AEC 尚未接通，默认半双工，B2/B3 不能签核。四个隔离失败场景已纳入正式回归，下方历次方案与交付声明保留为历史。
+
 # voice-agent 文档目录 (AI Mate Voice Agent Docs)
+
+> **2026-10-22 最新验收要求**：[本地插话的系统链路与代码自动验收](execution/local-barge-in-system-auto-validation-2026-10-22.zh.md)。连续语音不走 Web/bsk 验收，由 Agent 自动执行真实 worker、声学、runtime、系统音频与 Tauri 检查；不等待 Owner 手工说话闭环。下方旧 Web 验收条款仅作历史。
 
 > **2026-10-22 当前收敛方案**：[本地 TTS 插话打断与继续输入](execution/local-barge-in-only-plan-2026-10-22.zh.md)。用户已暂缓流式字幕、Zipformer 与额外纠错；只做 AEC/VAD、本轮输出取消、句首保留及现有 SenseVoice 同会话继续输入。B0–B3/BI-01–14 待实施，下方组合方案保留为历史。
 

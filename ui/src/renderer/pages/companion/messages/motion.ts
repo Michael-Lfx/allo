@@ -1,5 +1,40 @@
 import type { CompanionActivity, CompanionMood, CompanionMotion } from '../characters/types';
 import { isActivePhase, motionForPetPhase, type PetMessage, type PetMessagePhase } from './types';
+import type { VoiceSnapshot } from '@common/adapter/voiceCompanion';
+
+/**
+ * Temporary voice call posture mapped from active acoustic session phases (CP-12, CP-13).
+ * Triggers dedicated character postures (e.g. Bolt listening, thinking, speaking)
+ * during live voice call, independent of general task phases.
+ */
+export function motionFromVoicePhase(
+  voice: VoiceSnapshot | null | undefined,
+  companionId: string | null | undefined
+): CompanionMotion | null {
+  if (!voice || !companionId) return null;
+  const binding = voice.binding;
+  if (!binding) return null;
+  const ownerId = binding.memory_owner_companion_id?.trim();
+  if (!ownerId || ownerId !== companionId) {
+    return null;
+  }
+  if (!voice.session_id || voice.ended_reason || voice.phase === 'idle') {
+    return null;
+  }
+  switch (voice.phase) {
+    case 'listening':
+    case 'follow_up':
+      return 'alert';
+    case 'transcribing':
+    case 'deciding':
+      return 'thinking';
+    case 'synthesizing':
+    case 'speaking':
+      return 'notify';
+    default:
+      return null;
+  }
+}
 
 const PHASE_PRIORITY: Record<PetMessagePhase, number> = {
   waiting: 50,

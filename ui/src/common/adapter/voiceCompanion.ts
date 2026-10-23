@@ -49,6 +49,8 @@ export interface VoiceSnapshot {
     asr_ready: boolean;
     kws_ready: boolean;
     vad_ready?: boolean;
+    barge_in_ready?: boolean;
+    barge_in_reason?: string | null;
     utterance_samples?: number;
     utterance_peak_milli?: number;
   } | null;
@@ -262,6 +264,53 @@ export async function wakeVoiceSession(signal?: AbortSignal): Promise<void> {
     method: 'POST', credentials: 'same-origin', headers: { ...buildBackendAuthHeaders('POST'), 'Content-Type': 'application/json' }, body: '{}', signal,
   });
   if (!response.ok) throw new Error('voice_wake_rejected');
+}
+
+export type VoiceCallTarget =
+  | { kind: 'voice_conversation'; conversation_id: string }
+  | { kind: 'workspace'; workspace: string }
+  | { kind: 'default_workspace' };
+
+export interface VoiceCallStartRequest {
+  request_id: string;
+  target: VoiceCallTarget;
+}
+
+export interface VoiceCallStartResponse {
+  request_id: string;
+  status: 'starting' | 'ready' | 'active';
+  conversation_id: string;
+  session_id: string | null;
+  memory_owner_companion_id?: string | null;
+  binding?: VoiceSnapshot['binding'];
+}
+
+export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceCallStartResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/session/start`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { ...buildBackendAuthHeaders('POST'), 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (response.status === 409) {
+    const errorBody = (await response.json().catch(() => ({}))) as {
+      code?: string;
+      active_conversation_id?: string;
+      message?: string;
+    };
+    const conflictErr = new Error(errorBody.message || 'voice_call_conflict');
+    Object.assign(conflictErr, {
+      code: errorBody.code || 'voice_call_conflict',
+      active_conversation_id: errorBody.active_conversation_id,
+    });
+    throw conflictErr;
+  }
+  if (!response.ok) {
+    const err = (await response.json().catch(() => null)) as { code?: string } | null;
+    throw new Error(err?.code || 'voice_call_failed');
+  }
+  return response.json() as Promise<VoiceCallStartResponse>;
 }
 
 /** Explicit UI entry opens the frozen target; background wake never steals focus. */

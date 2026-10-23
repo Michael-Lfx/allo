@@ -114,6 +114,8 @@
     "stale": "Unavailable model: {{model}}"
   },
   "audio": {
+    "halfDuplex": "Half duplex: local echo cancellation is not ready; automatic interruption during playback is disabled.",
+    "bargeInTest": "Interruption control test: echo-free test audio only.",
     "turnFailed": "This voice turn stopped after an unexpected error. The text is preserved; start speaking again.",
     "wakeOnly": "ASR recognized only the wake phrase, with no question. Start again and say the full question.",
     "captureNoPcm": "No microphone audio arrived within six seconds. Listening ended; check your input device and retry.",
@@ -200,6 +202,12 @@
     "connecting": "Connecting to voice service…",
     "unavailable": "Voice service is unavailable. Check voice settings.",
     "stop": "Stop voice",
+    "startCall": "Start Call",
+    "hangup": "Hang Up",
+    "sendText": "Send Text",
+    "voiceCallActive": "Voice call active",
+    "startFailed": "Failed to start voice call",
+    "stopFailed": "Failed to hang up voice call",
     "tryWake": "Try wake",
     "tryWakeDescription": "Manually trigger wake and open the voice window without saying the wake word. Start speaking within six seconds; silence ends the session. This does not test wake-word recognition.",
     "phase": {
@@ -383,6 +391,8 @@
     "workspace": "Workspace"
   },
   "notification": {
+    "interrupted": "Playback interrupted; text result retained",
+    "muted": "Playback muted; text result retained",
     "title": "Result playback",
     "pending": "Waiting to play",
     "dispatched": "Dispatched; awaiting actual playback receipt",
@@ -401,6 +411,11 @@
   },
   "entry": {
     "start": "Start voice conversation",
-    "openActive": "Open active voice conversation"
+    "openActive": "Open active voice conversation",
+    "voiceCall": "Voice Call",
+    "voiceConnecting": "Connecting…",
+    "returnVoiceCall": "Return to Call",
+    "returnVoiceCallWorkspace": "Return to Call ({{workspace}})",
+    "callConflictActive": "Another voice call is already active; switched to active call"
   }
 }

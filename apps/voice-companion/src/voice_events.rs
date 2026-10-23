@@ -121,7 +121,15 @@ impl VoiceEventHub {
         }
         state.seq += 1;
         if matches!(event,VoiceCompanionEvent::SessionEnded{..}|VoiceCompanionEvent::Error{stage:_,code:_}) {
-            if let Some(turn)=state.conversation.last_mut(){if turn.reply_state==Some(nomifun_api_types::voice::VoiceReplyState::Streaming){turn.reply_state=Some(nomifun_api_types::voice::VoiceReplyState::Interrupted);}}
+            let output_interrupted = matches!(event, VoiceCompanionEvent::SessionEnded { .. })
+                && matches!(state.phase, Phase::Speaking | Phase::Synthesizing);
+            if let Some(turn) = state.conversation.last_mut() {
+                if turn.reply_state == Some(nomifun_api_types::voice::VoiceReplyState::Streaming)
+                    || (output_interrupted && turn.assistant_text.is_some())
+                {
+                    turn.reply_state = Some(nomifun_api_types::voice::VoiceReplyState::Interrupted);
+                }
+            }
         }
         match &event {
             VoiceCompanionEvent::SessionEnded { reason } => {
@@ -186,6 +194,14 @@ impl VoiceEventHub {
                 }
             }
             VoiceCompanionEvent::SpeechStarted => {
+                if matches!(state.phase, Phase::Speaking | Phase::Synthesizing) {
+                    state.phase = Phase::Listening;
+                    if let Some(turn) = state.conversation.last_mut() {
+                        if turn.assistant_text.is_some() {
+                            turn.reply_state = Some(nomifun_api_types::voice::VoiceReplyState::Interrupted);
+                        }
+                    }
+                }
                 state.listening_deadline_ms = None;
                 state.follow_up_deadline_ms = None;
             }
@@ -422,6 +438,25 @@ mod tests {
         assert_eq!(snap.conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Interrupted));
         assert_eq!(snap.conversation[0].error.as_ref().unwrap().code,"model_timeout");
         assert_eq!(snap.conversation[0].assistant_text.as_deref(),Some("第一句。"));
+    }
+
+    #[test]
+    fn completed_text_keeps_an_interrupted_audio_marker_on_speech_and_stop() {
+        for end in [
+            VoiceCompanionEvent::SpeechStarted,
+            VoiceCompanionEvent::SessionEnded { reason: nomifun_api_types::voice::VoiceSessionEndReason::UserStop },
+        ] {
+            let hub = VoiceEventHub::new();
+            let _listener = hub.sender().subscribe();
+            hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+            hub.send(VoiceCompanionEvent::SpeechRecognized { text: "问题".into() }).unwrap();
+            hub.send(VoiceCompanionEvent::IntentDecided { intent: "Chat".into(), reply: Some("完整生成但尚未播完。".into()), understood_request: None }).unwrap();
+            hub.send(VoiceCompanionEvent::TtsSpeaking { text: "完整生成但尚未播完。".into() }).unwrap();
+            hub.send(end).unwrap();
+            let turn = hub.snapshot().conversation.pop().unwrap();
+            assert_eq!(turn.reply_state, Some(nomifun_api_types::voice::VoiceReplyState::Interrupted));
+            assert_eq!(turn.assistant_text.as_deref(), Some("完整生成但尚未播完。"));
+        }
     }
 
     #[test]

@@ -32,6 +32,7 @@ import ChannelSlackLogo from '@/renderer/assets/channel-logos/slack.svg';
 import ChannelTelegramLogo from '@/renderer/assets/channel-logos/telegram.svg';
 import ChannelWecomLogo from '@/renderer/assets/channel-logos/wecom.svg';
 import ChannelWeixinLogo from '@/renderer/assets/channel-logos/weixin.svg';
+import { Headset } from '@icon-park/react';
 import CompanionAvatar from './CompanionAvatar';
 import { browserNarrationFor } from './browserNarration';
 import { getDeskSpecFor } from './characters';
@@ -64,6 +65,12 @@ import {
 import { classifyPublicMessageDelivery } from '../conversation/platforms/publicMessageDelivery';
 import { reconcileConversationTurnAfterAcceptedReplay } from '../conversation/platforms/reconcileConversationTurnAfterStreamTerminal';
 import { getConversationOrNull } from '../conversation/utils/conversationCache';
+import {
+  dismissVoiceSession,
+  isVoiceSessionDismissed,
+  resolveVoiceOwnerCompanionId,
+  VOICE_DISMISSED_SESSIONS_EVENT,
+} from '@/renderer/services/voice/voiceCallPresence';
 import './companion.css';
 
 const BUBBLE_MS = 12_000;
@@ -151,8 +158,22 @@ const CompanionPage: React.FC = () => {
   const [input, setInput] = useState('');
   const {snapshot:voiceSnapshot}=useVoiceSnapshot();
   const [voiceEntryFailed,setVoiceEntryFailed]=useState(false);
-  const voiceOwned=Boolean(companionId&&voiceSnapshot?.binding?.memory_owner_companion_id===companionId);
-  const voiceActive=voiceOwned&&Boolean(voiceSnapshot?.session_id)&&!voiceSnapshot?.ended_reason&&voiceSnapshot?.phase!=='idle';
+  const voiceTargetId = resolveVoiceOwnerCompanionId(voiceSnapshot?.binding?.memory_owner_companion_id);
+  const voiceOwned = Boolean(companionId && voiceTargetId && companionId === voiceTargetId);
+  const [, setDismissedVersion] = useState(0);
+  useEffect(() => {
+    const handleDismissChange = () => setDismissedVersion((v) => v + 1);
+    window.addEventListener('storage', handleDismissChange);
+    window.addEventListener(VOICE_DISMISSED_SESSIONS_EVENT, handleDismissChange);
+    return () => {
+      window.removeEventListener('storage', handleDismissChange);
+      window.removeEventListener(VOICE_DISMISSED_SESSIONS_EVENT, handleDismissChange);
+    };
+  }, []);
+  const currentSessionDismissed = isVoiceSessionDismissed(voiceSnapshot?.session_id);
+  const voiceActive = voiceOwned && Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle' && !currentSessionDismissed;
+  const voiceActiveRef = useRef(voiceActive);
+  voiceActiveRef.current = voiceActive;
   const enterVoice = useCallback(async () => {
     setVoiceEntryFailed(false);
     try {
@@ -317,7 +338,8 @@ const CompanionPage: React.FC = () => {
     try {
       const { getCurrentWindow, PhysicalPosition, availableMonitors } = await import('@tauri-apps/api/window');
       const win = getCurrentWindow();
-      if (!cfg.appearance.companion_enabled) {
+      const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
+      if (!effectiveVisible) {
         await win.hide();
         return;
       }
@@ -373,7 +395,8 @@ const CompanionPage: React.FC = () => {
   // applyWindowState's show(): before the first orderFront macOS reports
   // scaleFactor 1.0 and every physical-px computation here would be wrong.
   const applyDeskSize = useCallback(async (cfg: ICompanionProfile, opts?: { anchor?: 'bottom' | 'top-left' }) => {
-    if (!isTauriRuntime() || !cfg.appearance.companion_enabled) return;
+    const effectiveVisible = Boolean(cfg.appearance.companion_enabled) || voiceActiveRef.current;
+    if (!isTauriRuntime() || !effectiveVisible) return;
     // An expanded surface owns the native rectangle until it closes. Config
     // echoes must not shrink it or turn its temporary top-left into desk state.
     if (expandedWindowSessionRef.current) return;
@@ -1092,6 +1115,12 @@ const CompanionPage: React.FC = () => {
     };
   }, [applyDeskSize, applyWindowState, companionId, popBubble, t]);
 
+  useEffect(() => {
+    if (profile) {
+      void applyWindowState(profile).then(() => applyDeskSize(profile));
+    }
+  }, [voiceActive, applyWindowState, applyDeskSize, profile]);
+
   // Persist the window position after drags (debounced onMoved).
   useEffect(() => {
     if (!isTauriRuntime() || !companionId) return;
@@ -1191,7 +1220,7 @@ const CompanionPage: React.FC = () => {
   // 还在拉取时窗口已可见，此刻就该穿透——否则启动数秒内整窗仍挡点击。停用→窗口 hide()→
   // companion_enabled=false→停轮询。
   useCompanionClickThrough({
-    enabled: isTauriRuntime() && profile?.appearance.companion_enabled !== false,
+    enabled: isTauriRuntime() && (profile?.appearance.companion_enabled !== false || voiceActive),
     onHoverChange: handleCompanionHoverChange,
     // 明确交互态整窗捕获：建议/展开 composer，以及迷你输入条已显露或有草稿时，
     // 优先保证控件可点可聚焦；离开后由 bar reveal 延迟和状态清空恢复按区域穿透。
@@ -1791,6 +1820,9 @@ const CompanionPage: React.FC = () => {
   const hideCompanion = useCallback(async () => {
     if (!companionId) return;
     memoryPanel.close('owner-invalid');
+    if (voiceSnapshot?.session_id) {
+      dismissVoiceSession(voiceSnapshot.session_id);
+    }
     const next = await ipcBridge.companion.patchCompanion
       .invoke({ companion_id: companionId, patch: { appearance: { companion_enabled: false } } })
       .catch(() => null);
@@ -1801,7 +1833,7 @@ const CompanionPage: React.FC = () => {
       // through the config-updated path; kept for call-site symmetry.
       await applyDeskSize(next);
     }
-  }, [applyDeskSize, applyWindowState, companionId, memoryPanel]);
+  }, [applyDeskSize, applyWindowState, companionId, memoryPanel, voiceSnapshot?.session_id]);
 
   const clearUnreadSuggestions = useCallback(() => {
     setUnread(0);
@@ -2042,6 +2074,18 @@ const CompanionPage: React.FC = () => {
               void enterVoice();
             }}
           >
+            {voiceActive && (
+              <div
+                className='nomi-companion-voice-badge'
+                data-companion-hit
+                data-testid='companion-voice-active-badge'
+                title={t('voice.session.voiceCallActive')}
+                aria-label={t('voice.session.voiceCallActive')}
+                role='status'
+              >
+                <Headset theme='filled' size='12' fill='currentColor' />
+              </div>
+            )}
             <CompanionAvatar
               character={profile?.character}
               mood={mood}

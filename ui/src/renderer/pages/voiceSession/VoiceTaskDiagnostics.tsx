@@ -5,7 +5,7 @@ import {openVoiceTask,replayVoiceResult,type VoiceSnapshot} from '@common/adapte
 
 const stages={waiting:'voice.progress.waiting',thinking:'voice.progress.thinking',answering:'voice.progress.answering',tool:'voice.progress.tool',planning:'voice.progress.planning',approval:'voice.progress.approval'} as const;
 const health={fresh:'voice.progress.fresh',unverified:'voice.progress.unverified',no_recent_progress:'voice.progress.no_recent_progress'} as const;
-const notifications={pending:'voice.notification.pending',dispatched:'voice.notification.dispatched',started:'voice.notification.started',played:'voice.notification.played',failed:'voice.notification.failed',unknown:'voice.notification.unknown',suppressed:'voice.notification.suppressed'} as const;
+const notifications={pending:'voice.notification.pending',dispatched:'voice.notification.dispatched',started:'voice.notification.started',played:'voice.notification.played',interrupted:'voice.notification.interrupted',muted:'voice.notification.muted',failed:'voice.notification.failed',unknown:'voice.notification.unknown',suppressed:'voice.notification.suppressed'} as const;
 export default function VoiceTaskDiagnostics({snapshot}:{snapshot:VoiceSnapshot|null}){
   const {t}=useTranslation();
   const [busy,setBusy]=useState(false);

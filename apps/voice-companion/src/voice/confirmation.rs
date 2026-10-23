@@ -5,9 +5,21 @@ use std::time::Duration;
 
 pub(super) struct PendingConfirmation {
     pub approval_id:String,
+    pub session_id:Option<String>,
     pub generation:u64,
     pub deadline_ms:i64,
+    pub listening_started:bool,
     pub response:Option<tokio::sync::oneshot::Sender<Option<String>>>,
+}
+
+impl PendingConfirmation {
+    pub(super) fn begin_listening(&mut self) -> i64 {
+        if !self.listening_started {
+            self.deadline_ms = self.deadline_ms.min(chrono::Utc::now().timestamp_millis() + 8000);
+            self.listening_started = true;
+        }
+        self.deadline_ms
+    }
 }
 
 impl VoiceCompanionRuntime {
@@ -26,55 +38,131 @@ impl VoiceCompanionRuntime {
             || !driver.yield_for_notification(){return Err("voice_busy");}
         let generation=self.playback.generation_id();
         driver.handle_event(AcousticEvent::ToolPolicyIntercept).map_err(|_|"voice_busy")?;
-        *self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner())=Some(PendingConfirmation {
-            approval_id:request.approval_id.clone(),generation,deadline_ms:request.expires_at_ms,response:None,
-        });
         let _=self.event_tx.send(VoiceCompanionEvent::ConfirmationPrompted {approval_id:request.approval_id.clone(),text:request.text.clone(),expires_at_ms:request.expires_at_ms});
+        *self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner())=Some(PendingConfirmation {
+            approval_id:request.approval_id.clone(),session_id:self.snapshot().session_id,generation,
+            deadline_ms:request.expires_at_ms,listening_started:false,response:None,
+        });
         drop(driver);
-        let budget=Duration::from_millis(request.expires_at_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).max(1) as u64);
-        let outcome=tokio::time::timeout(budget,async {
+        let budget = Duration::from_millis(
+            request
+                .expires_at_ms
+                .saturating_sub(chrono::Utc::now().timestamp_millis())
+                .max(1) as u64,
+        );
+        let outcome = tokio::time::timeout(budget, async {
             tokio::select! {
-                result=self.play_prompt_and_listen(&request,generation)=>result,
-                _=async {while self.playback.generation_id()==generation {tokio::time::sleep(Duration::from_millis(20)).await;}}=>Ok(false),
+                result = self.play_prompt_and_listen(&request, generation) => result,
+                _ = async {
+                    loop {
+                        let state = self.driver.lock().await.current_state();
+                        if !matches!(state, AcousticState::AwaitingConfirmation | AcousticState::ListeningConfirm) {
+                            break;
+                        }
+                        if self.snapshot().ended_reason.is_some() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                } => Ok(false),
             }
-        }).await;
-        let approved=matches!(outcome,Ok(Ok(true))) && self.playback.generation_id()==generation
-            && chrono::Utc::now().timestamp_millis()<request.expires_at_ms;
-        let owned={
-            let mut pending=self.pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());
-            if pending.as_ref().is_some_and(|pending|pending.approval_id==request.approval_id){pending.take();true}else{false}
+        })
+        .await;
+        let approved = matches!(outcome, Ok(Ok(true)))
+            && chrono::Utc::now().timestamp_millis() < request.expires_at_ms;
+        let mut driver = self.driver.lock().await;
+        let current = self.snapshot();
+        let owned = {
+            let mut pending = self
+                .pending_confirmation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if pending
+                .as_ref()
+                .is_some_and(|pending| pending.approval_id == request.approval_id)
+            {
+                let same_session = pending.as_ref().unwrap().session_id == current.session_id
+                    && current.ended_reason.is_none()
+                    && matches!(driver.current_state(), AcousticState::AwaitingConfirmation | AcousticState::ListeningConfirm);
+                pending.take();
+                same_session
+            } else {
+                false
+            }
         };
-        let mut driver=self.driver.lock().await;
-        if owned && self.playback.generation_id()==generation {
-            if let Some(turn)=self.active_turn.lock().unwrap_or_else(|error|error.into_inner()).take(){turn.abort();}
-            driver.reset();
-            if !matches!(outcome,Ok(Ok(_))){
-                let _=self.playback.interrupt().await;
-                let _=self.event_tx.send(VoiceCompanionEvent::Error {stage:"confirmation".into(),code:"confirmation_audio_or_timeout".into()});
+        if owned {
+            if let Some(turn) = self
+                .active_turn
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                turn.abort();
             }
-            let text=if approved {"已提交本次确认，等待执行侧校验。"}else{"未获得本次确认，本次语音答复为拒绝。"};
-            let _=self.event_tx.send(VoiceCompanionEvent::ResponseReady {text:text.into()});
+            driver.reset();
+            if !matches!(outcome, Ok(Ok(_))) {
+                let _ = self.playback.interrupt().await;
+                let _ = self.event_tx.send(VoiceCompanionEvent::Error {
+                    stage: "confirmation".into(),
+                    code: "confirmation_audio_or_timeout".into(),
+                });
+            }
+            let text = if approved {
+                "已提交本次确认，等待执行侧校验。"
+            } else {
+                "未获得本次确认，本次语音答复为拒绝。"
+            };
+            let _ = self
+                .event_tx
+                .send(VoiceCompanionEvent::ResponseReady { text: text.into() });
             if snapshot.session_id.is_some() && snapshot.ended_reason.is_none() {
                 let _ = driver.handle_event(AcousticEvent::WakeHit);
                 if driver.begin_listening_window() {
                     let _ = self.event_tx.send(VoiceCompanionEvent::Listening);
-                    let _ = self.event_tx.send(VoiceCompanionEvent::ListeningReady {timeout_secs:180});
+                    let _ = self
+                        .event_tx
+                        .send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
                 }
             } else {
-                let _=self.event_tx.send(VoiceCompanionEvent::Idle);
+                let _ = self.event_tx.send(VoiceCompanionEvent::Idle);
             }
         }
-        Ok(VoiceToolConfirmationReply {approval_id:request.approval_id,msg_id:request.msg_id,call_id:request.call_id,approved})
+        Ok(VoiceToolConfirmationReply {
+            approval_id: request.approval_id,
+            msg_id: request.msg_id,
+            call_id: request.call_id,
+            approved: approved && owned,
+        })
     }
 
-    async fn play_prompt_and_listen(&self,request:&VoiceToolConfirmationPrompt,generation:u64)->Result<bool,AudioSinkError> {
-        self.playback.speak_text_with_started(self.tts.as_ref(),&request.text,"",||{}).await?;
-        let mut driver=self.driver.lock().await;
-        if self.playback.generation_id()!=generation || driver.current_state()!=AcousticState::AwaitingConfirmation{return Ok(false);}
-        let total_remaining=request.expires_at_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).min(8000);
-        if total_remaining<=0{return Ok(false);}
-        let deadline_ms=chrono::Utc::now().timestamp_millis()+total_remaining;
-        driver.handle_event(AcousticEvent::PromptDone).map_err(|_|AudioSinkError::Write("confirmation_scope_changed".into()))?;
+    async fn play_prompt_and_listen(
+        &self,
+        request: &VoiceToolConfirmationPrompt,
+        generation: u64,
+    ) -> Result<bool, AudioSinkError> {
+        self
+            .playback
+            .speak_text_for_generation(self.tts.as_ref(), &request.text, "", generation, || {})
+            .await?;
+        let mut driver = self.driver.lock().await;
+        let state = driver.current_state();
+        if state != AcousticState::AwaitingConfirmation && state != AcousticState::ListeningConfirm {
+            return Ok(false);
+        }
+        let deadline_ms = {
+            let mut pending = self.pending_confirmation.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(pending) = pending.as_mut().filter(|p| p.approval_id == request.approval_id && p.session_id == self.snapshot().session_id) else { return Ok(false); };
+            pending.begin_listening()
+        };
+        let total_remaining = deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis());
+        if total_remaining <= 0 {
+            return Ok(false);
+        }
+        if state == AcousticState::AwaitingConfirmation {
+            driver
+                .handle_event(AcousticEvent::PromptDone)
+                .map_err(|_| AudioSinkError::Write("confirmation_scope_changed".into()))?;
+        }
         driver.limit_confirmation_window(Duration::from_millis(total_remaining as u64));
         drop(driver);
 
@@ -82,23 +170,41 @@ impl VoiceCompanionRuntime {
         loop {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let remaining = deadline_ms.saturating_sub(now_ms);
-            if remaining <= 0 || self.playback.generation_id() != generation {
+            if remaining <= 0 {
                 return Ok(false);
             }
 
+            let current_gen = self.playback.generation_id();
             let (tx, rx) = tokio::sync::oneshot::channel();
             {
-                let mut pending = self.pending_confirmation.lock().unwrap_or_else(|error| error.into_inner());
-                let Some(pending) = pending.as_mut().filter(|pending| pending.approval_id == request.approval_id) else {
+                let mut pending = self
+                    .pending_confirmation
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let Some(pending) = pending
+                    .as_mut()
+                    .filter(|pending| pending.approval_id == request.approval_id)
+                else {
                     return Ok(false);
                 };
                 pending.deadline_ms = deadline_ms;
+                pending.generation = current_gen;
                 pending.response = Some(tx);
             }
             let _ = self.event_tx.send(VoiceCompanionEvent::ConfirmationListening { deadline_ms });
 
-            let answer = tokio::time::timeout(Duration::from_millis(remaining as u64), rx).await.ok().and_then(Result::ok).flatten();
-            if self.playback.generation_id() != generation || chrono::Utc::now().timestamp_millis() >= deadline_ms {
+            let answer = tokio::time::timeout(Duration::from_millis(remaining as u64), rx)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+            if chrono::Utc::now().timestamp_millis() >= deadline_ms {
+                return Ok(false);
+            }
+            if self.snapshot().ended_reason.is_some()
+                || !self.pending_confirmation.lock().unwrap_or_else(|e| e.into_inner())
+                    .as_ref().is_some_and(|p| p.approval_id == request.approval_id && p.session_id == self.snapshot().session_id)
+            {
                 return Ok(false);
             }
 
@@ -110,7 +216,7 @@ impl VoiceCompanionRuntime {
                     round += 1;
                     let remaining_after = deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis());
                     if round < 2 && remaining_after > 2500 {
-                        let _ = self.playback.speak_text_with_started(self.tts.as_ref(), "没听清，请说可以执行或不要执行", "", || {}).await;
+                        let _ = self.playback.speak_text_for_generation(self.tts.as_ref(), "没听清，请说可以执行或不要执行", "", current_gen, || {}).await;
                         continue;
                     }
                     return Ok(false);

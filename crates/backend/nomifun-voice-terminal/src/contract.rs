@@ -147,6 +147,8 @@ pub enum AcousticEvent {
     FollowUpSpeech,
     /// 180-second follow-up window expired without speech
     FollowUpTimeout,
+    /// User interrupted playback with oral speech (barge-in)
+    BargeIn,
 }
 
 /// Error returned when an illegal FSM transition is attempted.
@@ -284,6 +286,30 @@ pub const LEGAL_TRANSITIONS: &[(AcousticState, AcousticEvent, AcousticState)] = 
         AcousticState::FollowUpListening,
         AcousticEvent::FollowUpTimeout,
         AcousticState::Idle,
+    ),
+    // 21. SpeakingFast -> Listening on barge-in
+    (
+        AcousticState::SpeakingFast,
+        AcousticEvent::BargeIn,
+        AcousticState::Listening,
+    ),
+    // 22. SpeakingControl -> Listening on barge-in
+    (
+        AcousticState::SpeakingControl,
+        AcousticEvent::BargeIn,
+        AcousticState::Listening,
+    ),
+    // 23. SpeakingSummary -> Listening on barge-in
+    (
+        AcousticState::SpeakingSummary,
+        AcousticEvent::BargeIn,
+        AcousticState::Listening,
+    ),
+    // 24. AwaitingConfirmation -> ListeningConfirm on barge-in (interrupted prompt)
+    (
+        AcousticState::AwaitingConfirmation,
+        AcousticEvent::BargeIn,
+        AcousticState::ListeningConfirm,
     ),
 ];
 

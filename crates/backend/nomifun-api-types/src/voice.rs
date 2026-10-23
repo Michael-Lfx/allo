@@ -517,6 +517,41 @@ pub struct VoiceTaskProgress {
     pub last_event_at_ms: Option<i64>,
     pub last_progress_at_ms: Option<i64>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VoiceCallTarget {
+    VoiceConversation { conversation_id: String },
+    Workspace { workspace: String },
+    DefaultWorkspace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceCallStartRequest {
+    pub request_id: String,
+    pub target: VoiceCallTarget,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceCallStartStatus {
+    Starting,
+    Ready,
+    Active,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceCallStartResponse {
+    pub request_id: String,
+    pub status: VoiceCallStartStatus,
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_owner_companion_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<VoiceBindingSnapshot>,
+}
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -626,6 +661,11 @@ pub struct VoiceAudioDiagnostics {
     pub kws_ready: bool,
     #[serde(default)]
     pub vad_ready: bool,
+    /// Automatic interruption is disabled unless echo-free input is verified.
+    #[serde(default)]
+    pub barge_in_ready: bool,
+    #[serde(default)]
+    pub barge_in_reason: Option<String>,
     #[serde(default)]
     pub utterance_samples: u32,
     #[serde(default)]

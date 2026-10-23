@@ -63,8 +63,49 @@
 }
 
 .nomi-companion-figure-hit {
+  position: relative;
   flex: none;
   line-height: 0;
+}
+
+.nomi-companion-voice-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-base);
+  border: 1.5px solid var(--flowy-success);
+  color: var(--flowy-success);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  z-index: 4;
+  animation: nomi-companion-pulse 2s ease-in-out infinite;
+}
+
+:root[data-theme='dark'] .nomi-companion-voice-badge,
+.dark .nomi-companion-voice-badge {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+@keyframes nomi-companion-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--flowy-success) 40%, transparent);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--flowy-success) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nomi-companion-voice-badge {
+    animation: none;
+  }
 }
 
 .nomi-puff {

@@ -208,7 +208,9 @@ impl VoiceSessionDriver {
         }
 
         let next = self.fsm.transition(event)?;
-        if matches!(event, AcousticEvent::WakeHit | AcousticEvent::UtteranceIgnored) {
+        if matches!(event, AcousticEvent::WakeHit | AcousticEvent::UtteranceIgnored)
+            || (event == AcousticEvent::BargeIn && next == AcousticState::Listening)
+        {
             self.speech_started = false;
             self.listening_deadline = Some(self.now() + Duration::from_secs(180));
         } else if next == AcousticState::FollowUpListening && event == AcousticEvent::PlaybackDone {
