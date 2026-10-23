@@ -638,6 +638,15 @@ async fn cleanup_start_failure(
     }
 }
 
+fn link_host_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "Flowy".to_string())
+}
+
 impl DesktopServer {
     /// Boot the embedded backend under `TrustLocalToken`, bind the permanent
     /// loopback listener, and spawn its serve task. Returns the shared handle
@@ -777,6 +786,19 @@ impl DesktopServer {
                 );
             }
         };
+        let link_identity = match nomifun_link::load_or_create_identity(&services.data_dir.join("link")) {
+            Ok(identity) => {
+                nomifun_link::publish_host(nomifun_link::LinkHost {
+                    fingerprint: identity.fingerprint.clone(),
+                    name: link_host_name(),
+                });
+                Some(identity)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "flowy link certificate was not created; phone pairing stays unavailable");
+                None
+            }
+        };
         let router = create_router(&services).await;
 
         // Seed the initial status with the PERSISTED admin identity so the
@@ -834,6 +856,7 @@ impl DesktopServer {
             status_rx,
         });
         server.spawn_loopback(loopback);
+        server.spawn_link(link_identity);
         server.spawn_robot_endpoint_projection();
         // Tail of startup: the backend is ready and the app-shell source has
         // been resolved, so re-opening LAN serving here is the earliest moment
@@ -961,6 +984,19 @@ impl DesktopServer {
     /// Subscribe to completion of the ordered application shutdown.
     pub fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
         self.shutdown_complete_rx.clone()
+    }
+
+    fn spawn_link(self: &Arc<Self>, identity: Option<nomifun_link::LinkIdentity>) {
+        let Some(identity) = identity else {
+            return;
+        };
+        let router = self.router.clone();
+        self.runtime.spawn(async move {
+            let _discovery = nomifun_link::advertise_link(&identity.fingerprint);
+            if let Err(error) = nomifun_link::serve_tls(router, identity).await {
+                tracing::error!(%error, "flowy link tls listener exited");
+            }
+        });
     }
 
     fn spawn_loopback(self: &Arc<Self>, listener: TcpListener) {
