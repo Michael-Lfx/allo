@@ -393,6 +393,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - teaches 标本课把该概念教到什么档位；assumes 标本课假定学习者已把该概念掌握到什么档位。
 - teaches 与 assumes 都写「本次」的投影：teaches 写本节点这次把概念教到哪一档，assumes 按本节点这次实际依赖的深度写档位——同一概念可以多次教、一次比一次深，档位跟着本次走，不按概念的「最终形态」虚报。
 - assumes 必须被已教账（既往批次已落库的 teaches）以不低于所假定档位覆盖，否则整批被打回——不存在的「先锁后面再补」。同批兄弟的 teaches 与本批铸名不构成供给：同批节点没有学习先后、必须同时就绪，谁也不依赖谁。
+- 档位自省以**教学深度本身**为准，不对照动词字面（动词只是示例，包括但不限于）：节点整体是操作训练（如计算/化简/求/作/写出一类动作句）而 teaches 全标 know 时，先自省是否低估——能按程序做出来，就不只是 know（知道是什么），至少该是 apply（会用）；反过来，首教形式化这类「写」只是认识步的节点，标 know 也可能是如实的。
 【起点纪律】
 - 学习者的真实起点 = 【学习目标】里的基础声明（未声明即彻底零基础）。判断一个节点是不是合格入口，看基线，不看它在教材里的位置：「简单」「基础」「入门」「第一章」都不等于零基础可起步。
 - 零基础校验：入口节点直接用到的每个概念，要么本节点就教它（写进 teaches、随批铸名），要么属于课程外通用常识（时间、方位、日常活动一类）；既像常识又像本课概念的两可词，按概念对待。校验范围不止「用到」：节点文本（定义、操作、实例、易错提醒）里引用或预设的每个课程内概念同样算依赖——零基础学习者读到那句文本时，该概念要么已教、要么本节点就地教它。
@@ -1800,6 +1801,18 @@ mod tests {
         assert!(rendered.contains("把就绪节点补到 5 个") == false, "the number contract lives in the system prompt");
         assert!(coach_system().contains("把就绪节点补到 5 个"));
         assert!(coach_system().contains("至多 5 个"));
+    }
+
+    /// k06（learnhub a39d36a 深度本位修订）：档位自省以教学深度本身为准、
+    /// 不对照动词字面——操作训练节点全标 know = 低估信号（能按程序做出来
+    /// 至少 apply）；首教形式化「写」只是认识步时 know 也如实。
+    #[test]
+    fn coach_system_tier_self_review_is_depth_based() {
+        let system = coach_system();
+        assert!(system.contains("教学深度本身"), "{system}");
+        assert!(system.contains("不对照动词字面"), "{system}");
+        assert!(system.contains("至少该是 apply"), "{system}");
+        assert!(system.contains("首教形式化"), "{system}");
     }
 
     /// 首批九块渲染：结构参考材料 + 地形门口（首批重点框架语）+ 凝练纪律三行；

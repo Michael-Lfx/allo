@@ -408,6 +408,11 @@ mod tests {
             "≥3 条",
             "≥5 条",
             "排期",
+            // k06：assumes 逻辑前提判别（载体边防误连）+ 块链连续性自检。
+            "逻辑前提",
+            "练习载体",
+            "块链连续性自检",
+            "不留悬空环节",
         ] {
             assert!(goal_body.contains(phrase), "goal prompt missing「{phrase}」");
         }
@@ -419,6 +424,10 @@ mod tests {
             "self_check",
             "learner_basis_assumed",
             "排期",
+            // k06：门语义半句（硬前置 = 不可自检豁免、非进入闸门）。
+            "不可自检豁免",
+            "不是进入闸门",
+            "进门前提",
         ] {
             assert!(terrain_body.contains(phrase), "terrain prompt missing「{phrase}」");
         }
@@ -459,6 +468,27 @@ mod tests {
             "宁可少改",
         ] {
             assert!(repair_body.contains(phrase), "repair prompt missing「{phrase}」");
+        }
+    }
+
+    /// 装配面无重复段落：同一资产的模型面正文里，非平凡的行（>20 字符）不得
+    /// 逐字重复出现——织入新条款时若把既有段落复制了一份（或新旧两版并存），
+    /// 本测试先红（k06 验收：装配面无重复段落）。
+    #[test]
+    fn structure_bodies_have_no_duplicate_paragraphs() {
+        for spec in REGISTRY {
+            let (_, body) = split_template(spec.template).expect("header block");
+            let mut seen = std::collections::HashSet::new();
+            for line in body.lines() {
+                if line.chars().count() <= 20 {
+                    continue;
+                }
+                assert!(
+                    seen.insert(line),
+                    "{} body has a duplicated paragraph line:{line}",
+                    spec.id
+                );
+            }
         }
     }
 

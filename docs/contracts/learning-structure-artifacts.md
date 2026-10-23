@@ -1,8 +1,8 @@
 ---
 contract: learning-structure-artifacts
-version: "1.3"
+version: "1.4"
 date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
 ---
 
@@ -240,6 +240,25 @@ est，1 est 分钟 = 1 分钟专注学习）。
   非空字符串、空白串按缺席裁 `None`，**零内容拦截、永不退稿**；不超容不写（缺席
   合法）。传统课时管线不消费该键（其机械预算已足够）。
 - 运维开关 `NOMI_LEARNING_EST_BUDGET=off` 关闭预算行与自报键（旧行为臂）。
+
+### 8.2 结构提示词随批注记（v1.4，k06）
+
+四轮吸收 k06（learnhub #149 提交 50c734a + a39d36a）的写作面条款（**零机械
+条款改动**，validator 不变）：
+
+- **assumes 逻辑前提判别**（`goal-decomposition.md`）：assumes 的判据 = 抽掉该
+  前置后继块的定义/推导在数学上无法进行；练习载体与讲解通道不配 assumes（走
+  contrasts 或不连）。与既有 `st.edge` 端点点名/方向语义同层，属写作品质措辞。
+- **块链连续性自检**（同资产）：逐主干沿 assumes 链走一遍，块表无承接的中间
+  环节补块或写进 `gaps`——`gaps` 的「补全方向」是既有契约键，不新增。
+- **门语义**（`prerequisite-terrain.md`）：硬前置 = 不可自检豁免，**不是进入
+  闸门**；判据措辞不得写成「须在进入课程前具备」类进门前提。
+- **档位深度本位自省**（`COACH_SYSTEM` 档位段，非本契约文件）：档位看教学深度
+  本身，不对照动词字面；操作训练节点全标 know = 低估（至少 apply），首教形式化
+  的「写」只是认识步时 know 如实。`ng.review.*`/`ng.nodes.est` 契约键不变。
+
+金样随批重生成（`LEARNING_UPDATE_GOLDEN=1`），围栏 FENCE_DEV_FACE 与条款覆盖
+短语断言同批更新。
 
 ## 9 挂载事实层（st.mount.*，j08 三轮 g1「结构转活文档·上」）
 
