@@ -294,6 +294,11 @@ const SendBox: React.FC<{
   bottomHint?: React.ReactNode;
   /** Conversation-only: render the compact plan strip inside the input panel status row. */
   showPinnedPlan?: boolean;
+  isVoiceConversation?: boolean;
+  isVoiceActive?: boolean;
+  isVoiceConnecting?: boolean;
+  onStartVoiceCall?: () => void;
+  onStopVoiceCall?: () => void;
   /**
    * Mobile-only: open a parent-supplied action sheet via the `+` button.
    * When provided, mobile renders a single `+` button (left) and send/stop button (right);
@@ -340,6 +345,11 @@ const SendBox: React.FC<{
   onSelectedWorkspaceItemsChange,
   bottomHint,
   showPinnedPlan = false,
+  isVoiceConversation = false,
+  isVoiceActive = false,
+  isVoiceConnecting = false,
+  onStartVoiceCall,
+  onStopVoiceCall,
   onMobilePlusClick,
 }) => {
   const layout = useLayoutContext();
@@ -2248,9 +2258,15 @@ const SendBox: React.FC<{
         showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
         steerAvailable={steerAvailable}
         onSteer={steerMessageHandler}
-        speechHidden={isMobileCompact}
+        speechHidden={isVoiceConversation || isMobileCompact}
+        isVoiceConversation={isVoiceConversation}
+        isVoiceActive={isVoiceActive}
+        isVoiceConnecting={isVoiceConnecting}
+        onStartVoiceCall={onStartVoiceCall}
+        onStopVoiceCall={onStopVoiceCall}
         sendTestId='sendbox-send-btn'
         stopTestId='sendbox-stop-btn'
+        phoneCallTestId='sendbox-phone-btn'
       />
     </div>
   );

@@ -150,6 +150,30 @@
   border-color: #71717a !important;
 }
 
+/* Phone call action: green circle */
+.send-button-custom.sendbox-phone-call-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: var(--flowy-success) !important;
+  border-color: var(--flowy-success) !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-phone-call-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: color-mix(in srgb, var(--flowy-success) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-success) 88%, #ffffff) !important;
+}
+
+/* Phone hangup action: red circle */
+.send-button-custom.sendbox-phone-hangup-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled) {
+  background-color: var(--flowy-danger) !important;
+  border-color: var(--flowy-danger) !important;
+  color: #fff !important;
+}
+
+.send-button-custom.sendbox-phone-hangup-button.arco-btn.arco-btn-primary:not(:disabled):not(.arco-btn-disabled):hover {
+  background-color: color-mix(in srgb, var(--flowy-danger) 88%, #ffffff) !important;
+  border-color: color-mix(in srgb, var(--flowy-danger) 88%, #ffffff) !important;
+}
+
 [data-theme='dark'] .send-button-custom:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn:disabled,
 [data-theme='dark'] .send-button-custom.arco-btn-primary:disabled,

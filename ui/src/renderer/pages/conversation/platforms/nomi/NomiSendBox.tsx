@@ -1,10 +1,12 @@
 
 
+import { useNavigate } from 'react-router-dom';
 import { conversationTarget, type ConversationId, type MessageId } from '@/common/types/ids';
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { sendVoiceKeyboardMessage } from '@common/adapter/voiceCompanion';
+import { sendVoiceKeyboardMessage, startVoiceCall, stopVoiceSession } from '@common/adapter/voiceCompanion';
+import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import VoiceConversationBar from '@renderer/pages/voiceSession/VoiceConversationBar';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { useSWRConfig } from 'swr';
@@ -243,6 +245,7 @@ const NomiSendBox: React.FC<{
   hideModeSelector,
   hideModelSelector = false,
 }) => {
+  const navigate = useNavigate();
   const [workspacePath, setWorkspacePath] = useState('');
   const [voiceConversation, setVoiceConversation] = useState<{
     id: string;
@@ -251,6 +254,21 @@ const NomiSendBox: React.FC<{
   const conversationVoiceKind =
     voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown';
   const isVoiceConversation = conversationVoiceKind === 'voice';
+  const { snapshot: voiceSnapshot } = useVoiceSnapshot(isVoiceConversation);
+  const activeVoiceConversationId = voiceSnapshot?.binding?.conversation_id;
+  const isCallActiveGlobally =
+    Boolean(voiceSnapshot?.session_id) &&
+    !voiceSnapshot?.ended_reason &&
+    voiceSnapshot?.phase !== 'idle';
+  const isVoiceActive =
+    isVoiceConversation &&
+    isCallActiveGlobally &&
+    activeVoiceConversationId === conversation_id;
+  const isVoiceActiveElsewhere =
+    isCallActiveGlobally &&
+    Boolean(activeVoiceConversationId) &&
+    activeVoiceConversationId !== conversation_id;
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
   const voiceSendAttempts = useRef(new Map<string, string>());
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
@@ -353,6 +371,45 @@ const NomiSendBox: React.FC<{
     (visible: boolean) => handleChatPopupVisibleChange('context', visible),
     [handleChatPopupVisibleChange]
   );
+
+  const handleStartVoiceCall = useCallback(async () => {
+    if (isVoiceActiveElsewhere && activeVoiceConversationId) {
+      Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+      await navigate(`/conversation/${encodeURIComponent(activeVoiceConversationId)}`);
+      return;
+    }
+    setIsVoiceConnecting(true);
+    try {
+      await startVoiceCall({
+        request_id: uuidv7(),
+        target: { kind: 'voice_conversation', conversation_id },
+      });
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string; active_conversation_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_conflict') {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+        if (errorObj.active_conversation_id && errorObj.active_conversation_id !== conversation_id) {
+          await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+        }
+      } else {
+        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+      }
+    } finally {
+      setIsVoiceConnecting(false);
+    }
+  }, [conversation_id, isVoiceActiveElsewhere, activeVoiceConversationId, navigate, t]);
+
+  const handleStopVoiceCall = useCallback(async () => {
+    if (!voiceSnapshot) return;
+    if (voiceSnapshot.binding?.conversation_id !== conversation_id) {
+      return;
+    }
+    try {
+      await stopVoiceSession(voiceSnapshot);
+    } catch {
+      Message.error(t('voice.session.stopFailed', { defaultValue: '挂断语音通话失败' }));
+    }
+  }, [conversation_id, voiceSnapshot, t]);
 
   const displayContextWindow = useMemo(
     () =>
@@ -2085,6 +2142,11 @@ const NomiSendBox: React.FC<{
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
+        isVoiceConversation={isVoiceConversation}
+        isVoiceActive={isVoiceActive}
+        isVoiceConnecting={isVoiceConnecting}
+        onStartVoiceCall={handleStartVoiceCall}
+        onStopVoiceCall={handleStopVoiceCall}
         showPinnedPlan
         onMobilePlusClick={isMobile ? () => setIsMobileSheetOpen(true) : undefined}
         value={content}

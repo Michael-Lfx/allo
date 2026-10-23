@@ -5,7 +5,7 @@ import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable
 import { autoWorkStartDisabled } from '@/renderer/pages/guid/hooks/autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Tooltip } from '@arco-design/web-react';
-import { ArrowUp, Lightning, Robot } from '@icon-park/react';
+import { ArrowUp, Lightning, PhoneCall, PhoneOff, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -26,6 +26,12 @@ export type ComposerSubmitClusterProps = {
   steerAvailable?: boolean;
   onSteer?: () => void;
   speechHidden?: boolean;
+  isVoiceConversation?: boolean;
+  isVoiceActive?: boolean;
+  isVoiceConnecting?: boolean;
+  onStartVoiceCall?: () => void;
+  onStopVoiceCall?: () => void;
+  phoneCallTestId?: string;
   sendTestId?: string;
   stopTestId?: string;
 };
@@ -82,12 +88,18 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   steerAvailable = false,
   onSteer,
   speechHidden = false,
+  isVoiceConversation = false,
+  isVoiceActive = false,
+  isVoiceConnecting = false,
+  onStartVoiceCall,
+  onStopVoiceCall,
+  phoneCallTestId = 'composer-phone-btn',
   sendTestId = 'composer-send-btn',
   stopTestId = 'composer-stop-btn',
 }) => {
   const { t } = useTranslation();
   const { ready, available } = useClawAsrAvailable();
-  const hideSpeech = speechHidden || !ready || !available;
+  const hideSpeech = isVoiceConversation || speechHidden || !ready || !available;
 
   const speechDisabled = disabled || loading || isUploading || (showStop && !hasDraft);
 
@@ -96,19 +108,22 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
 
   const sendDisabled = disabled || isUploading || !hasDraft;
   const showStopButton = showStop && Boolean(onStop);
+  const showPhoneButton = Boolean(isVoiceConversation);
 
   // A running conversation replaces Send with Stop. Outside that state, Send
   // remains visible and is disabled until the draft is valid.
   const showSendButton = !autoWorkMode && !showStopButton;
+  const effectiveShowSendButton = isVoiceConversation ? hasDraft : showSendButton;
   const showSteerButton = showSteer && !showStopButton;
-  const showAutoWorkButton = autoWorkMode;
+  const effectiveShowSteerButton = !isVoiceConversation && showSteerButton;
+  const showAutoWorkButton = !isVoiceConversation && autoWorkMode;
 
   // Keep the rightmost circle slot stable: idle composer shows a filled (black)
   // mic there; once send/stop/robot appears that slot stays put and a gray
   // inline mic opens to its left — avoids the mic jumping right→left and
   // swapping black→transparent on the first keystroke.
   const hasCompanionCircle =
-    showStopButton || showAutoWorkButton || showSendButton;
+    showPhoneButton || showStopButton || showAutoWorkButton || effectiveShowSendButton;
   const showSecondarySpeech = !hideSpeech && hasCompanionCircle;
   const showPrimaryFilledSpeech = !hideSpeech && !hasCompanionCircle;
 
@@ -140,7 +155,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           />
         ) : null}
 
-        {showSteerButton && steerAvailable && onSteer && hasDraft ? (
+        {effectiveShowSteerButton && steerAvailable && onSteer && hasDraft ? (
           <Button
             shape='circle'
             type='primary'
@@ -169,7 +184,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
           </Tooltip>
         ) : null}
 
-        {showSendButton ? (
+        {effectiveShowSendButton ? (
           <Button
             shape='circle'
             type='primary'
@@ -183,14 +198,48 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
             aria-label={
               showSteer
                 ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
-                : t('conversation.chat.send', { defaultValue: 'Send' })
+                : isVoiceConversation
+                  ? t('voice.session.sendText', { defaultValue: '发送文字' })
+                  : t('conversation.chat.send', { defaultValue: 'Send' })
             }
             title={
               showSteer
                 ? t('conversation.chat.queueNext', { defaultValue: 'Queue as next step' })
-                : t('conversation.chat.send', { defaultValue: 'Send' })
+                : isVoiceConversation
+                  ? t('voice.session.sendText', { defaultValue: '发送文字' })
+                  : t('conversation.chat.send', { defaultValue: 'Send' })
             }
           />
+        ) : null}
+
+        {showPhoneButton ? (
+          isVoiceActive || isVoiceConnecting ? (
+            <Button
+              shape='circle'
+              type='primary'
+              loading={isVoiceConnecting}
+              className='send-button-custom sendbox-phone-hangup-button'
+              icon={<PhoneOff theme='filled' size='14' fill='white' strokeWidth={4} />}
+              onClick={onStopVoiceCall}
+              data-testid={phoneCallTestId}
+              data-layout-part='phone'
+              aria-label={t('voice.session.hangup', { defaultValue: '挂断通话' })}
+              title={t('voice.session.hangup', { defaultValue: '挂断通话' })}
+            />
+          ) : (
+            <Button
+              shape='circle'
+              type='primary'
+              loading={isVoiceConnecting}
+              className='send-button-custom sendbox-phone-call-button'
+              icon={<PhoneCall theme='filled' size='14' fill='white' strokeWidth={4} />}
+              onClick={onStartVoiceCall}
+              data-testid={phoneCallTestId}
+              data-layout-part='phone'
+              aria-label={t('voice.session.startCall', { defaultValue: '开始通话' })}
+              title={t('voice.session.startCall', { defaultValue: '开始通话' })}
+            />
+          )
         ) : null}
 
         {showPrimaryFilledSpeech ? (

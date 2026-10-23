@@ -10,7 +10,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -148,6 +148,16 @@ fn detect_task_control(input: &str) -> Option<nomifun_api_types::voice::VoiceTas
     }
 }
 
+/// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
+/// to ensure the leading onset of user speech is not clipped upon barge-in interruption.
+const BARGE_IN_PREROLL_SAMPLES: usize = 8_000;
+
+enum ReplyPlayback {
+    Played,
+    Interrupted,
+    Muted,
+}
+
 /// Production voice companion pipeline assembly and runtime controller.
 pub struct VoiceCompanionRuntime {
     pending_confirmation:Arc<std::sync::Mutex<Option<PendingConfirmation>>>,
@@ -164,12 +174,15 @@ pub struct VoiceCompanionRuntime {
     acoustic_ready: Arc<AtomicBool>,
     event_tx: Arc<VoiceEventHub>,
     active_turn: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    input_generation: Arc<AtomicU64>,
     pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
     /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
     #[allow(dead_code)]
     mic_source: Option<Arc<nomifun_audio::MicSource>>,
     #[cfg(any(test, feature = "voice-skeleton"))]
     replay_capture: bool,
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    replay_barge_in: bool,
 }
 
 impl Drop for VoiceCompanionRuntime {
@@ -249,10 +262,13 @@ impl VoiceCompanionRuntime {
             acoustic_ready: Arc::new(AtomicBool::new(false)),
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
+            input_generation: Arc::new(AtomicU64::new(0)),
             pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             mic_source,
             #[cfg(any(test, feature = "voice-skeleton"))]
             replay_capture: false,
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            replay_barge_in: false,
         }
     }
 
@@ -283,10 +299,12 @@ impl VoiceCompanionRuntime {
                 capture_pipeline,
                 event_tx,
                 active_turn: Arc::new(std::sync::Mutex::new(None)),
+                input_generation: Arc::new(AtomicU64::new(0)),
                 pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
                 mic_source: None,
                 acoustic_ready: Arc::new(AtomicBool::new(true)),
                 replay_capture: true,
+                replay_barge_in: false,
             },
             rx,
         )
@@ -300,6 +318,13 @@ impl VoiceCompanionRuntime {
     ) -> Self {
         self.playback = playback;
         self.tts = tts;
+        self
+    }
+
+    /// Controlled echo-free PCM only; never grants production AEC readiness.
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn with_test_barge_in(mut self) -> Self {
+        self.replay_barge_in = true;
         self
     }
 
@@ -383,9 +408,17 @@ impl VoiceCompanionRuntime {
         let mut announced = self.announced_tasks.lock().await;
         if let Some(record) = announced.iter_mut().find(|r| r.attempt_id == attempt) {
             match play_result {
-                Ok(()) => {
+                Ok(ReplyPlayback::Played) => {
                     record.status = "played".into();
                     record.reason_code = None;
+                }
+                Ok(ReplyPlayback::Interrupted) => {
+                    record.status = "interrupted".into();
+                    record.reason_code = Some("playback_interrupted".into());
+                }
+                Ok(ReplyPlayback::Muted) => {
+                    record.status = "muted".into();
+                    record.reason_code = Some("tts_muted".into());
                 }
                 Err(code) => {
                     record.status = "failed".into();
@@ -464,6 +497,8 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::Busy);
         }
         driver.reset();
+        self.pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.input_generation.fetch_add(1, Ordering::SeqCst);
         self.playback
             .interrupt()
             .await
@@ -633,29 +668,31 @@ impl VoiceCompanionRuntime {
         event_tx:&Arc<VoiceEventHub>,
         tts:&Arc<dyn TtsProvider>,
         generation:u64,
-    ) -> Result<(), &'static str> {
+    ) -> Result<ReplyPlayback, &'static str> {
         let guard=driver.lock().await;
-        if playback.generation_id()!=generation {return Ok(());}
+        if playback.generation_id()!=generation {return Ok(ReplyPlayback::Interrupted);}
         info!("voice_response_playback_started");
         let _=event_tx.send(VoiceCompanionEvent::ResponseReady {text:reply_text.to_owned()});
         drop(guard);
         if !event_tx.feedback().speak_replies {
             Self::finish_muted_playback(driver, playback, event_tx, generation).await;
-            return Ok(());
+            return Ok(ReplyPlayback::Muted);
         }
         let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {
             text: reply_text.to_string(),
         });
         let started = std::time::Instant::now();
         let result = playback
-            .speak_text_with_started(tts.as_ref(), reply_text, "", || {
+            .speak_text_for_generation(tts.as_ref(), reply_text, "", generation, || {
                 let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
                 });
             })
             .await;
         info!(elapsed_ms=started.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_playback_finished");
-        Self::finish_response_playback(result,driver,playback,event_tx,generation).await
+        if playback.generation_id() != generation { return Ok(ReplyPlayback::Interrupted); }
+        Self::finish_response_playback(result,driver,playback,event_tx,generation).await?;
+        Ok(ReplyPlayback::Played)
     }
 
     async fn finish_muted_playback(
@@ -936,6 +973,11 @@ impl VoiceCompanionRuntime {
 
                 loop {
                     tokio::select! {
+                        biased;
+                        _ = playback.interrupted(generation) => {
+                            let _ = cancel_tx.send(true);
+                            return;
+                        }
                         sentence_opt = sentence_rx.recv(), if !sentence_rx_closed => {
                             match sentence_opt {
                                 Some(sentence) => {
@@ -1011,6 +1053,8 @@ impl VoiceCompanionRuntime {
                     }
                 }
                 drop(speech_tx);
+
+                if playback.generation_id() != generation { return; }
 
                 if router_result.is_none() {
                     if let Some(mut handle) = router_guard.0.take() {
@@ -1295,7 +1339,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {text:text.into()});
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_with_started(tts.as_ref(),text,"", || {
+                                playback.speak_text_for_generation(tts.as_ref(),text,"", generation, || {
                                     let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {text:text.into()});
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
@@ -1306,7 +1350,7 @@ impl VoiceCompanionRuntime {
                             let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing { text: text.into() });
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_with_started(tts.as_ref(), text, "", || {
+                                playback.speak_text_for_generation(tts.as_ref(), text, "", generation, || {
                                     let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text: text.into() });
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
@@ -1395,6 +1439,7 @@ impl VoiceCompanionRuntime {
         tts: Arc<dyn TtsProvider>,
         task_client: Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         active_turn: &Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+        input_generation: Arc<AtomicU64>,
         generation: u64,
         pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
         session_id: Option<String>,
@@ -1405,6 +1450,7 @@ impl VoiceCompanionRuntime {
         }
         let active_turn_clone = active_turn.clone();
         let pending_clone = pending_utterances.clone();
+        let input_id = input_generation.fetch_add(1, Ordering::SeqCst) + 1;
         *active = Some(tokio::spawn(async move {
             use futures_util::FutureExt;
             if playback.generation_id() != generation {
@@ -1426,7 +1472,7 @@ impl VoiceCompanionRuntime {
             .await;
             if result.is_err() {
                 let mut d = driver.lock().await;
-                if playback.generation_id() != generation {
+                if playback.generation_id() != generation || input_generation.load(Ordering::SeqCst) != input_id {
                     return;
                 }
                 d.reset();
@@ -1439,7 +1485,8 @@ impl VoiceCompanionRuntime {
                 let _ = events.send(VoiceCompanionEvent::Idle);
             } else {
                 let mut d = driver.lock().await;
-                if events.snapshot().session_id == session_id
+                if input_generation.load(Ordering::SeqCst) == input_id
+                    && events.snapshot().session_id == session_id
                     && events.snapshot().ended_reason.is_none()
                 {
                     // Output interruption does not invalidate PCM captured in this connection.
@@ -1480,6 +1527,7 @@ impl VoiceCompanionRuntime {
                                 tts.clone(),
                                 task_client.clone(),
                                 &active_turn_clone,
+                                input_generation.clone(),
                                 next_gen,
                                 pending_clone.clone(),
                                 next_item.session_id,
@@ -1524,6 +1572,14 @@ impl VoiceCompanionRuntime {
         let event_tx = self.event_tx.clone();
         let active_turn = self.active_turn.clone();
         let pending_utterances = Arc::clone(&self.pending_utterances);
+        let input_generation = self.input_generation.clone();
+        // Native capture has no render reference/AEC yet. Raw VAD is not safe barge-in.
+        let barge_in_ready = {
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            { self.replay_capture && self.replay_barge_in }
+            #[cfg(not(any(test, feature = "voice-skeleton")))]
+            { false }
+        };
 
         tokio::spawn(async move {
             let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
@@ -1565,6 +1621,8 @@ impl VoiceCompanionRuntime {
             let mut observed_session = None;
             let mut audio = VoiceAudioDiagnostics::default();
             audio.vad_ready = true;
+            audio.barge_in_ready = barge_in_ready;
+            audio.barge_in_reason = Some(if barge_in_ready { "test_echo_free_pcm" } else { "aec_unavailable" }.into());
             let mut last_audio_publish = std::time::Instant::now();
             let mut last_audio_log = std::time::Instant::now();
             let mut last_pcm = std::time::Instant::now();
@@ -1955,6 +2013,12 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::ListeningConfirm=>{
+                        if !barge_in_ready && playback.has_pending_audio() {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            vad.reset();
+                            continue;
+                        }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len()>8000 {let excess=utterance_pcm.len()-8000;utterance_pcm.drain(..excess);}
                         audio.utterance_samples=utterance_pcm.len() as u32;
@@ -2024,6 +2088,7 @@ impl VoiceCompanionRuntime {
                                     tts.clone(),
                                     task_client.clone(),
                                     &active_turn,
+                                    input_generation.clone(),
                                     generation,
                                     pending_utterances.clone(),
                                     session.clone(),
@@ -2092,6 +2157,7 @@ impl VoiceCompanionRuntime {
                                     tts.clone(),
                                     task_client.clone(),
                                     &active_turn,
+                                    input_generation.clone(),
                                     generation,
                                     pending_utterances.clone(),
                                     session.clone(),
@@ -2099,6 +2165,88 @@ impl VoiceCompanionRuntime {
                                 utterance_pcm.clear();
                                 kws.reset();
                                 vad.reset();
+                            }
+                        }
+                    }
+
+                    AcousticState::SpeakingFast
+                    | AcousticState::SpeakingControl
+                    | AcousticState::SpeakingSummary => {
+                        if !barge_in_ready || !playback.has_pending_audio() { continue; }
+                        utterance_pcm.extend_from_slice(&chunk);
+                        if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
+                            let excess = utterance_pcm.len() - BARGE_IN_PREROLL_SAMPLES;
+                            utterance_pcm.drain(..excess);
+                        }
+                        audio.utterance_samples = utterance_pcm.len() as u32;
+                        audio.utterance_peak_milli =
+                            audio.utterance_peak_milli.max(audio.peak_milli);
+
+                        let is_active = vad.process_frame(&chunk);
+                        if is_active {
+                            info!(
+                                state = ?current_state,
+                                rms_milli = audio.rms_milli,
+                                "barge_in_playback_interrupted"
+                            );
+                            let mut d = driver.lock().await;
+                            if d.current_state() != current_state { continue; }
+                            if playback.interrupt().await.is_err() {
+                                d.reset();
+                                let _ = event_tx.send(VoiceCompanionEvent::Error { stage:"playback".into(), code:"speaker_failed".into() });
+                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded { reason:VoiceSessionEndReason::Failed });
+                                continue;
+                            }
+                            if let Ok(AcousticState::Listening) = d.handle_event(AcousticEvent::BargeIn) {
+                                input_generation.fetch_add(1, Ordering::SeqCst);
+                                d.mark_speech_started();
+                                speech_started = true;
+                                let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
+                                let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                                let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                    diagnostics: audio.clone(),
+                                });
+                                last_audio_publish = std::time::Instant::now();
+                            }
+                        }
+                    }
+
+                    AcousticState::AwaitingConfirmation => {
+                        if !barge_in_ready || !playback.has_pending_audio() { continue; }
+                        utterance_pcm.extend_from_slice(&chunk);
+                        if !speech_started && utterance_pcm.len() > BARGE_IN_PREROLL_SAMPLES {
+                            let excess = utterance_pcm.len() - BARGE_IN_PREROLL_SAMPLES;
+                            utterance_pcm.drain(..excess);
+                        }
+                        audio.utterance_samples = utterance_pcm.len() as u32;
+                        audio.utterance_peak_milli =
+                            audio.utterance_peak_milli.max(audio.peak_milli);
+
+                        let is_active = vad.process_frame(&chunk);
+                        if is_active {
+                            info!(
+                                rms_milli = audio.rms_milli,
+                                "barge_in_confirmation_prompt_interrupted"
+                            );
+                            let mut d = driver.lock().await;
+                            if d.current_state() != AcousticState::AwaitingConfirmation { continue; }
+                            if playback.interrupt().await.is_err() {
+                                d.reset();
+                                let _ = event_tx.send(VoiceCompanionEvent::Error { stage:"playback".into(), code:"speaker_failed".into() });
+                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded { reason:VoiceSessionEndReason::Failed });
+                                continue;
+                            }
+                            if let Ok(AcousticState::ListeningConfirm) = d.handle_event(AcousticEvent::BargeIn) {
+                                if let Some(pending) = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                                    pending.begin_listening();
+                                }
+                                d.mark_speech_started();
+                                speech_started = true;
+                                let _ = event_tx.send(VoiceCompanionEvent::SpeechStarted);
+                                let _ = event_tx.send(VoiceCompanionEvent::AudioDiagnostics {
+                                    diagnostics: audio.clone(),
+                                });
+                                last_audio_publish = std::time::Instant::now();
                             }
                         }
                     }
@@ -2131,8 +2279,6 @@ impl VoiceCompanionRuntime {
                             vad.reset();
                         }
                     }
-
-                    _ => {}
                 }
                 audio.speech_detected = vad.is_speech_active();
             }

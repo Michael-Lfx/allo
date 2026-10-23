@@ -4,6 +4,9 @@ use std::time::Duration;
 use nomifun_voice_terminal::{completion::HostDialogueClient,router::OpenAiCompatibleVoiceRouter,driver::VoiceRouter};
 use nomifun_api_types::voice::VoiceDialogueRequest;
 
+#[path = "support/barge_in_acceptance.rs"]
+mod barge_in_acceptance;
+
 #[tokio::test]
 async fn model_failure_does_not_strand_an_already_captured_follow_up() {
     let flow=StreamingWorker::with_error(true).await;
@@ -86,6 +89,7 @@ struct SpeechSink {
 }
 #[async_trait::async_trait]
 impl nomifun_voice_terminal::playback::AudioSink for SpeechSink {
+    fn has_pending_audio(&self)->bool{!self.frames.lock().unwrap().is_empty()}
     async fn write_frame(&self,frame:Vec<u8>)->Result<(),nomifun_voice_terminal::playback::AudioSinkError>{self.frames.lock().unwrap().push(frame);self.wrote.notify_one();Ok(())}
     async fn flush(&self)->Result<(),nomifun_voice_terminal::playback::AudioSinkError>{self.frames.lock().unwrap().clear();Ok(())}
     async fn drain(&self)->Result<(),nomifun_voice_terminal::playback::AudioSinkError>{self.drains.fetch_add(1,Ordering::SeqCst);self.draining.notify_one();self.consumed.notified().await;Ok(())}
@@ -114,6 +118,9 @@ impl Drop for StreamingWorker {fn drop(&mut self){self.producer.close();self.wor
 impl StreamingWorker {
     async fn new()->Self {Self::with_error(false).await}
     async fn with_error(fail:bool)->Self {
+        Self::with_barge_in(fail, true).await
+    }
+    async fn with_barge_in(fail:bool,enabled:bool)->Self {
         let server=ModelStream::with_error(fail).await;let models=tempfile::tempdir().unwrap();
         let(capture,producer)=nomifun_audio::voice_pipeline::VoiceCapturePipeline::new(Default::default());
         let(runtime,_)=voice_companion::voice::VoiceCompanionRuntime::from_capture(
@@ -121,6 +128,7 @@ impl StreamingWorker {
             Arc::new(nomifun_audio::stt::FakeSttCallback::always("你好")),server.router());
         let sink=Arc::new(SpeechSink::default());let speech=Arc::new(SentenceSpeech::default());
         let runtime=runtime.with_test_playback(Arc::new(nomifun_voice_terminal::playback::PlaybackPipeline::new(sink.clone())),speech.clone());
+        let runtime=if enabled {runtime.with_test_barge_in()} else {runtime};
         runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
         let worker=runtime.start_worker();Self{server,runtime,producer,sink,speech,worker,_models:models}
     }

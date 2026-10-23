@@ -295,7 +295,7 @@ impl VoiceTaskService {
     }
 
     pub async fn finish_announcement(&self,command_id:&str,attempt_id:&str,status:&str)->Result<(),String> {
-        if !matches!(status,"dispatched"|"started"|"played"|"failed"|"unknown"|"suppressed") {return Err("task_announcement_failed".into());}
+        if !matches!(status,"dispatched"|"started"|"played"|"interrupted"|"muted"|"failed"|"unknown"|"suppressed") {return Err("task_announcement_failed".into());}
         let _guard=self.operation.lock().await;
         let mut record=self.read_command(command_id)?.ok_or("task_not_found")?;
         if record.attempt_id.as_deref()!=Some(attempt_id) {return Err("task_scope_changed".into());}
@@ -1376,6 +1376,27 @@ mod tests {
         assert!(!restored.request_replay("command-a","new-replay").await.unwrap());
         assert_eq!(restored.finish_announcement("command-a",&first.attempt_id,"played").await.unwrap_err(),"task_scope_changed");
         assert_eq!(runtime.sent.load(Ordering::SeqCst),1);
+    }
+
+    #[tokio::test]
+    async fn interrupted_and_muted_notifications_are_terminal_but_explicitly_replayable() {
+        for status in ["interrupted", "muted"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("task.json");
+            let runtime = Arc::new(Runtime::default());
+            let tasks = service(path.clone(), runtime.clone());
+            tasks.submit(command(), config()).await.unwrap();
+            *runtime.receipt.lock().unwrap() = Some(receipt(true));
+            tasks.status().await.unwrap();
+            tasks.claim_announcement("command-a", true).await.unwrap();
+            let attempt = tasks.notification_for("command-a").unwrap().unwrap().attempt_id;
+            tasks.finish_announcement("command-a", &attempt, status).await.unwrap();
+            let restored = service(path, runtime.clone());
+            assert_eq!(restored.notification_for("command-a").unwrap().unwrap().status, status);
+            assert!(restored.unresolved_announcements().unwrap().is_empty());
+            assert!(restored.request_replay("command-a", "explicit-replay").await.unwrap());
+            assert_eq!(runtime.sent.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[tokio::test]

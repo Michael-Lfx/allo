@@ -1,4 +1,4 @@
-import { CloseSmall, Puzzle, Robot } from '@icon-park/react';
+import { CloseSmall, Headset, Puzzle, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import styles from '../index.module.css';
@@ -12,9 +12,15 @@ export interface ComposerEntryStripProps {
   /** Opens the shared Skills selector for the current draft. */
   onAdjustSkills?: () => void;
   activeSkillCount?: number;
+  /** Starts or returns to the voice call bound to the current workspace. */
+  onStartVoiceCall?: () => void;
+  isVoiceConnecting?: boolean;
+  isVoiceActive?: boolean;
+  voiceWorkspaceLabel?: string;
   /** Conversation composers only need the Skills control. */
   hidePreset?: boolean;
   skillsButtonTestId?: string;
+  voiceButtonTestId?: string;
   forceOpaque?: boolean;
 }
 
@@ -33,6 +39,11 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
   activeSkillCount = 0,
   hidePreset = false,
   skillsButtonTestId = 'guid-adjust-skills',
+  voiceButtonTestId = 'guid-voice-call',
+  onStartVoiceCall,
+  isVoiceConnecting = false,
+  isVoiceActive = false,
+  voiceWorkspaceLabel,
   forceOpaque = false,
 }) => {
   const { t } = useTranslation();
@@ -69,11 +80,40 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
     </button>
   ) : null;
 
+  const voiceButton = onStartVoiceCall ? (
+    <button
+      type='button'
+      data-testid={voiceButtonTestId}
+      data-button-shape='pill'
+      disabled={isVoiceConnecting}
+      className={`${styles.entryButton} ${styles.entryButtonInteractive} ${isVoiceActive ? styles.entryButtonActive : ''}`}
+      onClick={onStartVoiceCall}
+      aria-label={t(isVoiceActive ? 'guid.entry.returnVoiceCall' : 'guid.entry.voiceCall', {
+        defaultValue: isVoiceActive ? 'Return to call' : 'Voice call',
+      })}
+      title={
+        voiceWorkspaceLabel
+          ? `${t(isVoiceActive ? 'guid.entry.returnVoiceCall' : 'guid.entry.voiceCall', { defaultValue: isVoiceActive ? 'Return to call' : 'Voice call' })} (${voiceWorkspaceLabel})`
+          : t(isVoiceActive ? 'guid.entry.returnVoiceCall' : 'guid.entry.voiceCall', { defaultValue: isVoiceActive ? 'Return to call' : 'Voice call' })
+      }
+    >
+      <Headset theme='outline' size={15} fill='currentColor' />
+      <span className={styles.entryButtonText}>
+        {isVoiceConnecting
+          ? t('guid.entry.voiceConnecting', { defaultValue: 'Connecting...' })
+          : t(isVoiceActive ? 'guid.entry.returnVoiceCall' : 'guid.entry.voiceCall', {
+              defaultValue: isVoiceActive ? 'Return to call' : 'Voice call',
+            })}
+      </span>
+    </button>
+  ) : null;
+
   if (hidePreset) {
-    if (!skillButton) return null;
+    if (!skillButton && !voiceButton) return null;
     return (
       <div className={styles.entryStrip} style={forceOpaque ? { opacity: 1 } : undefined}>
         {skillButton}
+        {voiceButton}
       </div>
     );
   }
@@ -100,6 +140,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
           <CloseSmall theme='outline' size={14} />
         </button>
         {skillButton}
+        {voiceButton}
       </div>
     );
   }
@@ -118,6 +159,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
         <span className={styles.entryButtonText}>{t('guid.entry.usePreset', { defaultValue: 'Use preset' })}</span>
       </button>
       {skillButton}
+      {voiceButton}
     </div>
   );
 };

@@ -29,6 +29,7 @@ use nomifun_api_types::voice::{
     VoiceTargetConfig, VoiceTargetMode, VoiceTargetSettings, VoiceTargetUpdateRequest,
 };
 pub use nomifun_api_types::voice::{
+    VoiceCallStartRequest, VoiceCallStartResponse, VoiceCallStartStatus, VoiceCallTarget,
     VoiceSessionControlRequest, VoiceSessionPhase, VoiceSessionSnapshot,
 };
 use nomifun_companion::CompanionService;
@@ -197,6 +198,7 @@ pub struct ConversationVoiceDialogueRecorder {
     journal_lock: Mutex<()>,
     projected_turns: RwLock<std::collections::HashSet<String>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
+    pending_call_reservation: RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
 }
 
 impl ConversationVoiceDialogueRecorder {
@@ -210,6 +212,7 @@ impl ConversationVoiceDialogueRecorder {
             journal_lock: Mutex::new(()),
             projected_turns: RwLock::new(std::collections::HashSet::new()),
             execution_runtime:None,
+            pending_call_reservation: RwLock::new(None),
             conversation_service,
             companion_service: None,
             target_config: Arc::new(RwLock::new(VoiceTargetConfig::default())),
@@ -280,10 +283,16 @@ impl ConversationVoiceDialogueRecorder {
         Ok(())
     }
 
-    async fn resolve_target_conversation(&self, candidate: Option<String>, _config: VoiceTargetConfig)
-        -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+    async fn resolve_target_conversation(
+        &self,
+        candidate: Option<String>,
+        _config: VoiceTargetConfig,
+        explicit_workspace: Option<&str>,
+    ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         let now = nomifun_common::now_ms();
-        let (candidate_workspace, source_id) = if let Some(id) = candidate {
+        let (candidate_workspace, source_id) = if let Some(ws) = explicit_workspace {
+            (Some(ws.to_string()), None)
+        } else if let Some(id) = candidate {
             let row = self.conversation_service.conversation_repo().get(&id).await
                 .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
@@ -504,6 +513,21 @@ impl ConversationVoiceDialogueRecorder {
 
 #[async_trait::async_trait]
 impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
+    fn set_call_reservation(&self, reservation: Option<crate::voice_dialogue::VoiceCallReservation>) {
+        let mut g = self.pending_call_reservation.write().unwrap_or_else(|e| e.into_inner());
+        *g = reservation;
+    }
+
+    fn take_call_reservation(&self) -> Option<crate::voice_dialogue::VoiceCallReservation> {
+        let mut g = self.pending_call_reservation.write().unwrap_or_else(|e| e.into_inner());
+        g.take()
+    }
+
+    fn current_call_reservation(&self) -> Option<crate::voice_dialogue::VoiceCallReservation> {
+        let g = self.pending_call_reservation.read().unwrap_or_else(|e| e.into_inner());
+        g.clone()
+    }
+
     fn is_projected(&self, turn_id: &str) -> bool {
         self.projected_turns.read().unwrap_or_else(|e|e.into_inner()).contains(turn_id)
     }
@@ -545,9 +569,23 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let _guard=self.journal_lock.lock().await;
         let mut records=self.read_records()?;
         if !records.iter().any(|r|r.request.session_id.as_deref()==Some(session)) {
-            let candidate=self.active_window_candidate.read().unwrap_or_else(|e|e.into_inner()).clone();
-            let config=self.target_config.read().unwrap_or_else(|e|e.into_inner()).clone();
-            let (id,source)=self.resolve_target_conversation(candidate,config).await?;
+            let reservation = self.current_call_reservation();
+            let (id, source, reservation_opt) = if let Some(res) = reservation {
+                let elapsed_ms = chrono::Utc::now().timestamp_millis() - res.reserved_at_epoch_ms;
+                if elapsed_ms < 10_000 {
+                    (res.conversation_id.clone(), None, Some(res))
+                } else {
+                    let candidate=self.active_window_candidate.read().unwrap_or_else(|e|e.into_inner()).clone();
+                    let config=self.target_config.read().unwrap_or_else(|e|e.into_inner()).clone();
+                    let (id, source) = self.resolve_target_conversation(candidate,config,None).await?;
+                    (id, source, None)
+                }
+            } else {
+                let candidate=self.active_window_candidate.read().unwrap_or_else(|e|e.into_inner()).clone();
+                let config=self.target_config.read().unwrap_or_else(|e|e.into_inner()).clone();
+                let (id, source) = self.resolve_target_conversation(candidate,config,None).await?;
+                (id, source, None)
+            };
             let source=source.as_deref().unwrap_or(&id);
             let execution=match self.frozen_execution(source).await {
                 Ok(config)=>config,
@@ -562,8 +600,14 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 (config,_) => (config,None),
             };
             let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&id).await.map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
-            records.push(DialogueRecord {request:VoiceDialogueRequest {session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id,admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,handoff_content:None,voice_context_digest:None});
+            records.push(DialogueRecord {request:VoiceDialogueRequest {session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,handoff_content:None,voice_context_digest:None});
             self.save_records(&records)?;
+            if let Some(res) = reservation_opt {
+                self.take_call_reservation();
+                if let Some(mgr) = VoiceCompanionProcessManager::global() {
+                    mgr.mark_request_bound(&res.request_id, session, &id, res.memory_owner.as_deref());
+                }
+            }
         }
         let binding=records.iter().find(|r|r.request.session_id.as_deref()==Some(session)).unwrap();
         // Rehydrate the projection fence once at binding/preflight, never on audio events.
@@ -581,6 +625,69 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     .then(||conversation.extra.get("companion_id")).flatten()
             }).and_then(|v|v.as_str()).map(str::to_owned),
         }))
+    }
+
+    async fn resolve_call_target(
+        &self,
+        target: &nomifun_api_types::voice::VoiceCallTarget,
+    ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+        match target {
+            nomifun_api_types::voice::VoiceCallTarget::Workspace { workspace } => {
+                let canonical = nomifun_common::paths::canonicalize_simplified(Path::new(workspace))
+                    .map_err(|e| VoiceDialogueRecorderError::WriteFailed(format!("workspace_directory_invalid: {e}")))?;
+                if !canonical.is_dir() {
+                    return Err(VoiceDialogueRecorderError::WriteFailed(format!(
+                        "workspace_directory_invalid: {} is not a directory",
+                        canonical.display()
+                    )));
+                }
+                let canonical_str = canonical.to_string_lossy().to_string();
+                let (conv_id, _) = self
+                    .resolve_target_conversation(None, VoiceTargetConfig::default(), Some(&canonical_str))
+                    .await?;
+                let memory_owner = self
+                    .conversation_service
+                    .conversation_repo()
+                    .get(&conv_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|row| {
+                        let extra: serde_json::Value = serde_json::from_str(&row.extra).ok()?;
+                        extra.get("memory_owner_companion_id").and_then(|v| v.as_str()).map(str::to_owned)
+                    });
+                Ok((conv_id, memory_owner))
+            }
+            nomifun_api_types::voice::VoiceCallTarget::VoiceConversation { conversation_id } => {
+                let row = self
+                    .conversation_service
+                    .conversation_repo()
+                    .get(conversation_id)
+                    .await
+                    .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?
+                    .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
+                if let Some(row) = row {
+                    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+                    if extra.get("voice").and_then(|v| v.as_bool()) == Some(true) {
+                        let memory_owner = extra.get("memory_owner_companion_id").and_then(|v| v.as_str()).map(str::to_owned);
+                        return Ok((conversation_id.clone(), memory_owner));
+                    }
+                }
+                Err(VoiceDialogueRecorderError::BindingInvalid("conversation_invalid".into()))
+            }
+            nomifun_api_types::voice::VoiceCallTarget::DefaultWorkspace => {
+                let memory_owner = match &self.companion_service {
+                    Some(companions) => companions.default_companion_id().await,
+                    None => None,
+                };
+                let home = self
+                    .conversation_service
+                    .ensure_default_voice_conversation_with_owner(&self.user_id, memory_owner.as_deref())
+                    .await
+                    .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+                Ok((home, memory_owner))
+            }
+        }
     }
 
     async fn preflight(&self,request:&VoiceDialogueRequest)->Result<VoiceDialoguePreflight,VoiceDialogueRecorderError> {
@@ -935,6 +1042,46 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandledStartOutcome {
+    Starting {
+        target: nomifun_api_types::voice::VoiceCallTarget,
+        conversation_id: String,
+        memory_owner: Option<String>,
+        reserved_at_epoch_ms: i64,
+    },
+    Bound {
+        target: nomifun_api_types::voice::VoiceCallTarget,
+        conversation_id: String,
+        session_id: Option<String>,
+        memory_owner: Option<String>,
+        bound_at_epoch_ms: i64,
+    },
+    Stopped {
+        target: nomifun_api_types::voice::VoiceCallTarget,
+        conversation_id: String,
+        session_id: Option<String>,
+        stopped_at_epoch_ms: i64,
+    },
+    Rejected {
+        target: nomifun_api_types::voice::VoiceCallTarget,
+        status_code_u16: u16,
+        error_json: String,
+        at_epoch_ms: i64,
+    },
+}
+
+impl HandledStartOutcome {
+    pub fn target(&self) -> &nomifun_api_types::voice::VoiceCallTarget {
+        match self {
+            Self::Starting { target, .. }
+            | Self::Bound { target, .. }
+            | Self::Stopped { target, .. }
+            | Self::Rejected { target, .. } => target,
+        }
+    }
+}
+
 pub struct VoiceCompanionProcessManager {
     audio_recovery:std::sync::Mutex<AudioRecovery>,
     prompted_approvals:std::sync::Mutex<std::collections::VecDeque<String>>,
@@ -964,6 +1111,8 @@ pub struct VoiceCompanionProcessManager {
     generation: AtomicU64,
     process_changed: Notify,
     shutdown_requested: AtomicBool,
+    call_start_lock: tokio::sync::Mutex<()>,
+    handled_start_requests: std::sync::RwLock<std::collections::HashMap<String, HandledStartOutcome>>,
 }
 
 static GLOBAL_COMPANION_MANAGER: std::sync::OnceLock<Arc<VoiceCompanionProcessManager>> =
@@ -1004,6 +1153,8 @@ impl VoiceCompanionProcessManager {
             dialogue_bridge: Mutex::new(None),
             config_write_lock: std::sync::Mutex::new(()),
             feedback_update_lock: Mutex::new(()),
+            call_start_lock: tokio::sync::Mutex::new(()),
+            handled_start_requests: std::sync::RwLock::new(std::collections::HashMap::new()),
             child: Arc::new(Mutex::new(None)),
             models_manager,
             config_path,
@@ -1052,6 +1203,56 @@ impl VoiceCompanionProcessManager {
 
     pub fn requested_target(&self) -> VoiceTargetConfig {
         self.target_selection.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn record_handled_start_request(&self, request_id: String, outcome: HandledStartOutcome) {
+        let mut map = self.handled_start_requests.write().unwrap_or_else(|e| e.into_inner());
+        if map.len() >= 128 {
+            let oldest_key = map.iter()
+                .min_by_key(|(_, v)| match v {
+                    HandledStartOutcome::Starting { reserved_at_epoch_ms, .. } => *reserved_at_epoch_ms,
+                    HandledStartOutcome::Bound { bound_at_epoch_ms, .. } => *bound_at_epoch_ms,
+                    HandledStartOutcome::Stopped { stopped_at_epoch_ms, .. } => *stopped_at_epoch_ms,
+                    HandledStartOutcome::Rejected { at_epoch_ms, .. } => *at_epoch_ms,
+                })
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest_key {
+                map.remove(&k);
+            }
+        }
+        map.insert(request_id, outcome);
+    }
+
+    pub fn mark_request_bound(&self, request_id: &str, session_id: &str, conversation_id: &str, memory_owner: Option<&str>) {
+        let mut map = self.handled_start_requests.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get_mut(request_id) {
+            let target = existing.target().clone();
+            *existing = HandledStartOutcome::Bound {
+                target,
+                conversation_id: conversation_id.to_string(),
+                session_id: Some(session_id.to_string()),
+                memory_owner: memory_owner.map(|s| s.to_string()),
+                bound_at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+            };
+        }
+    }
+
+    pub fn mark_active_request_stopped(&self, session_id: Option<&str>) {
+        if let Some(sid) = session_id {
+            let mut map = self.handled_start_requests.write().unwrap_or_else(|e| e.into_inner());
+            for (_, outcome) in map.iter_mut() {
+                if let HandledStartOutcome::Bound { conversation_id, session_id: Some(s), target, .. } = outcome {
+                    if s == sid {
+                        *outcome = HandledStartOutcome::Stopped {
+                            target: target.clone(),
+                            conversation_id: conversation_id.clone(),
+                            session_id: Some(s.clone()),
+                            stopped_at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+                        };
+                    }
+                }
+            }
+        }
     }
 
     pub async fn target_settings(&self) -> VoiceTargetSettings {
@@ -1955,14 +2156,24 @@ impl VoiceCompanionProcessManager {
     }
 
     pub async fn stop_session(&self, request: VoiceSessionControlRequest) -> Result<(), String> {
-        self.task_feedback.lock().unwrap_or_else(|e| e.into_inner()).clear_pending();
-        if !request.matches(&self.snapshot()) {
+        let _start_lock = self.call_start_lock.lock().await;
+        let snap = self.snapshot();
+        if !request.matches(&snap) {
             return Err("session_scope_changed".into());
         }
-        if let Some(session_id)=&request.session_id {
-            let mut revoked=self.revoked_sessions.write().unwrap_or_else(|error|error.into_inner());
-            if !revoked.contains(session_id) {revoked.push_back(session_id.clone());}
-            if revoked.len()>64 {revoked.pop_front();}
+        if let Some(recorder) = &self.dialogue_recorder {
+            recorder.take_call_reservation();
+        }
+        self.task_feedback.lock().unwrap_or_else(|e| e.into_inner()).clear_pending();
+        self.mark_active_request_stopped(request.session_id.as_deref());
+        if let Some(session_id) = &request.session_id {
+            let mut revoked = self.revoked_sessions.write().unwrap_or_else(|error| error.into_inner());
+            if !revoked.contains(session_id) {
+                revoked.push_back(session_id.clone());
+            }
+            if revoked.len() > 64 {
+                revoked.pop_front();
+            }
         }
         let source = self
             .source
@@ -1974,8 +2185,12 @@ impl VoiceCompanionProcessManager {
             instance_id: source.0,
             ..request
         };
-        let response = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"daemon_unavailable".to_owned())?
-            .post(format!("{}/api/voice/stop",self.daemon_origin))
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "daemon_unavailable".to_owned())?
+            .post(format!("{}/api/voice/stop", self.daemon_origin))
             .header("x-ai-mate-control-token", &self.control_token)
             .json(&request)
             .timeout(std::time::Duration::from_secs(3))
@@ -1988,6 +2203,286 @@ impl VoiceCompanionProcessManager {
         } else {
             Err("session_scope_changed".into())
         }
+    }
+
+    pub async fn start_call(
+        &self,
+        request: nomifun_api_types::voice::VoiceCallStartRequest,
+    ) -> Result<nomifun_api_types::voice::VoiceCallStartResponse, (axum::http::StatusCode, String)> {
+        let _start_lock = self.call_start_lock.lock().await;
+
+        let status = self.status().await;
+        if !status.running {
+            return Err((
+                axum::http::StatusCode::BAD_REQUEST,
+                "voice_companion_not_running".to_string(),
+            ));
+        }
+
+        let recorder = self.dialogue_recorder.as_ref().ok_or_else(|| {
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "dialogue_recorder_unavailable".to_string(),
+            )
+        })?;
+
+        let snap = self.snapshot();
+        let is_active = snap.session_id.is_some()
+            && snap.ended_reason.is_none()
+            && snap.phase != VoiceSessionPhase::Idle;
+
+        // Check idempotency against handled_start_requests cache
+        let existing_outcome = {
+            self.handled_start_requests
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&request.request_id)
+                .cloned()
+        };
+        if let Some(existing) = existing_outcome {
+            if existing.target() != &request.target {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    serde_json::json!({
+                        "code": "request_target_conflict",
+                        "message": "Cannot change target for the same request_id"
+                    })
+                    .to_string(),
+                ));
+            }
+            match existing {
+                HandledStartOutcome::Starting {
+                    conversation_id,
+                    memory_owner,
+                    reserved_at_epoch_ms,
+                    ..
+                } => {
+                    let now = chrono::Utc::now().timestamp_millis();
+                    if snap.session_id.is_some()
+                        && snap.binding.as_ref().map(|b| &b.conversation_id) == Some(&conversation_id)
+                    {
+                        self.mark_request_bound(
+                            &request.request_id,
+                            snap.session_id.as_deref().unwrap_or(""),
+                            &conversation_id,
+                            memory_owner.as_deref(),
+                        );
+                        return Ok(nomifun_api_types::voice::VoiceCallStartResponse {
+                            request_id: request.request_id,
+                            status: if snap.acoustic_ready {
+                                nomifun_api_types::voice::VoiceCallStartStatus::Ready
+                            } else {
+                                nomifun_api_types::voice::VoiceCallStartStatus::Active
+                            },
+                            conversation_id,
+                            session_id: snap.session_id,
+                            memory_owner_companion_id: memory_owner,
+                            binding: snap.binding,
+                        });
+                    }
+                    if now - reserved_at_epoch_ms < 10_000 {
+                        return Ok(nomifun_api_types::voice::VoiceCallStartResponse {
+                            request_id: request.request_id,
+                            status: nomifun_api_types::voice::VoiceCallStartStatus::Starting,
+                            conversation_id,
+                            session_id: snap.session_id,
+                            memory_owner_companion_id: memory_owner,
+                            binding: snap.binding,
+                        });
+                    }
+                }
+                HandledStartOutcome::Bound {
+                    conversation_id,
+                    session_id,
+                    memory_owner,
+                    ..
+                } => {
+                    return Ok(nomifun_api_types::voice::VoiceCallStartResponse {
+                        request_id: request.request_id,
+                        status: if snap.acoustic_ready
+                            && snap.binding.as_ref().map(|b| &b.conversation_id) == Some(&conversation_id)
+                        {
+                            nomifun_api_types::voice::VoiceCallStartStatus::Ready
+                        } else {
+                            nomifun_api_types::voice::VoiceCallStartStatus::Active
+                        },
+                        conversation_id,
+                        session_id: snap.session_id.or(session_id),
+                        memory_owner_companion_id: memory_owner,
+                        binding: snap.binding,
+                    });
+                }
+                HandledStartOutcome::Stopped { conversation_id, .. } => {
+                    return Err((
+                        axum::http::StatusCode::CONFLICT,
+                        serde_json::json!({
+                            "code": "voice_call_already_stopped",
+                            "active_conversation_id": Some(conversation_id),
+                            "message": "This request has already concluded and stopped"
+                        })
+                        .to_string(),
+                    ));
+                }
+                HandledStartOutcome::Rejected {
+                    status_code_u16,
+                    error_json,
+                    ..
+                } => {
+                    let status = axum::http::StatusCode::from_u16(status_code_u16)
+                        .unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+                    return Err((status, error_json));
+                }
+            }
+        }
+
+        // Check if an existing reservation from another request is pending
+        if let Some(res) = recorder.current_call_reservation() {
+            let elapsed_ms = chrono::Utc::now().timestamp_millis() - res.reserved_at_epoch_ms;
+            if elapsed_ms < 10_000 {
+                if res.request_id != request.request_id && !is_active {
+                    return Err((
+                        axum::http::StatusCode::CONFLICT,
+                        serde_json::json!({
+                            "code": "voice_call_starting",
+                            "active_conversation_id": Some(res.conversation_id),
+                            "message": "A voice call is currently starting"
+                        })
+                        .to_string(),
+                    ));
+                }
+            } else {
+                recorder.take_call_reservation();
+            }
+        }
+
+        let (conversation_id, memory_owner) = recorder
+            .resolve_call_target(&request.target)
+            .await
+            .map_err(|e| match e {
+                VoiceDialogueRecorderError::WriteFailed(msg) if msg.contains("workspace_directory_invalid") => {
+                    (axum::http::StatusCode::BAD_REQUEST, "workspace_directory_invalid".to_string())
+                }
+                VoiceDialogueRecorderError::BindingInvalid(msg) => {
+                    (axum::http::StatusCode::BAD_REQUEST, msg)
+                }
+                _ => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "target_resolution_failed".to_string()),
+            })?;
+
+        if is_active {
+            let active_conv = snap.binding.as_ref().map(|b| b.conversation_id.as_str());
+            if active_conv == Some(&conversation_id) {
+                return Ok(nomifun_api_types::voice::VoiceCallStartResponse {
+                    request_id: request.request_id,
+                    status: if snap.acoustic_ready {
+                        nomifun_api_types::voice::VoiceCallStartStatus::Ready
+                    } else {
+                        nomifun_api_types::voice::VoiceCallStartStatus::Active
+                    },
+                    conversation_id,
+                    session_id: snap.session_id,
+                    memory_owner_companion_id: snap.binding.as_ref().and_then(|b| b.memory_owner_companion_id.clone()),
+                    binding: snap.binding,
+                });
+            } else {
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    serde_json::json!({
+                        "code": "voice_call_conflict",
+                        "active_conversation_id": active_conv,
+                        "message": "Another voice call is active"
+                    })
+                    .to_string(),
+                ));
+            }
+        }
+
+        let now_epoch_ms = chrono::Utc::now().timestamp_millis();
+        let reservation = crate::voice_dialogue::VoiceCallReservation {
+            request_id: request.request_id.clone(),
+            target: request.target.clone(),
+            conversation_id: conversation_id.clone(),
+            memory_owner: memory_owner.clone(),
+            reserved_at_epoch_ms: now_epoch_ms,
+        };
+        recorder.set_call_reservation(Some(reservation));
+        self.set_candidate_conversation(Some(conversation_id.clone()));
+        self.record_handled_start_request(
+            request.request_id.clone(),
+            HandledStartOutcome::Starting {
+                target: request.target.clone(),
+                conversation_id: conversation_id.clone(),
+                memory_owner: memory_owner.clone(),
+                reserved_at_epoch_ms: now_epoch_ms,
+            },
+        );
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| {
+                recorder.take_call_reservation();
+                (axum::http::StatusCode::SERVICE_UNAVAILABLE, e.to_string())
+            })?;
+
+        let wake_result = client
+            .post(format!("{}/api/voice/wake", self.daemon_origin))
+            .header("x-ai-mate-control-token", &self.control_token)
+            .timeout(std::time::Duration::from_secs(3))
+            .json(&serde_json::json!({ "conversation_id": conversation_id }))
+            .send()
+            .await;
+
+        let resp = match wake_result {
+            Ok(r) => r,
+            Err(e) => {
+                // Unknown transport result: wake may have been delivered to daemon before network drop.
+                // Do NOT immediately discard reservation; keep it alive for late binding / idempotent retry.
+                return Err((
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    serde_json::json!({
+                        "code": "daemon_wake_timeout",
+                        "conversation_id": Some(&conversation_id),
+                        "message": format!("Failed to receive wake confirmation from voice daemon: {e}. Reservation preserved for retry.")
+                    })
+                    .to_string(),
+                ));
+            }
+        };
+
+        let resp_status = resp.status();
+        if !resp_status.is_success() {
+            // Definite rejection: clear reservation
+            recorder.take_call_reservation();
+            let body_text = resp.text().await.unwrap_or_default();
+            self.record_handled_start_request(
+                request.request_id.clone(),
+                HandledStartOutcome::Rejected {
+                    target: request.target.clone(),
+                    status_code_u16: resp_status.as_u16(),
+                    error_json: body_text.clone(),
+                    at_epoch_ms: chrono::Utc::now().timestamp_millis(),
+                },
+            );
+            return Err((
+                resp_status,
+                serde_json::json!({
+                    "code": "daemon_wake_rejected",
+                    "status": resp_status.as_u16(),
+                    "message": format!("Daemon rejected wake request: {body_text}")
+                })
+                .to_string(),
+            ));
+        }
+
+        Ok(nomifun_api_types::voice::VoiceCallStartResponse {
+            request_id: request.request_id,
+            status: nomifun_api_types::voice::VoiceCallStartStatus::Starting,
+            conversation_id,
+            session_id: None,
+            memory_owner_companion_id: memory_owner,
+            binding: None,
+        })
     }
 
     /// Resolves the compiled `voice-companion` executable path on disk (with fallback to `ai-mate`).
@@ -2706,6 +3201,10 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
             "/api/voice/companion/session/stop",
             post(companion_stop_session_handler),
         )
+        .route(
+            "/api/voice/companion/session/start",
+            post(companion_start_call_handler),
+        )
         .with_state(manager)
 }
 
@@ -3008,6 +3507,23 @@ async fn companion_stop_session_handler(
             axum::Json(serde_json::json!({"success": false, "error": code})),
         )
             .into_response(),
+    }
+}
+
+async fn companion_start_call_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+    axum::Json(payload): axum::Json<nomifun_api_types::voice::VoiceCallStartRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match manager.start_call(payload).await {
+        Ok(res) => axum::Json(res).into_response(),
+        Err((status, err_str)) => {
+            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&err_str) {
+                (status, axum::Json(json_val)).into_response()
+            } else {
+                (status, axum::Json(serde_json::json!({ "code": err_str, "message": err_str }))).into_response()
+            }
+        }
     }
 }
 
@@ -3798,6 +4314,7 @@ mod tests {
                     vad_ready: true,
                     utterance_samples: i as u32 * 160,
                     utterance_peak_milli: (i * 15) as u16,
+                    ..Default::default()
                 }),
                 ..Default::default()
             };
@@ -4071,5 +4588,267 @@ mod tests {
         let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
         assert!(summary.contains("备份失败") || summary.contains("没有复制"), "spoken summary lost the actual failure: {summary}");
         assert!(summary.chars().count() <= 80, "summary must be <= 80 chars, got: {}", summary.chars().count());
+    }
+
+    #[tokio::test]
+    async fn test_session_start_call_lifecycle_and_conflict() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let app = voice_companion_routes(manager.clone());
+
+        // 1. Calling when manager not running returns 400
+        let req_stopped = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-1".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+            }).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req_stopped).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // 2. Set mock child and mock recorder
+        struct TestCallRecorder {
+            conversation_id: String,
+            memory_owner: Option<String>,
+            reservation: std::sync::RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
+        }
+        #[async_trait::async_trait]
+        impl VoiceDialogueRecorder for TestCallRecorder {
+            fn set_call_reservation(&self, res: Option<crate::voice_dialogue::VoiceCallReservation>) {
+                *self.reservation.write().unwrap() = res;
+            }
+            fn take_call_reservation(&self) -> Option<crate::voice_dialogue::VoiceCallReservation> {
+                self.reservation.write().unwrap().take()
+            }
+            fn current_call_reservation(&self) -> Option<crate::voice_dialogue::VoiceCallReservation> {
+                self.reservation.read().unwrap().clone()
+            }
+            async fn preflight(&self, _: &VoiceDialogueRequest) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+                Err(VoiceDialogueRecorderError::BindingInvalid("test".into()))
+            }
+            async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> {
+                Ok(())
+            }
+            async fn resolve_call_target(&self, target: &VoiceCallTarget) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+                match target {
+                    VoiceCallTarget::Workspace { workspace } if workspace == "invalid_dir" => {
+                        Err(VoiceDialogueRecorderError::WriteFailed("workspace_directory_invalid: not a directory".into()))
+                    }
+                    VoiceCallTarget::Workspace { .. } => Ok((self.conversation_id.clone(), self.memory_owner.clone())),
+                    VoiceCallTarget::DefaultWorkspace => Ok((self.conversation_id.clone(), self.memory_owner.clone())),
+                    VoiceCallTarget::VoiceConversation { conversation_id } => Ok((conversation_id.clone(), self.memory_owner.clone())),
+                }
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock_daemon = axum::Router::new().route(
+            "/api/voice/wake",
+            axum::routing::post(|| async {
+                (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "success": true })))
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, mock_daemon).await;
+        });
+
+        let recorder = Arc::new(TestCallRecorder {
+            conversation_id: "conv-voice-test".into(),
+            memory_owner: Some("flowy-bolt".into()),
+            reservation: std::sync::RwLock::new(None),
+        });
+        let manager_with_rec = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+                dir.path(),
+            )
+            .with_replay_daemon(format!("http://127.0.0.1:{port}"))
+            .with_recorder(recorder.clone()),
+        );
+        // Safe synthetic child (R08: non-recursive dummy child)
+        let builder = if cfg!(windows) {
+            let mut b = nomi_process_runtime::ChildProcessBuilder::new("cmd.exe");
+            b.args(["/c", "ping", "-n", "10", "127.0.0.1"]);
+            b
+        } else {
+            let mut b = nomi_process_runtime::ChildProcessBuilder::new("sleep");
+            b.arg("10");
+            b
+        };
+        let managed = builder.spawn_managed().ok();
+        if let Some(m) = managed {
+            *manager_with_rec.child.lock().await = Some(m);
+        }
+
+        let app_running = voice_companion_routes(manager_with_rec.clone());
+
+        // 3. Invalid directory returns 400
+        let req_invalid_ws = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-invalid".into(),
+                target: VoiceCallTarget::Workspace { workspace: "invalid_dir".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_invalid = app_running.clone().oneshot(req_invalid_ws).await.unwrap();
+        assert_eq!(resp_invalid.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // 4. Valid start returns starting status and sets active candidate
+        let req_valid = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-valid".into(),
+                target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_valid = app_running.clone().oneshot(req_valid).await.unwrap();
+        assert_eq!(resp_valid.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(resp_valid.into_body(), 16_384).await.unwrap();
+        let start_resp: VoiceCallStartResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(start_resp.request_id, "req-valid");
+        assert_eq!(start_resp.conversation_id, "conv-voice-test");
+        assert_eq!(start_resp.status, VoiceCallStartStatus::Starting);
+        assert_eq!(start_resp.memory_owner_companion_id.as_deref(), Some("flowy-bolt"));
+        assert_eq!(
+            manager_with_rec.active_window_candidate.read().unwrap().as_deref(),
+            Some("conv-voice-test")
+        );
+
+        // 4a-1. F3: An old stop request with mismatched session must NOT clear new pending reservation
+        let stop_old = manager_with_rec.stop_session(VoiceSessionControlRequest {
+            instance_id: "old-instance".into(),
+            session_id: Some("old-session-id".into()),
+            turn_id: None,
+        }).await;
+        assert!(stop_old.is_err(), "old stop request with wrong instance/session must be rejected");
+        assert!(recorder.current_call_reservation().is_some(), "F3: rejected old stop request must NOT destroy new reservation");
+
+        // 4b. Idempotency test (R02): same request_id and target returns Starting
+        let req_retry = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-valid".into(),
+                target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_retry = app_running.clone().oneshot(req_retry).await.unwrap();
+        assert_eq!(resp_retry.status(), axum::http::StatusCode::OK);
+
+        // 4c. Request target conflict (R02): same request_id with different target returns 400
+        let req_target_conflict = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-valid".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+            }).unwrap()))
+            .unwrap();
+        let resp_target_conflict = app_running.clone().oneshot(req_target_conflict).await.unwrap();
+        assert_eq!(resp_target_conflict.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // 4d. Concurrent start (R02): different request_id while pending returns 409
+        let req_concurrent = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-different".into(),
+                target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_concurrent = app_running.clone().oneshot(req_concurrent).await.unwrap();
+        assert_eq!(resp_concurrent.status(), axum::http::StatusCode::CONFLICT);
+
+        // 5. If already active on same conversation -> returns Active
+        {
+            let mut snap = manager_with_rec.snapshot.write().unwrap();
+            snap.session_id = Some("active-session-1".into());
+            snap.phase = VoiceSessionPhase::Listening;
+            snap.binding = Some(nomifun_api_types::voice::VoiceBindingSnapshot {
+                session_id: "active-session-1".into(),
+                binding_id: "binding-1".into(),
+                conversation_id: "conv-voice-test".into(),
+                workspace: Some("D:\\valid_ws".into()),
+                memory_owner_companion_id: Some("flowy-bolt".into()),
+            });
+        }
+        let req_same = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-same".into(),
+                target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_same = app_running.clone().oneshot(req_same).await.unwrap();
+        assert_eq!(resp_same.status(), axum::http::StatusCode::OK);
+        let body_same = axum::body::to_bytes(resp_same.into_body(), 16_384).await.unwrap();
+        let start_same: VoiceCallStartResponse = serde_json::from_slice(&body_same).unwrap();
+        assert_eq!(start_same.status, VoiceCallStartStatus::Active);
+        assert_eq!(start_same.conversation_id, "conv-voice-test");
+        assert_eq!(start_same.session_id.as_deref(), Some("active-session-1"));
+
+        // F1: Retrying req-valid while call is bound/active returns OK idempotently
+        let req_valid_bound = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-valid".into(),
+                target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_bound = app_running.clone().oneshot(req_valid_bound).await.unwrap();
+        assert_eq!(resp_bound.status(), axum::http::StatusCode::OK);
+        let body_bound = axum::body::to_bytes(resp_bound.into_body(), 16_384).await.unwrap();
+        let bound_resp: VoiceCallStartResponse = serde_json::from_slice(&body_bound).unwrap();
+        assert_eq!(bound_resp.request_id, "req-valid");
+        assert_eq!(bound_resp.status, VoiceCallStartStatus::Active);
+
+        // F1: Same req-valid with changed target after bound STILL returns 400 target conflict
+        let req_bound_diff_target = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-valid".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+            }).unwrap()))
+            .unwrap();
+        let resp_bound_diff = app_running.clone().oneshot(req_bound_diff_target).await.unwrap();
+        assert_eq!(resp_bound_diff.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        // 6. If already active on different conversation -> 409 CONFLICT
+        let req_conflict = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/voice/companion/session/start")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+                request_id: "req-diff".into(),
+                target: VoiceCallTarget::VoiceConversation { conversation_id: "other-conversation".into() },
+            }).unwrap()))
+            .unwrap();
+        let resp_conflict = app_running.clone().oneshot(req_conflict).await.unwrap();
+        assert_eq!(resp_conflict.status(), axum::http::StatusCode::CONFLICT);
+        let body_conflict = axum::body::to_bytes(resp_conflict.into_body(), 16_384).await.unwrap();
+        let conflict_json: serde_json::Value = serde_json::from_slice(&body_conflict).unwrap();
+        assert_eq!(conflict_json["code"], "voice_call_conflict");
+        assert_eq!(conflict_json["active_conversation_id"], "conv-voice-test");
     }
 }

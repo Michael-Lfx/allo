@@ -23,6 +23,7 @@ export default function VoiceAudioStatus({ snapshot, includeError = true, compac
     : cueReason === 'earcon_drain_timeout' ? 'voice.feedback.reason.timeout'
     : cueReason ? 'voice.feedback.reason.output' : null;
   const diagnostics = <>
+    {audio?.barge_in_reason && <div>{t(audio.barge_in_ready ? 'voice.audio.bargeInTest' : 'voice.audio.halfDuplex')}</div>}
     <div>{t('voice.audio.asr')}: {t(audio ? audio.asr_ready ? 'voice.audio.ready' : 'voice.audio.notReady' : 'voice.audio.unknown')} · {t('voice.audio.kws')}: {t(audio ? audio.kws_ready ? 'voice.audio.ready' : 'voice.audio.notReady' : 'voice.audio.unknown')}</div>
     <div>{t('voice.audio.vad')}: {t(audio?.vad_ready ? 'voice.audio.ready' : 'voice.audio.unknown')} · {t('voice.audio.captured', { seconds: ((audio?.utterance_samples ?? 0) / 16000).toFixed(1) })}</div>
     {snapshot?.feedback && <div>{t('voice.feedback.latestCue')}: {t(`voice.feedback.cue.${snapshot.feedback.kind}`)} · {t(`voice.feedback.receipt.${snapshot.feedback.status}`)}

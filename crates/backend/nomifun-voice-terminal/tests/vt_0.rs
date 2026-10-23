@@ -234,8 +234,8 @@ fn test_c3_voice_decision_schema_missing_intent_type_rejected() {
 fn test_c4_fsm_legal_transitions_vt_0_04() {
     assert_eq!(
         LEGAL_TRANSITIONS.len(),
-        21,
-        "Includes the recoverable ignored-utterance transition"
+        25,
+        "Includes the recoverable ignored-utterance transition and barge-in transitions"
     );
 
     for (index, &(from, event, expected_to)) in LEGAL_TRANSITIONS.iter().enumerate() {
@@ -284,6 +284,7 @@ fn test_c4_fsm_illegal_transitions_rejected() {
         AcousticEvent::PlaybackDone,
         AcousticEvent::FollowUpSpeech,
         AcousticEvent::FollowUpTimeout,
+        AcousticEvent::BargeIn,
     ];
 
     assert!(LEGAL_TRANSITIONS.iter().all(|&(s, e, to)| all_states.contains(&s) && all_states.contains(&to) && all_events.contains(&e)));
@@ -459,5 +460,22 @@ fn test_c4_fsm_full_lifecycle_scenarios() {
     assert_eq!(
         fsm.transition(AcousticEvent::FollowUpTimeout).unwrap(),
         AcousticState::Idle
+    );
+
+    // Scenario 9: Barge-in during confirmation prompt transitions to ListeningConfirm without dialogue deadline
+    let mut driver = VoiceSessionDriver::new();
+    assert_eq!(
+        driver
+            .handle_event(AcousticEvent::ToolPolicyIntercept)
+            .unwrap(),
+        AcousticState::AwaitingConfirmation
+    );
+    assert_eq!(
+        driver.handle_event(AcousticEvent::BargeIn).unwrap(),
+        AcousticState::ListeningConfirm
+    );
+    assert!(
+        driver.remaining_listening_time().is_none(),
+        "ListeningConfirm must not retain dialogue 180s deadline"
     );
 }

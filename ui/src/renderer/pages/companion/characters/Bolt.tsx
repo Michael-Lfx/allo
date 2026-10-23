@@ -3,13 +3,24 @@
 import React from 'react';
 import type { CharacterProps } from './types';
 
-const Bolt: React.FC<CharacterProps> = ({ mood, activity, size = 150 }) => {
+const Bolt: React.FC<CharacterProps> = ({ mood, activity, size = 150, motion }) => {
   // mood: 'happy' | 'content' | 'sleepy' | 'worried' | 'excited'
   // activity: 'idle' | 'thinking'
-  const sleeping = mood === 'sleepy';
-  const thinking = activity === 'thinking';
+  // motion: 'idle' | 'thinking' | 'wink' | 'wide' | 'alert' | 'notify' | 'exclaim' | 'sleep' | 'play' | 'orbit' | 'burst' | 'comet'
+  const sleeping = mood === 'sleepy' || motion === 'sleep';
+  const thinking = activity === 'thinking' || motion === 'thinking' || motion === 'orbit';
+  const listening = motion === 'alert';
+  const speaking = motion === 'notify';
+
+  const motionClass = motion ? `nomi-bolt--motion-${motion}` : '';
+  const postureClass = listening ? 'nomi-bolt--listening' : speaking ? 'nomi-bolt--speaking' : '';
+
   return (
-    <div className={`nomi-ch nomi-bolt nomi-bolt--${mood} nomi-bolt--${activity}`} style={{ width: size, height: size }}>
+    <div
+      className={`nomi-ch nomi-bolt nomi-bolt--${mood} nomi-bolt--${activity} ${motionClass} ${postureClass}`.trim()}
+      data-motion={motion ?? ''}
+      style={{ width: size, height: size }}
+    >
       <style>{`
         .nomi-bolt{position:relative;display:inline-block}
         .nomi-bolt svg{display:block;overflow:visible}
@@ -74,6 +85,19 @@ const Bolt: React.FC<CharacterProps> = ({ mood, activity, size = 150 }) => {
         @keyframes nomi-bolt-dot{0%,80%,100%{opacity:.18}40%{opacity:1}}
         .nomi-bolt--thinking .nomi-bolt__antBall{animation:nomi-bolt-antblink 1s ease-in-out infinite}
         @keyframes nomi-bolt-antblink{0%,100%{opacity:1}50%{opacity:.45}}
+
+        /* listening: alert antenna + focused body float */
+        .nomi-bolt--listening .nomi-bolt__antBall{animation:nomi-bolt-antblink .8s ease-in-out infinite}
+        .nomi-bolt--listening .nomi-bolt__body{animation:nomi-bolt-float 2.2s ease-in-out infinite}
+
+        /* speaking: mouth movement */
+        .nomi-bolt--speaking .nomi-bolt__mouth--speaking{transform-origin:80px 98px;animation:nomi-bolt-speak .35s ease-in-out infinite alternate}
+        @keyframes nomi-bolt-speak{0%{transform:scaleY(.5)}100%{transform:scaleY(1.3)}}
+
+        @media (prefers-reduced-motion: reduce) {
+          .nomi-bolt__mouth--speaking{animation:none}
+          .nomi-bolt--listening .nomi-bolt__antBall{animation:none}
+        }
       `}</style>
       <svg viewBox='0 0 160 160' width={size} height={size}>
         <defs>
@@ -166,6 +190,24 @@ const Bolt: React.FC<CharacterProps> = ({ mood, activity, size = 150 }) => {
                 <circle className='nomi-bolt__dot nomi-bolt__dot--b' cx='80' cy='84' r='5' fill='#37e0ff' />
                 <circle className='nomi-bolt__dot nomi-bolt__dot--c' cx='94' cy='84' r='5' fill='#37e0ff' />
               </>
+            ) : listening ? (
+              <g className='nomi-bolt__eyes nomi-bolt__eyes--listening'>
+                {/* attentive focused eyes looking forward */}
+                <ellipse className='nomi-bolt__eyeL' cx='66' cy='83' rx='6' ry='7.5' fill='#37e0ff' />
+                <ellipse className='nomi-bolt__eyeR' cx='94' cy='83' rx='6' ry='7.5' fill='#37e0ff' />
+                <circle cx='65' cy='80.5' r='2' fill='#d7fbff' />
+                <circle cx='93' cy='80.5' r='2' fill='#d7fbff' />
+                <ellipse cx='80' cy='99' rx='3.5' ry='3.5' fill='#37e0ff' />
+              </g>
+            ) : speaking ? (
+              <g className='nomi-bolt__eyes nomi-bolt__eyes--speaking'>
+                {/* lively eyes + speaking mouth */}
+                <ellipse className='nomi-bolt__eyeL' cx='66' cy='84' rx='5' ry='6.5' fill='#37e0ff' />
+                <ellipse className='nomi-bolt__eyeR' cx='94' cy='84' rx='5' ry='6.5' fill='#37e0ff' />
+                <circle cx='64' cy='81.5' r='1.6' fill='#d7fbff' />
+                <circle cx='92' cy='81.5' r='1.6' fill='#d7fbff' />
+                <path className='nomi-bolt__mouth--speaking' d='M72 96 Q80 105 88 96 Q80 102 72 96 Z' fill='#37e0ff' />
+              </g>
             ) : sleeping ? (
               <>
                 {/* lower-arc sleepy eyes */}
@@ -225,7 +267,7 @@ const Bolt: React.FC<CharacterProps> = ({ mood, activity, size = 150 }) => {
           {/* sleepy z's */}
           {sleeping && (
             <g fill='none' stroke='#9fb0c4' strokeWidth='2.4' strokeLinecap='round' strokeLinejoin='round'>
-              <path className='nomi-bolt__z' d='M104 50 h8 l-8 9 h8' transform='scale(.8)' transform-origin='108 55' />
+              <path className='nomi-bolt__z' d='M104 50 h8 l-8 9 h8' transform='scale(.8)' style={{ transformOrigin: '108px 55px' }} />
               <path className='nomi-bolt__z nomi-bolt__z--b' d='M114 44 h6 l-6 7 h6' />
             </g>
           )}

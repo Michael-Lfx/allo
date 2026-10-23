@@ -3,7 +3,7 @@ import type { CompanionId } from '@/common/types/ids';
 import type { CompanionActivity, CompanionMood, CompanionMotion } from '../characters/types';
 import { listenPetMessageBroadcast, subscribePetMessages } from './channel';
 import { attachPetMessageProjectors } from './project';
-import { foldIncomingPetMessage, resolveCompanionMotion } from './motion';
+import { foldIncomingPetMessage, motionFromVoicePhase, resolveCompanionMotion } from './motion';
 import { isActivePhase, type PetMessage } from './types';
 import type {VoiceSnapshot} from '@common/adapter/voiceCompanion';
 import {petMessageFromVoice} from './voice';
@@ -91,7 +91,11 @@ export function useCompanionPetFeed(opts: {
     setMessages((current) => current.filter((item) => item.id !== id));
   }, []);
 
-  const motion = useMemo(() => resolveCompanionMotion(mood, activity, messages), [mood, activity, messages]);
+  const motion = useMemo(() => {
+    const fromVoice = motionFromVoicePhase(opts.voice, companionId);
+    if (fromVoice) return fromVoice;
+    return resolveCompanionMotion(mood, activity, messages);
+  }, [mood, activity, messages, opts.voice, companionId]);
 
   return { messages, motion, dismiss };
 }

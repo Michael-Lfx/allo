@@ -28,6 +28,10 @@ pub enum AudioSinkError {
 
 #[async_trait]
 pub trait AudioSink: Send + Sync {
+    /// True only while frames remain queued for this sink's output.
+    fn has_pending_audio(&self) -> bool {
+        false
+    }
     fn is_available(&self) -> bool {
         true
     }
@@ -57,6 +61,9 @@ impl PhysicalAudioSink {
 }
 #[async_trait]
 impl AudioSink for PhysicalAudioSink {
+    fn has_pending_audio(&self) -> bool {
+        self.speaker.as_ref().is_some_and(|speaker| speaker.buffered_samples() > 0)
+    }
     fn is_available(&self) -> bool {
         self.speaker
             .as_ref()
@@ -216,6 +223,7 @@ impl Drop for PendingOutput<'_> {
 pub struct PlaybackPipeline {
     sink: Arc<dyn AudioSink>,
     generation_id: Arc<AtomicU64>,
+    interruption: tokio::sync::watch::Sender<u64>,
     output: tokio::sync::Mutex<()>,
     pending_output: AtomicUsize,
 }
@@ -228,6 +236,7 @@ impl PlaybackPipeline {
         Self {
             sink,
             generation_id: Arc::new(AtomicU64::new(0)),
+            interruption: tokio::sync::watch::channel(0).0,
             output: tokio::sync::Mutex::new(()),
             pending_output: AtomicUsize::new(0),
         }
@@ -235,6 +244,18 @@ impl PlaybackPipeline {
 
     pub fn generation_id(&self) -> u64 {
         self.generation_id.load(Ordering::SeqCst)
+    }
+
+    pub fn has_pending_audio(&self) -> bool {
+        self.sink.has_pending_audio()
+    }
+
+    /// Wakes even when synthesis, a channel receive or an output lock is stalled.
+    pub async fn interrupted(&self, expected_gen: u64) {
+        let mut changed = self.interruption.subscribe();
+        while *changed.borrow_and_update() <= expected_gen {
+            if changed.changed().await.is_err() { return; }
+        }
     }
 
     fn request_output(&self) -> PendingOutput<'_> {
@@ -293,7 +314,10 @@ impl PlaybackPipeline {
     /// Increments generation_id and flushes audio sink to instantly cancel playback (<50ms barge-in).
     pub async fn interrupt(&self) -> Result<(), AudioSinkError> {
         self.generation_id.fetch_add(1, Ordering::SeqCst);
-        self.sink.flush().await
+        // Flush before releasing the old owner; a new output must not be cleared by this flush.
+        let result = self.sink.flush().await;
+        self.interruption.send_replace(self.generation_id());
+        result
     }
 
     /// Plays an earcon sound asset through the audio sink.
@@ -453,6 +477,8 @@ impl PlaybackPipeline {
         };
         let work=async {let((),result)=tokio::join!(synthesize,consume);result};
         tokio::select!{
+            biased;
+            _=self.interrupted(expected_gen)=>Ok(()),
             result=work=>result,
             _=cancelled.changed()=>Err(AudioSinkError::Write("model_stream_failed".into())),
         }
@@ -466,10 +492,36 @@ impl PlaybackPipeline {
         voice: &str,
         started: impl FnOnce() + Send,
     ) -> Result<(), AudioSinkError> {
+        let expected_gen = self.generation_id();
+        self.speak_text_for_generation(tts, text, voice, expected_gen, started).await
+    }
+
+    pub async fn speak_text_for_generation(
+        &self,
+        tts: &dyn crate::tts::TtsProvider,
+        text: &str,
+        voice: &str,
+        expected_gen: u64,
+        started: impl FnOnce() + Send,
+    ) -> Result<(), AudioSinkError> {
+        tokio::select! {
+            biased;
+            _ = self.interrupted(expected_gen) => Ok(()),
+            result = self.speak_text_generation(tts, text, voice, expected_gen, started) => result,
+        }
+    }
+
+    async fn speak_text_generation(
+        &self,
+        tts: &dyn crate::tts::TtsProvider,
+        text: &str,
+        voice: &str,
+        expected_gen: u64,
+        started: impl FnOnce() + Send,
+    ) -> Result<(), AudioSinkError> {
         if !self.sink.is_available() {
             return Err(AudioSinkError::Write("speaker_unavailable".into()));
         }
-        let expected_gen = self.generation_id();
         let mut stream = tts
             .synthesize_stream(text, voice)
             .await
@@ -515,6 +567,35 @@ impl PlaybackPipeline {
 mod tests {
     use super::*;
     use crate::tts::NullTts;
+
+    #[tokio::test]
+    async fn interruption_releases_a_stalled_sentence_stream_fifty_times() {
+        let sink = Arc::new(TestAudioSink::new());
+        let playback = Arc::new(PlaybackPipeline::new(sink.clone()));
+        for _ in 0..50 {
+            let (sentences, rx) = mpsc::channel(1);
+            let (_cancel, cancel_rx) = tokio::sync::watch::channel(false);
+            sentences.send("unfinished old reply".into()).await.unwrap();
+            let generation = playback.generation_id();
+            let output = playback.clone();
+            let old = tokio::spawn(async move {
+                output.speak_sentence_stream(&NullTts::new(), rx, generation, cancel_rx, || {}).await
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while sink.frame_count() == 0 { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            playback.interrupt().await.unwrap();
+            tokio::time::timeout(Duration::from_millis(200), old).await.unwrap().unwrap().unwrap();
+            assert!(sentences.is_closed(), "old synthesis and model input must be dropped");
+            assert_eq!(sink.frame_count(), 0);
+        }
+        let old_generation = playback.generation_id();
+        playback.interrupt().await.unwrap();
+        playback.speak_text_for_generation(&NullTts::new(), "late old reply", "", old_generation, || panic!("stale speech started")).await.unwrap();
+        assert_eq!(sink.frame_count(), 0);
+        playback.speak_text(&NullTts::new(), "new reply", "").await.unwrap();
+        assert_eq!(sink.frame_count(), 1);
+    }
 
     struct DelayedTts {
         entered: tokio::sync::Notify,

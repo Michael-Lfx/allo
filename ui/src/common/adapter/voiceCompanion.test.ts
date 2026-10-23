@@ -272,3 +272,55 @@ test('target selection and replay use host-owned APIs and carry the current acou
     expect(requests.some(r=>r.url.includes('/wake')||r.url.includes('/messages'))).toBe(false);
   }finally{globalThis.fetch=original;}
 });
+
+test('startVoiceCall dispatches start request and translates 409 conflict correctly', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  let isConflict = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), init });
+    if (isConflict) {
+      return new Response(JSON.stringify({ code: 'voice_call_conflict', active_conversation_id: 'conv-active-123' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return Response.json({
+      request_id: 'req-1',
+      status: 'starting',
+      conversation_id: 'conv-voice-123',
+      session_id: null,
+      memory_owner_companion_id: 'flowy-bolt',
+    });
+  }) as typeof fetch;
+
+  try {
+    const res = await voice.startVoiceCall({
+      request_id: 'req-1',
+      target: { kind: 'workspace', workspace: 'D:/test' },
+    });
+    expect(res.conversation_id).toBe('conv-voice-123');
+    expect(res.memory_owner_companion_id).toBe('flowy-bolt');
+    expect(requests[0].url.endsWith('/api/voice/companion/session/start')).toBe(true);
+    expect(JSON.parse(requests[0].init?.body as string)).toEqual({
+      request_id: 'req-1',
+      target: { kind: 'workspace', workspace: 'D:/test' },
+    });
+
+    isConflict = true;
+    let thrownError: any = null;
+    try {
+      await voice.startVoiceCall({
+        request_id: 'req-2',
+        target: { kind: 'default_workspace' },
+      });
+    } catch (e) {
+      thrownError = e;
+    }
+    expect(thrownError).not.toBeNull();
+    expect(thrownError.code).toBe('voice_call_conflict');
+    expect(thrownError.active_conversation_id).toBe('conv-active-123');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
