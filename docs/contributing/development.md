@@ -89,6 +89,9 @@ renderer presents that per-boot trust secret on every request.
 | `bun run help --check` | Root script help output is current. |
 | `bun run build:ui` | Production Vite build. |
 | `bun run build` | Tauri desktop release bundle for the current OS. |
+| `bun run build:inspect` | Read-only report of `build.noindex`, `target`, and any active dev session. |
+| `bun run build:gc` | Explicit reclaim of provably unused historical build artifacts; needs `cargo-sweep`. |
+| `bun run build:clean` | Explicit destructive cleanup; forces a cold Rust rebuild next time. |
 
 For a broad pre-PR check, run:
 
@@ -99,6 +102,61 @@ bun run check:i18n
 bun run check:theme
 bun run help --check
 ```
+
+## Build cache size
+
+`dev`, test and default build entry points leave the cargo cache alone; reclaiming
+space is explicit. Run `bun run build:inspect` first (it also reports whether
+`cargo-sweep` is available), and confirm no dev session is active, then pick
+`build:gc` — or `build:clean` only when a cold rebuild is acceptable.
+
+`build:gc` enforces the size cap through `cargo sweep --maxsize`, so `cargo-sweep`
+is a hard prerequisite:
+
+```bash
+cargo install cargo-sweep --locked
+```
+
+Without it the cap is unenforceable: `--gc` can only evict old incremental units,
+while `deps/` — where the volume actually lives (historical rlib / pdb / exe /
+rmeta generations) — stays untouched. Measured drift: on a machine without
+`cargo-sweep`, `build.noindex` grew to 183G before anyone noticed; one `build:gc`
+pass brought it to 26G.
+
+Order of magnitude (Windows, measured in this repo):
+
+| State | Size |
+| --- | --- |
+| Dev dependencies only (after one `build:gc`) | ~26G |
+| One generation of a full `cargo test` | tens of G (289 integration test files → 372 test executables; the heavy ones are ~280MB exe + ~290MB pdb each) |
+| Several accumulated generations (unswept) | 150G+ |
+
+So a sweep is not permanent: any change in source, features, profile or
+dependencies makes cargo emit a new set of hashed artifacts and keeps the old set.
+Growth after a heavy test run is expected — repeat `build:inspect` → `build:gc`.
+
+The default 28G cap matches the **daily dev working set** (26.2G measured right
+after a sweep); one full `cargo test` generation is disposable. When you need to
+keep that generation across a heavy test loop, raise the cap for one run with
+`--cap` — it drives both `cargo sweep --maxsize` and the residual warning
+threshold:
+
+```bash
+bun run build:gc --cap 80    # trim to 80G for this run; default untouched
+bun run build:gc             # back to the default 28G afterwards
+```
+
+`--cap` only accepts a positive number; anything else warns and falls back to 28G.
+
+To run heavy e2e suites without polluting the daily dev cache, give that run its
+own build directory:
+
+```bash
+CARGO_TARGET_DIR=build.noindex-e2e cargo test -p <crate> --tests
+```
+
+Delete that directory afterwards — it is not covered by the current `.gitignore`
+rules and would show up as an untracked tree.
 
 ## Backend CLI
 
