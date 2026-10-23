@@ -2,8 +2,8 @@
 id: k03
 title: "est 时长预算行进图课时提示词 + 超容自报 capacity_note（形状零拦截）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -88,3 +88,28 @@ part_of: ../map.md
 
 契约文档 `learning-structure-artifacts.md` 若涉课时输入面，随批加一行注记
 （est 预算行 + capacity_note 形状），bump 小版本。
+
+## Resolution
+
+**已关（2026-10-23，`b4259de0e`；冒烟读数面 `dd95ebe83`）**。
+
+- **预算行**：`GraphLessonContext.est_minutes`（图路径读 `learning_lessons.
+  estimated_minutes`，恒 Some）→ `lesson_user_text` 图语义段注入
+  `- 时长预算：{est} 分钟（节点尺寸锚——规划与写作两阶段对照此预算）`；
+  渲染函数 `render_est_budget_line` 单源。
+- **capacity_note**：`ls_set_section_manifest` 可选键（string）→
+  `LessonOp::SetSectionManifest{capacity_note}` → `LessonDraft.capacity_note`
+  （空白裁 None、零内容拦截）→ `LessonInspectView`（ls_inspect 可见）→
+  `LessonOutput.capacity_note` → 审计观察条 warning `over_capacity` + 落库时
+  `over_capacity` 日志行。
+- **写作阶段提醒**：`GENERATE_LESSON_AGENT_SYSTEM` 篇幅段后加一句对照预算 +
+  超容才自报句。
+- **开关**：`NOMI_LEARNING_EST_BUDGET=off` → 不注预算行、计划工具自报键忽略。
+- **smoke content 档读数**：存档 user 回合按注入原文计数 + 发布事件
+  `capacity_note_events`；on `budget_line_calls=1`、off `=0`，两臂 EXIT 0；
+  两臂模型均未自报（缺席合法，非门禁）。读数见
+  [verification-cards.md](../assets/verification-cards.md) §k03。
+- **单测**：预算行装配/开关取值；capacity_note 三态；off 臂忽略；inspect/output
+  透传；旧课时包无键反序列化兼容；agent 侧两臂装配。
+- **契约注记**：`learning-structure-artifacts.md` v1.3 §8.1。
+- 传统路径未改（范围注记在 §8.1）；未做受众行（k05 R11 口径吸收）。

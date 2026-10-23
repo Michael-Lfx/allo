@@ -2,8 +2,8 @@
 id: k04
 title: "题面相似度防雷同机械门——trigram 三口径 0.7、题级丢弃留痕、破地板整稿回灌"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -93,3 +93,27 @@ part_of: ../map.md
 
 本票与 k05 都动 `generation/lesson.rs` / `lesson_content_loop.rs` 提示词面，
 依赖序 k03 → k05 已排；k04 与 k05 触面错开（校验器 vs 提示词块），无依赖。
+
+## Resolution
+
+**已关（2026-10-23，`8b86d0a63`）**。
+
+- **单源三口径**：`defnear::stem_similarity` = max(trigram Jaccard, trigram 包含
+  度, 子串包含度)（复用 `normalize`/`trigrams`；<3 字符整串单 gram）+
+  `STEM_SIMILARITY_THRESHOLD = 0.7`。铸名近形与题面防雷同同一函数。
+- **批门题级丢弃**：`filter_novel_activities`（池 = 既有题面 + 已接受批内兄弟；
+  平手取先入池）→ 剔除记 `DroppedActivity{prompt, hit_prompt, score}` →
+  地板破时整稿回灌带指名（沿用 2 次尝试回路）。传统管线落库前逐条 warn 日志。
+- **单题/变式同门**：`validate_generated_activity` 用同一门（quiz 变式经此路径，
+  命中即如实跳过只出旧题，现有失败路径）。
+- **观察条升级**：draft 审计 `activity_prompt_duplicate` 带命中对与分值。
+- **开关**：`NOMI_LEARNING_QB_SIMILARITY=off` → 旧规范化精确/子串门。
+- **读数计数器**：`qb_readings`（pool_checks/sim_hits/dropped/retries），quiz
+  档打印。
+- **单测**：换数题新门红旧门绿、异考法绿、装饰剥除、题级丢弃 + 地板回灌指名、
+  off 臂旧门、平手确定性、开关取值——全绿。
+- **双臂**：on pool_checks=6 sim_hits=0；off pool_checks=0；variants 各 6，
+  EXIT 均 0。on 臂未误伤真实「同考点换角度」变式；真机未自发雷同（如实记录）。
+  读数见 [verification-cards.md](../assets/verification-cards.md) §k04。
+- **已知边界**：字符 trigram 对极短题面（如「3+5=?」）区分度有限，learnhub 同款；
+  验收改用真实长度题干（换数/换情境）锁红绿。

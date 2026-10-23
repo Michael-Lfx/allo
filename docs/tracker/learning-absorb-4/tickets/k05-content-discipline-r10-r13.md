@@ -2,8 +2,8 @@
 id: k05
 title: "内容纪律 R10 具象替身 / R11 受众语域 / R12 表述工具在场 / R13 断言-例子一致"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [k03]
 part_of: ../map.md
 ---
@@ -93,3 +93,25 @@ part_of: ../map.md
 learnhub 的配套「病历」思路（真机产物录制存档）在 allo 的等价物 =
 ArchivingCompleter 观测存档 + 本票对照卡——效果判据落档可追溯，不引回放
 基建。
+
+## Resolution
+
+**已关（2026-10-23，`cd28da39e`；读数面 `dd95ebe83`）**。
+
+- **两管线写作面**：传统管线 `CONTENT_DISCIPLINE_BLOCK` 追加 R10/R11/R12/R13
+  四条（`content_discipline_block()` 装配）；图管线 `GENERATE_LESSON_AGENT_SYSTEM`
+  成色段同义中文四条（`CONTENT_DISCIPLINE_V2_CN`）；`section_outline_system` 加
+  情境取向句（`audience_planning_clause()`）。
+- **R11 输入面**：不加受众字段/向导/DB（B 组产品裁决）；条款锚定既有程度声明与
+  目标文本，声明非低龄受众时情境取该受众生活域。
+- **开关**：`NOMI_LEARNING_CONTENT_DISCIPLINE_V2=off` → 四条与规划句均不装配
+  （= j07 后提示词）。
+- **单测**：开关两臂（off 臂四条短语全无、j07 基线条款保留；on 臂全在）+ agent
+  系统提示词四条短语在场。
+- **双臂（开关臂）**：content 档 on 四条存档计数 1/1/1/1、off 0/0/0/0，EXIT 均 0。
+  人读（同 fixture 各一次，读落库节正文）：R10 on 臂 s1 先给「两只股票日内
+  小幅挪动 vs 涨 4%/跌 3%」情境量 + 分布图、公式推后，off 臂 s1 抽象框定后直接
+  上公式（⚠️）；R11/R12/R13 两臂均未违规，R13 算例逐式复核通过。j07 观察条
+  两臂同口径无劣化。读数见 [verification-cards.md](../assets/verification-cards.md) §k05。
+- **R12 观察读数**：可选增强未做（与 R12/R13 机械面同留雾区，map Not yet specified）。
+- 非目标遵办：不建 R12/R13 机械门、不动金样资产。

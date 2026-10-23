@@ -2,8 +2,8 @@
 id: k01
 title: "Mindmap 负坐标翼裁剪修复——两翼中心对称 + dy 补偿 + 布局单测"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -66,3 +66,22 @@ part_of: ../map.md
 ## 备注
 
 本票是纯前端几何修复，无 LLM 面，不配环境开关；「双臂」取修复前后版本对照。
+
+## Resolution
+
+**已关（2026-10-23，`f3be14438`）**。
+
+- **布局纯函数**：`structure/mindmapLayout.ts` 导出 `computeLayout` + 几何常量
+  （`CENTER_X`/`CENTER_TOPIC`），`Mindmap.tsx` 只消费；颜色仍由渲染侧
+  `buildGroupPalette` 注入。两翼坐标改 `CENTER_X ± SPINE_X / BLOCK_X` 中心
+  对称，`width = CENTER_X*2`；贝塞尔锚点与中心框统一 `CENTER_TOPIC` 中线。
+- **文本基线**：三处 `dominantBaseline='central'` 删除，改 `dy='0.35em'`。
+- **单测**：`mindmapLayout.test.ts` 3 例（≥2 主干全矩形落画布内 / 两翼不压
+  中心框 / 单主干单翼同样成立）全绿（bun test）。
+- **双臂（版本臂，文字实录）**：同 fixture 旧算法 x 范围 `[-595,705]`（左翼
+  整翼负坐标 = 裁剪不可见；中心框 525–705 与右翼块 445–595 重叠 50px）→ 新
+  算法 `[40,1230] ⊂ [0,1270]`、右翼块 min_x 821 > 中心框 725。读数见
+  [verification-cards.md](../assets/verification-cards.md) §k01。
+- **门**：`bun run typecheck` 学习面零错误（全仓 61 条存量基线漂移 1 条，
+  与学习模块无关——videoCanvas/vite.config）；i18n 零新键。
+- 偏差：无。
