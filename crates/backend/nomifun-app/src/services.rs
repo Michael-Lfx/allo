@@ -2925,6 +2925,8 @@ impl AppServices {
                     workspace: data_dir.clone(),
                 },
                 round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                // 生产无首轮观测（冒烟存档专用）。
+                prompt_observer: None,
             },
         ));
         // Best-effort WebSocket progress for course/lesson generation —

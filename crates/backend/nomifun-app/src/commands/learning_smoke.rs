@@ -226,7 +226,22 @@ async fn wire(
         },
     ));
     // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
-    // 自行解析 provider（OneShotDeps），不经管线 completer。
+    // 自行解析 provider（OneShotDeps），不经管线 completer。首轮观测钩子把
+    // system/user 追加进本次运行的 calls.jsonl（k03/k05 双臂读数面）。
+    let lesson_observer = archiving.as_ref().map(|archiving| {
+        let path = archiving.run_dir().join("calls.jsonl");
+        Arc::new(move |record: serde_json::Value| {
+            use std::io::Write;
+            let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            else {
+                return;
+            };
+            let _ = writeln!(file, "{record}");
+        }) as Arc<dyn Fn(serde_json::Value) + Send + Sync>
+    });
     service.set_lesson_engine(Arc::new(
         nomifun_ai_agent::LiveLessonContentAgentEngine {
             service: service.clone(),
@@ -237,6 +252,7 @@ async fn wire(
                 workspace: cli.data_dir.clone(),
             },
             round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            prompt_observer: lesson_observer,
         },
     ));
     // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录。
@@ -2305,13 +2321,28 @@ async fn run_content(
     if let Some(archive) = archiving.as_ref() {
         let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
             .unwrap_or_default();
-        let budget_line_calls = calls.lines().filter(|line| line.contains("时长预算")).count();
-        let capacity_note_calls = calls
+        // 预算行按注入原文（"- 时长预算："）在 **user 字段** 计数——系统
+        // 提示词里的说明句同样以该词开头，不能整行 grep。
+        let budget_line_calls = calls
             .lines()
-            .filter(|line| line.contains("capacity_note"))
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| {
+                value
+                    .get("user")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|user| user.contains("- 时长预算："))
+            })
+            .count();
+        // 超容自报按发布观测行计数（实际产物，非 schema 提及；缺席合法）。
+        let capacity_notes = calls
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
+            .filter_map(|value| value.get("capacity_note").cloned())
+            .filter(|note| !note.is_null())
             .count();
         println!(
-            "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_calls={capacity_note_calls}"
+            "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_events={capacity_notes}"
         );
         // k05 读数面（非门禁）：四条纪律短语在存档里的在场性（off 臂 0）。
         let discipline_hits = [
@@ -2878,13 +2909,26 @@ async fn run_maintenance(
     .bind(&course_id)
     .fetch_optional(&pool)
     .await?;
-    anyhow::ensure!(
-        watermark == Some(2),
-        "watermark must advance to the max consumed finding id (got {watermark:?})"
-    );
+    // 开关臂分支：on 臂 = 水位推进 + 二回合零工作；off 臂 = 不推水位 +
+    // 二回合全量重读重跑 LLM（旧行为臂，两种终态各自成立）。
+    let watermark_enabled = std::env::var(nomifun_learning::FINDINGS_WATERMARK_SWITCH_ENV)
+        .map(|value| !nomifun_learning::is_findings_watermark_disabled_value(&value))
+        .unwrap_or(true);
+    println!("watermark read-out: enabled={watermark_enabled} value={watermark:?}");
+    if watermark_enabled {
+        anyhow::ensure!(
+            watermark == Some(2),
+            "watermark must advance to the max consumed finding id (got {watermark:?})"
+        );
+    } else {
+        anyhow::ensure!(
+            watermark.is_none(),
+            "off arm must not advance the watermark (got {watermark:?})"
+        );
+    }
 
-    // ③ 回合 2：零工作零 LLM 零写（观测存档行数不变 = 零 LLM）。
-    println!("[2/2] second tick (expect idle, zero LLM)…");
+    // ③ 回合 2：on 臂零工作零 LLM 零写；off 臂重读同一批留痕并重跑 LLM。
+    println!("[2/2] second tick (on: expect idle; off: expect re-read)…");
     let archive_lines = |archiving: &Option<Arc<ArchivingCompleter>>| {
         archiving
             .as_ref()
@@ -2903,16 +2947,29 @@ async fn run_maintenance(
         second.idle,
         second.courses.len()
     );
-    anyhow::ensure!(
-        second.courses.is_empty(),
-        "second tick must be zero-work (got {} courses)",
-        second.courses.len()
-    );
-    anyhow::ensure!(second.idle >= 1, "second tick must count the course as idle");
-    anyhow::ensure!(
-        after == before,
-        "second tick must issue zero LLM calls ({before} -> {after})"
-    );
+    if watermark_enabled {
+        anyhow::ensure!(
+            second.courses.is_empty(),
+            "second tick must be zero-work (got {} courses)",
+            second.courses.len()
+        );
+        anyhow::ensure!(second.idle >= 1, "second tick must count the course as idle");
+        anyhow::ensure!(
+            after == before,
+            "second tick must issue zero LLM calls ({before} -> {after})"
+        );
+    } else {
+        // off 臂：留痕未消费 → 二回合重新工作并重跑 LLM（全量重读旧行为）。
+        anyhow::ensure!(
+            second.courses.len() == 1,
+            "off arm second tick must re-work the course (got {})",
+            second.courses.len()
+        );
+        anyhow::ensure!(
+            after > before,
+            "off arm second tick must re-run the model ({before} -> {after})"
+        );
+    }
     let watermark_after: Option<i64> = sqlx::query_scalar(
         "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
     )

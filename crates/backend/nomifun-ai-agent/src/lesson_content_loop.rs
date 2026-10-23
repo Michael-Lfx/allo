@@ -150,6 +150,11 @@ pub struct LiveLessonContentAgentEngine {
     /// 场消息恢复认知；发布成功后清除。内存态，与草稿同生命周期（重启即
     /// 失）。与学习图循环的同名字段同构（断点续跑的另一半）。
     pub round_logs: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// 可选首轮观测钩子（冒烟存档面，k03/k05 读数）：每次生成先落一轮
+    /// `{method:"lesson_agent_turn", system, user}`，发布成功再落
+    /// `{method:"lesson_agent_publish", capacity_note, estimated_minutes}`。
+    /// 生产接线恒 None（引擎自带 provider，不经 ArchivingCompleter）。
+    pub prompt_observer: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
@@ -241,6 +246,16 @@ impl LiveLessonContentAgentEngine {
             }
             None => (lesson_user_text(context), None),
         };
+        // 首轮观测（冒烟读数面）：system/user 在模型调用前落档；生产恒 None。
+        if let Some(observer) = self.prompt_observer.as_ref() {
+            observer(serde_json::json!({
+                "ts": nomifun_common::now_ms(),
+                "method": "lesson_agent_turn",
+                "ok": true,
+                "system": GENERATE_LESSON_AGENT_SYSTEM.as_str(),
+                "user": user_text,
+            }));
+        }
         let ctx = Arc::new(LoopContext {
             service: Arc::clone(&self.service),
             context: context.clone(),
@@ -276,6 +291,16 @@ impl LiveLessonContentAgentEngine {
                     "activities": output.activities.len(),
                     "estimated_minutes": output.estimated_minutes,
                 }));
+                // 发布观测（冒烟读数面）：超容自报与 est 的实际产物。
+                if let Some(observer) = self.prompt_observer.as_ref() {
+                    observer(serde_json::json!({
+                        "ts": nomifun_common::now_ms(),
+                        "method": "lesson_agent_publish",
+                        "ok": true,
+                        "capacity_note": output.capacity_note,
+                        "estimated_minutes": output.estimated_minutes,
+                    }));
+                }
                 Ok(output)
             }
             Ok(Err(error)) => {
@@ -1260,6 +1285,7 @@ mod tests {
             service,
             deps: test_deps(),
             round_logs: Arc::new(Mutex::new(HashMap::new())),
+            prompt_observer: None,
         }
     }
 
