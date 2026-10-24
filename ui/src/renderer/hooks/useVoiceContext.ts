@@ -7,8 +7,11 @@ export function useVoiceContext() {
   const {pathname}=useLocation();
   useEffect(()=>{
     const route=parseSessionRoute(pathname);
-    // Guid owns its explicit workspace selection; unrelated pages keep the last selection.
-    const report=()=>{if(route?.kind==='conversation')void reportVoiceCandidate(route.id).catch(()=>{});};
+    // View presence controls empty-draft cleanup; it must not erase the last task workspace.
+    const report=()=>{
+      if(route?.kind==='conversation')void reportVoiceCandidate(route.id).catch(()=>{});
+      else if(pathname!=='/guid')void reportVoiceCandidate(null,null,true).catch(()=>{});
+    };
     report();
     window.addEventListener('focus',report);
     document.addEventListener('visibilitychange',report);

@@ -191,9 +191,16 @@ pub trait VoiceDialogueRecorder: Send + Sync {
         &self,
         _target: &nomifun_api_types::voice::VoiceCallTarget,
         _session_mode: Option<&str>,
+        _request_id: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         Err(VoiceDialogueRecorderError::BindingInvalid("recorder_unavailable".into()))
     }
+
+    fn set_call_delete_guard(&self, _guard: Arc<dyn Fn(&str) -> bool + Send + Sync>) {}
+
+    async fn finish_call_placeholder(&self, _conversation_id: &str, _request_id: &str) -> Result<bool, VoiceDialogueRecorderError> { Ok(false) }
+
+    async fn cleanup_ended_placeholders(&self, _selected: Option<&str>, _protected: &[String]) -> Result<(), VoiceDialogueRecorderError> { Ok(()) }
 
     async fn task_configuration(&self, _command:&nomifun_api_types::voice::VoiceTaskCommand) -> Result<Option<FrozenVoiceExecution>,String> {
         Err("binding_invalid".into())
@@ -235,6 +242,21 @@ pub enum VoiceDialogueRecorderError {
     BindingBusy(String),
     WriteFailed(String),
 }
+
+impl std::fmt::Display for VoiceDialogueRecorderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DecisionInvalid => write!(f, "DecisionInvalid"),
+            Self::GenerationUnknown => write!(f, "GenerationUnknown"),
+            Self::Conflict => write!(f, "Conflict"),
+            Self::BindingInvalid(s) => write!(f, "BindingInvalid: {s}"),
+            Self::BindingBusy(s) => write!(f, "BindingBusy: {s}"),
+            Self::WriteFailed(s) => write!(f, "WriteFailed: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for VoiceDialogueRecorderError {}
 
 pub const DEFAULT_VOICE_DIALOGUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 pub const VOICE_FIRST_RESPONSE_TIMEOUT: std::time::Duration = DEFAULT_VOICE_DIALOGUE_TIMEOUT;

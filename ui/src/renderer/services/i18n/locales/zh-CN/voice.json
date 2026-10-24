@@ -4,7 +4,17 @@
     "historyFailed": "记录同步失败，当前内容已保留",
     "retryHistory": "重试同步",
     "resetScopeUnavailable": "语音状态尚未同步，暂未清理。请稍后重试。",
-    "retryStart": "核对通话启动状态"
+    "retryStart": "核对通话启动状态",
+    "pill": {
+      "syncing": "同步中",
+      "connecting": "连接中",
+      "listening": "倾听中",
+      "transcribing": "识别中",
+      "deciding": "思考中",
+      "speaking": "播报中",
+      "activeElsewhere": "别处通话中",
+      "idle": "待命"
+    }
   },
   "pet": {
     "more": "另有 {{count}} 项"
@@ -426,6 +436,9 @@
     "voiceConnecting": "连接中…",
     "returnVoiceCall": "返回通话",
     "returnVoiceCallWorkspace": "返回通话 ({{workspace}})",
+    "callActiveMarker": "通话中",
+    "endBeforeDelete": "请先挂断通话再删除",
+    "moreActions": "更多操作",
     "callConflictActive": "当前已有正在进行的语音通话，已为您切换"
   },
   "presentation": {

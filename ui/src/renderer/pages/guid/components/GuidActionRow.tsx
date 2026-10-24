@@ -60,6 +60,7 @@ type GuidActionRowProps = {
   hasDraft: boolean;
   onStartVoiceCall?: () => void;
   isVoiceConnecting?: boolean;
+  isVoiceActive?: boolean;
   voiceCallLabel?: string;
   speechLocale?: string;
   onSpeechTranscript: (text: string) => void;
@@ -98,6 +99,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   hidePresetTag = false,
   loading,
   hasDraft,
+  isVoiceActive = false,
   onStartVoiceCall,
   isVoiceConnecting = false,
   voiceCallLabel,
@@ -263,10 +265,10 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           </div>
         )}
 
-        {!hasDraft && !autoWorkMode && onStartVoiceCall && <span className='text-12px text-t-secondary'>{voiceCallLabel ?? t('voice.entry.start')}</span>}
         <ComposerSubmitCluster
           isVoiceConversation={Boolean(onStartVoiceCall) && !autoWorkMode}
           isVoiceConnecting={isVoiceConnecting}
+          isVoiceActiveElsewhere={isVoiceActive}
           onStartVoiceCall={onStartVoiceCall}
           hasDraft={hasDraft}
           loading={loading}

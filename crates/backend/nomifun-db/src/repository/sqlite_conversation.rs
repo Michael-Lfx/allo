@@ -268,10 +268,24 @@ fn validate_skill_load_commit(
     Ok(())
 }
 
+async fn retain_voice_placeholder_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<(), DbError> {
+    let updated = sqlx::query(
+        "UPDATE conversations SET extra = CASE \
+         WHEN json_extract(extra, '$.voice_lifecycle') IN ('provisional', 'ended_empty') \
+         THEN json_set(extra, '$.voice_lifecycle', 'retained') ELSE extra END \
+         WHERE conversation_id = ? AND COALESCE(json_extract(extra, '$.voice_lifecycle'), '') != 'discarded'",
+    ).bind(id).execute(&mut **tx).await?;
+    if updated.rows_affected() == 0 {
+        return Err(DbError::Conflict("conversation_already_discarded".into()));
+    }
+    Ok(())
+}
+
 async fn insert_message_row(
     tx: &mut Transaction<'_, Sqlite>,
     message: &MessageRow,
 ) -> Result<(), DbError> {
+    retain_voice_placeholder_tx(tx, &message.conversation_id).await?;
     sqlx::query(
         "INSERT INTO messages \
             (message_id, conversation_id, msg_id, type, content, position, \
@@ -4155,6 +4169,7 @@ impl IConversationRepository for SqliteConversationRepository {
         .await?;
 
         if claim.rows_affected() == 1 {
+            retain_voice_placeholder_tx(&mut tx, conversation_id).await?;
             let persisted_user = if let Some(user_msg) = user_message {
                 sqlx::query(
                     "INSERT INTO messages \
@@ -4302,6 +4317,31 @@ impl IConversationRepository for SqliteConversationRepository {
             return Err(DbError::NotFound(format!(
                 "Conversation '{conversation_id}' not found"
             )));
+        }
+        let persisted_extra: String = sqlx::query_scalar("SELECT extra FROM conversations WHERE conversation_id = ?")
+            .bind(conversation_id).fetch_one(&mut *tx).await?;
+        let persisted: serde_json::Value = serde_json::from_str(&persisted_extra)
+            .map_err(|e| DbError::Init(format!("invalid conversation extra: {e}")))?;
+        if persisted["voice_lifecycle"] == "discarded" {
+            return Err(DbError::Conflict("conversation_already_discarded".into()));
+        }
+        let mut updates = updates.clone();
+        if let Some(incoming) = updates.extra.as_ref() {
+            let mut value: serde_json::Value = serde_json::from_str(incoming)
+                .map_err(|e| DbError::Init(format!("invalid conversation extra: {e}")))?;
+            for key in ["voice_creation_key", "voice_creation_request"] {
+                if let Some(original) = persisted.get(key) { value[key] = original.clone(); }
+            }
+            if let Some(state) = persisted.get("voice_lifecycle") {
+                if state == "retained" || value["voice_lifecycle"] != "retained" { value["voice_lifecycle"] = state.clone(); }
+            }
+            updates.extra = Some(value.to_string());
+        }
+        if updates.name.is_some() && matches!(persisted["voice_lifecycle"].as_str(), Some("provisional" | "ended_empty")) {
+            let mut value: serde_json::Value = serde_json::from_str(updates.extra.as_deref().unwrap_or(&persisted_extra))
+                .map_err(|e| DbError::Init(format!("invalid conversation extra: {e}")))?;
+            value["voice_lifecycle"] = serde_json::json!("retained");
+            updates.extra = Some(value.to_string());
         }
         let touches_logical_references = updates.execution_template_id.is_some()
             || updates.model.is_some()
@@ -5375,6 +5415,41 @@ impl IConversationRepository for SqliteConversationRepository {
         .await?)
     }
 
+    async fn retain_voice_placeholder(&self, user_id: &str, conversation_id: &str) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let owned = sqlx::query("UPDATE conversations SET updated_at = updated_at WHERE conversation_id = ? AND user_id = ?")
+            .bind(conversation_id).bind(user_id).execute(&mut *tx).await?;
+        if owned.rows_affected() == 0 { return Err(DbError::NotFound("conversation".into())); }
+        retain_voice_placeholder_tx(&mut tx, conversation_id).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn finish_voice_placeholder(&self, user_id: &str, conversation_id: &str, discard: bool) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        if !discard {
+            sqlx::query("UPDATE conversations SET extra = json_set(extra, '$.voice_creation_request.ended', json('true')) WHERE conversation_id = ? AND user_id = ? AND json_type(extra, '$.voice_creation_request') = 'object' AND json_extract(extra, '$.voice_lifecycle') != 'discarded'")
+                .bind(conversation_id).bind(user_id).execute(&mut *tx).await?;
+        }
+        let state = if discard { "discarded" } else { "ended_empty" };
+        let updated = sqlx::query(
+            "UPDATE conversations SET extra = json_set(extra, '$.voice_lifecycle', ?), updated_at = ? \
+             WHERE conversation_id = ? AND user_id = ? \
+             AND json_extract(extra, '$.voice_lifecycle') IN ('provisional', 'ended_empty') \
+             AND active_turn_operation_id IS NULL AND status != 'running' \
+             AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.conversation_id = conversations.conversation_id) \
+             AND NOT EXISTS (SELECT 1 FROM conversation_delivery_receipts r \
+                 WHERE r.conversation_id = conversations.conversation_id AND r.status = 'accepted')",
+        ).bind(state).bind(nomifun_common::now_ms()).bind(conversation_id).bind(user_id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(updated.rows_affected() > 0)
+    }
+
+    async fn ended_voice_placeholders(&self, user_id: &str) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar("SELECT conversation_id FROM conversations WHERE user_id = ? AND json_extract(extra, '$.voice_lifecycle') = 'ended_empty' LIMIT 100")
+            .bind(user_id).fetch_all(&self.pool).await?)
+    }
+
     async fn insert_message_with_epoch(
         &self,
         message: &MessageRow,
@@ -6253,7 +6328,7 @@ impl IConversationRepository for SqliteConversationRepository {
         let count_row: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM messages m \
              INNER JOIN conversations c ON m.conversation_id = c.conversation_id \
-             WHERE c.user_id = ? AND m.content LIKE ?",
+             WHERE c.user_id = ? AND m.content LIKE ? AND (json_extract(c.extra, '$.voice_lifecycle') IS NULL OR json_extract(c.extra, '$.voice_lifecycle') != 'discarded')",
         )
         .bind(user_id)
         .bind(&like_pattern)
@@ -6285,7 +6360,7 @@ impl IConversationRepository for SqliteConversationRepository {
                 c.updated_at AS conversation_updated_at \
              FROM messages m \
              INNER JOIN conversations c ON m.conversation_id = c.conversation_id \
-             WHERE c.user_id = ? AND m.content LIKE ? \
+             WHERE c.user_id = ? AND m.content LIKE ? AND (json_extract(c.extra, '$.voice_lifecycle') IS NULL OR json_extract(c.extra, '$.voice_lifecycle') != 'discarded') \
              ORDER BY m.created_at DESC \
              LIMIT ? OFFSET ?",
         )
@@ -6659,6 +6734,10 @@ fn append_filter_conditions(filters: &ConversationFilters, where_parts: &mut Vec
          WHERE execution_link.conversation_id = c.conversation_id \
            AND execution_link.relation = 'attempt')"
             .to_string(),
+    );
+    // Discarded voice placeholders are excluded from normal conversation lists & counts (rev3 LC-11).
+    where_parts.push(
+        "(json_extract(c.extra, '$.voice_lifecycle') IS NULL OR json_extract(c.extra, '$.voice_lifecycle') != 'discarded')".to_string(),
     );
 }
 

@@ -30,7 +30,7 @@ for(const [locale,dictionary] of [['zh-CN',zh],['en-US',en]] as const){
  test(`${locale}: each acoustic phase has concise translated status without workspace or diagnostic payload`,async()=>{
   const i18n=createInstance();await i18n.init({lng:locale,resources:{[locale]:{translation:{voice:dictionary}}},initImmediate:false});
   for(const phase of Object.keys(dictionary.session.phase) as VoiceSnapshot['phase'][]){
-   const snapshot={phase,session_id:'s',binding:{session_id:'s',conversation_id:'p',workspace:'D:/private-project'},conversation:[{model_text:'private router JSON'}]} as unknown as VoiceSnapshot;
+   const snapshot={phase,connection:'connected',acoustic_ready:true,session_id:'s',binding:{session_id:'s',conversation_id:'p',workspace:'D:/private-project'},conversation:[{model_text:'private router JSON'}]} as unknown as VoiceSnapshot;
    const html=renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceComposerStatus conversationId='p' snapshot={snapshot}/></I18nextProvider>);
    expect(html).toContain(dictionary.session.phase[phase]);
    expect(html).not.toContain('D:/private-project');expect(html).not.toContain('private router JSON');

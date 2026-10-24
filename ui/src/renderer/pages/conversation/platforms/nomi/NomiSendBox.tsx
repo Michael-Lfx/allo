@@ -2197,8 +2197,17 @@ const NomiSendBox: React.FC<{
         key={conversation_id}
         data-testid='nomi-sendbox'
         isVoiceConversation={isVoiceConversation}
-        footer={isVoiceConversation?<VoiceComposerStatus conversationId={conversation_id} snapshot={voiceSnapshot}
-          failed={voiceFailed} historyFailed={voiceHistoryFailed} onRetryHistory={onRetryVoiceHistory}/>:undefined}
+        statusSlot={isVoiceConversation ? (
+          <VoiceComposerStatus
+            conversationId={conversation_id}
+            snapshot={voiceSnapshot}
+            failed={voiceFailed}
+            historyFailed={voiceHistoryFailed}
+            isConnecting={isVoiceConnecting}
+            isActiveElsewhere={isVoiceActiveElsewhere}
+            onRetryHistory={onRetryVoiceHistory}
+          />
+        ) : undefined}
         isVoiceActive={isVoiceActive}
         isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}

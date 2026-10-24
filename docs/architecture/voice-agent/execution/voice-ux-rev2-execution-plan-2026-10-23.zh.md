@@ -1,3 +1,5 @@
+> **2026-10-24 后续方案已更新**：rev2 代码已提交推送，最新基准 `4aca4cd11`。本次后续实施按 [rev3 交互与生命周期方案](voice-call-composer-and-session-lifecycle-plan-2026-10-24.zh.md) 和 [rev3 任务书](voice-call-ux-rev3-agent-brief-2026-10-24.zh.md)。本文最右固定类型图标、底部 footer、首页文字和首页复用约束已被明确替换；消息隔离、审批/队列/unknown 恢复与重置保护继续有效。以下全文保留为历史，不从 E0 重做。
+
 > **2026-10-24 当前实施事实**：rev2 的 E1–E3 已实施；代码/服务/构建回归已执行，E4 原生视觉与物理设备边界单列。参见 [实施与验证记录](voice-ux-rev2/IMPLEMENTATION.zh.md)。仍在 `feat/voice-next`，未提交、未推送；以下方案和状态声明按历史原文保留，请勿从 E0 重复开工。
 
 # 语音交互优化 rev2 · 最终执行计划

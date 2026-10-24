@@ -320,9 +320,12 @@ const GuidPage: React.FC = () => {
         })),
       });
 
-      const target: VoiceCallTarget = guidInput.dir?.trim()
-        ? { kind: 'workspace', workspace: guidInput.dir.trim() }
-        : { kind: 'default_workspace' };
+      const target: VoiceCallTarget = {
+        kind: 'new_voice_conversation',
+        workspace: guidInput.dir?.trim() || null,
+        model: isNomiAgent ? mainModelRef : undefined,
+        preset_id: isNomiAgent && agentSelection.is_presetAgent ? agentSelection.selectedAgentInfo?.preset_id : undefined,
+      };
 
       const res = await startVoiceCallIntent(target,
         isNomiAgent ? agentSelection.selectedMode as 'default' | 'auto_edit' | 'yolo' : undefined);
@@ -339,7 +342,7 @@ const GuidPage: React.FC = () => {
     } finally {
       setIsVoiceConnecting(false);
     }
-  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, agentSelection.selectedMode, navigate, t]);
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, mainModelRef, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id, agentSelection.selectedMode, navigate, t]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
@@ -1161,6 +1164,7 @@ const GuidPage: React.FC = () => {
     <GuidActionRow
       onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
       isVoiceConnecting={isVoiceConnecting}
+      isVoiceActive={isVoiceActive}
       voiceCallLabel={t(isVoiceActive ? 'voice.entry.openActive' : 'voice.entry.start')}
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}

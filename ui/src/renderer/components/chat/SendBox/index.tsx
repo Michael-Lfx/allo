@@ -294,6 +294,8 @@ const SendBox: React.FC<{
   onSelectedWorkspaceItemsChange?: (items: FileSelectionItem[]) => void;
   bottomHint?: React.ReactNode;
   footer?: React.ReactNode;
+  /** Custom status slot rendered in top-left of composer internal status row (e.g. voice status pill) */
+  statusSlot?: React.ReactNode;
   /** Conversation-only: render the compact plan strip inside the input panel status row. */
   showPinnedPlan?: boolean;
   isVoiceConversation?: boolean;
@@ -350,6 +352,7 @@ const SendBox: React.FC<{
   onSelectedWorkspaceItemsChange,
   bottomHint,
   footer,
+  statusSlot,
   showPinnedPlan = false,
   isVoiceConversation = false,
   isVoiceActive = false,
@@ -431,7 +434,7 @@ const SendBox: React.FC<{
     setConversationPlan(pinnedPlan);
     return () => setConversationPlan(null);
   }, [pinnedPlan, setConversationPlan, showPinnedPlan]);
-  const hasInternalStatusRow = Boolean(topRightTools);
+  const hasInternalStatusRow = Boolean(statusSlot || topRightTools);
   const [historyNavigationIndex, setHistoryNavigationIndex] = useState<number | null>(null);
   const historyDraftRef = useRef<string | null>(null);
   const [replyQuote, setReplyQuote] = useState<ReplyQuote | null>(null);
@@ -2418,9 +2421,14 @@ const SendBox: React.FC<{
       )}
         {hasInternalStatusRow && (
           <div
-            className='sendbox-internal-status-row mb-8px flex w-full flex-wrap items-start gap-8px'
+            className='sendbox-internal-status-row mb-8px flex w-full flex-wrap items-center justify-between gap-8px'
             data-testid='sendbox-internal-status-row'
           >
+            {statusSlot && (
+              <div className='flex items-center gap-6px flex-shrink-0' data-testid='sendbox-status-slot'>
+                {statusSlot}
+              </div>
+            )}
             {topRightTools && (
               <div className='ml-auto flex h-28px flex-shrink-0 items-center' data-testid='sendbox-internal-context-tools'>
                 {topRightTools}

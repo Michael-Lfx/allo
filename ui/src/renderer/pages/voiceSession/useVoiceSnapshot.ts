@@ -1,8 +1,19 @@
 import {useEffect,useState,useSyncExternalStore} from 'react';
-import {subscribeVoiceSession,getPendingVoiceCallConversationId,subscribeVoiceCallIntent,type VoiceSnapshot} from '@common/adapter/voiceCompanion';
+import {
+  subscribeVoiceSession,
+  getPendingVoiceCallConversationId,
+  subscribeVoiceCallIntent,
+  getActiveVoiceCallConversationId,
+  subscribeActiveVoiceCallConversationId,
+  type VoiceSnapshot,
+} from '@common/adapter/voiceCompanion';
 
 export function usePendingVoiceCallConversationId() {
   return useSyncExternalStore(subscribeVoiceCallIntent,getPendingVoiceCallConversationId,()=>null);
+}
+
+export function useActiveVoiceConversationId() {
+  return useSyncExternalStore(subscribeActiveVoiceCallConversationId, getActiveVoiceCallConversationId, () => null);
 }
 
 /** View-only subscription. Mount/reconnect never starts capture or resends input. */

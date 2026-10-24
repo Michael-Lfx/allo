@@ -1,0 +1,13 @@
+@keyframes voice-call-wave {
+  0%, 100% { opacity: 0.55; transform: scaleY(0.8); }
+  50% { opacity: 1; transform: scaleY(1); }
+}
+
+.voice-call-wave {
+  transform-origin: center;
+  animation: voice-call-wave 1600ms ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-call-wave { animation: none; }
+}

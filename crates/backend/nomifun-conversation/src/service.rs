@@ -537,6 +537,10 @@ pub(crate) fn strip_clone_instance_state(extra: &mut serde_json::Value) {
     };
 
     for key in [
+        "voice_lifecycle",
+        "voice_creation_key",
+        "voice_creation_request",
+        "voice_task_workspace",
         // Workspace identity and response-only workspace metadata.
         "workspace",
         "custom_workspace",
@@ -1688,6 +1692,7 @@ pub struct ConversationService {
     /// can happen post-construction without breaking the `Clone` impl —
     /// mirrors the `cron_service` slot pattern below.
     delete_hooks: Arc<RwLock<Vec<Arc<dyn OnConversationDelete>>>>,
+    voice_call_delete_guard: Arc<RwLock<Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>>>,
     cron_service: Arc<RwLock<Option<Arc<dyn ICronService>>>>,
     mcp_server_repo: Arc<RwLock<Option<Arc<dyn IMcpServerRepository>>>>,
     /// Knowledge base service slot (same post-construction registration
@@ -3209,6 +3214,7 @@ impl ConversationService {
             skill_resolver,
             runtime_registry,
             delete_hooks: Arc::new(RwLock::new(Vec::new())),
+            voice_call_delete_guard: Arc::new(RwLock::new(None)),
             cron_service: Arc::new(RwLock::new(None)),
             mcp_server_repo: Arc::new(RwLock::new(None)),
             knowledge_service: Arc::new(RwLock::new(None)),
@@ -4569,13 +4575,17 @@ impl ConversationService {
         conversation_id: &str,
     ) -> Result<Option<nomifun_db::models::ConversationDeliveryReceiptRow>, AppError> {
         let conversation_key = parse_conv_id(conversation_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         Ok(self
             .conversation_repo
             .latest_completed_turn_receipt(user_id, conversation_key)
@@ -5745,7 +5755,7 @@ impl ConversationService {
         user_id: &str,
         req: CreateConversationRequest,
     ) -> Result<ConversationResponse, AppError> {
-        self.create_inner(user_id, req, None, None, None).await
+        self.create_inner(user_id, req, None, None, None, None).await
     }
 
     /// Trusted in-process create with a durable operation identity.  This is
@@ -5757,7 +5767,7 @@ impl ConversationService {
         req: CreateConversationRequest,
         creation_key: &str,
     ) -> Result<ConversationResponse, AppError> {
-        self.create_inner(user_id, req, None, Some(creation_key), None).await
+        self.create_inner(user_id, req, None, Some(creation_key), None, None).await
     }
 
     /// Trusted voice entry: the frozen workspace marker can only be stamped
@@ -5765,7 +5775,7 @@ impl ConversationService {
     pub async fn create_voice_idempotent(&self,user_id:&str,mut req:CreateConversationRequest,creation_key:&str,workspace:&str,preset_snapshot:Option<ResolvedPresetSnapshot>)->Result<ConversationResponse,AppError> {
         req.preset_id=None;
         req.preset_overrides=None;
-        self.create_inner(user_id,req,preset_snapshot,Some(creation_key),Some(workspace)).await
+        self.create_inner(user_id,req,preset_snapshot,Some(creation_key),Some(workspace),None).await
     }
 
     /// Read-only recovery of a trusted voice creation. This never creates,
@@ -5947,6 +5957,109 @@ impl ConversationService {
         Ok(response.conversation_id)
     }
 
+    pub async fn create_provisional_voice_conversation(
+        &self,
+        user_id: &str,
+        owner: Option<&str>,
+        mode: Option<&str>,
+        workspace: Option<&str>,
+        request_id: &str,
+        model: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        preset_id: Option<&str>,
+    ) -> Result<ConversationResponse, AppError> {
+        let owner_companion = owner
+            .map(CompanionId::try_from)
+            .transpose()
+            .map_err(|e| AppError::BadRequest(format!("invalid voice memory owner: {e}")))?;
+        if request_id.trim().is_empty() || request_id.len() > 200 {
+            return Err(AppError::BadRequest("voice_start_request_invalid".into()));
+        }
+        let workspace = workspace.map(|ws| {
+            nomifun_common::paths::canonicalize_simplified(std::path::Path::new(ws))
+                .map_err(|_| AppError::BadRequest("workspace_directory_invalid".into()))
+        }).transpose()?;
+        if workspace.as_ref().is_some_and(|ws| !ws.is_dir()) {
+            return Err(AppError::BadRequest("workspace_directory_invalid".into()));
+        }
+        let workspace = workspace.map(|ws| ws.to_string_lossy().into_owned());
+        let creation_key = format!("voice:provisional:{user_id}:{request_id}");
+        let creation = serde_json::json!({"request_id":request_id,"workspace":workspace,"requested_mode":mode,"model":model,"preset_id":preset_id});
+        if let Some(existing) = self
+            .conversation_repo
+            .find_by_creation_key(user_id, &creation_key)
+            .await?
+        {
+            let extra: serde_json::Value =
+                serde_json::from_str(&existing.extra).unwrap_or_default();
+            if extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+                return Err(AppError::Conflict("conversation_already_discarded".into()));
+            }
+            if extra.pointer("/voice_creation_request/ended").and_then(|v| v.as_bool()) == Some(true) {
+                return Err(AppError::Conflict("voice_call_already_stopped".into()));
+            }
+            if extra.get("voice_creation_request") != Some(&creation) {
+                return Err(AppError::Conflict("voice_start_request_conflict".into()));
+            }
+            return self.get(user_id, &existing.conversation_id).await;
+        }
+        let mode = self.resolve_voice_session_mode(mode).await?;
+        let extra = serde_json::json!({
+            "is_default_voice": true,
+            "voice": true,
+            "memory_owner_companion_id": owner_companion,
+            "session_mode": mode,
+        });
+        let req = CreateConversationRequest {
+            name: Some("语音通话".to_owned()),
+            r#type: AgentType::Nomi,
+            extra,
+            source: Some(ConversationSource::Nomifun),
+            model: model.map(|value| nomifun_common::ProviderWithModel {provider_id: value.provider_id.clone(), model: value.model.clone(), use_model: Some(value.model.clone())}),
+            preset_id: preset_id.map(str::to_owned),
+            preset_overrides: None,
+            delegation_policy: DelegationPolicy::Disabled,
+            execution_model_pool: None,
+            decision_policy: DecisionPolicy::default(),
+            execution_template_id: None,
+            channel_chat_id: None,
+        };
+        let created = self.create_inner(user_id, req, None, Some(&creation_key), workspace.as_deref(), Some(creation.clone())).await?;
+        if created.extra.get("voice_creation_request") != Some(&creation) {
+            return Err(AppError::Conflict("voice_start_request_conflict".into()));
+        }
+        Ok(created)
+    }
+
+    pub async fn retain_provisional_voice_conversation(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        self.conversation_repo.retain_voice_placeholder(user_id, parse_conv_id(conversation_id)?).await.map_err(Into::into)
+    }
+
+    pub async fn discard_provisional_voice_conversation(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, AppError> {
+        self.finish_provisional_voice_conversation(user_id, conversation_id, true).await
+    }
+
+    pub async fn finish_provisional_voice_conversation(&self, user_id: &str, conversation_id: &str, discard: bool) -> Result<bool, AppError> {
+        let id = parse_conv_id(conversation_id)?;
+        let cancellation = CancellationToken::new();
+        let _guard = self.runtime_state.acquire_preparation_gate(id, &cancellation).await?;
+        if discard && self.is_conversation_busy(user_id, conversation_id).await? { return Ok(false); }
+        let changed = self.conversation_repo.finish_voice_placeholder(user_id, id, discard).await?;
+        if changed { self.broadcast_list_changed(user_id, conversation_id, "updated", Some(&ConversationSource::Nomifun)); }
+        Ok(changed)
+    }
+
+    pub async fn ended_voice_placeholders(&self, user_id: &str) -> Result<Vec<String>, AppError> {
+        self.conversation_repo.ended_voice_placeholders(user_id).await.map_err(Into::into)
+    }
+
     /// Checks whether a conversation is currently busy (processing a turn, executing autowork, or in running status).
     pub async fn is_conversation_busy(&self, user_id: &str, conversation_id: &str) -> Result<bool, AppError> {
         let conversation_key = parse_conv_id(conversation_id)?;
@@ -5982,7 +6095,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         req.preset_id = None;
         req.preset_overrides = None;
-        self.create_inner(user_id, req, Some(snapshot), None, None).await
+        self.create_inner(user_id, req, Some(snapshot), None, None, None).await
     }
 
     /// Snapshot-preserving counterpart of [`Self::create_idempotent`].
@@ -5995,7 +6108,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         req.preset_id = None;
         req.preset_overrides = None;
-        self.create_inner(user_id, req, Some(snapshot), Some(creation_key), None)
+        self.create_inner(user_id, req, Some(snapshot), Some(creation_key), None, None)
             .await
     }
 
@@ -6026,8 +6139,14 @@ impl ConversationService {
         trusted_snapshot: Option<nomifun_api_types::ResolvedPresetSnapshot>,
         creation_key: Option<&str>,
         voice_workspace: Option<&str>,
+        voice_creation: Option<serde_json::Value>,
     ) -> Result<ConversationResponse, AppError> {
         reject_backend_owned_lifecycle_extra_keys(&req.extra)?;
+        let is_voice_creation = voice_creation.is_some();
+        if let Some(creation) = voice_creation {
+            req.extra["voice_lifecycle"] = serde_json::json!("provisional");
+            req.extra["voice_creation_request"] = creation;
+        }
         if let Some(workspace) = voice_workspace {
             if !req.extra.is_object() || !std::path::Path::new(workspace).is_absolute() {
                 return Err(AppError::BadRequest("voice_workspace_invalid".into()));
@@ -6508,6 +6627,9 @@ impl ConversationService {
             req.execution_model_pool.as_ref(),
         )?;
 
+        if is_voice_creation && req.r#type != AgentType::Nomi {
+            return Err(AppError::BadRequest("voice_preset_agent_unsupported".into()));
+        }
         let conversation_id = ConversationId::new().into_string();
         let row = nomifun_db::models::ConversationRow {
             id: 0,
@@ -7181,6 +7303,13 @@ impl ConversationService {
             || execution_template_id_changed;
         let runtime_recycle_required = model_changed || workspace_changed || delegation_policy_changed;
 
+        let merged_extra = if matches!(serde_json::from_str::<serde_json::Value>(&existing.extra).ok()
+            .and_then(|v| v.get("voice_lifecycle").and_then(|s| s.as_str()).map(str::to_owned)).as_deref(), Some("provisional" | "ended_empty")) {
+            let mut extra: serde_json::Value = serde_json::from_str(merged_extra.as_deref().unwrap_or(&existing.extra))
+                .map_err(|e| AppError::Internal(format!("invalid conversation extra: {e}")))?;
+            extra["voice_lifecycle"] = serde_json::json!("retained");
+            Some(extra.to_string())
+        } else { merged_extra };
         let updates = ConversationRowUpdate {
             name: req.name,
             pinned: req.pinned,
@@ -7679,9 +7808,11 @@ impl ConversationService {
         result_rx
     }
 
-    /// Delete a conversation and run repository-owned logical-reference cleanup.
-    ///
-    /// Broadcasts `conversation.listChanged(deleted)`.
+    /// Keep the host's acoustic ownership out of the Conversation dependency graph.
+    pub fn set_voice_call_delete_guard(&self, guard: Arc<dyn Fn(&str) -> bool + Send + Sync>) {
+        *self.voice_call_delete_guard.write().unwrap_or_else(|e| e.into_inner()) = Some(guard);
+    }
+
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %id))]
     pub async fn delete(&self, user_id: &str, id: &str) -> Result<(), AppError> {
         let conv_id = parse_conv_id(id)?;
@@ -7692,6 +7823,11 @@ impl ConversationService {
             .await?
             .filter(|r| r.user_id == user_id)
             .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
+
+        let voice_guard = self.voice_call_delete_guard.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if voice_guard.is_some_and(|guard| guard(id)) {
+            return Err(AppError::Conflict("voice_call_active".into()));
+        }
 
         if self
             .is_execution_attempt_conversation(user_id, conv_id)
@@ -9202,13 +9338,17 @@ impl ConversationService {
         // Reject public access to retained execution-attempt transcripts before
         // creating any durable receipt. The inner path repeats this check at
         // admission time to close a concurrent relation-change race.
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         runtime_build_lease.ensure_active()?;
         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
             .await?;
@@ -9611,13 +9751,17 @@ impl ConversationService {
         let conversation_key = parse_conv_id(conversation_id)?;
         let runtime_build_lease =
             self.begin_public_runtime_preparation(conversation_key, user_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         runtime_build_lease.ensure_active()?;
         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
             .await?;
@@ -9874,13 +10018,17 @@ impl ConversationService {
         let conversation_key = parse_conv_id(conversation_id)?;
         let runtime_build_lease =
             self.begin_public_runtime_preparation(conversation_key, user_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         runtime_build_lease.ensure_active()?;
         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
             .await?;
@@ -9924,13 +10072,17 @@ impl ConversationService {
         validate_public_idempotency_key(idempotency_key)?;
 
         let conversation_key = parse_conv_id(conversation_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
             .await?;
 
@@ -9996,13 +10148,17 @@ impl ConversationService {
     ) -> Result<PublicTurnDeliveryState, AppError> {
         validate_public_idempotency_key(idempotency_key)?;
         let conversation_key = parse_conv_id(conversation_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
 
         let operation_id =
             Self::public_turn_operation_id(user_id, conversation_key, idempotency_key);
@@ -10059,13 +10215,17 @@ impl ConversationService {
         validate_public_idempotency_key(idempotency_key)?;
         let conversation_key = parse_conv_id(conversation_id)?;
         let target_message_id = parse_message_id(target_message_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
 
         let operation_id =
             Self::public_edit_resubmit_operation_id(user_id, conversation_key, idempotency_key);
@@ -10175,13 +10335,17 @@ impl ConversationService {
             ));
         }
         let conversation_key = parse_conv_id(conversation_id)?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         let operation_id =
             Self::public_turn_operation_id(user_id, conversation_key, idempotency_key);
         let Some(receipt) = self
@@ -10431,13 +10595,17 @@ impl ConversationService {
         validate_public_idempotency_key(idempotency_key)?;
         let conversation_key = parse_conv_id(conversation_id)?;
         runtime_build_lease.ensure_active()?;
-        self.conversation_repo
+        let conv_row = self.conversation_repo
             .get(conversation_key)
             .await?
             .filter(|row| row.user_id == user_id)
             .ok_or_else(|| {
                 AppError::NotFound(format!("Conversation {conversation_id} not found"))
             })?;
+        let conv_extra: serde_json::Value = serde_json::from_str(&conv_row.extra).unwrap_or_default();
+        if conv_extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(AppError::Conflict("conversation_already_discarded".into()));
+        }
         self.ensure_not_retained_execution_attempt(user_id, conversation_key)
             .await?;
         runtime_build_lease.ensure_active()?;
@@ -17968,8 +18136,11 @@ fn reject_execution_policy_extra_keys(extra: &serde_json::Value) -> Result<(), A
 /// Reject instead of silently stripping them so every caller gets an explicit
 /// failure and no partial PATCH can make an injected fence indistinguishable
 /// from a backend reservation after restart.
-pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 13] = [
+pub(crate) const BACKEND_OWNED_LIFECYCLE_EXTRA_KEYS: [&str; 16] = [
     "voice_task_workspace",
+    "voice_lifecycle",
+    "voice_creation_key",
+    "voice_creation_request",
     "_edit_resubmit_fence",
     "active_turn_operation_id",
     "admission_epoch",

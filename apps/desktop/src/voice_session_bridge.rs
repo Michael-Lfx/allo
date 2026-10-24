@@ -3,7 +3,7 @@ use nomifun_app::voice_companion_manager::{VoiceCompanionProcessManager, VoiceWi
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 #[tauri::command]
-pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Option<String>, workspace: Option<String>, sequence: u64) -> Result<(), String> {
+pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Option<String>, workspace: Option<String>, sequence: u64, view_only: Option<bool>) -> Result<(), String> {
     if window.label() != "main" { return Err("voice_context_window_invalid".into()); }
     let manager = VoiceCompanionProcessManager::global().ok_or("voice_unavailable")?;
     let focused = window.is_focused().map_err(|_| "voice_context_unavailable")?
@@ -20,7 +20,11 @@ pub fn report_voice_context(window: tauri::WebviewWindow, conversation_id: Optio
         }
         conversation_id
     };
-    manager.report_window_context(VoiceWindowContext { conversation_id: candidate, workspace, sequence });
+    if view_only == Some(true) {
+        manager.report_voice_view(candidate, sequence);
+    } else {
+        manager.report_window_context(VoiceWindowContext { conversation_id: candidate, workspace, sequence });
+    }
     Ok(())
 }
 

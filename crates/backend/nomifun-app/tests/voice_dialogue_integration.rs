@@ -69,6 +69,92 @@ async fn latest_user_correction_survives_a_long_assistant_reply() {
 
 struct NullSink;
 
+#[tokio::test]
+async fn new_voice_call_freezes_the_home_model_and_rejects_changed_selection() {
+    use nomifun_api_types::voice::{VoiceCallTarget, VoiceModelRef};
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service_with_models(&["selected-model", "other-model"]).await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    let mut target = VoiceCallTarget::NewVoiceConversation {
+        workspace: None,
+        model: Some(VoiceModelRef {provider_id: USER_ID.into(), model: "selected-model".into()}),
+        preset_id: None,
+    };
+    let (id, _) = recorder.resolve_call_target(&target, Some("yolo"), Some("home-selection")).await.unwrap();
+    assert_eq!(service.get(USER_ID, &id).await.unwrap().model.unwrap().model, "selected-model");
+    assert_eq!(recorder.resolve_call_target(&target, Some("yolo"), Some("home-selection")).await.unwrap().0, id);
+    if let VoiceCallTarget::NewVoiceConversation {model: Some(model), ..} = &mut target {model.model = "other-model".into();}
+    assert!(recorder.resolve_call_target(&target, Some("yolo"), Some("home-selection")).await.is_err());
+    if let VoiceCallTarget::NewVoiceConversation {preset_id, ..} = &mut target {*preset_id = Some("missing-preset".into());}
+    assert!(recorder.resolve_call_target(&target, Some("yolo"), Some("missing-home-preset")).await.is_err(), "a selected preset must be resolved, never silently dropped");
+}
+
+#[tokio::test]
+async fn voice_placeholder_closes_only_after_terminal_and_view_departure() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let conversation = service.create_provisional_voice_conversation(USER_ID, None, Some("yolo"), None, "empty-call", None, None).await.unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    recorder.set_call_reservation(Some(VoiceCallReservation { request_id: "empty-call".into(), target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {workspace: None, model: None, preset_id: None}, conversation_id: conversation.conversation_id.clone(), memory_owner: None, reserved_at_epoch_ms: nomifun_common::now_ms() }));
+    recorder.freeze_session("empty-session", Some("empty-call")).await.unwrap();
+    assert!(!recorder.finish_call_placeholder(&conversation.conversation_id, "stale-request").await.unwrap());
+    assert!(recorder.finish_call_placeholder(&conversation.conversation_id, "empty-call").await.unwrap());
+    recorder.cleanup_ended_placeholders(Some(&conversation.conversation_id), &[]).await.unwrap();
+    assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "ended_empty");
+    recorder.cleanup_ended_placeholders(None, &[conversation.conversation_id.clone()]).await.unwrap();
+    assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "ended_empty");
+    let restored = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    restored.cleanup_ended_placeholders(None, &[]).await.unwrap();
+    assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "discarded");
+}
+
+#[tokio::test]
+async fn only_retained_explicit_calls_replace_automatic_workspace_pointers() {
+    use nomifun_api_types::voice::VoiceCallTarget;
+    for project in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = project.then(|| dir.path().to_string_lossy().into_owned());
+        let auto = workspace.as_ref().map(|workspace| VoiceCallTarget::Workspace {workspace: workspace.clone()}).unwrap_or(VoiceCallTarget::DefaultWorkspace);
+        let service = fixture_service().await;
+        let recorder = ConversationVoiceDialogueRecorder::new(service, USER_ID.into(), dir.path());
+        let old = recorder.resolve_call_target(&auto, None, None).await.unwrap().0;
+        let target = VoiceCallTarget::NewVoiceConversation {workspace, model: None, preset_id: None};
+        let (new, owner) = recorder.resolve_call_target(&target, None, Some("pointer-call")).await.unwrap();
+        assert_ne!(new, old);
+        assert_eq!(recorder.resolve_call_target(&auto, None, None).await.unwrap().0, old, "unused call must not publish a pointer");
+        recorder.set_call_reservation(Some(VoiceCallReservation {request_id: "pointer-call".into(), target: target.clone(), conversation_id: new.clone(), memory_owner: owner, reserved_at_epoch_ms: nomifun_common::now_ms()}));
+        recorder.freeze_session("pointer-session", Some("pointer-call")).await.unwrap();
+        let mut input = VoiceDialogueRequest::scoped("pointer-session", "pointer-turn", "保存这次对话");
+        input.call_request_id = Some("pointer-call".into());
+        recorder.preflight(&input).await.unwrap();
+        recorder.record_pair(&new, &input, r#"{"intent_type":"chat","reply_tts":"已保存。"}"#).await.unwrap();
+        assert_eq!(recorder.resolve_call_target(&auto, None, None).await.unwrap().0, new);
+        let empty = recorder.resolve_call_target(&target, None, Some("unused-next-call")).await.unwrap().0;
+        assert_ne!(empty, new);
+        assert_eq!(recorder.resolve_call_target(&auto, None, None).await.unwrap().0, new);
+    }
+}
+
+#[tokio::test]
+async fn voice_placeholder_keeps_inflight_input_and_retains_the_late_real_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let conversation = service.create_provisional_voice_conversation(USER_ID, None, Some("yolo"), None, "late-call", None, None).await.unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+    recorder.set_call_reservation(Some(VoiceCallReservation { request_id: "late-call".into(), target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {workspace: None, model: None, preset_id: None}, conversation_id: conversation.conversation_id.clone(), memory_owner: None, reserved_at_epoch_ms: nomifun_common::now_ms() }));
+    recorder.freeze_session("late-session", Some("late-call")).await.unwrap();
+    let mut request = VoiceDialogueRequest::scoped("late-session", "late-turn", "保留这句话");
+    request.call_request_id = Some("late-call".into());
+    recorder.preflight(&request).await.unwrap();
+    recorder.finish_call_placeholder(&conversation.conversation_id, "late-call").await.unwrap();
+    recorder.cleanup_ended_placeholders(None, &[]).await.unwrap();
+    assert_ne!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "discarded");
+    recorder.record_pair(&conversation.conversation_id, &request, r#"{"intent_type":"chat","reply_tts":"已保留。"}"#).await.unwrap();
+    recorder.cleanup_ended_placeholders(None, &[]).await.unwrap();
+    assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "retained");
+    assert_eq!(service.list_messages(USER_ID, &conversation.conversation_id, Default::default()).await.unwrap().items.len(), 2);
+}
+
 impl UserEventSink for NullSink {
     fn send_to_user(&self, _user_id: &str, _event: nomifun_api_types::WebSocketMessage<serde_json::Value>) {}
 }
@@ -1268,7 +1354,7 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
 
     // 2. Start call on Workspace P: target resolves to a dedicated voice conversation for P
     let target_p = nomifun_api_types::voice::VoiceCallTarget::Workspace { workspace: ws_p_path.clone() };
-    let (conv_p_id, memory_owner) = recorder.resolve_call_target(&target_p, None).await.unwrap();
+    let (conv_p_id, memory_owner) = recorder.resolve_call_target(&target_p, None, None).await.unwrap();
 
     // Host freezes reservation for P
     recorder.set_call_reservation(Some(VoiceCallReservation {
@@ -1304,7 +1390,7 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
     let target_explicit = nomifun_api_types::voice::VoiceCallTarget::VoiceConversation {
         conversation_id: old_voice_conv.conversation_id.clone(),
     };
-    let (resolved_explicit_id, owner_explicit) = recorder.resolve_call_target(&target_explicit, None).await.unwrap();
+    let (resolved_explicit_id, owner_explicit) = recorder.resolve_call_target(&target_explicit, None, None).await.unwrap();
     assert_eq!(resolved_explicit_id, old_voice_conv.conversation_id);
     assert_eq!(owner_explicit.as_deref(), Some("flowy-bolt"));
 

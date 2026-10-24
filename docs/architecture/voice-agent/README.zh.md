@@ -1,3 +1,7 @@
+> **2026-10-24 当前 rev3 修复事实**：[独立复审修复与验证](execution/voice-ux-rev3/REPAIR-VERIFICATION-2026-10-24.zh.md) 是最新入口。已修复新建/占位生命周期/恢复清理/模型预设冻结/活动归属/侧栏与胶囊缺口；生命周期 11、集成 30、宿主 voice 90、前端 164 项通过。DB 全量 458 通过；Conversation 除 3 项卡住的技能测试外 644 通过，不能称全量通过。TS/dead-css 和浏览器/原生未签核单列。工作树未提交、未推送，以下历史状态原文保留。
+
+> **2026-10-24 最新待实施 rev3**：[通话入口、状态胶囊与生命周期](execution/voice-call-composer-and-session-lifecycle-plan-2026-10-24.zh.md)、[执行任务书](execution/voice-call-ux-rev3-agent-brief-2026-10-24.zh.md)。左声波/右侧单操作槽、首页 icon-only、左上胶囊、首页新建与已有会话续聊分离；切页不挂断，空占位按安全终态关闭。基准 `4aca4cd11`，157 项定向回归通过；仅文档，未实施。rev2 已提交推送，下方原始“未提交”描述仅为历史。
+
 > **2026-10-24 当前实施事实**：rev2 的 E1–E3 已实施；代码/服务/构建回归已执行，E4 原生视觉与物理设备边界单列。参见 [实施与验证记录](execution/voice-ux-rev2/IMPLEMENTATION.zh.md)。仍在 `feat/voice-next`，未提交、未推送；以下方案和状态声明按历史原文保留，请勿从 E0 重复开工。
 
 > **2026-10-23 rev2 最终执行入口（待实施）**：[优化计划与三项边界复审](execution/voice-ux-rev2-execution-plan-2026-10-23.zh.md)、[可复制执行任务书](execution/voice-ux-rev2-agent-brief-2026-10-23.zh.md)。先隔离对话/任务通知并避免跨会话通知阻塞，再接替审批/unknown 查询/挂断，最后收拢输入框、侧栏波纹与设置。29 项验收；本轮 32 项既有测试通过、2 个缺陷探针失败复现，仅文档，未改业务代码。以下旧方案全文保留。
