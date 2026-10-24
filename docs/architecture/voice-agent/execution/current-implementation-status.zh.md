@@ -1,3 +1,5 @@
+> **2026-10-24 本地提交及下一步**：修复代码已提交为 `8f62353ea`，未推送；[P0–P4 验证修复计划](voice-ux-rev3/NEXT-VALIDATION-PLAN-2026-10-24.zh.md) 已整理，尚未执行。先查明 3 项技能测试卡住原因，再补生命周期和真实 UI/原生证据；下方未提交描述属于提交前历史。
+
 > **2026-10-24 当前 rev3 修复事实**：[独立复审修复与验证](voice-ux-rev3/REPAIR-VERIFICATION-2026-10-24.zh.md) 是最新入口。已修复新建/占位生命周期/恢复清理/模型预设冻结/活动归属/侧栏与胶囊缺口；生命周期 11、集成 30、宿主 voice 90、前端 164 项通过。DB 全量 458 通过；Conversation 除 3 项卡住的技能测试外 644 通过，不能称全量通过。TS/dead-css 和浏览器/原生未签核单列。工作树未提交、未推送，以下历史状态原文保留。
 
 > **2026-10-24 rev3 方案入口与当前基准**：[新一轮交互/生命周期方案](voice-call-composer-and-session-lifecycle-plan-2026-10-24.zh.md)、[任务书](voice-call-ux-rev3-agent-brief-2026-10-24.zh.md)。`feat/voice-next` HEAD `4aca4cd11333a0d4151d03fb8941186c1017462b`，此前 rev2 已提交推送。本次只更新方案并复跑前端定向基线：157 pass / 0 fail / 1213 assertions，20 files，4.86s。首页新建分支、左上胶囊、左侧活动声波及占位终态均待实施；TS 61 项为旧记录，本轮未重跑。现有 rev2 PROGRESS/RESULTS 外部改动保留，以下历史事实不删除。
