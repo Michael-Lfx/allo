@@ -24,23 +24,27 @@ export default function VoiceTaskStatus({ task, errorCode, instanceId, confirmat
     ? Math.max(0, Math.ceil((confirmation.expires_at_ms - now) / 1000))
     : 0;
 
-  const scope=`${instanceId ?? ''}:${task?.command_id ?? ''}:${confirmation?.approval_id ?? ''}`;
+  const scope=`${instanceId ?? ''}:${currentConversationId ?? task?.conversation_id ?? ''}:${task?.command_id ?? ''}:${confirmation?.approval_id ?? ''}`;
   const currentScope=useRef(scope);currentScope.current=scope;
+  const generation=useRef(0);
+  useEffect(()=>{generation.current++;return()=>{generation.current++;};},[scope]);
   const control = async (cancel:boolean) => {
     if (!task || !instanceId) return;
     const requestScope=scope;
+    const requestGeneration=generation.current;
     setPending(requestScope);setControlError(null);
     try {if(cancel)await cancelVoiceTask(instanceId,task);else await getVoiceTask(task.command_id);}
-    catch(cause) {if(currentScope.current===requestScope)setControlError({scope:requestScope,code:cause instanceof Error?cause.message:'task_control_unknown'});}
-    finally {setPending((value) => value===requestScope?null:value);}
+    catch(cause) {if(currentScope.current===requestScope&&generation.current===requestGeneration)setControlError({scope:requestScope,code:cause instanceof Error?cause.message:'task_control_unknown'});}
+    finally {if(generation.current===requestGeneration)setPending((value) => value===requestScope?null:value);}
   };
   const canCancel=task && task.status === 'accepted' && task.conversation_id && task.message_id;
   const decide=async(approved:boolean)=>{
     if(!task || !instanceId || !confirmation || Date.now()>=confirmation.expires_at_ms)return;
     const requestScope=scope;setPending(requestScope);setControlError(null);
+    const requestGeneration=generation.current;
     try {await confirmVoiceTask(instanceId,task,confirmation,approved);}
-    catch(cause){if(currentScope.current===requestScope)setControlError({scope:requestScope,code:cause instanceof Error?cause.message:'task_control_unknown'});}
-    finally{setPending((value)=>value===requestScope?null:value);}
+    catch(cause){if(currentScope.current===requestScope&&generation.current===requestGeneration)setControlError({scope:requestScope,code:cause instanceof Error?cause.message:'task_control_unknown'});}
+    finally{if(generation.current===requestGeneration)setPending((value)=>value===requestScope?null:value);}
   };
   if (!task && !errorCode) return null;
   return <article className='flex flex-col gap-2'>

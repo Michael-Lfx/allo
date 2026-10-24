@@ -317,7 +317,8 @@ describe('requires-reset fail-closed contract', () => {
     expect(nomiSendBoxSource).toMatch(
       /disabled=\{[^}]*requiresConversationReset\s*\|\|\s*!current_model\?\.use_model\s*\|\|\s*!modelSelection\.isCurrentModelAvailable/
     );
-    expect(nomiSendBoxSource).toContain('voiceConversation?.id!==conversation_id');
+    expect(nomiSendBoxSource).toContain("voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown'");
+    expect(nomiSendBoxSource).toContain("voiceKind ??");
   });
 
   test('authoritative reset commits the coordinator generation before refresh', () => {

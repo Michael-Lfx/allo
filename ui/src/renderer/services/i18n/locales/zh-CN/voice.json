@@ -1,4 +1,11 @@
 {
+  "composer": {
+    "queued": "排队中 {{count}} 项",
+    "historyFailed": "记录同步失败，当前内容已保留",
+    "retryHistory": "重试同步",
+    "resetScopeUnavailable": "语音状态尚未同步，暂未清理。请稍后重试。",
+    "retryStart": "核对通话启动状态"
+  },
   "pet": {
     "more": "另有 {{count}} 项"
   },
@@ -412,7 +419,8 @@
     "plainTextOnly": "语音会话队列暂支持纯文字；请移除附件或已选技能后发送。"
   },
   "entry": {
-    "start": "开始语音对话",
+    "start": "语音通话",
+    "listMarker": "语音会话",
     "openActive": "返回当前语音会话",
     "voiceCall": "语音通话",
     "voiceConnecting": "连接中…",

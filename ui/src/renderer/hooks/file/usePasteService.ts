@@ -51,6 +51,8 @@ export const usePasteService = ({
         event.preventDefault();
         event.stopPropagation();
       }
+      // A text-only composer must never upload a pasted image into a hidden attachment.
+      if (!onFilesAdded) return false;
 
       try {
         const handled = await PasteService.handlePaste(

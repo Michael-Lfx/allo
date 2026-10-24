@@ -28,7 +28,9 @@ export type ComposerSubmitClusterProps = {
   speechHidden?: boolean;
   isVoiceConversation?: boolean;
   isVoiceActive?: boolean;
+  isVoiceActiveElsewhere?: boolean;
   isVoiceConnecting?: boolean;
+  isVoiceStartUncertain?: boolean;
   onStartVoiceCall?: () => void;
   onStopVoiceCall?: () => void;
   phoneCallTestId?: string;
@@ -90,7 +92,9 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   speechHidden = false,
   isVoiceConversation = false,
   isVoiceActive = false,
+  isVoiceActiveElsewhere = false,
   isVoiceConnecting = false,
+  isVoiceStartUncertain = false,
   onStartVoiceCall,
   onStopVoiceCall,
   phoneCallTestId = 'composer-phone-btn',
@@ -108,12 +112,12 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
 
   const sendDisabled = disabled || isUploading || !hasDraft;
   const showStopButton = showStop && Boolean(onStop);
-  const showPhoneButton = isVoiceConversation && !showStopButton && (!hasDraft || isVoiceConnecting);
+  const showPhoneButton = isVoiceConversation && !showStopButton && (!hasDraft || isVoiceConnecting || isVoiceStartUncertain);
 
   // A running conversation replaces Send with Stop. Outside that state, Send
   // remains visible and is disabled until the draft is valid.
   const showSendButton = !autoWorkMode && !showStopButton;
-  const effectiveShowSendButton = isVoiceConversation ? hasDraft && !showStopButton && !isVoiceConnecting : showSendButton;
+  const effectiveShowSendButton = isVoiceConversation ? hasDraft && !showStopButton && !isVoiceConnecting && !isVoiceStartUncertain : showSendButton;
   const showSteerButton = showSteer && !showStopButton;
   const effectiveShowSteerButton = !isVoiceConversation && showSteerButton;
   const showAutoWorkButton = !isVoiceConversation && autoWorkMode;
@@ -144,6 +148,11 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         </div>
       ) : null}
 
+        {isVoiceConversation && isVoiceActive && (showStopButton || effectiveShowSendButton) && onStopVoiceCall && (
+          <Button size='mini' type='text' status='danger' icon={<PhoneOff theme='outline' size='14'/>}
+            onClick={onStopVoiceCall} data-testid='composer-secondary-hangup'
+            aria-label={t('voice.session.hangup')} title={t('voice.session.hangup')}/>
+        )}
       <div className='composer-submit-cluster__primary'>
         {showStopButton && onStop ? (
           <ComposerStopButton
@@ -213,7 +222,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
         ) : null}
 
         {showPhoneButton ? (
-          isVoiceActive || isVoiceConnecting ? (
+          isVoiceActive ? (
             <Button
               shape='circle'
               type='primary'
@@ -234,12 +243,13 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               type='primary'
               loading={isVoiceConnecting}
               className='send-button-custom sendbox-phone-call-button'
+              disabled={isVoiceConnecting}
               icon={<PhoneCall theme='filled' size='14' fill='white' strokeWidth={4} />}
               onClick={onStartVoiceCall}
               data-testid={phoneCallTestId}
               data-layout-part='phone'
-              aria-label={t('voice.session.startCall', { defaultValue: '开始通话' })}
-              title={t('voice.session.startCall', { defaultValue: '开始通话' })}
+              aria-label={t(isVoiceStartUncertain?'voice.composer.retryStart':isVoiceActiveElsewhere?'voice.entry.openActive':'voice.session.startCall')}
+              title={t(isVoiceStartUncertain?'voice.composer.retryStart':isVoiceActiveElsewhere?'voice.entry.openActive':'voice.session.startCall')}
             />
           )
         ) : null}

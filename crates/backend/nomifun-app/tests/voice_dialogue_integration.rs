@@ -170,11 +170,15 @@ async fn ignored_turns_leave_no_public_messages_and_do_not_displace_valid_handof
     }
     let messages=service.list_messages(USER_ID,&conversation_id,Default::default()).await.unwrap();
     assert_eq!(messages.items.len(),before,"ignored raw text must not publish messages or trigger their memory collection");
-    assert!(recorder.is_projected("valid-turn"));
+    assert!(recorder.is_projected("ignore-session",&conversation_id,"valid-turn"));
+    assert!(!recorder.is_projected("another-session",&conversation_id,"valid-turn"));
+    assert!(!recorder.is_projected("ignore-session","another-conversation","valid-turn"));
+    assert!(recorder.projected_message_ids("ignore-session",&conversation_id,"valid-turn").is_some());
+    assert!(recorder.projected_message_ids("another-session",&conversation_id,"valid-turn").is_none());
     let restored=ConversationVoiceDialogueRecorder::new(service.clone(),USER_ID.into(),dir.path());
-    assert!(!restored.is_projected("valid-turn"));
+    assert!(!restored.is_projected("ignore-session",&conversation_id,"valid-turn"));
     restored.freeze_session("ignore-session", None).await.unwrap();
-    assert!(restored.is_projected("valid-turn"),"binding restore must retire persisted live previews without regenerating");
+    assert!(restored.is_projected("ignore-session",&conversation_id,"valid-turn"),"binding restore must retire persisted live previews without regenerating");
     let next=VoiceDialogueRequest::scoped("ignore-session","task-turn","按刚才要求创建订单");
     recorder.preflight(&next).await.unwrap();
     recorder.record_pair(&conversation_id,&next,r#"{"intent_type":"agent_task","task_goal":"创建订单","spoken_ack":"正在处理"}"#).await.unwrap();

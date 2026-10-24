@@ -690,6 +690,8 @@ pub struct VoiceTtsDiagnostic {
 pub struct VoiceConversationTurn {
     pub turn_id: String,
     #[serde(default, skip_serializing_if="Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
     pub user_message_id: Option<String>,
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub assistant_message_id: Option<String>,

@@ -418,3 +418,48 @@ test('startVoiceCall dispatches start request and translates 409 conflict correc
     globalThis.fetch = originalFetch;
   }
 });
+
+test('pending call survives ambiguous transport and starting receipt; subscribers see settlement, retry reuses original ID',async()=>{
+ const original=globalThis.fetch;const sent:unknown[]=[];let attempt=0;let changes=0;
+ const off=voice.subscribeVoiceCallIntent(()=>{changes++;});
+ globalThis.fetch=(async(_input:RequestInfo|URL,init?:RequestInit)=>{
+  sent.push(JSON.parse(String(init?.body)));attempt++;
+  if(attempt===1)throw new Error('lost response');
+  if(attempt===2)return Response.json({request_id:voice.getPendingVoiceCallIntent()!.request_id,status:'starting',conversation_id:'call-test',session_id:null});
+  return Response.json({request_id:voice.getPendingVoiceCallIntent()!.request_id,status:'bound',conversation_id:'call-test',session_id:'session'});
+ }) as typeof fetch;
+ try{
+  const target={kind:'voice_conversation' as const,conversation_id:'call-test'};
+  expect(await voice.startVoiceCallIntent(target).then(()=>null,error=>(error as Error).message)).toBe('lost response');
+  const pending=voice.getPendingVoiceCallIntent();expect(pending?.request_id).toBeTruthy();
+  expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'other'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+  expect(sent).toHaveLength(1);
+  expect((await voice.startVoiceCallIntent(target)).status).toBe('starting');
+  expect(voice.getPendingVoiceCallIntent()).toBe(pending);
+  await voice.startVoiceCallIntent(target);
+  expect(voice.getPendingVoiceCallIntent()).toBeNull();
+  expect(sent[0]).toEqual(sent[1]);expect(sent[1]).toEqual(sent[2]);expect(changes).toBe(2);
+ }finally{off();globalThis.fetch=original;}
+});
+
+test('homepage starting receipt remains recoverable from its resolved Conversation with the original request',async()=>{
+ const original=globalThis.fetch;const sent:Array<{request_id:string;target:unknown;session_mode?:string}>=[];
+ globalThis.fetch=(async(_input:RequestInfo|URL,init?:RequestInit)=>{
+  const request=JSON.parse(String(init?.body));sent.push(request);
+  return Response.json({request_id:request.request_id,status:sent.length===1?'starting':'ready',conversation_id:'resolved-home-call',session_id:sent.length===1?null:'s'});
+ }) as typeof fetch;
+ try {
+  await voice.startVoiceCallIntent({kind:'current_selection'},'auto_edit');
+  expect(voice.getPendingVoiceCallConversationId()).toBe('resolved-home-call');
+  expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'other'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+  expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'resolved-home-call'},'yolo').then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+  expect(sent).toHaveLength(1);
+  await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'resolved-home-call'});
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toEqual(sent[0]);
+  expect(voice.getPendingVoiceCallConversationId()).toBeNull();
+ } finally {
+  if(voice.getPendingVoiceCallIntent())await voice.startVoiceCallIntent(voice.getPendingVoiceCallIntent()!.target,'auto_edit');
+  globalThis.fetch=original;
+ }
+});

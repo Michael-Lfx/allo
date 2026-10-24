@@ -14,6 +14,11 @@ pub(crate) struct VoiceEventHub {
     last_task_seq: std::sync::atomic::AtomicU64,
 }
 
+fn current_turn_mut(state: &mut VoiceSessionSnapshot) -> Option<&mut VoiceConversationTurn> {
+    let current_id = state.turn_id.as_ref()?;
+    state.conversation.iter_mut().rev().find(|t| &t.turn_id == current_id)
+}
+
 impl VoiceEventHub {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(128);
@@ -173,6 +178,7 @@ impl VoiceEventHub {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .clear();
+                state.conversation.clear();
                 state.ended_reason = None;
                 state.call_request_id = request_id.clone();
                 state.feedback = None;
@@ -204,7 +210,7 @@ impl VoiceEventHub {
             VoiceCompanionEvent::SpeechStarted => {
                 if matches!(state.phase, Phase::Speaking | Phase::Synthesizing) {
                     state.phase = Phase::Listening;
-                    if let Some(turn) = state.conversation.last_mut() {
+                    if let Some(turn) = current_turn_mut(&mut state) {
                         if turn.assistant_text.is_some() {
                             turn.reply_state = Some(nomifun_api_types::voice::VoiceReplyState::Interrupted);
                         }
@@ -220,8 +226,10 @@ impl VoiceEventHub {
                 state.phase = Phase::Transcribing;
                 state.turn_id = Some(nomifun_common::generate_id());
                 let turn_id = state.turn_id.clone().unwrap();
+                let session_id = state.session_id.clone();
                 state.conversation.push(VoiceConversationTurn {
                     turn_id,
+                    session_id,
                     ..Default::default()
                 });
                 if state.conversation.len() > 3 {
@@ -234,7 +242,7 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::SpeechRecognized { text } => {
                 state.user_text = Some(text.clone());
-                if let Some(turn) = state.conversation.last_mut() {
+                if let Some(turn) = current_turn_mut(&mut state) {
                     turn.user_text = Some(text.clone());
                 }
                 state.phase = Phase::Deciding;
@@ -272,11 +280,11 @@ impl VoiceEventHub {
                         }
                     }
                     state.understood_request = understood_request.clone();
-                    if let Some(turn) = state.conversation.last_mut() {
+                    if let Some(turn) = current_turn_mut(&mut state) {
                         turn.understood_request = understood_request.clone();
                     }
                     state.assistant_text = reply.clone();
-                    if let Some(turn) = state.conversation.last_mut() {
+                    if let Some(turn) = current_turn_mut(&mut state) {
                         turn.assistant_text = reply.clone();
                         turn.reply_state=Some(nomifun_api_types::voice::VoiceReplyState::Complete);
                     }
@@ -292,20 +300,19 @@ impl VoiceEventHub {
                     if context.len()>6 {context.drain(..2);}
                 }
                 let turn_id = format!("task-result-{command_id}");
-                state.turn_id = Some(turn_id.clone());
+                state.turn_id = Some(turn_id);
                 state.user_text = None;
                 state.understood_request = None;
                 state.assistant_text = Some(text.clone());
                 state.error = None;
                 state.ended_reason = None;
-                state.conversation.push(VoiceConversationTurn {turn_id,assistant_text:Some(text.clone()),..Default::default()});
-                if state.conversation.len()>3 {state.conversation.remove(0);}
+                // Synthetic notice is NOT a chat row; do NOT push to state.conversation
                 state.phase = Phase::Synthesizing;
             }
             VoiceCompanionEvent::ReplySentence {text,understood_request}=>{
                 if let Some(understood)=understood_request {state.understood_request=Some(understood.clone());}
                 state.assistant_text.get_or_insert_with(String::new).push_str(text);
-                if let Some(turn)=state.conversation.last_mut(){
+                if let Some(turn)=current_turn_mut(&mut state){
                     turn.assistant_text.get_or_insert_with(String::new).push_str(text);
                     turn.reply_state=Some(nomifun_api_types::voice::VoiceReplyState::Streaming);
                     if let Some(understood)=understood_request {turn.understood_request=Some(understood.clone());}
@@ -313,12 +320,12 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::ResponseReady {text} => {
                 state.assistant_text=Some(text.clone());
-                if let Some(turn)=state.conversation.last_mut() {turn.assistant_text=Some(text.clone());}
+                if let Some(turn)=current_turn_mut(&mut state) {turn.assistant_text=Some(text.clone());}
             }
             VoiceCompanionEvent::ConfirmationPrompted {approval_id,text,..}=>{
                 let turn_id=format!("approval-{approval_id}");
-                state.session_id=Some(nomifun_common::generate_id());
-                state.turn_id=Some(turn_id.clone());
+                state.session_id.get_or_insert_with(nomifun_common::generate_id);
+                state.turn_id=Some(turn_id);
                 state.user_text=None;
                 state.understood_request=None;
                 state.assistant_text=Some(text.clone());
@@ -326,8 +333,7 @@ impl VoiceEventHub {
                 state.error=None;
                 state.listening_deadline_ms=None;
                 state.follow_up_deadline_ms=None;
-                state.conversation.push(VoiceConversationTurn {turn_id,assistant_text:Some(text.clone()),..Default::default()});
-                if state.conversation.len()>3 {state.conversation.remove(0);}
+                // Synthetic notice is NOT a chat row; do NOT push to state.conversation
                 state.phase=Phase::AwaitingConfirmation;
             }
             VoiceCompanionEvent::ConfirmationListening {deadline_ms}=>{
@@ -336,7 +342,7 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::ConfirmationHeard {text}=>{
                 state.user_text=Some(text.clone());
-                if let Some(turn)=state.conversation.last_mut(){turn.user_text=Some(text.clone());}
+                if let Some(turn)=current_turn_mut(&mut state){turn.user_text=Some(text.clone());}
             }
             VoiceCompanionEvent::TtsSynthesizing { .. }
             | VoiceCompanionEvent::TtsSpeaking { .. } => {
@@ -365,13 +371,13 @@ impl VoiceEventHub {
                     Some(chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000);
             }
             VoiceCompanionEvent::Error { stage, code } => {
-                let turn_id=if matches!(state.phase,Phase::Idle|Phase::Listening){None}else{state.turn_id.clone()};
+                let has_active_turn = !matches!(state.phase, Phase::Idle | Phase::Listening);
                 state.phase = Phase::Error;
                 state.error = Some(VoiceSessionError {
                     stage: stage.clone(),
                     code: code.clone(),
                 });
-                if let Some(turn)=state.conversation.last_mut(){if turn_id.as_deref()==Some(turn.turn_id.as_str()){turn.error=Some(VoiceSessionError{stage:stage.clone(),code:code.clone()});}}
+                if has_active_turn { if let Some(turn)=current_turn_mut(&mut state){turn.error=Some(VoiceSessionError{stage:stage.clone(),code:code.clone()});} }
             }
             VoiceCompanionEvent::Idle => {
                 self.context
@@ -451,12 +457,36 @@ mod tests {
         assert!(hub.context().is_empty(),"partial generation must not enter completed context");
         assert_eq!(hub.snapshot().conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Streaming));
         hub.send(VoiceCompanionEvent::Error{stage:"dialogue".into(),code:"model_timeout".into()}).unwrap();
-        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
-        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
-        let snap=hub.snapshot();assert!(snap.error.is_none());
+        hub.send(VoiceCompanionEvent::SpeechStarted).unwrap();
+        let snap=hub.snapshot();
         assert_eq!(snap.conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Interrupted));
         assert_eq!(snap.conversation[0].error.as_ref().unwrap().code,"model_timeout");
         assert_eq!(snap.conversation[0].assistant_text.as_deref(),Some("第一句。"));
+        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
+        assert!(hub.snapshot().conversation.is_empty());
+        assert!(hub.snapshot().error.is_none());
+    }
+
+    #[test]
+    fn notices_do_not_overwrite_real_turn_or_replace_active_session() {
+        let hub = VoiceEventHub::new();
+        let _listener = hub.sender().subscribe();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        hub.send(VoiceCompanionEvent::SpeechRecognized { text: "真实问题".into() }).unwrap();
+        hub.send(VoiceCompanionEvent::IntentDecided { intent: "Chat".into(), reply: Some("真实回答".into()), understood_request: None }).unwrap();
+        let original = hub.snapshot();
+        assert_eq!(original.conversation[0].session_id, original.session_id);
+        hub.send(VoiceCompanionEvent::ConfirmationPrompted { approval_id: "approval".into(), text: "授权提示".into(), expires_at_ms: i64::MAX }).unwrap();
+        hub.send(VoiceCompanionEvent::ConfirmationHeard { text: "同意".into() }).unwrap();
+        hub.send(VoiceCompanionEvent::ResponseReady { text: "提示播报".into() }).unwrap();
+        let after = hub.snapshot();
+        assert_eq!(after.session_id, original.session_id);
+        assert_eq!(after.conversation.len(), 1);
+        assert_eq!(after.conversation[0].user_text, original.conversation[0].user_text);
+        assert_eq!(after.conversation[0].assistant_text, original.conversation[0].assistant_text);
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
+        assert!(hub.snapshot().conversation.is_empty(), "KWS must clear volatile old turns too");
     }
 
     #[test]

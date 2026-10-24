@@ -34,6 +34,7 @@ import {
   isConversationProcessing,
 } from '@/renderer/pages/conversation/utils/conversationRuntime';
 import NomiChat from '../platforms/nomi/NomiChat';
+import {isVoiceConversation} from '../utils/isVoiceConversation';
 import { useNomiModelSelection } from '../platforms/nomi/useNomiModelSelection';
 import CompanionChatPanel from '@/renderer/pages/nomi/companion/CompanionChatPanel';
 import type { TExecutionModelPool, TExecutionModelRef } from '@/common/types/agentExecution/agentExecutionTypes';
@@ -238,7 +239,7 @@ const NomiConversationLayout: React.FC<{
       workspaceExtraTabs={workspaceExtraTabs}
     >
       <NomiChat
-        isVoiceConversation={'voice' in conversation.extra && conversation.extra.voice === true}
+        isVoiceConversation={isVoiceConversation(conversation)}
         conversation_id={conversation.id}
         workspace={conversation.extra.workspace}
         modelSelection={modelSelection}

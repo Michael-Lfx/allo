@@ -1,5 +1,9 @@
-import {useEffect,useState} from 'react';
-import {subscribeVoiceSession,type VoiceSnapshot} from '@common/adapter/voiceCompanion';
+import {useEffect,useState,useSyncExternalStore} from 'react';
+import {subscribeVoiceSession,getPendingVoiceCallConversationId,subscribeVoiceCallIntent,type VoiceSnapshot} from '@common/adapter/voiceCompanion';
+
+export function usePendingVoiceCallConversationId() {
+  return useSyncExternalStore(subscribeVoiceCallIntent,getPendingVoiceCallConversationId,()=>null);
+}
 
 /** View-only subscription. Mount/reconnect never starts capture or resends input. */
 export function useVoiceSnapshot(enabled=true) {

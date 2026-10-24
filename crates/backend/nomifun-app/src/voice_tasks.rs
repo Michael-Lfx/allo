@@ -240,9 +240,12 @@ impl VoiceTaskService {
         Ok(self.read_command(command_id)?.is_none_or(|record|record.announcement_claimed))
     }
 
-    pub fn pending_result(&self) -> Result<Option<(VoiceTaskSnapshot,String)>,String> {
+    pub fn pending_result_for_conversation(&self, conversation_id: &str) -> Result<Option<(VoiceTaskSnapshot,String)>,String> {
         Ok(self.read_ledger()?.and_then(|ledger|ledger.records.into_iter().find(|record|
-            !record.command.session_id.starts_with("keyboard-") && !record.announcement_claimed && matches!(record.task.status,VoiceTaskStatus::Completed|VoiceTaskStatus::Failed)
+            !record.command.session_id.starts_with("keyboard-")
+                && !record.announcement_claimed
+                && record.task.conversation_id.as_deref() == Some(conversation_id)
+                && matches!(record.task.status,VoiceTaskStatus::Completed|VoiceTaskStatus::Failed)
         )).map(|record|(record.task,record.command.goal)))
     }
 
@@ -1198,13 +1201,38 @@ mod tests {
         let mut next=command();next.command_id="command-b".into();
         tasks.submit(next,config()).await.unwrap();
         let restored=service(path,runtime.clone());
-        assert_eq!(restored.pending_result().unwrap().unwrap().0.command_id,"command-a");
+        assert_eq!(restored.pending_result_for_conversation("dedicated-conversation").unwrap().unwrap().0.command_id,"command-a");
         assert!(!restored.announcement_claimed("command-a").unwrap(),"a newer task cannot erase a pending result");
         assert!(restored.claim_announcement("command-a",true).await.unwrap());
         assert!(restored.announcement_claimed("command-a").unwrap());
         assert!(!restored.claim_announcement("command-a",true).await.unwrap());
         assert_eq!(restored.current_task().unwrap().unwrap().command_id,"command-b");
         assert_eq!(runtime.sent.load(Ordering::SeqCst),2);
+    }
+
+    #[tokio::test]
+    async fn voice_pending_results_filter_before_selection_without_claiming_foreign_tasks() {
+        let dir=tempfile::tempdir().unwrap();let runtime=Arc::new(Runtime::default());
+        let tasks=service(dir.path().join("task.json"),runtime.clone());
+        tasks.submit(command(),config()).await.unwrap();
+        *runtime.receipt.lock().unwrap()=Some(receipt(true));
+        tasks.status().await.unwrap();
+        let mut a=tasks.read_command("command-a").unwrap().unwrap();
+        a.task.conversation_id=Some("conversation-a".into());tasks.save(&a).unwrap();
+        let mut command_b=command();command_b.command_id="command-b".into();
+        tasks.submit(command_b,config()).await.unwrap();
+        *runtime.receipt.lock().unwrap()=Some(receipt(true));
+        tasks.status().await.unwrap();
+        let mut b=tasks.read_command("command-b").unwrap().unwrap();
+        b.task.conversation_id=Some("conversation-b".into());tasks.save(&b).unwrap();
+        assert_eq!(tasks.pending_result_for_conversation("conversation-b").unwrap().unwrap().0.command_id,"command-b");
+        assert_eq!(tasks.pending_result_for_conversation("conversation-a").unwrap().unwrap().0.command_id,"command-a");
+        assert!(!tasks.announcement_claimed("command-a").unwrap());
+        assert!(!tasks.announcement_claimed("command-b").unwrap());
+        assert!(tasks.pending_result_for_conversation("absent").unwrap().is_none());
+        tasks.claim_announcement("command-b",true).await.unwrap();
+        assert!(tasks.pending_result_for_conversation("conversation-b").unwrap().is_none());
+        assert!(tasks.pending_result_for_conversation("conversation-a").unwrap().is_some());
     }
 
     #[tokio::test]
