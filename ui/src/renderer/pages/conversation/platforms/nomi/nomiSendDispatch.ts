@@ -3,6 +3,7 @@ import type { TChatConversation } from '@/common/config/storage';
 import type { VoiceTaskSnapshot } from '@/common/adapter/voiceCompanion';
 import type { ConversationCommandQueueItem } from '@/renderer/pages/conversation/platforms/useConversationCommandQueue';
 import { uuid } from '@/common/utils';
+import {isVoiceConversation} from '../../utils/isVoiceConversation';
 
 export type ConversationVoiceKind = 'unknown' | 'voice' | 'ordinary';
 
@@ -19,7 +20,7 @@ export async function resolveVoiceConversationKind(
 
   const cached = getCachedConversation?.(targetId);
   if (cached && cached.id === targetId) {
-    const isVoice = Boolean(cached.extra && 'voice' in cached.extra && cached.extra.voice === true);
+    const isVoice = isVoiceConversation(cached);
     return {
       kind: isVoice ? 'voice' : 'ordinary',
       workspace: cached.extra?.workspace,
@@ -30,7 +31,7 @@ export async function resolveVoiceConversationKind(
   if (!res) {
     throw new Error(`Conversation ${targetId} not found`);
   }
-  const isVoice = Boolean(res.extra && 'voice' in res.extra && res.extra.voice === true);
+  const isVoice = isVoiceConversation(res);
   return {
     kind: isVoice ? 'voice' : 'ordinary',
     workspace: res.extra?.workspace,

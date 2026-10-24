@@ -23,3 +23,23 @@ for (const [locale,voice] of [['zh-CN',zh],['en-US',en]] as const) {
     }
   });
 }
+
+for(const [locale,voice] of [['zh-CN',zh],['en-US',en]] as const){
+ test(`${locale}: uncertain startup remains recoverable and cannot send or hang up an unbound call`,async()=>{
+  const i18n=createInstance();await i18n.init({lng:locale,resources:{[locale]:{translation:{voice}}},initImmediate:false});
+  const html=renderToStaticMarkup(<I18nextProvider i18n={i18n}><CloudAuthContext.Provider value={{ready:false,status:'unauthenticated'} as CloudAuthContextValue}>
+   <ComposerSubmitCluster isVoiceConversation hasDraft isVoiceStartUncertain onSend={()=>{}} onSpeechTranscript={()=>{}} onStartVoiceCall={()=>{}}/>
+  </CloudAuthContext.Provider></I18nextProvider>);
+  expect(html).toContain(voice.composer.retryStart);expect(html).not.toContain('composer-send-btn');expect(html).not.toContain('sendbox-phone-hangup-button');
+ });
+ test(`${locale}: active call keeps a small hangup beside the single task/send primary`,async()=>{
+  const i18n=createInstance();await i18n.init({lng:locale,resources:{[locale]:{translation:{voice}}},initImmediate:false});
+  for(const stop of [false,true]){
+   const html=renderToStaticMarkup(<I18nextProvider i18n={i18n}><CloudAuthContext.Provider value={{ready:false,status:'unauthenticated'} as CloudAuthContextValue}>
+    <ComposerSubmitCluster isVoiceConversation isVoiceActive hasDraft showStop={stop} onStop={()=>{}} onSend={()=>{}} onSpeechTranscript={()=>{}} onStopVoiceCall={()=>{}}/>
+   </CloudAuthContext.Provider></I18nextProvider>);
+   expect(html).toContain('composer-secondary-hangup');expect(html).toContain('arco-btn-status-danger');
+   expect((html.match(/data-testid="composer-(send|stop|phone)-btn"/g)??[]).length).toBe(1);
+  }
+ });
+}

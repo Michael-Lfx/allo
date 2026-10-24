@@ -7,7 +7,8 @@ import ConversationHoverCard from '@/renderer/pages/conversation/components/Conv
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { Checkbox, Dropdown, Menu, Popover, Spin, Tooltip } from '@arco-design/web-react';
-import { DeleteOne, EditOne, Export, MoreOne, Pushpin } from '@icon-park/react';
+import { DeleteOne, EditOne, Export, MoreOne, Pushpin, Voice } from '@icon-park/react';
+import {isVoiceConversation} from '../utils/isVoiceConversation';
 import classNames from 'classnames';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
@@ -47,6 +48,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   } = props;
   const { t } = useTranslation();
   const isPinned = isConversationPinned(conversation);
+  const isVoice = isVoiceConversation(conversation);
   const cronStatus = getJobStatus(conversation.id);
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   const ageLabel = formatSessionAgeLabel(t, conversation.created_at);
@@ -95,7 +97,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         id={'c-' + conversation.id}
         className={classNames(
           'chat-history__item h-34px rd-10px flex items-center group cursor-pointer relative overflow-hidden shrink-0 conversation-item [&.conversation-item+&.conversation-item]:mt-2px min-w-0 transition-colors',
-          collapsed ? 'justify-center px-0' : 'justify-start gap-8px pr-16px',
+          collapsed ? 'justify-center gap-2px px-0' : 'justify-start gap-8px pr-16px',
           // Nested workpath conversations use the compact baseline; the parent
           // row and the surrounding drawer already provide the hierarchy cue.
           !collapsed && 'pl-18px',
@@ -171,15 +173,17 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         )}
 
         {showCompactUnreadDot && (
-          <span className='absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'>
+          <span className={isVoice?'flex shrink-0 items-center justify-center group-hover:invisible':'absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'}>
             {unreadDot}
           </span>
         )}
 
+        {isVoice&&isMobile&&!batchMode&&!collapsed&&<span className='w-20px shrink-0' aria-hidden='true'/>}
         {!batchMode && (
           <div
             className={classNames(
-              'absolute right-8px top-1/2 -translate-y-1/2 items-center justify-end !collapsed-hidden',
+              'absolute top-1/2 -translate-y-1/2 items-center justify-end !collapsed-hidden',
+              isVoice ? 'right-32px' : 'right-8px',
               {
                 flex: isMobile || menuVisible,
                 'hidden group-hover:flex': !isMobile && !menuVisible,
@@ -263,6 +267,12 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             </Dropdown>
           </div>
         )}
+        {isVoice&&<Tooltip content={t('voice.entry.listMarker')}>
+          <span className='inline-flex shrink-0 items-center justify-center w-14px text-t-secondary'
+            role='img' aria-label={t('voice.entry.listMarker')} data-testid='conversation-voice-marker'>
+            <Voice theme='outline' size='14' aria-hidden='true'/>
+          </span>
+        </Tooltip>}
       </div>
   );
 

@@ -293,11 +293,14 @@ const SendBox: React.FC<{
   selectedWorkspaceItems?: FileSelectionItem[];
   onSelectedWorkspaceItemsChange?: (items: FileSelectionItem[]) => void;
   bottomHint?: React.ReactNode;
+  footer?: React.ReactNode;
   /** Conversation-only: render the compact plan strip inside the input panel status row. */
   showPinnedPlan?: boolean;
   isVoiceConversation?: boolean;
   isVoiceActive?: boolean;
+  isVoiceActiveElsewhere?: boolean;
   isVoiceConnecting?: boolean;
+  isVoiceStartUncertain?: boolean;
   onStartVoiceCall?: () => void;
   onStopVoiceCall?: () => void;
   /**
@@ -346,10 +349,13 @@ const SendBox: React.FC<{
   selectedWorkspaceItems,
   onSelectedWorkspaceItemsChange,
   bottomHint,
+  footer,
   showPinnedPlan = false,
   isVoiceConversation = false,
   isVoiceActive = false,
+  isVoiceActiveElsewhere = false,
   isVoiceConnecting = false,
+  isVoiceStartUncertain = false,
   onStartVoiceCall,
   onStopVoiceCall,
   onMobilePlusClick,
@@ -823,7 +829,7 @@ const SendBox: React.FC<{
 
   // 使用拖拽 hook
   const { isFileDragging, dragHandlers } = useDragUpload({
-    onFilesAdded,
+    onFilesAdded: isVoiceConversation ? undefined : onFilesAdded,
     containerRef: dropzoneRef,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
@@ -852,11 +858,11 @@ const SendBox: React.FC<{
     conversationContext?.type === 'nomi'
   );
   const activeAtFileQuery = useMemo(() => {
-    if (!conversationContext?.workspace) {
+    if (isVoiceConversation || !conversationContext?.workspace) {
       return null;
     }
     return getActiveAtFileQuery(input, caretPosition);
-  }, [caretPosition, conversationContext?.workspace, input]);
+  }, [caretPosition, conversationContext?.workspace, input, isVoiceConversation]);
   const activeAtFileTokenKey = useMemo(() => {
     if (!activeAtFileQuery) {
       return null;
@@ -933,7 +939,7 @@ const SendBox: React.FC<{
     return commands;
   }, [conversationContext?.conversation_id, enableBtw, onClearContext, onSlashBuiltinCommand, t]);
 
-  const canPickSkills = Boolean(onSendWithSkills && onSkillChipsChange);
+  const canPickSkills = !isVoiceConversation && Boolean(onSendWithSkills && onSkillChipsChange);
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(canPickSkills);
   const handleToggleCatalogSkill = useCallback(
     (skillId: string) => {
@@ -1560,7 +1566,7 @@ const SendBox: React.FC<{
   // 使用共享的PasteService集成
   const { onPaste, onFocus: handlePasteFocus } = usePasteService({
     supportedExts,
-    onFilesAdded,
+    onFilesAdded: isVoiceConversation ? undefined : onFilesAdded,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
   });
@@ -2264,7 +2270,9 @@ const SendBox: React.FC<{
         speechHidden={isVoiceConversation || isMobileCompact}
         isVoiceConversation={isVoiceConversation}
         isVoiceActive={isVoiceActive}
+        isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}
+        isVoiceStartUncertain={isVoiceStartUncertain}
         onStartVoiceCall={onStartVoiceCall}
         onStopVoiceCall={onStopVoiceCall}
         sendTestId='sendbox-send-btn'
@@ -2554,7 +2562,7 @@ const SendBox: React.FC<{
                     (bottomHint as string | undefined) ??
                     t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
                   : placeholder
-                    ? `${placeholder}  ${bottomHint ?? t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' })}`
+                    ? isVoiceConversation ? placeholder : `${placeholder}  ${bottomHint ?? t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' })}`
                     : ((bottomHint as string | undefined) ??
                       t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
               }
@@ -2630,6 +2638,7 @@ const SendBox: React.FC<{
             </div>
           </div>
         )}
+        {footer&&<div className='mt-8px w-full' data-testid='sendbox-footer'>{footer}</div>}
     </ComposerSurface>
     {canPickSkills ? (
       <PresetPickerDrawer

@@ -17,16 +17,16 @@ import {
   MessageListLoadingProvider,
   MessageListProvider,
   useMessageLstCache,
+  useMessageList,
 } from '@renderer/pages/conversation/Messages/hooks';
 import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Messages/usePendingConfirmationsRecovery';
 import HOC from '@renderer/utils/ui/HOC';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import SessionSkillModeBar from '@/renderer/pages/conversation/components/SessionSkillModeBar';
 import NomiSendBox from './NomiSendBox';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
-import {buildVoiceLiveMessages} from '@renderer/pages/voiceSession/liveVoiceTurn';
-import {useMessageList} from '@renderer/pages/conversation/Messages/hooks';
+import {mergeVoiceTranscript, createLiveVoiceHistory, reconcileLiveVoiceHistory} from '@renderer/pages/voiceSession/liveVoiceTurn';
 import { mergeWithCapabilities, type AgentModeOption } from '@/renderer/utils/model/agentModes';
 import { useNomiMessage } from './useNomiMessage';
 import type { NomiModelSelection } from './useNomiModelSelection';
@@ -75,7 +75,31 @@ const NomiChat: React.FC<{
   const historyPaging = useMessageLstCache(conversation_id, { windowed: true });
   const {snapshot:voiceSnapshot} = useVoiceSnapshot(isVoiceConversation);
   const persistedMessages = useMessageList();
-  const liveMessages = useMemo(() => buildVoiceLiveMessages(voiceSnapshot, conversation_id, persistedMessages), [voiceSnapshot, conversation_id, persistedMessages]);
+  const liveHistory = useRef(createLiveVoiceHistory());
+  const attemptedRefresh = useRef('');
+  const [voiceSyncFailure, setVoiceSyncFailure] = useState('');
+  const live = reconcileLiveVoiceHistory(liveHistory.current, {
+    snapshot: voiceSnapshot, conversationId: conversation_id, epoch: historyPaging.epoch,
+    visibleIds: new Set(persistedMessages.flatMap(message => [message.message_id, message.msg_id].filter((id): id is NonNullable<typeof id> => Boolean(id)))),
+    currentSequence: historyPaging.currentSequence(), latestPage: historyPaging.latestPage,
+  });
+  const view = useMemo(()=>({active:true}),[conversation_id,live.state.scope,historyPaging.epoch]);
+  const currentView = useRef(view);
+  currentView.current=view;
+  useEffect(()=>{view.active=true;return()=>{view.active=false;};},[view]);
+  useLayoutEffect(() => { liveHistory.current = live.state; });
+  const refreshVoiceHistory = async () => {
+    const scope = live.state.scope;
+    try {
+      if (await historyPaging.refresh() && view.active && currentView.current===view) setVoiceSyncFailure(value => value === scope ? '' : value);
+    } catch { if(view.active && currentView.current===view)setVoiceSyncFailure(scope); }
+  };
+  useEffect(() => {
+    if (!isVoiceConversation || !live.refreshKey || attemptedRefresh.current === live.refreshKey) return;
+    attemptedRefresh.current = live.refreshKey;
+    void refreshVoiceHistory();
+  }, [isVoiceConversation, live.refreshKey, historyPaging.refresh]);
+  const voiceMessages = isVoiceConversation ? mergeVoiceTranscript(voiceSnapshot, conversation_id, persistedMessages, live.state) : undefined;
   usePendingConfirmationsRecovery(conversation_id, { enabled: !readOnly });
   const [dynamicModes, setDynamicModes] = useState<AgentModeOption[]>([]);
   const turnActivity = useNomiMessage(conversation_id, {
@@ -137,7 +161,7 @@ const NomiChat: React.FC<{
         <div className={CHAT_CONTENT_COLUMN_CLASSES}>
           <FlexFullContainer>
             <MessageList
-              liveMessages={liveMessages}
+              messages={voiceMessages}
               className='flex-1'
               emptySlot={resolvedEmptySlot}
               onLoadOlder={historyPaging.loadOlder}
@@ -156,6 +180,10 @@ const NomiChat: React.FC<{
               />
               <SessionSkillModeBar />
               <NomiSendBox
+                key={conversation_id}
+                voiceKind={isVoiceConversation ? 'voice' : 'ordinary'}
+                voiceHistoryFailed={voiceSyncFailure === live.state.scope}
+                onRetryVoiceHistory={refreshVoiceHistory}
                 conversation_id={conversation_id}
                 modelSelection={modelSelection}
                 session_mode={session_mode}

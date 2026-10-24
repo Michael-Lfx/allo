@@ -203,8 +203,8 @@ pub struct ConversationVoiceDialogueRecorder {
     pub user_id: String,
     journal_path: PathBuf,
     journal_lock: Mutex<()>,
-    projected_turns: RwLock<std::collections::HashSet<String>>,
-    projected_messages: RwLock<std::collections::HashMap<String, (Option<String>, String)>>,
+    projected_turns: RwLock<std::collections::HashSet<(String, String, String)>>,
+    projected_messages: RwLock<std::collections::HashMap<(String, String, String), (Option<String>, String)>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
     pending_call_reservation: RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
 }
@@ -540,11 +540,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         g.clone()
     }
 
-    fn is_projected(&self, turn_id: &str) -> bool {
-        self.projected_turns.read().unwrap_or_else(|e|e.into_inner()).contains(turn_id)
+    fn is_projected(&self, session_id: &str, conversation_id: &str, turn_id: &str) -> bool {
+        self.projected_turns.read().unwrap_or_else(|e|e.into_inner()).contains(&(session_id.into(), conversation_id.into(), turn_id.into()))
     }
-    fn projected_message_ids(&self, turn_id: &str) -> Option<(Option<String>, String)> {
-        self.projected_messages.read().unwrap_or_else(|e|e.into_inner()).get(turn_id).cloned()
+    fn projected_message_ids(&self, session_id: &str, conversation_id: &str, turn_id: &str) -> Option<(Option<String>, String)> {
+        self.projected_messages.read().unwrap_or_else(|e|e.into_inner()).get(&(session_id.into(), conversation_id.into(), turn_id.into())).cloned()
     }
     async fn keyboard_configuration(&self, conversation_id:&str) -> Result<crate::voice_dialogue::FrozenVoiceExecution,String> {
         let conv = self.conversation_service.get(&self.user_id, conversation_id).await.map_err(|_|"binding_invalid")?;
@@ -628,15 +628,15 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             return Err(VoiceDialogueRecorderError::BindingInvalid("start_request_changed".into()));
         }
         // Rehydrate the projection fence once at binding/preflight, never on audio events.
-        for record in records.iter().filter(|record| record.projected) {
+        for record in records.iter().filter(|record| record.projected && record.request.session_id.as_deref() == Some(session) && record.conversation_id == binding.conversation_id) {
             if let (Some(turn), Some(assistant)) = (&record.request.turn_id, &record.assistant_message_id) {
-                self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone(), (record.message_id.clone(), assistant.clone()));
+                self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert((session.into(), binding.conversation_id.clone(), turn.clone()), (record.message_id.clone(), assistant.clone()));
             }
         }
         // A host restart must not show an already persisted turn as a live duplicate.
         self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).extend(
-            records.iter().filter(|record| record.projected && record.request.session_id.as_deref()==Some(session))
-                .filter_map(|record| record.request.turn_id.clone())
+            records.iter().filter(|record| record.projected && record.request.session_id.as_deref()==Some(session) && record.conversation_id == binding.conversation_id)
+                .filter_map(|record| record.request.turn_id.clone().map(|turn| (session.into(), binding.conversation_id.clone(), turn)))
         );
         let conversation = self.conversation_service.get(&self.user_id,&binding.conversation_id).await
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
@@ -735,7 +735,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         if let Some(record)=records.iter().find(|r|r.request.voice_record_id==request.voice_record_id) {
             if record.request!=*request {return Err(VoiceDialogueRecorderError::Conflict);}
             if record.projected {
-                if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+                if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert((session.into(), record.conversation_id.clone(), turn.clone())); }
             }
             return match &record.output {
                 Some(content) if record.projected=>Ok(VoiceDialoguePreflight::Cached{content:content.clone()}),
@@ -842,8 +842,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     record.assistant_message_id = Some(projection.assistant_message.message_id.clone());
                     records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
                     self.save_records(&records)?;
-                    if let Some(turn) = &request.turn_id { self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone(), (projection.user_message.map(|row|row.message_id), projection.assistant_message.message_id)); }
-                    if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+                    if let (Some(session), Some(turn)) = (&request.session_id, &request.turn_id) {
+                        let key = (session.clone(), conversation_id.to_owned(), turn.clone());
+                        self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(key.clone(), (projection.user_message.map(|row|row.message_id), projection.assistant_message.message_id));
+                        self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(key);
+                    }
                     return Ok(());
                 }
                 Err(nomifun_common::AppError::Conflict(ref msg)) if msg.contains("epoch") || msg.contains("revision") => {
@@ -901,8 +904,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         records.iter_mut().find(|r|r.request.voice_record_id==request.voice_record_id).unwrap().assistant_message_id = Some(assistant_message_id.clone());
         records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
         self.save_records(&records)?;
-        if let Some(turn) = &request.turn_id { self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone(), (Some(user_message_id), assistant_message_id)); }
-        if let Some(turn) = &request.turn_id { self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(turn.clone()); }
+        if let (Some(session), Some(turn)) = (&request.session_id, &request.turn_id) {
+            let key = (session.clone(), conversation_id.to_owned(), turn.clone());
+            self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(key.clone(), (Some(user_message_id), assistant_message_id));
+            self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(key);
+        }
         Ok(())
     }
 
@@ -1497,13 +1503,21 @@ impl VoiceCompanionProcessManager {
                 // Playback and approval listening never hold up deadline/receipt observation.
                 // One owned speech job keeps notices bounded and gives terminal/approval work priority.
                 if speech.as_ref().is_none_or(|job|job.is_finished()) {
-                    if let (Some(task),Some(confirmation))=(active.clone(),approval) {
-                        let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.notify_confirmation(&task,&confirmation).await {owner.project_task_error(code);}}));
-                    } else if let Ok(Some((task,goal)))=tasks.pending_result() {
-                        manager.task_feedback.lock().unwrap_or_else(|e|e.into_inner()).clear_pending();
-                        let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.notify_task_result(&task,&goal).await {owner.project_task_error(code);}}));
-                    } else if let Some(task)=active.filter(|task|task.status==VoiceTaskStatus::Accepted) {
-                        let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.maybe_notify_task_progress(&task).await {owner.project_task_error(code);}}));
+                    // Recover the binding after a missed SSE frame/reconnect before selecting a notice.
+                    if manager.snapshot().binding.is_none() && active.is_some() {
+                        let _ = manager.refresh_daemon_snapshot().await;
+                    }
+                    let active_binding = manager.snapshot().binding;
+                    if let Some(binding) = active_binding {
+                        let conv_id = binding.conversation_id.clone();
+                        if let (Some(task),Some(confirmation))=(active.clone().filter(|t| t.conversation_id.as_deref() == Some(conv_id.as_str())),approval) {
+                            let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.notify_confirmation(&task,&confirmation).await {owner.project_task_error(code);}}));
+                        } else if let Ok(Some((task,goal)))=tasks.pending_result_for_conversation(&conv_id) {
+                            manager.task_feedback.lock().unwrap_or_else(|e|e.into_inner()).clear_pending();
+                            let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.notify_task_result(&task,&goal).await {owner.project_task_error(code);}}));
+                        } else if let Some(task)=active.filter(|task|task.conversation_id.as_deref() == Some(conv_id.as_str()) && task.status==VoiceTaskStatus::Accepted) {
+                            let owner=manager.clone();speech=Some(tokio::spawn(async move {if let Err(code)=owner.maybe_notify_task_progress(&task).await {owner.project_task_error(code);}}));
+                        }
                     }
                 }
                 drop(manager);
@@ -1526,6 +1540,8 @@ impl VoiceCompanionProcessManager {
         if !snapshot.enabled || snapshot.connection != VoiceConnectionState::Connected {
             return Ok(());
         }
+        let Some(binding) = &snapshot.binding else { return Ok(()); };
+        if task.conversation_id.as_deref() != Some(binding.conversation_id.as_str()) { return Ok(()); }
 
         // Priority 1: Check active tool confirmation
         if snapshot.confirmation.is_some() {
@@ -1541,6 +1557,9 @@ impl VoiceCompanionProcessManager {
             Ok(source) => source,
             Err(_) => return Ok(()),
         };
+        if source.session_id.as_deref() != Some(&binding.session_id) {
+            return Ok(());
+        }
         if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected)
@@ -1582,9 +1601,12 @@ impl VoiceCompanionProcessManager {
         if !matches!(task.status,VoiceTaskStatus::Completed|VoiceTaskStatus::Failed)
             || !snapshot.enabled || snapshot.connection!=VoiceConnectionState::Connected
         {return Ok(());}
+        let Some(binding) = &snapshot.binding else { return Ok(()); };
+        if task.conversation_id.as_deref() != Some(binding.conversation_id.as_str()) { return Ok(()); }
         let tasks = self.tasks.as_ref().ok_or("runtime_unavailable")?;
         if tasks.announcement_claimed(&task.command_id)? {return Ok(());}
         let source = match self.refresh_daemon_snapshot().await {Ok(source) => source,Err(_) => return Ok(())};
+        if source.session_id.as_deref() != Some(&binding.session_id) { return Ok(()); }
         if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected) {return Ok(());}
@@ -1661,13 +1683,15 @@ impl VoiceCompanionProcessManager {
         if request.instance_id!=scope.instance_id || scope.session_id.as_deref()!=Some(&request.session_id) || scope.turn_id.as_deref()!=Some(&request.turn_id) {return Err("task_scope_changed".into());}
         if !scope.enabled || scope.connection!=VoiceConnectionState::Connected {return Err("daemon_unavailable".into());}
         if scope.ended_reason==Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop) {return Err("task_scope_changed".into());}
+        let Some(binding) = &scope.binding else { return Err("binding_invalid".into()); };
         self.reconcile_announcements().await?;
         let tasks = self.tasks.as_ref().ok_or("runtime_unavailable")?;
         let task = tasks.status_for(command_id).await?;
+        if task.conversation_id.as_deref() != Some(binding.conversation_id.as_str()) { return Err("task_command_conflict".into()); }
         if !matches!(task.status, VoiceTaskStatus::Completed | VoiceTaskStatus::Failed) {
             return Err("task_not_terminal".into());
         }
-        let goal = tasks.pending_result().ok().flatten()
+        let goal = tasks.pending_result_for_conversation(&binding.conversation_id).ok().flatten()
             .and_then(|(t, g)| (t.command_id == command_id).then_some(g))
             .unwrap_or_else(|| "先前任务".into());
         // Unclaim so next claim generates a new attempt_id
@@ -1680,8 +1704,11 @@ impl VoiceCompanionProcessManager {
         let snapshot=self.snapshot();
         if !snapshot.enabled || snapshot.connection!=VoiceConnectionState::Connected
             || confirmation.expires_at_ms<=nomifun_common::now_ms() {return Ok(());}
+        let Some(binding) = &snapshot.binding else { return Ok(()); };
+        if task.conversation_id.as_deref() != Some(binding.conversation_id.as_str()) { return Ok(()); }
         if self.prompted_approvals.lock().unwrap_or_else(|error|error.into_inner()).contains(&confirmation.approval_id){return Ok(());}
         let source=match self.refresh_daemon_snapshot().await {Ok(source)=>source,Err(_)=>return Ok(())};
+        if source.session_id.as_deref() != Some(&binding.session_id) { return Ok(()); }
         if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected) {return Ok(());}
@@ -1891,8 +1918,30 @@ impl VoiceCompanionProcessManager {
         if !response.status().is_success() {return Err("daemon_unavailable".into());}
         let source: VoiceSessionSnapshot = response.json().await.map_err(|_| "daemon_unavailable")?;
         if generation != self.generation.load(Ordering::Acquire) { return Err("task_scope_changed".into()); }
-        self.project(source.clone(), generation);
+        self.project_with_binding(source.clone(), generation).await;
         Ok(source)
+    }
+
+    async fn project_with_binding(&self, source: VoiceSessionSnapshot, generation: u64) {
+        self.project(source.clone(), generation);
+        if generation != self.generation.load(Ordering::Acquire) { return; }
+        if let (Some(recorder), Some(session)) = (&self.dialogue_recorder, &source.session_id) {
+            if matches!(source.phase, VoiceSessionPhase::Listening | VoiceSessionPhase::Transcribing | VoiceSessionPhase::Deciding)
+                && self.snapshot().binding.is_none() {
+                match recorder.freeze_session(session, source.call_request_id.as_deref()).await {
+                    Ok(Some(binding)) => {
+                        let mut current = self.snapshot.write().unwrap_or_else(|e|e.into_inner());
+                        if generation == self.generation.load(Ordering::Acquire) && current.session_id.as_ref() == Some(session) {
+                            current.binding = Some(binding);
+                            current.seq += 1;
+                            let _ = self.events.send(current.clone());
+                        }
+                    },
+                    Err(_) => self.project_task_error("binding_invalid".into()),
+                    _ => {},
+                }
+            }
+        }
     }
 
     fn requested_feedback(&self) -> Result<VoiceFeedbackConfig, String> {
@@ -2037,13 +2086,19 @@ impl VoiceCompanionProcessManager {
         source_snapshot.confirmation=snapshot.confirmation.clone();
         source_snapshot.task_ready = snapshot.task_ready;
         source_snapshot.task_error_code = snapshot.task_error_code.clone();
-        source_snapshot.projected_turn_ids = source_snapshot.conversation.iter()
-            .filter(|turn| self.dialogue_recorder.as_ref().is_some_and(|recorder|recorder.is_projected(&turn.turn_id)))
-            .map(|turn|turn.turn_id.clone()).collect();
-        for turn in &mut source_snapshot.conversation {
-            if let Some((user, assistant)) = self.dialogue_recorder.as_ref().and_then(|recorder|recorder.projected_message_ids(&turn.turn_id)) {
-                turn.user_message_id = user;
-                turn.assistant_message_id = Some(assistant);
+        source_snapshot.conversation.retain(|turn| turn.session_id.is_some() && turn.session_id == source_snapshot.session_id);
+        source_snapshot.projected_turn_ids.clear();
+        if let Some(binding) = &source_snapshot.binding {
+            for turn in &mut source_snapshot.conversation {
+                if let Some(recorder) = &self.dialogue_recorder {
+                    if recorder.is_projected(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
+                        source_snapshot.projected_turn_ids.push(turn.turn_id.clone());
+                    }
+                    if let Some((user, assistant)) = recorder.projected_message_ids(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
+                        turn.user_message_id = user;
+                        turn.assistant_message_id = Some(assistant);
+                    }
+                }
             }
         }
         // Fresh daemon audio snapshots must not erase the last readable reply.
@@ -2172,20 +2227,7 @@ impl VoiceCompanionProcessManager {
                                 if let Ok(VoiceCompanionEvent::Snapshot { snapshot }) =
                                     serde_json::from_str(&data)
                                 {
-                                    manager.project(snapshot.clone(), generation);
-                                    if let (Some(recorder),Some(session))=(&manager.dialogue_recorder,&snapshot.session_id) {
-                                        if matches!(snapshot.phase,VoiceSessionPhase::Listening|VoiceSessionPhase::Transcribing|VoiceSessionPhase::Deciding)
-                                            && manager.snapshot().binding.is_none() {
-                                            match recorder.freeze_session(session, snapshot.call_request_id.as_deref()).await {
-                                                Ok(Some(binding))=>{
-                                                    let mut current=manager.snapshot.write().unwrap_or_else(|e|e.into_inner());
-                                                    if current.session_id.as_ref()==Some(session) {current.binding=Some(binding);current.seq+=1;let _=manager.events.send(current.clone());}
-                                                },
-                                                Err(_)=>manager.project_task_error("binding_invalid".into()),
-                                                _=>{},
-                                            }
-                                        }
-                                    }
+                                    manager.project_with_binding(snapshot, generation).await;
                                 }
                             }
                         }
@@ -3627,6 +3669,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn voice_projection_rejects_missing_and_foreign_turn_sessions_without_dropping_valid_speech() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path());
+        manager.snapshot.write().unwrap().binding = Some(nomifun_api_types::voice::VoiceBindingSnapshot {
+            session_id: "session-b".into(), binding_id: "binding-b".into(), conversation_id: "conversation-b".into(),
+            workspace: None, memory_owner_companion_id: None,
+        });
+        let turn = |session: Option<&str>, id: &str| nomifun_api_types::voice::VoiceConversationTurn {
+            session_id: session.map(str::to_owned), turn_id: id.into(), user_text: Some(id.into()), ..Default::default()
+        };
+        manager.project(VoiceSessionSnapshot {
+            instance_id: "daemon".into(), seq: 1, session_id: Some("session-b".into()), turn_id: Some("valid".into()),
+            conversation: vec![turn(None, "missing"), turn(Some("session-a"), "foreign"), turn(Some("session-b"), "valid")],
+            ..Default::default()
+        }, 0);
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.conversation.len(), 1);
+        assert_eq!(snapshot.conversation[0].turn_id, "valid");
+        assert_eq!(snapshot.conversation[0].session_id.as_deref(), Some("session-b"));
+    }
+
+    #[tokio::test]
+    async fn voice_foreign_result_and_approval_are_rejected_before_notification_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path());
+        {
+            let mut snapshot = manager.snapshot.write().unwrap();
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+            snapshot.session_id = Some("session-b".into());
+            snapshot.binding = Some(nomifun_api_types::voice::VoiceBindingSnapshot {
+                session_id: "session-b".into(), binding_id: "binding-b".into(), conversation_id: "conversation-b".into(),
+                workspace: None, memory_owner_companion_id: None,
+            });
+        }
+        let task = VoiceTaskSnapshot {
+            command_id: "command-a".into(), session_id: "session-a".into(), acoustic_turn_id: "turn-a".into(),
+            conversation_id: Some("conversation-a".into()), message_id: Some("message-a".into()), runtime_turn_id: None,
+            status: VoiceTaskStatus::Completed, result_ok: Some(true), result_text: Some("A private result".into()), error_code: None,
+        };
+        assert!(manager.notify_task_result(&task, "A private goal").await.is_ok());
+        let approval = VoiceToolConfirmation {
+            approval_id: "approval-a".into(), msg_id: "message-a".into(), call_id: "call-a".into(), tool_name: "Write".into(),
+            arguments: serde_json::json!({"path":"a.txt"}), expires_at_ms: i64::MAX,
+        };
+        assert!(manager.notify_confirmation(&task, &approval).await.is_ok());
+        assert!(manager.prompted_approvals.lock().unwrap().is_empty());
+        assert_eq!(manager.snapshot().session_id.as_deref(), Some("session-b"));
+        assert!(manager.snapshot().assistant_text.is_none());
+    }
+
+    #[test]
     fn audio_recovery_retries_devices_with_backoff_without_restarting_model_failures_or_speech() {
         use nomifun_api_types::voice::{VoiceAudioDiagnostics,VoiceSessionEndReason};
         let mut retry=AudioRecovery::default();
@@ -3681,7 +3775,7 @@ mod tests {
         manager.write_autostart_config(true).unwrap();
         let old=VoiceSessionSnapshot {instance_id:"old-daemon".into(),seq:1,session_id:Some("old-session".into()),turn_id:Some("old-turn".into()),
             user_text:Some("读取文件".into()),assistant_text:Some("文件里的真实结果".into()),
-            conversation:vec![nomifun_api_types::voice::VoiceConversationTurn {turn_id:"old-turn".into(),user_text:Some("读取文件".into()),assistant_text:Some("文件里的真实结果".into()),..Default::default()}],..Default::default()};
+            conversation:vec![nomifun_api_types::voice::VoiceConversationTurn {session_id:Some("old-session".into()),turn_id:"old-turn".into(),user_text:Some("读取文件".into()),assistant_text:Some("文件里的真实结果".into()),..Default::default()}],..Default::default()};
         manager.project(old,0);
         let old_scope=VoiceSessionControlRequest {instance_id:manager.snapshot().instance_id,session_id:Some("old-session".into()),turn_id:Some("old-turn".into())};
         manager.generation.store(1,Ordering::Release);

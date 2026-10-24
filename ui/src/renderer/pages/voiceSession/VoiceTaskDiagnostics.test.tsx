@@ -13,7 +13,7 @@ for(const [locale,dict] of [['zh-CN',zh],['en-US',en]] as const){
   test(locale+': execution, health and actual playback stay distinct',async()=>{
     const i18n=createInstance();await i18n.init({lng:locale,resources:{[locale]:{translation:{voice:dict}}},initImmediate:false});
     for(const status of ['pending','dispatched','started','failed','played','interrupted','muted','unknown','suppressed'] as const){
-      const snapshot={instance_id:'host',enabled:true,connection:'connected',session_id:'s',turn_id:'t',binding:{session_id:'s',binding_id:'b',conversation_id:'c',workspace:'D:/owned'},task:{command_id:'command',status:'completed'},task_progress:{command_id:'command',stage:'tool',health:'no_recent_progress'},task_notification:{command_id:'command',status}} as unknown as VoiceSnapshot;
+      const snapshot={instance_id:'host',enabled:true,connection:'connected',session_id:'s',turn_id:'t',binding:{session_id:'s',binding_id:'b',conversation_id:'c',workspace:'D:/owned'},task:{command_id:'command',conversation_id:'c',status:'completed'},task_progress:{command_id:'command',stage:'tool',health:'no_recent_progress'},task_notification:{command_id:'command',status}} as unknown as VoiceSnapshot;
       const html=renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceTaskDiagnostics snapshot={snapshot}/></I18nextProvider>);
       expect(html).toContain(dict.notification[status]);expect(html).toContain(dict.progress.no_recent_progress);expect(html).toContain('D:/owned');expect(html).toContain(dict.notification.replay);expect(html).not.toContain('voice.');
       if(status==='failed')expect(html).not.toContain(dict.notification.played);

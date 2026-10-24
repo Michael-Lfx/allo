@@ -1,4 +1,11 @@
 {
+  "composer": {
+    "queued": "{{count}} queued",
+    "historyFailed": "History sync failed; current text is preserved",
+    "retryHistory": "Retry sync",
+    "resetScopeUnavailable": "Voice status is still syncing. Nothing was cleared; please retry shortly.",
+    "retryStart": "Check call startup"
+  },
   "pet": {
     "more": "{{count}} more"
   },
@@ -412,7 +419,8 @@
     "plainTextOnly": "Voice conversation queues currently accept plain text. Remove attachments or selected skills before sending."
   },
   "entry": {
-    "start": "Start voice conversation",
+    "start": "Voice call",
+    "listMarker": "Voice conversation",
     "openActive": "Open active voice conversation",
     "voiceCall": "Voice Call",
     "voiceConnecting": "Connecting…",

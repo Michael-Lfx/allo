@@ -11,6 +11,7 @@ import { CheckOne, CloseOne, Info } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
+import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
 import VoiceDialogueStatusSection from './VoiceDialogueStatus';
@@ -959,7 +960,6 @@ const VoiceSettings: React.FC = () => {
           </SettingsList>
         </SettingsSection>
 
-        <VoiceDialogueStatusSection />
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
         <p className='m-0 text-12px text-t-secondary' role='status'>
           {voiceSnapshot?.tts ? t('voice.presentation.ttsActual', {
@@ -985,6 +985,7 @@ const VoiceSettings: React.FC = () => {
               </summary>
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
+                <VoiceDialogueStatusSection />
                 <SettingsList>
                   <SettingsRow
                     label={t('voice.session.tryWake')}
@@ -1106,20 +1107,7 @@ const VoiceSettings: React.FC = () => {
                     </div>
 
                     <VoiceAudioStatus snapshot={voiceSnapshot} />
-
-                    <div className='rounded-6px border border-solid border-primary-2 bg-fill-2 p-3.5 text-12px'>
-                      <div className='flex items-center gap-2 font-medium text-primary-7'>
-                        <Info theme='filled' size='14' />
-                        <span>{t('voice.dashboard.tipTitle')}</span>
-                      </div>
-                      <div className='mt-1 text-t-secondary leading-relaxed'>
-                        {t('voice.dashboard.tipContent')}
-                      </div>
-                      <div className='mt-2.5 flex flex-wrap items-center gap-2 pt-2 border-t border-t-solid border-[var(--border-base)] text-11px text-t-tertiary'>
-                        <span className='font-medium text-t-secondary'>{t('voice.dashboard.activeKeywordsTitle')}:</span>
-                        <span>{t('voice.dashboard.activeKeywordsList')}</span>
-                      </div>
-                    </div>
+                    <VoiceTaskDiagnostics key={`${voiceSnapshot?.instance_id}:${voiceSnapshot?.binding?.conversation_id}:${voiceSnapshot?.task?.command_id}`} snapshot={voiceSnapshot} />
 
                     <div className='flex flex-col gap-2'>
                       <div className='flex items-center justify-between text-12px text-t-secondary'>

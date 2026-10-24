@@ -140,3 +140,10 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
   });
 });
 
+
+test('voice settings keep model identifiers inside advanced diagnostics and remove wake overclaims',()=>{
+ const source=readFileSync(componentUrl,'utf8');
+ expect(source.indexOf('<VoiceDialogueStatusSection')).toBeGreaterThan(source.indexOf("voice.diagnostics.advancedTitle"));
+ expect(source).not.toContain('voice.dashboard.tipContent');
+ expect(source).not.toContain('voice.dashboard.activeKeywordsList');
+});

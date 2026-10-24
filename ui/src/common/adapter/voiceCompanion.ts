@@ -40,7 +40,7 @@ export interface VoiceSnapshot {
   playback_ready: boolean;
   listening_deadline_ms?: number | null;
   follow_up_deadline_ms?: number | null;
-  conversation?: Array<{ turn_id: string; user_message_id?: string | null; assistant_message_id?: string | null; user_text: string | null; understood_request?: string | null; assistant_text: string | null; model_text: string | null; reply_state?: 'streaming' | 'complete' | 'interrupted' | null; error?: VoiceSnapshot['error'] }>;
+  conversation?: Array<{ turn_id: string; session_id?: string | null; user_message_id?: string | null; assistant_message_id?: string | null; user_text: string | null; understood_request?: string | null; assistant_text: string | null; model_text: string | null; reply_state?: 'streaming' | 'complete' | 'interrupted' | null; error?: VoiceSnapshot['error'] }>;
   audio?: {
     rms_milli: number;
     peak_milli: number;
@@ -320,26 +320,48 @@ export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceC
   return response.json() as Promise<VoiceCallStartResponse>;
 }
 
-let pendingCallIntent: {request:VoiceCallStartRequest; inFlight:Promise<VoiceCallStartResponse>|null} | null = null;
+let pendingCallIntent: {request:VoiceCallStartRequest; conversationId:string|null; inFlight:Promise<VoiceCallStartResponse>|null} | null = null;
+const callIntentListeners = new Set<()=>void>();
+export const getPendingVoiceCallIntent = () => pendingCallIntent?.request ?? null;
+export const getPendingVoiceCallConversationId = () => pendingCallIntent?.conversationId ?? null;
+export function subscribeVoiceCallIntent(listener:()=>void) {
+  callIntentListeners.add(listener);
+  return ()=>{callIntentListeners.delete(listener);};
+}
+function clearPendingCallIntent() {
+  pendingCallIntent=null;
+  callIntentListeners.forEach(listener=>listener());
+}
 function reconcilePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): void {
   if (pendingCallIntent && snapshot.call_request_id === pendingCallIntent.request.request_id &&
       snapshot.session_id && (stopConfirmed || snapshot.ended_reason || snapshot.binding?.session_id === snapshot.session_id)) {
-    pendingCallIntent = null;
+    clearPendingCallIntent();
   }
 }
 /** One unresolved start owns its target and mode, including across renderer route changes. */
 export function startVoiceCallIntent(target:VoiceCallTarget, session_mode?:VoiceCallStartRequest['session_mode']):Promise<VoiceCallStartResponse> {
-  if (pendingCallIntent && (JSON.stringify(pendingCallIntent.request.target)!==JSON.stringify(target) || pendingCallIntent.request.session_mode!==session_mode)) {
+  const resumeResolvedTarget = pendingCallIntent && target.kind === 'voice_conversation'
+    && pendingCallIntent.conversationId === target.conversation_id
+    && (session_mode === undefined || session_mode === pendingCallIntent.request.session_mode);
+  if (pendingCallIntent && !resumeResolvedTarget && (JSON.stringify(pendingCallIntent.request.target)!==JSON.stringify(target) || pendingCallIntent.request.session_mode!==session_mode)) {
     return Promise.reject(Object.assign(new Error('voice_call_starting'),{code:'voice_call_starting'}));
   }
-  const intent: NonNullable<typeof pendingCallIntent> = pendingCallIntent ??= {request:{request_id:crypto.randomUUID(),target,session_mode},inFlight:null};
+  if (!pendingCallIntent) {
+    pendingCallIntent={request:{request_id:crypto.randomUUID(),target,session_mode},conversationId:target.kind==='voice_conversation'?target.conversation_id:null,inFlight:null};
+    callIntentListeners.forEach(listener=>listener());
+  }
+  const intent = pendingCallIntent;
   if (!intent.inFlight) intent.inFlight = startVoiceCall(intent.request).then(result=>{
-    if(result.status!=='starting' && pendingCallIntent===intent) pendingCallIntent=null;
+    if (result.status==='starting' && pendingCallIntent===intent && intent.conversationId!==result.conversation_id) {
+      intent.conversationId=result.conversation_id;
+      callIntentListeners.forEach(listener=>listener());
+    }
+    if(result.status!=='starting' && pendingCallIntent===intent) clearPendingCallIntent();
     return result;
   }).catch(error=>{
     const known = error as {status?:number;code?:string};
     if ((known.status && known.status<500) || known.code==='daemon_wake_rejected' || known.code==='voice_call_already_stopped' || known.code==='voice_call_conflict') {
-      if(pendingCallIntent===intent)pendingCallIntent=null;
+      if(pendingCallIntent===intent)clearPendingCallIntent();
     }
     throw error;
   }).finally(()=>{intent.inFlight=null;});

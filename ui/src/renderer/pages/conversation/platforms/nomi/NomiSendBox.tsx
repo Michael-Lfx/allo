@@ -6,10 +6,12 @@ import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
 import { sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
-import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
-import VoiceConversationBar from '@renderer/pages/voiceSession/VoiceConversationBar';
+import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
+import VoiceComposerStatus from '@renderer/pages/voiceSession/VoiceComposerStatus';
 import {stopDisplayedVoiceTask} from '@renderer/pages/voiceSession/stopVoiceTask';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
+import {isVoiceConversation as classifyVoiceConversation} from '../../utils/isVoiceConversation';
 import { useSWRConfig } from 'swr';
 import {
   dispatchNomiSend,
@@ -235,6 +237,9 @@ const NomiSendBox: React.FC<{
    */
   hideModeSelector?: boolean;
   hideModelSelector?: boolean;
+  voiceHistoryFailed?: boolean;
+  onRetryVoiceHistory?: () => Promise<void>;
+  voiceKind?: ConversationVoiceKind;
 }> = ({
   conversation_id,
   modelSelection,
@@ -245,6 +250,9 @@ const NomiSendBox: React.FC<{
   turnActivity,
   hideModeSelector,
   hideModelSelector = false,
+  voiceHistoryFailed = false,
+  onRetryVoiceHistory,
+  voiceKind,
 }) => {
   const navigate = useNavigate();
   const [workspacePath, setWorkspacePath] = useState('');
@@ -253,9 +261,9 @@ const NomiSendBox: React.FC<{
     kind: ConversationVoiceKind;
   }>({ id: conversation_id, kind: 'unknown' });
   const conversationVoiceKind =
-    voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown';
+    voiceKind ?? (voiceConversation.id === conversation_id ? voiceConversation.kind : 'unknown');
   const isVoiceConversation = conversationVoiceKind === 'voice';
-  const { snapshot: voiceSnapshot } = useVoiceSnapshot(isVoiceConversation);
+  const { snapshot: voiceSnapshot, failed: voiceFailed } = useVoiceSnapshot(isVoiceConversation);
   const activeVoiceConversationId = voiceSnapshot?.binding?.conversation_id;
   const isCallActiveGlobally =
     Boolean(voiceSnapshot?.session_id) &&
@@ -270,6 +278,8 @@ const NomiSendBox: React.FC<{
     Boolean(activeVoiceConversationId) &&
     activeVoiceConversationId !== conversation_id;
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
+  const pendingCallConversationId=usePendingVoiceCallConversationId();
+  const isVoiceStartUncertain=Boolean(!isVoiceActive && pendingCallConversationId===conversation_id);
   const voiceSendAttempts = useRef(new Map<string, string>());
   const [currentMode, setCurrentMode] = useState<string | undefined>(session_mode);
   const [currentReasoningEffort, setCurrentReasoningEffort] = useState<string | undefined>(
@@ -380,9 +390,11 @@ const NomiSendBox: React.FC<{
       return;
     }
     setIsVoiceConnecting(true);
+    const generation=lifecycleGenerationRef.current;
     try {
       await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id });
     } catch (err: unknown) {
+      if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
       const errorObj = err as { code?: string; active_conversation_id?: string } | undefined;
       if (errorObj?.code === 'voice_call_conflict') {
         Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
@@ -393,7 +405,7 @@ const NomiSendBox: React.FC<{
         Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
       }
     } finally {
-      setIsVoiceConnecting(false);
+      if (mountedRef.current && lifecycleGenerationRef.current===generation) setIsVoiceConnecting(false);
     }
   }, [conversation_id, isVoiceActiveElsewhere, activeVoiceConversationId, navigate, t]);
 
@@ -525,9 +537,10 @@ const NomiSendBox: React.FC<{
 
   useEffect(() => {
     let disposed = false;
+    if (voiceKind && voiceKind !== 'unknown') return;
     const cached = cache.get(`conversation/${conversation_id}`)?.data as TChatConversation | undefined;
     if (cached && cached.id === conversation_id) {
-      const isVoice = Boolean(cached.extra && 'voice' in cached.extra && cached.extra.voice === true);
+      const isVoice = classifyVoiceConversation(cached);
       setVoiceConversation({ id: conversation_id, kind: isVoice ? 'voice' : 'ordinary' });
       if (cached.extra?.workspace) {
         setWorkspacePath(cached.extra.workspace);
@@ -553,7 +566,7 @@ const NomiSendBox: React.FC<{
     return () => {
       disposed = true;
     };
-  }, [conversation_id, cache]);
+  }, [conversation_id, cache, voiceKind]);
 
   useEffect(() => {
     if (!conversationContext?.workspace) return;
@@ -2012,12 +2025,20 @@ const NomiSendBox: React.FC<{
 
   // Clear conversation context (release model context); keeps message records.
   const handleClearContext = async (): Promise<void> => {
-    // Keep queued work behind the post-reset authority read. A clear-context
-    // response must not race a late send and reopen the old turn locally.
-    pause();
-    resetActiveExecution('external-reset');
+    const generation = lifecycleGenerationRef.current;
     try {
-      await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      const clearContext = async () => {
+        // Keep queued work behind the post-reset authority read.
+        pause();
+        resetActiveExecution('external-reset');
+        await ipcBridge.conversation.clearContext.invoke({ conversation_id });
+      };
+      if (isVoiceConversation) await resetVoiceHistory(voiceSnapshot, conversation_id, clearContext);
+      else await clearContext();
+      if (isVoiceConversation) {
+        emitter.emit('conversation.messages.refresh', {conversationId: conversation_id, reason: 'reset'});
+      }
+      if (!mountedRef.current || lifecycleGenerationRef.current !== generation) return;
       resume();
       Message.success({
         content: t('conversation.clearContext.success', { defaultValue: 'Context cleared' }),
@@ -2025,6 +2046,11 @@ const NomiSendBox: React.FC<{
         closable: true,
       });
     } catch (error) {
+      if (!mountedRef.current || lifecycleGenerationRef.current !== generation) return;
+      if (error instanceof Error && error.message === 'voice_reset_scope_unavailable') {
+        Message.info(t('voice.composer.resetScopeUnavailable'));
+        return;
+      }
       console.warn('[NomiSendBox] clear context failed', error);
       // Preserve the messages and leave the queue paused until the user
       // explicitly resumes after the reset outcome is known.
@@ -2040,7 +2066,9 @@ const NomiSendBox: React.FC<{
     await runConversationResetSingleFlight({
       inFlightRef: resetInFlightRef,
       conversationId: conversation_id,
-      invokeReset: (params) => ipcBridge.conversation.reset.invoke(params),
+      invokeReset: (params) => isVoiceConversation
+        ? resetVoiceHistory(voiceSnapshot, conversation_id, () => ipcBridge.conversation.reset.invoke(params))
+        : ipcBridge.conversation.reset.invoke(params),
       onStart: () => {
         setIsResettingConversation(true);
       },
@@ -2051,7 +2079,7 @@ const NomiSendBox: React.FC<{
         ) {
           return;
         }
-        commitAuthoritativeConversationReset(conversation_id);
+        if (!isVoiceConversation) commitAuthoritativeConversationReset(conversation_id);
         const operation = getEditResubmitOperation(conversation_id);
         if (operation) {
           clearEditingMessageByOperation(conversation_id, operation.operationId);
@@ -2074,6 +2102,10 @@ const NomiSendBox: React.FC<{
         ) {
           return;
         }
+        if (error instanceof Error && error.message === 'voice_reset_scope_unavailable') {
+          Message.info(t('voice.composer.resetScopeUnavailable'));
+          return;
+        }
         console.warn('[NomiSendBox] explicit conversation reset failed', error);
         Message.error(t('conversation.editMessage.resetFailed'));
       },
@@ -2086,7 +2118,7 @@ const NomiSendBox: React.FC<{
         }
       },
     });
-  }, [conversation_id, t]);
+  }, [conversation_id, t, isVoiceConversation, voiceSnapshot]);
 
   const modelUnavailable =
     !hideModelSelector &&
@@ -2161,17 +2193,20 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
-      {isVoiceConversation&&<VoiceConversationBar conversationId={conversation_id} showHangup={Boolean(content.trim())||uploadFile.length>0||isBusy}/>}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
         isVoiceConversation={isVoiceConversation}
+        footer={isVoiceConversation?<VoiceComposerStatus conversationId={conversation_id} snapshot={voiceSnapshot}
+          failed={voiceFailed} historyFailed={voiceHistoryFailed} onRetryHistory={onRetryVoiceHistory}/>:undefined}
         isVoiceActive={isVoiceActive}
+        isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}
+        isVoiceStartUncertain={isVoiceStartUncertain}
         onStartVoiceCall={handleStartVoiceCall}
         onStopVoiceCall={handleStopVoiceCall}
         showPinnedPlan
-        onMobilePlusClick={isMobile ? () => setIsMobileSheetOpen(true) : undefined}
+        onMobilePlusClick={isMobile && !isVoiceConversation ? () => setIsMobileSheetOpen(true) : undefined}
         value={content}
         onChange={handleContentChange}
         selectedWorkspaceItems={atPath}
@@ -2193,18 +2228,18 @@ const NomiSendBox: React.FC<{
         stopPending={voiceStopPending}
         onClearContext={handleClearContext}
         className='z-10'
-        onFilesAdded={handleNomiFilesAdded}
+        onFilesAdded={isVoiceConversation?undefined:handleNomiFilesAdded}
         hasPendingAttachments={uploadFile.length > 0 || atPath.length > 0}
         supportedExts={allSupportedExts}
         defaultMultiLine={!isMobile}
         lockMultiLine={!isMobile}
         tools={
           <div className='composer-toolbar-tools flex items-center min-w-0'>
-            <FileAttachButton
+            {!isVoiceConversation&&<FileAttachButton
               openFileSelector={openFileSelector}
               onLocalFilesAdded={handleNomiFilesAdded}
               loadedMcpStatuses={loadedMcpStatuses}
-            />
+            />}
             {!hideModeSelector && (
               <AgentModeSelector
                 backend='nomi'
@@ -2218,7 +2253,7 @@ const NomiSendBox: React.FC<{
                 beforeRuntimeMutation={prepareRuntimeSync}
               />
             )}
-            <GoalModeChip conversation_id={conversation_id} armed={goalModeArmed} onArmedChange={setGoalModeArmed} />
+            {!isVoiceConversation&&<GoalModeChip conversation_id={conversation_id} armed={goalModeArmed} onArmedChange={setGoalModeArmed} />}
           </div>
         }
         rightTools={
@@ -2344,16 +2379,16 @@ const NomiSendBox: React.FC<{
           ...atPath.map((item) => (typeof item === 'string' ? item : item.path)),
         ]}
         onSend={onSendHandler}
-        onSendWithSkills={onSendWithSkillsHandler}
-        skillChips={skillChips}
-        onSkillChipsChange={setSkillChips}
+        onSendWithSkills={isVoiceConversation?undefined:onSendWithSkillsHandler}
+        skillChips={isVoiceConversation?[]:skillChips}
+        onSkillChipsChange={isVoiceConversation?undefined:setSkillChips}
         onSteer={onSteerHandler}
         steerAvailable
         onEditResubmit={handleEditResubmit}
         slash_commands={slash_commands}
-        onSlashBuiltinCommand={onSlashBuiltinCommand}
-        onAddFiles={openFileSelector}
-        enableGoalMenu
+        onSlashBuiltinCommand={isVoiceConversation?undefined:onSlashBuiltinCommand}
+        onAddFiles={isVoiceConversation?undefined:openFileSelector}
+        enableGoalMenu={!isVoiceConversation}
         goalModeArmed={goalModeArmed}
         onGoalModeChange={setGoalModeArmed}
         allowSendWhileLoading
