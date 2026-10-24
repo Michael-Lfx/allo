@@ -898,6 +898,19 @@ pub trait IConversationRepository: Send + Sync {
         updates: &ConversationRowUpdate,
     ) -> Result<(), DbError>;
 
+    /// Keep lifecycle changes in the same SQLite writer boundary as message admission.
+    async fn retain_voice_placeholder(&self, _user_id: &str, _conversation_id: &str) -> Result<bool, DbError> {
+        Err(DbError::Init("voice placeholder persistence unsupported".into()))
+    }
+
+    async fn finish_voice_placeholder(&self, _user_id: &str, _conversation_id: &str, _discard: bool) -> Result<bool, DbError> {
+        Err(DbError::Init("voice placeholder persistence unsupported".into()))
+    }
+
+    async fn ended_voice_placeholders(&self, _user_id: &str) -> Result<Vec<String>, DbError> {
+        Ok(Vec::new())
+    }
+
     /// Atomically claims a conversation for its one auto-title attempt.
     ///
     /// The name comparison protects an explicitly named conversation and the

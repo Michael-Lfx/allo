@@ -277,11 +277,27 @@ impl ConversationVoiceDialogueRecorder {
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))
     }
 
-    fn update_workspace_interaction(&self, conv_id: &str, now: i64) -> Result<(), VoiceDialogueRecorderError> {
+    async fn update_workspace_interaction(&self, conv_id: &str, now: i64) -> Result<(), VoiceDialogueRecorderError> {
         let mut registry = self.read_workspace_sessions()?;
         let mut changed = false;
+        let conversation = self.conversation_service.get(&self.user_id, conv_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        // Explicit calls publish their automatic reuse pointer only after real
+        // acceptance. The empty key is reserved for the default workspace.
+        if conversation.extra["voice_lifecycle"] == "retained"
+            && let Some(request_id) = conversation.extra.pointer("/voice_creation_request/request_id").and_then(|v| v.as_str()) {
+            let workspace = conversation.extra.get("voice_task_workspace").and_then(|v| v.as_str()).unwrap_or("");
+            if registry.sessions.get(workspace).is_none_or(|entry| entry.last_user_interaction_at <= now) {
+                registry.sessions.insert(workspace.into(), WorkspaceVoiceSessionEntry {
+                    workspace: workspace.into(), conversation_id: conv_id.into(),
+                    creation_key: format!("voice:provisional:{}:{request_id}", self.user_id),
+                    last_user_interaction_at: now,
+                });
+                changed = true;
+            }
+        }
         for entry in registry.sessions.values_mut() {
-            if entry.conversation_id == conv_id {
+            if entry.conversation_id == conv_id && entry.last_user_interaction_at < now {
                 entry.last_user_interaction_at = now;
                 changed = true;
             }
@@ -290,6 +306,19 @@ impl ConversationVoiceDialogueRecorder {
             self.save_workspace_sessions(&registry)?;
         }
         Ok(())
+    }
+
+    async fn retained_default_call(&self) -> Result<Option<String>, VoiceDialogueRecorderError> {
+        let registry = self.read_workspace_sessions()?;
+        let Some(entry) = registry.sessions.get("") else { return Ok(None); };
+        let owner = match &self.companion_service {Some(service) => service.default_companion_id().await, None => None};
+        let row = self.conversation_service.conversation_repo().get(&entry.conversation_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        Ok(row.filter(|row| row.user_id == self.user_id && row.r#type == "nomi")
+            .and_then(|row| serde_json::from_str::<serde_json::Value>(&row.extra).ok())
+            .filter(|extra| extra["voice_lifecycle"] == "retained"
+                && extra.get("memory_owner_companion_id").and_then(|v| v.as_str()) == owner.as_deref())
+            .map(|_| entry.conversation_id.clone()))
     }
 
     async fn resolve_target_conversation(
@@ -378,7 +407,7 @@ impl ConversationVoiceDialogueRecorder {
                         let owner_matches = existing_extra.get("memory_owner_companion_id").and_then(|v|v.as_str()) == default_companion.as_deref();
                         let is_voice_busy = self.conversation_service.is_conversation_busy(&self.user_id, &entry.conversation_id).await.unwrap_or(false);
                         let idle_ms = now.saturating_sub(entry.last_user_interaction_at);
-                        if (owner_matches && idle_ms <= 30 * 60 * 1000) || is_voice_busy {
+                        if existing_extra["voice_lifecycle"] != "discarded" && ((owner_matches && idle_ms <= 30 * 60 * 1000) || is_voice_busy) {
                             entry.last_user_interaction_at = now;
                             registry.sessions.insert(canonical_str.clone(), entry.clone());
                             self.save_workspace_sessions(&registry)?;
@@ -440,6 +469,7 @@ impl ConversationVoiceDialogueRecorder {
             }
         }
 
+        if let Some(id) = self.retained_default_call().await? { return Ok((id, source_id)); }
         let memory_owner = match &self.companion_service {Some(companions)=>companions.default_companion_id().await,None=>None};
         let home = self.conversation_service.ensure_default_voice_conversation_with_mode(&self.user_id,memory_owner.as_deref(),session_mode).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok((home, source_id))
@@ -653,8 +683,53 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         &self,
         target: &nomifun_api_types::voice::VoiceCallTarget,
         session_mode: Option<&str>,
+        request_id: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+        // Share the journal lock with late projections publishing reuse pointers:
+        // registry read/modify/write must not lose another workspace's update.
+        let _guard = self.journal_lock.lock().await;
         match target {
+            nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation { workspace, model, preset_id } => {
+                let memory_owner = match &self.companion_service {
+                    Some(companions) => companions.default_companion_id().await,
+                    None => None,
+                };
+                let canonical_workspace = if let Some(ws) = workspace {
+                    let canonical = nomifun_common::paths::canonicalize_simplified(Path::new(ws))
+                        .map_err(|e| VoiceDialogueRecorderError::WriteFailed(format!("workspace_directory_invalid: {e}")))?;
+                    if !canonical.is_dir() {
+                        return Err(VoiceDialogueRecorderError::WriteFailed(format!(
+                            "workspace_directory_invalid: {} is not a directory",
+                            canonical.display()
+                        )));
+                    }
+                    Some(canonical.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+                let req_id = request_id.filter(|id| !id.trim().is_empty())
+                    .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("voice_start_request_invalid".into()))?;
+                let created = self
+                    .conversation_service
+                    .create_provisional_voice_conversation(
+                        &self.user_id,
+                        memory_owner.as_deref(),
+                        session_mode,
+                        canonical_workspace.as_deref(),
+                        req_id,
+                        model.as_ref(),
+                        preset_id.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        nomifun_common::AppError::Conflict(msg) => {
+                            VoiceDialogueRecorderError::BindingInvalid(msg)
+                        }
+                        _ => VoiceDialogueRecorderError::WriteFailed(e.to_string()),
+                    })?;
+                let frozen_owner = created.extra.get("memory_owner_companion_id").and_then(|v| v.as_str()).map(str::to_owned);
+                Ok((created.conversation_id, frozen_owner))
+            }
             nomifun_api_types::voice::VoiceCallTarget::CurrentSelection => {
                 let context = self.active_window_candidate.read().unwrap_or_else(|e| e.into_inner()).clone();
                 let (id, _) = self.resolve_target_conversation(context.conversation_id, VoiceTargetConfig::default(), context.workspace.as_deref(), session_mode).await?;
@@ -699,6 +774,9 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
                 if let Some(row) = row {
                     let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+                    if extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+                        return Err(VoiceDialogueRecorderError::BindingInvalid("conversation_already_discarded".into()));
+                    }
                     if extra.get("voice").and_then(|v| v.as_bool()) == Some(true) {
                         let memory_owner = extra.get("memory_owner_companion_id").and_then(|v| v.as_str()).map(str::to_owned);
                         return Ok((conversation_id.clone(), memory_owner));
@@ -711,6 +789,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     Some(companions) => companions.default_companion_id().await,
                     None => None,
                 };
+                if let Some(id) = self.retained_default_call().await? { return Ok((id, memory_owner)); }
                 let home = self
                     .conversation_service
                     .ensure_default_voice_conversation_with_mode(&self.user_id, memory_owner.as_deref(), session_mode)
@@ -719,6 +798,40 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 Ok((home, memory_owner))
             }
         }
+    }
+
+    fn set_call_delete_guard(&self, guard: Arc<dyn Fn(&str) -> bool + Send + Sync>) {
+        self.conversation_service.set_voice_call_delete_guard(guard);
+    }
+
+    async fn finish_call_placeholder(&self, conversation_id: &str, request_id: &str) -> Result<bool, VoiceDialogueRecorderError> {
+        let _guard = self.journal_lock.lock().await;
+        let records = self.read_records()?;
+        if !records.iter().any(|r| r.conversation_id == conversation_id && r.request.call_request_id.as_deref() == Some(request_id)) {
+            return Ok(false);
+        }
+        let conversation = self.conversation_service.get(&self.user_id, conversation_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        if conversation.extra.pointer("/voice_creation_request/request_id").and_then(|v| v.as_str()) != Some(request_id) { return Ok(false); }
+        if conversation.extra["voice_lifecycle"] == "retained" {
+            self.update_workspace_interaction(conversation_id, conversation.modified_at).await?;
+        }
+        self.conversation_service.finish_provisional_voice_conversation(&self.user_id, conversation_id, false).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))
+    }
+
+    async fn cleanup_ended_placeholders(&self, selected: Option<&str>, protected: &[String]) -> Result<(), VoiceDialogueRecorderError> {
+        let _guard = self.journal_lock.lock().await;
+        let records = self.read_records()?;
+        let ids = self.conversation_service.ended_voice_placeholders(&self.user_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        for id in ids {
+            if selected == Some(id.as_str()) || protected.contains(&id)
+                || records.iter().any(|r| r.conversation_id == id && r.request.turn_id.is_some() && !r.projected) { continue; }
+            self.conversation_service.discard_provisional_voice_conversation(&self.user_id, &id).await
+                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 
     async fn preflight(&self,request:&VoiceDialogueRequest)->Result<VoiceDialoguePreflight,VoiceDialogueRecorderError> {
@@ -836,7 +949,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             ).await;
             match res {
                 Ok(projection) => {
-                    self.update_workspace_interaction(conversation_id, nomifun_common::now_ms())?;
+                    self.update_workspace_interaction(conversation_id, nomifun_common::now_ms()).await?;
                     let record = records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap();
                     record.message_id = projection.user_message.as_ref().map(|row| row.message_id.clone());
                     record.assistant_message_id = Some(projection.assistant_message.message_id.clone());
@@ -900,7 +1013,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             _ => VoiceDialogueRecorderError::WriteFailed(e.to_string()),
         })?;
 
-        self.update_workspace_interaction(conversation_id, nomifun_common::now_ms())?;
+        self.update_workspace_interaction(conversation_id, nomifun_common::now_ms()).await?;
         records.iter_mut().find(|r|r.request.voice_record_id==request.voice_record_id).unwrap().assistant_message_id = Some(assistant_message_id.clone());
         records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
         self.save_records(&records)?;
@@ -1167,6 +1280,7 @@ pub struct VoiceCompanionProcessManager {
     shutdown_requested: AtomicBool,
     call_start_lock: tokio::sync::Mutex<()>,
     handled_start_requests: std::sync::RwLock<std::collections::HashMap<String, HandledStartOutcome>>,
+    viewed_conversation: RwLock<(u64, Option<String>)>,
 }
 
 static GLOBAL_COMPANION_MANAGER: std::sync::OnceLock<Arc<VoiceCompanionProcessManager>> =
@@ -1174,7 +1288,22 @@ static GLOBAL_COMPANION_MANAGER: std::sync::OnceLock<Arc<VoiceCompanionProcessMa
 
 impl VoiceCompanionProcessManager {
     pub fn register_global(manager: Arc<Self>) {
+        manager.install_call_delete_guard();
         let _ = GLOBAL_COMPANION_MANAGER.set(manager);
+    }
+
+    fn install_call_delete_guard(self: &Arc<Self>) {
+        if let Some(recorder) = &self.dialogue_recorder {
+            let weak = Arc::downgrade(self);
+            recorder.set_call_delete_guard(Arc::new(move |id| weak.upgrade().is_some_and(|manager| manager.conversation_in_call(id))));
+        }
+    }
+
+    fn conversation_in_call(&self, id: &str) -> bool {
+        let snapshot = self.snapshot();
+        (snapshot.session_id.is_some() && snapshot.ended_reason.is_none()
+            && snapshot.binding.as_ref().is_some_and(|b| b.conversation_id == id))
+            || self.dialogue_recorder.as_ref().and_then(|r| r.current_call_reservation()).is_some_and(|r| r.conversation_id == id)
     }
 
     pub fn global() -> Option<Arc<Self>> {
@@ -1209,6 +1338,7 @@ impl VoiceCompanionProcessManager {
             feedback_update_lock: Mutex::new(()),
             call_start_lock: tokio::sync::Mutex::new(()),
             handled_start_requests: std::sync::RwLock::new(std::collections::HashMap::new()),
+            viewed_conversation: RwLock::new((0, None)),
             child: Arc::new(Mutex::new(None)),
             models_manager,
             config_path,
@@ -1258,8 +1388,14 @@ impl VoiceCompanionProcessManager {
     }
 
     pub fn report_window_context(&self, context: VoiceWindowContext) {
+        self.report_voice_view(context.conversation_id.clone(), context.sequence);
         let mut current = self.active_window_candidate.write().unwrap_or_else(|e| e.into_inner());
         if context.sequence > current.sequence { *current = context; }
+    }
+
+    pub fn report_voice_view(&self, conversation_id: Option<String>, sequence: u64) {
+        let mut viewed = self.viewed_conversation.write().unwrap_or_else(|e| e.into_inner());
+        if sequence > viewed.0 { *viewed = (sequence, conversation_id); }
     }
 
     pub fn requested_target(&self) -> VoiceTargetConfig {
@@ -2159,6 +2295,7 @@ impl VoiceCompanionProcessManager {
 
     /// One upstream stream per host, independent of any renderer/page lifecycle.
     fn start_projection(self: &Arc<Self>) {
+        self.install_call_delete_guard();
         if self.projection_started.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -2204,6 +2341,9 @@ impl VoiceCompanionProcessManager {
                                 if manager.shutdown_requested.load(Ordering::Acquire)
                                     || generation!=manager.generation.load(Ordering::Acquire)
                                     || manager.recover_audio_if_needed().await {break;}
+                                if let Err(error) = manager.reconcile_empty_placeholders().await {
+                                    tracing::debug!(%error, "voice placeholder cleanup deferred");
+                                }
                                 continue;
                             },
                             next = stream.next() => next,
@@ -2290,6 +2430,28 @@ impl VoiceCompanionProcessManager {
         } else {
             Err("session_scope_changed".into())
         }
+    }
+
+    async fn reconcile_empty_placeholders(&self) -> Result<(), String> {
+        let _guard = self.call_start_lock.lock().await;
+        let snapshot = self.snapshot();
+        if snapshot.connection != VoiceConnectionState::Connected { return Ok(()); }
+        let Some(recorder) = &self.dialogue_recorder else { return Ok(()); };
+        let mut protected: Vec<String> = match &self.tasks {
+            Some(tasks) => tasks.queue_projection()?.into_iter().filter_map(|item| item.task.conversation_id).collect(),
+            None => Vec::new(),
+        };
+        if let Some(reservation) = recorder.current_call_reservation() { protected.push(reservation.conversation_id); }
+        if let Some(binding) = &snapshot.binding {
+            if snapshot.ended_reason.is_none() { protected.push(binding.conversation_id.clone()); }
+            else if snapshot.session_id.as_deref() == Some(&binding.session_id)
+                && let Some(request_id) = snapshot.call_request_id.as_deref() {
+                recorder.finish_call_placeholder(&binding.conversation_id, request_id).await.map_err(|e| e.to_string())?;
+            }
+        }
+        let (view_sequence, selected) = self.viewed_conversation.read().unwrap_or_else(|e| e.into_inner()).clone();
+        if view_sequence == 0 { return Ok(()); }
+        recorder.cleanup_ended_placeholders(selected.as_deref(), &protected).await.map_err(|e| e.to_string())
     }
 
     pub async fn start_call(
@@ -2458,6 +2620,7 @@ impl VoiceCompanionProcessManager {
                     .is_some_and(|active| nomifun_common::paths::paths_equivalent(Path::new(workspace), Path::new(active))),
                 VoiceCallTarget::CurrentSelection => active_id.is_some(),
                 VoiceCallTarget::DefaultWorkspace => false,
+                VoiceCallTarget::NewVoiceConversation { .. } => false,
             };
             if same_target && active_id.is_some() {
                 return Ok(VoiceCallStartResponse {
@@ -2475,11 +2638,16 @@ impl VoiceCompanionProcessManager {
         }
 
         let (conversation_id, memory_owner) = recorder
-            .resolve_call_target(&request.target, request.session_mode.as_deref())
+            .resolve_call_target(&request.target, request.session_mode.as_deref(), Some(&request.request_id))
             .await
             .map_err(|e| match e {
                 VoiceDialogueRecorderError::WriteFailed(msg) if msg.contains("workspace_directory_invalid") => {
                     (axum::http::StatusCode::BAD_REQUEST, "workspace_directory_invalid".to_string())
+                }
+                VoiceDialogueRecorderError::BindingInvalid(msg) if matches!(msg.as_str(), "conversation_already_discarded" | "voice_call_already_stopped" | "voice_start_request_conflict") => {
+                    (axum::http::StatusCode::CONFLICT, serde_json::json!({
+                        "code": msg,
+                    }).to_string())
                 }
                 VoiceDialogueRecorderError::BindingInvalid(msg) => {
                     (axum::http::StatusCode::BAD_REQUEST, msg)
@@ -4781,7 +4949,7 @@ mod tests {
             async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> {
                 Ok(())
             }
-            async fn resolve_call_target(&self, target: &VoiceCallTarget, _session_mode: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+            async fn resolve_call_target(&self, target: &VoiceCallTarget, _session_mode: Option<&str>, _request_id: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
                 self.resolutions.fetch_add(1, Ordering::SeqCst);
                 match target {
                     VoiceCallTarget::Workspace { workspace } if workspace == "invalid_dir" => {
@@ -4790,6 +4958,7 @@ mod tests {
                     VoiceCallTarget::Workspace { .. } => Ok((self.conversation_id.clone(), self.memory_owner.clone())),
                     VoiceCallTarget::DefaultWorkspace | VoiceCallTarget::CurrentSelection => Ok((self.conversation_id.clone(), self.memory_owner.clone())),
                     VoiceCallTarget::VoiceConversation { conversation_id } => Ok((conversation_id.clone(), self.memory_owner.clone())),
+                    VoiceCallTarget::NewVoiceConversation { .. } => Ok((self.conversation_id.clone(), self.memory_owner.clone())),
                 }
             }
         }

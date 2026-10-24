@@ -344,7 +344,7 @@ test('state sync failure clears when the live stream subsequently delivers readi
   try {
     off = await subscribeVoiceSession((snapshot) => seen.push(snapshot.acoustic_ready), false, (code) => errors.push(code));
     expect(errors[0]).toBe('voice_snapshot_unavailable');
-    controller?.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'Snapshot', payload: { snapshot: { instance_id: 'host', seq: 1, acoustic_ready: true } } }) + '\n\n'));
+    controller?.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'Snapshot', payload: { snapshot: { instance_id: 'readiness-recovery-host', seq: 1, acoustic_ready: true } } }) + '\n\n'));
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(errors.at(-1)).toBe(null);
     expect(seen).toEqual([true]);

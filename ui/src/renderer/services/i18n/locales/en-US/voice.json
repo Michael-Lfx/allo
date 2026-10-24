@@ -4,7 +4,17 @@
     "historyFailed": "History sync failed; current text is preserved",
     "retryHistory": "Retry sync",
     "resetScopeUnavailable": "Voice status is still syncing. Nothing was cleared; please retry shortly.",
-    "retryStart": "Check call startup"
+    "retryStart": "Check call startup",
+    "pill": {
+      "syncing": "Syncing",
+      "connecting": "Connecting",
+      "listening": "Listening",
+      "transcribing": "Transcribing",
+      "deciding": "Thinking",
+      "speaking": "Speaking",
+      "activeElsewhere": "Call active elsewhere",
+      "idle": "Standby"
+    }
   },
   "pet": {
     "more": "{{count}} more"
@@ -426,6 +436,9 @@
     "voiceConnecting": "Connecting…",
     "returnVoiceCall": "Return to Call",
     "returnVoiceCallWorkspace": "Return to Call ({{workspace}})",
+    "callActiveMarker": "In Call",
+    "endBeforeDelete": "End the call before deleting",
+    "moreActions": "More actions",
     "callConflictActive": "Another voice call is already active; switched to active call"
   },
   "presentation": {

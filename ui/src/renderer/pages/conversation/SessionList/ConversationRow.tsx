@@ -7,7 +7,9 @@ import ConversationHoverCard from '@/renderer/pages/conversation/components/Conv
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@/renderer/utils/ui/siderTooltip';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { Checkbox, Dropdown, Menu, Popover, Spin, Tooltip } from '@arco-design/web-react';
-import { DeleteOne, EditOne, Export, MoreOne, Pushpin, Voice } from '@icon-park/react';
+import { DeleteOne, EditOne, Export, MoreOne, Pushpin } from '@icon-park/react';
+import { AudioLines } from 'lucide-react';
+import '../../voiceSession/voiceCallStatus.css';
 import {isVoiceConversation} from '../utils/isVoiceConversation';
 import classNames from 'classnames';
 import React from 'react';
@@ -30,6 +32,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
     selected,
     menuVisible,
     showSessionAge = true,
+    isCallActive = false,
   } = props;
   const layout = useLayoutContext();
   const isMobile = layout?.isMobile ?? false;
@@ -49,6 +52,9 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
   const { t } = useTranslation();
   const isPinned = isConversationPinned(conversation);
   const isVoice = isVoiceConversation(conversation);
+  const moreRef = React.useRef<HTMLButtonElement>(null);
+  const [hoverCardVisible, setHoverCardVisible] = React.useState(false);
+  const [actionsFocused, setActionsFocused] = React.useState(false);
   const cronStatus = getJobStatus(conversation.id);
   const siderTooltipProps = getSiderTooltipProps(tooltipEnabled);
   const ageLabel = formatSessionAgeLabel(t, conversation.created_at);
@@ -111,6 +117,18 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         )}
         onClick={handleRowClick}
         onContextMenu={handleRowContextMenu}
+        tabIndex={batchMode ? -1 : 0}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            onMenuVisibleChange(conversation.id, false);
+            moreRef.current?.focus();
+          } else if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault(); handleRowClick();
+          } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault(); onOpenMenu(conversation);
+          }
+        }}
       >
         {batchMode && (
           <span
@@ -123,7 +141,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             <Checkbox checked={checked} className='session-batch-selection-checkbox' />
           </span>
         )}
-        {isGenerating && !batchMode && <Spin size={16} />}
+        {isGenerating && !batchMode && !isVoice && <Spin size={16} />}
         {showHoverPinnedIcon && (
           <span
             className='absolute left-18px top-1/2 z-1 -translate-y-1/2 text-t-secondary pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity'
@@ -138,19 +156,38 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {!batchMode && !collapsed && capabilityItems.length > 0 && (
           <CapabilityIconCluster items={capabilityItems} size={CAPABILITY_ICON_SIZE} className='shrink-0' />
         )}
+        {/* Type stays visible; the connection dot distinguishes the active call without relying on color. */}
+        {isVoice && (
+          <Tooltip disabled={menuVisible} content={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}>
+            <span
+              className={classNames('relative inline-flex shrink-0 items-center justify-center w-14px', {
+                'text-primary-6': isCallActive,
+                'text-t-secondary': !isCallActive,
+              })}
+              role='img'
+              aria-label={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}
+              data-testid='conversation-voice-marker'
+            >
+              <AudioLines size={14} className={isCallActive ? 'voice-call-wave' : undefined} aria-hidden='true' />
+              {isCallActive && <span className='absolute right-0 bottom-0 size-3px rd-full bg-current' aria-hidden='true' />}
+            </span>
+          </Tooltip>
+        )}
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer
           className='h-24px min-w-0 flex-1 collapsed-hidden'
           containerClassName='flex items-center'
         >
-          <MarqueeText
+          {isVoice ? <Tooltip content={displayName} disabled={menuVisible || actionsFocused}>
+            <span className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-14px font-[500] lh-24px text-t-primary'>{displayName}</span>
+          </Tooltip> : <MarqueeText
             text={displayName}
             trigger='hover'
             title=''
             disabled={collapsed || batchMode || isMobile || menuVisible}
             className='chat-history__item-name block overflow-hidden text-ellipsis whitespace-nowrap min-w-0 text-14px font-[500] lh-24px text-t-primary'
-          />
+          />}
         </FlexFullContainer>
         {/* Keep trailing width in the layout on hover (invisible, not display:none)
             so the title ellipsis width does not flash wider then narrower. */}
@@ -168,7 +205,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           </span>
         )}
         {/* When there is no age/unread meta, still reserve the more-button width. */}
-        {!batchMode && !collapsed && !isMobile && !showDesktopTrailingMeta && (
+        {!batchMode && !collapsed && (isMobile || !showDesktopTrailingMeta) && (
           <span className='w-20px shrink-0' aria-hidden />
         )}
 
@@ -178,20 +215,22 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           </span>
         )}
 
-        {isVoice&&isMobile&&!batchMode&&!collapsed&&<span className='w-20px shrink-0' aria-hidden='true'/>}
         {!batchMode && (
           <div
             className={classNames(
-              'absolute top-1/2 -translate-y-1/2 items-center justify-end !collapsed-hidden',
-              isVoice ? 'right-32px' : 'right-8px',
+              'absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-end transition-opacity',
               {
-                flex: isMobile || menuVisible,
-                'hidden group-hover:flex': !isMobile && !menuVisible,
+                '!collapsed-hidden': !menuVisible,
+                'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto': !isMobile && !menuVisible,
               }
             )}
             onClick={(event) => {
               event.stopPropagation();
             }}
+            onMouseEnter={() => { setActionsFocused(true); setHoverCardVisible(false); }}
+            onMouseLeave={() => setActionsFocused(false)}
+            onFocus={() => { setActionsFocused(true); setHoverCardVisible(false); }}
+            onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setActionsFocused(false); }}
           >
             <Dropdown
               droplist={
@@ -210,7 +249,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
                       return;
                     }
                     if (key === 'delete') {
-                      onDelete(conversation.id);
+                      if (!isCallActive) onDelete(conversation.id);
                     }
                   }}
                 >
@@ -234,10 +273,10 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
                       </div>
                     </Menu.Item>
                   )}
-                  <Menu.Item key='delete'>
+                  <Menu.Item key='delete' disabled={isCallActive}>
                     <div className='flex items-center gap-8px text-[rgb(var(--warning-6))]'>
                       <DeleteOne theme='outline' size='14' />
-                      <span>{t('conversation.history.deleteTitle')}</span>
+                      <span>{t(isCallActive ? 'voice.entry.endBeforeDelete' : 'conversation.history.deleteTitle')}</span>
                     </div>
                   </Menu.Item>
                 </Menu>
@@ -249,30 +288,30 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
               getPopupContainer={() => document.body}
               unmountOnExit={false}
             >
-              <span
+              <button
+                ref={moreRef}
+                type='button'
+                aria-label={t('voice.entry.moreActions')}
+                aria-haspopup='menu'
+                aria-expanded={menuVisible}
                 className={classNames(
-                  'flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn session-action-icon-btn',
-                  {
-                    flex: isMobile || menuVisible,
-                    'hidden group-hover:flex': !isMobile && !menuVisible,
-                  }
+                  'flex-center cursor-pointer transition-colors text-t-secondary hover:text-t-primary size-20px rd-4px sider-action-btn session-action-icon-btn border-none bg-transparent p-0 outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-primary)]',
                 )}
                 onClick={(event) => {
                   event.stopPropagation();
                   onOpenMenu(conversation);
                 }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.stopPropagation();
+                  }
+                }}
               >
-                <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none' />
-              </span>
+                <MoreOne theme='outline' size='14' fill='currentColor' className='block leading-none pointer-events-none' />
+              </button>
             </Dropdown>
           </div>
         )}
-        {isVoice&&<Tooltip content={t('voice.entry.listMarker')}>
-          <span className='inline-flex shrink-0 items-center justify-center w-14px text-t-secondary'
-            role='img' aria-label={t('voice.entry.listMarker')} data-testid='conversation-voice-marker'>
-            <Voice theme='outline' size='14' aria-hidden='true'/>
-          </span>
-        </Tooltip>}
       </div>
   );
 
@@ -297,6 +336,8 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
       position='right'
       content={<ConversationHoverCard conversation={conversation} />}
       triggerProps={{ mouseEnterDelay: 400 }}
+      popupVisible={isVoice ? hoverCardVisible && !menuVisible && !actionsFocused : undefined}
+      onVisibleChange={isVoice ? setHoverCardVisible : undefined}
     >
       {renderRow()}
     </Popover>

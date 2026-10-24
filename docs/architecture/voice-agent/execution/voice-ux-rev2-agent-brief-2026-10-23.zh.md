@@ -1,3 +1,5 @@
+> **2026-10-24 已有后续任务书**：下一轮使用 [rev3 可复制任务书](voice-call-ux-rev3-agent-brief-2026-10-24.zh.md)，细则见 [rev3 方案](voice-call-composer-and-session-lifecycle-plan-2026-10-24.zh.md)。rev2 已提交推送；下方“最右固定声波、footer、首页文字、未提交”等内容按原文归档，不能作为新一轮执行指令。
+
 > **2026-10-24 当前实施事实**：rev2 的 E1–E3 已实施；代码/服务/构建回归已执行，E4 原生视觉与物理设备边界单列。参见 [实施与验证记录](voice-ux-rev2/IMPLEMENTATION.zh.md)。仍在 `feat/voice-next`，未提交、未推送；以下方案和状态声明按历史原文保留，请勿从 E0 重复开工。
 
 你是执行者，本任务书及其引用的 rev2 计划是本轮任务来源；中途不等人工逐片批准。拿不准且无法从代码确认的事项写 BLOCKED.md，继续独立工作。

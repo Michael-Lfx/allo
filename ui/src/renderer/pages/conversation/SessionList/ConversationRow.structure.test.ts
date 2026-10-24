@@ -14,7 +14,7 @@ describe('ConversationRow structure', () => {
     expect(source.includes('getAgentLogo')).toBe(false);
     expect(source.includes('usePresetInfo')).toBe(false);
     expect(source.includes('renderLeadingIcon')).toBe(false);
-    expect(source.includes("{isGenerating && !batchMode && <Spin size={16} />}")).toBe(true);
+    expect(source.includes("{isGenerating && !batchMode && !isVoice && <Spin size={16} />}")).toBe(true);
   });
 
   test('gives conversation titles balanced left spacing', () => {
