@@ -6,6 +6,7 @@ mod independent {
     use nomifun_common::{AgentKillReason, AppError, TimestampMs};
     use nomifun_conversation::{ConversationService, skill_resolver::{SkillResolver, ResolvedAgentSkill}};
     use nomifun_db::{SqliteConversationRepository, SqliteAgentMetadataRepository, SqliteAcpSessionRepository};
+    use nomifun_db::sqlx;
     use nomifun_realtime::UserEventSink;
 
     const OWNER: &str = "0190f5fe-7c00-7a00-8000-000000000001";
@@ -30,7 +31,20 @@ mod independent {
     }
     async fn service() -> Arc<ConversationService> {
         let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER.to_owned()).unwrap()).await.unwrap();
-        Arc::new(ConversationService::new(Arc::<str>::from(OWNER),std::env::temp_dir(),Arc::new(Sink),Arc::new(Skills),Arc::new(Runtime),Arc::new(SqliteConversationRepository::new(db.pool().clone())),Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),Arc::new(nomifun_conversation::NoExecutionConversationBoundary)))
+        service_on_pool(db.pool().clone(), OWNER)
+    }
+    fn service_on_pool(pool: sqlx::SqlitePool, owner: &str) -> Arc<ConversationService> {
+        Arc::new(ConversationService::new(Arc::<str>::from(owner),std::env::temp_dir(),Arc::new(Sink),Arc::new(Skills),Arc::new(Runtime),Arc::new(SqliteConversationRepository::new(pool.clone())),Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),Arc::new(SqliteAcpSessionRepository::new(pool)),Arc::new(nomifun_conversation::NoExecutionConversationBoundary)))
+    }
+    async fn service_with_model() -> (Arc<ConversationService>, nomifun_api_types::voice::VoiceModelRef) {
+        use nomifun_db::IProviderRepository;
+        let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER.to_owned()).unwrap()).await.unwrap();
+        nomifun_db::SqliteProviderRepository::new(db.pool().clone()).create(nomifun_db::CreateProviderParams {
+            provider_id: Some(OWNER), platform: "openai", name: "lifecycle fixture", base_url: "http://127.0.0.1:1/v1", api_key_encrypted: "unused",
+            models: r#"["fixture-model"]"#, enabled: true, model_context_limits: None, model_protocols: None, model_descriptions: None,
+            model_enabled: None, bedrock_config: None, is_full_url: false, sort_order: None,
+        }).await.unwrap();
+        (service_on_pool(db.pool().clone(), OWNER), nomifun_api_types::voice::VoiceModelRef {provider_id: OWNER.into(), model: "fixture-model".into()})
     }
     #[tokio::test]
     async fn review_project_new_call_must_succeed() {
@@ -140,5 +154,118 @@ mod independent {
         // This fixture deliberately has no execution-deletion boundary. Once
         // inactive, deletion must reach that normal boundary instead of the call guard.
         assert!(matches!(svc.delete(OWNER,&conv.conversation_id).await, Err(AppError::ConversationDelete(_))));
+    }
+
+    #[tokio::test]
+    async fn closing_races_with_keyboard_send_without_losing_accepted_input() {
+        let (svc, model) = service_with_model().await;
+        let registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(Runtime);
+        for index in 0..12 {
+            let conversation = svc.create_provisional_voice_conversation(OWNER, None, None, None, &format!("keyboard-race-{index}"), Some(&model), None).await.unwrap();
+            let request = serde_json::from_value(serde_json::json!({"content":"retain this accepted keyboard input"})).unwrap();
+            let command = format!("keyboard-command-{index}");
+            let send = svc.send_message_with_idempotency_key(OWNER, &conversation.conversation_id, &command, request, &registry);
+            let close = svc.discard_provisional_voice_conversation(OWNER, &conversation.conversation_id);
+            let (closed, sent) = if index == 0 {
+                let sent = send.await; assert!(sent.is_ok(), "the valid-send control must be admitted: {sent:?}");
+                (close.await, sent)
+            } else if index == 1 {
+                let closed = close.await; assert!(closed.as_ref().is_ok_and(|closed| *closed));
+                (closed, send.await)
+            } else { tokio::join!(close, send) };
+            if sent.is_ok() {
+                assert!(!closed.unwrap());
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    while svc.runtime_state().has_active_turn(&conversation.conversation_id) {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+                let messages = svc.list_messages(OWNER, &conversation.conversation_id, Default::default()).await.unwrap();
+                assert_eq!(messages.items.iter().filter(|message| message.position == Some(nomifun_common::MessagePosition::Right)).count(), 1);
+                assert_eq!(svc.get(OWNER, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "retained");
+            } else {
+                assert!(closed.unwrap(), "unexpected send failure before either race participant won: {sent:?}");
+                assert!(svc.list_messages(OWNER, &conversation.conversation_id, Default::default()).await.unwrap().items.is_empty());
+                assert!(!svc.runtime_state().has_active_turn(&conversation.conversation_id));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn file_database_reopen_keeps_closed_creation_identity_after_130_later_requests() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("voice.sqlite");
+        let database = nomifun_db::init_database(&path).await.unwrap();
+        let owner: String = sqlx::query_scalar("SELECT owner_user_id FROM installation_identity").fetch_one(database.pool()).await.unwrap();
+        let svc = service_on_pool(database.pool().clone(), &owner);
+        let closed = svc.create_provisional_voice_conversation(&owner, None, None, None, "durable-closed-request", None, None).await.unwrap();
+        assert!(svc.discard_provisional_voice_conversation(&owner, &closed.conversation_id).await.unwrap());
+        for index in 0..130 {
+            svc.create_provisional_voice_conversation(&owner, None, None, None, &format!("later-{index}"), None, None).await.unwrap();
+        }
+        drop(svc);
+        database.close().await;
+        let reopened = nomifun_db::init_database(&path).await.unwrap();
+        let restored = service_on_pool(reopened.pool().clone(), &owner);
+        assert!(matches!(restored.create_provisional_voice_conversation(&owner, None, None, None, "durable-closed-request", None, None).await, Err(AppError::Conflict(code)) if code == "conversation_already_discarded"));
+        assert_eq!(restored.get(&owner, &closed.conversation_id).await.unwrap().extra["voice_lifecycle"], "discarded");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM conversation_creation_keys WHERE creation_key = ?").bind(format!("voice:provisional:{owner}:durable-closed-request")).fetch_one(reopened.pool()).await.unwrap();
+        assert_eq!(count, 1, "reopening must not re-create the closed identity");
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn bound_task_admission_and_close_preserve_the_already_accepted_user_message() {
+        let (svc, model) = service_with_model().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let conversation = svc.create_provisional_voice_conversation(OWNER, None, None, Some(workspace.path().to_str().unwrap()), "bound-close", Some(&model), None).await.unwrap();
+        let id = nomifun_common::MessageId::new().into_string();
+        svc.append_voice_message(OWNER, &conversation.conversation_id, &id, "user visible input", "bound-command").await.unwrap();
+        let target = svc.get(OWNER, &conversation.conversation_id).await.unwrap();
+        let epoch = svc.conversation_repo().get_turn_admission_state(OWNER, &conversation.conversation_id).await.unwrap().epoch;
+        let request = nomifun_api_types::VoiceBoundMessageRequest {
+            message_id: id.clone(), display_text: "user visible input".into(), command_id: "bound-command".into(),
+            expected_admission_epoch: epoch, expected_workspace: target.extra["voice_task_workspace"].as_str().unwrap().into(),
+            voice_context_digest: None, content: "hidden task execution context".into(), files: vec![], inject_skills: vec![], hidden: false, origin: None, channel_platform: None,
+        };
+        let registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(Runtime);
+        let (closed, delivery) = tokio::join!(
+            svc.discard_provisional_voice_conversation(OWNER, &conversation.conversation_id),
+            svc.send_voice_bound_message(OWNER, &conversation.conversation_id, "bound-command", request, &registry)
+        );
+        assert!(!closed.unwrap());
+        assert_eq!(delivery.unwrap().message_id, id);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while svc.runtime_state().has_active_turn(&conversation.conversation_id) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let messages = svc.list_messages(OWNER, &conversation.conversation_id, Default::default()).await.unwrap();
+        assert_eq!(messages.items.iter().filter(|message| message.message_id == id).count(), 1);
+        assert!(messages.items.iter().all(|message| !message.content.to_string().contains("hidden task execution context")));
+        assert_eq!(svc.get(OWNER, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "retained");
+    }
+
+    #[tokio::test]
+    async fn closed_placeholder_is_absent_from_every_list_page_and_total() {
+        let svc = service().await;
+        let closed = svc.create_provisional_voice_conversation(OWNER, None, None, None, "list-closed", None, None).await.unwrap();
+        assert!(svc.discard_provisional_voice_conversation(OWNER, &closed.conversation_id).await.unwrap());
+        let saved = svc.create_provisional_voice_conversation(OWNER, None, None, None, "list-retained", None, None).await.unwrap();
+        svc.append_voice_message(OWNER, &saved.conversation_id, &nomifun_common::MessageId::new().into_string(), "searchable retained sentence", "list-message").await.unwrap();
+        let ordinary = svc.create(OWNER, serde_json::from_value(serde_json::json!({"type":"nomi","name":"ordinary history","extra":{}})).unwrap()).await.unwrap();
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        loop {
+            let page = svc.list(OWNER, nomifun_api_types::ListConversationsQuery {cursor, limit: Some(1), ..Default::default()}, false).await.unwrap();
+            assert_eq!(page.total, 2);
+            if page.items.is_empty() {break;}
+            let id = page.items[0].conversation_id.clone();
+            assert!(ids.insert(id.clone()), "a keyset page repeated a conversation");
+            cursor = Some(id);
+        }
+        assert_eq!(ids, [saved.conversation_id, ordinary.conversation_id].into_iter().collect());
+        let found = svc.search_messages(OWNER, serde_json::from_value(serde_json::json!({"keyword":"searchable retained sentence"})).unwrap()).await.unwrap();
+        assert_eq!(found.total, 1);
     }
 }

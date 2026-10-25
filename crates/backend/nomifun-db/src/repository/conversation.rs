@@ -367,6 +367,44 @@ pub trait IConversationRepository: Send + Sync {
         ))
     }
 
+    /// Atomically finalizes the exact cancelled generation and settles its
+    /// transcript/ACP cleanup artifacts in the same database transaction.
+    ///
+    /// This is the restart-orphan healing seam. A cleanup failure (or a crash
+    /// before commit) must roll the lifecycle settlement back too, so the
+    /// durable `running` generation remains enumerable and a later boot can
+    /// retry. Implementations without one atomic transaction fail closed.
+    async fn finalize_exact_cancelled_turn_generation_with_artifact_cleanup(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        expected_admission_epoch: i64,
+        expected_active_operation_id: Option<&str>,
+        reason: &str,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
+        completed_at: TimestampMs,
+        message_updates: &[(String, MessageRowUpdate)],
+        clear_acp_session: bool,
+    ) -> Result<TurnLifecycleTransition, DbError> {
+        let _ = (
+            user_id,
+            conversation_id,
+            expected_admission_epoch,
+            expected_active_operation_id,
+            reason,
+            result_error_code,
+            result_error_retryable,
+            completed_at,
+            message_updates,
+            clear_acp_session,
+        );
+        Err(DbError::Init(
+            "Conversation repository does not implement atomic restart-orphan artifact cleanup"
+                .to_owned(),
+        ))
+    }
+
     /// Closes a durable `running` Conversation after the caller has proven
     /// that no process-local turn or runtime can still own it.
     ///

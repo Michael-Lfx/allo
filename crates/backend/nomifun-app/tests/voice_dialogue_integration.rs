@@ -70,6 +70,52 @@ async fn latest_user_correction_survives_a_long_assistant_reply() {
 struct NullSink;
 
 #[tokio::test]
+async fn voice_creation_uses_the_same_authoritative_preset_and_freezes_its_snapshot() {
+    use nomifun_db::IProviderRepository;
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+    let providers = Arc::new(nomifun_db::SqliteProviderRepository::new(pool.clone()));
+    providers.create(nomifun_db::CreateProviderParams {
+        provider_id: Some(USER_ID), platform: "openai", name: "preset fixture", base_url: "http://127.0.0.1:1/v1", api_key_encrypted: "unused",
+        models: r#"["home-model","preset-model"]"#, enabled: true, model_context_limits: None, model_protocols: None, model_descriptions: None,
+        model_enabled: None, bedrock_config: None, is_full_url: false, sort_order: None,
+    }).await.unwrap();
+    let registry = nomifun_extension::ExtensionRegistry::new(
+        nomifun_extension::ExtensionStateStore::new(dir.path().join("extensions.json")),
+        Arc::new(nomifun_realtime::BroadcastEventBus::new(16)), "1.6.8".into(),
+    );
+    let presets = Arc::new(nomifun_preset::PresetService::new(
+        Arc::new(nomifun_db::SqlitePresetRepository::new(pool.clone())),
+        Arc::new(nomifun_db::SqlitePresetStateRepository::new(pool.clone())),
+        Arc::new(nomifun_db::SqlitePresetTagRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())), providers,
+        Arc::new(nomifun_db::SqliteProviderModelRepository::new(pool.clone())),
+        Arc::new(nomifun_preset::BuiltinPresetRegistry::empty()), registry, dir.path().into(),
+    ));
+    let preset = presets.create(serde_json::from_value(serde_json::json!({
+        "name":"voice authority fixture", "instructions":"Original frozen instructions", "targets":["conversation"],
+        "model_preferences":[{"provider_id":USER_ID,"model":"preset-model","required":true}]
+    })).unwrap()).await.unwrap();
+    let service = ConversationService::new(Arc::<str>::from(USER_ID), dir.path().into(), Arc::new(NullSink), Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())), Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)), Arc::new(nomifun_conversation::NoExecutionConversationBoundary));
+    service.with_preset_service(presets.clone());
+    let normal = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type":"nomi", "extra":{}, "preset_id":preset.preset_id, "model":{"provider_id":USER_ID,"model":"home-model"}
+    })).unwrap()).await.unwrap();
+    let model = nomifun_api_types::voice::VoiceModelRef {provider_id: USER_ID.into(), model: "home-model".into()};
+    let voice = service.create_provisional_voice_conversation(USER_ID, None, None, Some(dir.path().to_str().unwrap()), "resolved-preset", Some(&model), Some(&preset.preset_id)).await.unwrap();
+    assert_eq!(voice.model.as_ref().unwrap().model, "preset-model");
+    assert_eq!(voice.model, normal.model);
+    assert_eq!(serde_json::to_value(&voice.preset_snapshot).unwrap(), serde_json::to_value(&normal.preset_snapshot).unwrap());
+    presets.update(&preset.preset_id, serde_json::from_value(serde_json::json!({"instructions":"Changed after admission"})).unwrap()).await.unwrap();
+    let replay = service.create_provisional_voice_conversation(USER_ID, None, None, Some(dir.path().to_str().unwrap()), "resolved-preset", Some(&model), Some(&preset.preset_id)).await.unwrap();
+    assert_eq!(replay.conversation_id, voice.conversation_id);
+    assert_eq!(replay.preset_snapshot.unwrap().instructions, "Original frozen instructions");
+}
+
+#[tokio::test]
 async fn new_voice_call_freezes_the_home_model_and_rejects_changed_selection() {
     use nomifun_api_types::voice::{VoiceCallTarget, VoiceModelRef};
     let dir = tempfile::tempdir().unwrap();
@@ -92,7 +138,8 @@ async fn new_voice_call_freezes_the_home_model_and_rejects_changed_selection() {
 #[tokio::test]
 async fn voice_placeholder_closes_only_after_terminal_and_view_departure() {
     let dir = tempfile::tempdir().unwrap();
-    let service = fixture_service().await;
+    let database_path = dir.path().join("conversation.sqlite");
+    let (database, service) = fixture_file_service(&database_path).await;
     let conversation = service.create_provisional_voice_conversation(USER_ID, None, Some("yolo"), None, "empty-call", None, None).await.unwrap();
     let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
     recorder.set_call_reservation(Some(VoiceCallReservation { request_id: "empty-call".into(), target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {workspace: None, model: None, preset_id: None}, conversation_id: conversation.conversation_id.clone(), memory_owner: None, reserved_at_epoch_ms: nomifun_common::now_ms() }));
@@ -103,9 +150,14 @@ async fn voice_placeholder_closes_only_after_terminal_and_view_departure() {
     assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "ended_empty");
     recorder.cleanup_ended_placeholders(None, &[conversation.conversation_id.clone()]).await.unwrap();
     assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "ended_empty");
+    drop(recorder);
+    drop(service);
+    database.close().await;
+    let (reopened_database, service) = fixture_file_service(&database_path).await;
     let restored = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
     restored.cleanup_ended_placeholders(None, &[]).await.unwrap();
     assert_eq!(service.get(USER_ID, &conversation.conversation_id).await.unwrap().extra["voice_lifecycle"], "discarded");
+    reopened_database.close().await;
 }
 
 #[tokio::test]
@@ -133,6 +185,27 @@ async fn only_retained_explicit_calls_replace_automatic_workspace_pointers() {
         assert_ne!(empty, new);
         assert_eq!(recorder.resolve_call_target(&auto, None, None).await.unwrap().0, new);
     }
+}
+
+#[tokio::test]
+async fn concurrent_workspace_target_resolution_keeps_both_registry_entries() {
+    use nomifun_api_types::voice::VoiceCallTarget;
+    let data = tempfile::tempdir().unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(fixture_service().await, USER_ID.into(), data.path());
+    let target_a = VoiceCallTarget::Workspace {workspace: first.path().to_string_lossy().into_owned()};
+    let target_b = VoiceCallTarget::Workspace {workspace: second.path().to_string_lossy().into_owned()};
+    let (a, b) = tokio::join!(recorder.resolve_call_target(&target_a, None, None), recorder.resolve_call_target(&target_b, None, None));
+    let a = a.unwrap().0;
+    let b = b.unwrap().0;
+    assert_ne!(a, b);
+    assert_eq!(recorder.resolve_call_target(&target_a, None, None).await.unwrap().0, a);
+    assert_eq!(recorder.resolve_call_target(&target_b, None, None).await.unwrap().0, b);
+    let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(data.path().join("voice").join(format!("workspace-sessions-{USER_ID}.json"))).unwrap()).unwrap();
+    assert_eq!(registry["sessions"].as_object().unwrap().len(), 2);
+    let owners = registry["sessions"].as_object().unwrap().values().map(|entry| entry["conversation_id"].as_str().unwrap().to_owned()).collect::<std::collections::HashSet<_>>();
+    assert_eq!(owners, [a, b].into_iter().collect());
 }
 
 #[tokio::test]
@@ -638,6 +711,20 @@ async fn bv_04_voice_target_becoming_busy_during_generation_preserves_append() {
 
 async fn fixture_service() -> Arc<ConversationService> {
     fixture_service_with_models(&[]).await
+}
+
+async fn fixture_file_service(path: &std::path::Path) -> (nomifun_db::Database, Arc<ConversationService>) {
+    if !path.exists() {
+        let seed = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap()).await.unwrap();
+        seed.snapshot_into(path).await.unwrap();
+        seed.close().await;
+    }
+    let database = nomifun_db::init_database(path).await.unwrap();
+    let pool = database.pool().clone();
+    let service = Arc::new(ConversationService::new(Arc::<str>::from(USER_ID), path.parent().unwrap().into(), Arc::new(NullSink), Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())), Arc::new(SqliteAgentMetadataRepository::new(pool.clone())), Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary)));
+    (database, service)
 }
 
 async fn fixture_service_with_models(models: &[&str]) -> Arc<ConversationService> {
