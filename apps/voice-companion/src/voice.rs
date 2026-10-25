@@ -1600,6 +1600,14 @@ impl VoiceCompanionRuntime {
         };
 
         tokio::spawn(async move {
+            // Native engines must not open an unverified offline copy. Keep
+            // waiting so first-boot installation can complete without restart.
+            if !replay {
+                while !models.get_status().await.state.is_ready() {
+                    acoustic_ready.store(false, Ordering::Release);
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
             let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                 model_dir: Some(models.models_dir().to_path_buf()),
                 ..Default::default()
@@ -2060,8 +2068,13 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     AcousticState::Listening => {
-                        // User speech capture: accumulate PCM samples
+                        // Match follow-up listening: retain VAD onset, not the
+                        // preceding silence, in the 30-second utterance budget.
                         utterance_pcm.extend_from_slice(&chunk);
+                        if !speech_started && utterance_pcm.len() > 8_000 {
+                            let excess = utterance_pcm.len() - 8_000;
+                            utterance_pcm.drain(..excess);
+                        }
                         audio.utterance_samples = utterance_pcm.len() as u32;
                         audio.utterance_peak_milli =
                             audio.utterance_peak_milli.max(audio.peak_milli);
@@ -2347,6 +2360,25 @@ mod tests {
         assert!(!handle.is_finished());
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn voice_worker_waits_for_verified_assets_before_native_initialization() {
+        let dir = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(dir.path()));
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (mut runtime, _) = VoiceCompanionRuntime::from_capture(
+            models, Arc::new(OobeManager::new_bypassed()), Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback), Arc::new(QwenVoiceRouter::new()),
+        );
+        runtime.replay_capture = false;
+        let worker = runtime.start_worker();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let waiting = !worker.is_finished();
+        let ready = runtime.snapshot().acoustic_ready;
+        worker.abort(); let _ = worker.await; producer.close();
+        assert!(waiting, "missing assets must wait for provisioning, not open native engines and exit");
+        assert!(!ready);
     }
 
     struct MockSpeech(Arc<std::sync::atomic::AtomicUsize>);

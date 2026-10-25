@@ -79,16 +79,20 @@ mod tests {
         config.models.models_dir = temp_dir.path().to_path_buf();
         config.models.auto_download = true;
 
-        // Populate all expected files so on-disk inspection confirms Ready state
+        // Match the fixture's real hashes; layout alone cannot grant Ready.
+        let mut manifest = std::collections::HashMap::new();
         for &rel_path in nomifun_voice_models::EXPECTED_FILES {
             let p = temp_dir.path().join(rel_path);
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
             std::fs::write(&p, b"mock model binary content").unwrap();
+            if nomifun_voice_models::verifier::DOWNLOAD_FILES.contains(&rel_path) {
+                manifest.insert(rel_path.to_owned(), nomifun_voice_models::verifier::compute_sha256(b"mock model binary content"));
+            }
         }
 
-        let manager = Arc::new(ModelManager::new(temp_dir.path()));
+        let manager = Arc::new(ModelManager::with_config(temp_dir.path(), vec![], manifest));
         let status = manager.get_status().await;
         assert!(
             matches!(status.state, ModelInstallState::Ready { .. }),

@@ -94,7 +94,11 @@ async fn test_vt_4_03_anti_brute_force_five_failures_locks_fifteen_minutes() {
 #[tokio::test]
 async fn test_vt_4_03_service_lifetime_decoupled_from_code_expiry() {
     let temp_dir = tempdir().unwrap();
-    let manager = Arc::new(ModelManager::new(temp_dir.path()));
+    let manifest = nomifun_voice_models::verifier::DOWNLOAD_FILES.iter().map(|path| (
+        (*path).to_owned(),
+        nomifun_voice_models::verifier::compute_sha256(b"mock model binary content"),
+    )).collect();
+    let manager = Arc::new(ModelManager::with_config(temp_dir.path(), vec![], manifest));
     let oobe = OobeManager::new();
 
     // 1. Initially NotInstalled, pairing service is active

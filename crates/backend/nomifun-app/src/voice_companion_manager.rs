@@ -3189,6 +3189,21 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
     const MAX_TARGET_CHARS: usize = 65;
 
     let sentences = split_sentences(text);
+    // English restrictions need their whole sentence: a success prefix is not
+    // a safe substitute when the failure/condition cannot fit the speech budget.
+    if has_english_failure(text) {
+        let critical = sentences
+            .iter()
+            .copied()
+            .filter(|s| is_negation_or_failure(s))
+            .collect::<Vec<_>>()
+            .join(". ");
+        return if critical.is_empty() || critical.chars().count() > 60 {
+            "Do not act on a shortened result. Review the full details and restrictions.".into()
+        } else {
+            format!("{critical}. See full details.")
+        };
+    }
     if sentences.is_empty() {
         let truncated: String = text.chars().take(MAX_TARGET_CHARS).collect();
         let res = format!("{truncated}，详情请在会话中查看。");
@@ -3338,7 +3353,8 @@ fn is_negation_or_failure(text: &str) -> bool {
             "未找到", "失败", "无法", "未完成", "未成功", "未能", "没有", "不存在",
             "无数据", "错误", "未查到", "不成功", "不能", "未复制", "仍然为空", "异常",
         ],
-    ) || (text.contains('未') && !text.contains("未来"))
+    ) || has_english_failure(text)
+        || (text.contains('未') && !text.contains("未来"))
         || (text.contains('无') && !text.contains("无论"))
         || (text.contains('不') && !text.contains("不但") && !text.contains("不仅"))
 }
@@ -3347,11 +3363,62 @@ fn contains_any(text: &str, keywords: &[&str]) -> bool {
     keywords.iter().any(|k| text.contains(k))
 }
 
+fn has_english_failure(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric() && c != '\'' && c != '’')
+        .any(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "no" | "not"
+                    | "never"
+                    | "cannot"
+                    | "can't"
+                    | "can’t"
+                    | "couldn't"
+                    | "couldn’t"
+                    | "don't"
+                    | "don’t"
+                    | "doesn't"
+                    | "doesn’t"
+                    | "didn't"
+                    | "didn’t"
+                    | "wasn't"
+                    | "wasn’t"
+                    | "weren't"
+                    | "weren’t"
+                    | "won't"
+                    | "won’t"
+                    | "failed"
+                    | "failure"
+                    | "failures"
+                    | "unable"
+                    | "unsuccessful"
+                    | "denied"
+                    | "error"
+                    | "errors"
+            )
+        })
+}
+
 fn split_sentences(text: &str) -> Vec<&str> {
-    text.split(|c| matches!(c, '。' | '！' | '!' | '？' | '?' | '\n' | '；' | ';'))
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect()
+    let mut sentences = Vec::new();
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        let after = index + ch.len_utf8();
+        let boundary = matches!(ch, '。' | '！' | '!' | '？' | '?' | '\n' | '；' | ';')
+            || (ch == '.' && text[after..].chars().next().is_none_or(char::is_whitespace));
+        if boundary {
+            let sentence = text[start..index].trim();
+            if !sentence.is_empty() {
+                sentences.push(sentence);
+            }
+            start = after;
+        }
+    }
+    let tail = text[start..].trim();
+    if !tail.is_empty() {
+        sentences.push(tail);
+    }
+    sentences
 }
 
 fn split_clauses(text: &str) -> Vec<&str> {
@@ -4878,6 +4945,26 @@ mod tests {
         let summary = extract_spoken_summary(text, VoiceTaskStatus::Completed);
         assert_eq!(summary, text);
         assert!(summary.chars().count() <= 80);
+    }
+
+    #[test]
+    fn test_spoken_summary_preserves_english_failure_and_restrictions() {
+        let raw = "The deployment validation and health checks completed successfully for all 120 configured records. However the database backup was NOT created and you must NOT delete the previous backup.";
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        assert!(!summary.contains("completed success"), "must not speak only the successful preamble: {summary}");
+        assert!(summary.to_ascii_lowercase().contains("not") || summary.contains("conditions"), "must preserve the restriction or defer to full details: {summary}");
+        assert!(summary.chars().count() <= 80);
+        for negative in ["cannot", "can't", "couldn’t", "FAILED", "unable", "must not"] {
+            assert!(is_negation_or_failure(&format!("Backup {negative} be completed")));
+        }
+        assert!(!is_negation_or_failure("A notable success notification"));
+        assert_eq!(split_sentences("Backup failed. Keep version 1.25 unchanged."), vec!["Backup failed", "Keep version 1.25 unchanged"]);
+        let with_number = "All deployment preparation and validation checks completed successfully across the workspace. Backup failed at 1.25 GB.";
+        let summary = extract_spoken_summary(with_number, VoiceTaskStatus::Completed);
+        assert!(summary.contains("Backup failed at 1.25 GB"), "must keep the failure and decimal: {summary}");
+        let no_error = "All deployment preparation and validation checks completed successfully across the workspace. No errors occurred.";
+        let summary = extract_spoken_summary(no_error, VoiceTaskStatus::Completed);
+        assert!(summary.contains("No errors occurred"), "a negation is not proof of a failed task: {summary}");
     }
 
     #[test]

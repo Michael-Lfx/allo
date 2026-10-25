@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{error, info, warn};
 
 use nomifun_api_types::voice::{
@@ -18,7 +18,7 @@ use nomifun_api_types::voice::{
 };
 
 use crate::downloader::{MirrorConfig, ModelDownloader};
-use crate::layout::{check_model_layout, inspect_model_files, EXPECTED_FILES};
+use crate::layout::{EXPECTED_FILES, check_model_layout, inspect_model_files};
 use crate::verifier::{DOWNLOAD_FILES, ModelVerifier};
 
 /// Errors encountered during model lifecycle operations.
@@ -43,6 +43,7 @@ pub struct ModelManager {
     downloader: Arc<ModelDownloader>,
     verifier: Arc<ModelVerifier>,
     install_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    checked_files: Arc<RwLock<Option<Vec<(u64, SystemTime)>>>>,
 }
 
 impl ModelManager {
@@ -72,6 +73,7 @@ impl ModelManager {
             downloader: Arc::new(ModelDownloader::new(mirrors)),
             verifier: Arc::new(ModelVerifier::with_manifest(baseline_manifest)),
             install_task: Arc::new(Mutex::new(None)),
+            checked_files: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -82,17 +84,9 @@ impl ModelManager {
 
     /// Returns the current status response of local voice models.
     pub async fn get_status(&self) -> VoiceModelStatusResponse {
+        let _operation = self.install_task.lock().await;
         let (disk_state, files, total_size_bytes) = inspect_model_files(&self.models_dir);
-        let mem_state = self.state.read().await.clone();
-
-        // Active transition states in memory take precedence over static disk inspection
-        let state = match &mem_state {
-            ModelInstallState::ProbingSource
-            | ModelInstallState::Downloading { .. }
-            | ModelInstallState::VerifyingSha256 { .. }
-            | ModelInstallState::Removing => mem_state,
-            _ => disk_state,
-        };
+        let state = self.refresh_integrity(disk_state).await;
 
         VoiceModelStatusResponse {
             state,
@@ -102,16 +96,71 @@ impl ModelManager {
         }
     }
 
+    fn file_stamps(&self) -> std::io::Result<Vec<(u64, SystemTime)>> {
+        EXPECTED_FILES
+            .iter()
+            .map(|rel| {
+                let metadata = std::fs::metadata(self.models_dir.join(rel))?;
+                Ok((metadata.len(), metadata.modified()?))
+            })
+            .collect()
+    }
+
+    // Called under the lifecycle lock. Cache both success and failure only for
+    // unchanged files; an offline repair or replacement must be checked again.
+    async fn refresh_integrity(&self, disk_state: ModelInstallState) -> ModelInstallState {
+        let current = self.state.read().await.clone();
+        if current.is_busy() {
+            return current;
+        }
+        if !disk_state.is_ready() {
+            *self.checked_files.write().await = None;
+            if current.is_failed() {
+                return current;
+            }
+            if current != disk_state {
+                self.set_state(disk_state.clone()).await;
+            }
+            return disk_state;
+        }
+        if let Ok(stamps) = self.file_stamps() {
+            if self.checked_files.read().await.as_ref() == Some(&stamps) {
+                return current;
+            }
+        }
+        self.verify_files().await
+    }
+
+    async fn verify_files(&self) -> ModelInstallState {
+        let before = self.file_stamps().ok();
+        let verified = self.verifier.verify(&self.models_dir).await;
+        let after = self.file_stamps().ok();
+        let stable = before.is_some() && before == after;
+        let state = if stable || !verified.is_ready() {
+            verified
+        } else {
+            ModelInstallState::Failed {
+                reason: "Model files changed during integrity verification; retry after installation completes".into(),
+                recoverable: true,
+            }
+        };
+        self.set_state(state.clone()).await;
+        *self.checked_files.write().await = if stable { after } else { None };
+        state
+    }
+
     /// Triggers model installation asynchronously with idempotency protection.
     pub async fn install(
         &self,
         req: Option<VoiceModelInstallRequest>,
     ) -> Result<VoiceModelInstallResponse, ModelManagerError> {
+        // The same lock owns admission, handle registration and removal.
+        let mut task_guard = self.install_task.lock().await;
         let current_state = self.state.read().await.clone();
         let force = req.as_ref().and_then(|r| r.force).unwrap_or(false);
 
         // 1. Idempotency check: if already busy (in progress), reject duplicate request
-        if current_state.is_busy() {
+        if current_state.is_busy() || task_guard.as_ref().is_some_and(|task| !task.is_finished()) {
             return Ok(VoiceModelInstallResponse {
                 accepted: false,
                 state: current_state,
@@ -121,6 +170,7 @@ impl ModelManager {
 
         // 2. Check actual disk layout state in addition to in-memory state
         let (disk_state, _, _) = inspect_model_files(&self.models_dir);
+        let current_state = self.refresh_integrity(disk_state.clone()).await;
 
         // If not force requested, and both memory state and physical on-disk files are Ready:
         if !force && current_state.is_ready() && disk_state.is_ready() {
@@ -132,6 +182,7 @@ impl ModelManager {
         }
 
         // 3. Mark state as ProbingSource and broadcast event
+        *self.checked_files.write().await = None;
         self.set_state(ModelInstallState::ProbingSource).await;
 
         // 4. Spawn background install task
@@ -140,7 +191,6 @@ impl ModelManager {
             this.run_install_pipeline(force).await;
         });
 
-        let mut task_guard = self.install_task.lock().await;
         *task_guard = Some(handle);
 
         Ok(VoiceModelInstallResponse {
@@ -155,7 +205,10 @@ impl ModelManager {
         info!("Starting voice model installation pipeline (force={force})");
 
         if force {
-            info!("Force re-install: purging existing model files and .part artifacts in {:?}", self.models_dir);
+            info!(
+                "Force re-install: purging existing model files and .part artifacts in {:?}",
+                self.models_dir
+            );
             for &rel in EXPECTED_FILES {
                 let p = self.models_dir.join(rel);
                 if p.exists() {
@@ -169,7 +222,12 @@ impl ModelManager {
                                 .as_millis()
                         ));
                         if let Err(rename_err) = tokio::fs::rename(&p, &tombstone).await {
-                            warn!("Failed to remove or tombstone file {}: remove_err={}, rename_err={}", p.display(), e, rename_err);
+                            warn!(
+                                "Failed to remove or tombstone file {}: remove_err={}, rename_err={}",
+                                p.display(),
+                                e,
+                                rename_err
+                            );
                         } else {
                             let _ = tokio::fs::remove_file(&tombstone).await;
                         }
@@ -189,7 +247,9 @@ impl ModelManager {
                 Some(m)
             }
             Err(e) => {
-                warn!("All candidate mirror probes failed ({e}). Proceeding with offline local fallback if remote download fails.");
+                warn!(
+                    "All candidate mirror probes failed ({e}). Proceeding with offline local fallback if remote download fails."
+                );
                 None
             }
         };
@@ -333,11 +393,8 @@ impl ModelManager {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
 
-        let verify_state = self.verifier.verify(&self.models_dir).await;
-        self.set_state(verify_state).await;
+        self.verify_files().await;
     }
-
-
 
     /// Deletes installed model files and resets the state to `NotInstalled`.
     pub async fn remove(&self) -> Result<VoiceModelDeleteResponse, ModelManagerError> {
@@ -345,8 +402,10 @@ impl ModelManager {
         let mut task_guard = self.install_task.lock().await;
         if let Some(handle) = task_guard.take() {
             handle.abort();
+            let _ = handle.await;
         }
 
+        *self.checked_files.write().await = None;
         self.set_state(ModelInstallState::Removing).await;
 
         let (_, _, freed_bytes) = inspect_model_files(&self.models_dir);
@@ -393,6 +452,8 @@ impl ModelManager {
     pub async fn set_state(&self, new_state: ModelInstallState) {
         let mut guard = self.state.write().await;
         *guard = new_state.clone();
-        let _ = self.progress_tx.send(VoiceModelProgressEvent::new(new_state));
+        let _ = self
+            .progress_tx
+            .send(VoiceModelProgressEvent::new(new_state));
     }
 }
