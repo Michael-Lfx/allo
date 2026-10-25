@@ -26,6 +26,7 @@ use crate::runtime_state::{
     RuntimeBuildLease, TurnWireContext,
 };
 use crate::ExecutionConversationBoundary;
+use crate::boot::prepare_proven_interrupted_turn_artifacts;
 use crate::orphan_recovery::{
     RunningOrphanDisposition, running_orphan_disposition,
 };
@@ -4821,9 +4822,17 @@ impl ConversationService {
         )
         .await;
 
+        // Prepare the exact transcript writes first; the repository commits
+        // them atomically with the lifecycle CAS below. A cleanup failure (or a
+        // crash before commit) therefore rolls the settlement back, leaving the
+        // still-running generation enumerable for the next boot.
+        let artifacts =
+            prepare_proven_interrupted_turn_artifacts(&self.conversation_repo, conversation_id)
+                .await?;
+
         let transition = self
             .conversation_repo
-            .finalize_exact_cancelled_turn_generation(
+            .finalize_exact_cancelled_turn_generation_with_artifact_cleanup(
                 user_id,
                 conversation_id,
                 admission.epoch,
@@ -4834,12 +4843,14 @@ impl ConversationService {
                     relay_error_code::INTERRUPTED_BY_RESTART,
                 )),
                 now_ms(),
+                &artifacts.message_updates,
+                artifacts.clear_acp_session,
             )
             .await?;
         match transition {
             TurnLifecycleTransition::Committed => {}
-            // A previous healer (or the crash-cutpoint repair) already closed
-            // this generation; nothing further to surface.
+            // A previous healer closed this generation together with its
+            // artifacts; nothing further to surface.
             TurnLifecycleTransition::AlreadyApplied => {
                 info!(
                     conversation_id,
@@ -4847,8 +4858,9 @@ impl ConversationService {
                 );
                 return Ok(true);
             }
-            // The persisted generation moved while healing; fail closed and
-            // let the next reconciliation re-read authority from scratch.
+            // The persisted generation moved while healing; the transaction
+            // left every message/session untouched. Fail closed and let the
+            // next reconciliation re-read authority from scratch.
             TurnLifecycleTransition::Stale => {
                 warn!(
                     conversation_id,
@@ -12286,6 +12298,9 @@ impl ConversationService {
                 Some(&receipt_error),
                 relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
             );
+            // The finalizer acquires the same preparation gate.
+            drop(preparation_guard);
+            drop(runtime_build_lease.take());
             self.release_and_complete_turn(
                 &mut turn_handle,
                 runtime_registry,
@@ -12300,7 +12315,6 @@ impl ConversationService {
                 channel_platform,
             )
             .await;
-            drop(runtime_build_lease.take());
             return Err(error);
         }
 
@@ -12349,6 +12363,8 @@ impl ConversationService {
                     Some(&receipt_error),
                     relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
                 );
+                // Avoid waiting for the preparation guard owned by this send.
+                drop(preparation_guard);
                 self.release_and_complete_turn(
                     &mut turn_handle,
                     runtime_registry,

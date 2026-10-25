@@ -1,4 +1,16 @@
+> **2026-10-25 宿主启动行为验收更新**：已补齐真实文件库、OS 服务锁和 `AppServices → create_router` 组合启动测试；旧构造期提前结算的临时退化触发 3/3 行为失败，源码逐字恢复后 boot 84 项通过。此前“仅有源码接线证据”的对应缺口已关闭，原生/设备与二进制冷启动仍单列；本节优先于下方历史描述，提交状态以 Git 为准。详见 [宿主启动验证记录](HOST-BOOT-VALIDATION-2026-10-25.zh.md).
+
+> **2026-10-25 第二次补修（最高优先，覆盖下方全部“已关闭”结论）**：独立复审确认上一补修仍有两个真实 SQLite 缺陷，均已修复。① 过期 A 清理曾可删除后来已结束 B 的 ACP session/消息：`apply_restart_orphan_artifacts` 在无 epoch 校验的 `AlreadyApplied` 分支执行；现只有精确 `epoch == expected_admission_epoch` 才允许清理，旧 A 只保留原回执吸收/返回契约，B 运行中或已结束均不被触碰（含 active-null/ABA）。② `boot.rs` 只取 Asc 第一页 5000 条，长历史尾部的断流 thinking/session 被永久遗漏；现按现有 `get_messages` 分页遍历完整历史，任一页失败仍在事务开始前 fail-closed。新增正式测试覆盖旧 A 对已结束 B/运行中 B/active-null B 不可改、以及 5001 条历史尾部清理。最新：`boot_reconcile_sqlite` **14 passed**；两 crate all-target **47 targets / 1677 passed / 0 failed / 0 ignored**；Conversation lib 648、DB lib 458、schema 23；host proof 10；R2 1；`cargo check -p Flowy` exit 0。`router/state.rs` 的 `include_str` 仍只是源码结构防线，不是完整 AppServices→router 行为集成。T4 真实 DOM/原生/设备与 AEC 仍未验。未提交、未推送。证据：`build.noindex/voice-workspace-display-review/opencode-repair-20261025/SECOND-FOLLOWUP-FINAL_REPORT.zh.md`。
+
+> **2026-10-25 独立复审 follow-up（最高优先）**：首轮“生命周期先提交、transcript/ACP 再 best-effort 清理”的 cutpoint 已修复。现在精确旧 epoch/operation 的 CAS、accepted receipt 结算、thinking/work 消息终态与 ACP session 清理在**同一 SQLite 事务**中提交；清理失败或事务内崩溃会整体回滚，代次继续 `running` 并可被下一次 boot 重试，不再出现“Reconciled 但永久丢失清理”。新增 ACP clear、thinking 清理、stranded work 消息三组真实 SQLite RED→GREEN；`boot_reconcile_sqlite` **10 passed**，两 crate all-target **47 targets / 1673 passed / 0 failed / 0 ignored**，宿主 voice **92 passed / 3 ignored**，recorder **32 passed**，`cargo check -p Flowy` exit 0。`router/state.rs` 的 `include_str` 仅作源码结构接线防线，不是完整 AppServices→router 行为集成；行为证据为真实 SQLite 恢复/回滚与真实 host proof provider 测试。T4 真实 DOM/原生/设备与 AEC 仍未验。未提交、未推送。证据：`build.noindex/voice-workspace-display-review/opencode-repair-20261025/FOLLOWUP-FINAL_REPORT.zh.md`。
+
+> **2026-10-25 更新（优先）**：独立审查 R1/R2/R3 已修复并验证，详见 [独立审查修复记录](REPAIR-VERIFICATION-2026-10-24.zh.md#independent-review-repair-2026-10-25)。R1 不再由 `services.rs` 无证明结算；R2 已覆盖生产 `start_call` 恢复；R3 反例已绑定正确列。剩余范围仅为 T4 真实 DOM/原生/DPI/桌宠姿态/物理声学，以及既有 TS/dead-css 基线；AEC/自然插话仍非本轮目标。
+
 # rev3 下一步验证与修复计划
+
+> **2026-10-25 接续收口（最新）**：P0（技能卡住）、P1（持久身份组合链路）、P4 中原剩余 boot/schema 自动化项已关闭；`nomifun-db + nomifun-conversation` all-target 1666 passed / 0 failed，宿主 voice 92 passed / 3 ignored，recorder integration 32 passed，前端 164、桌宠逻辑 38 通过。P2 真实 DOM 仍被 Web 云端登录门禁阻断，P3 原生透明首帧/DPI/桌宠姿态与物理声学仍未签核；TS 61 条和 dead-css 仍是既有失败。精确命令、退出码和日志见 [2026-10-25 接续收口记录](REPAIR-VERIFICATION-2026-10-24.zh.md#continuation-2026-10-25)。下文计划原文保留为历史。
+
+> **2026-10-24 接续执行状态（优先）**：已按用户授权执行 P0/P1 和 P4 定向验证，不再是待开工。技能事件契约/失败收尾死锁、迟到 view-only 序号与普通 extra 替换回归已修复；生命周期 15、recorder 32、宿主 91、Conversation lib 648、前端 164、桌宠逻辑 38 项通过。P2 真实 DOM 与 P3 原生首帧/DPI 因当前工具能力缺口仍未签核；扩大普通会话回归的失败另列，不能称全量通过。当前事实统一见 [接续执行记录](REPAIR-VERIFICATION-2026-10-24.zh.md#next-validation-execution)，下文待执行文字按原计划存档。当前修改未提交、未推送。
 
 > **状态**：待执行；不是新增用例的通过记录。
 > **已提交代码基准**：`8f62353ea386d483fa26f911b62000191d9e3d5a`，分支 `feat/voice-next`，未推送。

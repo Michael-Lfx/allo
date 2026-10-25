@@ -14369,6 +14369,35 @@ async fn send_message_allows_large_explicit_skill_snapshot() {
 }
 
 #[tokio::test]
+async fn skill_load_write_failure_returns_and_settles_the_exact_admission() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let resolver = Arc::new(CatalogSkillResolver::with_snapshot(ResolvedSkillSnapshot {
+        skill_id: "user:pdf".into(), name: "pdf".into(), source: "user".into(),
+        version_hash: "a".repeat(64), content: "# PDF workflow".into(), location: None,
+    }));
+    let service = ConversationService::new(Arc::<str>::from(SQLITE_TEST_OWNER), std::env::temp_dir(), Arc::new(MockBroadcaster::new()),
+        resolver, registry.clone(), repo.clone(), Arc::new(StubAgentMetadataRepo), Arc::new(StubAcpSessionRepo::default()), Arc::new(crate::NoExecutionConversationBoundary));
+    let conversation = service.create(SQLITE_TEST_OWNER, make_create_req()).await.unwrap();
+    nomifun_db::sqlx::query("CREATE TRIGGER reject_test_skill_load BEFORE INSERT ON conversation_skill_loads BEGIN SELECT RAISE(ABORT, 'injected skill ledger write failure'); END")
+        .execute(database.pool()).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), send_message_with_test_key(
+        &service, SQLITE_TEST_OWNER, &conversation.conversation_id, "skill-write-failure",
+        serde_json::from_value(json!({"content":"", "inject_skills":["user:pdf"]})).unwrap(), &registry,
+    )).await.expect("a failed persistence operation must not reacquire its own preparation gate");
+    assert!(result.is_err());
+    assert!(!service.runtime_state().has_active_turn(&conversation.conversation_id));
+    let row = repo.get(&conversation.conversation_id).await.unwrap().unwrap();
+    assert_eq!(row.status.as_deref(), Some("finished"));
+    assert!(repo.get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc).await.unwrap().items.is_empty());
+    assert!(repo.get_skill_loads(&conversation.conversation_id).await.unwrap().is_empty());
+    let receipt = service.latest_completed_turn_receipt(SQLITE_TEST_OWNER, &conversation.conversation_id).await.unwrap().unwrap();
+    assert_eq!(receipt.result_ok, Some(false));
+    assert!(receipt.result_error.unwrap().contains("injected skill ledger write failure"));
+}
+
+#[tokio::test]
 async fn first_turn_loads_source_qualified_preset_skills_without_filtering_the_launcher_request() {
     let database = init_database_memory().await.unwrap();
     let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));

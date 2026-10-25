@@ -117,10 +117,12 @@ async fn insert_turn_parent(
         message_id: turn_id.to_owned(),
         conversation_id: conversation_id.to_owned(),
         msg_id: Some(turn_id.to_owned()),
-        r#type: "system".to_owned(),
-        content: r#"{"kind":"turn_root"}"#.to_owned(),
-        position: Some("center".to_owned()),
-        status: Some("finish".to_owned()),
+        // Match the relay's real provisional root; a synthetic system row is
+        // deliberately rejected by its primary-message ownership contract.
+        r#type: "text".to_owned(),
+        content: json!({ "content": "", "turn_id": turn_id }).to_string(),
+        position: Some("left".to_owned()),
+        status: Some("work".to_owned()),
         hidden: true,
         created_at: now_ms(),
     })

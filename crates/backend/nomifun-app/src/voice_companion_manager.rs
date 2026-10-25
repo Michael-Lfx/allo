@@ -1388,7 +1388,10 @@ impl VoiceCompanionProcessManager {
     }
 
     pub fn report_window_context(&self, context: VoiceWindowContext) {
-        self.report_voice_view(context.conversation_id.clone(), context.sequence);
+        let mut viewed = self.viewed_conversation.write().unwrap_or_else(|e| e.into_inner());
+        // View-only reports participate in the same ordering as full targets.
+        if context.sequence <= viewed.0 { return; }
+        *viewed = (context.sequence, context.conversation_id.clone());
         let mut current = self.active_window_candidate.write().unwrap_or_else(|e| e.into_inner());
         if context.sequence > current.sequence { *current = context; }
     }
@@ -5289,6 +5292,443 @@ mod tests {
         assert!(manager.active_window_candidate().read().unwrap().workspace.is_none());
     }
 
+    #[tokio::test]
+    async fn durable_voice_identity_survives_start_cache_eviction_and_file_reopen() {
+        // Real parts under test: the manager's start-call arbitration and
+        // bounded handled-start cache, the production
+        // ConversationVoiceDialogueRecorder, file-backed SQLite, the on-disk
+        // dialogue journal/workspace registry, and durable provisional
+        // creation identity. Simulated boundary only: the daemon wake IPC
+        // endpoint and the model call (no microphone or acoustic models are
+        // started). No route, arbitration, or storage layer is mocked.
+        use async_trait::async_trait;
+        use nomifun_ai_agent::{
+            AgentRuntimeRegistry, runtime_handle::AgentRuntimeHandle,
+            types::AgentRuntimeBuildOptions,
+        };
+        use nomifun_common::{AgentKillReason, AppError, MessageId, TimestampMs};
+        use nomifun_conversation::ConversationService;
+        use nomifun_conversation::skill_resolver::{ResolvedAgentSkill, SkillResolver};
+        use nomifun_db::{
+            SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+            SqliteConversationRepository,
+        };
+        use nomifun_realtime::UserEventSink;
+
+        struct Sink;
+        impl UserEventSink for Sink {
+            fn send_to_user(
+                &self,
+                _: &str,
+                _: nomifun_api_types::WebSocketMessage<serde_json::Value>,
+            ) {
+            }
+        }
+        struct Skills;
+        #[async_trait]
+        impl SkillResolver for Skills {
+            async fn auto_inject_names(&self) -> Vec<String> {
+                vec![]
+            }
+            async fn resolve_skills(&self, _: &[String]) -> Vec<ResolvedAgentSkill> {
+                vec![]
+            }
+            async fn link_workspace_skills(
+                &self,
+                _: &std::path::Path,
+                _: &[&str],
+                _: &[ResolvedAgentSkill],
+            ) -> usize {
+                0
+            }
+        }
+        struct Runtime;
+        #[async_trait]
+        impl AgentRuntimeRegistry for Runtime {
+            fn get_runtime(&self, _: &str) -> Option<AgentRuntimeHandle> {
+                None
+            }
+            async fn get_or_create_runtime(
+                &self,
+                _: &str,
+                _: AgentRuntimeBuildOptions,
+            ) -> Result<AgentRuntimeHandle, AppError> {
+                Err(AppError::Internal(
+                    "no model execution in this persistence drill".into(),
+                ))
+            }
+            fn terminate(&self, _: &str, _: Option<AgentKillReason>) -> Result<(), AppError> {
+                Ok(())
+            }
+            fn terminate_all(&self) {}
+            fn active_runtime_count(&self) -> usize {
+                0
+            }
+            fn collect_idle_runtimes(&self, _: TimestampMs) -> Vec<String> {
+                vec![]
+            }
+        }
+        fn service_on_pool(
+            pool: nomifun_db::sqlx::SqlitePool,
+            owner: &str,
+        ) -> Arc<ConversationService> {
+            Arc::new(ConversationService::new(
+                Arc::<str>::from(owner),
+                std::env::temp_dir(),
+                Arc::new(Sink),
+                Arc::new(Skills),
+                Arc::new(Runtime),
+                Arc::new(SqliteConversationRepository::new(pool.clone())),
+                Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+                Arc::new(SqliteAcpSessionRepository::new(pool)),
+                Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+            ))
+        }
+        async fn start_mock_daemon() -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let app = axum::Router::new().route(
+                "/api/voice/wake",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({ "success": true })),
+                    )
+                }),
+            );
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            format!("http://127.0.0.1:{port}")
+        }
+        async fn boot_manager(
+            _service: &Arc<ConversationService>,
+            recorder: &Arc<ConversationVoiceDialogueRecorder>,
+            data_dir: &std::path::Path,
+            daemon_origin: String,
+        ) -> Arc<VoiceCompanionProcessManager> {
+            let manager = Arc::new(
+                VoiceCompanionProcessManager::new(
+                    Arc::new(nomifun_voice_models::ModelManager::new(data_dir)),
+                    data_dir,
+                )
+                .with_replay_daemon(daemon_origin)
+                .with_recorder(recorder.clone()),
+            );
+            // Safe synthetic child (non-recursive dummy process): start_call
+            // requires the companion daemon to report running, while the real
+            // IPC boundary is the mocked wake endpoint above.
+            let builder = if cfg!(windows) {
+                let mut b = nomi_process_runtime::ChildProcessBuilder::new("cmd.exe");
+                b.args(["/c", "ping", "-n", "10", "127.0.0.1"]);
+                b
+            } else {
+                let mut b = nomi_process_runtime::ChildProcessBuilder::new("sleep");
+                b.arg("10");
+                b
+            };
+            if let Some(child) = builder.spawn_managed().ok() {
+                *manager.child.lock().await = Some(child);
+            }
+            manager
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let database_path = dir.path().join("voice-cache.sqlite");
+        let database = nomifun_db::init_database(&database_path).await.unwrap();
+        let owner: String = nomifun_db::sqlx::query_scalar(
+            "SELECT owner_user_id FROM installation_identity",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        let service = service_on_pool(database.pool().clone(), &owner);
+        let workspace = tempfile::tempdir().unwrap();
+        let frozen_workspace = nomifun_common::paths::canonicalize_simplified(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let daemon_origin = start_mock_daemon().await;
+
+        // 1. Production start_call creates the durable identity and records a
+        //    Starting receipt in the bounded in-memory cache.
+        let recorder =
+            Arc::new(ConversationVoiceDialogueRecorder::new(service.clone(), owner.clone(), dir.path()));
+        let manager = boot_manager(&service, &recorder, dir.path(), daemon_origin.clone()).await;
+        let recover_target = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+            workspace: Some(frozen_workspace.clone()),
+            model: None,
+            preset_id: None,
+        };
+        let recover_request = nomifun_api_types::voice::VoiceCallStartRequest {
+            request_id: "req-cache-recover".into(),
+            target: recover_target.clone(),
+            session_mode: None,
+        };
+        let first_start = manager.start_call(recover_request.clone()).await.unwrap();
+        assert_eq!(
+            first_start.status,
+            nomifun_api_types::voice::VoiceCallStartStatus::Starting
+        );
+        let retained_conversation_id = first_start.conversation_id.clone();
+        service
+            .append_voice_message(
+                &owner,
+                &retained_conversation_id,
+                &MessageId::new().into_string(),
+                "accepted input must survive",
+                "cache-command",
+            )
+            .await
+            .unwrap();
+
+        // A discarded request must never be resurrected by a cache miss.
+        // Simulate the 10s starting window elapsing so a different request may
+        // proceed without waiting in real time.
+        recorder.take_call_reservation("req-cache-recover");
+        let closed_start = manager
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+                request_id: "req-cache-closed".into(),
+                target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+                    workspace: None,
+                    model: None,
+                    preset_id: None,
+                },
+                session_mode: None,
+            })
+            .await
+            .unwrap();
+        let closed_conversation_id = closed_start.conversation_id.clone();
+        assert!(
+            service
+                .discard_provisional_voice_conversation(&owner, &closed_conversation_id)
+                .await
+                .unwrap()
+        );
+
+        // A changed session mode for the same request_id must conflict.
+        recorder.take_call_reservation("req-cache-closed");
+        let mode_start = manager
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+                request_id: "req-cache-mode".into(),
+                target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+                    workspace: None,
+                    model: None,
+                    preset_id: None,
+                },
+                session_mode: Some("default".into()),
+            })
+            .await
+            .unwrap();
+        let mode_conversation_id = mode_start.conversation_id.clone();
+        recorder.take_call_reservation("req-cache-mode");
+
+        // Real journal: one completed dialogue and one claim that never got a
+        // model answer (the model boundary itself is simulated/absent).
+        let completed_request =
+            VoiceDialogueRequest::scoped("cache-session", "cache-turn", "remember this");
+        let recorded_conversation = match recorder.preflight(&completed_request).await.unwrap() {
+            VoiceDialoguePreflight::Ready { conversation_id } => conversation_id,
+            other => panic!("expected a fresh voice binding, got {other:?}"),
+        };
+        recorder
+            .record_pair(
+                &recorded_conversation,
+                &completed_request,
+                r#"{"intent_type":"chat","understood_request":"remember","reply_tts":"remembered"}"#,
+            )
+            .await
+            .unwrap();
+        let unanswered_request =
+            VoiceDialogueRequest::scoped("cache-session", "cache-turn-unknown", "unfinished");
+        recorder.preflight(&unanswered_request).await.unwrap();
+
+        // 2. Force the 128-entry start-receipt cache past its bound. The durable
+        //    identity below must not depend on these in-memory receipts.
+        let filler_reserved_at = chrono::Utc::now().timestamp_millis() + 10_000;
+        for index in 0..135 {
+            manager.record_handled_start_request(
+                format!("req-filler-{index}"),
+                HandledStartOutcome::Starting {
+                    target: nomifun_api_types::voice::VoiceCallTarget::CurrentSelection,
+                    session_mode: None,
+                    conversation_id: format!("conv-filler-{index}"),
+                    memory_owner: None,
+                    // Newer than the three real receipts, so the bounded cache
+                    // evicts the real ones first.
+                    reserved_at_epoch_ms: filler_reserved_at + index,
+                },
+            );
+        }
+        {
+            let receipts = manager.handled_start_requests.read().unwrap();
+            assert_eq!(receipts.len(), 128, "start receipts must stay bounded");
+            assert!(
+                !receipts.contains_key("req-cache-recover"),
+                "the real start receipt must be evicted"
+            );
+            assert!(!receipts.contains_key("req-cache-closed"));
+            assert!(!receipts.contains_key("req-cache-mode"));
+        }
+
+        // 3. Real restart: drop manager/recorder/service, close SQLite, reopen
+        //    the file database and journal, and rebuild all three objects.
+        drop(manager);
+        drop(recorder);
+        drop(service);
+        database.close().await;
+
+        let reopened = nomifun_db::init_database(&database_path).await.unwrap();
+        let service = service_on_pool(reopened.pool().clone(), &owner);
+        let recorder =
+            Arc::new(ConversationVoiceDialogueRecorder::new(service.clone(), owner.clone(), dir.path()));
+        let manager = boot_manager(&service, &recorder, dir.path(), daemon_origin).await;
+        assert!(
+            manager.handled_start_requests.read().unwrap().is_empty(),
+            "a restarted manager starts with no in-memory receipts"
+        );
+
+        // 4. Retry through the same production entrypoint with the same
+        //    request_id and frozen target.
+        let replay = manager.start_call(recover_request).await.unwrap();
+        assert_eq!(
+            replay.conversation_id, retained_conversation_id,
+            "the durable creation identity must win without the evicted cache"
+        );
+        assert_eq!(
+            replay.status,
+            nomifun_api_types::voice::VoiceCallStartStatus::Starting
+        );
+        assert_eq!(
+            recorder
+                .current_call_reservation()
+                .expect("the replayed start must reserve the exact conversation")
+                .conversation_id,
+            retained_conversation_id
+        );
+
+        let replayed_row = service
+            .get(&owner, &retained_conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_row.extra["voice_task_workspace"], frozen_workspace,
+            "replaying the frozen target must not switch workspaces"
+        );
+        assert_eq!(replayed_row.extra["voice_lifecycle"], "retained");
+        let duplicate_conversations: i64 = nomifun_db::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM conversations \
+             WHERE user_id = ? AND json_extract(extra, '$.voice_creation_request.request_id') = ?",
+        )
+        .bind(&owner)
+        .bind("req-cache-recover")
+        .fetch_one(reopened.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            duplicate_conversations, 1,
+            "the replayed start must not create a second Conversation"
+        );
+        let retained_messages = service
+            .list_messages(&owner, &retained_conversation_id, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            retained_messages
+                .items
+                .iter()
+                .filter(|message| message.content["content"] == "accepted input must survive")
+                .count(),
+            1,
+            "an accepted message must not be lost or duplicated"
+        );
+
+        // 5. A cache-miss replay of a discarded or reconfigured request fails
+        //    closed instead of resurrecting or re-creating the Conversation.
+        // Simulate the replay's starting window elapsing.
+        recorder.take_call_reservation("req-cache-recover");
+        let closed_error = manager
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+                request_id: "req-cache-closed".into(),
+                target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+                    workspace: None,
+                    model: None,
+                    preset_id: None,
+                },
+                session_mode: None,
+            })
+            .await
+            .expect_err("a discarded start request must not be resurrected");
+        assert_eq!(closed_error.0, axum::http::StatusCode::CONFLICT);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&closed_error.1).unwrap()["code"],
+            "conversation_already_discarded"
+        );
+        assert_eq!(
+            service
+                .get(&owner, &closed_conversation_id)
+                .await
+                .unwrap()
+                .extra["voice_lifecycle"],
+            "discarded"
+        );
+
+        let mode_error = manager
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+                request_id: "req-cache-mode".into(),
+                target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+                    workspace: None,
+                    model: None,
+                    preset_id: None,
+                },
+                session_mode: Some("yolo".into()),
+            })
+            .await
+            .expect_err("a changed configuration must conflict after restart");
+        assert_eq!(mode_error.0, axum::http::StatusCode::CONFLICT);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&mode_error.1).unwrap()["code"],
+            "voice_start_request_conflict"
+        );
+        assert_eq!(
+            service
+                .get(&owner, &mode_conversation_id)
+                .await
+                .unwrap()
+                .extra["session_mode"],
+            "default"
+        );
+
+        // 6. Journal reopen: the completed turn is served from disk without a
+        //    new generation, and the unanswered claim stays unknown instead of
+        //    being silently converted into a fresh model request.
+        assert!(matches!(
+            recorder.preflight(&completed_request).await.unwrap(),
+            VoiceDialoguePreflight::Cached { content } if content.contains("remembered")
+        ));
+        assert_eq!(
+            recorder.preflight(&unanswered_request).await.unwrap_err(),
+            VoiceDialogueRecorderError::GenerationUnknown
+        );
+        let recorded_messages = service
+            .list_messages(&owner, &recorded_conversation, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            recorded_messages
+                .items
+                .iter()
+                .filter(|message| message.content["content"] == "remember this")
+                .count(),
+            1,
+            "journal replay must not duplicate the accepted user message"
+        );
+
+        reopened.close().await;
+    }
+
     #[test]
     fn handled_start_requests_cache_bounds_and_evicts_oldest() {
         let dir = tempfile::tempdir().unwrap();
@@ -5312,6 +5752,22 @@ mod tests {
         assert!(!map.contains_key("req-6"));
         assert!(map.contains_key("req-7"));
         assert!(map.contains_key("req-134"));
+    }
+
+    #[test]
+    fn voice_view_departure_preserves_target_and_fences_delayed_full_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(dir.path())), dir.path());
+        manager.report_window_context(VoiceWindowContext {sequence: 10, conversation_id: Some("project-a".into()), workspace: Some("workspace-a".into())});
+        manager.report_voice_view(None, 12);
+        assert_eq!(manager.viewed_conversation.read().unwrap().clone(), (12, None));
+        assert_eq!(manager.active_window_candidate.read().unwrap().conversation_id.as_deref(), Some("project-a"));
+        manager.report_window_context(VoiceWindowContext {sequence: 11, conversation_id: Some("stale-project".into()), workspace: Some("stale-workspace".into())});
+        assert_eq!(manager.viewed_conversation.read().unwrap().clone(), (12, None));
+        assert_eq!(manager.active_window_candidate.read().unwrap().conversation_id.as_deref(), Some("project-a"), "an older full report must not cross the newer view-only sequence fence");
+        manager.report_window_context(VoiceWindowContext {sequence: 13, conversation_id: Some("project-b".into()), workspace: Some("workspace-b".into())});
+        assert_eq!(manager.viewed_conversation.read().unwrap().clone(), (13, Some("project-b".into())));
+        assert_eq!(manager.active_window_candidate.read().unwrap().workspace.as_deref(), Some("workspace-b"));
     }
 
     #[test]

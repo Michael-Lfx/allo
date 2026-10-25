@@ -412,6 +412,7 @@ fn make_skill_load_commit(conversation_id: &str, catalog_key: &str) -> Conversat
                 "source": "user",
                 "version_hash": "a".repeat(64),
                 "content": content,
+                "invocation": "force",
             })
             .to_string(),
             position: Some("center".to_owned()),
@@ -4908,6 +4909,27 @@ async fn skill_load_ledger_and_message_projection_commit_atomically() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn forced_skill_load_projection_matches_the_producer_contract_and_rejects_tampering() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("forced-skill-contract");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+    let mut load = make_skill_load_commit(&conversation.conversation_id, "user:pdf");
+    let mut content: serde_json::Value = serde_json::from_str(&load.load_message.content).unwrap();
+    content["invocation"] = serde_json::json!("force");
+    load.load_message.content = content.to_string();
+    repo.persist_skill_loads_and_user_message(&conversation.conversation_id, None, std::slice::from_ref(&load)).await.unwrap();
+    for (field, value) in [("invocation", "automatic"), ("content", "different instructions"), ("source", "builtin")] {
+        let mut invalid = make_skill_load_commit(&conversation.conversation_id, "user:pdf");
+        let mut content: serde_json::Value = serde_json::from_str(&invalid.load_message.content).unwrap();
+        content["invocation"] = serde_json::json!("force");
+        content[field] = serde_json::json!(value);
+        invalid.load_message.content = content.to_string();
+        assert!(repo.persist_skill_loads_and_user_message(&conversation.conversation_id, None, std::slice::from_ref(&invalid)).await.is_err());
+    }
+    assert_eq!(repo.get_skill_loads(&conversation.conversation_id).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
