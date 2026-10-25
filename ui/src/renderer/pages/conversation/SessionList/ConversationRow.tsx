@@ -113,8 +113,14 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             // batch selection retains its own state color below.
             'session-list-active-row !text-t-primary': selected && !batchMode,
             'bg-[rgba(var(--primary-6),0.08)]': batchMode && checked,
+            'conversation-item--voice': isVoice,
           }
         )}
+        data-voice-call-active={isVoice ? isCallActive : undefined}
+        data-voice-menu-open={isVoice ? menuVisible : undefined}
+        data-voice-mobile={isVoice ? isMobile : undefined}
+        data-voice-collapsed={isVoice ? collapsed : undefined}
+        data-voice-batch={isVoice ? batchMode : undefined}
         onClick={handleRowClick}
         onContextMenu={handleRowContextMenu}
         tabIndex={batchMode ? -1 : 0}
@@ -156,23 +162,6 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
         {!batchMode && !collapsed && capabilityItems.length > 0 && (
           <CapabilityIconCluster items={capabilityItems} size={CAPABILITY_ICON_SIZE} className='shrink-0' />
         )}
-        {/* Type stays visible; the connection dot distinguishes the active call without relying on color. */}
-        {isVoice && (
-          <Tooltip disabled={menuVisible} content={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}>
-            <span
-              className={classNames('relative inline-flex shrink-0 items-center justify-center w-14px', {
-                'text-primary-6': isCallActive,
-                'text-t-secondary': !isCallActive,
-              })}
-              role='img'
-              aria-label={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}
-              data-testid='conversation-voice-marker'
-            >
-              <AudioLines size={14} className={isCallActive ? 'voice-call-wave' : undefined} aria-hidden='true' />
-              {isCallActive && <span className='absolute right-0 bottom-0 size-3px rd-full bg-current' aria-hidden='true' />}
-            </span>
-          </Tooltip>
-        )}
         {/* Name owns the flexible middle; age is a fixed right-aligned marker so
             rows scan cleanly without metadata hugging the title. */}
         <FlexFullContainer
@@ -180,7 +169,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           containerClassName='flex items-center'
         >
           {isVoice ? <Tooltip content={displayName} disabled={menuVisible || actionsFocused}>
-            <span className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-14px font-[500] lh-24px text-t-primary'>{displayName}</span>
+            <span data-testid='conversation-row-title' className='block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-14px font-[500] lh-24px text-t-primary'>{displayName}</span>
           </Tooltip> : <MarqueeText
             text={displayName}
             trigger='hover'
@@ -193,7 +182,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             so the title ellipsis width does not flash wider then narrower. */}
         {showDesktopTrailingMeta && (
           <span
-            className={classNames('flex shrink-0 items-center gap-6px', {
+            className={classNames('conversation-trailing-meta flex shrink-0 items-center gap-6px', {
               'group-hover:invisible': !menuVisible,
               invisible: menuVisible,
             })}
@@ -205,20 +194,41 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
           </span>
         )}
         {/* When there is no age/unread meta, still reserve the more-button width. */}
-        {!batchMode && !collapsed && (isMobile || !showDesktopTrailingMeta) && (
+        {!isVoice && !batchMode && !collapsed && (isMobile || !showDesktopTrailingMeta) && (
           <span className='w-20px shrink-0' aria-hidden />
         )}
 
         {showCompactUnreadDot && (
-          <span className={isVoice?'flex shrink-0 items-center justify-center group-hover:invisible':'absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'}>
+          <span className={isVoice?'conversation-voice-unread flex shrink-0 items-center justify-center group-hover:invisible':'absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-center group-hover:hidden'}>
             {unreadDot}
+          </span>
+        )}
+
+        {/* Idle type and More share one trailing slot. An active call keeps a
+            second slot so its status stays visible when actions are revealed. */}
+        {isVoice && (
+          <span className='conversation-voice-trailing' data-testid='conversation-voice-trailing'>
+            <Tooltip disabled={menuVisible || (!isCallActive && actionsFocused)} content={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}>
+              <span
+                className={classNames('conversation-voice-marker relative inline-flex shrink-0 items-center justify-center', {
+                  'text-primary-6': isCallActive,
+                  'text-t-secondary': !isCallActive,
+                })}
+                role='img'
+                aria-label={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}
+                data-testid='conversation-voice-marker'
+              >
+                <AudioLines size={14} className={isCallActive ? 'voice-call-wave' : undefined} aria-hidden='true' />
+                {isCallActive && <span className='absolute right-0 bottom-0 size-3px rd-full bg-current' aria-hidden='true' />}
+              </span>
+            </Tooltip>
           </span>
         )}
 
         {!batchMode && (
           <div
             className={classNames(
-              'absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-end transition-opacity',
+              'session-row-actions absolute right-8px top-1/2 -translate-y-1/2 flex items-center justify-end transition-opacity',
               {
                 '!collapsed-hidden': !menuVisible,
                 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto': !isMobile && !menuVisible,

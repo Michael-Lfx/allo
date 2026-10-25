@@ -30,9 +30,16 @@ for(const [locale,voice] of [['zh-CN',zh],['en-US',en]] as const){
    const html=render(props);
    expect(html).toContain('data-testid="conversation-voice-marker"');
    expect(html).toContain(`aria-label="${voice.entry.listMarker}"`);
+   expect(html).toContain('data-testid="conversation-voice-trailing"');
+   expect(html.indexOf('data-testid="conversation-row-title"')).toBeLessThan(html.indexOf('data-testid="conversation-voice-marker"'));
+   expect(html).toContain(`data-voice-mobile="${mobile}"`);
+   expect(html).toContain(`data-voice-collapsed="${collapsed}"`);
+   expect(html).toContain(`data-voice-batch="${batch}"`);
+   expect(html).toContain(`data-voice-menu-open="${menu}"`);
    expect(html).not.toContain('animate-pulse');
    const normal=render({...props,conversation:{...props.conversation,name:'语音任务',extra:{}} as ConversationRowProps['conversation']});
    expect(normal).not.toContain('conversation-voice-marker');
+   expect(normal).not.toContain('conversation-voice-trailing');
   }
  });
 }

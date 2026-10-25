@@ -8,6 +8,61 @@
   animation: voice-call-wave 1600ms ease-in-out infinite;
 }
 
+/* Reserve actions before interaction: only opacity changes on hover/focus. */
+.conversation-voice-trailing {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  height: 20px;
+}
+
+.conversation-voice-marker {
+  width: 20px;
+  height: 20px;
+  opacity: 1;
+  transition: opacity 120ms var(--flowy-ease-move);
+}
+
+.conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-batch='true'])[data-voice-call-active='true'] .conversation-voice-trailing,
+.conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-batch='true'])[data-voice-mobile='true'] .conversation-voice-trailing {
+  flex-basis: 44px;
+}
+
+.conversation-item--voice:not([data-voice-collapsed='true']) > .session-row-actions {
+  right: 16px;
+}
+
+@media (hover: hover) {
+  .conversation-item--voice[data-voice-call-active='false'][data-voice-mobile='false'][data-voice-batch='false'][data-voice-collapsed='false']:is(:hover, :focus-within, [data-voice-menu-open='true']) .conversation-voice-marker {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+.conversation-item--voice:focus-within .conversation-trailing-meta,
+.conversation-item--voice:focus-within .conversation-voice-unread,
+.conversation-item--voice[data-voice-menu-open='true'] .conversation-voice-unread {
+  visibility: hidden;
+}
+
+/* Touch has no hover reveal. Keep both type and actions discoverable. */
+@media (hover: none) {
+  .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'] .conversation-voice-trailing {
+    flex-basis: 44px;
+  }
+
+  .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'] .conversation-voice-marker {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'] > .session-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .voice-call-wave { animation: none; }
+  .conversation-voice-marker { transition: none; }
 }
