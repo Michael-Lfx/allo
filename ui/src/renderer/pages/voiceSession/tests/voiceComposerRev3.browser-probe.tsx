@@ -7,7 +7,7 @@ import '@arco-design/web-react/dist/css/arco.css';
 import ConversationRow from '../../conversation/SessionList/ConversationRow';
 import type {ConversationRowProps} from '../../conversation/SessionList/types';
 import {LayoutContext} from '@renderer/hooks/context/LayoutContext';
-import VoiceComposerStatus from '../VoiceComposerStatus';
+import VoiceCallDock from '../VoiceCallDock';
 import zh from '@renderer/services/i18n/locales/zh-CN/voice.json';
 import en from '@renderer/services/i18n/locales/en-US/voice.json';
 
@@ -65,8 +65,8 @@ async function run() {
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
       check(getComputedStyle(marker.querySelector('svg')!).animationName === 'none', `${tag}: reduced motion is respected`);
     }
-    await act(async () => root.render(<I18nextProvider i18n={i18n}><VoiceComposerStatus conversationId='p' snapshot={null}/></I18nextProvider>));
-    check(container.textContent?.includes(dictionary.composer.pill.syncing), `${tag}: unknown state is syncing`);
+    await act(async () => root.render(<I18nextProvider i18n={i18n}><VoiceCallDock conversationId='p' snapshot={null}/></I18nextProvider>));
+    check(container.textContent?.includes(dictionary.dock.syncing), `${tag}: unknown state is syncing`);
     check(!container.querySelector('details'), `${tag}: normal pill has no empty menu`);
     await act(async () => root.render(null));
   }

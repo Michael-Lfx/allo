@@ -218,6 +218,15 @@ pub trait VoiceDialogueRecorder: Send + Sync {
         request: &VoiceDialogueRequest,
     ) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError>;
 
+    /// Attribution must come from the durable claim, never the acoustic turn id.
+    async fn billing_attribution(
+        &self,
+        _conversation_id: &str,
+        _request: &VoiceDialogueRequest,
+    ) -> Result<nomifun_ai_agent::FlowyProxyAttribution, VoiceDialogueRecorderError> {
+        Ok(Default::default())
+    }
+
     async fn record_pair(
         &self,
         conversation_id: &str,
@@ -419,15 +428,23 @@ async fn complete(
         None
     };
 
+    let attribution = if generated.is_none() {
+        if let (Some(recorder), Some(id)) = (&state.recorder, ready_conversation_id.as_deref()) {
+            match recorder.billing_attribution(id, &request).await {
+                Ok(attribution) => attribution,
+                Err(error) => return (StatusCode::CONFLICT, Json(serde_json::json!({"code":record_error_code(&error)}))).into_response(),
+            }
+        } else { Default::default() }
+    } else { Default::default() };
     let choice = state
         .selection
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    if request.stream {return stream_response(state,request,choice,ready_conversation_id,generated);}
+    if request.stream {return stream_response(state,request,choice,ready_conversation_id,generated,attribution);}
     let result = if let Some(content)=generated {Ok(Ok(content))} else {tokio::time::timeout(
         state.timeout.min(DEFAULT_VOICE_DIALOGUE_TIMEOUT),
-        {use tracing::Instrument;state.completer.complete(&request.prompt, choice.as_ref()).instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id))},
+        nomifun_ai_agent::with_flowy_proxy_attribution(attribution, {use tracing::Instrument;state.completer.complete(&request.prompt, choice.as_ref()).instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id))}),
     )
     .await};
     match result {
@@ -468,7 +485,7 @@ fn record_error_code(error:&VoiceDialogueRecorderError)->&'static str {
     }
 }
 
-fn stream_response(state:DialogueState,request:VoiceDialogueRequest,choice:Option<VoiceModelRef>,conversation_id:Option<String>,generated:Option<String>)->Response {
+fn stream_response(state:DialogueState,request:VoiceDialogueRequest,choice:Option<VoiceModelRef>,conversation_id:Option<String>,generated:Option<String>,attribution:nomifun_ai_agent::FlowyProxyAttribution)->Response {
     use nomifun_api_types::voice::VoiceDialogueFrame;
     let (tx,rx)=tokio::sync::mpsc::channel(8);
     tokio::spawn(async move {
@@ -482,8 +499,8 @@ fn stream_response(state:DialogueState,request:VoiceDialogueRequest,choice:Optio
                     Ok(())
                 });
                 use tracing::Instrument;
-                let completion=state.completer.complete_stream(&request.prompt,choice.as_ref(),callback)
-                    .instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id));
+                let completion=nomifun_ai_agent::with_flowy_proxy_attribution(attribution, state.completer.complete_stream(&request.prompt,choice.as_ref(),callback)
+                    .instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id)));
                 tokio::pin!(completion);
                 let idle=tokio::time::sleep(state.timeout.min(VOICE_FIRST_RESPONSE_TIMEOUT));tokio::pin!(idle);
                 let total=tokio::time::sleep(state.timeout);tokio::pin!(total);

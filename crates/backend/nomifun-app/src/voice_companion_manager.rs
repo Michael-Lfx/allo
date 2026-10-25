@@ -896,6 +896,26 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         Ok(VoiceDialoguePreflight::Ready{conversation_id})
     }
 
+    async fn billing_attribution(
+        &self,
+        conversation_id: &str,
+        request: &VoiceDialogueRequest,
+    ) -> Result<nomifun_ai_agent::FlowyProxyAttribution, VoiceDialogueRecorderError> {
+        let _guard = self.journal_lock.lock().await;
+        let records = self.read_records()?;
+        let record = records.iter()
+            .find(|record| request.voice_record_id.is_some() && record.request.voice_record_id == request.voice_record_id)
+            .filter(|record| record.request == *request && record.conversation_id == conversation_id)
+            .ok_or(VoiceDialogueRecorderError::Conflict)?;
+        let turn_id = record.message_id.as_deref()
+            .and_then(|id| nomifun_common::MessageId::parse(id).ok())
+            .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("billing_turn_missing".into()))?;
+        Ok(nomifun_ai_agent::FlowyProxyAttribution {
+            session_id: Some(conversation_id.into()),
+            turn_id: Some(turn_id.into_string()),
+        })
+    }
+
     async fn record_pair(&self,conversation_id:&str,request:&VoiceDialogueRequest,assistant_content:&str)->Result<(),VoiceDialogueRecorderError> {
         let _guard=self.journal_lock.lock().await;
         let mut records=self.read_records()?;
@@ -1005,6 +1025,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             &display,
             "voice_companion",
             Some(admission_epoch),
+            Some(&user_message_id),
         ).await.map_err(|e| match e {
             nomifun_common::AppError::Conflict(ref msg) if msg.contains("epoch") || msg.contains("revision") => {
                 VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into())

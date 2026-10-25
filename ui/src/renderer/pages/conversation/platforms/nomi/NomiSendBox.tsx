@@ -8,7 +8,7 @@ import type { TChatConversation } from '@/common/config/storage';
 import { sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
-import VoiceComposerStatus from '@renderer/pages/voiceSession/VoiceComposerStatus';
+import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
 import {stopDisplayedVoiceTask} from '@renderer/pages/voiceSession/stopVoiceTask';
 import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import {isVoiceConversation as classifyVoiceConversation} from '../../utils/isVoiceConversation';
@@ -2193,21 +2193,31 @@ const NomiSendBox: React.FC<{
           }
         />
       )}
+      {isVoiceConversation && (
+        <VoiceCallDock
+          conversationId={conversation_id}
+          snapshot={voiceSnapshot}
+          failed={voiceFailed}
+          historyFailed={voiceHistoryFailed}
+          historyMessages={messageList}
+          isConnecting={isVoiceConnecting}
+          isActiveElsewhere={isVoiceActiveElsewhere}
+          onRetryHistory={onRetryVoiceHistory}
+          onReturnToCall={
+            activeVoiceConversationId
+              ? () => {
+                  void navigate(
+                    `/conversation/${encodeURIComponent(activeVoiceConversationId)}`
+                  );
+                }
+              : undefined
+          }
+        />
+      )}
       <SendBox
         key={conversation_id}
         data-testid='nomi-sendbox'
         isVoiceConversation={isVoiceConversation}
-        statusSlot={isVoiceConversation ? (
-          <VoiceComposerStatus
-            conversationId={conversation_id}
-            snapshot={voiceSnapshot}
-            failed={voiceFailed}
-            historyFailed={voiceHistoryFailed}
-            isConnecting={isVoiceConnecting}
-            isActiveElsewhere={isVoiceActiveElsewhere}
-            onRetryHistory={onRetryVoiceHistory}
-          />
-        ) : undefined}
         isVoiceActive={isVoiceActive}
         isVoiceActiveElsewhere={isVoiceActiveElsewhere}
         isVoiceConnecting={isVoiceConnecting}

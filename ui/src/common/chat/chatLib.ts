@@ -1490,7 +1490,7 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
         type: 'text',
         msg_id: message.msg_id,
         ...turnIdentity,
-        position: message.type === 'user_content' ? 'right' : 'left',
+        position: message.type === 'user_content' ? 'right' : (message.position ?? 'left'),
         conversation_id: message.conversation_id,
         created_at,
         content: isRichData

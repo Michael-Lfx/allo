@@ -4,17 +4,33 @@
     "historyFailed": "History sync failed; current text is preserved",
     "retryHistory": "Retry sync",
     "resetScopeUnavailable": "Voice status is still syncing. Nothing was cleared; please retry shortly.",
-    "retryStart": "Check call startup",
-    "pill": {
-      "syncing": "Syncing",
-      "connecting": "Connecting",
-      "listening": "Listening",
-      "transcribing": "Transcribing",
-      "deciding": "Thinking",
-      "speaking": "Speaking",
-      "activeElsewhere": "Call active elsewhere",
-      "idle": "Standby"
-    }
+    "retryStart": "Check call startup"
+  },
+  "dock": {
+    "syncing": "Syncing voice status",
+    "notInCall": "Not in a call",
+    "waitingWake": "Waiting for wake word",
+    "connecting": "Connecting",
+    "listening": "Listening · please speak",
+    "followUp": "Go ahead",
+    "transcribing": "Transcribing",
+    "deciding": "Thinking",
+    "synthesizing": "Preparing audio",
+    "speaking": "Speaking",
+    "speakingInterruptible": "Speaking · You can interrupt",
+    "awaitingApproval": "Approval needed",
+    "listeningConfirm": "Confirm or decline",
+    "dispatching": "Submitting task",
+    "unavailable": "Microphone or voice service unavailable",
+    "activeElsewhere": "Call active in another conversation",
+    "textFollowUp": "Microphone not ready; continue by typing",
+    "taskRunning": "Task running",
+    "syncFailed": "History sync failed",
+    "details": "Details",
+    "detailsWithCount": "Details ({{count}})",
+    "hideDetails": "Hide details",
+    "reviewApproval": "Review approval",
+    "detailsAria": "Voice call details"
   },
   "pet": {
     "more": "{{count}} more"

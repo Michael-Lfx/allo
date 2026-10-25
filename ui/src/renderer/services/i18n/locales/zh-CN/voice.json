@@ -4,17 +4,33 @@
     "historyFailed": "记录同步失败，当前内容已保留",
     "retryHistory": "重试同步",
     "resetScopeUnavailable": "语音状态尚未同步，暂未清理。请稍后重试。",
-    "retryStart": "核对通话启动状态",
-    "pill": {
-      "syncing": "同步中",
-      "connecting": "连接中",
-      "listening": "倾听中",
-      "transcribing": "识别中",
-      "deciding": "思考中",
-      "speaking": "播报中",
-      "activeElsewhere": "别处通话中",
-      "idle": "待命"
-    }
+    "retryStart": "核对通话启动状态"
+  },
+  "dock": {
+    "syncing": "正在同步语音状态",
+    "notInCall": "未在通话",
+    "waitingWake": "等待唤醒",
+    "connecting": "正在连接",
+    "listening": "正在听，请说话",
+    "followUp": "可以继续说",
+    "transcribing": "正在识别",
+    "deciding": "正在思考",
+    "synthesizing": "正在准备语音",
+    "speaking": "正在播报",
+    "speakingInterruptible": "正在播报，可插话",
+    "awaitingApproval": "需要确认",
+    "listeningConfirm": "请确认或拒绝",
+    "dispatching": "正在提交任务",
+    "unavailable": "麦克风或语音服务不可用",
+    "activeElsewhere": "通话在另一会话进行",
+    "textFollowUp": "麦克风未就绪，可输入文字继续",
+    "taskRunning": "任务处理中",
+    "syncFailed": "记录同步失败",
+    "details": "详情",
+    "detailsWithCount": "详情 ({{count}})",
+    "hideDetails": "收起详情",
+    "reviewApproval": "查看确认",
+    "detailsAria": "语音通话详情"
   },
   "pet": {
     "more": "另有 {{count}} 项"

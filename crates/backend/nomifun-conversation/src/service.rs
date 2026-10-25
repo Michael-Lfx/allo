@@ -11409,7 +11409,7 @@ impl ConversationService {
         content: &str,
         origin: &str,
     ) -> Result<String, AppError> {
-        self.project_assistant_message_idempotent_with_epoch(user_id, conversation_id, operation_id, content, origin, None).await
+        self.project_assistant_message_idempotent_with_epoch(user_id, conversation_id, operation_id, content, origin, None, None).await
     }
 
     pub async fn project_assistant_message_idempotent_with_epoch(
@@ -11420,6 +11420,7 @@ impl ConversationService {
         content: &str,
         origin: &str,
         expected_admission_epoch: Option<i64>,
+        owning_turn_id: Option<&str>,
     ) -> Result<String, AppError> {
         let conversation_id = parse_conv_id(conversation_id)?;
         let projection_token = CancellationToken::new();
@@ -11450,13 +11451,20 @@ impl ConversationService {
             "origin": origin,
         })
         .to_string();
+        let mut message_content = serde_json::json!({ "content": content });
+        // Derived attribution does not change legacy delivery fingerprints;
+        // idempotent replays publish the original stored row and its turn id.
+        if let Some(turn_id) = owning_turn_id {
+            message_content["turn_id"] = MessageId::parse(turn_id)
+                .map_err(|error| AppError::BadRequest(error.to_string()))?.into_string().into();
+        }
         let candidate = MessageRow {
             id: 0,
             message_id: message_id.clone(),
             conversation_id: conversation_id.to_owned(),
             msg_id: Some(message_id),
             r#type: "text".to_owned(),
-            content: serde_json::json!({ "content": content }).to_string(),
+            content: message_content.to_string(),
             position: Some("left".to_owned()),
             status: Some("finish".to_owned()),
             hidden: false,
@@ -11506,6 +11514,7 @@ impl ConversationService {
                 serde_json::json!({
                 "conversation_id": row.conversation_id,
                 "msg_id": stable_message_id,
+                "turn_id": data.get("turn_id"),
                 "type": "content",
                 "data": data,
                 "position": row.position,
@@ -11607,13 +11616,17 @@ impl ConversationService {
         });
 
         let assistant_msg_id = MessageId::new().into_string();
+        let mut assistant_content = serde_json::json!({ "content": assistant_text });
+        if let Some(user) = &user_candidate {
+            assistant_content["turn_id"] = user.message_id.clone().into();
+        }
         let assistant_candidate = MessageRow {
             id: 0,
             message_id: assistant_msg_id.clone(),
             conversation_id: conversation_id.to_owned(),
             msg_id: Some(assistant_msg_id),
             r#type: "text".to_owned(),
-            content: serde_json::json!({ "content": assistant_text }).to_string(),
+            content: assistant_content.to_string(),
             position: Some("left".to_owned()),
             status: Some("finish".to_owned()),
             hidden: false,
@@ -11691,6 +11704,7 @@ impl ConversationService {
                     serde_json::json!({
                         "conversation_id": asst_row.conversation_id,
                         "msg_id": asst_row.msg_id.as_deref().unwrap_or(&asst_row.message_id),
+                        "turn_id": asst_data.get("turn_id"),
                         "type": "content",
                         "data": asst_data,
                         "position": asst_row.position,

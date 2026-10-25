@@ -7538,12 +7538,12 @@ async fn voice_replays_wait_for_projection_gate_and_reject_a_cleared_epoch() {
     let epoch=repo.get_turn_admission_state(SQLITE_TEST_OWNER,&conv.conversation_id).await.unwrap().epoch;
     let message=MessageId::new().into_string();
     svc.append_voice_message_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,&message,"original","projection-command",Some(epoch)).await.unwrap();
-    svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch)).await.unwrap();
+    svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch),None).await.unwrap();
     broadcaster.take_events();
     let token=CancellationToken::new();
     let gate=svc.runtime_state().acquire_preparation_gate(&conv.conversation_id,&token).await.unwrap();
     let mut user=Box::pin(svc.append_voice_message_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,&message,"original","projection-command",Some(epoch)));
-    let mut assistant=Box::pin(svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch)));
+    let mut assistant=Box::pin(svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch),None));
     assert!(tokio::time::timeout(Duration::from_millis(20),&mut user).await.is_err());
     assert!(tokio::time::timeout(Duration::from_millis(20),&mut assistant).await.is_err());
     repo.clear_terminal_conversation_messages(SQLITE_TEST_OWNER,&conv.conversation_id,now_ms()).await.unwrap();

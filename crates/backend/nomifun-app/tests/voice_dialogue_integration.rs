@@ -52,6 +52,80 @@ async fn voice_user_created_event_preserves_the_frozen_memory_owner() {
 }
 
 #[tokio::test]
+async fn voice_pair_publishes_the_same_sides_and_billing_turn_as_reloaded_messages() {
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let captured = Arc::new(ReviewCapturedEvents::default());
+    let service = ConversationService::new(
+        Arc::<str>::from(USER_ID),
+        std::env::temp_dir(),
+        captured.clone(),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(db.pool().clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    );
+    let conv = service
+        .ensure_default_voice_conversation(USER_ID)
+        .await
+        .unwrap();
+    let epoch = service
+        .conversation_repo()
+        .get_turn_admission_state(USER_ID, &conv)
+        .await
+        .unwrap()
+        .epoch;
+    let user_id = nomifun_common::MessageId::new().into_string();
+    for _ in 0..2 {
+        service
+            .project_voice_dialogue_pair_with_user_msg_id(
+                USER_ID,
+                &conv,
+                "layout-billing-pair",
+                Some("今天星期几？"),
+                "我来确认日期。",
+                "voice_companion",
+                epoch,
+                Some(&user_id),
+            )
+            .await
+            .unwrap();
+    }
+    let rows = service
+        .list_messages(USER_ID, &conv, Default::default())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(rows.len(), 2);
+    let events = captured.0.lock().unwrap();
+    let streams: Vec<_> = events
+        .iter()
+        .filter(|event| event.name == "message.stream")
+        .collect();
+    assert_eq!(
+        streams.len(),
+        3,
+        "replay rebroadcasts the stable assistant without reinserting user rows"
+    );
+    assert_eq!(streams[0].data["position"], "right");
+    assert_eq!(streams[0].data["msg_id"], user_id);
+    for assistant in &streams[1..] {
+        assert_eq!(assistant.data["position"], "left");
+        assert_eq!(assistant.data["turn_id"], user_id);
+        let stored = rows
+            .iter()
+            .find(|row| row.message_id == assistant.data["msg_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(stored.content["turn_id"], assistant.data["turn_id"]);
+    }
+}
+
+#[tokio::test]
 async fn latest_user_correction_survives_a_long_assistant_reply() {
     let dir=tempfile::tempdir().unwrap();
     let recorder=ConversationVoiceDialogueRecorder::new(fixture_service().await,USER_ID.into(),dir.path());
@@ -706,6 +780,10 @@ async fn bv_04_voice_target_becoming_busy_during_generation_preserves_append() {
         .record_pair(&target_conv_id, &req, r#"{"intent_type":"chat","reply_tts":"助手回复"}"#)
         .await;
     assert!(res.is_ok(), "record_pair must support appending while target is busy");
+    let messages = conversation_svc.list_messages(user_id, &target_conv_id, Default::default()).await.unwrap().items;
+    let user = messages.iter().find(|m| m.position == Some(nomifun_common::MessagePosition::Right)).unwrap();
+    let assistant = messages.iter().find(|m| m.position == Some(nomifun_common::MessagePosition::Left)).unwrap();
+    assert_eq!(assistant.content["turn_id"].as_str(), Some(user.message_id.as_str()), "busy projection must retain the billed user turn");
 }
 
 
@@ -739,6 +817,134 @@ async fn fixture_service_with_models(models: &[&str]) -> Arc<ConversationService
     }
     Arc::new(ConversationService::new(Arc::<str>::from(USER_ID),std::env::temp_dir(),Arc::new(NullSink),Arc::new(NoopSkillResolver),Arc::new(EmptyRegistry),
         Arc::new(SqliteConversationRepository::new(db.pool().clone())),Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),Arc::new(nomifun_conversation::NoExecutionConversationBoundary)))
+}
+
+struct AttributionCompleter(std::sync::Mutex<Vec<nomifun_ai_agent::FlowyProxyAttribution>>);
+
+#[async_trait]
+impl nomifun_app::voice_dialogue::VoiceDialogueCompleter for AttributionCompleter {
+    async fn resolve_model(
+        &self,
+        _: Option<&nomifun_api_types::voice::VoiceModelRef>,
+    ) -> Result<nomifun_api_types::voice::VoiceModelRef, String> {
+        Err("unused".into())
+    }
+    async fn complete(
+        &self,
+        _: &str,
+        _: Option<&nomifun_api_types::voice::VoiceModelRef>,
+    ) -> Result<String, String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(nomifun_ai_agent::FlowyProxyAttribution {
+                session_id: nomifun_ai_agent::current_flowy_chat_session_id(),
+                turn_id: nomifun_ai_agent::current_flowy_billing_turn_id(),
+            });
+        Ok(r#"{"intent_type":"chat","understood_request":"询问日期","reply_tts":"我来确认日期。"}"#.into())
+    }
+}
+
+#[tokio::test]
+async fn voice_fast_model_billing_uses_durable_user_turn_for_http_and_spawned_stream() {
+    use nomifun_app::voice_dialogue::VoiceDialogueBridge;
+    for stream in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let service = fixture_service().await;
+        let recorder = Arc::new(ConversationVoiceDialogueRecorder::new(
+            service.clone(),
+            USER_ID.into(),
+            dir.path(),
+        ));
+        let completer = Arc::new(AttributionCompleter(Default::default()));
+        let bridge = VoiceDialogueBridge::start_with_recorder(
+            completer.clone(),
+            Default::default(),
+            "billing-test".into(),
+            axum::Router::new(),
+            Some(recorder.clone()),
+        )
+        .await
+        .unwrap();
+        let mut request =
+            VoiceDialogueRequest::scoped("billing-session", "acoustic-turn", "今天星期几？");
+        request.prompt = "请理解并回答用户关于日期的问题".into();
+        request.stream = stream;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        for _ in 0..2 {
+            let response = client
+                .post(&bridge.endpoint)
+                .header("x-ai-mate-control-token", "billing-test")
+                .json(&request)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let is_stream = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("application/x-ndjson"));
+            let body = response.text().await.unwrap();
+            assert!(status.is_success(), "{status}: {body}");
+            if is_stream {
+                let frames: Vec<nomifun_api_types::voice::VoiceDialogueFrame> = body
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert!(
+                    matches!(frames.last(), Some(nomifun_api_types::voice::VoiceDialogueFrame::Complete { response }) if response.record_error.is_none()),
+                    "{body}"
+                );
+            } else {
+                let response: nomifun_api_types::voice::VoiceDialogueResponse =
+                    serde_json::from_str(&body).unwrap();
+                assert!(response.record_error.is_none());
+            }
+        }
+        let binding = recorder
+            .freeze_session("billing-session", None)
+            .await
+            .unwrap()
+            .unwrap();
+        let messages = service
+            .list_messages(USER_ID, &binding.conversation_id, Default::default())
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(messages.len(), 2, "cached replay cannot create a new pair");
+        let user = messages
+            .iter()
+            .find(|m| m.position == Some(nomifun_common::MessagePosition::Right))
+            .unwrap();
+        let assistant = messages
+            .iter()
+            .find(|m| m.position == Some(nomifun_common::MessagePosition::Left))
+            .unwrap();
+        let calls = completer.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "cached replay cannot bill a second generation"
+        );
+        assert_eq!(
+            calls[0].session_id.as_deref(),
+            Some(binding.conversation_id.as_str())
+        );
+        assert_eq!(calls[0].turn_id.as_deref(), Some(user.message_id.as_str()));
+        assert_eq!(
+            assistant.content["turn_id"].as_str(),
+            Some(user.message_id.as_str())
+        );
+        assert!(
+            nomifun_ai_agent::current_flowy_billing_turn_id().is_none(),
+            "billing scope cannot escape the model call"
+        );
+    }
 }
 
 struct GatedCompleter {

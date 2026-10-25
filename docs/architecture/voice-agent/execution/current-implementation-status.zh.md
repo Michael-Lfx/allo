@@ -233,3 +233,48 @@
 最新实施依据为 [最终串行交接](voice-repair-final-handoff-2026-10-22.zh.md) 和执行辅导 §12。固定提交复审的八项边界问题及真实 owner 侧库反例已合并为 C01–C09，不能签核“R1–R5 全部完成”。实施顺序为事务/身份 → 第一条桌宠到真实任务的可见纵向 → 连续控制/队列 → 联合体验、延迟及资源差额验证，无逐片人工批准环节。
 
 复核期间另一执行者已修改 nomifun-db repository/测试及 Conversation service 的 epoch 传递；这是未提交在途代码，不属于本轮文档修改或原有通过成绩。需重新固定 diff 并验证忙时原文落盘、原子清空与重放、缺原子能力时拒绝降级。完整 UI 类型检查与 ACP 集成失败仍未归因；未运行当前在途代码的联合构建、真人设备或安装签核。旧配置迁移及离线音色选择继续单列，不清空历史数据或强行改权限定模式。
+
+
+## 2026-10-25 语音消息左右排版与快模型积分归属补记
+
+在 `cd5a904af` 基础上，修复实时 `content` 适配忽略 `position: right` 导致语音用户消息靠左的问题；保留原始 ASR，继续由同一次快模型调用完成需求理解、意图和短答。快模型调用现从持久生成 claim 获取计费归属，普通与流式调用、空闲与忙时投影均关联稳定用户消息 ID，重放不重复生成。执行 Agent 保持自己的执行轮次；本次不修改计价或扣款规则，不估算历史积分。
+
+验证事实与范围见 [排版及积分归属修复记录](voice-ux-rev3/VOICE-MESSAGE-LAYOUT-AND-USAGE-2026-10-25.zh.md)。本轮未请求付费云端服务，线上实际积分数值未验收；既有 TS 61 条错误未修改，原生和声学边界保持原记录。
+
+## 2026-10-25 复审后补修：独立悬浮语音条与积分隔离（追加，不覆盖上文）
+
+基准仍为 `feat/voice-next` 当前未提交工作区；首轮实现与本文历史内容保留。复审发现的三个真实反例已先以失败日志固定：`independent-isolation-red.txt`（9 passed / 2 failed）、`independent-capture-red.txt`（12 passed / 1 failed）。本轮未删除或弱化任何 `independent review:` 测试，未提交、暂存、推送、切分支或派发子 Agent。
+
+### 实际修复
+
+1. **积分门禁与 inflight 竞态**：`runTurnCreditQuery` 先完成 Conversation 资格读取，再发布/复用 inflight；普通本地/第三方门禁拒绝不再占用共享 inflight。云调用仍按 Conversation+turn 去重并复用缓存；未使用 force 绕开。归属入口在普通本地门禁同时进入时会实际查询。
+2. **逐轮 session 归属**：`collectVoiceBilledTurns` 现在要求 `turn.session_id === snapshot.session_id`，缺失、旧代次或空 session 的轮次不参与积分归属，与 `liveVoiceTurn` 的严格隔离一致。
+3. **真实 no_pcm 状态**：`capture_state = no_pcm` 时，即使 phase 仍为 listening/follow_up/idle 且 acoustic_ready 为真，也不再显示正在听/等待唤醒/波形；显示准确采集故障并停止活动。PCM 恢复后回到真实阶段。`barge_in_ready` 仍要求 acoustic_ready 与 receiving 同时成立。
+4. **historyFailed + snapshot=null 恢复面板**：详情面板改为只要存在可恢复详情就挂载（关闭时 hidden），`aria-controls` 始终有目标；打开后历史重试可见、可点，面板获得焦点，Escape 关闭并回焦。未伪造 snapshot。
+5. **历史语音积分有界回填**：`useVoiceTurnCredits` 新增从当前已加载持久消息收集 durable assistant turn_id 的回填路径，最多 12 条、按 Conversation 过滤、要求 message_id 与 finish 状态、排除临时/流式行与 task agent 输出；仅语音 dock 使用，复用同一 attributed 查询/缓存/持久化核心，普通发送与计费路径未增加语音逻辑、轮询或 LLM。
+
+### 验证事实
+
+- 复审反例 GREEN：`independent-isolation-green.txt` 15 passed / 0 failed；`independent-capture-green.txt` 13 passed / 0 failed。
+- 语音/积分/相关回归：`followup-suite.log` 192 passed / 0 failed。
+- 基线四文件：`four-tests-followup.log` 70 passed / 0 failed / 210 assertions。这里 70 是四个文件合计，不是 liveVoiceTurn 单文件；后者单独为 17 passed。
+- 真实 Chrome 探针：`browser-probe-result.json`、`browser-probe-run-followup-final.log`，normal 58/58、reduced-motion 58/58；新增 historyFailed+null 的打开/重试/aria-controls/Escape/回焦实测。
+- typecheck：`typecheck-followup.log` 61 条错误，与首轮基线逐行一致。i18n/theme/motion 通过；build:ui 退出 0；dead-css 仍为既有未修改文件命中，本轮新增/修改文件无命中。
+- 未验收：真实 Flowy 云端扣费金额（无付费探针授权）、200% 原生浏览器缩放、完整 SPA 宿主中的菜单/虚拟列表；独立 DOM 夹具不等同整页验收。
+
+### FD 状态（复审后）
+
+- FD-01、FD-04、FD-05、FD-06、FD-08、FD-10：本轮定向行为/隔离测试通过，FD-01/04/05 的完整宿主点击与真实 API 仍标为部分。
+- FD-02、FD-03：状态映射、采集健康、焦点与隐藏/Reduced Motion 探针通过；真实桌宠 daemon 现场阶段未驱动。
+- FD-07：服务端 usage 透传路径与 mock 行为通过；真实云端金额未验收。
+- FD-09：中英、明暗、360px、焦点、对比度与 Reduced Motion 通过；200% 原生缩放与完整 SPA 未验收，保持部分。
+
+### 悬浮条最终独立复审补记（2026-10-25）
+
+原三个父反例独立转绿，并补修无 binding/session、采集已关闭仍误报等待唤醒的边界。最终父审查 8 文件 112 项通过，Chrome 隔离 DOM 探针 normal/Reduced Motion 各 58 项通过，生产前端构建 exit 0，TS 61 条与开工基线逐条相同。代码审查和定向修复收口，完整 SPA、真实设备、原生缩放、线上金额仍保留未验收；未提交、未推送。详见 [独立复审与收口](voice-ux-rev3/FLOATING-DOCK-INDEPENDENT-REVIEW-2026-10-25.zh.md)。
+
+### 积分并发与失败恢复再复审补修（2026-10-25）
+
+后续全面复审重新发现多轮历史 usage 整表覆盖、失败后 attempted 永不恢复两项边界，并在正式反例中确认关联的失败写入污染成功缓存问题；上述历史“收口”仅代表当时已覆盖的范围。本轮已修正同渲染器内 Conversation 写回串行化、最新数据合并、写成功后缓存，以及语音专属的有限重试和 online/focus 恢复，普通模型门禁与通用层隔离保持。
+
+正式前端回归 172 项通过，真实 React/Chrome hook 生命周期探针 11 项通过；新旧失败证据保留。详细决策、最终门禁、提交范围及未签核边界见 [积分写回与恢复修复记录](voice-ux-rev3/CREDIT-WRITEBACK-RECOVERY-REPAIR-2026-10-25.zh.md)。

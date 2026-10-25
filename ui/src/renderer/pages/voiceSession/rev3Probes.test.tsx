@@ -12,7 +12,7 @@ import { I18nextProvider } from 'react-i18next';
 import ConversationRow from '../conversation/SessionList/ConversationRow';
 import type { ConversationRowProps } from '../conversation/SessionList/types';
 import { LayoutContext } from '@renderer/hooks/context/LayoutContext';
-import VoiceComposerStatus from './VoiceComposerStatus';
+import VoiceCallDock from './VoiceCallDock';
 import * as voice from '@common/adapter/voiceCompanion';
 import zh from '@renderer/services/i18n/locales/zh-CN/voice.json';
 import en from '@renderer/services/i18n/locales/en-US/voice.json';
@@ -26,20 +26,20 @@ async function localized(child: React.ReactNode, locale: 'zh-CN' | 'en-US') {
 for (const locale of ['zh-CN', 'en-US'] as const) {
   const dictionary = locale === 'zh-CN' ? zh : en;
   test(`${locale}: missing snapshot is syncing, not an assertion of idle`, async () => {
-    const html = await localized(<VoiceComposerStatus conversationId='p' snapshot={null} />, locale);
-    expect(html).toContain(dictionary.composer.pill.syncing);
-    expect(html).not.toContain(dictionary.session.phase.idle);
+    const html = await localized(<VoiceCallDock conversationId='p' snapshot={null} />, locale);
+    expect(html).toContain(dictionary.dock.syncing);
+    expect(html).not.toContain(dictionary.dock.notInCall);
   });
   test(`${locale}: stale listening phases cannot claim a working microphone`, async () => {
     const snapshot = { instance_id: 'host', seq: 1, session_id: 'call', phase: 'listening', connection: 'connected', acoustic_ready: true,
       binding: { session_id: 'call', binding_id: 'binding', conversation_id: 'p', workspace: null } } as voice.VoiceSnapshot;
-    const offline = await localized(<VoiceComposerStatus conversationId='p' snapshot={{...snapshot, connection: 'offline'}} />, locale);
-    expect(offline).toContain(dictionary.session.unavailable);
-    expect(offline).not.toContain(dictionary.session.phase.listening);
-    const ended = await localized(<VoiceComposerStatus conversationId='p' snapshot={{...snapshot, ended_reason: 'user_stop'}} />, locale);
-    expect(ended).toContain(dictionary.session.phase.idle);
-    const text = await localized(<VoiceComposerStatus conversationId='p' snapshot={{...snapshot, acoustic_ready: false}} />, locale);
-    expect(text).toContain(dictionary.session.phase.text_follow_up);
+    const offline = await localized(<VoiceCallDock conversationId='p' snapshot={{...snapshot, connection: 'offline'}} />, locale);
+    expect(offline).toContain(dictionary.dock.unavailable);
+    expect(offline).not.toContain(dictionary.dock.listening);
+    const ended = await localized(<VoiceCallDock conversationId='p' snapshot={{...snapshot, ended_reason: 'user_stop'}} />, locale);
+    expect(ended).toContain(dictionary.dock.notInCall);
+    const text = await localized(<VoiceCallDock conversationId='p' snapshot={{...snapshot, acoustic_ready: false}} />, locale);
+    expect(text).toContain(dictionary.dock.textFollowUp);
   });
   test(`${locale}: voice wave survives rename, active state is accessible, and actions stay focusable`, async () => {
     const props = { conversation: { id: 'p', type: 'nomi', name: 'renamed', extra: { voice: true }, created_at: Date.now() },
