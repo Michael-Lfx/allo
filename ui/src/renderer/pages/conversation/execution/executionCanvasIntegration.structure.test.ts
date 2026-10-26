@@ -70,6 +70,10 @@ describe('conversation execution canvas integration', () => {
 
     expect(controlsSource.includes("status === 'running' || status === 'waiting_input'")).toBe(true);
     expect(controlsSource.includes('const isTerminal = isTerminalExecutionStatus(status)')).toBe(true);
+    // `border-b-base` resolves to `border-bottom-color: var(--bg-base)`, which
+    // paints the bottom edge with the panel background and erases it.
+    expect(controlsSource.includes('border-b-base')).toBe(false);
+    expect(controlsSource.includes('border-[var(--border-base)]')).toBe(true);
     expect(controlsSource.includes("status !== '' && !isBusyPlaceholder && !isTerminal")).toBe(true);
     expect(projectedSource.includes("step.kind === 'agent' && step.status === 'pending'")).toBe(true);
     expect(projectedSource.includes('participant.retired_in_revision == null')).toBe(true);

@@ -217,6 +217,7 @@ mod tests {
             usage: TokenUsage::default(),
             turns: 1,
             is_error,
+            denied_tool_calls: 0,
         }
     }
 

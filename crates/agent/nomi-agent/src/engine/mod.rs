@@ -1214,6 +1214,15 @@ impl AgentEngine {
             .deny_unconfirmed();
     }
 
+    /// Tool calls this engine refused, including delegated fail-closed
+    /// denials. Read after a turn so the host can mark the task incomplete.
+    pub fn denied_tool_calls(&self) -> usize {
+        self.confirmer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .denied_count()
+    }
+
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn nomi_protocol::writer::ProtocolEmitter>) {
         self.protocol_writer = Some(writer);
     }
