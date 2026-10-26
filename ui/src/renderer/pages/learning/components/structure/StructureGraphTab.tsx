@@ -2,6 +2,7 @@ import { Button, Empty, Tag, Typography } from '@arco-design/web-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { LearningStructureView } from '../../types';
+import { GateCoverage } from './GateCoverage';
 import { MatrixView } from './MatrixView';
 import { Mindmap } from './Mindmap';
 import { RelationNet } from './RelationNet';
@@ -138,6 +139,8 @@ export function StructureGraphTab({
           )}
         </div>
       )}
+
+      {view.terrain && <GateCoverage structure={structure} terrain={view.terrain} />}
 
       {tab === 'mindmap' && <Mindmap structure={structure} />}
       {tab === 'net' && <RelationNet structure={structure} />}

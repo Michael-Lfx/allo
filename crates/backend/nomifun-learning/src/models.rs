@@ -1710,7 +1710,9 @@ pub struct SpineView {
 }
 
 /// 块视图行：`layer` = assumes 前置链深度（L0 起算，层号不是排期）；
-/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）。
+/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）；
+/// `door_refs` = 门位标签（m1，learnhub #165 v2.14：覆盖本块主题的门口
+/// 编号，语义 =「能满足判据必已会本块」；旧快照无键 = 空数组）。
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockView {
     pub name: String,
@@ -1720,6 +1722,8 @@ pub struct BlockView {
     pub note: String,
     pub layer: usize,
     pub no_prereq: bool,
+    #[serde(default)]
+    pub door_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1778,6 +1782,10 @@ pub struct TerrainDoorView {
     pub id: String,
     pub criterion: String,
     pub kind: String,
+    /// 块覆盖统计（m1）：本块结构中被该门口 door_refs 标注覆盖的块数
+    /// （过门自检读侧的机械读数；无标注 = 0）。
+    #[serde(default)]
+    pub covered_blocks: usize,
 }
 
 /// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位

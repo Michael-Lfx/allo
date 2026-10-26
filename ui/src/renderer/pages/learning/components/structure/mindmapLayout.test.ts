@@ -40,6 +40,7 @@ const makeBlock = (spine: string, index: number): BlockView => ({
   note: '',
   layer: 0,
   no_prereq: true,
+  door_refs: [],
 });
 
 const makeStructure = (spineBlocks: [string, number][]): Pick<StructureView, 'spines' | 'blocks'> => ({

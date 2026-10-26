@@ -52,10 +52,12 @@ pub fn build_structure_view(
             (stored_hash as u64) != current_hash,
         )
     });
+    let structure_view = build_structure(&structure);
+    let terrain_view = build_terrain(&terrain, &structure_view.blocks);
     LearningStructureView {
         course_id,
-        structure: Some(build_structure(&structure)),
-        terrain: build_terrain(&terrain),
+        structure: Some(structure_view),
+        terrain: terrain_view,
         generated_at,
         mounts,
     }
@@ -235,6 +237,8 @@ fn build_structure(structure: &Value) -> StructureView {
                     note: text(block, "note"),
                     layer: 0,
                     no_prereq: true,
+                    // 门位标签（m1）：旧快照无键 = 空数组（serde default 同义）。
+                    door_refs: strings(block, "door_refs"),
                 })
                 .collect()
         })
@@ -428,7 +432,7 @@ fn build_structure(structure: &Value) -> StructureView {
     }
 }
 
-fn build_terrain(terrain: &Value) -> Option<TerrainView> {
+fn build_terrain(terrain: &Value, blocks: &[BlockView]) -> Option<TerrainView> {
     if !terrain.is_object() {
         return None;
     }
@@ -438,10 +442,20 @@ fn build_terrain(terrain: &Value) -> Option<TerrainView> {
         .map(|items| {
             items
                 .iter()
-                .map(|door| TerrainDoorView {
-                    id: text(door, "id"),
-                    criterion: text(door, "criterion"),
-                    kind: text(door, "kind"),
+                .map(|door| {
+                    let id = text(door, "id");
+                    // 块覆盖统计（m1）：door_refs 引用本门口的块数（读侧机械
+                    // 读数，消费面 = 过门自检；引用不存在门口的块不计入）。
+                    let covered_blocks = blocks
+                        .iter()
+                        .filter(|block| block.door_refs.iter().any(|referenced| referenced == &id))
+                        .count();
+                    TerrainDoorView {
+                        id,
+                        criterion: text(door, "criterion"),
+                        kind: text(door, "kind"),
+                        covered_blocks,
+                    }
                 })
                 .collect()
         })
@@ -547,10 +561,10 @@ mod tests {
                     { "name": "主干二", "definition": "d2", "key_points": ["k"], "instance": "i" }
                 ],
                 "blocks": [
-                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "n" },
+                    { "name": "块A", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "n", "door_refs": ["G1"] },
                     { "name": "块B", "slug": "block-b", "spine": "主干一", "stage": "进阶", "note": "n" },
                     { "name": "块C", "slug": "block-c", "spine": "主干二", "stage": "高级", "note": "n" },
-                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "入门", "note": "n" }
+                    { "name": "块D", "slug": "block-d", "spine": "主干二", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] }
                 ],
                 "edges": [
                     { "source": "块B", "target": "块A", "type": "assumes", "tier": "know", "note": "" },
@@ -566,7 +580,8 @@ mod tests {
                 "generated_by": "model-x",
                 "disclaimer": "判据快照",
                 "doors": [
-                    { "id": "G1", "criterion": "能解 x²=p", "kind": "hard" }
+                    { "id": "G1", "criterion": "能解 x²=p", "kind": "hard" },
+                    { "id": "G2", "criterion": "可辨认等式变形的合法性", "kind": "self_check" }
                 ]
             }
         })
@@ -648,13 +663,65 @@ mod tests {
     fn terrain_view_carries_doors() {
         let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&sample_envelope()), &[], None, 0);
         let terrain = view.terrain.expect("sample has terrain");
-        assert_eq!(terrain.doors.len(), 1);
+        assert_eq!(terrain.doors.len(), 2);
         assert_eq!(terrain.doors[0].id, "G1");
         assert_eq!(terrain.learner_basis_assumed, "纯零基础（未声明）");
 
         let doorless = json!({ "version": 1, "structure": {}, "terrain": { "doors": [] } });
         let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&doorless), &[], None, 0);
         assert!(view.terrain.is_none());
+    }
+
+    // ── m1（learnhub #165，契约 v2.14）：门位标签读侧 ────────────────────────
+
+    /// 块视图携带 door_refs；无键旧快照 = 空 Vec（serde default 容旧快照）。
+    #[test]
+    fn block_views_carry_door_refs_with_legacy_snapshot_default() {
+        let view = view();
+        let refs = |name: &str| {
+            view.blocks
+                .iter()
+                .find(|block| block.name == name)
+                .map(|block| block.door_refs.clone())
+                .unwrap()
+        };
+        assert_eq!(refs("块A"), vec!["G1".to_owned()]);
+        assert_eq!(refs("块D"), vec!["G1".to_owned(), "G2".to_owned()]);
+        assert_eq!(refs("块B"), Vec::<String>::new(), "无键旧快照 = 空数组");
+        assert_eq!(refs("块C"), Vec::<String>::new());
+    }
+
+    /// TerrainView 块覆盖统计：每条门口覆盖块数（块 door_refs 引用计一次；
+    /// 引用不存在门口的块不计入任何门口）。
+    #[test]
+    fn terrain_view_counts_covered_blocks_per_door() {
+        let full = build_structure_view(
+            nomifun_common::LearningCourseId::new(),
+            Some(&sample_envelope()),
+            &[],
+            None,
+            0,
+        );
+        let terrain = full.terrain.expect("sample has terrain");
+        let count = |id: &str| {
+            terrain
+                .doors
+                .iter()
+                .find(|door| door.id == id)
+                .map(|door| door.covered_blocks)
+                .unwrap()
+        };
+        assert_eq!(count("G1"), 2, "块A + 块D 引用 G1");
+        assert_eq!(count("G2"), 1, "仅块D 引用 G2");
+
+        // 旧快照：块无 door_refs 键 = 全部计数 0，投影不炸。
+        let mut legacy = sample_envelope();
+        for block in legacy["structure"]["blocks"].as_array_mut().unwrap() {
+            block.as_object_mut().unwrap().remove("door_refs");
+        }
+        let view = build_structure_view(nomifun_common::LearningCourseId::new(), Some(&legacy), &[], None, 0);
+        let terrain = view.terrain.expect("legacy has terrain");
+        assert!(terrain.doors.iter().all(|door| door.covered_blocks == 0));
     }
 
     /// 环安全：assumes 成环时投影不挂、层号冻结在环可达深度。

@@ -380,6 +380,36 @@ mod tests {
         assert_eq!(artifacts.structure["domain"]["prerequisite_doors"], json!(["G1"]));
     }
 
+    /// m1 叉积核验走既有反馈重试回路（零新机制）：块 door_refs 引用了地形
+    /// 未定义的 G9 → 首轮打回（gd.blocks.door_refs 进逐条款报告）→ 第二轮
+    /// 对齐产物过门。
+    #[tokio::test]
+    async fn dangling_block_door_refs_triggers_feedback_retry() {
+        let mut bad_structure = golden_structure();
+        bad_structure["blocks"][0]["door_refs"] = json!(["G1", "G9"]);
+        let mut aligned = golden_structure();
+        aligned["blocks"][0]["door_refs"] = json!(["G1"]);
+        let completer = scripted(vec![
+            bad_structure,
+            golden_terrain(),
+            aligned,
+            golden_terrain(),
+        ]);
+        let artifacts = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .expect("second attempt aligns the block door refs");
+        assert_eq!(artifacts.structure["blocks"][0]["door_refs"], json!(["G1"]));
+    }
+
     /// 预算耗尽：持续违约 = 明示失败，消息携带最后一轮逐条款报告。
     #[tokio::test]
     async fn exhausted_budget_fails_loud_with_clause_report() {
