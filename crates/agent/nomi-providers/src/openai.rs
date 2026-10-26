@@ -1257,7 +1257,18 @@ async fn process_sse_stream_with_capture(
     let mut stream = response.bytes_stream();
     let mut emitted_content = false;
 
-    while let Some(chunk) = stream.next().await {
+    // A local engine can withhold the next byte until the whole generation
+    // finishes. Stop drops the consumer; this wait must end then, so the
+    // response (and its socket) is dropped instead of running to a normal Done.
+    loop {
+        let next_chunk = tokio::select! {
+            biased;
+            _ = tx.closed() => return StreamOutcome::Ok,
+            next_chunk = stream.next() => next_chunk,
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
@@ -3032,6 +3043,49 @@ mod tests {
         }
         assert!(saw_done, "stream ending without [DONE] must still emit a Done");
         assert!(matches!(outcome, StreamOutcome::Ok));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_receiver_closes_a_stalled_local_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut probe = [0u8; 1];
+            let _ = socket.read(&mut probe).await;
+            let _ = disconnected_tx.send(());
+        });
+
+        let provider = OpenAIProvider::new("key", &format!("http://{addr}"), openai_compat());
+        let rx = provider.stream(&simple_request()).await.unwrap();
+        drop(rx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), disconnected_rx)
+            .await
+            .expect("dropping the stream consumer must close the stalled local response")
+            .unwrap();
     }
 
     #[tokio::test]
