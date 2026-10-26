@@ -97,6 +97,18 @@ impl Tool for LocalDelegateTool {
             Ok(invocations) => invocations,
             Err(error) => return rejected(error),
         };
+        // Fail before spending tokens when a task asks for a mutation tool the
+        // delegated engine could never approve. Without this, the child sees a
+        // tool it can call but every call is denied, and the model can still
+        // report success to the parent.
+        let gaps: Vec<String> = invocations
+            .iter()
+            .filter_map(|invocation| self.runner.approval_gap(invocation))
+            .collect();
+        if !gaps.is_empty() {
+            return rejected(gaps.join("\n"));
+        }
+
         let results = self.runner.execute_fanout(invocations).await;
 
         let synthesis = if synthesize && results.len() >= 2 {
@@ -294,6 +306,7 @@ mod tests {
             usage: TokenUsage::default(),
             turns: 1,
             is_error,
+            denied_tool_calls: 0,
         }
     }
 

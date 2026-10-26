@@ -316,23 +316,83 @@ fn transform_output_start(clause: &str, verb: &str, verb_end: usize) -> Option<u
         .min()
 }
 
+/// Negation markers that withdraw the output obligation of every action they
+/// govern.
+const NEGATION_MARKERS: &[&str] = &[
+    "不要",
+    "不得",
+    "禁止",
+    "严禁",
+    "不准",
+    "切勿",
+    "无需",
+    "不用",
+    "do not",
+    "don't",
+    "dont",
+    "must not",
+    "should not",
+    "never",
+    "no need to",
+];
+
+/// A marker never governs past a clause reset or a polarity flip: `不要删除旧文件，
+/// 创建新文件` still requires the new file, and `Do not stop until you create
+/// report.md` still requires the report.
+const NEGATION_SCOPE_BREAKS: &[&str] = &[
+    "，", ",", "。", "；", ";", "但", "而是", " but ", " however ", " instead ",
+    " until ", " unless ", " 直到 ",
+];
+
+/// `别`/`without` only withdraw the action they touch (`别创建`), never a
+/// coordinated list, and never when they close a compound word: `分别创建`
+/// and `特别创建` are affirmative.
+const BIE_COMPOUND_HEADS: &[char] = &[
+    '分', '特', '区', '别', '类', '告', '级', '性', '个', '差', '辨', '识', '离',
+];
+
+fn ends_with_adjacent_negation(prefix: &str) -> bool {
+    if prefix.ends_with("without") || prefix.ends_with("without ") {
+        return true;
+    }
+    let Some(head) = prefix.strip_suffix('别') else {
+        return false;
+    };
+    !head
+        .chars()
+        .next_back()
+        .is_some_and(|previous| BIE_COMPOUND_HEADS.contains(&previous))
+}
+
+/// How far a marker may reach forward to the verb it governs: long enough for a
+/// coordinated action list (`读写、创建或重跑`), short enough that an
+/// unrelated marker earlier in the clause cannot swallow real work.
+const MAX_NEGATION_REACH: usize = 48;
+
 fn verb_is_negated(clause: &str, verb_start: usize) -> bool {
     let prefix = clause[..verb_start].trim_end();
-    [
-        "不要",
-        "别",
-        "禁止",
-        "无需",
-        "不用",
-        "do not",
-        "don't",
-        "dont",
-        "never",
-        "without",
-        "no need to",
-    ]
-    .iter()
-    .any(|marker| prefix.ends_with(marker) || prefix.ends_with(&format!("{marker} ")))
+    let ends_with_marker = |markers: &[&str]| {
+        markers
+            .iter()
+            .any(|marker| prefix.ends_with(marker) || prefix.ends_with(&format!("{marker} ")))
+    };
+    // Immediate form: `不要生成视频` / `Do not create a video`.
+    if ends_with_marker(NEGATION_MARKERS) || ends_with_adjacent_negation(prefix) {
+        return true;
+    }
+    // Coordinated form: one marker governs a whole action list, so every action
+    // in it is withdrawn (`不得自行读写、创建或重跑任何文件操作`). Without this a read-only
+    // step that explicitly forbids writes would be charged for an artifact it
+    // promised never to produce.
+    NEGATION_MARKERS.iter().any(|marker| {
+        prefix.rfind(marker).is_some_and(|position| {
+            let governed = &prefix[position + marker.len()..];
+            governed.chars().count() <= MAX_NEGATION_REACH
+                && !NEGATION_SCOPE_BREAKS
+                    .iter()
+                    .any(|boundary| governed.contains(boundary))
+        })
+    })
 }
 
 fn verb_is_nested_capability(clause: &str, verb_start: usize) -> bool {
@@ -1609,6 +1669,42 @@ mod tests {
             "declared workspace markdown must count as a verified output: {merged:?}"
         );
         assert!(validate_required_artifacts(SCRIPT_SPEC, &merged).is_ok());
+    }
+
+    #[test]
+    fn a_forbidden_action_list_creates_no_artifact_obligation() {
+        // A read-only synthesis step that spells out the actions it must not
+        // take must not be charged for the artifacts those actions would have
+        // produced. `不得` was missing from the negation markers, and negation
+        // only reached a verb it was glued to, so `创建` inside the
+        // coordinated list was read as an output promise.
+        let spec = "汇总子 Agent。父 Agent 不做任何文件操作。仅根据依赖步骤返回的原始报告汇总，不得自行读写、创建或重跑任何文件操作。";
+        assert!(validate_required_artifacts(spec, &[]).is_ok(), "{spec}");
+        for spec in [
+            "不得创建任何文件",
+            "禁止生成图片",
+            "严禁导出 PDF",
+            "切勿保存快照",
+            "must not create any files",
+            "should not export a PDF",
+        ] {
+            assert!(validate_required_artifacts(spec, &[]).is_ok(), "{spec}");
+        }
+    }
+
+    #[test]
+    fn negation_does_not_leak_past_a_clause_reset_or_polarity_flip() {
+        // Withdrawing one action must not withdraw the next one.
+        assert!(
+            validate_required_artifacts("不要删除旧文件，创建新文件", &[]).is_err(),
+            "the second action is still promised"
+        );
+        assert!(
+            validate_required_artifacts("Do not stop until you create report.md", &[]).is_err()
+        );
+        // `分别` / `特别` only look like the adjacent marker `别`.
+        assert!(validate_required_artifacts("分别创建 repo/a.png 与 repo/b.png", &[]).is_err());
+        assert!(validate_required_artifacts("特别生成一张封面图片", &[]).is_err());
     }
 
     #[test]
