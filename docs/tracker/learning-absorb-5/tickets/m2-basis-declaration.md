@@ -77,7 +77,8 @@ part_of: ../map.md
       读数同源）；**声明解析失败（概念已删）= Broken 如实降级不炸**。
 - [ ] 端点 + WS：`POST /courses/{id}/basis/declare` + `GET .../basis`（读数：
       已声明 doors/concepts/命中块）+ 撤销（删锚行；**概念留池**——登记表
-      全局有效，撤销只收缩本课已知集投影；票面裁决点，可复议）。
+      全局有效，撤销只收缩本课已知投影、来源标记保留不抹；2026-10-26 grill
+      定案「声明可撤、概念不灭」）。
       开关 `NOMI_LEARNING_BASIS_DECLARATION=off`（off = 端点 409 如实拒绝）。
 - [ ] 前端：结构 Tab 或概念 Tab 加声明入口（勾选门口 → 确认文案三后果如实：
       不生成节点/不排课/不计 XP）+ 概念行来源徽标（basis-declaration 来源）
