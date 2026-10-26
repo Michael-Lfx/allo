@@ -10,6 +10,7 @@ pub mod compat;
 pub mod dependency;
 pub mod digest;
 pub mod frontmatter;
+pub mod icon;
 pub mod import;
 pub mod install;
 pub mod manifest;
@@ -21,6 +22,7 @@ pub use dependency::{
     CatalogIndex, DeclaredDependency, DependencyProblem, check_dependencies,
 };
 pub use import::{ImportError, ImportRequest, ImporterService, blocked_import_result};
+pub use icon::{IconOutcome, IconPlacement, PlacedIcon, place_market_icon};
 pub use install::{
     InstallError, InstallerConfig, InstallerService, InstalledSkillLocation, MaterializeOutcome,
 };

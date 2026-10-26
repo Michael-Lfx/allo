@@ -1170,6 +1170,16 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
             row_source_kind(&row)
         };
 
+        // The market's icon for this entry, handed to the importer as a plain
+        // absolute path (doc `51` §3.2 / D5). Resolved here because only the
+        // marketplace layer knows the market root; resolved through the *same*
+        // function `store/list` uses for the card, so the picture on the card and
+        // the picture in the snapshot can never disagree.
+        let market_icon = crate::app_server_store::market_root_dir(&row, &self.market_root)
+            .and_then(|root| {
+                crate::app_server_store::market_icon_for(&root, &entry.source_uri)
+                    .map(|icon| root.join(icon))
+            });
         // Remote imports carry the resolved revision for provenance.
         let revision = row.resolved_revision.clone().unwrap_or_else(|| "".into());
         let request = if revision.is_empty() {
@@ -1199,7 +1209,8 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // payload so the installed-skill catalog shows what the store shows.
         // Plugin imports keep their `plugin.json` tags.
         .with_declared_version(Some(facts.version.clone()))
-        .with_index_display(facts.index_info.as_ref().map(|info| info.display()));
+        .with_index_display(facts.index_info.as_ref().map(|info| info.display()))
+        .with_market_icon(market_icon);
         self.importer
             .run_import(&request)
             .await

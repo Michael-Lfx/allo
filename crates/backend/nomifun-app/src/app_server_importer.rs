@@ -78,6 +78,10 @@ impl ImportProvider for AppServerImportProvider {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            // A caller-supplied path has no marketplace provenance, so there is
+            // no market icon to carry in (doc `51` §3.2): the source tree's own
+            // `plugin.json.avatar` / skill `assets/icon.*` still apply.
+            market_icon: None,
         };
         self.importer
             .run_import(&import_request)

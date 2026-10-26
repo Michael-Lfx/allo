@@ -53,6 +53,7 @@ async fn tc_imp_001_002_software_company_imports_five_agents_and_one_team() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -143,6 +144,7 @@ async fn tc_imp_003_agents_only_never_creates_a_team() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -169,6 +171,7 @@ async fn tc_imp_004_path_traversal_and_absolute_paths_are_blocked() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
             .await
             .unwrap();
@@ -218,6 +221,7 @@ async fn tc_imp_005_symlink_escape_is_rejected() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -258,6 +262,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -275,6 +280,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -293,6 +299,7 @@ async fn tc_imp_006_same_digest_reuses_and_conflicting_digest_blocks() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -330,6 +337,7 @@ async fn market_entry_version_overrides_the_manifest_placeholder() {
         source_revision: None,
         declared_version: None,
         index_display: None,
+        market_icon: None,
     };
 
     // Historical behaviour: the manifest placeholder wins.
@@ -384,6 +392,7 @@ async fn market_entry_content_change_needs_a_raised_version() {
         source_revision: None,
         declared_version: None,
         index_display: None,
+        market_icon: None,
     }
     .with_declared_version(Some(version.into()));
 
@@ -424,6 +433,7 @@ async fn tc_imp_007_partial_component_failure_keeps_good_components() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -452,6 +462,7 @@ async fn tc_imp_008_high_risk_components_are_static_imports_only() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -490,6 +501,7 @@ async fn tc_imp_009_credential_values_never_enter_snapshot_or_repository() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -521,6 +533,7 @@ async fn skill_market_imports_skills_with_market_identity() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -548,6 +561,7 @@ async fn mcp_connector_import_preserves_stdio_args_and_env() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -607,6 +621,7 @@ async fn mcp_connector_import_keeps_the_remote_auth_template() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -696,6 +711,7 @@ async fn a_declared_token_schema_becomes_the_credential_form() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -856,6 +872,7 @@ async fn connector_market_imports_connector_entries() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -887,6 +904,7 @@ async fn tc_imp_010_file_path_declarations_and_object_dependencies() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -953,6 +971,7 @@ async fn tc_imp_011_cli_connector_directory_imports_connector_and_skills() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1013,6 +1032,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1030,6 +1050,7 @@ async fn tc_imp_012_market_frontmatter_compat() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1055,6 +1076,7 @@ async fn tc_imp_013_author_object_and_string_component_roots() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1083,6 +1105,7 @@ async fn tc_imp_014_single_skill_directory_without_marketplace_json() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1115,6 +1138,7 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
                 source_revision: None,
                 declared_version: Some("2.0.0".into()),
                 index_display: None,
+                market_icon: None,
             }
             .with_index_display(Some(DisplayFields {
                 // `50` §3.2: the four display keys are stamped from the index
@@ -1160,6 +1184,7 @@ async fn tc_cat_010_skill_payload_carries_the_market_index_tags() {
             source_revision: None,
             declared_version: Some("3.0.0".into()),
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1185,6 +1210,7 @@ async fn tc_imp_015_display_metadata_preserved() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1230,6 +1256,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
         .await
         .unwrap();
@@ -1244,6 +1271,7 @@ async fn missing_manifest_blocks_and_missing_source_is_a_typed_error() {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         })
             .await,
         Err(nomifun_importer::ImportError::SourceNotFound)
@@ -1394,4 +1422,276 @@ async fn strict_dependencies_on_blocks_an_unsatisfied_range() {
     let joined = result.errors.join(" | ");
     assert!(joined.contains("^9.0.0"), "must repeat the requirement: {joined}");
     assert!(joined.contains("1.2.0"), "must report the available version: {joined}");
+}
+
+// ---------------------------------------------------------------------------
+// Doc `51`: the marketplace icon is fossilised into the snapshot at import
+// ---------------------------------------------------------------------------
+//
+// The market declares one icon per entry at `<market_root>/icons/<base>.<ext>` —
+// a **sibling** of the entry directory, which is exactly why `copy_tree` cannot
+// carry it and why the placement has to be an explicit step (doc `51` §3.2).
+
+/// Copy a fixture into a fresh tree and drop a market icon **beside** the entry
+/// directory, the layout the marketplace layer hands the importer.
+fn market_with_icon(
+    fixture: &str,
+    icon: &str,
+    bytes: &[u8],
+) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("entry");
+    copy_tree_for_test(&fixtures().join(fixture), &source);
+    let icons = root.path().join("icons");
+    std::fs::create_dir_all(&icons).unwrap();
+    let icon_path = icons.join(icon);
+    std::fs::write(&icon_path, bytes).unwrap();
+    (root, source, icon_path)
+}
+
+fn copy_tree_for_test(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree_for_test(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn payload_of(payload_json: &str) -> serde_json::Value {
+    serde_json::from_str(payload_json).expect("component payload parses")
+}
+
+/// TC-IM-303: a single-skill entry's icon lands at `assets/icon.<ext>`, beside
+/// `SKILL.md`, so `skill/files` lists it and the managed copy carries it too.
+#[tokio::test]
+async fn tc_im_303_a_market_icon_lands_beside_the_skill_manifest() {
+    let (service, temp, repo) = setup().await;
+    let (_root, source, icon) = market_with_icon("single-skill-dir", "demo.svg", b"<svg>skill</svg>");
+
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: source,
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: Some("mkt".into()),
+            entry_name: Some("entry".into()),
+            source_revision: None,
+            declared_version: None,
+            index_display: None,
+            market_icon: Some(icon),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    let snapshot = temp.path().join("agent-store-imports").join(&result.snapshot_id);
+    assert_eq!(
+        std::fs::read(snapshot.join("assets/icon.svg")).unwrap(),
+        b"<svg>skill</svg>",
+        "the icon must sit where SKILL_ICON_CANDIDATES looks for it"
+    );
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let skill = find_kind(&components, "skill").into_iter().next().expect("a skill");
+    let payload = payload_of(&skill.payload_json);
+    assert_eq!(payload["avatar"], "assets/icon.svg");
+}
+
+/// TC-IM-303 (connector): a connector has no directory of its own, so its icon
+/// is namespaced under `avatars/connectors/` — the snapshot asset face serves it
+/// and it can never be confused with the package avatar.
+#[tokio::test]
+async fn tc_im_303_a_market_icon_lands_under_avatars_connectors() {
+    let (service, temp, repo) = setup().await;
+    let (_root, source, icon) = market_with_icon("mcp-connector", "demo.png", b"png-bytes");
+
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: source,
+            source_kind: SourceKind::WorkBuddyMcpConnector,
+            marketplace_id: Some("mkt".into()),
+            entry_name: Some("entry".into()),
+            source_revision: None,
+            declared_version: None,
+            index_display: None,
+            market_icon: Some(icon),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.status.starts_with("completed"),
+        "status: {} warnings: {:?}",
+        result.status,
+        result.warnings
+    );
+    let snapshot = temp.path().join("agent-store-imports").join(&result.snapshot_id);
+    assert_eq!(
+        std::fs::read(snapshot.join("avatars/connectors/demo.png")).unwrap(),
+        b"png-bytes"
+    );
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let connector = find_kind(&components, "connector").into_iter().next().expect("a connector");
+    assert_eq!(payload_of(&connector.payload_json)["avatar"], "avatars/connectors/demo.png");
+}
+
+/// TC-IM-304 / INV-3: an entry declaring **several** skills has no honest place
+/// for one market icon, so nothing is placed and nothing is stamped.
+#[tokio::test]
+async fn tc_im_304_a_multi_component_bundle_places_no_icon() {
+    let (service, temp, repo) = setup().await;
+    let (_root, source, icon) = market_with_icon("skill-market", "demo.svg", b"<svg/>");
+
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: source,
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: Some("mkt".into()),
+            entry_name: Some("entry".into()),
+            source_revision: None,
+            declared_version: None,
+            index_display: None,
+            market_icon: Some(icon),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    let snapshot = temp.path().join("agent-store-imports").join(&result.snapshot_id);
+    assert!(
+        !snapshot.join("assets").exists(),
+        "one icon cannot be attributed to N skills"
+    );
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    for skill in find_kind(&components, "skill") {
+        assert!(
+            payload_of(&skill.payload_json).get("avatar").is_none(),
+            "no payload may claim an icon that was never placed"
+        );
+    }
+}
+
+/// TC-IM-305: a refused icon is a **warning**, never a failed import — and it
+/// never leaves a payload claiming an icon it did not place.
+#[tokio::test]
+async fn tc_im_305_an_oversized_icon_is_refused_without_failing_the_import() {
+    let (service, temp, repo) = setup().await;
+    let oversized = vec![0u8; nomifun_importer::icon::MAX_MARKET_ICON_BYTES as usize + 1];
+    let (_root, source, icon) = market_with_icon("single-skill-dir", "huge.png", &oversized);
+
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: source,
+            source_kind: SourceKind::WorkBuddySkillMarket,
+            marketplace_id: Some("mkt".into()),
+            entry_name: Some("entry".into()),
+            source_revision: None,
+            declared_version: None,
+            index_display: None,
+            market_icon: Some(icon),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.status.starts_with("completed"),
+        "an icon is display data, not a gate: {} {:?}",
+        result.status,
+        result.warnings
+    );
+    assert!(
+        result.warnings.iter().any(|warning| warning.contains("上限")),
+        "the refusal must be reported: {:?}",
+        result.warnings
+    );
+    let snapshot = temp.path().join("agent-store-imports").join(&result.snapshot_id);
+    assert!(!snapshot.join("assets/icon.png").exists());
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    let skill = find_kind(&components, "skill").into_iter().next().expect("a skill");
+    assert!(payload_of(&skill.payload_json).get("avatar").is_none());
+}
+
+/// D4: the icon is part of the snapshot's content digest — the same bytes twice
+/// yield the same digest, and a different icon is a different snapshot content.
+#[tokio::test]
+async fn tc_im_307_the_icon_is_covered_by_the_content_digest() {
+    let (service, _temp, _repo) = setup().await;
+    let import = |bytes: &'static [u8]| {
+        let (_root, source, icon) = market_with_icon("single-skill-dir", "demo.svg", bytes);
+        let service = service.clone();
+        async move {
+            let _keep_alive = _root;
+            service
+                .run_import(&ImportRequest {
+                    source_path: source,
+                    source_kind: SourceKind::WorkBuddySkillMarket,
+                    marketplace_id: Some("mkt".into()),
+                    entry_name: Some("entry".into()),
+                    source_revision: None,
+                    declared_version: None,
+                    index_display: None,
+                    market_icon: Some(icon),
+                })
+                .await
+                .unwrap()
+        }
+    };
+
+    let first = import(b"<svg>one</svg>").await;
+    let again = import(b"<svg>one</svg>").await;
+    let other = import(b"<svg>two</svg>").await;
+
+    assert_eq!(
+        first.content_digest, again.content_digest,
+        "identical content must stay identical"
+    );
+    assert_ne!(
+        first.content_digest, other.content_digest,
+        "a different icon is different content (doc 51 D4)"
+    );
+}
+
+/// TC-IM-302 / INV-4: when the author declared the package avatar, the market
+/// icon is **not placed at all**. An unneeded fallback would only add a file
+/// nothing references — to the snapshot and to `pack.assets`.
+#[tokio::test]
+async fn tc_im_302_an_authored_avatar_keeps_the_market_icon_out() {
+    let (service, temp, repo) = setup().await;
+    let (_root, source, icon) = market_with_icon("asset-pack", "asset-pack.png", b"market-icon");
+
+    let result = service
+        .run_import(&ImportRequest {
+            source_path: source,
+            source_kind: SourceKind::CodeBuddyPlugin,
+            marketplace_id: Some("mkt".into()),
+            entry_name: Some("asset-pack".into()),
+            source_revision: None,
+            declared_version: None,
+            index_display: None,
+            market_icon: Some(icon),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.status, "completed", "errors: {:?}", result.errors);
+    let snapshot = temp.path().join("agent-store-imports").join(&result.snapshot_id);
+    assert!(
+        !snapshot.join("avatars/asset-pack.png").exists(),
+        "the market icon must not be placed next to the author's own avatar"
+    );
+
+    let components = repo.get_components(&result.snapshot_id).await.unwrap();
+    for component in find_kind(&components, "team").iter().chain(find_kind(&components, "agent").iter()) {
+        assert_eq!(
+            payload_of(&component.payload_json)["avatar"],
+            "avatars/team.png",
+            "the author's declaration must survive ({})",
+            component.name
+        );
+    }
 }
