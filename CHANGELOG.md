@@ -5,11 +5,6 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
-- Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
-- Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.
-- Note for 1.6.5–1.6.8: Default and Auto-Accept Edits sessions could hit this loop when delegating write tasks. Workaround: use YOLO, add the tool to `[tools].allow_list`, or avoid delegated writes until this fix ships.
-
 ## v1.6.8 - 2026-10-23
 
 - Local Herdsman connections use `127.0.0.1` when the daemon listens on `0.0.0.0`, so the client can actually dial it.

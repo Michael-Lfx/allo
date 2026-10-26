@@ -7,10 +7,6 @@ pub struct ToolConfirmer {
     /// every tool that is not auto-approved or allow-listed is denied without
     /// reading stdin, where EOF used to be read as an empty "yes".
     deny_unconfirmed: bool,
-    /// Monotonic count of calls this confirmer refused. Delegated engines
-    /// carry it into the invocation result so a denied write cannot be
-    /// reported as a completed task.
-    denied_count: usize,
     allow_list: HashSet<String>,
     #[cfg(test)]
     check_count: usize,
@@ -23,27 +19,8 @@ pub struct ToolConfirmer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfirmResult {
     Approved,
-    Denied(DenialReason),
+    Denied,
     Quit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DenialReason {
-    User,
-    NoApprovalChannel,
-}
-
-impl DenialReason {
-    /// Model-facing explanation. Keep this actionable: the model should stop
-    /// retrying and surface the real remedy instead of calling it a sandbox.
-    pub fn message(self) -> &'static str {
-        match self {
-            Self::User => "Tool execution denied by user",
-            Self::NoApprovalChannel => {
-                "Tool execution denied: no approval channel is available. Add this tool to [tools].allow_list, enable auto-approve (YOLO), or run the write in a session with an approval channel (for delegated tasks, the parent agent)."
-            }
-        }
-    }
 }
 
 impl ToolConfirmer {
@@ -51,7 +28,6 @@ impl ToolConfirmer {
         Self {
             auto_approve,
             deny_unconfirmed: false,
-            denied_count: 0,
             allow_list: allow_list.into_iter().collect(),
             #[cfg(test)]
             check_count: 0,
@@ -68,11 +44,6 @@ impl ToolConfirmer {
     /// Fail closed for delegated engines: never prompt on stdin.
     pub fn deny_unconfirmed(&mut self) {
         self.deny_unconfirmed = true;
-    }
-
-    /// Number of tool calls this confirmer refused.
-    pub fn denied_count(&self) -> usize {
-        self.denied_count
     }
 
     /// Add a tool name to the allow list at runtime.
@@ -92,7 +63,7 @@ impl ToolConfirmer {
             return ConfirmResult::Approved;
         }
         if self.deny_unconfirmed {
-            return self.deny(DenialReason::NoApprovalChannel);
+            return ConfirmResult::Denied;
         }
 
         self.prompt_for_decision(tool_name, tool_input_display)
@@ -116,7 +87,7 @@ impl ToolConfirmer {
         // `Ok(0)` is EOF: an unattended child or a closed stdin must not be
         // read as consent. Only an explicit y/yes approves.
         match io::stdin().lock().read_line(&mut input) {
-            Ok(0) | Err(_) => return self.deny(DenialReason::NoApprovalChannel),
+            Ok(0) | Err(_) => return ConfirmResult::Denied,
             Ok(_) => {}
         }
 
@@ -127,13 +98,8 @@ impl ToolConfirmer {
                 ConfirmResult::Approved
             }
             LineDecision::Quit => ConfirmResult::Quit,
-            LineDecision::Deny => self.deny(DenialReason::User),
+            LineDecision::Deny => ConfirmResult::Denied,
         }
-    }
-
-    fn deny(&mut self, reason: DenialReason) -> ConfirmResult {
-        self.denied_count += 1;
-        ConfirmResult::Denied(reason)
     }
 
     #[cfg(test)]
@@ -217,11 +183,11 @@ mod tests {
         confirmer.deny_unconfirmed();
         assert_eq!(
             confirmer.check("Write", "out.txt"),
-            ConfirmResult::Denied(DenialReason::NoApprovalChannel)
+            ConfirmResult::Denied
         );
         assert_eq!(
             confirmer.check("Bash", "rm -rf ."),
-            ConfirmResult::Denied(DenialReason::NoApprovalChannel)
+            ConfirmResult::Denied
         );
         // An explicit allow-list entry is still authoritative.
         assert_eq!(
@@ -249,21 +215,6 @@ mod tests {
     }
 
     #[test]
-    fn denied_count_tracks_fail_closed_denials() {
-        let mut confirmer = ToolConfirmer::new(false, vec!["Read".into()]);
-        confirmer.deny_unconfirmed();
-        assert_eq!(confirmer.check("Write", "out.txt"), ConfirmResult::Denied(DenialReason::NoApprovalChannel));
-        assert_eq!(confirmer.check("Bash", "rm -rf ."), ConfirmResult::Denied(DenialReason::NoApprovalChannel));
-        assert_eq!(confirmer.check("Read", "in.txt"), ConfirmResult::Approved);
-        assert_eq!(confirmer.denied_count(), 2);
-
-        let mut auto = ToolConfirmer::new(true, vec![]);
-        auto.deny_unconfirmed();
-        assert_eq!(auto.check("Write", "out.txt"), ConfirmResult::Approved);
-        assert_eq!(auto.denied_count(), 0);
-    }
-
-    #[test]
     fn test_empty_or_unknown_input_never_approves() {
         assert_eq!(classify_confirmation_line(""), LineDecision::Deny);
         assert_eq!(classify_confirmation_line("   "), LineDecision::Deny);
@@ -273,17 +224,6 @@ mod tests {
         assert_eq!(classify_confirmation_line(" YES "), LineDecision::Approve);
         assert_eq!(classify_confirmation_line("a"), LineDecision::Always);
         assert_eq!(classify_confirmation_line("q"), LineDecision::Quit);
-    }
-
-    #[test]
-    fn denial_messages_distinguish_user_from_missing_channel() {
-        assert_eq!(
-            DenialReason::User.message(),
-            "Tool execution denied by user"
-        );
-        let message = DenialReason::NoApprovalChannel.message();
-        assert!(message.contains("no approval channel"));
-        assert!(!message.contains("denied by user"));
     }
 
     // Phase 6: add_to_allow_list() grants runtime approval

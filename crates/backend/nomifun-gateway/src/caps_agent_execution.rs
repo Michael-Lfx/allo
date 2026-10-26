@@ -19,7 +19,7 @@ use nomifun_common::{
     AdaptationPolicy, AgentDelegationTask, AgentExecutionActor, AgentExecutionActorType,
     AgentExecutionEventKind, AgentExecutionId, AgentExecutionReceipt, AgentExecutionStatus,
     AgentStepMode, AgentToolPolicy, DecisionPolicy, DelegationPolicy, ExecutionStepKind, PlanGate,
-    StepFailurePolicy, plan_gate_for_lead_session_mode,
+    StepFailurePolicy,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -586,13 +586,7 @@ async fn create_context(
         model_pool,
         lead_model,
         delegation_policy,
-        // The plan gate is the only approval surface a user can actually
-        // answer once work is delegated: Attempts run in their own YOLO
-        // sessions and the execution transcript is read-only, so a per-tool
-        // card raised inside one only ever times out. A lead that chose
-        // Default or Auto-Accept Edits asked to review work before it runs, so
-        // park the plan once instead of silently escalating the children.
-        plan_gate: plan_gate_for_lead_session_mode(ctx.session_mode.as_deref()),
+        plan_gate: PlanGate::Automatic,
         adaptation_policy: AdaptationPolicy::Fixed,
         decision_policy,
         inherited_work_dir,
@@ -874,11 +868,7 @@ async fn delegate(deps: Arc<GatewayDeps>, ctx: CallerCtx, params: DelegateParams
         work_dir: work_dir.or(defaults.inherited_work_dir),
         model_pool: defaults.model_pool.clone(),
         delegation_policy: defaults.delegation_policy,
-        // The host floor is the user's session mode; `nomi_delegate` may tighten
-        // it but can never argue it back down to automatic.
-        plan_gate: plan_gate.map_or(defaults.plan_gate, |requested| {
-            nomifun_common::strictest_plan_gate(defaults.plan_gate, requested.into())
-        }),
+        plan_gate: plan_gate.map(Into::into).unwrap_or(defaults.plan_gate),
         adaptation_policy: adaptation_policy
             .map(Into::into)
             .unwrap_or(defaults.adaptation_policy),
@@ -935,15 +925,7 @@ async fn delegate(deps: Arc<GatewayDeps>, ctx: CallerCtx, params: DelegateParams
         Ok(execution) => ok(delegate_receipt(
             execution.execution_id,
             execution.status,
-            if execution.plan_gate == PlanGate::RequireApproval {
-                // The user reviews the plan, so the lead must not report the
-                // work as started: nothing runs until the plan is approved.
-                "Delegated work was accepted and the plan needs the user's approval \
-                 before any sub-Agent starts. End this turn and tell the user to \
-                 approve the plan; do not claim the work has started."
-            } else {
-                "Delegated work was accepted. It will continue in the collaboration panel; inspect it only when progress is needed."
-            },
+            "Delegated work was accepted. It will continue in the collaboration panel; inspect it only when progress is needed.",
         )),
         Err(error) => json!({"error":error.to_string()}),
     }
@@ -1746,45 +1728,6 @@ mod tests {
                 Some(ExecutionModelPool::Single { model: denied }),
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn a_reviewing_lead_session_parks_the_delegated_plan_instead_of_escalating() {
-        // A delegated Attempt runs in its own YOLO session and its transcript
-        // is read-only, so the only approval a user can answer is the plan
-        // gate. Default / Auto-Accept Edits leads must therefore review the
-        // plan rather than have the children silently write as YOLO.
-        for mode in [Some("default"), Some("auto_edit")] {
-            assert_eq!(
-                plan_gate_for_lead_session_mode(mode),
-                PlanGate::RequireApproval,
-                "{mode:?}"
-            );
-        }
-        // YOLO asked not to be asked, and an absent mode means no host recorded
-        // a preference (Remote companion, tests), where the runtime default is
-        // YOLO as well.
-        for mode in [Some("yolo"), None] {
-            assert_eq!(plan_gate_for_lead_session_mode(mode), PlanGate::Automatic, "{mode:?}");
-        }
-    }
-
-    #[test]
-    fn delegate_arguments_cannot_loosen_the_session_planning_floor() {
-        // The session mode is the host's floor. A `plan_gate: automatic`
-        // argument from the model would otherwise undo the review the user
-        // asked for by choosing Default / Auto-Accept Edits.
-        let floor = plan_gate_for_lead_session_mode(Some("default"));
-        assert_eq!(floor, PlanGate::RequireApproval);
-        assert_eq!(
-            nomifun_common::strictest_plan_gate(floor, PlanGate::Automatic),
-            PlanGate::RequireApproval
-        );
-        assert_eq!(
-            nomifun_common::strictest_plan_gate(PlanGate::Automatic, PlanGate::RequireApproval),
-            PlanGate::RequireApproval,
-            "tightening is always allowed"
         );
     }
 

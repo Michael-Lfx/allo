@@ -211,14 +211,6 @@ pub struct AgentExecutionStepResult {
     pub text: String,
     pub turns: usize,
     pub usage: TokenUsage,
-    /// Tool calls the delegated engine refused. Non-zero means the task could
-    /// not complete its requested effects, even if the model returned text.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub denied_tool_calls: usize,
-}
-
-fn is_zero(value: &usize) -> bool {
-    *value == 0
 }
 
 impl From<&AgentInvocationOutput> for AgentExecutionStepResult {
@@ -233,7 +225,6 @@ impl From<&AgentInvocationOutput> for AgentExecutionStepResult {
             text: output.text.clone(),
             turns: output.turns,
             usage: output.usage.clone(),
-            denied_tool_calls: output.denied_tool_calls,
         }
     }
 }
@@ -465,9 +456,6 @@ pub struct AgentInvocationOutput {
     pub usage: TokenUsage,
     pub turns: usize,
     pub is_error: bool,
-    /// Tool calls the confined child engine refused. A non-zero count means
-    /// the delegate never obtained the effects it asked for.
-    pub denied_tool_calls: usize,
 }
 
 /// Executes one Agent invocation.
@@ -485,7 +473,7 @@ mod tests {
     use super::{
         AgentDelegationTask, AgentExecutionReceipt, AgentExecutionStatus,
         AgentExecutionStepResult, AgentExecutionStepResultStatus, AgentExecutionSummary,
-        AgentToolPolicy, AgentInvocationOutput, ParallelDelegationRequest, apply_agent_role_context,
+        AgentToolPolicy, ParallelDelegationRequest, apply_agent_role_context,
     };
     use crate::message::TokenUsage;
 
@@ -610,40 +598,6 @@ mod tests {
     }
 
     #[test]
-    fn denied_tool_calls_survive_the_step_projection() {
-        let denied = AgentInvocationOutput {
-            name: "writer".to_owned(),
-            text: "done".to_owned(),
-            usage: TokenUsage::default(),
-            turns: 2,
-            is_error: true,
-            denied_tool_calls: 1,
-        };
-        let step = AgentExecutionStepResult::from(&denied);
-        assert_eq!(step.status, AgentExecutionStepResultStatus::Failed);
-        assert_eq!(step.denied_tool_calls, 1);
-        let value = serde_json::to_value(&step).unwrap();
-        assert_eq!(value["denied_tool_calls"], 1);
-
-        let clean = AgentInvocationOutput {
-            name: "writer".to_owned(),
-            text: "done".to_owned(),
-            usage: TokenUsage::default(),
-            turns: 2,
-            is_error: false,
-            denied_tool_calls: 0,
-        };
-        let clean_step = AgentExecutionStepResult::from(&clean);
-        assert!(
-            serde_json::to_value(clean_step)
-                .unwrap()
-                .get("denied_tool_calls")
-                .is_none(),
-            "a zero count must not widen the wire payload"
-        );
-    }
-
-    #[test]
     fn receipt_terminal_projection_and_step_ids_are_typed_extensions() {
         let result = AgentExecutionStepResult {
             name: "scan".to_owned(),
@@ -651,7 +605,6 @@ mod tests {
             text: "done".to_owned(),
             turns: 1,
             usage: TokenUsage::default(),
-            denied_tool_calls: 0,
         };
         let receipt = AgentExecutionReceipt::new(
             "exec_test",

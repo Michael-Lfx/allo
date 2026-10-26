@@ -26,8 +26,7 @@ use nomifun_api_types::{
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionReceipt, AgentExecutionStatus, AppError, ConversationId,
-    DelegationPolicy, PlanGate, ProviderWithModel, UserId, lead_session_mode,
-    plan_gate_for_lead_session_mode,
+    DelegationPolicy, PlanGate, ProviderWithModel, UserId,
 };
 use nomifun_conversation::ConversationService;
 
@@ -164,10 +163,7 @@ async fn plan_via_engine(
             conversation.model.as_ref(),
         ),
         delegation_policy: conversation.delegation_policy,
-        // Host policy, never model input, and the same rule the Platform
-        // Gateway applies: a lead that asked to review its work gets to
-        // review the plan instead of having the children escalate to YOLO.
-        plan_gate: plan_gate_for_lead_session_mode(lead_session_mode(&conversation.extra)),
+        plan_gate: PlanGate::Automatic,
         adaptation_policy: AdaptationPolicy::Fixed,
         decision_policy: conversation.decision_policy,
         max_parallel: None,
@@ -175,10 +171,6 @@ async fn plan_via_engine(
         lead_model: lead_model(conversation.model.as_ref()),
         steps: None,
     };
-
-    // The plan is what the user reviews, so the receipt has to say so: otherwise
-    // the lead ends its turn as if the work were already running.
-    let awaiting_plan_approval = request.plan_gate == PlanGate::RequireApproval;
 
     // A conversation bound to a Team template instantiates it: participant
     // authority, member pool and template policy all come from the template.
@@ -228,15 +220,8 @@ async fn plan_via_engine(
     Ok(receipt(
         created.execution_id,
         created.status,
-        if awaiting_plan_approval {
-            "Delegated work was accepted and the host is planning it. This session \
-             reviews plans before execution, so the user must approve the plan before \
-             any sub-Agent starts. End this turn and tell the user to approve it; do \
-             not claim the work has started."
-        } else {
-            "Delegated work was accepted and the host is planning it. End this turn; \
-             inspect progress only if the user asks."
-        },
+        "Delegated work was accepted and the host is planning it. End this turn; \
+         inspect progress only if the user asks.",
     ))
 }
 
