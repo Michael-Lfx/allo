@@ -460,7 +460,11 @@ const ICON_EXTS: [&str; 6] = ["png", "svg", "jpg", "jpeg", "webp", "gif"];
 /// `tencent-docs.svg`, `agent-earth.png`). Skills and connectors declare no
 /// plugin.json avatar; the market ships an `icons/` directory instead.
 /// Returns the icon file name (relative to the market root) when present.
-fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
+///
+/// Doubles as the resolver the **import** path uses to carry that icon into the
+/// snapshot (doc `51` §3.2): the listing face and the import face must agree on
+/// which file "this entry's icon" means, so they share this one function.
+pub(crate) fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
     let base = Path::new(source_uri)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

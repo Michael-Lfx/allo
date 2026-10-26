@@ -350,3 +350,94 @@ describe("exportAgent / exportTeam (thin entries)", () => {
     }
   });
 });
+
+/**
+ * Doc `51`: the icon references a pack carries must land on disk with **zero new
+ * code here** — a skill's icon travels on the skill file face, a connector's on
+ * the snapshot asset face, and `materializePack` already walks both.
+ */
+describe("materializePack (doc 51 icons)", () => {
+  const SKILL_ICON = new TextEncoder().encode("PNG-bytes-skill-icon");
+  const CONNECTOR_ICON = new TextEncoder().encode("<svg>github</svg>");
+
+  function packWithIcons(): ExpertPack {
+    const base = makePack("agent");
+    return {
+      ...base,
+      skills: [{ name: "hello", id: "hello", icon: "assets/icon.png" }],
+      connectors: [{ id: "mcp-github", name: "github", enabled: true, icon: "avatars/connectors/github.svg" }],
+      assets: [
+        {
+          path: "avatars/connectors/github.svg",
+          kind: "avatar",
+          size: CONNECTOR_ICON.byteLength,
+          digest: "a".repeat(64),
+        },
+      ],
+    };
+  }
+
+  function iconDeps(pack: ExpertPack): ExportDeps {
+    const deps = fakeDeps(pack, {
+      hello: {
+        files: [
+          { path: "SKILL.md", bytes: new TextEncoder().encode("# hello") },
+          { path: "assets/icon.png", bytes: SKILL_ICON },
+        ],
+      },
+    });
+    return {
+      ...deps,
+      readImportAsset: async (_snapshotId: string, assetPath: string) => {
+        if (assetPath === "avatars/connectors/github.svg") return CONNECTOR_ICON;
+        throw new Error(`asset_not_found: ${assetPath}`);
+      },
+    };
+  }
+
+  it("writes both icons and reports only the snapshot one as an asset", async () => {
+    const pack = packWithIcons();
+    const dir = await tempDir();
+    try {
+      const result = await materializePack(iconDeps(pack), pack, dir);
+
+      const files = await listFilesDeep(dir);
+      expect(files).toEqual([
+        "avatars/connectors/github.svg",
+        "expert-pack.json",
+        "persona.md",
+        "skills/hello/SKILL.md",
+        "skills/hello/assets/icon.png",
+      ]);
+
+      // The skill icon rides `skill/files`, the connector icon `pack.assets` —
+      // which is also why only the latter shows up in `writtenAssets`.
+      expect(result.writtenAssets).toEqual(["avatars/connectors/github.svg"]);
+      expect(result.writtenSkills).toEqual(["hello"]);
+
+      const skillIcon = await readFile(path.join(dir, "skills/hello/assets/icon.png"));
+      expect(Array.from(skillIcon)).toEqual(Array.from(SKILL_ICON));
+      const connectorIcon = await readFile(path.join(dir, "avatars/connectors/github.svg"));
+      expect(Array.from(connectorIcon)).toEqual(Array.from(CONNECTOR_ICON));
+
+      // The pack JSON is written verbatim, icons included.
+      expect(await readFile(path.join(dir, "expert-pack.json"), "utf8"))
+        .toBe(JSON.stringify(pack, null, 2));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("an icon-free pack produces exactly the same directory as before", async () => {
+    const pack = makePack("agent");
+    const dir = await tempDir();
+    try {
+      await materializePack(fakeDeps(pack, { hello: HELLO }), pack, dir);
+      const files = await listFilesDeep(dir);
+      expect(files).toEqual(["expert-pack.json", "persona.md", "skills/hello/SKILL.md"]);
+      expect(files.some((file) => file.includes("assets/"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

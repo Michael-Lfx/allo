@@ -64,6 +64,18 @@ pub struct ImportRequest {
     /// catalogs show what the store shows. `None` = the entry (or its market)
     /// declares nothing.
     pub index_display: Option<DisplayFields>,
+    /// The icon the **marketplace** declares for this entry (`icons/<base>.<ext>`)
+    /// as an **absolute path** (doc `51` §3.2).
+    ///
+    /// Only the marketplace layer knows the market root and the entry's
+    /// basename, so the resolution happens there (the same division of labour as
+    /// [`Self::index_display`], `50` §3.3): the importer never infers market
+    /// layout, it only places this one file where that entity kind expects it.
+    ///
+    /// `None` = the entry (or its market) ships no icon, or the entry is a
+    /// multi-component bundle — one market icon cannot be attributed to N
+    /// components, so nothing is placed (doc `51` INV-3).
+    pub market_icon: Option<PathBuf>,
 }
 
 impl ImportRequest {
@@ -80,6 +92,12 @@ impl ImportRequest {
         self
     }
 
+    /// Carry the marketplace-declared icon into the snapshot (doc `51` §3.2).
+    pub fn with_market_icon(mut self, icon: Option<PathBuf>) -> Self {
+        self.market_icon = icon;
+        self
+    }
+
     /// Manual import (no marketplace provenance).
     pub fn manual(source_path: PathBuf, source_kind: SourceKind) -> Self {
         Self {
@@ -90,6 +108,7 @@ impl ImportRequest {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         }
     }
 
@@ -108,6 +127,7 @@ impl ImportRequest {
             source_revision: None,
             declared_version: None,
             index_display: None,
+            market_icon: None,
         }
     }
 
@@ -127,6 +147,7 @@ impl ImportRequest {
             source_revision: Some(source_revision),
             declared_version: None,
             index_display: None,
+            market_icon: None,
         }
     }
 }
@@ -243,7 +264,7 @@ impl ImporterService {
         std::fs::create_dir_all(&materialized).map_err(|error| {
             ImportError::Internal(format!("create snapshot dir: {error}"))
         })?;
-        let files = match copy_tree(&source, &materialized) {
+        let mut files = match copy_tree(&source, &materialized) {
             Ok(files) => files,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&materialized);
@@ -254,6 +275,31 @@ impl ImporterService {
                 ));
             }
         };
+        // Place the marketplace icon (doc `51` §3.2). It lives **beside** the
+        // entry directory (`<market_root>/icons/`), so `copy_tree` above cannot
+        // carry it, and it has to land *before* `tree_digest` so the snapshot's
+        // digest covers it (doc `51` D4). A refusal is a warning, never a
+        // failed import: an icon is display data (INV-6).
+        let icon_placement = crate::icon::icon_placement(&parsed, request.source_kind);
+        let mut icon_warning: Option<String> = None;
+        let mut icon_relative: Option<String> = None;
+        if let Some(placement) = icon_placement {
+            match crate::icon::place_market_icon(
+                request.market_icon.as_deref(),
+                &materialized,
+                placement,
+            ) {
+                crate::icon::IconOutcome::Placed(placed) => {
+                    files.push(crate::walk::CopiedFile {
+                        relative: placed.relative.clone(),
+                        digest_hex: placed.digest_hex,
+                    });
+                    icon_relative = Some(placed.relative);
+                }
+                crate::icon::IconOutcome::Refused(reason) => icon_warning = Some(reason),
+                crate::icon::IconOutcome::Absent => {}
+            }
+        }
         let content_digest = tree_digest(&files);
 
         // 5–7. component standardization (steps 6–8)
@@ -321,6 +367,23 @@ impl ImporterService {
             // versa — parse_manifest dispatches by source kind.
             _ => {}
         }
+        // The placed icon becomes a payload key of the components that own it
+        // (doc `51` §3.2.2). This is how the export face finds it again without
+        // a second query: `team_skills` / `team_connectors` read `payload.avatar`
+        // straight off the component row (`51` §3.3.2).
+        if let (Some(placement), Some(relative)) = (icon_placement, &icon_relative) {
+            builder.stamp_avatar(relative, placement.stamp_kinds());
+        }
+        if let Some(warning) = icon_warning {
+            builder.warn(warning);
+        }
+        // A Skill's icon may already live **inside its own directory**
+        // (`assets/icon.<ext>`, the `SKILL_ICON_CANDIDATES` convention built-in
+        // skills use). That file travels on the skill file face regardless; what
+        // nothing recorded so far is *which* file it is, so the export face had
+        // no way to name it (doc `51` P2). Stamp it now — the payload key is the
+        // same one the marketplace placement uses, so a consumer needs one rule.
+        builder.stamp_skill_directory_icons(&materialized);
         // Path-safety violations anywhere block the whole snapshot (02 §11.1).
         if !builder.blocking_errors.is_empty() {
             let _ = std::fs::remove_dir_all(&materialized);
@@ -557,6 +620,63 @@ impl ComponentBuilder {
         }
         self.claimed.insert(component.component_id.clone());
         self.components.push(component);
+    }
+
+    /// Stamp a placed marketplace icon into the payloads of one or more kinds
+    /// (doc `51` §3.2.2).
+    ///
+    /// `avatar` is the key every read face already understands (`asset_url`,
+    /// `declared_avatar`), so a placed icon needs no new payload vocabulary. An
+    /// existing key is **never** replaced: `plugin.json.avatar` (or the author's
+    /// own skill icon) is the declaration that wins (INV-4).
+    fn stamp_avatar(&mut self, relative: &str, kinds: &[&str]) {
+        for component in &mut self.components {
+            if !kinds.contains(&component.kind.as_str()) {
+                continue;
+            }
+            let Some(object) = component.payload.as_object_mut() else {
+                continue;
+            };
+            if object.contains_key("avatar") {
+                continue;
+            }
+            object.insert("avatar".to_owned(), serde_json::json!(relative));
+        }
+    }
+
+    /// Stamp `assets/icon.<ext>` into every Skill component whose **own
+    /// directory** ships one (doc `51` §3.1/§3.2.2).
+    ///
+    /// The path stamped is **skill-directory relative** — the coordinate system
+    /// `skill/files` and `skill/file` use — so a consumer reads the bytes with
+    /// the same call that reads `SKILL.md`. This covers both shapes: a package's
+    /// `skills/<slug>/assets/icon.png`, and a single-skill entry, whose snapshot
+    /// root *is* the skill directory.
+    fn stamp_skill_directory_icons(&mut self, snapshot_dir: &Path) {
+        for component in &mut self.components {
+            if component.kind != crate::models::KIND_SKILL {
+                continue;
+            }
+            let Some(dir) = component
+                .relative_path
+                .as_deref()
+                .and_then(|relative| relative.rsplit_once('/'))
+                .map(|(dir, _)| dir)
+            else {
+                continue;
+            };
+            let relative = crate::icon::skill_icon_in_snapshot(snapshot_dir, dir);
+            let Some(relative) = relative else {
+                continue;
+            };
+            let Some(object) = component.payload.as_object_mut() else {
+                continue;
+            };
+            if object.contains_key("avatar") {
+                continue;
+            }
+            object.insert("avatar".to_owned(), serde_json::json!(relative));
+        }
     }
 
     fn warn(&mut self, message: String) {
@@ -950,6 +1070,14 @@ fn build_plugin_components(
         attach_display_fields(&mut payload, &builder.display_for(Some(manifest)));
         if let Some(category_id) = &manifest.category_id {
             payload["category_id"] = json!(category_id);
+        }
+        // The package avatar belongs to the **team row** as well (doc `38` D8):
+        // a team pack's `pack.avatar` reads this payload, while the member packs
+        // deliberately carry none (D7). Without this line a team package that
+        // declares a `plugin.json.avatar` exported no avatar at all — surfaced
+        // while wiring doc `51` §3.2.2.
+        if let Some(avatar) = &manifest.avatar {
+            payload["avatar"] = json!(avatar);
         }
         builder.push(Component::new(
             crate::models::KIND_TEAM,

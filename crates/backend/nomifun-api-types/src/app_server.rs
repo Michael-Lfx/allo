@@ -810,7 +810,13 @@ pub struct AppServerTeamDetail {
 /// consumer reading a pack of a lower format keeps working (unknown fields are
 /// skipped), it just sees fewer of these optional fields; stating that
 /// distinction is what this version exists for.
-pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 3;
+/// **`4` adds the per-entity icons** (`skills[].icon` + `connectors[].icon`,
+/// doc `51`): the skills and connectors a pack references now say where their
+/// picture lives, in each one's own address space (skill directory vs snapshot
+/// asset), so a consumer can render a full card list without guessing file names
+/// or reading the market. Optional on both sides, hence additive for older
+/// consumers.
+pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 4;
 
 /// Which catalog kind a pack describes.
 ///
@@ -954,6 +960,16 @@ pub struct AppServerExpertModelRef {
 pub struct AppServerExpertSkillRef {
     pub name: String,
     pub id: String,
+    /// The skill's icon, as a **skill-directory-relative** path
+    /// (`assets/icon.png`) — the coordinate system `skill/files` publishes and
+    /// `skill/file` reads (doc `51` §3.3). Absent when the skill ships none.
+    ///
+    /// Deliberately a bare path rather than an [`AppServerExpertAssetRef`]: a
+    /// skill's bytes live on the *skill* file face, which publishes no per-file
+    /// digest of its own, so a `{size, digest}` pair here would be a second,
+    /// unverifiable copy of metadata this pack cannot check (doc `51` D3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// One plugin-level asset the pack carries, **by reference** (doc `38`).
@@ -1006,6 +1022,13 @@ pub struct AppServerExpertConnectorRef {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    /// The connector's icon as a **snapshot-relative** path
+    /// (`avatars/connectors/github.svg`), and — like [`AppServerExpertPack::avatar`]
+    /// — **only when that exact file appears in the pack's `assets` list**, so the
+    /// reference can never name bytes a consumer cannot fetch (doc `51` INV-2).
+    /// Absent when the host has no icon for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// The expert's declared tool surface.

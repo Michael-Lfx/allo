@@ -250,7 +250,15 @@ use tokio::sync::mpsc;
 /// values are merged at import from the author's `plugin.json` and the market
 /// index row, then read back from the component payload; no method is added or
 /// removed, so the documented split stays `56 / 83`.
-pub const PROTOCOL_VERSION: &str = "fp-18";
+/// **`fp-19` gives the exported expert pack its per-entity icons** (doc `51`):
+/// `AppServerExpertSkillRef` gains `icon` (a skill-directory-relative path, read
+/// back with `skill/file`) and `AppServerExpertConnectorRef` gains `icon` (a
+/// snapshot-relative path that must appear in the pack's own `assets`, like
+/// `pack.avatar`). Both are optional and omitted when absent, so an existing
+/// consumer's JSON is unchanged; no method is added or removed, so the documented
+/// split stays `56 / 83`. The artifact contract moves with it
+/// (`pack_format 3 → 4`).
+pub const PROTOCOL_VERSION: &str = "fp-19";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12894,6 +12902,7 @@ model = "mimo-v2.5-free"
             skills: vec![nomifun_api_types::AppServerExpertSkillRef {
                 name: "release-notes".into(),
                 id: "release-notes".into(),
+                icon: None,
             }],
             connectors: vec![],
             assets: vec![nomifun_api_types::AppServerExpertAssetRef {
@@ -13396,14 +13405,15 @@ model = "mimo-v2.5-free"
     #[test]
     fn sample_expert_pack_serializes_the_current_pack_format_with_assets() {
         // Doc `38` flipped `pack_format` to 2 and put the asset list on the wire;
-        // doc `44` moved it to 3 for the display metadata. The shape guard here
-        // keeps a future bump a conscious act.
+        // doc `44` moved it to 3 for the display metadata; doc `51` moved it to 4
+        // for the per-entity icons. The shape guard here keeps a future bump a
+        // conscious act.
         let json = serde_json::to_value(sample_expert_pack()).unwrap();
         assert_eq!(
             json["pack_format"],
             nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT
         );
-        assert_eq!(json["pack_format"], 3);
+        assert_eq!(json["pack_format"], 4);
         assert_eq!(json["assets"][0]["path"], "bin/init_task.py");
         assert_eq!(json["assets"][0]["kind"], "script");
         // `avatar` is absent when unset (`skip_serializing_if`), so `null` can

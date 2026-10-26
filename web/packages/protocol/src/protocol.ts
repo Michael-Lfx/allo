@@ -94,7 +94,7 @@
  * must never pick an auth affordance from a shape. No method changes, so the
  * documented route split stays `56 / 83`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-18";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-19";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1762,9 +1762,11 @@ export interface TeamDetail extends TeamSummary {
  * History: `1` was the doc-`32` shape; **`2` added the plugin-level asset list**
  * (`assets` / `avatar`, doc `38`); **`3` adds the display metadata** (`tags` /
  * `category_id`, doc `44`) so the market's organization structure travels with
- * the pack.
+ * the pack; **`4` adds the per-entity icons** (`skills[].icon` /
+ * `connectors[].icon`, doc `51`), so a consumer can render a complete card list
+ * without guessing file names or reading the market.
  */
-export const APP_SERVER_EXPERT_PACK_FORMAT = 3;
+export const APP_SERVER_EXPERT_PACK_FORMAT = 4;
 
 export type ExpertPackKind = "agent" | "team";
 
@@ -1835,6 +1837,16 @@ export interface ExpertModel {
 export interface ExpertSkillRef {
   name: string;
   id: string;
+  /**
+   * The skill's icon as a **skill-directory-relative** path (`assets/icon.png`) —
+   * the coordinate system `skill/files` publishes and `skill/file` reads
+   * (doc `51` §3.3, `pack_format 4`). Absent when the skill ships none.
+   *
+   * A bare path on purpose: a skill's bytes live on the *skill* file face, which
+   * publishes no per-file size/digest of its own, so an `ExpertAssetRef` here
+   * would carry metadata this pack cannot verify (doc `51` D3).
+   */
+  icon?: string | null;
 }
 
 /**
@@ -1849,6 +1861,13 @@ export interface ExpertConnectorRef {
   id: string;
   name: string;
   enabled: boolean;
+  /**
+   * The connector's icon as a **snapshot-relative** path
+   * (`avatars/connectors/github.svg`), and — like {@link ExpertPack.avatar} —
+   * only when that exact file appears in the pack's `assets` list, so it can
+   * never name bytes you cannot fetch (doc `51` INV-2, `pack_format 4`).
+   */
+  icon?: string | null;
 }
 
 /** A declaration, never a permission boundary (doc 32 §5 R9). */

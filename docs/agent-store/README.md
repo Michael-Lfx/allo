@@ -158,6 +158,8 @@ flowchart TD
 | [`49-store-search-and-suggestions.zh.md`](file:///c:/workspace/allo/docs/agent-store/49-store-search-and-suggestions.zh.md) | 目录检索与使用提示：多词 AND 匹配口径、`matchStoreItem` 字段级命中区间（供高亮）、`searchWithHits` / `searchInstalled` / `listStatus`（透出 `markets_pending`）、预取取代缓存、三档排序、**四类 × 两面的提示词接入**（`plugin.json.quickPrompts` 优先 + 索引行 `examples_*` 回落，P1 零 wire；详情面 P2 待定）、D1~D12 决策、TC-1~TC-19 验收 | 🔧 P1 已实施（2026-10-21；client 三方法 + 宿主 `examples → quick_prompts` 回落 + 商店卡片/抽屉提示；详情面 P2 与发布同步待做） |
 | [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步） |
 
+| [`51-export-icons.zh.md`](file:///c:/workspace/allo/docs/agent-store/51-export-icons.zh.md) | 导出面图标补齐（专家/专家团/技能/连接器）：市场 `icons/` 与 entry 目录是**兄弟关系**、`copy_tree` 带不到 ⇒ 安装期按实体类型固化进不可变快照（插件/团 `avatars/`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/`），路径写进组件 payload `avatar`（作者声明优先、永不覆盖）；导出面只加 `skills[].icon` / `connectors[].icon`（纯路径字符串），字节仍走 `skill/file` 与 `import/asset`；`pack_format 3 → 4`、指纹 `fp-18 → fp-19`；D1~D12 决策、TC-IM/TC-EX/TC-SDK 用例、连接器图标的**可达性边界**（§3.3.5） | 🔧 已实施（2026-10-26；`nomifun-importer` 64+32 / `nomifun-app` 111 / `nomifun-app-server` 192 / `web` 586 全绿；指纹门 10 落点 + 站点 2 文件；真机 EXI-001~EXI-005 PASS） |
+
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
 
@@ -305,6 +307,17 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-26 实施 `51`：导出面图标补齐，尚未发版）
+
+`51` 落地完成，指纹 `fp-18 → fp-19`、`pack_format 3 → 4`，尚未发版（下一版随 `52` 或 §8 的发布窗口一起走）：
+
+1. **真缺口定位**：市场 `icons/<base>.<ext>` 位于**市场根**，是 entry 目录的**兄弟**，`run_import` 的 `copy_tree(&source, &materialized)` 只拷 entry ⇒ 图标字节永远进不了不可变快照；而技能 / 连接器又没有 `plugin.json`，`payload["avatar"]` 的唯一写入点（`attach_plugin_display`）只在插件分支被调用。两者叠加 = 导出面只有 `plugin.json.avatar` 一条通路（24/381 个插件、全部技能、全部连接器无图标）。
+2. **安装期固化**：`ImportRequest.market_icon`（绝对路径，marketplace 层解析、importer 只落位，与 `50` 的 `index_display` 同构）→ 按实体类型写入快照（插件/团 `avatars/<basename>`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/<basename>`）→ 路径写进组件 payload 的 `avatar`。三闸门：六种扩展名白名单、512 KiB 上限、**目标已存在即跳过**（作者声明优先、永不覆盖）；多组件 bundle **不落位**（一张图标不能诚实归属到 N 个组件）。
+3. **导出面只加两个字段**：`skills[].icon`（技能目录相对路径，字节走 `skill/file`）与 `connectors[].icon`（快照相对路径且必须在 `assets` 里，字节走 `import/asset`）；缺席即省略键。SDK `materializePack` **零改动**——技能图标随 `skill/files`、连接器图标随 `pack.assets` 自然落盘。
+4. **实施期两处补齐**（原方案缺口）：①包级技能的图标原本**没有任何字段说明它是图标**，新增 `stamp_skill_directory_icons`（探技能自己目录的 `assets/icon.*`，**只在技能自己的目录里探**，绝不把包根 `assets/` 发给每个技能）；②团队 payload 从来没写过 `avatar`（`attach_plugin_display` 只在 agent 分支调用），补一行后**团队包终于带上它声明的头像**（`38` D8 的既有缺口）。
+5. **一条诚实的边界**（`51` §3.3.5）：`connectors[].icon` 只在"单连接器 entry"产生；团包里 `mcpServers` 声明的连接器没有自己的图标来源，`icon` 恒缺席——把包图标广播给连接器就是给同一张图造两个主体（违反 `51` INV-3）。该边界由真机 EXI-004 钉住。
+6. **门禁读数**：`nomifun-importer` 64 lib + 32 integration、`nomifun-app` 111、`nomifun-app-server` 192、`web` 586 / 1 skipped；`check:fingerprint` ✓ `fp-19`（10 落点 / 7 文件 + 站点 2 文件）；`bun run help --check` ✓；真机 `web/scripts/verify-export-icons.ts` **PASS**（EXI-001~005）。
 
 ## 本轮（2026-10-22 发布 `0.1.0-beta.12`）
 
