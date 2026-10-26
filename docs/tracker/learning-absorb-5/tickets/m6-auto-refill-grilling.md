@@ -1,9 +1,9 @@
 ---
 id: m6
 title: "自动补批定案——生长作为调度动作（#121/ADR-0024 域中立）"
-type: task
-status: open
-assignee:
+type: grilling
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -80,3 +80,25 @@ part_of: ../map.md
   空承诺（派发口必须真实可达）。
 - allo 的 READY_TRIGGER/停滞臂已有语义，verdict 必须与之**组合**而非旁路
   （盘问点 2 的核心）。
+
+## Resolution（2026-10-26 grill-with-docs 定案，用户按推荐全部裁决）
+
+- **触发两时点**：① 既有完成/跳过检查（`maybe_kick_growth`，就绪<3 门）保持；
+  ② **课程工作区加载只读裁决端点**（`GET /courses/{id}/growth/verdict` 纯读，
+  Due 则前端自动调既有 POST grow 后台补批，「自动准备中」承诺由真实派发口
+  兑现——770cfd4 教训）。不寄宿 k02 维护定时器（越过 ADR-0010「收尾交学习者」
+  精神且混维护票面语义）。
+- **阈值维持 READY_TRIGGER=3 不动**；m6 只把触发包装成显式 verdict 函数
+  （Due/BelowThreshold/Disabled）+ 带数字裁决日志（ready/due）。**无独立暂停线**
+  ——allo 无评审债量纲，不硬搬 learnhub 40（量纲必须有自己的源）；防失控四件
+  = 并发 1（课级 slot 锁既有）+ 开关 + 重入集（每课每裁决轮至多一批）+ m7
+  资源闸。
+- **开关**：`learning.autoRefillEnabled` 默认开 + `NOMI_LEARNING_AUTO_REFILL=off`
+  环境兜底，两件分层（用户面 vs 灭火面）。
+- **依赖**：实施票 m10 `blocked_by: [m7]`（补批提交走资源闸）。
+- **术语落盘**：CONTEXT.md 新增 Auto Refill 词条；Growth 词条批容量 7→5 修正
+  （对齐代码 READY_TARGET=5 / MAX_BATCH_NODES=5）。
+- **事实修正**：盘问中核实「完成时点 + 就绪<3 自动检查」已存在
+  （`maybe_kick_growth` → `kick_growth` :1362 门）——本票增量仅为 verdict
+  显式化、第二触发点、开关与重入集，非从零设计。
+- **实施票**：m10（自动补批落地）。
