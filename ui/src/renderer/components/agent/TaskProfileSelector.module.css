@@ -1,70 +1,7 @@
-.track {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px;
-  border-radius: 999px;
-  background: var(--color-fill-2);
-}
-
-.option {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 36px;
-  padding: 0 16px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--color-text-2);
-  cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
-  outline: none;
-  transition:
-    background-color var(--flowy-motion-fast) var(--flowy-ease-enter),
-    color var(--flowy-motion-fast) var(--flowy-ease-enter);
-}
-
-.option:hover:not(:disabled):not(.optionActive) {
-  color: var(--color-text-1);
-  background: color-mix(in srgb, var(--color-fill-3) 70%, transparent);
-}
-
-.option:focus-visible {
-  box-shadow: 0 0 0 2px var(--flowy-focus);
-}
-
-.option:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.optionActive,
-.optionActive:hover:not(:disabled) {
-  background: var(--color-text-1);
-  color: var(--color-bg-1);
-}
-
 .optionIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 0;
   flex: 0 0 auto;
-}
-
-.optionLabel {
-  line-height: 1.4;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .option {
-    transition: none;
-  }
 }

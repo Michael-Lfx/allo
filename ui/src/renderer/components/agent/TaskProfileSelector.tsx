@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import classNames from 'classnames';
 import { Briefcase, Code } from '@icon-park/react';
 import React, { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import GooeyNav from '@renderer/components/base/GooeyNav';
 import { useTaskProfileStore, normalizeTaskProfile, type TaskProfile } from '@/renderer/stores/taskProfileStore';
 import styles from './TaskProfileSelector.module.css';
 
@@ -36,10 +36,10 @@ function profileIcon(value: TaskProfile) {
 }
 
 /**
- * Segmented work-mode control for choosing the Nomi profile. The selection is
- * app-global and persisted (see {@link useTaskProfileStore}) so it survives
- * navigation between modules and app restarts; a conversation freezes its own
- * value at creation.
+ * Work-mode control for choosing the Nomi profile. The selection is app-global
+ * and persisted (see {@link useTaskProfileStore}) so it survives navigation
+ * between modules and app restarts; a conversation freezes its own value at
+ * creation.
  */
 const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({ onProfileSelect, disabled = false, className }) => {
   const { t } = useTranslation();
@@ -63,34 +63,21 @@ const TaskProfileSelector: React.FC<TaskProfileSelectorProps> = ({ onProfileSele
   );
 
   return (
-    <div
-      className={classNames(styles.track, className)}
-      role='radiogroup'
-      aria-label={label}
-      data-testid='task-profile-selector'
-    >
-      {PROFILES.map((value) => {
-        const active = value === profile;
-        return (
-          <button
-            key={value}
-            type='button'
-            role='radio'
-            aria-checked={active}
-            data-button-shape='pill'
-            data-testid={`task-profile-option-${value}`}
-            className={classNames(styles.option, active && styles.optionActive)}
-            disabled={disabled}
-            onClick={() => handleSelect(value)}
-          >
-            <span className={styles.optionIcon} aria-hidden='true'>
-              {profileIcon(value)}
-            </span>
-            <span className={styles.optionLabel}>{profileLabel(value)}</span>
-          </button>
-        );
-      })}
-    </div>
+    <GooeyNav
+      className={className}
+      testId='task-profile-selector'
+      ariaLabel={label}
+      selection='radio'
+      size='md'
+      disabled={disabled}
+      activeIndex={Math.max(0, PROFILES.indexOf(profile))}
+      items={PROFILES.map((value) => ({
+        label: profileLabel(value),
+        icon: <span className={styles.optionIcon}>{profileIcon(value)}</span>,
+        testId: `task-profile-option-${value}`,
+      }))}
+      onChange={(index) => handleSelect(PROFILES[index])}
+    />
   );
 };
 

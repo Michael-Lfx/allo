@@ -19,7 +19,7 @@ import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search, Upload, VideoOne } from '@icon-park/react';
 import { CanvasChromeButton } from '@oc/components/canvas/canvas-overlay';
 import '@oc/styles/quiet-chrome.css';
-import SegmentedTabs, { type SegmentedTabItem } from '@renderer/components/base/SegmentedTabs';
+import GooeyNav from '@renderer/components/base/GooeyNav';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import { isDesktopShell } from '@renderer/utils/platform';
@@ -167,14 +167,14 @@ const VideoGenerationListPage: React.FC = () => {
     page.scrollTop = savedPageScrollTopRef.current;
   }, [listTab]);
 
-  const listTabItems: SegmentedTabItem[] = useMemo(
+  const listTabItems = useMemo(
     () => [
       {
-        key: 'tvShow',
+        key: 'tvShow' as const,
         label: t('videoGeneration.list.tabs.tvShow', { defaultValue: 'Flowy TV' }),
       },
       {
-        key: 'recent',
+        key: 'recent' as const,
         label: t('videoGeneration.list.tabs.recent', { defaultValue: '最近创作' }),
       },
     ],
@@ -1086,11 +1086,12 @@ const VideoGenerationListPage: React.FC = () => {
         <section className='flex flex-col gap-12px'>
             <div className='flex flex-wrap items-center justify-between gap-12px'>
               <div>
-                <SegmentedTabs
+                <GooeyNav
+                  selection='tab'
                   size='sm'
-                  items={listTabItems}
-                  activeKey={listTab}
-                  onChange={handleListTabChange}
+                  items={listTabItems.map((item) => ({ label: item.label }))}
+                  activeIndex={Math.max(0, listTabItems.findIndex((item) => item.key === listTab))}
+                  onChange={(index) => handleListTabChange(listTabItems[index].key)}
                 />
                 <p className='m-0 mt-8px text-12px text-[var(--color-text-3)]'>
                   {listTab === 'tvShow'
