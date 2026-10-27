@@ -2,8 +2,8 @@
 id: m9
 title: "定义用语表与只读审计落地——base 语料移植 + 定义审计纯函数 + 审计端点与概念 Tab 标记"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -80,3 +80,9 @@ part_of: ../map.md
 审计哲学（learnhub 同源）：「读侧先看见」——审计是缺口标记不是拦截门；
 概念表结构评估结论遵守：不给 ConceptRecord 加属字段，改定义契约 + 根资产 +
 只读投影。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m9-lexicon-audit，5d406c2aa 等）：base.yaml 逐字节移植（148 行）+ `definition_audit` 纯函数全套（CJK 1-4gram 两过滤、最长优先掩码、**单字只作边界 token**、自指/互指）+ 三层定义用语表（登记表活跃名 ∪ base ∪ structure_json 旁键课程豁免——零迁移）+ `GET /concepts/audit` 只读端点 + 概念 Tab 行级标记 + 双域夹具（philosophy-intro + rust-ownership：预埋自指/互指/缺口全抓住，干净定义零误报）。
+- **验收形态**：纯本地零 LLM——夹具红绿矩阵即判据（14 模块测 + 3 服务测），票面无双臂要求。
+- **碎片面补接**（m3 落地后，learn-v5/m9f-fragment-verdict，dcaa04919..4e17f8572）：`FragmentVerdict` 独立清单（不并 provenance 表）+ 机械核全覆盖 + **report-only v1** 进 findings（k02 水位消费）+ `NOMI_LEARNING_REVIEW_FRAGMENTS`（面开关，缺省 on）+ `NOMI_LEARNING_LEXICON_ENFORCE`（块路径，**首个缺省 off 开关**，反转约定已注记）。真机：27/27 碎片全裁噪声（3 行抽检属实）、enforce 臂演示完整 degraded 阶梯（rows=0 invalid=2 retried=1 degraded=true）——assets/m9f-fragment-verdict-comparison-card.md；enforce 阻断支未自然到达（unhandled=0）如实注记。

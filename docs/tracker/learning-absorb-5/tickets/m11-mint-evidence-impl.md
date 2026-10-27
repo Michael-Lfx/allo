@@ -2,8 +2,8 @@
 id: m11
 title: "铸名门外部证据落地——flowy-web 直依赖 + 扩邻 + 评审候选集证据块（fail-open）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -77,3 +77,9 @@ part_of: ../map.md
 
 「变好才许收」意味着本票可能以「零翻转、如实记录、裁决不收」关票——这是
 合法终态不是失败（ADR-0030 §24 原文纪律）。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m11-mint-evidence，0088dee6c）：flowy-web 直依赖（briefing 先例；勘误：crate 实在 `crates/agent/` 非 shared，依赖面同律）+ 歧义多候选案恰一次搜索（query 机械派生、批级去重、冷启动/直定/单候选零搜索）+ 证据标题命中扩 defnear 邻居（basis=「外部证据命中：<标题>」，cap 3、deprecated 排除、摘要不匹配）+ 证据块（top-2/≤400 字/防线句）随既有候选集注入进评审 user 消息——判据条款字节未动 + fail-open 双路 + NOMI_LEARNING_MINT_RESEARCH。
+- **双臂对照（开关臂）**：assets/m11-mint-evidence-comparison-card.md——on 臂自然歧义案 `searches=4 evidence_hits=20` + 防线句入档（DDG/百度结果）；off 臂显式零。
+- **「变好才许收」裁决面（ADR-0030，留用户）**：裁决翻转数 = 0（无自然跨臂同案对；expansions 未触发）——机制 fail-open 零歧义零成本故缺省保留，翻转证据待后续自然案累计；最终收/不收由用户裁量（票面既定）。

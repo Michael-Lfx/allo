@@ -2,8 +2,8 @@
 id: m5
 title: "生长收敛梯子对账加固——有状态复审 + #175 三断层（#128/#129 残差）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -94,3 +94,9 @@ allo 生长重试回路的差异，把真缺口补上：有状态复审（前轮
 
 learnhub #175 的三条断层全是**真机两连越权/盲试**实证出来的——对账表的
 「待核实」行如果核实为已等价，Resolution 如实记录即可，不为凑数造工作。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **对账表九行全部裁决**（三行「待核实」核实结果：守卫确为首错早退→已补全量枚举；意见回灌确为部分有→已补三路；前轮注入确缺→已补有状态复审；其余六行已等价/结构性豁免维持）。
+- **交付**（learn-v5/m5-convergence-ladder，5dda65516 + f96437f3f）：`AttemptFail.review_history` 独立通道（不并入指纹原因，指纹免漂移）+ `prior_review_section` 注入段 + 反乒乓纪律**单源** `ANTI_PING_PONG_DISCIPLINE`（code-review 修复：双写已漂移 → mod.rs 定义、两处消费，头句按面保留）+ `ADVICE_SCOPE_CLAUSE` 两臂同织 + `review_point_names` 机械面 + 守卫全量枚举（按上一稿节点序单报告）+ 三路回灌（polish 穷尽/守卫违规/输出违约）+ NOMI_LEARNING_REVIEW_STATE 开关 + smoke `[review_state: …]`。
+- **双臂对照（开关臂）**：assets/m5-convergence-ladder-hardening-comparison-card.md——两臂读数行在场、自然重试 1/1 重试后通过、早停 0；**如实缺口**：injections=0（跨轮注入面未自然触发——三路注入由单测覆盖，机械面证据足）。

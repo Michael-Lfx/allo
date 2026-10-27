@@ -2,8 +2,8 @@
 id: m1
 title: "门口梯队 door_refs 块注解 + 过门自检读侧"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -87,3 +87,10 @@ learnhub #165（契约 v2.14）：goal-decomposition 产物 blocks 增可选 `do
 learnhub 证据：ldata1 数学课 21 块入门档仅 3 块带 door_refs、自检面无处扩
 （ADR-0013 增补缘由）——allo 对照卡里如实记录标注密度，供 m2 判块命中语义
 是否够用。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m1-door-refs，c0f79250c）：契约 `gd.blocks.door_refs`（形态/批内去重/叉积双臂核验：⊆地形门口 ∧ ⊆课程门）+ goal-decomposition/prerequisite-terrain 资产织入（金样三闸随批）+ 读侧 `BlockView.door_refs`/`TerrainDoorView.covered_blocks`（serde default 容旧快照）+ 前端 GateCoverage 门口→覆盖块卡 + BlockDetail 标签 + i18n 双语 + 契约文档 v1.5→v1.6。
+- **双臂对照（版本臂）**：assets/m1-door-refs-comparison-card.md——两臂 EXIT 均按既有判据绿（old: 54 块/83 边，new: 51 块/59 边）；door_refs 引用可解析机械核验通过（空洞真值：生成侧未产键）。
+- **如实发现（本票最有价值的信号）**：生成侧 door_refs **零标注**（入门块 0/23 ×2 样本；learnhub 同款纪律先例 3/21）——「宁缺勿滥」措辞下模型不执行可选键。读侧/消费面机制经 m2 fixture 证明完好（AND 命中、叉积核验、投影、过门自检卡全部工作）。
+- **后续**：雾区新增「door_refs 生成侧密度观察」——提示词执行面另调（需独立双臂证据），本票机制面关闭。

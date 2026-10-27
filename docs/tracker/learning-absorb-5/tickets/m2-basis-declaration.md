@@ -2,8 +2,8 @@
 id: m2
 title: "已会声明通道——勾选即已会、只铸概念不落节点（ADR-0032 域中立移植）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [m1]
 part_of: ../map.md
 ---
@@ -116,3 +116,10 @@ part_of: ../map.md
   40 字且多主题——上限 60 与最小可教单元条款是同一条教训的两半。
 - 声明是**课后动作**（结构生成之后勾门口），不改建课向导输入面；结构重生成
   后 door_refs 变化的声明一致性 = 幂等增量天然消化（doors 不在勾选集即失效）。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m2-basis-declaration，707debb97..60dc3dad2）：迁移 071 `learning_basis_declarations`（+`blocks_json` 有意扩展：AND 口径命中块出处审计；v3 契约四处注册 + 四针迁移测试）、声明管线（勾选⊆门口校验 → 幂等增量 noop → door_refs AND 命中 → 一次结构化 LLM 1..60 最小可教单元 → 既有命名门——精确占用/defnear 直定/j04 复用裁决，落池必经 register_alias_tx → 单事务锚行）、已知集三面并网（taught_ledger/生长语义门/教练账）、POST declare + GET basis + DELETE 撤销（声明可撤、概念不灭、来源标记保留）、NOMI_LEARNING_BASIS_DECLARATION off=409、前端过门自检卡声明入口/撤销确认/来源徽标/i18n、smoke `basis` 档。WS 复用 course-generation 流加 basis_declared/basis_revoked 相位。
+- **双臂对照（开关臂）**：assets/m2-basis-declaration-comparison-card.md——off 臂 EXIT=2 如实拒绝；on 臂**五硬判据全过 EXIT=0**（真机判据修复 59b4f790 后补跑：下游就绪翻转 / 幂等重跑 noop 零 LLM / 撤销投影复原概念留池；`declaration_calls=1` 档案判据在场）；概念粒度人读抽判 ✅（最小可教单元，无块名整体铸一条）。
+- **冒烟判据修复**：档案判据原断言管线构造上不可产的字面量（frontmatter 被装配剥离、档案器无任务槽）——改签名断言 `DECLARATION_SYSTEM`（59b4f790，含 why 注释）。
+- **偏差**：迁移多 `blocks_json` 列（票面意图内）；其余零。

@@ -2,8 +2,8 @@
 id: m10
 title: "自动补批落地——verdict 显式化 + 工作区加载触发 + 开关与重入集"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: [m7]
 part_of: ../map.md
 ---
@@ -66,3 +66,8 @@ verdict 函数，新增第二触发点（课程工作区加载 → 只读裁决�
 learnhub 两条教训直接继承：日预算闸撤销（过度拦截「长批→跳批→再长批」正常
 循环）、「自动准备中」空承诺（770cfd4：派发口必须真实可达——本票前端 Due
 即自动发批，不挂死通知）。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m10-auto-refill，14d340ae8 等）：`auto_refill_verdict` 纯函数（Due/BelowThreshold/Disabled，阈值维持 READY_TRIGGER=3、无暂停线——m6 定案）+ kick_growth 等价重构消费 verdict（带数字裁决日志）+ `GET /courses/{id}/growth/verdict` 纯读 + 前端工作区加载 Due 自动发批（诚实「自动准备中」，失败/未派发释放配额、BTreeSet 重入语义中立化，7 bun 测试）+ 设置 `learning.autoRefillEnabled` 缺省开 + 环境闸 `NOMI_LEARNING_AUTO_REFILL`。
+- **双臂对照（开关臂）**：assets/m10-auto-refill-comparison-card.md——on 臂 `verdict=due ready=0 → below_threshold ready=4 → ready=5`（补批真实落库、就绪读数上升）；off 臂 `verdict=disabled enabled=false`（EXIT=2 系开关门控自动臂的**既定行为**，手动/force 豁免）。工作区 UI 触发 = 桌面手测项（CLI 不可达，如实注记）。
