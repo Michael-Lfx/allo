@@ -731,7 +731,8 @@ export interface SpineView {
 }
 
 /** 块视图行：layer = assumes 前置链深度（L0 起算，层号不是排期）；
- * no_prereq = 本块不做任何 assumes 边之源 */
+ * no_prereq = 本块不做任何 assumes 边之源；
+ * door_refs = 门位标签（覆盖本块主题的门口编号，旧快照无键 = 空数组） */
 export interface BlockView {
   name: string;
   slug: string;
@@ -741,6 +742,7 @@ export interface BlockView {
   note: string;
   layer: number;
   no_prereq: boolean;
+  door_refs: string[];
 }
 
 export interface StructureEdgeView {
@@ -795,6 +797,8 @@ export interface TerrainDoorView {
   criterion: string;
   /** hard | self_check */
   kind: 'hard' | 'self_check';
+  /** 块覆盖统计：结构中被该门口 door_refs 标注覆盖的块数（无标注 = 0） */
+  covered_blocks: number;
 }
 
 /** 学习记录视图：批次时间线（倒序）——生长史即课程史 */
