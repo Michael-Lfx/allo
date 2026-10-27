@@ -46,9 +46,12 @@
     "untitled": "未命名任务",
     "briefingKind": "资讯口播",
     "importProject": "导入工程",
+    "importCanvas": "导入画布",
+    "importFilter": "Flowy 工程（短剧 / 无限画布）",
     "importDesktopOnly": "导入工程仅桌面端可用。",
     "importOk": "工程已导入",
     "importFailed": "导入失败",
+    "importUnsupported": "请选择短剧工程（.nomivimax）或无限画布工程（.nomiccanvas）",
     "empty": {
       "title": "你的第一支影片从上方开始",
       "desc": "写下一个画面或故事，Flowy 会先给你一版可编辑分镜。"
