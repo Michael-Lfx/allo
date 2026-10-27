@@ -50,6 +50,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(grow_learning_graph),
         )
         .route(
+            "/api/learning/courses/{id}/growth/verdict",
+            get(growth_verdict),
+        )
+        .route(
             "/api/learning/courses/{id}/graph/history",
             get(graph_history),
         )
@@ -296,6 +300,23 @@ async fn grow_learning_graph(
         .kick_growth(&user.id, &course_id, true, None)
         .await?;
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
+}
+
+/// 自动补批判定（m10 触发②）：纯读裁决——就绪存量 × 开关合力 →
+/// due | below_threshold | disabled。零 LLM 零写入，Disabled 臂与停摆臂
+/// 如实读数；前端课程工作区加载时据此决定是否自动调既有 POST grow。
+async fn growth_verdict(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::GrowthVerdictView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .growth_verdict(&user.id, &course_id)
+            .await?,
+    )))
 }
 
 async fn graph_history(

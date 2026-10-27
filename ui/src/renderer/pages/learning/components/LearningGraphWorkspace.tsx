@@ -24,6 +24,7 @@ import { lessonStatusTagColors } from '../model';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
+import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
 import { errorMessage } from '../utils';
 import type {
@@ -92,6 +93,10 @@ const LearningGraphWorkspace: React.FC<{
   // 画完立即上屏、终结（完成/失败/取消）落定状态——思考化之后结构与生长
   // 都要跑分钟级，不刷新用户会以为什么都没发生。
   useGraphGenerationEvents(detail.course.id, () => onRefresh());
+
+  // 自动补批触发②（m10）：工作区加载 → 纯读裁决 → Due 自动补一批（后台）。
+  // autoPreparing 是派发窗口的诚实读数，批次运行期仍由 growth_running 表达。
+  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh);
 
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
     () => graph?.recommended[0] ?? null
@@ -345,6 +350,11 @@ const LearningGraphWorkspace: React.FC<{
               : t('learning.learningGraphStructureGenerate')}
           </Button>
           <span className='flex-1' />
+          {autoPreparing && (
+            <Tag size='small' color='processing' className='!mx-0'>
+              {t('learning.learningGraphAutoPreparing')}
+            </Tag>
+          )}
           {graph.growth_running && (
             <Tag size='small' color='processing' className='!mx-0'>
               {t('learning.learningGraphGrowing')}

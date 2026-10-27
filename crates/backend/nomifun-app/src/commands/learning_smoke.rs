@@ -1288,6 +1288,16 @@ async fn run_grow(
     }
 
     for round in 1..=batches {
+        // 自动补批判定读数（m10，读数面非门禁）：裁决结果 + ready 数——
+        // 双臂对照卡数据源（on 臂 due + 批后 ready 上升；off 臂 disabled
+        // 如实）。读不到不拦流程（冒烟对象是生长管线本身）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} pre  verdict={} ready={} trigger={} enabled={} stalled={}",
+                view.verdict, view.ready_count, view.trigger, view.enabled, view.stalled
+            ),
+            Err(error) => println!("[auto-refill] round {round} pre verdict readout unavailable: {error}"),
+        }
         if round > 1 {
             // 确定性学习者替身：首节点完成、其余跳过（两种满足路径都过，
             // 进度事件自动触发下一轮生长——与真实学习者同线）。
@@ -1338,6 +1348,15 @@ async fn run_grow(
                 stats.review_state_injections
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
+        }
+        // 批后对照读数（m10）：ready 前后并排的「后」半张——对照卡看批后
+        // 水位回升（on 臂），off 臂此行同样如实（verdict=disabled）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} post verdict={} ready={} (对照 pre 行看批后水位)",
+                view.verdict, view.ready_count
+            ),
+            Err(error) => println!("[auto-refill] round {round} post verdict readout unavailable: {error}"),
         }
         // 铸名门外部证据读数（m11，读数面非门禁）：搜索/命中/扩邻/降级；
         // off 臂（`NOMI_LEARNING_MINT_RESEARCH=off`）显式零 = 零搜索证明。

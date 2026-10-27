@@ -76,6 +76,13 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
       {}
     ),
+  // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
+  // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作
+  growthVerdict: (courseId: string) =>
+    httpRequest<import('./types').GrowthVerdictView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/growth/verdict`
+    ),
   // 学习记录：批次时间线（倒序）
   graphHistory: (courseId: string) =>
     httpRequest<GraphHistoryView>(

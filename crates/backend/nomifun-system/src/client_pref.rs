@@ -243,6 +243,16 @@ fn validate_value(key: &str, value: &serde_json::Value) -> Result<(), AppError> 
             )),
         };
     }
+    // m10 自动补批开关：布尔（缺省开的单源注记在 nomifun-learning
+    // `DEFAULT_AUTO_REFILL_ENABLED`；环境闸 `NOMI_LEARNING_AUTO_REFILL` 兜底）。
+    if key == "learning.autoRefillEnabled" {
+        return match value.as_bool() {
+            Some(_) => Ok(()),
+            None => Err(AppError::BadRequest(
+                "learning.autoRefillEnabled must be a boolean".into(),
+            )),
+        };
+    }
     if key == "learning.maintenanceIntervalMinutes" {
         return match value.as_i64() {
             Some(minutes) if (30..=10080).contains(&minutes) => Ok(()),
@@ -327,6 +337,19 @@ mod tests {
         assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(29)).is_err());
         assert!(validate_value("learning.maintenanceIntervalMinutes", &json!(10081)).is_err());
         assert!(validate_value("learning.maintenanceIntervalMinutes", &json!("360")).is_err());
+    }
+
+    /// m10 自动补批开关：布尔可写，非布尔拒绝（缺省开的读侧在
+    /// nomifun-learning，写侧只把形状锁住）。
+    #[test]
+    fn validate_value_gates_auto_refill_switch() {
+        assert!(validate_value("learning.autoRefillEnabled", &json!(true)).is_ok());
+        assert!(validate_value("learning.autoRefillEnabled", &json!(false)).is_ok());
+        assert!(validate_value("learning.autoRefillEnabled", &json!("true")).is_err());
+        assert!(validate_value("learning.autoRefillEnabled", &json!(1)).is_err());
+        // null 同样拒绝（与 maintenanceAutoEnabled 一致：布尔键不设删除面，
+        // 关 = 写 false）。
+        assert!(validate_value("learning.autoRefillEnabled", &json!(serde_json::Value::Null)).is_err());
     }
 
     #[tokio::test]
