@@ -151,9 +151,10 @@ pub(crate) fn validate_term_provenance(
         // 的某个词；已教/自教行写的是定义**所预设的概念名**（如「代数式」
         // 预设「四则运算」而定义原文未必出现该串），不能要求逐字包含
         // （learnhub 真机录制核验：严格版误伤 2/37 行，全为已教行）。
+        // 空定义不豁免（learnhub 同构：对照域查在即逐字核对，没有「空定义
+        // 跳过」臂——空定义无处逐字落地，常识/缺失行照判行伪）。
         if matches!(row.source, TermSource::CommonSense | TermSource::Missing) {
             if let Some(definition) = definitions.get(concept)
-                && !definition.is_empty()
                 && !term_grounded(&row.term, definition)
             {
                 return Err(format!(
@@ -482,6 +483,29 @@ mod tests {
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
         let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        assert!(error.contains("未逐字出现"), "{error}");
+    }
+
+    /// 空定义不豁免（learnhub 同构）：对照域查在即逐字核对，没有「空定义
+    /// 跳过」臂——空定义无处逐字落地，常识/缺失行照判行伪（钉住：曾有
+    /// `!definition.is_empty()` 豁免，空定义 + 常识/缺失行会静默过关）。
+    #[test]
+    fn empty_definition_cannot_ground_common_sense_or_missing_rows() {
+        let mut batch = batch();
+        batch.mints[0].definition = String::new();
+        let rows = vec![
+            row("借用", "作用域", TermSource::CommonSense, None),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let error = validate_term_provenance(&rows, true, &batch, &known()).unwrap_err();
+        assert!(error.contains("未逐字出现"), "{error}");
+
+        // 缺失行同走这一臂（pass=false 避开缺失行「自认缺口却放行」先报）。
+        let rows = vec![
+            row("借用", "作用域", TermSource::Missing, None),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let error = validate_term_provenance(&rows, false, &batch, &known()).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
     }
 
