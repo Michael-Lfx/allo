@@ -34,6 +34,29 @@ pub const DEFAULT_MAINTENANCE_ENABLED: bool = true;
 pub const DEFAULT_MAINTENANCE_INTERVAL_MINUTES: i64 = 360;
 pub const MAINTENANCE_INTERVAL_MINUTES: std::ops::RangeInclusive<i64> = 30..=10080;
 
+/// 自动补批设置缺省（m10）：`learning.autoRefillEnabled` 缺省开——环境闸
+/// `NOMI_LEARNING_AUTO_REFILL` 兜底（off = verdict 恒 Disabled）。
+pub const DEFAULT_AUTO_REFILL_ENABLED: bool = true;
+
+/// 布尔偏好的宽容解析（bool / "true"|"1"|"yes" / 1|0 / 其它回退缺省）：
+/// maintenance 与 autoRefill 两个开关同式（k02 读侧纪律，坏值不报错）。
+fn parse_bool_pref(parsed: &serde_json::Value, default: bool) -> bool {
+    match parsed {
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            _ => default,
+        },
+        serde_json::Value::Number(number) => match number.as_i64() {
+            Some(1) => true,
+            Some(0) => false,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
 /// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
 /// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
 /// 并非"两次即弃"的语义。
@@ -1204,22 +1227,7 @@ impl LearningService {
             };
             match key.as_str() {
                 "learning.maintenanceAutoEnabled" => {
-                    settings.enabled = match parsed {
-                        serde_json::Value::Bool(flag) => flag,
-                        serde_json::Value::String(text) => {
-                            match text.trim().to_ascii_lowercase().as_str() {
-                                "true" | "1" | "yes" => true,
-                                "false" | "0" | "no" => false,
-                                _ => DEFAULT_MAINTENANCE_ENABLED,
-                            }
-                        }
-                        serde_json::Value::Number(number) => match number.as_i64() {
-                            Some(1) => true,
-                            Some(0) => false,
-                            _ => DEFAULT_MAINTENANCE_ENABLED,
-                        },
-                        _ => DEFAULT_MAINTENANCE_ENABLED,
-                    };
+                    settings.enabled = parse_bool_pref(&parsed, DEFAULT_MAINTENANCE_ENABLED);
                 }
                 "learning.maintenanceIntervalMinutes" => {
                     settings.interval_minutes = parsed
@@ -1231,6 +1239,52 @@ impl LearningService {
             }
         }
         settings
+    }
+
+    /// 自动补批开关合力（m10）：环境闸 `NOMI_LEARNING_AUTO_REFILL`（off =
+    /// 恒 Disabled）∧ 设置 `learning.autoRefillEnabled`（缺省开；坏值读侧
+    /// 回退缺省，写侧拒绝在 nomifun-system）。任一关闭即 Disabled。
+    pub async fn auto_refill_enabled(&self) -> bool {
+        if !crate::learning_graph::auto_refill_env_enabled() {
+            return false;
+        }
+        let raw: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM client_preferences WHERE key = 'learning.autoRefillEnabled'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(raw) = raw else {
+            return DEFAULT_AUTO_REFILL_ENABLED;
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return DEFAULT_AUTO_REFILL_ENABLED;
+        };
+        parse_bool_pref(&parsed, DEFAULT_AUTO_REFILL_ENABLED)
+    }
+
+    /// 自动补批判定（m10 触发②）：纯读零 LLM 零写入——守卫与 grow 同源
+    /// （`require_live_graph_course`：非图课程/软删 404、归档 409），裁决
+    /// 三态如实读数（Disabled 臂不藏），停摆臂随行（空图 = stalled，前端
+    /// 以此抑制自动补批）。无副作用：不占 slot、不 spawn。
+    pub async fn growth_verdict(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::GrowthVerdictView, AppError> {
+        self.require_live_graph_course(course_id).await?;
+        let enabled = self.auto_refill_enabled().await;
+        let ready_count = self.ready_count(course_id, user_id).await?;
+        let verdict = crate::learning_graph::auto_refill_verdict(ready_count, enabled);
+        let stalled = self.growth_stalled(course_id).await?;
+        Ok(crate::models::GrowthVerdictView {
+            verdict: verdict.as_str().to_owned(),
+            ready_count,
+            trigger: crate::learning_graph::READY_TRIGGER,
+            enabled,
+            stalled,
+        })
     }
 
     /// 一次自动维护回合（k02，learnhub `tick_with` 同构）：逐 enabled 图
@@ -1376,8 +1430,17 @@ impl LearningService {
         // 的手动/自动触发都给人面错误（可恢复），不再烧教练预算。
         self.require_live_graph_course(course_id).await?;
         let ready_count = self.ready_count(course_id, user_id).await?;
-        if !force && ready_count >= crate::learning_graph::READY_TRIGGER {
-            return Ok(false);
+        // 自动臂的门消费 verdict 纯函数（m10 显式化，行为等价重构）：默认
+        // 开关组合下与原 `ready_count >= READY_TRIGGER → Ok(false)` 门逐字
+        // 同语义；开关关 = Disabled 同样在此早退。手动 force 不进裁决——
+        // 补批开关只管自动臂，手动补充永远可达（ADR-0010 豁免纪律）。
+        if !force {
+            let enabled = self.auto_refill_enabled().await;
+            if crate::learning_graph::auto_refill_verdict(ready_count, enabled)
+                != crate::learning_graph::AutoRefillVerdict::Due
+            {
+                return Ok(false);
+            }
         }
         // 停摆臂只约束自动触发；手动 force 永远豁免（ADR-0010：只留空图臂）。
         if !force && self.growth_stalled(course_id).await? {
