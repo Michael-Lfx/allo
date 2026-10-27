@@ -4,6 +4,7 @@ import type {
   BasisView,
   CalendarStats,
   CheckinStatus,
+  ConceptAuditReport,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
@@ -77,6 +78,13 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
       {}
     ),
+  // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
+  // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作
+  growthVerdict: (courseId: string) =>
+    httpRequest<import('./types').GrowthVerdictView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/growth/verdict`
+    ),
   // 学习记录：批次时间线（倒序）
   graphHistory: (courseId: string) =>
     httpRequest<GraphHistoryView>(
@@ -88,6 +96,13 @@ export const learningApi = {
     httpRequest<GraphConceptRowView[]>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+  // 缺口片段/自指/互指环；概念表行级标记的数据源
+  conceptAudit: (courseId: string) =>
+    httpRequest<ConceptAuditReport>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/concepts/audit`
     ),
   // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
   // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口

@@ -28,10 +28,14 @@
 pub mod advice_alias;
 pub mod alias_records;
 pub mod basis_declaration;
+pub mod definition_audit;
 pub mod defnear;
 pub mod growth_contract;
 pub mod growth_retry;
+pub mod lexicon;
+pub mod mint_evidence;
 pub mod mounting;
+pub mod provenance;
 pub mod structure_contract;
 pub mod structure_gen;
 pub mod structure_ops;
@@ -54,6 +58,53 @@ pub(crate) const READY_TRIGGER: usize = 3;
 
 /// 单批新增节点上限（提示词与门同源，超过整批拒收）。
 pub(crate) const MAX_BATCH_NODES: usize = 5;
+
+// ── Auto Refill（自动补批判定，m10）────────────────────────────────────────
+
+/// 自动补批判定三态（learnhub 同名域中立化，m6 定案）：阈值仍是
+/// [`READY_TRIGGER`]（无新量纲）、无暂停线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRefillVerdict {
+    /// 面不够：就绪存量低于触发水位，补一批。
+    Due,
+    /// 水位以上：就绪存量不低于触发水位，无需补批。
+    BelowThreshold,
+    /// 开关关闭：设置开关与环境闸任一关闭（合力 false）即 Disabled。
+    Disabled,
+}
+
+impl AutoRefillVerdict {
+    /// 读数面的机器名（裁决端点与 smoke 读数行同源）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Due => "due",
+            Self::BelowThreshold => "below_threshold",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// 自动补批判定纯函数（裁决纯读零 LLM）：输入就绪存量与开关合力
+/// （设置 ∧ 环境闸）。裁决日志必带 ready 数字（一行）。
+pub fn auto_refill_verdict(ready_count: usize, enabled: bool) -> AutoRefillVerdict {
+    let verdict = if !enabled {
+        AutoRefillVerdict::Disabled
+    } else if ready_count < READY_TRIGGER {
+        AutoRefillVerdict::Due
+    } else {
+        AutoRefillVerdict::BelowThreshold
+    };
+    tracing::info!("auto_refill: ready={ready_count} verdict={}", verdict.as_str());
+    verdict
+}
+
+/// 环境闸读数（`NOMI_LEARNING_AUTO_REFILL`）：off/0/false = 关（verdict 恒
+/// Disabled）；未设或其它取值 = 开（设置开关正常起作用）。
+pub(crate) fn auto_refill_env_enabled() -> bool {
+    std::env::var(crate::switches::AUTO_REFILL_SWITCH_ENV)
+        .map(|value| !crate::switches::is_auto_refill_disabled_value(&value))
+        .unwrap_or(true)
+}
 
 // ── Tiers ──────────────────────────────────────────────────────────────────
 
@@ -418,6 +469,7 @@ pub(crate) const COACH_SYSTEM: &str = r#"你是一名学习图教练：课程不
 - 名字出处：teaches/assumes 引用的每个概念名，要么照抄登记表/已教账/别名池中的既有名字，要么随批 mints 铸名，要么随批 new_aliases 提名；四处皆无 = 整批被打回。与登记表现有概念同义时改用既有名字，不重复铸名。
 - 选名裁量：引用已教概念时，从别名池里选最贴合本节点角度的名字（投影即命名）；一个新角度确实值得命名时，用 new_aliases 给该概念提名新名（附该名字下的意义与出处）——评审裁决复用后它保留为该概念的活跃别名，下次可直接引用。不要为同一角度造第二个名字。
 - new_aliases 只收「既有概念的新名字」：登记表里没有的东西走 mints 铸名。提名的概念若被裁决为新铸，整批打回——把该提名改写成 mints 再交。
+- 提名定义一物一义（定义原子性）：一条提名只定义一个对象——定义里不得顺带给第二个概念下定义；定义里预设的构件概念，要么单列提名、要么改写绕开。自检验收：把提名拆成两半，各半仍说得出独立定义的 = 捆扎条目，必须拆条。概念严格原子，学习节点允许复合：节点标题综合多个对象合法，但 teaches 的每个概念各自单列提名，不得捆成一个概念条目。
 - 铸名≠供给：mints 只是把名字登记进概念表。本批节点可以 teach 新铸概念（这是铸名的唯一用途），但任何节点都不得 assume 只有本批（兄弟 teaches 或本批铸名）才供给的概念——同批无先后、必须同时就绪，那种依赖整批打回。
 - 缺前提的正路是分层长：节点内容用到的概念既往批次没教过，本批就先长教它的铺垫节点（铸名写进该节点的 teaches），把依赖它的节点留到下一批——而不是削掉前提、空泛化内容，或把依赖链塞进同一批。
 【第一批（花名册为空时）】
@@ -667,17 +719,23 @@ pub(crate) async fn coach_draft(
 /// from the rejected draft that never reached the registry (the 2026-09-29
 /// math-course burn: draft 3 assumed six names it never minted, 16 gate
 /// errors). The repair discipline is point-editing, not re-planning.
+///
+/// `prior_review` = 前轮评审意见的回灌段（m5 #175C 有状态复审；空串 = 首轮
+/// 或开关 off，零注入、字节回到既有形态）。段由 [`prior_review_section`]
+/// 装配：独立注入段 + 反乒乓纪律句（已修不重提、已过不翻案）。
 pub(crate) async fn coach_redraft(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     context: &CoachContext,
     previous: &ProposedBatch,
     problems: &str,
+    prior_review: &str,
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
-        context.render()
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        context.render(),
+        prior_review_section(prior_review)
     );
     let raw = crate::generation::complete_json_coach(
         completer,
@@ -689,6 +747,21 @@ pub(crate) async fn coach_redraft(
     )
     .await?;
     parse_coach_reply(&raw)
+}
+
+/// 前轮评审意见的注入段（m5 #175C 有状态复审）：空 = 首轮/开关 off，零
+/// 注入（重排提示词字节回到既有形态）；非空 = 独立段（不与打回问题并段）
+/// + 反乒乓纪律句（已修不重提、已过不翻案）。
+fn prior_review_section(prior_review: &str) -> String {
+    if prior_review.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n【前轮评审意见（随重试回灌；前轮批已打回未落库，本轮重排后评审会复审）】\n\
+         【反乒乓纪律】已修不重提：前轮已点名、上一稿已按建议修正的地方保持修正，不要回退重写；\
+         已过不翻案：前轮评审已放行的内容不要推翻重改；注意力放本轮打回点的修复与前轮意见的落实上。\n\
+         {prior_review}"
+    )
 }
 
 // ── AI concept review (advisory-but-blocking once) ─────────────────────────
@@ -729,6 +802,40 @@ const CRITERION_ONE_V2: &str = r#"1. 挂号充分（子查：登记表外名词�
 
 /// 判据①（k07 旧版，off 臂原样）：改版前的并句措辞，逐字保留。
 const CRITERION_ONE_V1: &str = r#"1. 挂号充分：节点标题与 purpose 里出现的每个领域名词，要么已教（已教账或本批 teaches）、要么已假定（本节点 assumes）、要么随批铸名、要么属于课程外的通用常识。「简单」不等于常识——课程内的基础概念也要挂号；三处皆无的名词，打回并指名。purpose 里「为后续 X 打基础/铺路」式的方向性提及不算无出处——它描述的是课程路线，不是本节点的内容依赖；本节点内容真正用到 X 才要求挂号。
+"#;
+
+/// 挂号表的程序句（m3）：判据①改为「按表核对」——CRITERION_ONE_V2 的
+/// 框定/四入口措辞保留为表的语义说明，判据的程序出口是结论里的
+/// `term_provenance` 表（learnhub #169「判据在场 ≠ 判据被执行」的程序化
+/// 收口：原则形态下评审员可无声放行，程序形态下缺表/行伪至少留痕）。
+const CRITERION_ONE_TABLE_CLAUSE: &str = r#"   - **逐词落行（按表核对，输出硬约束）**：把上面四入口的核对结果逐词落成结论里的 `term_provenance` 挂号表——本批每条 mints 铸名与 new_aliases 提名的**定义**里引用或预设的领域名词逐个一行，行形状与来源四值见下方【挂号表 term_provenance】段。评审接受前机械校验整表：缺表、漏行或行出处对不上 = 结论无效，带死因重试恰一次，仍败按 Degraded 保守放行并留痕。
+"#;
+
+/// 挂号表的输出契约段（m3，织入评审系统提示词尾部）：行形状 + 来源四值 +
+/// 逐字规则 + 同形词盲区注记（#176 真机「次数」案：机械核行只认字面）+
+/// 机械执法语义。词表与 `provenance::TERM_SOURCES` 互钉，改词表须同步。
+const TABLE_OUTPUT_CONTRACT: &str = r#"
+
+【挂号表 term_provenance——输出硬约束】
+- 通过与打回的结论都必须携带 `term_provenance` 数组：批内每条提名至少一行，缺表或某条提名零行 = 结论无效。
+- 每行形状：{ "concept": "提名名", "term": "该提名定义里引用或预设的领域名词", "source": "已教|自教|常识|缺失", "ref": "出处概念名" }。
+- 报**已教**：`ref` 必填，逐字照抄已教账/登记表的正名或别名；ref 写了本批铸名或提名的名字 = 无效——本批产出不是已教出处。
+- 报**自教**：`ref` 必填，逐字照抄本批某节点 teaches 里的概念名；ref 指向本条提名自身 = 循环自证，无效（定义预设的词不由定义自身供给）；提名的名字本身不算 teaches。
+- 报**常识**：不写 `ref`；term 是课程外、无需教学、不承载本课知识功能的通用背景词，「简单」不等于常识。
+- 报**缺失**：查无出处时如实报缺失——不写 `ref`，且该结论必须 pass=false 并在 problems 里指名该名词；标缺失却 pass = 自相矛盾，结论无效。缺失是合法的自认通道，绝不要把查无出处的缺口洗成常识。
+- **常识/缺失行的 term 必须逐字取自该提名定义原文**（可带尾随括注，如「数（直线上点对应的数）」）；已教/自教行写的是定义所预设的概念名，不要求逐字出现在定义里。
+- **同形词盲区注记**：机械核行只认字面、无词义维度——常识行的 term 逐字命中已教账/登记表名池即判事实矛盾，哪怕词义不同；确属同形异义时按已教行挂该名字的 `ref`（机械面绿），词义出入写进 findings 留痕供数据面复核。
+"#;
+
+/// advice 范围条款（m5 #175A，learnhub node-growth-review.md「advice 范围
+/// (点修守卫对齐)」同构）：问题定位与点修守卫的点名集对齐——`node` 字段是
+/// 唯一点名通道，守卫机械比对只认它。两臂（挂号表 on/off）同文：条款管
+/// problems 输出形状，与挂号表面正交。
+const ADVICE_SCOPE_CLAUSE: &str = r#"
+【advice 范围（点修守卫对齐）】
+- 修法需要改动**某个节点**的任何字段（teaches、标题、est、difficulty、assumes）= 该条问题的 `node` 必须填那个节点的标题；要动几个节点就单列几条。
+- 不需要改动任何具体节点的问题（只动随批 mints / new_aliases 提名自身：改写定义、改名字、词条提案），`node` 填空串——批级意见不点名任何节点，advice 也不得要求改动任何节点。
+- advice 文字里提到的节点名不构成点名：点修的机械比对只认各条问题的 `node` 字段，批级意见的修法去动节点 = 整批打回。
 "#;
 
 const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
@@ -776,25 +883,79 @@ fn review_v2_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// 评审系统提示词（k07 开关装配）：头段 + 判据①（新/旧）+ 尾段。
+/// 评审挂号表的运维开关（m3）：置 off/0/false = 不要求 `term_provenance`
+/// 表、不做机械校验（= k07 后行为，off 臂）；未设/其它值 = 开启。开启时
+/// 评审提示词织入表格条款（判据①按表核对）且评审结论接受前机械核对整表。
+pub const REVIEW_PROVENANCE_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_PROVENANCE";
+
+/// 挂号表开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_review_provenance_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 挂号表是否开启（未设/其它值 = 开启）。
+fn review_provenance_enabled() -> bool {
+    std::env::var(REVIEW_PROVENANCE_SWITCH_ENV)
+        .map(|value| !is_review_provenance_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 有状态复审的运维开关（m5 #175C，learnhub ReviewInput.prior_review 同构）：
+/// 置 off/0/false = 评审往返记录不积累、前轮评审意见不随失败回灌重排
+/// （off 臂 = m5 前行为）；未设/其它值 = 开启。机械守卫面（点名守卫全量
+/// 枚举、点名集 node 字段口径）是纯确定性改进，不走开关。
+pub const REVIEW_STATE_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_STATE";
+
+/// 有状态复审开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_review_state_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 有状态复审是否开启（未设/其它值 = 开启）。
+pub(crate) fn review_state_enabled() -> bool {
+    std::env::var(REVIEW_STATE_SWITCH_ENV)
+        .map(|value| !is_review_state_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 挂号表评审整路尝试上限（含首轮；「重试恰一次」= 2，learnhub
+/// REVIEW_MAX_ATTEMPTS 同款）。只作用于挂号表机械校验判「结论不可用」的
+/// 路径（表缺失/行伪/表键解析失败）；调用失败与整体解析失败的降级口径
+/// 维持现状（保守放行，当场生效）——外层 j03 预算与指纹早停不动。
+const REVIEW_PROVENANCE_ATTEMPTS: usize = 2;
+
+/// 评审系统提示词装配（k07 判据①两臂 + m3 挂号表臂 + m5 advice 范围条
+/// 款）：挂号表开 = V2 框定措辞 + 按表核对程序句 + 表输出契约段（V2 off
+/// 不改表臂——V1 并句把「随批铸名」算出处，与表的「批内提名不是出处」矛
+/// 盾）；挂号表关 = k07 后行为原样（表条款与机械校验都不在）。advice 范
+/// 围条款（#175A）两臂同织——它管 problems 输出形状，与挂号表面正交。
 pub(crate) fn concept_review_system() -> String {
+    if review_provenance_enabled() {
+        return format!(
+            "{CONCEPT_REVIEW_HEAD}{CRITERION_ONE_V2}{CRITERION_ONE_TABLE_CLAUSE}{CONCEPT_REVIEW_TAIL}{TABLE_OUTPUT_CONTRACT}{ADVICE_SCOPE_CLAUSE}"
+        );
+    }
     let criterion = if review_v2_enabled() {
         CRITERION_ONE_V2
     } else {
         CRITERION_ONE_V1
     };
-    format!("{CONCEPT_REVIEW_HEAD}{criterion}{CONCEPT_REVIEW_TAIL}")
+    format!("{CONCEPT_REVIEW_HEAD}{criterion}{CONCEPT_REVIEW_TAIL}{ADVICE_SCOPE_CLAUSE}")
 }
 
 /// 评审产出（j04 扩权）：问题条 + 复用裁决。fails-open 降级 = 两者皆空。
 /// j09 findings warn 通道：数据缺陷观察不打回只留痕，与 problems 阻断通道
 /// 并行（调用方落 `learning_structure_findings`，修补回合的输入源）。
+/// `provenance` = 挂号表机械校验读数（smoke rows/invalid/retried/degraded
+/// 的数据源；读数面非门禁）。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ReviewOutcome {
     pub problems: Vec<ReviewProblem>,
     /// 复用裁决（形状已验；候选集归属由调用方机械核验）。
     pub reuse: Vec<ReuseRuling>,
     pub findings: Vec<ReviewFinding>,
+    /// 挂号表机械校验读数（off 臂恒零值）。
+    pub provenance: provenance::ProvenanceReadout,
 }
 
 /// 一条 findings 观察：留痕是线索不是第二真相。
@@ -821,8 +982,13 @@ pub struct NominationPlan {
     pub name: String,
     /// 定义归一化直定宿主（Option；Some = 绕过评审直接复用该概念）。
     pub direct_host: Option<String>,
-    /// 近邻候选集（词面补位保证非空——登记表非空时）。
+    /// 近邻候选集（词面补位保证非空——登记表非空时；m11 起证据标题命中
+    /// 可由代码补入行，basis=「外部证据命中：<标题>」）。
     pub candidates: Vec<defnear::NeighborCandidate>,
+    /// 外部通行名证据（m11，ADR-0030；空 = 无证据——开关关/搜索失败/
+    /// 零结果/非歧义案，照常评审）。只进参考面：随候选集注入通道渲染，
+    /// 判据与输出契约零改动。
+    pub evidence: Vec<mint_evidence::ExternalEvidence>,
 }
 
 /// 结构门产出：语义门错误 + 提名候选装配。
@@ -830,6 +996,9 @@ pub struct NominationPlan {
 pub struct GateOutcome {
     pub errors: Vec<GateError>,
     pub nominations: Vec<NominationPlan>,
+    /// 登记表活跃条目投影（m11 外部证据扩邻的匹配域；`registry_entries()`
+    /// 单源产出，deprecated = 0 已滤）。
+    pub mint_registry: Vec<defnear::RegistryEntry>,
     /// 登记表现存概念 id 全集（评审复用裁决的事实边界：候选集只是可见面，
     /// 裁决宿主只要求在这里存在）。
     pub registry_concept_ids: HashSet<String>,
@@ -840,60 +1009,41 @@ pub struct GateOutcome {
     /// concept_id。撞池下复用是唯一不重命名的合法出路，直接走 j04 落池，
     /// 对应 `ng.mints.collision` 红条已被门面吸收。
     pub auto_reusals: HashMap<String, String>,
+    /// 评审挂号表机械核对的已知名池（m3；小写折叠）：已教账 ∪ 登记表活跃
+    /// 名+别名 ∪ 本批铸名/提名——learnhub 门面同构（known 含本批产出：已教
+    /// 行指向本批提名由校验器单独红）。
+    pub provenance_known: HashSet<String>,
 }
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,
 /// call error, unparseable reply) degrades to an empty outcome — the review
 /// never blocks a structurally valid batch when it cannot run. `candidates`
-/// 是【提名候选集】的渲染文本（j04 复用裁决的可见面）。
+/// 是【提名候选集】的渲染文本（j04 复用裁决的可见面）。`known_names` =
+/// 挂号表机械核对的已知名池（gate_batch 装配：已教账 ∪ 登记表活跃名+别名
+/// ∪ 本批铸名/提名；小写折叠），off 臂不用。
+///
+/// 挂号表臂（m3）：结论接受前机械核对 `term_provenance` 整表——表缺失/
+/// 行伪/表键解析失败 = 结论不可用，**恰一次**带死因重试评审；仍败 =
+/// Degraded 保守放行（评审器故障 ≠ 批缺陷），降级留痕走 findings（调用方
+/// 落 j09 通道）。重试只重掷评审（死因进评审反馈），不动外层 j03 预算。
 pub(crate) async fn concept_review(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     batch: &ProposedBatch,
     context: &CoachContext,
     candidates: &str,
+    known_names: &[String],
 ) -> ReviewOutcome {
+    let provenance_on = review_provenance_enabled();
     let batch_json = serde_json::to_string_pretty(batch).unwrap_or_default();
     let candidates_block = if candidates.trim().is_empty() {
         String::new()
     } else {
         format!("\n\n【提名候选集（复用裁决的机械面；concept_id 用材料里出现过的真实登记表 id）】\n{candidates}")
     };
-    let user = format!(
-        "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
-        context.render()
-    );
-    // JSON 接缝 + thinking ON（g4：全部生成面统一）。
-    let system = concept_review_system();
-    let raw = match crate::generation::complete_json_coach(
-        completer,
-        model_override,
-        &system,
-        &user,
-        crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
-        None,
-    )
-    .await
-    {
-        Ok(raw) => raw,
-        Err(_) => return ReviewOutcome::default(),
-    };
-    // 输出契约（ng.review.*）：verdict 词表 + problems/reuse 形状。评审自身
-    // 不可用（调用失败或违约）→ 保守放行（语义不变：评审不阻断结构合法的
-    // 批次；reuse 随之丢失 = 退化现状）。
-    let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
-        return ReviewOutcome::default();
-    };
-    if growth_contract::validate_review(&value)
-        .into_iter()
-        .any(|violation| !violation.warning)
-    {
-        tracing::warn!(
-            raw_head = %raw.chars().take(400).collect::<String>(),
-            "concept review reply violated its contract — degrading to PASS"
-        );
-        return ReviewOutcome::default();
-    }
+    // 输出契约（ng.review.*）：verdict 词表 + problems/reuse 形状 + 挂号表
+    // 行形状（serde default 容旧包/存量录制；必填性 = 提示词 + 重试执法，
+    // 不走 serde 必填——解析单源容旧）。
     #[derive(Deserialize)]
     struct Verdict {
         #[serde(default)]
@@ -904,24 +1054,154 @@ pub(crate) async fn concept_review(
         reuse: Vec<ReuseRuling>,
         #[serde(default)]
         findings: Vec<ReviewFinding>,
+        /// 挂号表（m3）：缺席 = 空（off 臂与存量形态兼容）。
+        #[serde(default)]
+        term_provenance: Vec<provenance::TermProvenance>,
     }
-    match serde_json::from_value::<Verdict>(value) {
-        Ok(verdict) if verdict.verdict == "reject" => ReviewOutcome {
-            problems: verdict.problems.into_iter().take(8).collect(),
-            // reject 也可能附 reuse（模型把近义铸名裁进 reuse、把其余硬伤放进
-            // problems——2026-10-19 真机实录）。裁决由调用方先行消化：能被裁
-            // 决覆盖的问题剔除，剩余才打回；这里丢弃 reuse 会把模型的正确裁
-            // 决白白烧进重裁循环。
+    fn verdict_outcome(verdict: Verdict, readout: provenance::ProvenanceReadout) -> ReviewOutcome {
+        let accept = |problems: Vec<ReviewProblem>| ReviewOutcome {
+            problems,
             reuse: verdict.reuse,
             findings: verdict.findings,
-        },
-        Ok(verdict) => ReviewOutcome {
+            provenance: readout,
+        };
+        if verdict.verdict == "reject" {
+            // reject 也可能附 reuse（模型把近义铸名裁进 reuse、把其余硬伤放
+            // 进 problems——2026-10-19 真机实录）。裁决由调用方先行消化：能
+            // 被裁决覆盖的问题剔除，剩余才打回；这里丢弃 reuse 会把模型的
+            // 正确裁决白白烧进重裁循环。
+            accept(verdict.problems.into_iter().take(8).collect())
+        } else {
+            accept(Vec::new())
+        }
+    }
+    /// Degraded 保守放行（learnhub ADR-0026 同款）：评审器两连败 ≠ 批缺陷
+    /// ——零 problems，降级留痕进 findings（j09 通道 → k02 水位消费）。
+    fn degraded_outcome(death: &str, readout: provenance::ProvenanceReadout) -> ReviewOutcome {
+        ReviewOutcome {
             problems: Vec::new(),
-            reuse: verdict.reuse,
-            findings: verdict.findings,
-        },
-        _ => ReviewOutcome::default(),
+            reuse: Vec::new(),
+            findings: vec![ReviewFinding {
+                node: String::new(),
+                field: "term_provenance".into(),
+                issue: format!(
+                    "评审挂号表机械校验两连败，结论不可用——按 Degraded 保守放行\
+                     （评审器故障 ≠ 批缺陷）；末次死因：{death}"
+                ),
+                advice: "本批未获挂号表评审背书，留痕供修补回合关注；连续 Degraded 时先查评审模型可用性"
+                    .into(),
+            }],
+            provenance: readout,
+        }
     }
+    let known: HashSet<String> = known_names.iter().map(|name| name.trim().to_lowercase()).collect();
+    let mut feedback = String::new();
+    let mut readout = provenance::ProvenanceReadout::default();
+    let max_attempts = if provenance_on { REVIEW_PROVENANCE_ATTEMPTS } else { 1 };
+    for attempt in 1..=max_attempts {
+        let mut user = format!(
+            "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
+            context.render()
+        );
+        if !feedback.is_empty() {
+            user.push_str(&format!(
+                "\n\n【上一轮评审结论不可用——挂号表机械校验未过，恰一次带死因重试】\n{feedback}\n\
+                 【重试纪律】逐条修正被点名的挂号表行（缺行补行、错出处改出处）；\
+                 problems/reuse/findings 等其余裁决保持稳定，重新输出完整结论 JSON。"
+            ));
+        }
+        // JSON 接缝 + thinking ON（g4：全部生成面统一）。
+        let system = concept_review_system();
+        let raw = match crate::generation::complete_json_coach(
+            completer,
+            model_override,
+            &system,
+            &user,
+            crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
+            None,
+        )
+        .await
+        {
+            Ok(raw) => raw,
+            Err(_) => return ReviewOutcome { provenance: readout, ..ReviewOutcome::default() },
+        };
+        // 评审自身不可用（调用失败或违约）→ 保守放行（语义不变：评审不阻断
+        // 结构合法的批次；reuse 随之丢失 = 退化现状）。
+        let Ok(value) = crate::generation::parse_json_object::<serde_json::Value>(&raw) else {
+            tracing::warn!(
+                raw_head = %raw.chars().take(400).collect::<String>(),
+                "concept review reply is not a single JSON object — degrading to PASS"
+            );
+            return ReviewOutcome { provenance: readout, ..ReviewOutcome::default() };
+        };
+        if growth_contract::validate_review(&value)
+            .into_iter()
+            .any(|violation| !violation.warning)
+        {
+            tracing::warn!(
+                raw_head = %raw.chars().take(400).collect::<String>(),
+                "concept review reply violated its contract — degrading to PASS"
+            );
+            return ReviewOutcome { provenance: readout, ..ReviewOutcome::default() };
+        }
+        let verdict = match serde_json::from_value::<Verdict>(value) {
+            Ok(verdict) => verdict,
+            Err(error) => {
+                if !provenance_on {
+                    tracing::warn!(
+                        error = %error,
+                        "concept review reply shape drifted — degrading to PASS"
+                    );
+                    return ReviewOutcome { provenance: readout, ..ReviewOutcome::default() };
+                }
+                // 词表外 source 等形状缺陷 = 机械校验看不到的表伪形态，与
+                // 行伪同路：恰一次带死因重试（learnhub「结论不可解析」同款）。
+                readout.invalid += 1;
+                let death = format!("挂号表不可用：结论不可解析（表形状缺陷）：{error}");
+                if attempt < max_attempts {
+                    readout.retried = 1;
+                    feedback = death;
+                    tracing::warn!(attempt, "provenance table unparseable — retrying the review once");
+                    continue;
+                }
+                tracing::warn!(death = %death, "provenance table unusable twice — degraded pass");
+                readout.degraded = true;
+                return degraded_outcome(&death, readout);
+            }
+        };
+        if !provenance_on {
+            return verdict_outcome(verdict, readout);
+        }
+        match provenance::validate_term_provenance(
+            &verdict.term_provenance,
+            verdict.verdict == "pass",
+            batch,
+            &known,
+        ) {
+            Ok(rows) => {
+                readout.rows = rows;
+                return verdict_outcome(verdict, readout);
+            }
+            Err(reason) => {
+                readout.invalid += 1;
+                let death = format!("挂号表不可用:{reason}");
+                if attempt < max_attempts {
+                    readout.retried = 1;
+                    feedback = death;
+                    tracing::warn!(
+                        attempt,
+                        reason = %reason,
+                        "provenance validation failed — retrying the review once with the death cause"
+                    );
+                    continue;
+                }
+                tracing::warn!(death = %death, "provenance table unusable twice — degraded pass");
+                readout.degraded = true;
+                return degraded_outcome(&death, readout);
+            }
+        }
+    }
+    unreachable!("review attempts loop always returns inside the body")
 }
 
 /// Render the review problems for the redraft prompt.
@@ -1342,6 +1622,40 @@ mod tests {
         ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
     }
 
+    // ── Auto Refill（m10）────────────────────────────────────────────────────
+
+    /// 裁决三态（m6 定案阈值不动：READY_TRIGGER=3）：就绪 ≥ 触发水位 =
+    /// BelowThreshold（水位以上，无需补批）；就绪 < 水位 = Due（面不够，
+    /// 补一批）；开关合力 false = Disabled（恒，水位以下也不再补）。
+    #[test]
+    fn auto_refill_verdict_three_states() {
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER, true),
+            AutoRefillVerdict::BelowThreshold
+        );
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER + 2, true),
+            AutoRefillVerdict::BelowThreshold
+        );
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER - 1, true),
+            AutoRefillVerdict::Due
+        );
+        assert_eq!(auto_refill_verdict(0, true), AutoRefillVerdict::Due);
+        assert_eq!(auto_refill_verdict(0, false), AutoRefillVerdict::Disabled);
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER - 1, false),
+            AutoRefillVerdict::Disabled
+        );
+        // 读数面机器名（端点/smoke 读数行同源）。
+        assert_eq!(AutoRefillVerdict::Due.as_str(), "due");
+        assert_eq!(
+            AutoRefillVerdict::BelowThreshold.as_str(),
+            "below_threshold"
+        );
+        assert_eq!(AutoRefillVerdict::Disabled.as_str(), "disabled");
+    }
+
     #[test]
     fn tier_ordering_is_know_apply_teach() {
         assert!(ConceptTier::Know < ConceptTier::Apply);
@@ -1520,7 +1834,8 @@ mod tests {
             vec![reference("二进制数", ConceptTier::Apply)],
             vec![],
         )]);
-        let review = concept_review(&completer, None, &batch, &CoachContext::default(), "").await;
+        let review =
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[]).await;
         assert_eq!(review.problems.len(), 2, "{review:?}");
         assert_eq!(review.reuse.len(), 1, "{review:?}");
         assert_eq!(review.reuse[0].name, "二进制数");
@@ -1544,6 +1859,8 @@ mod tests {
         }
         let previous = std::env::var(REVIEW_V2_SWITCH_ENV).ok();
         let _restore = Restore(previous);
+        // 本测试锁 k07 两臂措辞：把 m3 挂号表臂固定在 off（表臂有自己的测试）。
+        let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
 
         unsafe { std::env::set_var(REVIEW_V2_SWITCH_ENV, "on") };
         let system = concept_review_system();
@@ -1578,6 +1895,54 @@ mod tests {
         for value in ["on", "1", "true", "", "disable"] {
             assert!(!is_review_v2_disabled_value(value));
         }
+    }
+
+    /// m3 挂号表臂：评审系统提示词织入表格条款——判据①改「按表核对」（V2
+    /// 框定/四入口措辞保留为表的语义说明）+ 输出契约段（来源四值/逐字规则/
+    /// 同形词盲区）。条款覆盖短语断言：改词表/删条款 = 本测试红。
+    #[test]
+    #[serial_test::serial]
+    fn provenance_arm_weaves_the_table_contract_into_the_review_prompt() {
+        let _provenance = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let _v2 = set_env(REVIEW_V2_SWITCH_ENV, "on");
+        let system = concept_review_system();
+        for phrase in [
+            // 表键与来源四值（缺失承重）。
+            "term_provenance",
+            "已教|自教|常识|缺失",
+            // 判据①程序句（V2 框定措辞保留为语义说明）。
+            "逐词落行",
+            "登记表外名词",
+            "批内提名本身不是出处",
+            "内嵌的上位词同样在审",
+            // 机械核对条款的提示词面：循环自证/本批提名不当已教出处/缺失
+            // 自认通道/逐字落地/全覆盖/结论无效。
+            "循环自证",
+            "本批产出不是已教出处",
+            "洗成常识",
+            "逐字取自该提名定义原文",
+            "至少一行",
+            "结论无效",
+            // 同形词盲区注记（#176）。
+            "同形词盲区",
+        ] {
+            assert!(system.contains(phrase), "挂号表臂缺「{phrase}」");
+        }
+        // 表臂不出现 V1 旧并句（V1 把「随批铸名」算出处，与表矛盾）。
+        assert!(!system.contains("三处皆无的名词"));
+
+        // off 臂零表条款：不要求表 = k07 后行为（提示词与机械校验都不在）。
+        let _off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let plain = concept_review_system();
+        for phrase in [
+            "term_provenance",
+            "已教|自教|常识|缺失",
+            "逐词落行",
+            "同形词盲区",
+        ] {
+            assert!(!plain.contains(phrase), "off 臂不得出现「{phrase}」");
+        }
+        assert!(plain.contains("登记表外名词"), "off 臂照常走 V2 措辞");
     }
 
     /// k07 挂号 finding 走通 j09 warn 留痕通道的解析面：pass 结论附带的
@@ -1625,11 +1990,359 @@ mod tests {
             serde_json::to_string(&reply).unwrap(),
         )));
         let batch = batch_of(vec![node("校准研磨度", vec![], vec![])]);
-        let review = concept_review(&completer, None, &batch, &CoachContext::default(), "").await;
+        let review =
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[]).await;
         assert!(review.problems.is_empty(), "pass 不阻断：{review:?}");
         assert_eq!(review.findings.len(), 1, "{review:?}");
         assert!(review.findings[0].issue.contains("内嵌的上位词"));
         assert_eq!(review.findings[0].node, "校准研磨度");
+    }
+
+    // ── 评审挂号表 term_provenance（m3）：恰一次带死因重试 → Degraded ──────
+
+    /// 脚本化评审 completer：按序吐回包并记录每次 prompt（重试反馈的死因
+    /// 断言面）。
+    struct ScriptedReview(std::sync::Mutex<(std::vec::IntoIter<String>, Vec<String>)>);
+    #[async_trait::async_trait]
+    impl LearningCompleter for ScriptedReview {
+        async fn complete(
+            &self,
+            _: Option<(&str, &str)>,
+            _: &str,
+            _: &str,
+            _: u32,
+        ) -> Result<String, nomifun_common::AppError> {
+            unreachable!("review only uses the json seam")
+        }
+        async fn complete_json_with_thinking(
+            &self,
+            _: Option<(&str, &str)>,
+            system: &str,
+            user: &str,
+            _: u32,
+            _: Option<f32>,
+        ) -> Result<String, nomifun_common::AppError> {
+            let mut guard = self.0.lock().unwrap();
+            guard.1.push(format!("{system}\n\x1f{user}"));
+            guard
+                .0
+                .next()
+                .ok_or_else(|| nomifun_common::AppError::Internal("script exhausted".into()))
+        }
+    }
+
+    /// 挂号表集成测试批：节点 teaches「所有权」（自教域），铸名「借用」
+    /// （定义含 所有权/引用/作用域）。
+    fn review_batch_with_mint() -> ProposedBatch {
+        ProposedBatch {
+            nodes: vec![node("判读借用", vec![reference("所有权", ConceptTier::Know)], vec![])],
+            mints: vec![ConceptMint {
+                canonical: "借用".into(),
+                aliases: Vec::new(),
+                definition: "所有权不变式下多读一写：引用随作用域在编译期检查。".into(),
+                source: None,
+            }],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        }
+    }
+
+    fn pass_with_table(rows: serde_json::Value) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "problems": [],
+            "term_provenance": rows,
+        }))
+        .unwrap()
+    }
+
+    fn legal_table() -> serde_json::Value {
+        serde_json::json!([
+            { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
+            { "concept": "借用", "term": "作用域", "source": "常识" }
+        ])
+    }
+
+    /// 环境守卫：评审开关是进程全局态（`#[serial]` 互斥 + Drop 恢复原值）。
+    fn set_env(env_var: &'static str, value: &str) -> impl Drop {
+        struct Restore(&'static str, Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(value) => unsafe { std::env::set_var(self.0, value) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let previous = std::env::var(env_var).ok();
+        unsafe { std::env::set_var(env_var, value) };
+        Restore(env_var, previous)
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn missing_table_retries_once_then_degrades_with_finding() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![
+                serde_json::to_string(&serde_json::json!({ "verdict": "pass", "problems": [] })).unwrap(),
+                serde_json::to_string(&serde_json::json!({ "verdict": "pass", "problems": [] })).unwrap(),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+        )
+        .await;
+        // Degraded 保守放行：零 problems（评审器故障 ≠ 批缺陷），降级留痕
+        // 走 findings（调用方落 j09 通道 → k02 水位消费）。
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.reuse.is_empty(), "{review:?}");
+        assert_eq!(review.findings.len(), 1, "降级必须留痕：{review:?}");
+        assert!(
+            review.findings[0].issue.contains("Degraded") && review.findings[0].issue.contains("缺挂号表行"),
+            "留痕带死因：{:?}",
+            review.findings[0]
+        );
+        assert_eq!(
+            review.provenance,
+            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true }
+        );
+        let prompts = &completer.0.lock().unwrap().1;
+        assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
+        assert!(prompts[1].contains("缺挂号表行"), "次轮须携带死因：{}", prompts[1]);
+        assert!(prompts[1].contains("挂号表不可用"), "次轮须点名挂号表：{}", prompts[1]);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn first_invalid_second_valid_recovers_with_rows() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![
+                serde_json::to_string(&serde_json::json!({ "verdict": "pass", "problems": [] })).unwrap(),
+                pass_with_table(legal_table()),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+        )
+        .await;
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.findings.is_empty(), "恢复则不留痕：{review:?}");
+        assert_eq!(
+            review.provenance,
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false }
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn off_arm_requires_no_table_and_makes_one_call() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![
+                serde_json::to_string(&serde_json::json!({ "verdict": "pass", "problems": [] })).unwrap(),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+        )
+        .await;
+        // off 臂 = k07 后行为：不要求表、不做机械校验，缺表照常放行。
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.findings.is_empty(), "{review:?}");
+        assert_eq!(
+            review.provenance,
+            provenance::ProvenanceReadout::default(),
+            "off 臂零校验零读数"
+        );
+        assert_eq!(completer.0.lock().unwrap().1.len(), 1, "off 臂单次调用");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn unparseable_source_word_is_a_retryable_table_defect() {
+        // 词表外 source = 机械校验看不到的表伪形态（serde 解析失败），与行伪
+        // 同路：恰一次带死因重试。
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![
+                pass_with_table(serde_json::json!([
+                    { "concept": "借用", "term": "作用域", "source": "大概会" }
+                ])),
+                pass_with_table(legal_table()),
+            ]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+        )
+        .await;
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.findings.is_empty(), "次轮干净结论恢复：{review:?}");
+        assert_eq!(
+            review.provenance,
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false }
+        );
+        let prompts = &completer.0.lock().unwrap().1;
+        assert!(
+            prompts[1].contains("挂号表不可用"),
+            "次轮须携带表形状缺陷死因：{}",
+            prompts[1]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provenance_switch_value_predicate_follows_off_convention() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(REVIEW_PROVENANCE_SWITCH_ENV, value) },
+                    None => unsafe { std::env::remove_var(REVIEW_PROVENANCE_SWITCH_ENV) },
+                }
+            }
+        }
+        let _restore = Restore(std::env::var(REVIEW_PROVENANCE_SWITCH_ENV).ok());
+        for value in ["off", "OFF", "0", "false", " False "] {
+            assert!(is_review_provenance_disabled_value(value), "{value:?} 关闭");
+        }
+        for value in ["on", "1", "true", "", "disable"] {
+            assert!(!is_review_provenance_disabled_value(value), "{value:?} 不关闭");
+        }
+        // 未设 = 开启（默认臂）。
+        unsafe { std::env::remove_var(REVIEW_PROVENANCE_SWITCH_ENV) };
+        assert!(review_provenance_enabled());
+        unsafe { std::env::set_var(REVIEW_PROVENANCE_SWITCH_ENV, "off") };
+        assert!(!review_provenance_enabled());
+    }
+
+    /// advice 范围条款（m5 #175A，learnhub node-growth-review「advice 范围
+    /// (点修守卫对齐)」同构）：两臂（挂号表 on/off）同织——条款管 problems
+    /// 输出形状，与挂号表面正交。条款覆盖短语断言：删条款/改措辞 = 本测试红。
+    #[test]
+    #[serial_test::serial]
+    fn advice_scope_clause_is_in_both_review_arms() {
+        let _on = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let system = concept_review_system();
+        for phrase in [
+            "advice 范围（点修守卫对齐）",
+            "该条问题的 `node` 必须填那个节点的标题",
+            "批级意见不点名任何节点",
+            "advice 文字里提到的节点名不构成点名",
+            "只动随批 mints / new_aliases 提名自身",
+        ] {
+            assert!(system.contains(phrase), "on 臂缺「{phrase}」");
+        }
+        let _off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let plain = concept_review_system();
+        for phrase in [
+            "advice 范围（点修守卫对齐）",
+            "批级意见不点名任何节点",
+            "advice 文字里提到的节点名不构成点名",
+        ] {
+            assert!(plain.contains(phrase), "off 臂缺「{phrase}」");
+        }
+    }
+
+    /// 有状态复审开关（m5 #175C）：取值判定只认 off/0/false；未设 = 开启。
+    #[test]
+    #[serial_test::serial]
+    fn review_state_switch_predicate_follows_off_convention() {
+        for value in ["off", "OFF", "0", "false", " False "] {
+            assert!(is_review_state_disabled_value(value), "{value:?} 关闭");
+        }
+        for value in ["on", "1", "true", "", "disable"] {
+            assert!(!is_review_state_disabled_value(value), "{value:?} 不关闭");
+        }
+        let _restore = set_env(REVIEW_STATE_SWITCH_ENV, "on");
+        assert!(review_state_enabled());
+        drop(_restore);
+        let _off = set_env(REVIEW_STATE_SWITCH_ENV, "off");
+        assert!(!review_state_enabled());
+        unsafe { std::env::remove_var(REVIEW_STATE_SWITCH_ENV) };
+        assert!(review_state_enabled(), "未设 = 开启（默认臂）");
+    }
+
+    /// 重排提示词（m5 #175A/#175C）：点名集定义句恒在（#175A 模型面，两臂
+    /// 同文）；前轮评审意见段随 `prior_review` 非空注入（独立段 + 反乒乓纪
+    /// 律句 + 往返记录原文），空 = 零注入、字节回到既有形态（off 臂面）。
+    #[tokio::test]
+    async fn redraft_prompt_carries_point_name_clause_and_prior_review_section() {
+        let history = "第 1 轮评审打回：\n- [teaches] 用定义计算极限: 缺前提（建议：补挂 assumes）";
+        // 空脚本：回包缺失按调用失败处理——prompt 已先记录，装配面照样可断言。
+        let completer = ScriptedReview(std::sync::Mutex::new((Vec::new().into_iter(), Vec::new())));
+        let previous = batch_of(vec![node(
+            "用定义计算极限",
+            vec![reference("极限", ConceptTier::Know)],
+            vec![],
+        )]);
+        let _ = coach_redraft(
+            &completer,
+            None,
+            &CoachContext::default(),
+            &previous,
+            "- [teaches] 用定义计算极限: 缺前提（建议：补挂 assumes）",
+            history,
+        )
+        .await;
+        let _ = coach_redraft(
+            &completer,
+            None,
+            &CoachContext::default(),
+            &previous,
+            "- [ng.refs.resolvable] 节点「甲」引用未铸名概念",
+            "",
+        )
+        .await;
+        let prompts = completer.0.lock().unwrap().1.clone();
+        assert_eq!(prompts.len(), 2);
+        // on 臂面：独立意见段 + 反乒乓纪律 + 往返记录原文 + 点名集定义句。
+        assert!(prompts[0].contains("【前轮评审意见"), "on 臂须带意见段：{}", prompts[0]);
+        assert!(prompts[0].contains("已修不重提") && prompts[0].contains("已过不翻案"));
+        assert!(prompts[0].contains("第 1 轮评审打回") && prompts[0].contains("补挂 assumes"));
+        // off 臂面（prior 为空）：零注入，意见段不在；点名集定义句恒在。
+        assert!(
+            !prompts[1].contains("前轮评审意见") && !prompts[1].contains("已修不重提"),
+            "空 prior 零注入：{}",
+            prompts[1]
+        );
+        for prompt in &prompts {
+            assert!(
+                prompt.contains("点名集 = 打回问题清单各条的 node 字段"),
+                "点名集定义句恒在：{prompt}"
+            );
+            assert!(prompt.contains("批级意见不点名任何节点"));
+            assert!(prompt.contains("不构成点名"));
+        }
     }
 
     #[test]

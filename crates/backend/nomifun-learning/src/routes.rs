@@ -50,12 +50,20 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(grow_learning_graph),
         )
         .route(
+            "/api/learning/courses/{id}/growth/verdict",
+            get(growth_verdict),
+        )
+        .route(
             "/api/learning/courses/{id}/graph/history",
             get(graph_history),
         )
         .route(
             "/api/learning/courses/{id}/graph/concepts",
             get(graph_concepts),
+        )
+        .route(
+            "/api/learning/courses/{id}/concepts/audit",
+            get(concept_audit),
         )
         .route(
             "/api/learning/courses/{id}/graph/structure/regenerate",
@@ -301,6 +309,23 @@ async fn grow_learning_graph(
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
 }
 
+/// 自动补批判定（m10 触发②）：纯读裁决——就绪存量 × 开关合力 →
+/// due | below_threshold | disabled。零 LLM 零写入，Disabled 臂与停摆臂
+/// 如实读数；前端课程工作区加载时据此决定是否自动调既有 POST grow。
+async fn growth_verdict(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::GrowthVerdictView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .growth_verdict(&user.id, &course_id)
+            .await?,
+    )))
+}
+
 async fn graph_history(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -376,6 +401,20 @@ async fn revoke_basis(
     let revoked = state.service.revoke_basis(&user.id, &course_id).await?;
     Ok(Json(ApiResponse::ok(
         serde_json::json!({ "revoked": revoked }),
+    )))
+}
+
+/// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+/// 缺口片段/自指/互指环。「读侧先看见」——审计是缺口标记不是拦截门；
+/// 概念表 Tab 的行级标记数据源。
+async fn concept_audit(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ConceptAuditReport>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_audit(&course_id).await?,
     )))
 }
 

@@ -452,7 +452,7 @@ impl LearningService {
             course_id.as_str(),
             Some(lesson_id.as_str()),
             &format!("课时内容 · {lesson_title}"),
-        )?;
+        ).await?;
         task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
         if row.try_get::<String, _>("course_kind").map_err(internal)?
             == CourseKind::LearningGraph.as_str()

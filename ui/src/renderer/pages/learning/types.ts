@@ -61,11 +61,14 @@ export interface GenerateCourseRequest {
 }
 
 /** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
- * 生长在后台任务执行——注册表让运行对外可发现、可取消。 */
+ * 生长在后台任务执行——注册表让运行对外可发现、可取消。m7 资源闸：
+ * `queued` = 排队中的任务数（闸开时提交先落排队，空闲许可就位才开跑；
+ * off 臂恒 0）。无在跑任务时 `topic` 回退最新排队主题。 */
 export interface LearningGraphGenerationStatus {
   running: boolean;
   topic: string | null;
   elapsed_secs: number | null;
+  queued: number;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
@@ -585,6 +588,22 @@ export interface LearningGraphView {
   growth_running: boolean;
 }
 
+/** 自动补批判定读数（m10 触发②，GET /courses/{id}/growth/verdict，纯读零
+ * 副作用）：与后端 `GrowthVerdictView` 同形。verdict ∈ due（水位以下，前端
+ * 自动补一批）| below_threshold（水位以上）| disabled（开关关，如实）；
+ * stalled = 停摆臂（空图）随行——true 时前端抑制自动补批（ADR-0010）。 */
+export interface GrowthVerdictView {
+  verdict: 'due' | 'below_threshold' | 'disabled';
+  /** 就绪存量（裁决输入原样回显） */
+  ready_count: number;
+  /** 触发水位（与后端 READY_TRIGGER 同源的唯一数字） */
+  trigger: number;
+  /** 开关合力（环境闸 ∧ 设置开关） */
+  enabled: boolean;
+  /** 停摆臂（空图）：自动触发不进入 */
+  stalled: boolean;
+}
+
 /** 结构读侧投影（GET /courses/{id}/graph/structure，always 200）：
  * structure = null 表示知识结构未生成（Missing 合法空状态，生成中态由
  * WS structure_* 事件表达）；投影运行时重算、永不落盘；严格课程内——
@@ -909,6 +928,41 @@ export interface GraphConceptRefView {
   /** 投影名（j04）：节点引用该概念时使用的名字；老行为 null（回退正名） */
   ref_name: string | null;
   status: LessonStatus;
+}
+
+/** 定义审计条目（m9 只读报告）：概念 + 机械点名片段（课程豁免过滤后） */
+export interface ConceptAuditEntry {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  /** 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声） */
+  fragments: string[];
+}
+
+/** 定义审计自指条目：定义含自身正名（ISO 704 禁止） */
+export interface ConceptAuditSelfRef {
+  concept_id: string;
+  name: string;
+}
+
+/** 定义审计互指对（循环定义的最短形态 A↔B） */
+export interface ConceptAuditCycle {
+  a_concept_id: string;
+  a_name: string;
+  b_concept_id: string;
+  b_name: string;
+}
+
+/** 定义审计报告（只读，零 LLM 零写入）：登记表全量 × 用语表三层的机械读数 */
+export interface ConceptAuditReport {
+  /** 审计的概念总数（登记表全量、非废弃） */
+  concept_count: number;
+  /** 有缺口的概念条目（零片段的概念不占行；按片段数降序） */
+  flagged: ConceptAuditEntry[];
+  /** 自指概念（定义含自身正名） */
+  self_refs: ConceptAuditSelfRef[];
+  /** 两两互指（按 (a, b) 字典序） */
+  mutual_cycles: ConceptAuditCycle[];
 }
 
 /** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */
