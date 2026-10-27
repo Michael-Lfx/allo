@@ -805,7 +805,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
     }
 }
 
-/// Build the default `ConversationRouterState` from application services.
+/// Stamp the embedded build info onto the agent engine (once per turn setup).
 fn stamp_trace_build_info() {
     nomifun_ai_agent::set_build_info(trace_build_info());
 }
@@ -821,24 +821,7 @@ fn trace_build_info() -> nomifun_ai_agent::BuildInfo {
     )
 }
 
-#[cfg(test)]
-mod build_info_tests {
-    use super::trace_build_info;
-
-    #[test]
-    fn trace_build_info_identifies_the_source_this_binary_was_built_from() {
-        let info = trace_build_info();
-
-        assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
-        let sha = info.git_sha.expect("tests run inside a git checkout");
-        assert!(
-            sha.len() == 12 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "{sha}"
-        );
-        assert!(info.git_dirty.is_some());
-    }
-}
-
+/// Build the default `ConversationRouterState` from application services.
 pub fn build_conversation_state(
     services: &AppServices,
     cron_service: Option<Arc<nomifun_cron::service::CronService>>,
@@ -2569,6 +2552,19 @@ mod tests {
 
     use crate::AppConfig;
     use nomifun_extension::{ExtensionSource, ScanPath};
+
+    #[test]
+    fn trace_build_info_identifies_the_source_this_binary_was_built_from() {
+        let info = trace_build_info();
+
+        assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
+        let sha = info.git_sha.expect("tests run inside a git checkout");
+        assert!(
+            sha.len() == 12 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{sha}"
+        );
+        assert!(info.git_dirty.is_some());
+    }
 
     #[test]
     fn terminal_exit_notice_rejects_stale_relaunch_epochs() {
