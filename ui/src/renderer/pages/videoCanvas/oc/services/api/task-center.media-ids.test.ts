@@ -247,4 +247,19 @@ describe("collectMediaIds / alloBodyFromCreateInput", () => {
         expect(body.mode).toBe("image");
         expect(body.aspect_ratio).toBe("1:1");
     });
+
+    test("canvas video task keeps the node id so a refresh can reattach it", () => {
+        const body = alloBodyFromCreateInput({
+            type: "canvas_video",
+            projectId: "proj-1",
+            prompt: "a cat walks",
+            input: {
+                mode: "video",
+                prompt: "a cat walks",
+                metadata: { nodeId: "node-video" },
+            },
+        });
+        expect(body.project_id).toBe("proj-1");
+        expect(body.node_id).toBe("node-video");
+    });
 });
