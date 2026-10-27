@@ -588,6 +588,22 @@ export interface LearningGraphView {
   growth_running: boolean;
 }
 
+/** 自动补批判定读数（m10 触发②，GET /courses/{id}/growth/verdict，纯读零
+ * 副作用）：与后端 `GrowthVerdictView` 同形。verdict ∈ due（水位以下，前端
+ * 自动补一批）| below_threshold（水位以上）| disabled（开关关，如实）；
+ * stalled = 停摆臂（空图）随行——true 时前端抑制自动补批（ADR-0010）。 */
+export interface GrowthVerdictView {
+  verdict: 'due' | 'below_threshold' | 'disabled';
+  /** 就绪存量（裁决输入原样回显） */
+  ready_count: number;
+  /** 触发水位（与后端 READY_TRIGGER 同源的唯一数字） */
+  trigger: number;
+  /** 开关合力（环境闸 ∧ 设置开关） */
+  enabled: boolean;
+  /** 停摆臂（空图）：自动触发不进入 */
+  stalled: boolean;
+}
+
 /** 结构读侧投影（GET /courses/{id}/graph/structure，always 200）：
  * structure = null 表示知识结构未生成（Missing 合法空状态，生成中态由
  * WS structure_* 事件表达）；投影运行时重算、永不落盘；严格课程内——
