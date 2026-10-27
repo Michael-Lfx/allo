@@ -203,7 +203,9 @@ fn text(value: &Value, key: &str) -> String {
         .to_owned()
 }
 
-fn build_structure(structure: &Value) -> StructureView {
+/// 结构快照 → 结构视图（纯解析，单源读侧）：已会声明管线复用同一解析路径
+/// 取块 door_refs（m1 AND 命中口径与读侧同源，零第二真相）。
+pub(crate) fn build_structure(structure: &Value) -> StructureView {
     let spines: Vec<SpineView> = structure
         .get("spines")
         .and_then(Value::as_array)
@@ -432,7 +434,9 @@ fn build_structure(structure: &Value) -> StructureView {
     }
 }
 
-fn build_terrain(terrain: &Value, blocks: &[BlockView]) -> Option<TerrainView> {
+/// 地形快照 → 地形视图（纯解析）：已会声明管线复用它取课程门口清单
+/// （勾选 ⊆ 课程门口的校验面与过门自检读侧同源）。
+pub(crate) fn build_terrain(terrain: &Value, blocks: &[BlockView]) -> Option<TerrainView> {
     if !terrain.is_object() {
         return None;
     }

@@ -17,7 +17,7 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
     QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
@@ -81,6 +81,13 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/graph/structure",
             get(get_structure_view),
         )
+        // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点）
+        // + 读数 + 撤销（概念留池）。off 开关 = 409 如实拒绝（service 侧执法）。
+        .route(
+            "/api/learning/courses/{id}/basis/declare",
+            post(declare_basis),
+        )
+        .route("/api/learning/courses/{id}/basis", get(get_basis).delete(revoke_basis))
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}", patch(rename_course))
@@ -351,6 +358,49 @@ async fn graph_concepts(
     let course_id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.graph_concepts(&course_id, &user.id).await?,
+    )))
+}
+
+/// 已会声明（m2）：勾选门口 → 幂等增量铸概念（零节点写）。整个管线同步跑
+/// 在 handler 里（generate_course 先例）：一次结构化 LLM 调用 + 命名门，
+/// 落库在单事务。
+async fn declare_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<DeclareBasisRequest>,
+) -> Result<Json<ApiResponse<crate::models::DeclarationResultView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .declare_basis(&user.id, &course_id, request)
+            .await?,
+    )))
+}
+
+/// 已会声明读数（GET basis）：已声明 doors/blocks/concepts + Broken 降级披露。
+async fn get_basis(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::BasisView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.basis_view(&course_id).await?,
+    )))
+}
+
+/// 撤销本课全部已会声明（删锚行；概念留池——「声明可撤、概念不灭」）。
+async fn revoke_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let revoked = state.service.revoke_basis(&user.id, &course_id).await?;
+    Ok(Json(ApiResponse::ok(
+        serde_json::json!({ "revoked": revoked }),
     )))
 }
 

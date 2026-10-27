@@ -1,7 +1,7 @@
 import { Button, Empty, Tag, Typography } from '@arco-design/web-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { LearningStructureView } from '../../types';
+import type { BasisView, LearningStructureView } from '../../types';
 import { GateCoverage } from './GateCoverage';
 import { MatrixView } from './MatrixView';
 import { Mindmap } from './Mindmap';
@@ -25,19 +25,31 @@ type TabKey = (typeof TABS)[number][0];
  * 真相）；页脚硬标注「投影非权威；层号 = 依赖深度，不是排期」。课程内铁律：
  * 不渲染概念节点、不做块-概念名字匹配。j08 起带挂载三态段（读侧 join，
  * 零第二真相）：三态计数 + stale 显影 + 已挂清单 + 挂载观察 + 挂载按钮。
+ * m2 起过门自检卡带已会声明写侧（勾选门口 → 铸概念；声明读数与动作经
+ * props 单向下传，本组件不持第二份声明状态）。
  */
 export function StructureGraphTab({
   view,
+  basis,
   onMount,
   mounting,
   onRepair,
   repairing,
+  onDeclareBasis,
+  declaringBasis,
+  onRevokeBasis,
+  revokingBasis,
 }: {
   view: LearningStructureView | null;
+  basis?: BasisView | null;
   onMount?: () => void;
   mounting?: boolean;
   onRepair?: () => void;
   repairing?: boolean;
+  onDeclareBasis?: (doors: string[]) => void;
+  declaringBasis?: boolean;
+  onRevokeBasis?: () => void;
+  revokingBasis?: boolean;
 }) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<TabKey>('mindmap');
@@ -140,7 +152,17 @@ export function StructureGraphTab({
         </div>
       )}
 
-      {view.terrain && <GateCoverage structure={structure} terrain={view.terrain} />}
+      {view.terrain && (
+        <GateCoverage
+          structure={structure}
+          terrain={view.terrain}
+          basis={basis ?? null}
+          declaring={declaringBasis}
+          revoking={revokingBasis}
+          onDeclare={onDeclareBasis}
+          onRevoke={onRevokeBasis}
+        />
+      )}
 
       {tab === 'mindmap' && <Mindmap structure={structure} />}
       {tab === 'net' && <RelationNet structure={structure} />}

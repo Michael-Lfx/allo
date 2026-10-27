@@ -1867,6 +1867,14 @@ pub struct GraphConceptRowView {
     pub refs: Vec<GraphConceptRefView>,
     /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
     pub other_courses: Vec<String>,
+    /// 铸造出处（attestation 簿记，068：可空；`basis-declaration` =
+    /// 已会声明铸入——前端据此出「已会声明」来源徽标）。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 本课已会声明覆盖该概念（声明锚反查；无节点也入表——声明概念的
+    /// 表内位置）。
+    #[serde(default)]
+    pub declared: bool,
 }
 
 /// 一条活跃别名（j04）：名字 + 该名字的意义（投影角度定义，缺席 = 与概念
@@ -1891,6 +1899,67 @@ pub struct GraphConceptRefView {
     /// 概念正名）。
     pub ref_name: Option<String>,
     pub status: LessonStatus,
+}
+
+// ── 已会声明（Declared Known，m2 / ADR-0032 移植）────────────────────────
+
+/// 一次声明请求：勾选的地形门口编号（幂等增量——已声明门口自动剔除）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeclareBasisRequest {
+    pub doors: Vec<String>,
+    /// 可选 provider/model 覆盖（与建课/生长同款成对约束）。
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// 一次声明的返回面（幂等空跑 noop = true、全空清单）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DeclarationResultView {
+    pub course_id: LearningCourseId,
+    /// 本次实际声明的门口（差集；noop = 空）。
+    pub doors: Vec<String>,
+    /// 本次命中的目标块显示名（AND 口径；透明面）。
+    pub blocks: Vec<String>,
+    /// 本次铸出或复用的概念。
+    pub concepts: Vec<crate::learning_graph::basis_declaration::DeclaredConceptView>,
+    pub minted: u32,
+    pub reused: u32,
+    /// 幂等空跑（勾选全部已声明）：零 LLM 零写。
+    pub noop: bool,
+    /// 铸造软提示（人面，如清单截断）。
+    pub warnings: Vec<String>,
+}
+
+/// 已会声明读数（GET basis）：本课已声明什么、命中了什么、概念表反查。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisView {
+    pub course_id: LearningCourseId,
+    /// 累计已声明门口（全部锚行并集）。
+    pub doors: Vec<String>,
+    /// 累计命中块 slug（全部锚行并集）。
+    pub blocks: Vec<String>,
+    /// 已声明概念（正名 + 铸造出处；声明可撤、概念不灭的回显面）。
+    pub concepts: Vec<BasisConceptView>,
+    /// 锚行里已无法在登记表解析的概念 id（概念被移除后的 Broken 如实降级
+    /// 计数——不炸、只披露）。
+    pub unresolved_concept_ids: Vec<String>,
+    /// 累计声明次数（锚行数）。
+    pub declarations: u32,
+    /// 机制开关状态（off 时端点 409，读数面照常可读——如实标注）。
+    pub enabled: bool,
+}
+
+/// 已声明概念的一行回显。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisConceptView {
+    pub concept_id: String,
+    pub canonical: String,
+    /// 声明来源标记（恒 `basis-declaration`；来源保留不抹）。
+    pub source: Option<String>,
+    /// 该概念出现在几次声明里。
+    pub declaration_count: u32,
 }
 
 /// 定义审计条目（m9 只读报告）：概念 + 机械点名片段。

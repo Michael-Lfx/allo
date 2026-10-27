@@ -66,6 +66,10 @@ pub use generation::{
 };
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::basis_declaration::{
+    BASIS_DECLARATION_SWITCH_ENV, DECLARATION_SOURCE, DeclaredConceptView,
+    is_basis_declaration_disabled_value,
+};
 pub use learning_graph::AutoRefillVerdict;
 pub use learning_graph::definition_audit;
 pub use learning_graph::lexicon;
@@ -78,9 +82,10 @@ pub use learning_graph::structure_contract::{
 pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, CourseDetail,
-    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, ConceptAuditCycle,
-    ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, DiagnosticItem, DiagnosticPlan,
+    ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, ConceptAuditCycle,
+    ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, CourseDetail,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DeclareBasisRequest,
+    DeclarationResultView, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,

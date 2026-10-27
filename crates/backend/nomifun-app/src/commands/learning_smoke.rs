@@ -92,6 +92,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             provider,
             model,
         } => run_maintenance(cli, db, provider, model).await,
+        LearningSmokeCommand::Basis {
+            db,
+            provider,
+            model,
+        } => run_basis(cli, db, provider, model).await,
         LearningSmokeCommand::Structure {
             goal,
             proficiency,
@@ -3080,4 +3085,373 @@ async fn run_maintenance(
 
     println!("OK  course={course_id} archived={archived_id}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// `learning-smoke basis`（m2，ADR-0032 移植）：已会声明冒烟。种子 = 一门带
+/// 地形门口（G1/G2）与 door_refs 标注块的图课程 + 控制节点（无 assumes，恒
+/// 就绪）。机械判据：
+/// ① off 臂：`NOMI_LEARNING_BASIS_DECLARATION=off` 时声明端点如实拒绝（零 LLM）；
+/// ② 声明（真管线）：登记表增行且**零 learning_lessons / growth_batches
+///    写入**（计数守恒——只铸概念不落节点）、锚行落库、声明概念入概念表读侧；
+/// ③ 下游就绪投影翻转：assume 声明概念的节点由未就绪翻就绪（控制节点恒就绪）；
+/// ④ 幂等重跑：noop、零 LLM（观测存档行数守恒）；
+/// ⑤ 撤销：锚行清零、投影复原、概念留池（来源标记保留不抹）。
+/// 无凭据时步骤 ② 的声明调用如实非零（mount/repair 档先例）。
+async fn run_basis(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 声明走真管线（需要 LLM）；archiving 供零 LLM 判据与调用档案。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let pool = wiring.pool.clone();
+    let now = nomifun_common::now_ms();
+
+    // 种子：图课程（地形门口 G1/G2 + 块 door_refs）+ 控制节点。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let envelope = serde_json::json!({
+        "version": 1,
+        "generated_at": now,
+        "structure": {
+            "goal": "已会声明冒烟目标",
+            "goal_type": "capability",
+            "proficiency_statement": "能独立复述声明判据",
+            "domain": {
+                "core_definition": "声明冒烟",
+                "includes": ["判读"],
+                "excludes": [],
+                "prerequisite_doors": ["G1", "G2"],
+                "audience": "冒烟操作者",
+                "scenarios": ["声明"],
+                "granularity": "主题级",
+            },
+            "spines": [
+                { "name": "主干一", "definition": "d", "key_points": ["k"], "instance": "i" }
+            ],
+            "blocks": [
+                { "name": "块甲", "slug": "block-a", "spine": "主干一", "stage": "入门", "note": "第一块", "door_refs": ["G1"] },
+                { "name": "块乙", "slug": "block-b", "spine": "主干一", "stage": "入门", "note": "第二块", "door_refs": ["G1", "G2"] }
+            ],
+            "edges": []
+        },
+        "terrain": {
+            "learner_basis_assumed": "已具备基础判读",
+            "disclaimer": "冒烟种子地形，仅供门口对账",
+            "doors": [
+                { "id": "G1", "criterion": "判据一", "kind": "hard" },
+                { "id": "G2", "criterion": "判据二", "kind": "self_check" }
+            ]
+        },
+    });
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, structure_json, created_at, updated_at) \
+         VALUES (?, '声明冒烟', '', 'general', 1, 'learning_graph', '已会声明冒烟目标', '', ?, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(serde_json::to_string(&envelope)?)
+    .bind(now)
+    .bind(now)
+    .execute(&pool)
+    .await?;
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '控制节点', '', 'p', 0, 10)",
+    )
+    .bind(nomifun_common::LearningLessonId::new().into_string())
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+
+    let course = nomifun_common::LearningCourseId::parse(&course_id)?;
+    let llm_lines = || {
+        archiving
+            .as_ref()
+            .and_then(|completer| {
+                std::fs::read_to_string(completer.run_dir().join("calls.jsonl")).ok()
+            })
+            .map(|content| content.lines().count())
+            .unwrap_or(0)
+    };
+
+    // ① off 臂：开关 off → 声明端点如实拒绝（零 LLM 零写）。
+    println!("[1/5] off arm: switch rejects the declare endpoint…");
+    let saved = std::env::var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV).ok();
+    unsafe {
+        std::env::set_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV, "off");
+    }
+    let off_error = service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into()],
+                provider_id: None,
+                model: None,
+            },
+        )
+        .await
+        .err();
+    match saved {
+        Some(value) => unsafe {
+            std::env::set_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV, value)
+        },
+        None => unsafe {
+            std::env::remove_var(nomifun_learning::BASIS_DECLARATION_SWITCH_ENV)
+        },
+    }
+    let Some(off_error) = off_error else {
+        anyhow::bail!("off arm must reject the declare endpoint");
+    };
+    anyhow::ensure!(
+        off_error.to_string().contains("已会声明通道已关闭"),
+        "off arm must reject loudly, got {off_error}"
+    );
+    let anchors_after_off: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_basis_declarations")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(anchors_after_off == 0, "off arm must write nothing");
+    println!("  off arm rejected: {off_error}");
+
+    // ② 声明（真管线；无凭据如实非零）。
+    println!("[2/5] declare G1+G2 (real pipeline)…");
+    let registry_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    let (lessons_before, batches_before) = node_and_batch_counts(&pool, &course_id).await?;
+    let declared = match service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into(), "G2".into()],
+                provider_id: provider
+                    .as_deref()
+                    .map(nomifun_common::ProviderId::parse)
+                    .transpose()?,
+                model: model.clone(),
+            },
+        )
+        .await
+    {
+        Ok(declared) => declared,
+        Err(error) => {
+            // 无凭据：声明调用如实非零（判据面 = 管线不可用不被藏起来）。
+            eprintln!("declare FAILED (no credentials?): {error}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    println!(
+        "declare read-out: doors={:?} blocks={:?} minted={} reused={} noop={}",
+        declared.doors, declared.blocks, declared.minted, declared.reused, declared.noop
+    );
+    anyhow::ensure!(!declared.noop, "first declare must not be noop");
+    anyhow::ensure!(
+        !declared.doors.is_empty() && !declared.blocks.is_empty(),
+        "first declare must hit doors and blocks"
+    );
+    anyhow::ensure!(
+        !declared.concepts.is_empty(),
+        "declare must mint or reuse at least one concept"
+    );
+    let registry_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(
+        registry_after > registry_before,
+        "registry must grow ({registry_before} -> {registry_after})"
+    );
+    let (lessons_after, batches_after) = node_and_batch_counts(&pool, &course_id).await?;
+    anyhow::ensure!(
+        (lessons_before, batches_before) == (lessons_after, batches_after)
+            && lessons_after == 1
+            && batches_after == 0,
+        "zero node/batch writes required (lessons {lessons_before}->{lessons_after}, batches {batches_before}->{batches_after})"
+    );
+    let anchors: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(anchors == 1, "one anchor row expected, got {anchors}");
+    // 声明概念入概念表读侧（来源徽标 + declared 旗标）。
+    let concept_rows = service.graph_concepts(&course, &owner).await?;
+    anyhow::ensure!(
+        !concept_rows.is_empty() && concept_rows.iter().all(|row| row.declared),
+        "declared concepts must surface in the concept table read-side"
+    );
+    // 观测存档：声明调用档案在场（task = basis-declaration）。
+    if let Some(archive) = archiving.as_ref() {
+        let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+            .unwrap_or_default();
+        anyhow::ensure!(
+            calls.contains("basis-declaration"),
+            "observation archive must contain the basis-declaration call"
+        );
+    }
+
+    // ③ 下游就绪投影翻转：assume 声明概念的节点由未就绪翻就绪。
+    println!("[3/5] downstream readiness flips via the declared concept…");
+    let minted_id = declared
+        .concepts
+        .iter()
+        .find(|concept| concept.minted)
+        .map(|concept| concept.concept_id.clone())
+        .unwrap_or_else(|| declared.concepts[0].concept_id.clone());
+    let downstream_id = nomifun_common::LearningLessonId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_lessons \
+         (lesson_id, module_id, title, summary, purpose, position, estimated_minutes) \
+         VALUES (?, ?, '下游节点', '', 'assumes the declared concept', 1, 10)",
+    )
+    .bind(&downstream_id)
+    .bind(&module_id)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier) \
+         VALUES (?, ?, 'assumes', 'know')",
+    )
+    .bind(&downstream_id)
+    .bind(&minted_id)
+    .execute(&pool)
+    .await?;
+    let detail = service.course_detail(&course, Some(&owner)).await?;
+    let recommended: Vec<String> = detail
+        .graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .recommended
+                .iter()
+                .map(|lesson| lesson.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    anyhow::ensure!(
+        recommended.iter().any(|lesson| lesson == &downstream_id),
+        "downstream node must be ready after declaration (recommended={recommended:?})"
+    );
+
+    // ④ 幂等重跑：noop、零 LLM。
+    println!("[4/5] idempotent rerun (noop, zero LLM)…");
+    let calls_before = llm_lines();
+    let rerun = service
+        .declare_basis(
+            &owner,
+            &course,
+            nomifun_learning::DeclareBasisRequest {
+                doors: vec!["G1".into(), "G2".into()],
+                provider_id: None,
+                model: None,
+            },
+        )
+        .await?;
+    let calls_after = llm_lines();
+    println!(
+        "rerun read-out: noop={} llm_calls {calls_before}->{calls_after}",
+        rerun.noop
+    );
+    anyhow::ensure!(rerun.noop, "rerun must be noop");
+    anyhow::ensure!(
+        rerun.doors.is_empty() && rerun.concepts.is_empty(),
+        "noop rerun must carry no doors/concepts"
+    );
+    anyhow::ensure!(
+        calls_after == calls_before,
+        "noop rerun must issue zero LLM calls ({calls_before} -> {calls_after})"
+    );
+
+    // ⑤ 撤销：锚行清零、投影复原、概念留池。
+    println!("[5/5] revoke (anchors deleted, projection restored, concepts kept)…");
+    let revoked = service.revoke_basis(&owner, &course).await?;
+    anyhow::ensure!(revoked == 1, "revoke must delete the one anchor row");
+    let anchors_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_basis_declarations WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(anchors_after == 0, "anchors must be gone after revoke");
+    let registry_final: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_concept_registry")
+            .fetch_one(&pool)
+            .await?;
+    anyhow::ensure!(
+        registry_final == registry_after,
+        "concepts must stay in the registry after revoke（声明可撤、概念不灭）"
+    );
+    let source_marks: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_concept_registry WHERE source = 'basis-declaration'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    anyhow::ensure!(
+        source_marks >= 1,
+        "declaration source marks must be preserved"
+    );
+    let detail = service.course_detail(&course, Some(&owner)).await?;
+    let recommended: Vec<String> = detail
+        .graph
+        .as_ref()
+        .map(|graph| {
+            graph
+                .recommended
+                .iter()
+                .map(|lesson| lesson.as_str().to_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    anyhow::ensure!(
+        !recommended.iter().any(|lesson| lesson == &downstream_id),
+        "downstream node must lose readiness after revoke (projection restored)"
+    );
+    // 幂等空撤销。
+    let revoked_again = service.revoke_basis(&owner, &course).await?;
+    anyhow::ensure!(revoked_again == 0, "second revoke must be a no-op");
+
+    println!("OK  course={course_id}");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 课程内节点数与生长批行数（计数守恒判据的读数）。
+async fn node_and_batch_counts(
+    pool: &nomifun_db::sqlx::SqlitePool,
+    course_id: &str,
+) -> anyhow::Result<(i64, i64)> {
+    let lessons: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_lessons l \
+         JOIN learning_modules m ON m.module_id = l.module_id WHERE m.course_id = ?",
+    )
+    .bind(course_id)
+    .fetch_one(pool)
+    .await?;
+    let batches: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?")
+            .bind(course_id)
+            .fetch_one(pool)
+            .await?;
+    Ok((lessons, batches))
 }
