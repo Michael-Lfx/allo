@@ -147,3 +147,35 @@ test('a fresh utterance arriving with the first post-reset epoch is not mistaken
  const after=reconcile(before.state,{snapshot:next,epoch:1});
  expect(content(mergeVoiceTranscript(next,id,[],after.state))).toEqual(['fresh question']);
 });
+
+const persisted=():TMessage[]=>[
+ {message_id:'u-task',msg_id:'u-task',content:{content:'任务进度？'},position:'right'} as TMessage,
+ {message_id:'a-task',msg_id:'a-task',content:{content:'查询任务状态'},position:'left'} as TMessage,
+];
+const answered={...snapshot,conversation:[{...turn,turn_id:'b',user_message_id:'u-task',assistant_message_id:'a-task',user_text:'任务进度？',assistant_text:'任务已完成，结果 42。'}]} as VoiceSnapshot;
+test('a foreign binding cannot rewrite another conversation’s persisted result',()=>{
+ const foreign={...answered,binding:{...answered.binding!,conversation_id:parseConversationId('0190f5fe-7c00-7a00-8000-000000000001')}};
+ expect(content(mergeVoiceTranscript(foreign,id,persisted()))).toEqual(['任务进度？','查询任务状态']);
+});
+test('a blocked turn cannot rewrite a persisted result',()=>{
+ expect(content(mergeVoiceTranscript(answered,id,persisted(),{blockedTurns:new Set(['b'])}))).toEqual(['任务进度？','查询任务状态']);
+});
+test('a cleared instance or late turn cannot rewrite persisted history',()=>{
+ const current={...answered,session_id:'clear-result',binding:{...answered.binding!,session_id:'clear-result'},conversation:[{...answered.conversation![0],session_id:'clear-result'}]};
+ prepareVoiceHistoryReset(current,id)();
+ const late={...current,conversation:[{...current.conversation![0],assistant_text:'迟到的假结果'}]};
+ expect(content(mergeVoiceTranscript(late,id,persisted()))).toEqual(['任务进度？','查询任务状态']);
+ const oldInstance={...late,instance_id:'old-host'};
+ expect(content(mergeVoiceTranscript(oldInstance,id,persisted()))).toEqual(['任务进度？','查询任务状态']);
+});
+test('a missing snapshot leaves durable results untouched and same text with a new id stays distinct',()=>{
+ expect(content(mergeVoiceTranscript(null,id,persisted()))).toEqual(['任务进度？','查询任务状态']);
+ const sameTextDifferentId={...answered,conversation:[{...answered.conversation![0],assistant_message_id:'a-live',assistant_text:'查询任务状态'}]} as VoiceSnapshot;
+ expect(mergeVoiceTranscript(sameTextDifferentId,id,persisted())).toHaveLength(3);
+});
+test('a stale instance cannot add live rows when the current instance is known',()=>{
+ const state={...createLiveVoiceHistory(),instanceId:'host'};
+ const old={...snapshot,instance_id:'old-host'};
+ expect(mergeVoiceTranscript(old,id,[],state)).toEqual([]);
+ expect(content(mergeVoiceTranscript(snapshot,id,[],state))).toEqual(['即时转写','第一句']);
+});

@@ -33,6 +33,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     'Message',
     't',
     'prepareVoiceSession',
+    'discardPendingVoiceCallIntent',
     'localeKey',
   ];
   const compiled = new Bun.Transpiler({ loader: 'ts' }).transformSync(
@@ -47,6 +48,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     info: [] as any[],
     warning: [] as any[],
     error: [] as any[],
+    discard: [] as any[],
     connectingStates: [] as boolean[],
   };
 
@@ -97,6 +99,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
       }
       return { can_start_full_call: true };
     },
+    discardPendingVoiceCallIntent: () => { calls.discard.push(1); },
     localeKey: 'zh-CN',
     ...overrides,
   };

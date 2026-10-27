@@ -36,6 +36,29 @@ impl UserEventSink for ReviewCapturedEvents {
         self.0.lock().unwrap().push(event);
     }
 }
+
+struct TestTitleCompleter;
+#[async_trait::async_trait]
+impl nomifun_ai_agent::conversation_title_completer::ConversationTitleCompleter for TestTitleCompleter {
+    async fn summarize(
+        &self,
+        content: &str,
+        _candidates: &[nomifun_common::ProviderWithModel],
+        _observation_session: Option<std::sync::Arc<nomifun_ai_agent::agent_trace::ObservationSession>>,
+    ) -> Result<nomifun_ai_agent::conversation_title_completer::ConversationTitleResult, AppError> {
+        let title = if content.is_ascii() {
+            "Capital of France"
+        } else {
+            "北京天气查询"
+        };
+        Ok(nomifun_ai_agent::conversation_title_completer::ConversationTitleResult {
+            title: title.into(),
+            llm_call_count: 1,
+            response_channel: None,
+            response_chars: title.chars().count(),
+        })
+    }
+}
 #[tokio::test]
 async fn voice_user_created_event_preserves_the_frozen_memory_owner() {
     let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap()).await.unwrap();
@@ -1724,4 +1747,437 @@ async fn voice_call_reservation_freezes_target_even_when_navigating_and_supports
     assert_eq!(recorder.current_call_reservation().unwrap().request_id,"req-newer","stale cleanup must not consume the newer reservation");
     assert_eq!(recorder.take_call_reservation("req-newer").unwrap().request_id,"req-newer");
     assert!(recorder.current_call_reservation().is_none());
+}
+
+#[tokio::test]
+async fn voice_conversation_locale_titles_and_autotitle_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service_with_models(&["voice-model"]).await;
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path());
+
+    // 1. Chinese provisional conversation gets "语音通话"
+    let target_zh = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+        workspace: None,
+        model: None,
+        preset_id: None,
+    };
+    let (conv_zh_id, _) = recorder.resolve_call_target_with_locale(&target_zh, None, Some("call-zh"), Some("zh-CN")).await.unwrap();
+    let conv_zh = service.get(USER_ID, &conv_zh_id).await.unwrap();
+    assert_eq!(conv_zh.name, "语音通话", "Chinese provisional voice conversation must default to 语音通话");
+    assert_eq!(conv_zh.extra.get("locale").and_then(|v| v.as_str()), Some("zh-CN"));
+
+    // 2. English provisional conversation gets "Voice Call"
+    let target_en = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+        workspace: None,
+        model: None,
+        preset_id: None,
+    };
+    let (conv_en_id, _) = recorder.resolve_call_target_with_locale(&target_en, None, Some("call-en"), Some("en-US")).await.unwrap();
+    let conv_en = service.get(USER_ID, &conv_en_id).await.unwrap();
+    assert_eq!(conv_en.name, "Voice Call", "English provisional voice conversation must default to Voice Call");
+    assert_eq!(conv_en.extra.get("locale").and_then(|v| v.as_str()), Some("en-US"));
+
+    // 3. User manual rename before first turn is preserved
+    service
+        .conversation_repo()
+        .update(
+            &conv_en_id,
+            &nomifun_db::ConversationRowUpdate {
+                name: Some("User Renamed Meeting".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let renamed = service.get(USER_ID, &conv_en_id).await.unwrap();
+    assert_eq!(renamed.name, "User Renamed Meeting");
+
+    // 4. First valid voice turn on the renamed conversation does not overwrite user's custom title
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "call-en".into(),
+        target: target_en.clone(),
+        conversation_id: conv_en_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: nomifun_common::now_ms(),
+    }));
+    recorder.freeze_session("session-en", Some("call-en")).await.unwrap();
+    let mut req_en = VoiceDialogueRequest::scoped("session-en", "turn-en-1", "What is the capital of France?");
+    req_en.call_request_id = Some("call-en".into());
+    req_en.raw_user_text = Some("What is the capital of France?".into());
+    recorder.preflight(&req_en).await.unwrap();
+    recorder.record_pair(&conv_en_id, &req_en, r#"{"intent_type":"chat","reply_tts":"The capital of France is Paris."}"#).await.unwrap();
+
+    // Give autotitle task a moment to process claim
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let after_turn = service.get(USER_ID, &conv_en_id).await.unwrap();
+    assert_eq!(after_turn.name, "User Renamed Meeting", "User manual rename must never be overwritten by voice autotitle");
+
+    // 5a. Without completer configured, autotitle fails gracefully and preserves default "语音通话"
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "call-zh".into(),
+        target: target_zh.clone(),
+        conversation_id: conv_zh_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: nomifun_common::now_ms(),
+    }));
+    recorder.freeze_session("session-zh", Some("call-zh")).await.unwrap();
+    let mut req_zh = VoiceDialogueRequest::scoped("session-zh", "turn-zh-1", "查询明天北京的天气");
+    req_zh.call_request_id = Some("call-zh".into());
+    req_zh.raw_user_text = Some("查询明天北京的天气".into());
+    recorder.preflight(&req_zh).await.unwrap();
+    recorder.record_pair(&conv_zh_id, &req_zh, r#"{"intent_type":"chat","reply_tts":"明天北京晴天。"}"#).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let conv_zh_after = service.get(USER_ID, &conv_zh_id).await.unwrap();
+    // Default title "语音通话" must be preserved when completer fails / is unavailable
+    assert_eq!(conv_zh_after.name, "语音通话", "Default title 语音通话 must be retained when title generation fails");
+    assert_eq!(conv_zh_after.extra.get("autoTitleState").and_then(|v| v.as_str()), Some("failed"));
+
+    // 5b. With title completer configured, default voice title is updated to the generated summary title
+    service.with_title_completer(Arc::new(TestTitleCompleter));
+    let target_en_gen = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+        workspace: None,
+        model: Some(nomifun_api_types::voice::VoiceModelRef {
+            provider_id: USER_ID.into(),
+            model: "voice-model".into(),
+        }),
+        preset_id: None,
+    };
+    let (conv_en_gen_id, _) = recorder.resolve_call_target_with_locale(&target_en_gen, None, Some("call-en-gen"), Some("en-US")).await.unwrap();
+    let conv_en_gen_initial = service.get(USER_ID, &conv_en_gen_id).await.unwrap();
+    assert_eq!(conv_en_gen_initial.name, "Voice Call");
+
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "call-en-gen".into(),
+        target: target_en_gen.clone(),
+        conversation_id: conv_en_gen_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: nomifun_common::now_ms(),
+    }));
+    recorder.freeze_session("session-en-gen", Some("call-en-gen")).await.unwrap();
+    let mut req_en_gen = VoiceDialogueRequest::scoped("session-en-gen", "turn-en-gen-1", "What is the capital of France?");
+    req_en_gen.call_request_id = Some("call-en-gen".into());
+    req_en_gen.raw_user_text = Some("What is the capital of France?".into());
+    recorder.preflight(&req_en_gen).await.unwrap();
+    recorder.record_pair(&conv_en_gen_id, &req_en_gen, r#"{"intent_type":"chat","reply_tts":"The capital of France is Paris."}"#).await.unwrap();
+
+    let conv_en_gen_after = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let conv = service.get(USER_ID, &conv_en_gen_id).await.unwrap();
+            if conv.extra.get("autoTitleState").and_then(|v| v.as_str()) == Some("done") {
+                break conv;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("title task should complete");
+    assert_eq!(conv_en_gen_after.name, "Capital of France", "Generated title must overwrite default Voice Call title");
+
+    // 6. Empty call without user turn keeps default title
+    let target_empty = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+        workspace: None,
+        model: None,
+        preset_id: None,
+    };
+    let (conv_empty_id, _) = recorder.resolve_call_target_with_locale(&target_empty, None, Some("call-empty"), Some("en-US")).await.unwrap();
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: "call-empty".into(),
+        target: target_empty,
+        conversation_id: conv_empty_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: nomifun_common::now_ms(),
+    }));
+    recorder.freeze_session("session-empty", Some("call-empty")).await.unwrap();
+    recorder.finish_call_placeholder(&conv_empty_id, "call-empty").await.unwrap();
+    let conv_empty_after = service.get(USER_ID, &conv_empty_id).await.unwrap();
+    assert_eq!(conv_empty_after.name, "Voice Call", "Empty call without user turn must keep default title");
+}
+
+#[tokio::test]
+async fn reviewer_busy_task_control_without_optional_display_should_not_fail_projection() {
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap(),
+    ).await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let service = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER_ID), std::env::temp_dir(), Arc::new(NullSink),
+        Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry), repo,
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+    let conversation_id = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    let journal = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), journal.path());
+    recorder.active_window_candidate.write().unwrap().conversation_id = Some(conversation_id.clone());
+    let request = VoiceDialogueRequest::scoped("review-session", "review-turn", "情况怎么样？");
+    recorder.preflight(&request).await.unwrap();
+    sqlx::query("UPDATE conversations SET active_turn_operation_id = 'review-active-task' WHERE conversation_id = ?")
+        .bind(&conversation_id).execute(db.pool()).await.unwrap();
+    let decision = r#"{"intent_type":"task_control","task_control_action":"query_status"}"#;
+    assert!(nomifun_api_types::voice::parse_voice_decision(decision).is_ok(), "the production wire contract accepts omitted optional display fields");
+    let result = recorder.record_pair(&conversation_id, &request, decision).await;
+    assert!(result.is_ok(), "a valid status request must not fail solely because it has no precomputed assistant display");
+    let task = task_control_snapshot(&conversation_id, "review-session", "review-turn", "真实结果 42");
+    let scope = nomifun_api_types::voice::VoiceSessionControlRequest {
+        instance_id: "review-instance".into(),
+        session_id: Some("review-session".into()),
+        turn_id: Some("review-turn".into()),
+    };
+    recorder.record_task_control_result(
+        &scope,
+        &nomifun_api_types::voice::VoiceTaskReference::from(&task),
+        Some("情况怎么样？"),
+        None,
+        nomifun_api_types::voice::VoiceTaskControlAction::QueryStatus,
+        &Ok(task),
+    ).await.unwrap();
+    let rows = service.list_messages(USER_ID, &conversation_id, Default::default()).await.unwrap().items;
+    let right = rows.iter().filter(|row| row.position == Some(nomifun_common::MessagePosition::Right)).count();
+    let left = rows.iter().filter(|row| row.position == Some(nomifun_common::MessagePosition::Left)).count();
+    eprintln!("busy task control: user_rows={right}, assistant_rows={left}");
+    assert_eq!(right, 1, "user message must be projected");
+    assert_eq!(left, 1, "the authoritative task result must be projected exactly once");
+    let assistant = rows.iter().find(|row| row.position == Some(nomifun_common::MessagePosition::Left)).unwrap();
+    let assistant_text = assistant.content.get("content").and_then(|value| value.as_str()).unwrap_or_default();
+    assert!(assistant_text.contains("真实结果 42"), "persisted result must be the real task result, not a placeholder: {}", assistant.content);
+}
+
+#[tokio::test]
+async fn reviewer_busy_task_control_with_display_is_a_valid_control_case() {
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap(),
+    ).await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let service = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER_ID), std::env::temp_dir(), Arc::new(NullSink),
+        Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry), repo,
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+    let conversation_id = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    let journal = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), journal.path());
+    recorder.active_window_candidate.write().unwrap().conversation_id = Some(conversation_id.clone());
+    let request = VoiceDialogueRequest::scoped("review-control-session", "review-control-turn", "情况怎么样？");
+    recorder.preflight(&request).await.unwrap();
+    sqlx::query("UPDATE conversations SET active_turn_operation_id = 'review-active-task' WHERE conversation_id = ?")
+        .bind(&conversation_id).execute(db.pool()).await.unwrap();
+    let decision = r#"{"intent_type":"task_control","task_control_action":"query_status","understood_request":"查询任务进度"}"#;
+    assert!(nomifun_api_types::voice::parse_voice_decision(decision).is_ok());
+    let result = recorder.record_pair(&conversation_id, &request, decision).await;
+    assert!(result.is_ok());
+    let task = task_control_snapshot(&conversation_id, "review-control-session", "review-control-turn", "完成：3 项");
+    let scope = nomifun_api_types::voice::VoiceSessionControlRequest {
+        instance_id: "review-instance".into(),
+        session_id: Some("review-control-session".into()),
+        turn_id: Some("review-control-turn".into()),
+    };
+    recorder.record_task_control_result(
+        &scope,
+        &nomifun_api_types::voice::VoiceTaskReference::from(&task),
+        Some("情况怎么样？"),
+        None,
+        nomifun_api_types::voice::VoiceTaskControlAction::QueryStatus,
+        &Ok(task),
+    ).await.unwrap();
+    let rows = service.list_messages(USER_ID, &conversation_id, Default::default()).await.unwrap().items;
+    eprintln!("busy control with display: total_rows={}", rows.len());
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().any(|row| row.position == Some(nomifun_common::MessagePosition::Left)
+        && row.content.get("content").and_then(|value| value.as_str()).is_some_and(|text| text.contains("完成：3 项"))));
+}
+
+fn task_control_snapshot(
+    conversation_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    result_text: &str,
+) -> nomifun_api_types::voice::VoiceTaskSnapshot {
+    nomifun_api_types::voice::VoiceTaskSnapshot {
+        command_id: format!("command-{turn_id}"),
+        session_id: session_id.into(),
+        acoustic_turn_id: turn_id.into(),
+        conversation_id: Some(conversation_id.into()),
+        message_id: Some(format!("message-{turn_id}")),
+        runtime_turn_id: None,
+        status: nomifun_api_types::voice::VoiceTaskStatus::Completed,
+        result_ok: Some(true),
+        result_text: Some(result_text.into()),
+        error_code: None,
+    }
+}
+
+async fn bound_task_control_turn(
+    recorder: &ConversationVoiceDialogueRecorder,
+    request_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    raw_user_text: &str,
+) -> (String, VoiceDialogueRequest) {
+    let target = nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
+        workspace: None, model: None, preset_id: None,
+    };
+    let (conversation_id, _) = recorder
+        .resolve_call_target_with_locale(&target, None, Some(request_id), Some("zh-CN"))
+        .await.unwrap();
+    recorder.set_call_reservation(Some(VoiceCallReservation {
+        request_id: request_id.into(),
+        target,
+        conversation_id: conversation_id.clone(),
+        memory_owner: None,
+        reserved_at_epoch_ms: nomifun_common::now_ms(),
+    }));
+    recorder.freeze_session(session_id, Some(request_id)).await.unwrap();
+    let mut request = VoiceDialogueRequest::scoped(session_id, turn_id, raw_user_text);
+    request.call_request_id = Some(request_id.into());
+    recorder.preflight(&request).await.unwrap();
+    let decision = r#"{"intent_type":"task_control","task_control_action":"query_status"}"#;
+    recorder.record_pair(&conversation_id, &request, decision).await.unwrap();
+    (conversation_id, request)
+}
+
+fn messages_of(rows: &[nomifun_api_types::MessageResponse], position: nomifun_common::MessagePosition) -> Vec<String> {
+    rows.iter()
+        .filter(|row| row.position == Some(position))
+        .filter_map(|row| row.content.get("content").and_then(|value| value.as_str()).map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn task_control_results_are_scoped_persisted_and_idempotent_across_restart() {
+    use nomifun_api_types::voice::{
+        VoiceSessionControlRequest, VoiceTaskControlAction, VoiceTaskReference,
+    };
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap(),
+    ).await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let service = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER_ID), std::env::temp_dir(), Arc::new(NullSink),
+        Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry), repo,
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+    let journal = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), journal.path());
+
+    let (conv_a, _request_a) = bound_task_control_turn(&recorder, "call-a", "session-a", "turn-a", "任务进度？").await;
+    let (conv_b, request_b) = bound_task_control_turn(&recorder, "call-b", "session-b", "turn-b", "任务进度？").await;
+    assert_ne!(conv_a, conv_b);
+
+    let task_a = task_control_snapshot(&conv_a, "session-a", "origin-a", "A 的真实结果");
+    let task_b = task_control_snapshot(&conv_b, "session-b", "origin-b", "B 的真实结果");
+    let scope_a = VoiceSessionControlRequest { instance_id: "instance-a".into(), session_id: Some("session-a".into()), turn_id: Some("turn-a".into()) };
+    let scope_b = VoiceSessionControlRequest { instance_id: "instance-b".into(), session_id: Some("session-b".into()), turn_id: Some("turn-b".into()) };
+
+    // The user question is persisted before any control result exists.
+    let rows_a = service.list_messages(USER_ID, &conv_a, Default::default()).await.unwrap().items;
+    let rows_b = service.list_messages(USER_ID, &conv_b, Default::default()).await.unwrap().items;
+    assert_eq!(messages_of(&rows_a, nomifun_common::MessagePosition::Right), vec!["任务进度？"]);
+    assert!(messages_of(&rows_a, nomifun_common::MessagePosition::Left).is_empty());
+    assert_eq!(messages_of(&rows_b, nomifun_common::MessagePosition::Right), vec!["任务进度？"]);
+
+    // A's task must not be persisted into B's turn, even before B has a result.
+    let cross = recorder.record_task_control_result(
+        &scope_b, &VoiceTaskReference::from(&task_a), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Ok(task_a.clone()),
+    ).await;
+    assert!(matches!(cross, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "task_scope_changed"));
+    let rows_b = service.list_messages(USER_ID, &conv_b, Default::default()).await.unwrap().items;
+    assert!(messages_of(&rows_b, nomifun_common::MessagePosition::Left).is_empty());
+
+    // An unknown result keeps the question and identity without fabricating a reply.
+    let unknown = recorder.record_task_control_result(
+        &scope_b, &VoiceTaskReference::from(&task_b), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Err("task_status_unavailable".into()),
+    ).await;
+    assert!(unknown.is_ok());
+    assert_eq!(
+        recorder.turn_error("session-b", &conv_b, "turn-b").as_ref().map(|error| error.code.as_str()),
+        Some("task_status_unavailable"),
+    );
+    let rows_b = service.list_messages(USER_ID, &conv_b, Default::default()).await.unwrap().items;
+    assert_eq!(messages_of(&rows_b, nomifun_common::MessagePosition::Right), vec!["任务进度？"]);
+    assert!(messages_of(&rows_b, nomifun_common::MessagePosition::Left).is_empty());
+
+    // Interleaved authoritative results stay in their own conversations.
+    recorder.record_task_control_result(
+        &scope_a, &VoiceTaskReference::from(&task_a), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Ok(task_a.clone()),
+    ).await.unwrap();
+    recorder.record_task_control_result(
+        &scope_b, &VoiceTaskReference::from(&task_b), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Ok(task_b.clone()),
+    ).await.unwrap();
+    assert!(recorder.turn_error("session-b", &conv_b, "turn-b").is_none());
+    let rows_a = service.list_messages(USER_ID, &conv_a, Default::default()).await.unwrap().items;
+    let rows_b = service.list_messages(USER_ID, &conv_b, Default::default()).await.unwrap().items;
+    let left_a = messages_of(&rows_a, nomifun_common::MessagePosition::Left);
+    let left_b = messages_of(&rows_b, nomifun_common::MessagePosition::Left);
+    assert_eq!(left_a.len(), 1);
+    assert_eq!(left_b.len(), 1);
+    assert!(left_a[0].contains("A 的真实结果") && !left_a[0].contains("B 的真实结果"));
+    assert!(left_b[0].contains("B 的真实结果") && !left_b[0].contains("A 的真实结果"));
+
+    // Duplicate delivery is idempotent for both the receipt and message rows.
+    recorder.record_task_control_result(
+        &scope_a, &VoiceTaskReference::from(&task_a), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Ok(task_a.clone()),
+    ).await.unwrap();
+    let rows_a_again = service.list_messages(USER_ID, &conv_a, Default::default()).await.unwrap().items;
+    assert_eq!(rows_a_again.len(), rows_a.len());
+    assert_eq!(messages_of(&rows_a_again, nomifun_common::MessagePosition::Right).len(), 1);
+
+    // A fresh recorder sees the same durable journal and can answer from the cached projection.
+    let restarted = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), journal.path());
+    let cached = restarted.preflight(&request_b).await.unwrap();
+    assert!(matches!(cached, VoiceDialoguePreflight::Cached { ref content } if content.contains("B 的真实结果")));
+
+    // A changed admission epoch is a real write guard failure; no fabricated result is added.
+    let (conv_d, _request_d) = bound_task_control_turn(&recorder, "call-d", "session-d", "turn-d", "任务进度？").await;
+    let task_d = task_control_snapshot(&conv_d, "session-d", "origin-d", "D 的真实结果");
+    let scope_d = VoiceSessionControlRequest { instance_id: "instance-d".into(), session_id: Some("session-d".into()), turn_id: Some("turn-d".into()) };
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 1 WHERE conversation_id = ?")
+        .bind(&conv_d).execute(db.pool()).await.unwrap();
+    let failed = recorder.record_task_control_result(
+        &scope_d, &VoiceTaskReference::from(&task_d), Some("任务进度？"), None,
+        VoiceTaskControlAction::QueryStatus, &Ok(task_d),
+    ).await;
+    assert!(matches!(failed, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"));
+    let rows_d = service.list_messages(USER_ID, &conv_d, Default::default()).await.unwrap().items;
+    assert_eq!(messages_of(&rows_d, nomifun_common::MessagePosition::Right), vec!["任务进度？"]);
+    assert!(messages_of(&rows_d, nomifun_common::MessagePosition::Left).is_empty());
+}
+
+#[tokio::test]
+async fn task_control_defers_display_until_the_real_task_result() {
+    let db = nomifun_db::init_database_memory_with_owner(
+        nomifun_common::UserId::parse(USER_ID.to_owned()).unwrap(),
+    ).await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
+    let service = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER_ID), std::env::temp_dir(), Arc::new(NullSink),
+        Arc::new(NoopSkillResolver), Arc::new(EmptyRegistry), repo,
+        Arc::new(SqliteAgentMetadataRepository::new(db.pool().clone())),
+        Arc::new(SqliteAcpSessionRepository::new(db.pool().clone())),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+    let conversation_id = service.ensure_default_voice_conversation(USER_ID).await.unwrap();
+    let journal = tempfile::tempdir().unwrap();
+    let recorder = ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), journal.path());
+    recorder.active_window_candidate.write().unwrap().conversation_id = Some(conversation_id.clone());
+    let request = VoiceDialogueRequest::scoped("defer-session", "defer-turn", "任务进度怎么样？");
+    recorder.preflight(&request).await.unwrap();
+    sqlx::query("UPDATE conversations SET active_turn_operation_id = 'defer-active-task' WHERE conversation_id = ?")
+        .bind(&conversation_id).execute(db.pool()).await.unwrap();
+    let decision = r#"{"intent_type":"task_control","task_control_action":"query_status"}"#;
+    let result = recorder.record_pair(&conversation_id, &request, decision).await;
+    assert!(result.is_ok(), "the user question must be accepted without a fabricated display");
+    let rows = service.list_messages(USER_ID, &conversation_id, Default::default()).await.unwrap().items;
+    let left = rows.iter().filter(|row| row.position == Some(nomifun_common::MessagePosition::Left)).count();
+    let right = rows.iter().filter(|row| row.position == Some(nomifun_common::MessagePosition::Right)).count();
+    assert_eq!(right, 1, "the user question must be persisted");
+    assert_eq!(left, 0, "no assistant placeholder may be persisted before the real task result");
 }

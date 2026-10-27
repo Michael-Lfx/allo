@@ -44,12 +44,14 @@ const invalidatedTurns = (snapshot: VoiceSnapshot | null, conversationId: string
   snapshot && invalidatedWindow?.scope === voiceScope(snapshot, conversationId) ? invalidatedWindow.turns : undefined;
 
 export interface LiveVoiceOptions {
+  instanceId?: string;
   retiredIds?: ReadonlySet<string>;
   blockedTurns?: ReadonlySet<string>;
   waitingTurns?: ReadonlySet<string>;
 }
 export interface LiveVoiceHistory {
   scope: string;
+  instanceId: string;
   epoch: number;
   retiredIds: Set<string>;
   blockedTurns: Set<string>;
@@ -58,7 +60,7 @@ export interface LiveVoiceHistory {
   waitingTurns: Set<string>;
 }
 export const createLiveVoiceHistory = (): LiveVoiceHistory => ({
-  scope: '', epoch: 0, retiredIds: new Set(), blockedTurns: new Set(), receipts: new Map(), observedTurns: new Set(), waitingTurns: new Set(),
+  scope: '', instanceId: '', epoch: 0, retiredIds: new Set(), blockedTurns: new Set(), receipts: new Map(), observedTurns: new Set(), waitingTurns: new Set(),
 });
 
 /** Retirement remains view-local; successful resets also consult the bounded call fence. */
@@ -80,7 +82,7 @@ export function reconcileLiveVoiceHistory(previous: LiveVoiceHistory, args: {
   }
   const activeIds = new Set(turns.flatMap(turn => [turn.user_message_id, turn.assistant_message_id].filter((id): id is string => Boolean(id))));
   const state: LiveVoiceHistory = {
-    scope, epoch, blockedTurns,
+    scope, instanceId: snapshot?.instance_id ?? '', epoch, blockedTurns,
     retiredIds: new Set(sameScope && previous.epoch === epoch ? [...previous.retiredIds].filter(id => activeIds.has(id)) : []),
     receipts: new Map(sameScope && previous.epoch === epoch ? [...previous.receipts].filter(([id]) => activeIds.has(id)) : []),
     observedTurns: new Set(sameScope && previous.epoch === epoch ? [...previous.observedTurns].filter(id=>turns.some(turn=>turn.turn_id===id)) : []),
@@ -115,7 +117,8 @@ export function reconcileLiveVoiceHistory(previous: LiveVoiceHistory, args: {
 /** Live presentation only; durable rows continue to belong to Conversation. */
 export function liveVoiceTurn(snapshot: VoiceSnapshot | null, conversationId: string,
   visibleIds: ReadonlySet<string> = new Set(), options: LiveVoiceOptions = {}): VoiceSnapshot | null {
-  if (!snapshot || snapshot.binding?.conversation_id !== conversationId || snapshot.binding.session_id !== snapshot.session_id) return null;
+  if (!snapshot || (options.instanceId && snapshot.instance_id !== options.instanceId)
+    || snapshot.binding?.conversation_id !== conversationId || snapshot.binding.session_id !== snapshot.session_id) return null;
   const projected = new Set(snapshot.projected_turn_ids ?? []);
   const invalidated = invalidatedTurns(snapshot, conversationId);
   const turns = (snapshot.conversation ?? []).flatMap(turn => {
@@ -152,10 +155,16 @@ export function buildVoiceLiveMessages(snapshot: VoiceSnapshot | null, conversat
 /** Place an unfinished side beside its own durable partner, even when a later turn landed first. */
 export function mergeVoiceTranscript(snapshot: VoiceSnapshot|null, conversationId:ConversationId,
   persisted:readonly TMessage[], options?:LiveVoiceOptions): TMessage[] {
-  const pending=buildVoiceLiveMessages(snapshot,conversationId,persisted,options);
-  if (!pending.length) return persisted as TMessage[];
   const result=[...persisted];
-  const turns=snapshot?.conversation ?? [];
+  // Durable rows are the source of truth. Never rewrite another binding,
+  // session, cleared turn or stale instance from a live snapshot.
+  const scoped = Boolean(snapshot && (!options?.instanceId || snapshot.instance_id === options.instanceId)
+    && snapshot.binding?.conversation_id === conversationId
+    && snapshot.binding.session_id === snapshot.session_id);
+  if (!scoped) return result as TMessage[];
+  const turns=snapshot!.conversation ?? [];
+  const pending=buildVoiceLiveMessages(snapshot,conversationId,result,options);
+  if (!pending.length) return result as TMessage[];
   const indexOf=(id:string|null|undefined)=>id?result.findIndex(row=>row.message_id===id||row.msg_id===id):-1;
   turns.forEach((turn,index)=>{
     const prefix=`voice-live:${conversationId}:${snapshot?.session_id ?? ''}:${turn.turn_id}:`;

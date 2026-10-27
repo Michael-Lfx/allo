@@ -235,11 +235,52 @@ pub struct ConversationVoiceDialogueRecorder {
     journal_lock: Mutex<()>,
     projected_turns: RwLock<std::collections::HashSet<(String, String, String)>>,
     projected_messages: RwLock<std::collections::HashMap<(String, String, String), (Option<String>, String)>>,
+    turn_errors: RwLock<std::collections::HashMap<(String, String, String), VoiceSessionError>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
     pending_call_reservation: RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
 }
 
 impl ConversationVoiceDialogueRecorder {
+    fn trigger_voice_autotitle(&self, conversation_id: &str, user_message_id: &str, raw_user_text: &str) {
+        let trimmed = raw_user_text.trim();
+        if trimmed.is_empty()
+            || !trimmed
+                .chars()
+                .any(|c| c.is_alphanumeric() || ('\u{4e00}'..='\u{9fa5}').contains(&c))
+        {
+            return;
+        }
+        let title_svc = self.conversation_service.clone();
+        let title_conv_id = conversation_id.to_owned();
+        let title_user_msg_id = user_message_id.to_owned();
+        let title_billing_turn_id = user_message_id.to_owned();
+        let title_content = raw_user_text.to_owned();
+        let user_id = self.user_id.clone();
+        tokio::spawn(async move {
+            let conv = title_svc.get(&user_id, &title_conv_id).await.ok();
+            if let Some(ref c) = conv {
+                let name = c.name.trim();
+                if !name.is_empty() && name != "语音通话" && name != "Voice Call" && name != title_content.trim() {
+                    return;
+                }
+            }
+            let title_session_model = conv.and_then(|c| c.model);
+            nomifun_ai_agent::with_flowy_chat_session_id(
+                title_conv_id.clone(),
+                nomifun_ai_agent::with_flowy_billing_turn_id(
+                    title_billing_turn_id,
+                    title_svc.maybe_autotitle(
+                        &title_conv_id,
+                        &title_user_msg_id,
+                        title_content,
+                        title_session_model,
+                    ),
+                ),
+            )
+            .await;
+        });
+    }
+
     pub fn new(
         conversation_service: Arc<nomifun_conversation::ConversationService>,
         user_id: String,
@@ -250,6 +291,7 @@ impl ConversationVoiceDialogueRecorder {
             journal_lock: Mutex::new(()),
             projected_turns: RwLock::new(std::collections::HashSet::new()),
             projected_messages: RwLock::new(std::collections::HashMap::new()),
+            turn_errors: RwLock::new(std::collections::HashMap::new()),
             execution_runtime:None,
             pending_call_reservation: RwLock::new(None),
             conversation_service,
@@ -544,6 +586,21 @@ struct DialogueRecord {
     handoff_content: Option<String>,
     #[serde(default)]
     voice_context_digest: Option<String>,
+    #[serde(default)]
+    control_error: Option<VoiceSessionError>,
+}
+
+fn map_voice_projection_error(error: nomifun_common::AppError) -> VoiceDialogueRecorderError {
+    match error {
+        nomifun_common::AppError::Conflict(ref message) if message.contains("epoch") || message.contains("revision") => {
+            VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into())
+        }
+        nomifun_common::AppError::Conflict(ref message) if message.contains("busy") => {
+            VoiceDialogueRecorderError::BindingBusy(message.clone())
+        }
+        nomifun_common::AppError::Conflict(_) => VoiceDialogueRecorderError::Conflict,
+        other => VoiceDialogueRecorderError::WriteFailed(other.to_string()),
+    }
 }
 
 impl ConversationVoiceDialogueRecorder {
@@ -605,6 +662,10 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
     }
     fn projected_message_ids(&self, session_id: &str, conversation_id: &str, turn_id: &str) -> Option<(Option<String>, String)> {
         self.projected_messages.read().unwrap_or_else(|e|e.into_inner()).get(&(session_id.into(), conversation_id.into(), turn_id.into())).cloned()
+    }
+    fn turn_error(&self, session_id: &str, conversation_id: &str, turn_id: &str) -> Option<VoiceSessionError> {
+        self.turn_errors.read().unwrap_or_else(|e| e.into_inner())
+            .get(&(session_id.into(), conversation_id.into(), turn_id.into())).cloned()
     }
     async fn keyboard_configuration(&self, conversation_id:&str) -> Result<crate::voice_dialogue::FrozenVoiceExecution,String> {
         let conv = self.conversation_service.get(&self.user_id, conversation_id).await.map_err(|_|"binding_invalid")?;
@@ -669,7 +730,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 (config,_) => (config,None),
             };
             let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&id).await.map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
-            records.push(DialogueRecord {request:VoiceDialogueRequest {call_request_id:call_request_id.map(str::to_owned),session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,assistant_message_id:None,handoff_content:None,voice_context_digest:None});
+            records.push(DialogueRecord {request:VoiceDialogueRequest {call_request_id:call_request_id.map(str::to_owned),session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,assistant_message_id:None,handoff_content:None,voice_context_digest:None,control_error:None});
             // Persist and consume under the same identity lock; a newer start cannot be taken here.
             let mut pending = self.pending_call_reservation.write().unwrap_or_else(|e|e.into_inner());
             if pending.as_ref().map(|res|res.request_id.as_str()) != reservation_opt.as_ref().map(|res|res.request_id.as_str()) {
@@ -698,6 +759,14 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             records.iter().filter(|record| record.projected && record.request.session_id.as_deref()==Some(session) && record.conversation_id == binding.conversation_id)
                 .filter_map(|record| record.request.turn_id.clone().map(|turn| (session.into(), binding.conversation_id.clone(), turn)))
         );
+        // A task-control failure is a durable, retryable turn state, not live
+        // assistant text. Rehydrate it after a host restart.
+        for record in records.iter().filter(|record| record.request.session_id.as_deref() == Some(session) && record.conversation_id == binding.conversation_id) {
+            if let (Some(turn), Some(error)) = (&record.request.turn_id, &record.control_error) {
+                self.turn_errors.write().unwrap_or_else(|e| e.into_inner())
+                    .insert((session.into(), binding.conversation_id.clone(), turn.clone()), error.clone());
+            }
+        }
         let conversation = self.conversation_service.get(&self.user_id,&binding.conversation_id).await
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok(Some(nomifun_api_types::voice::VoiceBindingSnapshot {
@@ -709,11 +778,12 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         }))
     }
 
-    async fn resolve_call_target(
+    async fn resolve_call_target_with_locale(
         &self,
         target: &nomifun_api_types::voice::VoiceCallTarget,
         session_mode: Option<&str>,
         request_id: Option<&str>,
+        locale: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         // Share the journal lock with late projections publishing reuse pointers:
         // registry read/modify/write must not lose another workspace's update.
@@ -741,7 +811,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                     .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("voice_start_request_invalid".into()))?;
                 let created = self
                     .conversation_service
-                    .create_provisional_voice_conversation(
+                    .create_provisional_voice_conversation_with_locale(
                         &self.user_id,
                         memory_owner.as_deref(),
                         session_mode,
@@ -749,6 +819,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                         req_id,
                         model.as_ref(),
                         preset_id.as_deref(),
+                        locale,
                     )
                     .await
                     .map_err(|e| match e {
@@ -920,6 +991,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             assistant_message_id: None,
             handoff_content: None,
             voice_context_digest: None,
+            control_error: None,
         });
         // The original ASR, frozen target/config and generation claim precede the model side effect.
         self.save_records(&records)?;
@@ -970,6 +1042,31 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
             return self.save_records(&records);
         }
+        if decision.intent_type == nomifun_api_types::voice::VoiceIntentType::TaskControl {
+            let current_epoch = self.conversation_service.conversation_repo()
+                .get_turn_admission_state(&self.user_id, conversation_id).await
+                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
+            if current_epoch != admission_epoch {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+            let raw_user_text = request.raw_user_text.as_deref().unwrap_or("").trim();
+            if !raw_user_text.is_empty() {
+                let op_id = request.voice_record_id.as_deref().unwrap_or("voice-turn");
+                self.conversation_service.append_voice_message_with_epoch(
+                    &self.user_id, conversation_id, &user_message_id, raw_user_text, op_id, Some(admission_epoch),
+                ).await.map_err(|error| match error {
+                    nomifun_common::AppError::Conflict(ref msg) if msg.contains("epoch") || msg.contains("revision") => {
+                        VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into())
+                    }
+                    nomifun_common::AppError::Conflict(msg) => VoiceDialogueRecorderError::BindingBusy(msg),
+                    other => VoiceDialogueRecorderError::WriteFailed(other.to_string()),
+                })?;
+            }
+            // The real status/cancel result is written by the control boundary.
+            // Never substitute global current-task state or a fixed placeholder.
+            self.save_records(&records)?;
+            return Ok(());
+        }
         let display = decision.reply_tts.as_deref()
             .or(decision.spoken_ack.as_deref())
             .or(decision.understood_request.as_deref())
@@ -986,7 +1083,8 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let op_id = request.voice_record_id.as_deref().unwrap_or("voice-turn");
 
         let is_busy = self.conversation_service.is_conversation_busy(&self.user_id, conversation_id).await.unwrap_or(false);
-        if !is_busy {
+        let has_display = !display.trim().is_empty();
+        if !is_busy && has_display {
             let res = self.conversation_service.project_voice_dialogue_pair_with_user_msg_id(
                 &self.user_id,
                 conversation_id,
@@ -1010,6 +1108,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                         self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(key.clone(), (projection.user_message.map(|row|row.message_id), projection.assistant_message.message_id));
                         self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(key);
                     }
+                    self.trigger_voice_autotitle(conversation_id, &user_message_id, raw_user_text);
                     return Ok(());
                 }
                 Err(nomifun_common::AppError::Conflict(ref msg)) if msg.contains("epoch") || msg.contains("revision") => {
@@ -1022,7 +1121,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             }
         }
 
-        // Busy append fallback:
+        // Busy append fallback (or omitted optional display fields):
         let current_epoch = self.conversation_service.conversation_repo()
             .get_turn_admission_state(&self.user_id, conversation_id).await
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
@@ -1048,32 +1147,233 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             })?;
         }
 
-        let assistant_message_id = self.conversation_service.project_assistant_message_idempotent_with_epoch(
-            &self.user_id,
-            conversation_id,
-            op_id,
-            &display,
-            "voice_companion",
-            Some(admission_epoch),
-            Some(&user_message_id),
-        ).await.map_err(|e| match e {
-            nomifun_common::AppError::Conflict(ref msg) if msg.contains("epoch") || msg.contains("revision") => {
-                VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into())
-            }
-            nomifun_common::AppError::Conflict(msg) => VoiceDialogueRecorderError::BindingBusy(msg),
-            _ => VoiceDialogueRecorderError::WriteFailed(e.to_string()),
-        })?;
+        let assistant_message_id = if has_display {
+            let mid = self.conversation_service.project_assistant_message_idempotent_with_epoch(
+                &self.user_id,
+                conversation_id,
+                op_id,
+                &display,
+                "voice_companion",
+                Some(admission_epoch),
+                Some(&user_message_id),
+            ).await.map_err(|e| match e {
+                nomifun_common::AppError::Conflict(ref msg) if msg.contains("epoch") || msg.contains("revision") => {
+                    VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into())
+                }
+                nomifun_common::AppError::Conflict(msg) => VoiceDialogueRecorderError::BindingBusy(msg),
+                _ => VoiceDialogueRecorderError::WriteFailed(e.to_string()),
+            })?;
+            Some(mid)
+        } else {
+            None
+        };
 
         self.update_workspace_interaction(conversation_id, nomifun_common::now_ms()).await?;
-        records.iter_mut().find(|r|r.request.voice_record_id==request.voice_record_id).unwrap().assistant_message_id = Some(assistant_message_id.clone());
+        records.iter_mut().find(|r|r.request.voice_record_id==request.voice_record_id).unwrap().assistant_message_id = assistant_message_id.clone();
         records.iter_mut().find(|r| r.request.voice_record_id == request.voice_record_id).unwrap().projected = true;
         self.save_records(&records)?;
         if let (Some(session), Some(turn)) = (&request.session_id, &request.turn_id) {
             let key = (session.clone(), conversation_id.to_owned(), turn.clone());
-            self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(key.clone(), (Some(user_message_id), assistant_message_id));
+            self.projected_messages.write().unwrap_or_else(|e|e.into_inner()).insert(key.clone(), (Some(user_message_id.clone()), assistant_message_id.unwrap_or_default()));
             self.projected_turns.write().unwrap_or_else(|e|e.into_inner()).insert(key);
         }
+        self.trigger_voice_autotitle(conversation_id, &user_message_id, raw_user_text);
         Ok(())
+    }
+
+    async fn task_scope_conversation(
+        &self,
+        scope: &nomifun_api_types::voice::VoiceSessionControlRequest,
+    ) -> Result<Option<String>, VoiceDialogueRecorderError> {
+        let session = scope.session_id.as_deref().filter(|value| !value.is_empty())
+            .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("scope_required".into()))?;
+        let turn = scope.turn_id.as_deref().filter(|value| !value.is_empty());
+        let _guard = self.journal_lock.lock().await;
+        let records = self.read_records()?;
+        if let Some(turn) = turn
+            && let Some(record) = records.iter().find(|record| {
+                record.request.session_id.as_deref() == Some(session)
+                    && record.request.turn_id.as_deref() == Some(turn)
+            }) {
+            return Ok(Some(record.conversation_id.clone()));
+        }
+        Ok(records.iter()
+            .find(|record| record.request.session_id.as_deref() == Some(session) && record.request.turn_id.is_none())
+            .map(|record| record.conversation_id.clone()))
+    }
+
+    async fn record_task_control_result(
+        &self,
+        scope: &nomifun_api_types::voice::VoiceSessionControlRequest,
+        task_reference: &nomifun_api_types::voice::VoiceTaskReference,
+        raw_user_text: Option<&str>,
+        locale: Option<&str>,
+        action: nomifun_api_types::voice::VoiceTaskControlAction,
+        result: &Result<nomifun_api_types::voice::VoiceTaskSnapshot, String>,
+    ) -> Result<(), VoiceDialogueRecorderError> {
+        use nomifun_api_types::voice::VoiceTaskStatus;
+        let session = scope.session_id.as_deref().filter(|value| !value.is_empty())
+            .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("scope_required".into()))?;
+        let turn = scope.turn_id.as_deref().filter(|value| !value.is_empty())
+            .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("scope_required".into()))?;
+        let supplied_raw = raw_user_text.map(str::trim).filter(|value| !value.is_empty());
+        let _guard = self.journal_lock.lock().await;
+        let mut records = self.read_records()?;
+
+        let record_index = if let Some(index) = records.iter().position(|record| {
+            record.request.session_id.as_deref() == Some(session)
+                && record.request.turn_id.as_deref() == Some(turn)
+        }) {
+            index
+        } else {
+            let sentinel = records.iter().find(|record| {
+                record.request.session_id.as_deref() == Some(session) && record.request.turn_id.is_none()
+            }).ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("binding_missing".into()))?;
+            let conversation_id = sentinel.conversation_id.clone();
+            let admission_epoch = self.conversation_service.conversation_repo()
+                .get_turn_admission_state(&self.user_id, &conversation_id).await
+                .map_err(|error| VoiceDialogueRecorderError::WriteFailed(error.to_string()))?.epoch;
+            records.push(DialogueRecord {
+                request: VoiceDialogueRequest {
+                    call_request_id: sentinel.request.call_request_id.clone(),
+                    locale: locale.map(str::to_owned),
+                    voice_record_id: Some(format!("voice-{turn}")),
+                    binding_id: Some(format!("voice-binding-{session}")),
+                    session_id: Some(session.into()),
+                    turn_id: Some(turn.into()),
+                    raw_user_text: supplied_raw.map(str::to_owned),
+                    ..Default::default()
+                },
+                conversation_id,
+                admission_epoch,
+                execution: sentinel.execution.clone(),
+                frozen_preset: sentinel.frozen_preset.clone(),
+                source_workspace: sentinel.source_workspace.clone(),
+                output: None,
+                projected: false,
+                command_id: None,
+                requested_at: Some(chrono::Local::now().to_rfc3339()),
+                message_id: Some(nomifun_common::generate_id()),
+                assistant_message_id: None,
+                handoff_content: None,
+                voice_context_digest: None,
+                control_error: None,
+            });
+            records.len() - 1
+        };
+
+        let conversation_id = records[record_index].conversation_id.clone();
+        let admission_epoch = records[record_index].admission_epoch;
+        if let Some(existing_raw) = records[record_index].request.raw_user_text.as_deref().map(str::trim).filter(|value| !value.is_empty())
+            && let Some(supplied) = supplied_raw
+            && existing_raw != supplied {
+            return Err(VoiceDialogueRecorderError::Conflict);
+        }
+        let raw_user_text = supplied_raw
+            .map(str::to_owned)
+            .or_else(|| records[record_index].request.raw_user_text.clone())
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("raw_user_text_missing".into()))?;
+        let current_epoch = self.conversation_service.conversation_repo()
+            .get_turn_admission_state(&self.user_id, &conversation_id).await
+            .map_err(|error| VoiceDialogueRecorderError::WriteFailed(error.to_string()))?.epoch;
+        if current_epoch != admission_epoch {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+
+        // A replay of an already persisted result must not rewrite it with a
+        // newer status snapshot. The first authoritative result owns the turn.
+        if records[record_index].projected && records[record_index].assistant_message_id.is_some() {
+            records[record_index].control_error = None;
+            self.turn_errors.write().unwrap_or_else(|error| error.into_inner())
+                .remove(&(session.to_owned(), conversation_id.clone(), turn.to_owned()));
+            return Ok(());
+        }
+        let user_message_id = records[record_index].message_id.clone()
+            .unwrap_or_else(nomifun_common::generate_id);
+        records[record_index].message_id = Some(user_message_id.clone());
+        let operation_id = records[record_index].request.voice_record_id.clone()
+            .unwrap_or_else(|| format!("voice-{turn}"));
+        self.conversation_service.append_voice_message_with_epoch(
+            &self.user_id, &conversation_id, &user_message_id, &raw_user_text, &operation_id, Some(admission_epoch),
+        ).await.map_err(map_voice_projection_error)?;
+
+        match result {
+            Ok(task) => {
+                if !task_reference.matches(task) {
+                    return Err(VoiceDialogueRecorderError::BindingInvalid("task_receipt_scope_changed".into()));
+                }
+                if task.conversation_id.as_deref() != Some(conversation_id.as_str()) {
+                    return Err(VoiceDialogueRecorderError::BindingInvalid("task_scope_changed".into()));
+                }
+                let is_en = nomifun_api_types::voice::is_english_locale(
+                    records[record_index].request.locale.as_deref().or(locale),
+                );
+                let display = match task.status {
+                    VoiceTaskStatus::Queued => if is_en { "The task is queued, waiting for previous task to finish." } else { "任务已排队，等待上一任务结束。" }.to_string(),
+                    VoiceTaskStatus::Delivering => if is_en { "Submitting the task, receipt verification pending." } else { "任务正在提交，尚未核实接单。" }.to_string(),
+                    VoiceTaskStatus::Unknown => if is_en { "Task status not verified yet, checking receipt." } else { "任务状态尚未核实，正在核对原回执。" }.to_string(),
+                    VoiceTaskStatus::Accepted => if is_en { "Task accepted, waiting for execution results." } else { "任务已接受，正在等待执行结果。" }.to_string(),
+                    VoiceTaskStatus::Cancelling => if is_en { "Cancelling the task, awaiting execution confirmation." } else { "正在取消任务，等待执行侧确认。" }.to_string(),
+                    VoiceTaskStatus::Completed => format!(
+                        "{}{}",
+                        if is_en { "Task completed. " } else { "任务已完成。" },
+                        task.result_text.as_deref().unwrap_or(if is_en { "Please check task details." } else { "请查看任务详情。" }).chars().take(220).collect::<String>(),
+                    ),
+                    VoiceTaskStatus::Failed if action == nomifun_api_types::voice::VoiceTaskControlAction::CancelTask
+                        && task.error_code.as_deref() == Some("task_cancelled") => {
+                        if is_en { "Task cancelled." } else { "任务已取消。" }.to_string()
+                    }
+                    VoiceTaskStatus::Failed => format!(
+                        "{}{}",
+                        if is_en { "Task ended, execution was unsuccessful. " } else { "任务已结束，执行结果未成功。" },
+                        task.result_text.as_deref().unwrap_or(if is_en { "Please check task details for reasons." } else { "请查看任务详情了解原因。" }).chars().take(220).collect::<String>(),
+                    ),
+                };
+                let assistant_message_id = self.conversation_service
+                    .project_assistant_message_idempotent_with_epoch(
+                        &self.user_id, &conversation_id, &operation_id, &display,
+                        "voice_companion", Some(admission_epoch), Some(&user_message_id),
+                    ).await.map_err(map_voice_projection_error)?;
+                records[record_index].output = Some(serde_json::json!({
+                    "intent_type": "task_control",
+                    "task_control_action": action,
+                    "understood_request": raw_user_text,
+                    "reply_tts": display,
+                }).to_string());
+                records[record_index].assistant_message_id = Some(assistant_message_id.clone());
+                records[record_index].projected = true;
+                records[record_index].control_error = None;
+                self.save_records(&records)?;
+                let key = (session.to_owned(), conversation_id.clone(), turn.to_owned());
+                self.projected_messages.write().unwrap_or_else(|error| error.into_inner())
+                    .insert(key.clone(), (Some(user_message_id), assistant_message_id));
+                self.projected_turns.write().unwrap_or_else(|error| error.into_inner()).insert(key.clone());
+                self.turn_errors.write().unwrap_or_else(|error| error.into_inner()).remove(&key);
+                if let Err(error) = self.update_workspace_interaction(&conversation_id, nomifun_common::now_ms()).await {
+                    // The turn is already durable; a workspace-index refresh
+                    // must not turn a successful result into a failed control.
+                    tracing::warn!(error=%error, "voice_task_control_workspace_interaction_deferred");
+                }
+                Ok(())
+            }
+            Err(code) => {
+                // Keep the user question, the original identity and an honest,
+                // retryable error for this turn. Never write fake assistant text.
+                records[record_index].projected = false;
+                records[record_index].control_error = Some(VoiceSessionError {
+                    stage: "task".into(),
+                    code: code.clone(),
+                });
+                self.save_records(&records)?;
+                self.turn_errors.write().unwrap_or_else(|error| error.into_inner()).insert(
+                    (session.to_owned(), conversation_id.clone(), turn.to_owned()),
+                    VoiceSessionError { stage: "task".into(), code: code.clone() },
+                );
+                Ok(())
+            }
+        }
     }
 
     async fn task_configuration(&self,command:&nomifun_api_types::voice::VoiceTaskCommand)->Result<Option<crate::voice_dialogue::FrozenVoiceExecution>,String> {
@@ -1472,6 +1772,7 @@ pub struct VoiceCompanionProcessManager {
     companion_service: Option<Arc<CompanionService>>,
     dialogue_bridge: Mutex<Option<VoiceDialogueBridge>>,
     config_write_lock: std::sync::Mutex<()>,
+    lifecycle_lock: Mutex<()>,
     feedback_update_lock: Mutex<()>,
     child: Arc<Mutex<Option<ManagedChildProcess>>>,
     models_manager: Arc<nomifun_voice_models::ModelManager>,
@@ -2214,6 +2515,7 @@ impl VoiceCompanionProcessManager {
             companion_service: None,
             dialogue_bridge: Mutex::new(None),
             config_write_lock: std::sync::Mutex::new(()),
+            lifecycle_lock: Mutex::new(()),
             feedback_update_lock: Mutex::new(()),
             call_start_lock: tokio::sync::Mutex::new(()),
             handled_start_requests: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -3127,6 +3429,10 @@ impl VoiceCompanionProcessManager {
                         turn.user_message_id = user;
                         turn.assistant_message_id = Some(assistant);
                     }
+                    if turn.error.is_none()
+                        && let Some(error) = recorder.turn_error(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
+                        turn.error = Some(error);
+                    }
                 }
             }
         }
@@ -3689,7 +3995,7 @@ impl VoiceCompanionProcessManager {
         }
 
         let (conversation_id, memory_owner) = recorder
-            .resolve_call_target(&request.target, request.session_mode.as_deref(), Some(&request.request_id))
+            .resolve_call_target_with_locale(&request.target, request.session_mode.as_deref(), Some(&request.request_id), request.locale.as_deref())
             .await
             .map_err(|e| match e {
                 VoiceDialogueRecorderError::WriteFailed(msg) if msg.contains("workspace_directory_invalid") => {
@@ -3823,37 +4129,38 @@ impl VoiceCompanionProcessManager {
         let current_exe=std::env::current_exe().ok();
         if let Some(binary)=Self::installed_voice_companion_binary(bundled_bin.as_deref(),current_exe.as_deref()) {return Some(binary);}
 
-        // 3. Known development build target directories
+        // 3. Known development build target directories (prefer newest binary)
         for exe_name in exe_names {
-            let candidates = [
+            let mut candidates = vec![
                 Path::new("target/debug").join(exe_name),
                 Path::new("target/release").join(exe_name),
                 Path::new("build.noindex/debug").join(exe_name),
                 Path::new("build.noindex/release").join(exe_name),
             ];
 
-            for c in &candidates {
-                if c.is_file() {
-                    return Some(c.clone());
-                }
-            }
-
             // 4. Resolve relative to workspace root if cwd is a sub-crate
             if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-                let root = Path::new(&manifest_dir).ancestors().nth(2);
-                if let Some(r) = root {
+                if let Some(r) = Path::new(&manifest_dir).ancestors().nth(2) {
                     for dir in [
                         "target/debug",
                         "target/release",
                         "build.noindex/debug",
                         "build.noindex/release",
                     ] {
-                        let c = r.join(dir).join(exe_name);
-                        if c.is_file() {
-                            return Some(c);
-                        }
+                        candidates.push(r.join(dir).join(exe_name));
                     }
                 }
+            }
+
+            let mut existing: Vec<PathBuf> = candidates.into_iter().filter(|c| c.is_file()).collect();
+            existing.sort_by_key(|p| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            });
+            if let Some(newest) = existing.pop() {
+                let resolved = std::fs::canonicalize(&newest).unwrap_or(newest);
+                return Some(resolved);
             }
         }
 
@@ -4153,6 +4460,9 @@ impl VoiceCompanionProcessManager {
 
     /// Toggles the companion daemon on or off.
     pub async fn toggle(self: &Arc<Self>, enabled: bool) -> Result<bool, String> {
+        // Serialize the user's enable/disable choice with prepare's
+        // check-start-recheck cycle. A prepare can never stop a newer enable.
+        let _lifecycle = self.lifecycle_lock.lock().await;
         self.write_autostart_config(enabled)?;
         if enabled {
             self.start().await?;
@@ -4228,9 +4538,56 @@ async fn private_task_control(
     let Some(manager)=weak.upgrade() else {return task_api_error("runtime_unavailable".into());};
     if headers.get("x-ai-mate-control-token").and_then(|value|value.to_str().ok())!=Some(manager.control_token.as_str()) {return axum::http::StatusCode::UNAUTHORIZED.into_response();}
     if let Err(code)=manager.private_voice_scope(&request.scope).await {return task_api_error(code);}
-    let request_scope=VoiceTaskControlRequest {instance_id:manager.snapshot().instance_id,task:request.task};
-    match manager.control_task(request_scope,request.action).await {
-        Ok(task) => axum::Json(task).into_response(),Err(code) => task_api_error(code),
+    let raw_user_text = request.raw_user_text.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    // An older daemon may query without the new provenance field. Reads remain
+    // compatible; cancellation still requires the explicit affirmative text.
+    if request.action == VoiceTaskControlAction::CancelTask && raw_user_text.is_none() {
+        return task_api_error("task_control_scope_required".into());
+    }
+    let Some(recorder)=manager.dialogue_recorder.clone() else {
+        return task_api_error("binding_invalid".into());
+    };
+    let conversation=match recorder.task_scope_conversation(&request.scope).await {
+        Ok(Some(conversation))=>conversation,
+        Ok(None)=>return task_api_error("binding_invalid".into()),
+        Err(error)=>return task_api_error(crate::voice_dialogue::record_error_code(&error).into()),
+    };
+    if request.task.conversation_id.as_deref()!=Some(conversation.as_str()) {
+        return task_api_error("task_scope_changed".into());
+    }
+    if request.action==VoiceTaskControlAction::CancelTask
+        && !nomifun_api_types::voice::is_affirmative_cancel_command(raw_user_text.unwrap_or_default()) {
+        return task_api_error("task_control_ambiguous".into());
+    }
+    let request_scope=VoiceTaskControlRequest {instance_id:manager.snapshot().instance_id,task:request.task.clone()};
+    let result=manager.control_task(request_scope,request.action).await;
+    let persistence=match raw_user_text {
+        Some(raw)=>recorder.record_task_control_result(
+            &request.scope,
+            &request.task,
+            Some(raw),
+            request.locale.as_deref(),
+            request.action,
+            &result,
+        ).await,
+        None=>{
+            // Compatibility read-only query: no provenance means the user
+            // question cannot be projected, but the task state is still valid.
+            tracing::warn!("voice_task_control_missing_raw_text");
+            Ok(())
+        }
+    };
+    match result {
+        Ok(task) => match persistence {
+            Ok(()) => axum::Json(task).into_response(),
+            Err(error) => task_api_error(crate::voice_dialogue::record_error_code(&error).into()),
+        },
+        Err(code) => {
+            if let Err(error)=persistence {
+                tracing::warn!(code=crate::voice_dialogue::record_error_code(&error),"voice_task_control_result_not_persisted");
+            }
+            task_api_error(code)
+        }
     }
 }
 
@@ -4624,32 +4981,59 @@ async fn companion_prepare_handler(
     axum::Json(request): axum::Json<nomifun_api_types::voice::VoiceSelfCheckRequest>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    if !manager.status().await.running {
-        if !manager.models_manager.get_status().await.state.is_ready() {
+    let mut started = false;
+    {
+        // Serialize with toggle(): a disable that lands after this check cannot
+        // be overwritten, and a newer enable cannot be stopped by this prepare.
+        let _lifecycle = manager.lifecycle_lock.lock().await;
+        // A prepare is never an enable action. The user's explicit switch in
+        // Settings owns that transition; an unknown/disabled choice must not be
+        // repaired into autostart here.
+        if !manager.read_autostart_config() {
             return (
                 axum::http::StatusCode::CONFLICT,
-                axum::Json(serde_json::json!({
-                    "code": "models_not_installed",
-                    "error": "models_not_installed"
-                })),
+                axum::Json(serde_json::json!({ "code": "voice_disabled", "error": "voice_disabled" })),
             )
                 .into_response();
         }
-        // Explicit user action: persist enabled intent and start the daemon.
-        if manager.write_autostart_config(true).is_err() {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({ "code": "configuration_write_failed" })),
-            )
-                .into_response();
+        if !manager.status().await.running {
+            if !manager.models_manager.get_status().await.state.is_ready() {
+                return (
+                    axum::http::StatusCode::CONFLICT,
+                    axum::Json(serde_json::json!({
+                        "code": "models_not_installed",
+                        "error": "models_not_installed"
+                    })),
+                )
+                    .into_response();
+            }
+            if let Err(error) = manager.start_child(true).await {
+                return (
+                    axum::http::StatusCode::CONFLICT,
+                    axum::Json(serde_json::json!({ "code": "daemon_start_failed", "error": error })),
+                )
+                    .into_response();
+            }
+            started = true;
+            // The user may have disabled voice while the child was starting.
+            if !manager.read_autostart_config() {
+                let _ = manager.stop().await;
+                return (
+                    axum::http::StatusCode::CONFLICT,
+                    axum::Json(serde_json::json!({ "code": "voice_disabled", "error": "voice_disabled" })),
+                )
+                    .into_response();
+            }
         }
-        if let Err(error) = manager.start_child(true).await {
-            return (
-                axum::http::StatusCode::CONFLICT,
-                axum::Json(serde_json::json!({ "code": "daemon_start_failed", "error": error })),
-            )
-                .into_response();
-        }
+    }
+    if !manager.read_autostart_config() {
+        return (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({ "code": "voice_disabled", "error": "voice_disabled" })),
+        )
+            .into_response();
+    }
+    if started {
         for _ in 0..60 {
             let snapshot = manager.snapshot();
             let audio = snapshot.audio.as_ref();
@@ -4664,6 +5048,13 @@ async fn companion_prepare_handler(
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        if !manager.read_autostart_config() {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({ "code": "voice_disabled", "error": "voice_disabled" })),
+            )
+                .into_response();
         }
     }
     match tokio::time::timeout(
@@ -5747,6 +6138,7 @@ mod tests {
             Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
             dir.path(),
         ));
+        manager.write_autostart_config(true).unwrap();
         let app = voice_companion_routes(manager.clone());
         let response = app
             .oneshot(
@@ -5765,6 +6157,34 @@ mod tests {
         assert_eq!(json["code"], "models_not_installed");
         assert!(manager.child.lock().await.is_none());
         assert!(manager.snapshot().session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn prepare_never_enables_a_disabled_companion() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        assert!(!manager.read_autostart_config());
+        let response = voice_companion_routes(manager.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/voice/companion/prepare")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"include_llm":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 16_384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "voice_disabled");
+        assert!(!manager.read_autostart_config(), "prepare must not write autostart");
+        assert!(manager.child.lock().await.is_none(), "prepare must not start a disabled companion");
     }
 
     #[tokio::test]
@@ -6236,7 +6656,7 @@ mod tests {
             async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> {
                 Ok(())
             }
-            async fn resolve_call_target(&self, _: &VoiceCallTarget, _: Option<&str>, _: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+            async fn resolve_call_target_with_locale(&self, _: &VoiceCallTarget, _: Option<&str>, _: Option<&str>, _: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
                 self.resolutions.fetch_add(1, Ordering::SeqCst);
                 Ok(("conversation".into(), None))
             }
@@ -6840,6 +7260,29 @@ mod tests {
             dir.path(),
         );
         assert_eq!(reloaded.requested_feedback().unwrap(), updated.requested);
+    }
+
+    #[tokio::test]
+    async fn toggle_waits_for_the_prepare_lifecycle_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let guard = manager.lifecycle_lock.lock().await;
+        let toggle = {
+            let manager = manager.clone();
+            tokio::spawn(async move { manager.toggle(false).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!toggle.is_finished(), "toggle must wait for prepare's lifecycle lock");
+        drop(guard);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), toggle)
+            .await
+            .expect("toggle must resume after prepare releases the lock")
+            .expect("toggle task must not panic");
+        assert!(result.is_ok());
+        assert!(!manager.read_autostart_config());
     }
 
     #[test]
@@ -7527,7 +7970,7 @@ mod tests {
             async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> {
                 Ok(())
             }
-            async fn resolve_call_target(&self, target: &VoiceCallTarget, _session_mode: Option<&str>, _request_id: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+            async fn resolve_call_target_with_locale(&self, target: &VoiceCallTarget, _session_mode: Option<&str>, _request_id: Option<&str>, _locale: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
                 self.resolutions.fetch_add(1, Ordering::SeqCst);
                 match target {
                     VoiceCallTarget::Workspace { workspace } if workspace == "invalid_dir" => {

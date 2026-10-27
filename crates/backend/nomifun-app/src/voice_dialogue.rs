@@ -148,7 +148,7 @@ impl ProviderVoiceDialogue {
         let config=nomifun_ai_agent::resolve_provider_config(&self.provider_repo,&self.provider_model_repo,&self.encryption_key,&selected.provider_id,&selected.model,&self.workspace)
             .await.map_err(|_|"model_unavailable")?;
         tracing::info!(provider_id=%selected.provider_id,model=%selected.model,"voice_dialogue_model_selected");
-        let is_en = locale.is_some_and(|l| l.starts_with("en"));
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
         let system = if is_en {
             if on_sentence.is_some() {
                 "Please follow the user's voice decision JSON contract. This is low-latency JSONL mode, outputting only continuous JSON objects without Markdown. The first object must strictly follow the VoiceDecision schema and immediately terminate: for chat, reply_tts must contain only the first complete short sentence (8 to 20 words, do not merge multiple sentences), understood_request must summarize the user's need in under 20 words. Natural language reply and understood_request must default to English unless the user explicitly requests another language; respect explicit user requests for a different language while preserving original proper nouns, code, and numbers. If a second sentence is needed, it must start a new JSON object, and each subsequent object must only be {\"reply_delta\":\"next complete short sentence\"}. Chat total must not exceed 60 words and 4 sentences. Non-chat intents have only the first object, subsequent sentences are strictly forbidden. Subsequent objects must not alter intent, task, or understanding. Do not output reasoning or thinking process. For tasks requiring external tools (weather, file operations, system actions, multi-step tasks), you must output agent_task to delegate execution; fabricating real-time data is strictly forbidden."
@@ -230,6 +230,9 @@ pub trait VoiceDialogueRecorder: Send + Sync {
     fn current_call_reservation(&self) -> Option<VoiceCallReservation> { None }
     fn is_projected(&self, _session_id: &str, _conversation_id: &str, _turn_id: &str) -> bool { false }
     fn projected_message_ids(&self, _session_id: &str, _conversation_id: &str, _turn_id: &str) -> Option<(Option<String>, String)> { None }
+    /// A task-control turn that could not produce an authoritative result is
+    /// kept as a visible, retryable error without fabricating assistant text.
+    fn turn_error(&self, _session_id: &str, _conversation_id: &str, _turn_id: &str) -> Option<nomifun_api_types::voice::VoiceSessionError> { None }
     async fn keyboard_configuration(&self, _conversation_id:&str) -> Result<FrozenVoiceExecution,String> {
         Err("binding_invalid".into())
     }
@@ -237,9 +240,19 @@ pub trait VoiceDialogueRecorder: Send + Sync {
 
     async fn resolve_call_target(
         &self,
+        target: &nomifun_api_types::voice::VoiceCallTarget,
+        session_mode: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+        self.resolve_call_target_with_locale(target, session_mode, request_id, None).await
+    }
+
+    async fn resolve_call_target_with_locale(
+        &self,
         _target: &nomifun_api_types::voice::VoiceCallTarget,
         _session_mode: Option<&str>,
         _request_id: Option<&str>,
+        _locale: Option<&str>,
     ) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
         Err(VoiceDialogueRecorderError::BindingInvalid("recorder_unavailable".into()))
     }
@@ -281,6 +294,31 @@ pub trait VoiceDialogueRecorder: Send + Sync {
         request: &VoiceDialogueRequest,
         assistant_content: &str,
     ) -> Result<(), VoiceDialogueRecorderError>;
+
+    /// Resolves the Conversation frozen for an acoustic session/turn. The host
+    /// uses it to keep task control and result persistence inside that owner.
+    async fn task_scope_conversation(
+        &self,
+        _scope: &nomifun_api_types::voice::VoiceSessionControlRequest,
+    ) -> Result<Option<String>, VoiceDialogueRecorderError> {
+        Ok(None)
+    }
+
+    /// Persists the user's task-control question and, only when the control
+    /// result is authoritative, the real task state under the same stable
+    /// request/session/turn identity. A failed or unknown result never writes a
+    /// fabricated assistant reply.
+    async fn record_task_control_result(
+        &self,
+        _scope: &nomifun_api_types::voice::VoiceSessionControlRequest,
+        _task_reference: &nomifun_api_types::voice::VoiceTaskReference,
+        _raw_user_text: Option<&str>,
+        _locale: Option<&str>,
+        _action: nomifun_api_types::voice::VoiceTaskControlAction,
+        _result: &Result<nomifun_api_types::voice::VoiceTaskSnapshot, String>,
+    ) -> Result<(), VoiceDialogueRecorderError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,7 +560,7 @@ async fn complete(
             .into_response(),
     }
 }
-fn record_error_code(error:&VoiceDialogueRecorderError)->&'static str {
+pub(crate) fn record_error_code(error:&VoiceDialogueRecorderError)->&'static str {
     match error {
         VoiceDialogueRecorderError::DecisionInvalid=>"model_response_invalid",
         VoiceDialogueRecorderError::Conflict=>"voice_record_conflict",

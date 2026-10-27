@@ -5,7 +5,7 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
+import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
 import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
@@ -437,6 +437,7 @@ const NomiSendBox: React.FC<{
           await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
         } catch (prepareError) {
           if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+          discardPendingVoiceCallIntent();
           const failure = prepareError as { code?: string; message?: string };
           Message.error(
             failure.code === 'models_not_installed'

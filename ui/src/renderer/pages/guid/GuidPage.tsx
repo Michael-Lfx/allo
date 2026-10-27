@@ -12,7 +12,7 @@ import {
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
 import { resolveLocaleKey } from '@/common/utils';
-import { abandonPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { abandonPendingVoiceCallIntent, discardPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
 import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
 import type { DictationActivationResult, DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
@@ -418,6 +418,7 @@ const GuidPage: React.FC = () => {
           return;
         }
         const failure = error as { code?: string };
+        discardPendingVoiceCallIntent();
         Message.warning(
           failure.code === 'models_not_installed'
             ? t('voice.errors.modelMissing')
@@ -494,6 +495,7 @@ const GuidPage: React.FC = () => {
           await navigate(`/conversation/${encodeURIComponent(retry.conversation_id)}`);
         } catch (prepareError) {
           if (!isMountedRef.current) return;
+          discardPendingVoiceCallIntent();
           const failure = prepareError as { code?: string; message?: string };
           Message.error(
             failure.code === 'models_not_installed'

@@ -367,7 +367,12 @@ export async function abandonPendingVoiceCallIntent(): Promise<void> {
   const intent = pendingCallIntent;
   if (!intent) return;
   intent.abandoned = true;
-  if (!intent.inFlight) await cancelCallByRequestId(intent.request.request_id);
+  if (!intent.inFlight && intent.conversationId) await cancelCallByRequestId(intent.request.request_id);
+}
+
+/** Terminal local failures (before the backend could create a session) may release the intent. */
+export function discardPendingVoiceCallIntent(): void {
+  if (pendingCallIntent && !pendingCallIntent.abandoned) clearPendingCallIntent();
 }
 
 /** Retry an unknown abandoned request without allocating a new request id. */
@@ -375,41 +380,51 @@ export async function retryAbandonedVoiceCallIntent(): Promise<boolean> {
   const intent = pendingCallIntent;
   if (!intent || !intent.abandoned) return true;
   const outcome = await cancelCallByRequestId(intent.request.request_id);
-  if (outcome.authoritative && !outcome.recovered && pendingCallIntent === intent) {
-    // Only if lookup retry authoritatively confirms there is no active session,
-    // clear it so the dead intent is safely unblocked without losing unknown intent.
+  if (outcome.terminal && pendingCallIntent === intent) {
+    // Only the protocol's terminal result releases the owned identity. A 200
+    // lookup, a failed stop, 404/409 and another request's session are not proof.
     clearPendingCallIntent();
   }
   return outcome.recovered;
 }
 
-async function cancelCallByRequestId(requestId: string): Promise<{ recovered: boolean; authoritative: boolean }> {
-  let authoritative = false;
+function abandonedIntentsError(requestId: string): Error {
+  return Object.assign(new Error('voice_call_cancel_unknown'), {
+    code: 'voice_call_cancel_unknown',
+    request_id: requestId,
+  });
+}
+
+async function cancelCallByRequestId(requestId: string): Promise<{ recovered: boolean; terminal: boolean }> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 150 : 500));
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 100 : 200));
     try {
       const response = await fetch(`${getBaseUrl()}/api/voice/companion/session`, {
         headers: buildBackendAuthHeaders('GET'), credentials: 'same-origin', signal: AbortSignal.timeout(2000),
       });
-      if (response.status === 404 || response.status === 409) {
-        authoritative = true;
-        break;
-      }
+      // A missing route or a transport conflict says nothing about this request.
       if (!response.ok) continue;
-      authoritative = true;
       const snapshot = await response.json() as VoiceSnapshot;
-      const active = snapshot.session_id && !snapshot.ended_reason && snapshot.phase !== 'idle';
-      if (active && snapshot.call_request_id === requestId) {
+      // Another instance's session (or a snapshot from before our request bound)
+      // cannot prove that this owned request is gone.
+      if (snapshot.call_request_id !== requestId) continue;
+      // A matching request id with no session is the "starting" window, not a
+      // terminal receipt. Only an explicit ended_reason is proof; phase=idle
+      // can still be a bound call waiting for wake/listening.
+      if (!snapshot.session_id) continue;
+      if (snapshot.ended_reason) return { recovered: false, terminal: true };
+      if (snapshot.phase === 'idle') continue;
+      try {
         await stopVoiceSession(snapshot);
-        if (pendingCallIntent?.request.request_id === requestId) clearPendingCallIntent();
-        return { recovered: true, authoritative: true };
+      } catch {
+        // A failed stop is an unknown outcome, not a terminal cancellation.
+        continue;
       }
-      if (!active || snapshot.call_request_id !== requestId) {
-        return { recovered: false, authoritative: true };
-      }
+      if (pendingCallIntent?.request.request_id === requestId) clearPendingCallIntent();
+      return { recovered: true, terminal: true };
     } catch { /* retry owned request; never guess a session */ }
   }
-  return { recovered: false, authoritative };
+  return { recovered: false, terminal: false };
 }
 
 function clearPendingCallIntent() {
@@ -417,8 +432,16 @@ function clearPendingCallIntent() {
   callIntentListeners.forEach(listener=>listener());
 }
 function settlePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): void {
-  if (pendingCallIntent && snapshot.call_request_id === pendingCallIntent.request.request_id &&
-      snapshot.session_id && (stopConfirmed || snapshot.ended_reason || snapshot.binding?.session_id === snapshot.session_id)) {
+  const intent = pendingCallIntent;
+  if (!intent || snapshot.call_request_id !== intent.request.request_id) return;
+  if (intent.abandoned) {
+    // An abandoned call is settled only by a confirmed stop or an explicitly
+    // ended session. Null session/phase=idle are not terminal receipts.
+    const ended = Boolean(snapshot.session_id) && Boolean(snapshot.ended_reason);
+    if (stopConfirmed || ended) clearPendingCallIntent();
+    return;
+  }
+  if (snapshot.session_id && (stopConfirmed || snapshot.ended_reason || snapshot.binding?.session_id === snapshot.session_id)) {
     clearPendingCallIntent();
   }
 }
@@ -468,8 +491,12 @@ export function startVoiceCallIntent(
   const intent = pendingCallIntent;
   if (!intent.inFlight) intent.inFlight = startVoiceCall(intent.request).then(async result=>{
     if (intent.abandoned) {
-      await cancelCallByRequestId(intent.request.request_id);
-      return result;
+      const outcome = await cancelCallByRequestId(intent.request.request_id);
+      if (outcome.terminal) {
+        if (pendingCallIntent === intent) clearPendingCallIntent();
+        return Object.assign({}, result, { abandoned: true, cancel_confirmed: true });
+      }
+      throw abandonedIntentsError(intent.request.request_id);
     }
     if (result.status==='starting' && pendingCallIntent===intent && intent.conversationId!==result.conversation_id) {
       intent.conversationId=result.conversation_id;
@@ -478,8 +505,22 @@ export function startVoiceCallIntent(
     if(result.status!=='starting' && pendingCallIntent===intent) clearPendingCallIntent();
     return result;
   }).catch(async error=>{
-    const known = error as {status?:number;code?:string};
-    if (
+    const known = error as {status?:number;code?:string;requires_check?:boolean;reason_code?:string};
+    const canRecoverWithPrepare = (known.code === 'voice_companion_not_running') ||
+      (known.status === 409 && (known.code === 'voice_suite_not_ready' || known.requires_check || known.reason_code === 'self_check_required') && known.reason_code !== 'models_not_installed' && known.requires_check !== false);
+
+    if (intent.abandoned) {
+      if (known.status === undefined || known.status >= 500) {
+        const outcome = await cancelCallByRequestId(intent.request.request_id);
+        if (outcome.terminal && pendingCallIntent === intent) clearPendingCallIntent();
+      } else {
+        // A definite pre-session rejection cannot have created a call.
+        if (pendingCallIntent === intent) clearPendingCallIntent();
+      }
+      (error as any).abandoned = true;
+    } else if (canRecoverWithPrepare) {
+      // Retain pendingCallIntent so UI and tests can observe, abandon, or prepare
+    } else if (
       (known.status && known.status<500) ||
       known.code==='daemon_wake_rejected' ||
       known.code==='voice_call_already_stopped' ||
@@ -488,8 +529,6 @@ export function startVoiceCallIntent(
       known.code==='voice_suite_not_ready'
     ) {
       if(pendingCallIntent===intent)clearPendingCallIntent();
-    } else if (intent.abandoned) {
-      await cancelCallByRequestId(intent.request.request_id);
     }
     throw error;
   }).finally(()=>{intent.inFlight=null;});
@@ -498,20 +537,72 @@ export function startVoiceCallIntent(
 
 /** Explicit UI entry opens the frozen target; background wake never steals focus. */
 let openingConversation: Promise<void>|null=null;
-export function startVoiceConversation(): Promise<void> {
-  if(!openingConversation)openingConversation=enterVoiceConversation().finally(()=>{openingConversation=null;});
+export function startVoiceConversation(locale?: string): Promise<void> {
+  const activeLocale = locale || (typeof globalThis !== 'undefined' && (globalThis as any).localeKey) || 'zh-CN';
+  if(!openingConversation)openingConversation=enterVoiceConversation(activeLocale).finally(()=>{openingConversation=null;});
   return openingConversation;
 }
 
-async function enterVoiceConversation(): Promise<void> {
+function abandonedIntentsStillPending(): Error | null {
+  const intent = pendingCallIntent;
+  return intent?.abandoned ? abandonedIntentsError(intent.request.request_id) : null;
+}
+
+async function enterVoiceConversation(locale?: string): Promise<void> {
+  const activeLocale = locale || (typeof globalThis !== 'undefined' && (globalThis as any).localeKey) || 'zh-CN';
   try {
-    const result = await startVoiceCallIntent({ kind: 'current_selection' });
+    const result = await startVoiceCallIntent({ kind: 'current_selection' }, undefined, activeLocale);
+    const unknown = abandonedIntentsStillPending();
+    if (unknown) throw unknown;
+    if ((result as any)?.abandoned) return;
     await openVoiceTask(result.conversation_id);
   } catch (error) {
-    const conflict = error as { code?: string; status?: number; active_conversation_id?: string };
+    const unknown = abandonedIntentsStillPending();
+    if (unknown) throw unknown;
+    if ((error as any)?.abandoned || (error as any)?.code === 'voice_call_cancelled') {
+      if (pendingCallIntent) clearPendingCallIntent();
+      return;
+    }
+    const conflict = error as { code?: string; status?: number; active_conversation_id?: string; requires_check?: boolean; reason_code?: string };
     if (conflict.active_conversation_id && (conflict.code === 'voice_call_conflict' || conflict.code === 'voice_call_starting')) {
       await openVoiceTask(conflict.active_conversation_id);
       return;
+    }
+    const isNotRunning = conflict.code === 'voice_companion_not_running';
+    const needsCheck = conflict.requires_check === true || conflict.reason_code === 'self_check_required';
+    const needsPrepare = isNotRunning || (conflict.status === 409 && needsCheck && conflict.reason_code !== 'models_not_installed');
+    if (needsPrepare) {
+      const abandoned = abandonedIntentsStillPending();
+      if (abandoned) throw abandoned;
+      let report: VoiceCapabilityReport;
+      try {
+        report = await prepareVoiceSession(true, activeLocale, 'preparing');
+      } catch (prepareErr) {
+        // A disabled/unknown status must not auto-enable; this start was a
+        // definite pre-session rejection, so releasing the local intent is safe.
+        clearPendingCallIntent();
+        throw prepareErr;
+      }
+      const abandonedAfterPrepare = abandonedIntentsStillPending();
+      if (abandonedAfterPrepare) throw abandonedAfterPrepare;
+      if (!report || report.can_start_full_call !== true) {
+        clearPendingCallIntent();
+        throw Object.assign(new Error(report?.reason_code || conflict.reason_code || 'voice_suite_not_ready'), {
+          code: report?.reason_code || conflict.reason_code || 'voice_suite_not_ready',
+          requires_check: false,
+        });
+      }
+      const retryResult = await startVoiceCallIntent({ kind: 'current_selection' }, undefined, activeLocale);
+      const abandonedAfterRetry = abandonedIntentsStillPending();
+      if (abandonedAfterRetry) throw abandonedAfterRetry;
+      if ((retryResult as any)?.abandoned) return;
+      await openVoiceTask(retryResult.conversation_id);
+      return;
+    }
+    const knownStatus = conflict.status;
+    const isServerOrUnknown = knownStatus === undefined || knownStatus >= 500;
+    if (pendingCallIntent?.abandoned || (!isServerOrUnknown && knownStatus < 500)) {
+      if (pendingCallIntent) clearPendingCallIntent();
     }
     throw error;
   }
@@ -697,10 +788,22 @@ export async function prepareVoiceSession(
   locale?: string,
   stage?: string,
 ): Promise<VoiceCapabilityReport> {
+  // Unknown or disabled status must never be repaired into an enabled call.
+  // The host repeats this check under its config lock before starting a child.
+  let status: VoiceCompanionStatus;
+  try {
+    status = await getVoiceCompanionStatus();
+  } catch {
+    throw Object.assign(new Error('voice_status_unavailable'), { code: 'voice_status_unavailable' });
+  }
+  if (status.autostart !== true) {
+    throw Object.assign(new Error('voice_disabled'), { code: 'voice_disabled' });
+  }
   const response = await fetch(`${getBaseUrl()}/api/voice/companion/prepare`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...buildBackendAuthHeaders('POST') },
     body: JSON.stringify({ include_llm: includeLlm, locale, stage }),
+    signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as { code?: string; error?: string };

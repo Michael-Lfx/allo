@@ -86,67 +86,43 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 fn detect_task_control(input: &str) -> Option<nomifun_api_types::voice::VoiceTaskControlAction> {
-    use nomifun_api_types::voice::VoiceTaskControlAction;
-    let s = input.trim();
-    if s.starts_with("读取")
-        || s.starts_with("创建")
-        || s.starts_with("分析")
-        || s.starts_with("扫描")
-        || s.starts_with("整理")
-        || s.starts_with("备份")
-    {
+    nomifun_api_types::voice::classify_voice_task_control(input)
+}
+
+async fn local_task_control_action(
+    input: &str,
+    client: &dyn nomifun_voice_terminal::task_client::VoiceTaskClient,
+) -> Option<nomifun_api_types::voice::VoiceTaskControlAction> {
+    let action = detect_task_control(input)?;
+    let explicit = input.contains("任务")
+        || input.to_ascii_lowercase().contains("task")
+        || input.contains("进度")
+        || input.to_ascii_lowercase().contains("progress");
+    if explicit {
+        return Some(action);
+    }
+    let has_active = tokio::time::timeout(std::time::Duration::from_millis(250), client.current())
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+        .flatten()
+        .is_some();
+    has_active.then_some(action)
+}
+
+fn task_status_for_prompt(
+    task: Option<&nomifun_api_types::voice::VoiceTaskSnapshot>,
+    scope: &nomifun_api_types::voice::VoiceSessionSnapshot,
+) -> Option<String> {
+    let session = scope.session_id.as_deref()?;
+    let task = task?;
+    if task.session_id != session {
         return None;
     }
-    let has_negated_cancel = s.contains("不要取消")
-        || s.contains("别取消")
-        || s.contains("不用取消")
-        || s.contains("不能取消")
-        || s.contains("不取消")
-        || s.contains("请勿取消")
-        || s.contains("不要停止")
-        || s.contains("别停止")
-        || s.contains("不用停止")
-        || s.contains("不要结束")
-        || s.contains("别结束");
-
-    let is_query = s.contains("任务进度")
-        || s.contains("任务状态")
-        || s.contains("查询进度")
-        || s.contains("查询状态")
-        || s.contains("查询任务")
-        || s.contains("进度")
-        || s.contains("状态")
-        || s.contains("重听")
-        || s.contains("再播一遍")
-        || s.contains("再说一遍")
-        || s.contains("刚才说了什么")
-        || s.contains("再读一遍");
-
-    if has_negated_cancel {
-        if is_query {
-            return Some(VoiceTaskControlAction::QueryStatus);
-        }
-        return None;
-    }
-
-    let is_cancel = s.contains("取消任务")
-        || s.contains("停止任务")
-        || s == "取消"
-        || s == "停止"
-        || s == "结束任务";
-
-    if is_cancel {
-        if is_query {
-            return None;
-        }
-        return Some(VoiceTaskControlAction::CancelTask);
-    }
-
-    if is_query {
-        Some(VoiceTaskControlAction::QueryStatus)
-    } else {
-        None
-    }
+    Some(serde_json::json!({
+        "command_id": task.command_id,
+        "status": task.status,
+    }).to_string())
 }
 
 /// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
@@ -1561,11 +1537,13 @@ impl VoiceCompanionRuntime {
         if active {
             return Err("voice_busy".into());
         }
-        let is_en = locale.is_some_and(|l| l.starts_with("en"));
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
         let (zh_text, en_text) = match stage {
-            Some("prepare") => ("正在准备语音通话。", "Preparing your voice call."),
             Some("task") | Some("create_task") => ("创建语音任务中", "Creating voice task..."),
-            _ => ("语音连接测试。", "Voice connection test."),
+            Some("prepare") | Some("preparing") => ("正在准备语音通话。", "Preparing your voice call."),
+            Some("connect") | Some("connecting") => ("正在连接语音通话。", "Connecting voice call."),
+            Some("start") | Some("starting") => ("正在启动语音服务。", "Starting voice service."),
+            _ => ("正在启动语音服务。", "Starting voice service."),
         };
         let cases = [
             ("zh-CN", "zh-CN-XiaoxiaoNeural", zh_text),
@@ -1930,7 +1908,7 @@ impl VoiceCompanionRuntime {
             text: reply_text.to_string(),
         });
         let started = std::time::Instant::now();
-        let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
+        let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
         let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
         let result = playback
             .speak_text_for_generation(tts.as_ref(), reply_text, voice_name, generation, || {
@@ -2154,10 +2132,13 @@ impl VoiceCompanionRuntime {
             Self::discard_utterance(driver, playback, event_tx, generation).await;
             return;
         }
+        let clean_input = text_opt
+            .as_deref()
+            .map(nomifun_audio::strip_wake_phrase)
+            .unwrap_or_default();
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
             let _ = event_tx.send(VoiceCompanionEvent::SpeechRecognized { text: text.clone() });
-            let clean_input = nomifun_audio::strip_wake_phrase(text);
             if !clean_input.is_empty() {
                 voice_feedback::play(playback, event_tx, VoiceCueKind::Recognized, generation)
                     .await;
@@ -2165,10 +2146,14 @@ impl VoiceCompanionRuntime {
                     return;
                 }
             }
+            let is_local_task_control = match task_client {
+                Some(client) => local_task_control_action(&clean_input, client.as_ref()).await,
+                None => None,
+            };
             if clean_input.is_empty() {
                 Self::discard_utterance(driver, playback, event_tx, generation).await;
                 return;
-            } else if let (Some(action), Some(_)) = (detect_task_control(&clean_input), task_client) {
+            } else if let Some(action) = is_local_task_control {
                 // Local task control fast-path: query and cancellation remain local,
                 // zero dialogue model calls, fully functional even when model is offline.
                 let dec = VoiceDecision {
@@ -2201,9 +2186,10 @@ impl VoiceCompanionRuntime {
                 if playback.generation_id() != generation {
                     return;
                 }
-                let task_status = task_context.as_ref().ok().and_then(|task| task.as_ref()).map(|task| serde_json::json!({
-                    "command_id": task.command_id, "status": task.status,
-                }).to_string());
+                let task_status = task_status_for_prompt(
+                    task_context.as_ref().ok().and_then(|task| task.as_ref()),
+                    &scope,
+                );
                 let (sentence_tx, mut sentence_rx) = tokio::sync::mpsc::channel::<nomifun_api_types::voice::VoiceDialogueSentence>(4);
                 let (speech_tx, speech_rx) = tokio::sync::mpsc::channel::<String>(4);
                 let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -2229,7 +2215,7 @@ impl VoiceCompanionRuntime {
                 let speak_replies = event_tx.feedback().speak_replies;
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
-                let is_en = scope.locale.as_deref().is_some_and(|l| l.starts_with("en"));
+                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
                 let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
@@ -2371,18 +2357,17 @@ impl VoiceCompanionRuntime {
                                 stage: "history".into(),
                                 code: code.clone(),
                             });
+                            if code == "binding_invalid" || code == "voice_record_conflict" {
+                                let _ = playback.interrupt().await;
+                                let _ = playback_guard.0.take();
+                                driver.lock().await.reset();
+                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+                                    reason: VoiceSessionEndReason::Failed,
+                                });
+                                return;
+                            }
                             if let Ok(dec) = nomifun_api_types::voice::parse_voice_decision(&content) {
-                                if dec.intent_type == IntentType::Chat {
-                                    router_result = Some(Ok(dec));
-                                } else {
-                                    let _ = playback.interrupt().await;
-                                    let _ = playback_guard.0.take();
-                                    driver.lock().await.reset();
-                                    let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
-                                        reason: VoiceSessionEndReason::Failed,
-                                    });
-                                    return;
-                                }
+                                router_result = Some(Ok(dec));
                             } else {
                                 let _ = playback.interrupt().await;
                                 let _ = playback_guard.0.take();
@@ -2398,8 +2383,8 @@ impl VoiceCompanionRuntime {
                             if playback.generation_id() != generation { return; }
                             let _ = playback.interrupt().await;
                             let _ = playback_guard.0.take();
-                            let code = match other_err {
-                                RouteError::Network(_) => "model_network_failed",
+                            let (stage, code) = match other_err {
+                                RouteError::Network(_) => ("dialogue", "model_network_failed"),
                                 RouteError::Generation(ref detail)
                                     if matches!(
                                         detail.as_str(),
@@ -2411,24 +2396,45 @@ impl VoiceCompanionRuntime {
                                             | "model_timeout"
                                     ) =>
                                 {
-                                    detail.as_str()
+                                    ("dialogue", detail.as_str())
                                 }
-                                RouteError::Validation(_) => "model_response_invalid",
+                                RouteError::Generation(ref detail)
+                                    if matches!(
+                                        detail.as_str(),
+                                        "binding_invalid"
+                                            | "voice_record_conflict"
+                                            | "binding_busy"
+                                            | "voice_projection_write_failed"
+                                            | "voice_record_write_failed"
+                                            | "voice_generation_unknown"
+                                    ) =>
+                                {
+                                    ("history", detail.as_str())
+                                }
+                                RouteError::Validation(_) => ("dialogue", "model_response_invalid"),
                                 RouteError::Generation(ref detail)
                                     if detail.contains("401") || detail.contains("403") =>
                                 {
-                                    "model_auth_failed"
+                                    ("dialogue", "model_auth_failed")
                                 }
                                 RouteError::Generation(ref detail)
                                     if detail.starts_with("HTTP status") =>
                                 {
-                                    "model_rejected"
+                                    ("dialogue", "model_rejected")
                                 }
-                                _ => "model_response_invalid",
+                                RouteError::Generation(ref detail)
+                                    if detail.contains("timeout") || detail.contains("timed out") =>
+                                {
+                                    ("dialogue", "model_timeout")
+                                }
+                                RouteError::Record { ref code, .. } => {
+                                    ("history", code.as_str())
+                                }
+                                _ => ("dialogue", "model_response_invalid"),
                             };
-                            warn!(code, "voice_model_failed");
+                            warn!(stage, code, "voice_model_failed");
                             let _ = event_tx.send(VoiceCompanionEvent::Error {
-                                stage: "dialogue".into(),
+                                stage: stage.into(),
                                 code: code.into(),
                             });
                             failed_driver.reset();
@@ -2560,6 +2566,8 @@ impl VoiceCompanionRuntime {
                         (Ok(Some(task)),Some(action)) => Ok(VoiceTaskControlCommand {
                             scope:VoiceSessionControlRequest {instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},
                             task:VoiceTaskReference::from(&task),action,
+                            raw_user_text: Some(clean_input.clone()),
+                            locale: snapshot.locale.clone(),
                         }),
                         (Err(_),_) => Err("task_status_unavailable".to_owned()),
                         (Ok(None),_) => Err("task_not_found".into()),
@@ -2576,8 +2584,13 @@ impl VoiceCompanionRuntime {
                     }
                     match result {
                         Ok(task) => {
-                            let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
-                            let text = if is_en {
+                            let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                            let cancelled = dec.task_control_action == Some(nomifun_api_types::voice::VoiceTaskControlAction::CancelTask)
+                                && task.status == VoiceTaskStatus::Failed
+                                && task.error_code.as_deref() == Some("task_cancelled");
+                            let text = if cancelled {
+                                if is_en { "Task cancelled." } else { "任务已取消。" }.to_string()
+                            } else if is_en {
                                 match task.status {
                                     VoiceTaskStatus::Queued => "The task is queued, waiting for previous task to finish.".into(),
                                     VoiceTaskStatus::Delivering => "Submitting the task, receipt verification pending.".into(),
@@ -2601,13 +2614,87 @@ impl VoiceCompanionRuntime {
                             let _ = Self::play_response(&text,driver,playback,event_tx,tts,generation).await;
                         },
                         Err(code) => {
-                            let mut driver=driver.lock().await;
-                            if playback.generation_id()!=generation {return;}
-                            driver.reset();
-                            let _=event_tx.send(VoiceCompanionEvent::Error {stage:"task".into(),code});
-                            drop(driver);
-                            voice_feedback::play(playback,event_tx,VoiceCueKind::Error,generation).await;
-                            if playback.generation_id()==generation {let _=event_tx.send(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed});}
+                            let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
+                            let is_recoverable = matches!(
+                                code.as_str(),
+                                "task_not_found"
+                                    | "task_status_unavailable"
+                                    | "task_scope_changed"
+                                    | "task_control_ambiguous"
+                                    | "task_control_scope_required"
+                                    | "voice_projection_write_failed"
+                                    | "voice_record_write_failed"
+                                    | "voice_record_conflict"
+                                    | "binding_busy"
+                                    | "target_revision_changed"
+                            );
+                            if is_recoverable {
+                                let _ = event_tx.send(VoiceCompanionEvent::Error { stage: "task".into(), code: code.clone() });
+                                let text = match code.as_str() {
+                                    "task_not_found" => {
+                                        if is_en {
+                                            "No task in this voice conversation is currently running."
+                                        } else {
+                                            "当前语音会话没有正在运行的后台任务。"
+                                        }
+                                    }
+                                    "task_scope_changed" => {
+                                        if is_en {
+                                            "That task belongs to another conversation, so I did not control it."
+                                        } else {
+                                            "该任务属于其他会话，未执行操作。"
+                                        }
+                                    }
+                                    "task_control_ambiguous" => {
+                                        if is_en {
+                                            "I did not cancel anything. Please state the task to cancel clearly."
+                                        } else {
+                                            "没有执行取消，请明确要取消的任务。"
+                                        }
+                                    }
+                                    "task_control_scope_required" => {
+                                        if is_en {
+                                            "I cannot confirm which task to control."
+                                        } else {
+                                            "无法确认要操作的任务。"
+                                        }
+                                    }
+                                    "voice_projection_write_failed"
+                                    | "voice_record_write_failed"
+                                    | "voice_record_conflict" => {
+                                        if is_en {
+                                            "I couldn't save the task result. Please retry or check the conversation."
+                                        } else {
+                                            "任务结果暂时无法保存，请稍后重试或在会话中查看。"
+                                        }
+                                    }
+                                    "binding_busy" | "target_revision_changed" => {
+                                        if is_en {
+                                            "The task state changed. Please try again."
+                                        } else {
+                                            "任务状态已变化，请稍后重试。"
+                                        }
+                                    }
+                                    _ => {
+                                        if is_en {
+                                            "Task status is temporarily unavailable."
+                                        } else {
+                                            "暂时无法获取任务状态。"
+                                        }
+                                    }
+                                };
+                                let _ = Self::play_response(text, driver, playback, event_tx, tts, generation).await;
+                            } else {
+                                let mut driver = driver.lock().await;
+                                if playback.generation_id() != generation { return; }
+                                driver.reset();
+                                let _ = event_tx.send(VoiceCompanionEvent::Error { stage: "task".into(), code });
+                                drop(driver);
+                                voice_feedback::play(playback, event_tx, VoiceCueKind::Error, generation).await;
+                                if playback.generation_id() == generation {
+                                    let _ = event_tx.send(VoiceCompanionEvent::SessionEnded { reason: VoiceSessionEndReason::Failed });
+                                }
+                            }
                         },
                     }
                 }
@@ -2639,7 +2726,7 @@ impl VoiceCompanionRuntime {
                     if playback.generation_id() != generation {
                         return;
                     }
-                    let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
+                    let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
                     let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
                     let code = match result {
                         Ok(delivery) if delivery.task.command_id != command.command_id
@@ -3804,6 +3891,7 @@ impl VoiceCompanionRuntime {
 mod tests {
     use super::*;
     use nomifun_voice_terminal::contract::AcousticState;
+    use nomifun_voice_terminal::task_client::VoiceTaskClient;
     use tempfile::tempdir;
 
     #[test]
@@ -4073,6 +4161,21 @@ mod tests {
             _: &str,
         ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).unwrap();
+            Ok(rx)
+        }
+    }
+
+    struct RecordingSpeech(Arc<std::sync::Mutex<Vec<(String, String)>>>);
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for RecordingSpeech {
+        async fn synthesize_stream(
+            &self,
+            text: &str,
+            voice: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            self.0.lock().unwrap().push((text.to_owned(), voice.to_owned()));
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.try_send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).unwrap();
             Ok(rx)
@@ -4579,6 +4682,64 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
     #[tokio::test]
+    async fn tts_self_check_startup_broadcast_and_bilingual_stages() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(RecordingSpeech(recorded.clone())),
+        );
+
+        // 1. Default stage (formerly "语音连接测试。") with zh-CN
+        recorded.lock().unwrap().clear();
+        let res_zh = runtime.self_check_tts_with_options(None, Some("zh-CN"), None).await.unwrap();
+        assert!(res_zh.ok);
+        let calls_zh = recorded.lock().unwrap().clone();
+        assert_eq!(calls_zh[0], ("正在启动语音服务。".to_string(), "zh-CN-XiaoxiaoNeural".to_string()));
+
+        // 2. Default stage with en-US
+        recorded.lock().unwrap().clear();
+        let res_en = runtime.self_check_tts_with_options(None, Some("en-US"), None).await.unwrap();
+        assert!(res_en.ok);
+        let calls_en = recorded.lock().unwrap().clone();
+        assert_eq!(calls_en[1], ("Starting voice service.".to_string(), "en-US-JennyNeural".to_string()));
+
+        // 3. Preparing stage with zh-CN
+        recorded.lock().unwrap().clear();
+        runtime.self_check_tts_with_options(None, Some("zh-CN"), Some("preparing")).await.unwrap();
+        let calls_prep_zh = recorded.lock().unwrap().clone();
+        assert_eq!(calls_prep_zh[0], ("正在准备语音通话。".to_string(), "zh-CN-XiaoxiaoNeural".to_string()));
+
+        // 4. Preparing stage with en-US
+        recorded.lock().unwrap().clear();
+        runtime.self_check_tts_with_options(None, Some("en-US"), Some("preparing")).await.unwrap();
+        let calls_prep_en = recorded.lock().unwrap().clone();
+        assert_eq!(calls_prep_en[1], ("Preparing your voice call.".to_string(), "en-US-JennyNeural".to_string()));
+
+        // 5. Task creation with zh-CN
+        recorded.lock().unwrap().clear();
+        runtime.self_check_tts_with_options(None, Some("zh-CN"), Some("create_task")).await.unwrap();
+        let calls_task_zh = recorded.lock().unwrap().clone();
+        assert_eq!(calls_task_zh[0], ("创建语音任务中".to_string(), "zh-CN-XiaoxiaoNeural".to_string()));
+
+        // 6. Task creation with en-US
+        recorded.lock().unwrap().clear();
+        runtime.self_check_tts_with_options(None, Some("en-US"), Some("create_task")).await.unwrap();
+        let calls_task_en = recorded.lock().unwrap().clone();
+        assert_eq!(calls_task_en[1], ("Creating voice task...".to_string(), "en-US-JennyNeural".to_string()));
+    }
+    #[tokio::test]
     async fn test_progress_must_not_block_final_result_of_same_task() {
         use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceSessionPhase};
         use nomifun_voice_terminal::playback::TestAudioSink;
@@ -4982,5 +5143,265 @@ mod tests {
             matches!(state, AcousticState::Listening | AcousticState::Idle),
             "driver must recover to Listening or Idle so future voice turns can proceed"
         );
+    }
+
+    struct RecordingTaskClient {
+        current: std::sync::Mutex<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
+        controls: std::sync::Mutex<Vec<nomifun_api_types::voice::VoiceTaskControlCommand>>,
+    }
+
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::task_client::VoiceTaskClient for RecordingTaskClient {
+        async fn submit(&self, _: nomifun_api_types::voice::VoiceTaskSubmitRequest)
+            -> Result<nomifun_api_types::voice::VoiceTaskDelivery, String> {
+            Err("unused".into())
+        }
+        async fn current(&self) -> Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>, String> {
+            Ok(self.current.lock().unwrap().clone())
+        }
+        async fn control(&self, request: nomifun_api_types::voice::VoiceTaskControlCommand)
+            -> Result<nomifun_api_types::voice::VoiceTaskSnapshot, String> {
+            self.controls.lock().unwrap().push(request);
+            self.current.lock().unwrap().clone().ok_or_else(|| "task_not_found".to_owned())
+        }
+    }
+
+    async fn execute_local_task_control(
+        input: &str,
+        client: &RecordingTaskClient,
+        scope: &nomifun_api_types::voice::VoiceSessionSnapshot,
+    ) -> Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>, String> {
+        let Some(action) = local_task_control_action(input, client).await else {
+            return Ok(None);
+        };
+        let Some(task) = client.current().await? else {
+            return Err("task_not_found".into());
+        };
+        client.control(nomifun_api_types::voice::VoiceTaskControlCommand {
+            scope: nomifun_api_types::voice::VoiceSessionControlRequest {
+                instance_id: scope.instance_id.clone(),
+                session_id: scope.session_id.clone(),
+                turn_id: scope.turn_id.clone(),
+            },
+            task: nomifun_api_types::voice::VoiceTaskReference::from(&task),
+            action,
+            raw_user_text: Some(input.to_owned()),
+            locale: scope.locale.clone(),
+        }).await.map(Some)
+    }
+
+    #[tokio::test]
+    async fn local_task_control_never_cancels_on_negation_and_carries_target_identity() {
+        use nomifun_api_types::voice::{
+            VoiceBindingSnapshot, VoiceSessionSnapshot, VoiceTaskControlAction, VoiceTaskSnapshot,
+            VoiceTaskStatus,
+        };
+        let task = VoiceTaskSnapshot {
+            command_id: "command-a".into(),
+            session_id: "session-a".into(),
+            acoustic_turn_id: "origin-a".into(),
+            conversation_id: Some("conversation-a".into()),
+            message_id: Some("message-a".into()),
+            runtime_turn_id: None,
+            status: VoiceTaskStatus::Accepted,
+            result_ok: None,
+            result_text: None,
+            error_code: None,
+        };
+        let client = RecordingTaskClient {
+            current: std::sync::Mutex::new(Some(task)),
+            controls: std::sync::Mutex::new(Vec::new()),
+        };
+        let scope = VoiceSessionSnapshot {
+            instance_id: "instance-a".into(),
+            session_id: Some("session-a".into()),
+            turn_id: Some("turn-a".into()),
+            locale: Some("en-US".into()),
+            binding: Some(VoiceBindingSnapshot {
+                session_id: "session-a".into(),
+                binding_id: "binding-a".into(),
+                conversation_id: "conversation-a".into(),
+                workspace: None,
+                memory_owner_companion_id: None,
+            }),
+            ..Default::default()
+        };
+        for input in [
+            "never cancel task",
+            "do not ever cancel task",
+            "don't you cancel task",
+            "不要取消任务",
+            "千万别取消任务",
+            "取消任务，但是不要停止",
+            "任务取消了",
+            "任务已经结束了",
+            "今天天气怎么样",
+            "今天天气情况怎么样",
+            "最近身体情况怎么样",
+            "停止任务播放",
+        ] {
+            let result = execute_local_task_control(input, &client, &scope).await;
+            assert!(result.is_ok(), "negated/ambiguous input must not control: {input:?}");
+            assert_eq!(client.controls.lock().unwrap().len(), 0, "no control call for {input:?}");
+        }
+
+        let query = execute_local_task_control("任务进度怎么样", &client, &scope).await.unwrap().unwrap();
+        assert_eq!(query.command_id, "command-a");
+        {
+            let controls = client.controls.lock().unwrap();
+            assert_eq!(controls.len(), 1);
+            assert_eq!(controls[0].action, VoiceTaskControlAction::QueryStatus);
+            assert_eq!(controls[0].task.command_id, "command-a");
+            assert_eq!(controls[0].task.conversation_id.as_deref(), Some("conversation-a"));
+            assert_eq!(controls[0].scope.session_id.as_deref(), Some("session-a"));
+        }
+
+        let cancelled = execute_local_task_control("cancel the task", &client, &scope).await.unwrap().unwrap();
+        assert_eq!(cancelled.command_id, "command-a");
+        {
+            let controls = client.controls.lock().unwrap();
+            assert_eq!(controls.len(), 2);
+            assert_eq!(controls[1].action, VoiceTaskControlAction::CancelTask);
+            assert_eq!(controls[1].task.command_id, "command-a");
+            assert_eq!(controls[1].scope.turn_id.as_deref(), Some("turn-a"));
+        }
+
+        let other_scope = VoiceSessionSnapshot {
+            session_id: Some("session-b".into()),
+            turn_id: Some("turn-b".into()),
+            binding: Some(VoiceBindingSnapshot {
+                session_id: "session-b".into(),
+                binding_id: "binding-b".into(),
+                conversation_id: "conversation-b".into(),
+                workspace: None,
+                memory_owner_companion_id: None,
+            }),
+            ..scope.clone()
+        };
+        let cross = execute_local_task_control("cancel the task", &client, &other_scope).await.unwrap().unwrap();
+        assert_eq!(cross.command_id, "command-a", "the daemon must not retarget another task");
+        {
+            let controls = client.controls.lock().unwrap();
+            assert_eq!(controls.len(), 3);
+            assert_eq!(controls[2].scope.session_id.as_deref(), Some("session-b"));
+            assert_eq!(controls[2].task.command_id, "command-a");
+            assert_eq!(controls[2].task.conversation_id.as_deref(), Some("conversation-a"));
+        }
+    }
+
+    #[test]
+    fn task_status_prompt_is_limited_to_the_current_acoustic_session() {
+        use nomifun_api_types::voice::{VoiceSessionSnapshot, VoiceTaskSnapshot, VoiceTaskStatus};
+        let task = VoiceTaskSnapshot {
+            command_id: "command-a".into(),
+            session_id: "session-a".into(),
+            acoustic_turn_id: "origin-a".into(),
+            conversation_id: Some("conversation-a".into()),
+            message_id: Some("message-a".into()),
+            runtime_turn_id: None,
+            status: VoiceTaskStatus::Accepted,
+            result_ok: None,
+            result_text: None,
+            error_code: None,
+        };
+        let other = VoiceSessionSnapshot {
+            session_id: Some("session-b".into()),
+            ..Default::default()
+        };
+        assert!(task_status_for_prompt(Some(&task), &other).is_none());
+        let same = VoiceSessionSnapshot {
+            session_id: Some("session-a".into()),
+            ..Default::default()
+        };
+        let status = task_status_for_prompt(Some(&task), &same).expect("same session must include status");
+        assert!(status.contains("command-a"));
+        assert!(status.contains("accepted"));
+        assert!(task_status_for_prompt(None, &same).is_none());
+    }
+
+    #[test]
+    fn task_control_requires_an_affirmative_explicit_cancel() {
+        use nomifun_api_types::voice::VoiceTaskControlAction::{CancelTask, QueryStatus};
+        let cases = [
+            ("cancel task", Some(CancelTask)),
+            ("cancel the task", Some(CancelTask)),
+            ("please cancel the current task", Some(CancelTask)),
+            ("CANCEL THE TASK", Some(CancelTask)),
+            ("stop the task", Some(CancelTask)),
+            ("stop the current job", Some(CancelTask)),
+            ("取消任务", Some(CancelTask)),
+            ("请帮我取消当前任务", Some(CancelTask)),
+            ("停止任务", Some(CancelTask)),
+            ("结束任务", Some(CancelTask)),
+            ("取消", Some(CancelTask)),
+            ("stop", Some(CancelTask)),
+            ("never cancel task", None),
+            ("do not ever cancel task", None),
+            ("don't you cancel task", None),
+            ("please don't cancel the task", None),
+            ("do not cancel task", None),
+            ("DON'T CANCEL TASK", None),
+            ("never ever cancel task", None),
+            ("I would never want you to cancel the task", None),
+            ("don't stop the task", None),
+            ("stop the task from failing", None),
+            ("不要取消任务", None),
+            ("千万别取消任务", None),
+            ("不要现在取消任务", None),
+            ("不要取消", None),
+            ("do not stop", None),
+            ("停止播放", None),
+            ("please stop", None),
+            ("取消任务，但是不要停止", None),
+            ("不要取消任务，取消吧", None),
+            ("取消任务并查询进度", Some(QueryStatus)),
+            ("don't cancel the task, just check progress", Some(QueryStatus)),
+            ("never cancel task but show progress", Some(QueryStatus)),
+            ("任务进度怎么样", Some(QueryStatus)),
+            ("what's the task status", Some(QueryStatus)),
+            ("今天天气怎么样", None),
+            ("今天天气情况怎么样", None),
+            ("最近身体情况怎么样", None),
+            ("任务情况怎么样", Some(QueryStatus)),
+            ("任务取消了", None),
+            ("任务已经结束了", None),
+            ("任务停止了", None),
+            ("任务取消", None),
+            ("任务结束", None),
+            ("停止任务播放", None),
+            ("请取消任务", Some(CancelTask)),
+            ("把任务取消", Some(CancelTask)),
+            ("立即停止任务", Some(CancelTask)),
+            ("你好", None),
+            ("创建任务", None),
+            ("结束了吗", None),
+            ("取消任务吧", Some(CancelTask)),
+            ("把任务取消吧", Some(CancelTask)),
+            ("请把任务取消", Some(CancelTask)),
+            ("取消任务，谢谢", Some(CancelTask)),
+            ("你取消任务", Some(CancelTask)),
+            ("取消任务。", Some(CancelTask)),
+            ("我把任务取消了", None),
+            ("把任务停止了", None),
+            ("把任务取消了", None),
+            ("取消任务很重要", None),
+            ("取消任务，可以吗", None),
+            ("取消任务可以吗", None),
+            ("取消任务好吗", None),
+            ("取消任务，好吗", None),
+            ("取消任务，多久", None),
+            ("取消任务？", None),
+            ("取消？", None),
+            ("stop?", None),
+            ("stop the task?", None),
+            ("cancel?", None),
+            ("cancel the task?", None),
+            ("我取消任务", None),
+            ("他取消任务", None),
+            ("取消任务了", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(detect_task_control(input), expected, "input={input:?}");
+        }
     }
 }

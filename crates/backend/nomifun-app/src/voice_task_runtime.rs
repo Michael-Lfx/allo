@@ -944,7 +944,9 @@ mod tests {
         let (delivery_count,):(i64,) = sqlx::query_as("SELECT COUNT(*) FROM conversation_delivery_receipts WHERE conversation_id = ?")
             .bind(done.conversation_id.as_deref().unwrap()).fetch_one(&database_pool).await.unwrap();
         if from_worker {
-            assert_eq!(delivery_count, if voice_controls || keyboard_queue { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s) and each executed task delivery receipt");
+            // VoiceControls additionally persists one authoritative receipt for
+            // the spoken status query and one for the spoken cancellation.
+            assert_eq!(delivery_count, if voice_controls { 5 } else if keyboard_queue { 3 } else { 2 }, "unified conversation must hold dialogue projection receipt(s), query/cancel result receipts and each executed task delivery receipt");
         } else {
             assert_eq!(creation_count,1,"one workspace voice Conversation creation identity");
             assert_eq!(delivery_count,if queued_drain {4}else{2},"one durable decision projection and one real runtime send per command");

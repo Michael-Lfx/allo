@@ -204,6 +204,14 @@ pub struct VoiceTaskControlCommand {
     pub scope:VoiceSessionControlRequest,
     pub task:VoiceTaskReference,
     pub action:VoiceTaskControlAction,
+    /// The user's original utterance for this acoustic turn. The host uses it to
+    /// persist the question and to re-check an explicit cancel before acting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_user_text: Option<String>,
+    /// The locale frozen for this call, so the recorded result matches what was
+    /// spoken even if the UI language changes later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1235,4 +1243,409 @@ pub struct VoiceTtsSelfCheckResponse {
     pub languages: Vec<VoiceTtsSelfCheckLanguage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Classifies a voice utterance into a task-control action only when the
+/// evidence is unambiguous. A negated, mixed or object-less cancel is never a
+/// cancel command; the caller must fall back to a normal reply or a safe
+/// clarification. Status questions remain read-only.
+pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction> {
+    const PREFIX_IGNORES: &[&str] = &["读取", "创建", "分析", "扫描", "整理", "备份"];
+    const EN_NEGATORS: &[&str] = &[
+        "not", "never", "no", "don't", "dont", "doesn't", "doesnt", "didn't", "didnt",
+        "won't", "wont", "wouldn't", "wouldnt", "shouldn't", "shouldnt", "can't", "cant",
+        "cannot", "isn't", "isnt", "aren't", "arent", "without", "avoid", "prevent",
+        "nor", "neither", "hardly", "barely",
+    ];
+    const EN_AFTER_NEGATORS: &[&str] = &[
+        "is not needed", "is not necessary", "not needed", "not necessary",
+        "isn't needed", "isnt needed",
+    ];
+    const ZH_NEGATORS: &[&str] = &[
+        "千万别", "千万不要", "不要", "别", "不用", "不能", "请勿", "无需", "不必",
+        "不准", "绝不", "永不", "禁止", "勿", "不",
+    ];
+    const ZH_AFTER_NEGATORS: &[&str] = &["是不", "不需要", "不必", "无需", "不用", "不成"];
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() || PREFIX_IGNORES.iter().any(|prefix| trimmed.starts_with(prefix)) {
+        return None;
+    }
+    let lower = normalize_voice_text(trimmed);
+    let tokens = english_tokens(&lower);
+    let has_task_word = trimmed.contains("任务") || tokens.iter().any(|token| is_task_object_token(token));
+    let exact_short = is_exact_short_cancel(trimmed, &tokens);
+
+    // Chat/weather must not become a task query merely because it contains
+    // "情况怎么样". Only an explicit task object may continue.
+    if !has_task_word && !exact_short {
+        const WEATHER_OR_CHAT_ZH: &[&str] = &[
+            "天气", "气温", "下雨", "下雪", "阴天", "晴天", "家里", "身体", "家人",
+            "最近怎么样", "最近好吗", "过得怎么样",
+        ];
+        const WEATHER_OR_CHAT_EN: &[&str] = &[
+            "weather", "temperature", "rain", "forecast", "how's it going",
+            "how is it going", "how are you",
+        ];
+        if WEATHER_OR_CHAT_ZH.iter().any(|word| trimmed.contains(word))
+            || WEATHER_OR_CHAT_EN.iter().any(|word| lower.contains(word))
+        {
+            return None;
+        }
+    }
+    let is_query = is_voice_status_query(trimmed, &lower, &tokens, has_task_word);
+    let is_question = trimmed.contains('？') || trimmed.contains('?');
+
+    let (mut affirmative, mut negated) = (0u8, 0u8);
+
+    for verb in ["取消", "停止", "终止", "结束"] {
+        for (offset, _) in trimmed.match_indices(verb) {
+            if !has_task_word && !exact_short {
+                continue;
+            }
+            let before: String = trimmed[..offset]
+                .chars()
+                .rev()
+                .take(12)
+                .take_while(|c| !is_clause_punctuation(*c))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let after: String = trimmed[offset + verb.len()..].chars().take(32).collect();
+            // "任务取消了" / "任务已经结束" are descriptions, not commands.
+            // Require verb-object order or an imperative marker.
+            if !exact_short && !is_chinese_imperative_cancel(&before, &after) {
+                continue;
+            }
+            let negated_mention = ZH_NEGATORS.iter().any(|word| before.contains(word))
+                || ZH_AFTER_NEGATORS.iter().any(|word| after.contains(word));
+            if negated_mention {
+                negated = negated.saturating_add(1);
+            } else {
+                affirmative = affirmative.saturating_add(1);
+            }
+        }
+    }
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token != "cancel" && token != "stop" {
+            continue;
+        }
+        if !has_task_word && !exact_short {
+            continue;
+        }
+        if token == "stop" && tokens[index + 1..].iter().take(4).any(|next| next == "from") {
+            continue;
+        }
+        let after = tokens[index + 1..].iter().take(8).cloned().collect::<Vec<_>>().join(" ");
+        let before_negated = tokens[index.saturating_sub(6)..index]
+            .iter()
+            .any(|word| EN_NEGATORS.contains(&word.as_str()));
+        let after_negated = EN_AFTER_NEGATORS.iter().any(|phrase| after.contains(phrase));
+        if before_negated || after_negated {
+            negated = negated.saturating_add(1);
+        } else {
+            affirmative = affirmative.saturating_add(1);
+        }
+    }
+
+    match (affirmative > 0, negated > 0, is_query) {
+        (true, true, _) => is_query.then_some(VoiceTaskControlAction::QueryStatus),
+        (true, false, true) => Some(VoiceTaskControlAction::QueryStatus),
+        (true, false, false) if !is_question => Some(VoiceTaskControlAction::CancelTask),
+        (true, false, false) => None,
+        (false, _, true) => Some(VoiceTaskControlAction::QueryStatus),
+        (false, _, false) => None,
+    }
+}
+
+/// True only for a positive, object-explicit cancel command. The host uses the
+/// same classifier at the control boundary so a loose model decision cannot
+/// cancel after a negation or an ambiguous utterance.
+pub fn is_affirmative_cancel_command(input: &str) -> bool {
+    classify_voice_task_control(input) == Some(VoiceTaskControlAction::CancelTask)
+}
+
+fn normalize_voice_text(input: &str) -> String {
+    input
+        .chars()
+        .map(|c| match c {
+            '’' | '‘' | '`' => '\'',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn english_tokens(input: &str) -> Vec<String> {
+    input
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '\''))
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn is_task_object_token(token: &str) -> bool {
+    let token = token.strip_suffix("'s").unwrap_or(token);
+    matches!(token, "task" | "tasks" | "job" | "jobs" | "operation" | "operations")
+}
+
+fn is_exact_short_cancel(trimmed: &str, tokens: &[String]) -> bool {
+    let trimmed = trimmed.trim_matches(is_clause_punctuation).trim();
+    matches!(trimmed, "取消" | "停止" | "终止")
+        || (tokens.len() == 1 && matches!(tokens[0].as_str(), "cancel" | "stop"))
+}
+
+fn is_chinese_imperative_cancel(before: &str, after: &str) -> bool {
+    let after_clause = after
+        .split(is_clause_punctuation)
+        .next()
+        .unwrap_or("")
+        .trim_start();
+    let full_after = after.trim();
+    const QUESTION_TAILS: &[&str] = &[
+        "吗", "呢", "么", "好不好", "行不行", "可不可以", "可以", "好吗", "行吗",
+        "对不对", "是不是", "对吧", "是吧", "能不能", "会不会", "要不要", "是否",
+        "可否", "能否", "有没有", "干嘛", "干啥", "哪", "谁", "多少", "几天",
+        "几点", "多久", "多长时间",
+    ];
+    if full_after.contains('？')
+        || full_after.contains('?')
+        || QUESTION_TAILS.iter().any(|tail| full_after.contains(*tail))
+    {
+        return false;
+    }
+    const NEGATORS: &[&str] = &[
+        "不要", "别", "不用", "不能", "请勿", "无需", "不必", "不准", "绝不", "永不",
+        "禁止", "勿", "不",
+    ];
+    if NEGATORS.iter().any(|word| full_after.contains(*word)) {
+        return false;
+    }
+
+    if ["他们", "她们", "他", "她", "它"]
+        .iter()
+        .any(|subject| before.contains(*subject))
+    {
+        return false;
+    }
+    let has_service = ["帮我", "帮忙", "替我", "为我", "为我们", "给我们", "帮我们"]
+        .iter()
+        .any(|marker| before.contains(*marker));
+    if ["我们", "咱们", "我", "咱", "自己", "本人"]
+        .iter()
+        .any(|subject| before.contains(*subject))
+        && !has_service
+    {
+        return false;
+    }
+
+    const STRONG_MARKERS: &[&str] = &[
+        "请", "帮我", "帮忙", "麻烦", "烦请", "劳驾", "立即", "马上", "立刻",
+        "赶紧", "快点", "抓紧", "尽快", "现在", "给我", "替我", "为我",
+        "为我们", "给我们", "帮我们",
+    ];
+    let has_strong = STRONG_MARKERS
+        .iter()
+        .any(|marker| before.starts_with(*marker));
+    let has_second_person = ["你", "您", "妳"]
+        .iter()
+        .any(|subject| before.contains(*subject));
+    let has_weak = before.contains('把');
+    if !has_weak && before.contains('的') {
+        return false;
+    }
+
+    if let Some(task_index) = after_clause.find("任务") {
+        let suffix = &after_clause[task_index + "任务".len()..];
+        return is_imperative_cancel_tail(suffix)
+            && (before.trim().is_empty() || has_strong || has_second_person);
+    }
+
+    if !is_imperative_cancel_tail(after_clause) {
+        return false;
+    }
+    if has_weak {
+        let subject = before.split('把').next().unwrap_or("");
+        if subject.contains('的') {
+            return false;
+        }
+        return subject.trim().is_empty() || has_strong || has_second_person;
+    }
+    has_strong
+}
+
+fn is_imperative_cancel_tail(tail: &str) -> bool {
+    const TAILS: &[&str] = &[
+        "", "吧", "啊", "呀", "哈", "哦", "啦", "咯", "呗", "嘛", "掉", "一下", "谢谢",
+        "多谢", "拜托", "掉吧", "一下吧", "一下呗",
+    ];
+    TAILS.contains(&tail)
+}
+
+fn is_clause_punctuation(c: char) -> bool {
+    matches!(c, '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';' | ':')
+}
+
+fn is_voice_status_query(trimmed: &str, lower: &str, tokens: &[String], has_task_word: bool) -> bool {
+    const QUERY_KEYWORDS_ZH: &[&str] = &[
+        "任务进度", "任务状态", "查询进度", "查询状态", "查询任务", "查看进度", "查看状态",
+        "情况怎么样", "怎么样了", "进展怎么样", "如何了", "做完了吗", "做到哪了", "完成了吗",
+        "执行得怎么样", "重听", "再播一遍", "再说一遍", "刚才说了什么", "再读一遍",
+    ];
+    const QUERY_KEYWORDS_EN: &[&str] = &[
+        "task status", "task progress", "what's the status", "what is the status",
+        "how is the task", "how's the task", "are you done", "is it done", "say again",
+        "repeat that", "pardon",
+    ];
+    if QUERY_KEYWORDS_ZH.iter().any(|keyword| trimmed.contains(keyword))
+        || QUERY_KEYWORDS_EN.iter().any(|keyword| lower.contains(keyword))
+    {
+        return true;
+    }
+    if has_task_word {
+        const TASK_QUERY_ZH: &[&str] = &[
+            "进度", "状态", "情况", "进展", "如何", "结束了吗", "取消了吗", "停止了吗",
+            "完成了吗", "完了吗", "怎么样了",
+        ];
+        if TASK_QUERY_ZH.iter().any(|keyword| trimmed.contains(keyword)) {
+            return true;
+        }
+        if tokens.iter().any(|token| matches!(token.as_str(), "progress" | "status")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns true if the optional locale string represents an English locale
+/// (e.g. "en", "en-US", "EN-US", "En-us", "en_GB", "EN_gb", "en.utf8").
+/// Case-insensitive, robust against separators ('-', '_', ' ', '.'), and panic-safe for any UTF-8 string.
+pub fn is_english_locale(locale: Option<&str>) -> bool {
+    locale.is_some_and(|l| {
+        l.split(['-', '_', ' ', '.'])
+            .next()
+            .is_some_and(|s| s.eq_ignore_ascii_case("en"))
+    })
+}
+
+#[cfg(test)]
+mod locale_helper_tests {
+    use super::*;
+
+    #[test]
+    fn test_is_english_locale_cases() {
+        assert!(is_english_locale(Some("en")));
+        assert!(is_english_locale(Some("EN")));
+        assert!(is_english_locale(Some("en-US")));
+        assert!(is_english_locale(Some("EN-US")));
+        assert!(is_english_locale(Some("En-us")));
+        assert!(is_english_locale(Some("en_GB")));
+        assert!(is_english_locale(Some("EN_gb")));
+        assert!(is_english_locale(Some("en.UTF-8")));
+
+        assert!(!is_english_locale(Some("zh-CN")));
+        assert!(!is_english_locale(Some("ZH-CN")));
+        assert!(!is_english_locale(Some("zh")));
+        assert!(!is_english_locale(Some("fr-FR")));
+        assert!(!is_english_locale(Some("")));
+        assert!(!is_english_locale(Some("   ")));
+        assert!(!is_english_locale(None));
+        assert!(!is_english_locale(Some("中")));
+        assert!(!is_english_locale(Some("中文")));
+        assert!(!is_english_locale(Some("日本語")));
+    }
+}
+
+#[cfg(test)]
+mod voice_task_control_contract_tests {
+    use super::*;
+
+    #[test]
+    fn control_command_roundtrips_optional_provenance() {
+        let command = VoiceTaskControlCommand {
+            scope: VoiceSessionControlRequest {
+                instance_id: "instance".into(),
+                session_id: Some("session".into()),
+                turn_id: Some("turn".into()),
+            },
+            task: VoiceTaskReference {
+                command_id: "command".into(),
+                conversation_id: Some("conversation".into()),
+                message_id: Some("message".into()),
+            },
+            action: VoiceTaskControlAction::CancelTask,
+            raw_user_text: Some("cancel the task".into()),
+            locale: Some("en-US".into()),
+        };
+        let encoded = serde_json::to_value(&command).unwrap();
+        assert_eq!(encoded["raw_user_text"], "cancel the task");
+        assert_eq!(encoded["locale"], "en-US");
+        let decoded: VoiceTaskControlCommand = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.action, VoiceTaskControlAction::CancelTask);
+        assert_eq!(decoded.raw_user_text.as_deref(), Some("cancel the task"));
+        assert_eq!(decoded.locale.as_deref(), Some("en-US"));
+    }
+}
+
+#[cfg(test)]
+mod task_control_classifier_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_requires_an_imperative_target() {
+        use VoiceTaskControlAction::{CancelTask, QueryStatus};
+        let cases = [
+            ("取消任务", Some(CancelTask)),
+            ("把任务取消", Some(CancelTask)),
+            ("请取消任务", Some(CancelTask)),
+            ("请帮我取消当前任务", Some(CancelTask)),
+            ("立即停止任务", Some(CancelTask)),
+            ("取消任务吧", Some(CancelTask)),
+            ("把任务取消吧", Some(CancelTask)),
+            ("请把任务取消", Some(CancelTask)),
+            ("取消任务，谢谢", Some(CancelTask)),
+            ("你取消任务", Some(CancelTask)),
+            ("取消任务。", Some(CancelTask)),
+            ("取消", Some(CancelTask)),
+            ("stop", Some(CancelTask)),
+            ("stop the task", Some(CancelTask)),
+            ("取消任务并查询进度", Some(QueryStatus)),
+            ("我把任务取消了", None),
+            ("把任务取消了", None),
+            ("把任务停止了", None),
+            ("取消任务很重要", None),
+            ("取消任务，可以吗", None),
+            ("取消任务可以吗", None),
+            ("取消任务好吗", None),
+            ("取消任务，好吗", None),
+            ("取消任务，多久", None),
+            ("取消任务？", None),
+            ("取消？", None),
+            ("stop?", None),
+            ("stop the task?", None),
+            ("cancel?", None),
+            ("cancel the task?", None),
+            ("我取消任务", None),
+            ("他取消任务", None),
+            ("取消任务了", None),
+            ("任务取消了", None),
+            ("任务取消", None),
+            ("不要取消任务", None),
+            ("取消任务，但是不要停止", None),
+            ("任务已经结束了", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                classify_voice_task_control(input),
+                expected,
+                "input={input:?}"
+            );
+            assert_eq!(
+                is_affirmative_cancel_command(input),
+                expected == Some(CancelTask),
+                "host guard input={input:?}"
+            );
+        }
+    }
 }
