@@ -120,7 +120,9 @@ impl LearningService {
         let topic = outline_brief_topic(&brief);
         let session = generate_id();
         let _task =
-            self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
+            self
+                .begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)
+                .await?;
         // t5(评审 S5):started 前导任何 triage/结构发现阶段帧——后续任何
         // failed(分诊/展开/导入失败)都有 started 前缀,进度视图不会收到
         // 无源 failed。

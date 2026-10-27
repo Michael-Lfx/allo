@@ -2892,6 +2892,20 @@ impl AppServices {
             knowledge_service.clone(),
             learning_completer,
         );
+        // 铸名门外部通行名证据（m11，ADR-0030 门内增强）：接线 DDG 无 key
+        // 搜索提供方；`NOMI_LEARNING_MINT_RESEARCH=off` = 零搜索零证据 =
+        // 现行为。接线失败 = 零搜索（fail-open 同律），只留结构化日志。
+        match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+            Ok(provider) => {
+                learning_service.set_mint_search_provider(std::sync::Arc::new(provider));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "mint research search provider unavailable; zero searches (fail-open)"
+                );
+            }
+        }
         // 学习图生长不再走 agent 循环（ADR-0009）：教练单次调用 + 结构门
         // + AI 概念评审都在 nomifun-learning 内部完成，注入点已删除。
         // Course outline agent engine: the two-loop tool-driven pipeline

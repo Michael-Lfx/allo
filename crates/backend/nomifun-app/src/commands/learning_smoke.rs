@@ -212,6 +212,17 @@ async fn wire(
     ));
     let service = Arc::new(LearningService::new(pool.clone()));
     service.set_generation_dependencies(knowledge_service.clone(), pipeline);
+    // 铸名门外部通行名证据（m11 双臂开关面）：接线 DDG 无 key 搜索提供方；
+    // `NOMI_LEARNING_MINT_RESEARCH=off` 臂在机制内零搜索（off = 现行为）。
+    // 接线失败 = 零搜索（fail-open 同律），只留一行提示。
+    match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+        Ok(provider) => {
+            service.set_mint_search_provider(std::sync::Arc::new(provider));
+        }
+        Err(error) => {
+            eprintln!("[mint-research] search provider unavailable, zero searches: {error}");
+        }
+    }
     // 传统课程（知识库 → 大纲）走与应用同款的双循环大纲引擎；此前的
     // smoke 档只覆盖学习图/课时内容，这条管线一直没有无头真机入口。
     service.set_course_outline_engine(Arc::new(
@@ -1327,6 +1338,14 @@ async fn run_grow(
                 stats.review_state_injections
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
+        }
+        // 铸名门外部证据读数（m11，读数面非门禁）：搜索/命中/扩邻/降级；
+        // off 臂（`NOMI_LEARNING_MINT_RESEARCH=off`）显式零 = 零搜索证明。
+        if let Some(mint) = wiring.service.mint_research_stats() {
+            println!(
+                "  [mint-research: searches={}, evidence_hits={}, expansions={}, degraded={}]",
+                mint.searches, mint.evidence_hits, mint.expansions, mint.degraded
+            );
         }
     }
 
@@ -2885,6 +2904,33 @@ async fn run_maintenance(
         first.idle,
         first.courses.len()
     );
+    // m7 任务资源闸读数（对照卡数据源）：tick 提交的 mount/repair 过闸占并发
+    // 账。判据形态——on 臂 running_peak ≤ limit 恒成立；off 臂 queued 恒 0、
+    // running 可超 limit（直跑形态读数）。
+    let gate = service.generation_gate_readout();
+    println!(
+        "gate read-out: enabled={} limit={} running={} running_peak={} queued={} queued_peak={}",
+        gate.enabled,
+        gate.limit,
+        gate.running,
+        gate.running_peak,
+        gate.queued,
+        gate.queued_peak
+    );
+    if gate.enabled {
+        anyhow::ensure!(
+            gate.running_peak <= gate.limit,
+            "gated arm running_peak must stay within the cap (got {} > {})",
+            gate.running_peak,
+            gate.limit
+        );
+    } else {
+        anyhow::ensure!(
+            gate.queued_peak == 0,
+            "off arm must never queue (queued_peak={})",
+            gate.queued_peak
+        );
+    }
     anyhow::ensure!(
         first.scanned == 1,
         "archived course must not be scanned (scanned={})",
@@ -2956,6 +3002,22 @@ async fn run_maintenance(
         second.scanned,
         second.idle,
         second.courses.len()
+    );
+    // m7 闸读数（收尾行）：两回合全部退出后在跑/排队应归零（许可不随异常
+    // 退出泄漏的 smoke 面投影）。
+    let gate_after = service.generation_gate_readout();
+    println!(
+        "gate read-out after tick2: running={} running_peak={} queued={} queued_peak={}",
+        gate_after.running,
+        gate_after.running_peak,
+        gate_after.queued,
+        gate_after.queued_peak
+    );
+    anyhow::ensure!(
+        gate_after.running == 0 && gate_after.queued == 0,
+        "gate must drain after ticks (running={} queued={})",
+        gate_after.running,
+        gate_after.queued
     );
     if watermark_enabled {
         anyhow::ensure!(

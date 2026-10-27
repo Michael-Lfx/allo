@@ -13,6 +13,27 @@ pub fn is_off_switch_value(value: &str) -> bool {
     )
 }
 
+/// 铸名门外部通行名证据开关（m11，ADR-0030 门内增强）：未设/其它取值 =
+/// 开启；`off` = 零搜索零证据 = 现行为（证据获取器 fail-open 的总闸）。
+pub const MINT_RESEARCH_SWITCH_ENV: &str = "NOMI_LEARNING_MINT_RESEARCH";
+
+/// 铸名门外部证据开关判定（[`is_off_switch_value`] 同款语义）。
+pub fn mint_research_enabled() -> bool {
+    std::env::var(MINT_RESEARCH_SWITCH_ENV)
+        .map(|value| !is_off_switch_value(&value))
+        .unwrap_or(true)
+}
+
+/// m7 任务资源闸的开关环境变量（`NOMI_LEARNING_TASK_GATE`）：off/0/false =
+/// 无上限直跑（闸前行为）；未设或其它取值 = 过闸（在跑上限 5 + FIFO 排队
+/// + 排队可见/可取消）。
+pub const TASK_GATE_SWITCH_ENV: &str = "NOMI_LEARNING_TASK_GATE";
+
+/// 任务资源闸关闭判定（off/0/false，大小写与首尾空白宽容）。
+pub fn is_task_gate_disabled_value(value: &str) -> bool {
+    is_off_switch_value(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,6 +45,22 @@ mod tests {
         }
         for value in ["on", "1", "true", "yes", "", " disable"] {
             assert!(!is_off_switch_value(value), "{value:?} 不关闭");
+        }
+    }
+
+    #[test]
+    fn task_gate_switch_delegates_to_off_values() {
+        for value in ["off", "0", "false", " OFF ", "False"] {
+            assert!(
+                is_task_gate_disabled_value(value),
+                "{value:?} = 闸关（直跑）"
+            );
+        }
+        for value in ["on", "1", "true", ""] {
+            assert!(
+                !is_task_gate_disabled_value(value),
+                "{value:?} = 闸开（cap 5 + 排队）"
+            );
         }
     }
 }

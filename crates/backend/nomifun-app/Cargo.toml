@@ -251,6 +251,10 @@ silero-vad = ["nomifun-robot/silero-vad"]
 [dependencies]
 tempfile.workspace = true
 
+# 铸名门外部通行名证据（m11）：组合根接线 DDG 无 key 搜索提供方。
+# backend → flowy-web 直依赖先例 = nomifun-briefing。
+flowy-web.workspace = true
+
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
 nomifun-db.workspace = true
