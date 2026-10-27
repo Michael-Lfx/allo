@@ -506,6 +506,8 @@ struct CreateTaskBody {
     last_frame_media_id: Option<String>,
     #[serde(default)]
     project_id: Option<String>,
+    #[serde(default)]
+    node_id: Option<String>,
 }
 
 async fn create_task(
@@ -529,6 +531,7 @@ async fn create_task(
             first_frame_media_id: body.first_frame_media_id,
             last_frame_media_id: body.last_frame_media_id,
             project_id: body.project_id,
+            node_id: body.node_id,
         })
         .await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(view))))
@@ -552,6 +555,9 @@ struct ListTasksQuery {
     /// When true, omit tasks that belong to a canvas project (node generations).
     #[serde(default)]
     standalone: bool,
+    /// When set, only tasks started from this canvas project.
+    #[serde(default)]
+    project_id: Option<String>,
 }
 
 fn default_task_limit() -> usize {
@@ -573,11 +579,19 @@ async fn list_tasks(
     // in one request.
     let limit = params.limit.clamp(1, 200);
     let offset = params.offset.min(10_000);
+    let project_id = params
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
     let tasks = state
         .service
-        .list_tasks(limit, offset, params.standalone)
+        .list_tasks(limit, offset, params.standalone, project_id)
         .await;
-    let total = state.service.task_count(params.standalone).await;
+    let total = state
+        .service
+        .task_count(params.standalone, project_id)
+        .await;
     Ok(Json(ApiResponse::ok(TaskListResponse { tasks, total })))
 }
 

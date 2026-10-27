@@ -18,6 +18,7 @@ import {
   cancelGenerationTask as alloCancel,
   createGenerationTask as alloCreate,
   getGenerationTask as alloGet,
+  listGenerationTasks as alloListTasks,
   type CreateGenerationBody,
   type GenerationTaskView,
 } from '@renderer/pages/videoCanvas/api';
@@ -37,6 +38,8 @@ export type GenerationTask = {
   id: string;
   sessionId?: string;
   projectId?: string;
+  /** Canvas node that owns this job. Survives a page reload even when the doc missed `taskId`. */
+  nodeId?: string;
   type: string;
   status: TaskStatus;
   progress?: number;
@@ -182,7 +185,7 @@ export type CreateTaskInput = {
   input?: Record<string, unknown>;
 };
 
-/** In-memory task index (allo has no list endpoint yet). */
+/** Session cache of tasks already seen in this page. Recovery also reads the server list. */
 const taskIndex = new Map<string, GenerationTask>();
 
 function mapStatus(status: GenerationTaskView['status']): TaskStatus {
@@ -194,19 +197,33 @@ function isoFromMs(ms: number | undefined): string {
   return new Date(ms || Date.now()).toISOString();
 }
 
+function canvasMediaKind(mode: string): 'video' | 'audio' | 'text' | 'image' {
+  const value = mode.toLowerCase();
+  if (value.includes('video') || value === 't2v' || value === 'i2v') return 'video';
+  if (value === 'audio' || value.includes('audio') || value === 'tts') return 'audio';
+  if (value === 'text' || value.includes('text')) return 'text';
+  return 'image';
+}
+
 function buildResultJson(view: GenerationTaskView): string | undefined {
   if (!view.result_media_id || view.status !== 'succeeded') return undefined;
   const mediaId = view.result_media_id;
   const url = resourceFileUrl(mediaId);
   const storageKey = resourceStorageKey(mediaId);
-  const mode = String(view.mode || '').toLowerCase();
-  const isVideo = mode.includes('video') || mode === 't2v' || mode === 'i2v';
-  if (isVideo) {
+  const kind = canvasMediaKind(String(view.mode || ''));
+  if (kind === 'video') {
     return JSON.stringify({
       mode: 'video',
       video: { dataUrl: url, storageKey, mimeType: 'video/mp4' },
     });
   }
+  if (kind === 'audio') {
+    return JSON.stringify({
+      mode: 'audio',
+      audio: { dataUrl: url, storageKey, mimeType: 'audio/mpeg' },
+    });
+  }
+  if (kind === 'text') return undefined;
   return JSON.stringify({
     mode: 'image',
     images: [{ dataUrl: url, storageKey, mimeType: 'image/png' }],
@@ -215,20 +232,20 @@ function buildResultJson(view: GenerationTaskView): string | undefined {
 
 export function mapAlloTask(view: GenerationTaskView, extra?: Partial<GenerationTask>): GenerationTask {
   const previewUrl = view.result_media_id ? resourceFileUrl(view.result_media_id) : undefined;
-  const mode = String(view.mode || '').toLowerCase();
-  const isVideo = mode.includes('video') || mode === 't2v' || mode === 'i2v';
+  const kind = canvasMediaKind(String(view.mode || ''));
   const task: GenerationTask = {
     ...extra,
     id: view.task_id,
     projectId: extra?.projectId || view.project_id || undefined,
-    type: extra?.type || `canvas_${isVideo ? 'video' : 'image'}`,
+    nodeId: extra?.nodeId || view.node_id || undefined,
+    type: extra?.type || `canvas_${kind}`,
     status: mapStatus(view.status),
     progress: Math.round((view.progress || 0) * 100),
     prompt: view.prompt || extra?.prompt || '',
     operation: extra?.operation,
     model: view.model || extra?.model,
     previewUrl,
-    previewKind: previewUrl ? (isVideo ? 'video' : 'image') : undefined,
+    previewKind: previewUrl ? (kind === 'video' ? 'video' : 'image') : undefined,
     resultJson: buildResultJson(view),
     error: view.error || undefined,
     attempts: 1,
@@ -425,7 +442,13 @@ export function alloBodyFromCreateInput(input: CreateTaskInput): CreateGeneratio
     first_frame_media_id: firstFrameId,
     last_frame_media_id: lastFrameId,
     ...(input.projectId?.trim() ? { project_id: input.projectId.trim() } : {}),
+    ...nodeIdFromTaskInput(metadata),
   };
+}
+
+function nodeIdFromTaskInput(metadata: Record<string, unknown>): { node_id: string } | Record<string, never> {
+  const nodeId = typeof metadata.nodeId === 'string' ? metadata.nodeId.trim() : '';
+  return nodeId ? { node_id: nodeId } : {};
 }
 
 export function createAgentSession(_input: CreateSessionInput): Promise<AgentSessionDetail> {
@@ -474,13 +497,15 @@ export async function createGenerationTask(input: CreateTaskInput) {
   return task;
 }
 
-export function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }) {
-  let tasks = [...taskIndex.values()];
-  if (options?.projectId) tasks = tasks.filter((t) => t.projectId === options.projectId);
+export async function listGenerationTasks(limit = 30, options?: { projectId?: string; activeOnly?: boolean }) {
+  const fetchLimit = options?.activeOnly ? Math.max(limit, 50) : limit;
+  const page = await alloListTasks(fetchLimit, 0, { projectId: options?.projectId });
+  let tasks = page.tasks.map((view) => mapAlloTask(view));
+  if (options?.projectId) tasks = tasks.filter((task) => task.projectId === options.projectId);
   if (options?.activeOnly) {
-    tasks = tasks.filter((t) => t.status === 'queued' || t.status === 'running');
+    tasks = tasks.filter((task) => task.status === 'queued' || task.status === 'running');
   }
-  return Promise.resolve(tasks.slice(0, limit));
+  return tasks.slice(0, limit);
 }
 
 export async function queryGenerationTask(id: string, _options?: { signal?: AbortSignal }) {
