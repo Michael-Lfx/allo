@@ -1,24 +1,44 @@
-//! 长任务注册表（三轮 t2）：进程内 keyed 注册 + `CancellationToken` 真取消
-//! + 快照/统一取消端点的数据源 + begin/finish 观测旁路。
+//! 长任务注册表（三轮 t2 + m7 资源闸）：进程内 keyed 注册 + `CancellationToken`
+//! 真取消 + 全局并发上限/排队（m7）+ 快照/统一取消端点的数据源 + begin/finish
+//! 观测旁路。
 //!
 //! - **键**：`{kind}:{course_id}:{node_id|-}`；同键并发 `begin` 拒绝
-//!   （Conflict），终态记录被同键新任务替换（历史看批行/草稿，不靠内存）。
-//! - **状态机**：`running → done | failed | cancelled`，终态**首写即定**
-//!   （幂等）：取消先到 = cancelled，任务先完成 = 竞速落败如实 done。
-//! - **排序**：注册序 `AtomicU64` 倒序（在跑置顶，同秒稳定）。
+//!   （Conflict；排队态同样拒绝——防双击双跑），终态记录被同键新任务替换
+//!   （历史看批行/草稿，不靠内存）。
+//! - **状态机**：`queued → running → done | failed | cancelled`（m7 起 queued
+//!   只在过闸路径出现；`NOMI_LEARNING_TASK_GATE=off` 时 begin 直跑、无
+//!   queued），终态**首写即定**（幂等）：取消先到 = cancelled，任务先完成 =
+//!   竞速落败如实 done。
+//! - **资源闸（m7，learnhub ADR-0029 缩编版）**：全局
+//!   [`tokio::sync::Semaphore`]（cap [`TASK_GATE_LIMIT`]，FIFO 公平）+ 排队
+//!   可见（快照 `queued_at_ms`/`queue_position`）+ 排队期取消窗口双侧闭合——
+//!   取消与 queued→running 迁移都在 tasks 锁内落账，acquire 到手后同锁复查
+//!   终态：半观察到的 queued 记录不可能跑 body（取消侧先写终态再触发 token，
+//!   等待侧 select 两臂都过同一把锁复查）。无完整资源元组注册表：allo 任务
+//!   面全部学习域任务，键级互斥（begin Conflict + 生成槽）已存在，全局 cap
+//!   之上不再叠 course 级串行（register_alias_tx 在 apply 事务内、defnear
+//!   纯读，风险面与 learnhub Grow 持 Registry 不同）。
+//! - **panic 容量防漏（m7）**：许可住 [`GenerationTaskGuard`]（RAII）——
+//!   tokio 任务 panic/abort 展开时 guard drop 归还许可并按 failed 留痕，
+//!   任何退出路径都不泄漏容量（选 RAII 而非 catch_unwind：任务体是 async
+//!   future，catch_unwind 需逐 poll 包 AssertUnwindSafe；tokio::spawn 边界
+//!   本就隔离 panic，RAII 覆盖 panic/abort/早退全部路径且零逐点代码）。
+//! - **排序**：注册序 `AtomicU64` 倒序（活跃置顶，同秒稳定）。
 //! - **真取消**：每个任务一枚 token；任务体在检查点轮询 + 经
 //!   [`CancellationCompleter`] 在 LLM 调用内 `select!` 真中断（中断 = 断
 //!   HTTP；批事务原子落库 = 中断零落库）。课时内容循环尚未接 token
-//!   （ADR-0004 显式差异，断开请求即中断）——对它的取消请求如实拒绝。
+//!   （ADR-0004 显式差异，断开请求即中断）——对它的取消请求如实拒绝
+//!   （排队期课时任务取消安全：body 零执行，不涉及 token 接线）。
 //! - **观测旁路**：begin/finish 两型 JSONL 行经注入的 observer 旁路落盘
 //!   （非执法；observer 缺席或写失败都静默降级）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use nomifun_common::AppError;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::completer::LearningCompleter;
@@ -38,10 +58,15 @@ pub(crate) const OBJECTIVE_KIND_SQL_LIST: &str =
      'ordering', 'matching'";
 
 /// 任务状态（终态首写即定）。
+pub(crate) const STATE_QUEUED: &str = "queued";
 pub(crate) const STATE_RUNNING: &str = "running";
 pub(crate) const STATE_DONE: &str = "done";
 pub(crate) const STATE_FAILED: &str = "failed";
 pub(crate) const STATE_CANCELLED: &str = "cancelled";
+
+/// 全局在跑任务上限（m7 资源闸；learnhub MAX_RUNNING_TASKS 同值 5）。只约束
+/// 过闸的 `begin` 路径；`NOMI_LEARNING_TASK_GATE=off` 时无上限直跑（闸前行为）。
+pub(crate) const TASK_GATE_LIMIT: usize = 5;
 
 /// 快照命令的单行视图（`GET /api/learning/generation-tasks`）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -51,13 +76,17 @@ pub struct GenerationTaskView {
     pub course_id: String,
     pub node_id: Option<String>,
     pub topic: String,
-    /// running | done | failed | cancelled。
+    /// queued | running | done | failed | cancelled（queued 只在过闸路径出现）。
     pub state: String,
     /// step 机器面（英文常量；前端不造步骤文案）。
     pub step: Option<String>,
     /// detail 人面（后端单源的单句中文）。
     pub detail: Option<String>,
     pub elapsed_secs: Option<u64>,
+    /// 排队登记时刻（unix ms；非 queued = None，m7 排队可见）。
+    pub queued_at_ms: Option<i64>,
+    /// 排队位次（1 起，注册序升序 = FIFO 提交序；非 queued = None）。
+    pub queue_position: Option<u32>,
 }
 
 struct TaskRecord {
@@ -71,14 +100,69 @@ struct TaskRecord {
     step: Option<String>,
     detail: Option<String>,
     started_at: Instant,
+    /// 排队登记时刻（unix ms；过闸路径在 queued 落位时写）。
+    queued_at_ms: Option<i64>,
+}
+
+/// 闸许可的 RAII 包装：drop（finish_*/panic/abort 任何退出路径）即归还许可
+/// 并回收在跑读数——panic 容量防漏的落点（模块注释「panic 容量防漏」节）。
+/// 在跑读数两臂都记（off 臂无许可可还，但读数要反映直跑形态）。
+struct GatePermit {
+    permit: Option<OwnedSemaphorePermit>,
+    registry: Arc<GenerationTaskRegistry>,
+}
+
+impl GatePermit {
+    /// 过闸臂：持真实许可（drop 归还信号量）。
+    fn acquire(
+        registry: &Arc<GenerationTaskRegistry>,
+        permit: OwnedSemaphorePermit,
+    ) -> Self {
+        Self {
+            permit: Some(permit),
+            registry: Self::count_running(registry),
+        }
+    }
+
+    /// off 臂：无许可，仅记在跑读数（直跑形态读数）。
+    fn uncounted(registry: &Arc<GenerationTaskRegistry>) -> Self {
+        Self {
+            permit: None,
+            registry: Self::count_running(registry),
+        }
+    }
+
+    fn count_running(registry: &Arc<GenerationTaskRegistry>) -> Arc<GenerationTaskRegistry> {
+        let running = registry
+            .gate_running
+            .fetch_add(1, AtomicOrdering::SeqCst)
+            + 1;
+        registry
+            .gate_running_peak
+            .fetch_max(running, AtomicOrdering::SeqCst);
+        Arc::clone(registry)
+    }
+}
+
+impl Drop for GatePermit {
+    fn drop(&mut self) {
+        self.registry.gate_running.fetch_sub(1, AtomicOrdering::SeqCst);
+        // 许可（若过闸）随结构体销毁归还信号量（字段仅为 Drop 副作用持有）。
+        let _ = &self.permit;
+    }
 }
 
 /// 一次长任务的注册句柄：`token()` 供任务体接检查点；显式 `finish_*` 收尾
 /// （终态首写即定）；未收尾即 drop（任务被 abort/panic）按 failed 留痕。
+/// 过闸任务的许可住守卫内（RAII）：任何退出路径（含 panic 展开）都归还
+/// 许可，容量不随异常退出泄漏。
 pub(crate) struct GenerationTaskGuard {
     registry: Arc<GenerationTaskRegistry>,
     key: String,
     token: CancellationToken,
+    /// 在跑占用（过闸 = 真许可，off 臂 = 仅读数；drop 即归还，任何退出路径
+    /// 含 panic 展开都不泄漏）。
+    permit: GatePermit,
 }
 
 impl GenerationTaskGuard {
@@ -121,6 +205,8 @@ impl Drop for GenerationTaskGuard {
             self.registry
                 .finish(&self.key.clone(), STATE_FAILED, "任务中断（未收尾即退出）".into());
         }
+        // 许可（若过闸）在此归还——panic/abort 展开也走这里，容量不泄漏。
+        let _ = &self.permit;
     }
 }
 
@@ -132,14 +218,55 @@ pub(crate) struct GenerationTaskRegistry {
     /// 观测旁路（begin/finish JSONL 行；非执法，写失败降级）。由组合根
     /// 注入（`LearningService::set_generation_task_observer`）。
     observer: std::sync::Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
+    /// 资源闸（m7）：`Some` = 过闸（cap [`TASK_GATE_LIMIT`]，FIFO）；
+    /// `None` = off（`NOMI_LEARNING_TASK_GATE=off`，无上限直跑 = 闸前行为）。
+    gate: Option<Arc<Semaphore>>,
+    /// 闸面读数（smoke 对照卡数据源）：在跑/排队的当前值与峰值。在跑计数
+    /// 跟许可生命周期走（[`GatePermit`] 构造 +1 / drop -1，真实资源占用面）；
+    /// 排队计数跟 queued 状态迁移走（登记 +1，acquire 迁移或排队取消 -1，
+    /// 每条记录离开 queued 恰一次）。
+    gate_running: AtomicUsize,
+    gate_running_peak: AtomicUsize,
+    gate_queued: AtomicUsize,
+    gate_queued_peak: AtomicUsize,
 }
 
 impl GenerationTaskRegistry {
     pub(crate) fn new() -> Self {
+        Self::with_gate(Self::gate_enabled_from_env(), TASK_GATE_LIMIT)
+    }
+
+    /// 以给定闸状态建注册表（测试面双臂显式构造，避免环境变量串扰）。
+    pub(crate) fn with_gate(enabled: bool, limit: usize) -> Self {
         Self {
             tasks: std::sync::Mutex::new(HashMap::new()),
             sequence: AtomicU64::new(1),
             observer: std::sync::Mutex::new(None),
+            gate: enabled.then(|| Arc::new(Semaphore::new(limit.max(1)))),
+            gate_running: AtomicUsize::new(0),
+            gate_running_peak: AtomicUsize::new(0),
+            gate_queued: AtomicUsize::new(0),
+            gate_queued_peak: AtomicUsize::new(0),
+        }
+    }
+
+    /// 开关读数（进程生命周期一次）：`NOMI_LEARNING_TASK_GATE` off/0/false =
+    /// 关（无上限直跑）；未设或其它值 = 开。
+    fn gate_enabled_from_env() -> bool {
+        std::env::var(crate::switches::TASK_GATE_SWITCH_ENV)
+            .map(|value| !crate::switches::is_task_gate_disabled_value(&value))
+            .unwrap_or(true)
+    }
+
+    /// 闸面读数（smoke 对照卡数据源）。
+    pub(crate) fn gate_readout(&self) -> crate::models::LearningTaskGateReadout {
+        crate::models::LearningTaskGateReadout {
+            enabled: self.gate.is_some(),
+            limit: TASK_GATE_LIMIT,
+            running: self.gate_running.load(AtomicOrdering::SeqCst),
+            running_peak: self.gate_running_peak.load(AtomicOrdering::SeqCst),
+            queued: self.gate_queued.load(AtomicOrdering::SeqCst),
+            queued_peak: self.gate_queued_peak.load(AtomicOrdering::SeqCst),
         }
     }
 
@@ -162,10 +289,19 @@ impl GenerationTaskRegistry {
         format!("{kind}:{course_id}:{}", node_id.unwrap_or("-"))
     }
 
-    /// 登记一个长任务：同键已有 `running` 记录 = 并发拒绝（Conflict）；同键
-    /// 终态记录被新任务替换。观测旁路发 begin 行。`self: &Arc<Self>`——
-    /// guard 需要回引注册表（finish/Drop 收尾）。
-    pub(crate) fn begin(
+    /// 登记一个长任务（m7 起异步、过闸）：同键已有 `queued|running` 记录 =
+    /// 并发拒绝（Conflict）；同键终态记录被新任务替换。观测旁路发 begin 行。
+    /// `self: &Arc<Self>`——guard 需要回引注册表（finish/Drop 收尾）。
+    ///
+    /// 流程（learnhub `run_task` 提交段的 tokio 等价形态）：
+    /// 1. 注册即落 `queued` 记录（gate off = 直落 running，闸前行为零变化）；
+    /// 2. `Semaphore::acquire_owned` 与 token 取消 `select!` 等准入；
+    /// 3. 许可到手后**同锁复查终态**（排队取消窗口双侧闭合的裁决点：取消侧
+    ///    在 tasks 锁内先写终态再触发 token，等待侧 select 两臂都在同一把
+    ///    锁内复查——半观察到的 queued 记录构造上不可能跑 body）；
+    /// 4. 复查见 cancelled = 排队期取消：许可原样归还、queued 计数回收、
+    ///    返回取消冲突错误（body 零执行）；复查见 queued = 迁移 running 开跑。
+    pub(crate) async fn begin(
         self: &Arc<Self>,
         kind: &'static str,
         course_id: &str,
@@ -173,35 +309,42 @@ impl GenerationTaskRegistry {
         topic: &str,
     ) -> Result<GenerationTaskGuard, AppError> {
         let key = Self::key(kind, course_id, node_id);
-        let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
-        if tasks
-            .get(&key)
-            .is_some_and(|record| record.state == STATE_RUNNING)
-        {
-            return Err(AppError::Conflict(format!(
-                "generation task already running: {key}"
-            )));
-        }
-        let sequence = self
-            .sequence
-            .fetch_add(1, AtomicOrdering::Relaxed);
         let token = CancellationToken::new();
-        tasks.insert(
-            key.clone(),
-            TaskRecord {
-                sequence,
-                kind,
-                course_id: course_id.to_owned(),
-                node_id: node_id.map(str::to_owned),
-                topic: topic.to_owned(),
-                state: STATE_RUNNING,
-                token: token.clone(),
-                step: None,
-                detail: None,
-                started_at: Instant::now(),
-            },
-        );
-        drop(tasks);
+        let gated = self.gate.is_some();
+        {
+            let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
+            if tasks.get(&key).is_some_and(|record| {
+                record.state == STATE_RUNNING || record.state == STATE_QUEUED
+            }) {
+                return Err(AppError::Conflict(format!(
+                    "generation task already running: {key}"
+                )));
+            }
+            let sequence = self
+                .sequence
+                .fetch_add(1, AtomicOrdering::Relaxed);
+            if gated {
+                let queued_now = self.gate_queued.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                self.gate_queued_peak
+                    .fetch_max(queued_now, AtomicOrdering::SeqCst);
+            }
+            tasks.insert(
+                key.clone(),
+                TaskRecord {
+                    sequence,
+                    kind,
+                    course_id: course_id.to_owned(),
+                    node_id: node_id.map(str::to_owned),
+                    topic: topic.to_owned(),
+                    state: if gated { STATE_QUEUED } else { STATE_RUNNING },
+                    token: token.clone(),
+                    step: None,
+                    detail: None,
+                    started_at: Instant::now(),
+                    queued_at_ms: gated.then(now_ms),
+                },
+            );
+        }
         self.emit_observation(serde_json::json!({
             "type": "begin",
             "key": key,
@@ -210,10 +353,69 @@ impl GenerationTaskRegistry {
             "at": now_ms(),
         })
         .to_string());
+
+        // —— 过闸等待：许可到手后同锁复查终态（见方法注释第 3 步）。
+        let permit = match self.gate.clone() {
+            None => GatePermit::uncounted(self),
+            Some(semaphore) => {
+                let mut acquired: Option<OwnedSemaphorePermit> = None;
+                loop {
+                    let cancelled = token.clone();
+                    tokio::select! {
+                        granted = semaphore.clone().acquire_owned() => {
+                            acquired = Some(
+                                granted.map_err(|_| {
+                                    AppError::Internal("generation task gate closed".into())
+                                })?,
+                            );
+                        }
+                        _ = cancelled.cancelled() => {}
+                    }
+                    // 同锁复查：这里读到什么就是什么（取消与迁移同锁落账）。
+                    let terminal = {
+                        let mut tasks =
+                            self.tasks.lock().expect("generation task registry poisoned");
+                        let Some(record) = tasks.get_mut(&key) else {
+                            return Err(AppError::Internal(format!(
+                                "generation task record vanished: {key}"
+                            )));
+                        };
+                        if record.state == STATE_QUEUED {
+                            if acquired.is_some() {
+                                // 准入：queued → running 单一临界区（开始时刻
+                                // 改写为真实开跑时点）。
+                                record.state = STATE_RUNNING;
+                                record.started_at = Instant::now();
+                            }
+                            None
+                        } else {
+                            Some(record.state)
+                        }
+                    };
+                    if terminal.is_some() {
+                        // 排队期取消：许可（若已到手）原样归还，body 零执行。
+                        // 排队读数已由取消侧（cancel 的 queued 分支）回收——
+                        // 这里只是等待者退场，不是状态迁移，不重复回收。
+                        drop(acquired);
+                        return Err(AppError::Conflict(CANCELLED_MESSAGE.to_owned()));
+                    }
+                    if acquired.is_some() {
+                        // 准入迁移（queued → running）：排队读数随之回收。
+                        let queued_before = self.gate_queued.fetch_sub(1, AtomicOrdering::SeqCst);
+                        debug_assert!(queued_before > 0, "queued counter underflow");
+                        break;
+                    }
+                    // token 已触发而终态未落（构造上不可达：cancel 先写终态再
+                    // 触发 token，且同一把锁）——防御性重等。
+                }
+                GatePermit::acquire(self, acquired.expect("loop breaks only after acquire"))
+            }
+        };
         Ok(GenerationTaskGuard {
             registry: Arc::clone(self),
             key,
             token,
+            permit,
         })
     }
 
@@ -254,8 +456,11 @@ impl GenerationTaskRegistry {
         self.emit_observation(line);
     }
 
-    /// 请求取消：任务在跑且可取消（growth/structure/outline；lesson 尚未
-    /// 接 token，见模块注释）→ 置 cancelled 终态 + 触发 token，返回
+    /// 请求取消：排队中 = 终态 cancelled + 触发 token（唤醒等待者；等待者
+    /// 同锁复查见终态即返回取消错误——**body 零执行**，许可未持有、排队位随
+    /// 等待 future 丢弃释放；课时任务的排队期取消安全，不涉 token 接线）；
+    /// 任务在跑且可取消（growth/structure/outline；lesson 尚未接 token，见
+    /// 模块注释）→ 置 cancelled 终态 + 触发 token，返回
     /// `Some(cancelled 视图状态)`；任务已终态（竞速落败）→ None。
     /// 取消胜出 = cancelled 终态；随后任务体的 finish 全部无操作。
     pub(crate) fn cancel(&self, key: &str) -> Result<Option<&'static str>, AppError> {
@@ -263,6 +468,17 @@ impl GenerationTaskRegistry {
         let Some(record) = tasks.get_mut(key) else {
             return Ok(None);
         };
+        if record.state == STATE_QUEUED {
+            // 排队期取消（m7 取消窗口的取消侧）：终态先落（同锁），再触发
+            // token 唤醒等待者——顺序保证等待者复查时终态必已可见。
+            record.state = STATE_CANCELLED;
+            record.detail = Some("已取消".into());
+            record.step = None;
+            record.token.cancel();
+            let queued_before = self.gate_queued.fetch_sub(1, AtomicOrdering::SeqCst);
+            debug_assert!(queued_before > 0, "queued counter underflow");
+            return Ok(Some(STATE_CANCELLED));
+        }
         if record.state != STATE_RUNNING {
             return Ok(None);
         }
@@ -278,15 +494,16 @@ impl GenerationTaskRegistry {
         Ok(Some(STATE_CANCELLED))
     }
 
-    /// 取消全部在跑任务（legacy 全局取消端点的转发面；lesson 跳过）。
-    /// 返回实际取消数。
+    /// 取消全部在跑/排队任务（legacy 全局取消端点的转发面；在跑 lesson 跳过，
+    /// 排队 lesson 安全可取）。返回实际取消数。
     pub(crate) fn cancel_running(&self) -> usize {
         let keys: Vec<String> = {
             let tasks = self.tasks.lock().expect("generation task registry poisoned");
             tasks
                 .iter()
                 .filter(|(_, record)| {
-                    record.state == STATE_RUNNING && record.kind != KIND_LESSON
+                    (record.state == STATE_RUNNING && record.kind != KIND_LESSON)
+                        || record.state == STATE_QUEUED
                 })
                 .map(|(key, _)| key.clone())
                 .collect()
@@ -300,15 +517,35 @@ impl GenerationTaskRegistry {
         cancelled
     }
 
-    /// 快照（在跑置顶、注册序倒序；终态随后同序）。
+    /// 排队面摘要（queued 计数 + 最新排队任务的 topic；generation_status 的
+    /// queued 读数源）。
+    pub(crate) fn queued_summary(&self) -> (usize, Option<String>) {
+        let tasks = self.tasks.lock().expect("generation task registry poisoned");
+        let mut rows: Vec<(u64, String)> = tasks
+            .values()
+            .filter(|record| record.state == STATE_QUEUED)
+            .map(|record| (record.sequence, record.topic.clone()))
+            .collect();
+        drop(tasks);
+        rows.sort_by_key(|(sequence, _)| *sequence);
+        (
+            rows.len(),
+            rows.last().map(|(_, topic)| topic.clone()),
+        )
+    }
+
+    /// 快照（活跃置顶、注册序倒序；终态随后同序）。活跃 = queued ∪ running
+    /// （m7 排队可见）；queued 行带 `queued_at_ms` 与 FIFO 位次（注册序升序
+    /// 中的名次，1 起）。
     pub(crate) fn snapshot(&self) -> Vec<GenerationTaskView> {
         let tasks = self.tasks.lock().expect("generation task registry poisoned");
         let mut rows: Vec<(u64, bool, TaskRecord)> = tasks
             .values()
             .map(|record| {
+                let active = record.state == STATE_RUNNING || record.state == STATE_QUEUED;
                 (
                     record.sequence,
-                    record.state == STATE_RUNNING,
+                    active,
                     TaskRecord {
                         sequence: record.sequence,
                         kind: record.kind,
@@ -320,25 +557,45 @@ impl GenerationTaskRegistry {
                         step: record.step.clone(),
                         detail: record.detail.clone(),
                         started_at: record.started_at,
+                        queued_at_ms: record.queued_at_ms,
                     },
                 )
             })
             .collect();
         drop(tasks);
         rows.sort_by(|a, b| b.0.cmp(&a.0));
-        rows.sort_by_key(|(_, running, _)| !*running);
+        rows.sort_by_key(|(_, active, _)| !*active);
+        // 排队位次：注册序升序（= FIFO 提交序）中的名次。
+        let mut queue_order: Vec<u64> = rows
+            .iter()
+            .filter(|(_, _, record)| record.state == STATE_QUEUED)
+            .map(|(sequence, _, _)| *sequence)
+            .collect();
+        queue_order.sort_unstable();
+        let queue_position = |sequence: u64| -> Option<u32> {
+            queue_order
+                .iter()
+                .position(|queued| *queued == sequence)
+                .map(|index| index as u32 + 1)
+        };
         rows.into_iter()
-            .map(|(_, _, record)| GenerationTaskView {
-                key: Self::key(record.kind, &record.course_id, record.node_id.as_deref()),
-                kind: record.kind.to_owned(),
-                course_id: record.course_id.clone(),
-                node_id: record.node_id.clone(),
-                topic: record.topic.clone(),
-                state: record.state.to_owned(),
-                step: record.step.clone(),
-                detail: record.detail.clone(),
-                elapsed_secs: (record.state == STATE_RUNNING)
-                    .then(|| record.started_at.elapsed().as_secs()),
+            .map(|(_, _, record)| {
+                let queued = record.state == STATE_QUEUED;
+                GenerationTaskView {
+                    key: Self::key(record.kind, &record.course_id, record.node_id.as_deref()),
+                    kind: record.kind.to_owned(),
+                    course_id: record.course_id.clone(),
+                    node_id: record.node_id.clone(),
+                    topic: record.topic.clone(),
+                    state: record.state.to_owned(),
+                    step: record.step.clone(),
+                    detail: record.detail.clone(),
+                    elapsed_secs: (record.state == STATE_RUNNING)
+                        .then(|| record.started_at.elapsed().as_secs()),
+                    queued_at_ms: queued.then(|| record.queued_at_ms.unwrap_or_default()),
+                    queue_position: queued.then(|| queue_position(record.sequence))
+                        .flatten(),
+                }
             })
             .collect()
     }
@@ -376,19 +633,123 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    /// m7 闸面测试共用：显式 on 臂构造（不读环境变量，测试互不串扰）。
+    fn gated_registry() -> Arc<GenerationTaskRegistry> {
+        Arc::new(GenerationTaskRegistry::with_gate(true, TASK_GATE_LIMIT))
+    }
+
+    /// 测试闸：占位任务体 arrive 后停在 wait_open，等 open() 放行
+    /// （learnhub 测试闸的 tokio 轮询版；current_thread 运行时友好）。
+    struct TestGate {
+        arrived: AtomicUsize,
+        open: std::sync::atomic::AtomicBool,
+    }
+
+    impl TestGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                arrived: AtomicUsize::new(0),
+                open: std::sync::atomic::AtomicBool::new(false),
+            })
+        }
+
+        fn arrive(&self) {
+            self.arrived.fetch_add(1, AtomicOrdering::SeqCst);
+        }
+
+        async fn wait_arrived(&self, target: usize, timeout: Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            while self.arrived.load(AtomicOrdering::SeqCst) < target {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            true
+        }
+
+        fn open(&self) {
+            self.open.store(true, AtomicOrdering::SeqCst);
+        }
+
+        async fn wait_open(&self, timeout: Duration) -> Result<(), String> {
+            let deadline = std::time::Instant::now() + timeout;
+            while !self.open.load(AtomicOrdering::SeqCst) {
+                if std::time::Instant::now() >= deadline {
+                    return Err("gate open timeout".into());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok(())
+        }
+    }
+
+    /// 占满在跑空位（n 个占位任务，body 等闸放行）：返回 join 句柄组。
+    /// `prefix` 区分同注册表内的多批占位（键防撞）。
+    fn fill_capacity(
+        registry: &Arc<GenerationTaskRegistry>,
+        gate: Arc<TestGate>,
+        prefix: &str,
+        n: usize,
+    ) -> Vec<tokio::task::JoinHandle<Result<(), AppError>>> {
+        (0..n)
+            .map(|i| {
+                let registry = Arc::clone(registry);
+                let gate = Arc::clone(&gate);
+                let key = format!("{prefix}fill{i}");
+                tokio::spawn(async move {
+                    let guard = registry.begin(KIND_GROWTH, &key, None, "fill").await?;
+                    gate.arrive();
+                    gate.wait_open(Duration::from_secs(10))
+                        .await
+                        .map_err(AppError::Conflict)?;
+                    guard.finish_done("fill done");
+                    Ok(())
+                })
+            })
+            .collect()
+    }
+
+    /// 轮询快照直到出现指定键与状态（超时 = false）。
+    async fn wait_state(
+        registry: &Arc<GenerationTaskRegistry>,
+        key: &str,
+        state: &str,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if registry
+                .snapshot()
+                .iter()
+                .any(|task| task.key == key && task.state == state)
+            {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
 
     /// 终态幂等：finish 之后再 finish/取消都不改写终态。
-    #[test]
-    fn terminal_states_are_idempotent() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
+    #[tokio::test]
+    async fn terminal_states_are_idempotent() {
+        let registry = gated_registry();
         let task = registry
             .begin(KIND_GROWTH, "course-1", None, "t")
+            .await
             .expect("first begin");
         task.finish_done("ok");
         // 终态后的取消/收尾全是无操作（竞速落败如实 done）。
         assert_eq!(registry.cancel("growth:course-1:-").unwrap(), None);
         let guard = registry
             .begin(KIND_GROWTH, "course-2", None, "t2")
+            .await
             .expect("second begin on another key");
         guard.finish_failed("boom");
         assert_eq!(registry.cancel("growth:course-2:-").unwrap(), None);
@@ -399,14 +760,15 @@ mod tests {
     }
 
     /// 同键并发 begin 拒绝；终态后同键新任务替换旧记录。
-    #[test]
-    fn same_key_begin_is_rejected_until_terminal() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
-        let first = registry.begin(KIND_STRUCTURE, "c", None, "a").unwrap();
-        assert!(registry.begin(KIND_STRUCTURE, "c", None, "b").is_err());
+    #[tokio::test]
+    async fn same_key_begin_is_rejected_until_terminal() {
+        let registry = gated_registry();
+        let first = registry.begin(KIND_STRUCTURE, "c", None, "a").await.unwrap();
+        assert!(registry.begin(KIND_STRUCTURE, "c", None, "b").await.is_err());
         first.finish_done("ok");
         let second = registry
             .begin(KIND_STRUCTURE, "c", None, "b")
+            .await
             .expect("terminal record is replaced");
         second.finish_cancelled();
         let snapshot = registry.snapshot();
@@ -415,10 +777,10 @@ mod tests {
     }
 
     /// 取消胜出 = cancelled 终态 + token 触发；guard 的 drop 不改写终态。
-    #[test]
-    fn cancel_wins_the_race_and_fires_the_token() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
-        let guard = registry.begin(KIND_GROWTH, "c", None, "t").unwrap();
+    #[tokio::test]
+    async fn cancel_wins_the_race_and_fires_the_token() {
+        let registry = gated_registry();
+        let guard = registry.begin(KIND_GROWTH, "c", None, "t").await.unwrap();
         let token = guard.token();
         assert_eq!(registry.cancel("growth:c:-").unwrap(), Some(STATE_CANCELLED));
         assert!(token.is_cancelled(), "cancellation fires the task token");
@@ -427,21 +789,21 @@ mod tests {
     }
 
     /// drop 未收尾 = failed 留痕（abort/panic 的观测面兜底）。
-    #[test]
-    fn dropping_a_running_guard_marks_failed() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
+    #[tokio::test]
+    async fn dropping_a_running_guard_marks_failed() {
+        let registry = gated_registry();
         {
-            let _guard = registry.begin(KIND_GROWTH, "c", None, "t").unwrap();
+            let _guard = registry.begin(KIND_GROWTH, "c", None, "t").await.unwrap();
         }
         assert_eq!(registry.snapshot()[0].state, STATE_FAILED);
     }
 
     /// 快照排序：在跑置顶、注册序倒序（同秒稳定序判据）。
-    #[test]
-    fn snapshot_orders_running_first_by_registration_sequence() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
-        let a = registry.begin(KIND_GROWTH, "a", None, "a").unwrap();
-        let _b = registry.begin(KIND_GROWTH, "b", None, "b").unwrap();
+    #[tokio::test]
+    async fn snapshot_orders_running_first_by_registration_sequence() {
+        let registry = gated_registry();
+        let a = registry.begin(KIND_GROWTH, "a", None, "a").await.unwrap();
+        let _b = registry.begin(KIND_GROWTH, "b", None, "b").await.unwrap();
         a.finish_done("ok");
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.len(), 2);
@@ -450,11 +812,388 @@ mod tests {
     }
 
     /// 课时任务如实拒绝远程取消（循环内 token 接线的显式差异）。
-    #[test]
-    fn lesson_tasks_refuse_cancellation() {
-        let registry = Arc::new(GenerationTaskRegistry::new());
-        let _guard = registry.begin(KIND_LESSON, "c", Some("l"), "t").unwrap();
+    #[tokio::test]
+    async fn lesson_tasks_refuse_cancellation() {
+        let registry = gated_registry();
+        let _guard = registry
+            .begin(KIND_LESSON, "c", Some("l"), "t")
+            .await
+            .unwrap();
         assert!(registry.cancel("lesson:c:l").is_err());
+    }
+
+    /// m7 并发上限：6 任务同时提交，5 跑 1 排队；排队行带 FIFO 位次与
+    /// queued_at；读数面 running_peak 恰为 cap、queued_peak ≥ 1。
+    #[tokio::test]
+    async fn gate_caps_running_at_five_and_queues_the_rest() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(
+            gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await,
+            "占位任务应全部在跑"
+        );
+        let readout = registry.gate_readout();
+        assert!(readout.enabled);
+        assert_eq!(readout.running, TASK_GATE_LIMIT, "占位恰满在跑上限");
+
+        // 第 6 个任务：排队等待。
+        let sixth = {
+            let registry = Arc::clone(&registry);
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                let guard = registry
+                    .begin(KIND_GROWTH, "overflow", None, "t")
+                    .await?;
+                gate.arrive();
+                gate.wait_open(Duration::from_secs(10))
+                    .await
+                    .map_err(AppError::Conflict)?;
+                guard.finish_done("overflow done");
+                Ok::<(), AppError>(())
+            })
+        };
+        assert!(
+            wait_state(&registry, "growth:overflow:-", STATE_QUEUED, Duration::from_secs(5)).await,
+            "超编任务应停在 queued：{:?}",
+            registry.snapshot()
+        );
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == "growth:overflow:-")
+            .expect("queued row in snapshot");
+        assert_eq!(view.queue_position, Some(1), "唯一排队者位次 1");
+        assert!(view.queued_at_ms.is_some(), "排队登记时刻可见");
+        assert_eq!(registry.gate_readout().queued, 1);
+
+        // 放行：排队者准入并跑完；峰值读数守上限。
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+        sixth.await.unwrap().unwrap();
+        let readout = registry.gate_readout();
+        assert_eq!(readout.running_peak, TASK_GATE_LIMIT, "在跑峰值 = cap");
+        assert!(readout.queued_peak >= 1, "排队峰值在场");
+        assert_eq!(readout.running, 0, "全部跑完后在跑归零");
+    }
+
+    /// m7 排队取消：queued 期 cancel → 终态 cancelled 立即可见、body 零执行
+    /// （排队取消窗口取消侧）；许可与排队位随之释放（后续满编可再准入）。
+    #[tokio::test]
+    async fn queued_cancel_terminates_without_running_the_body() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+
+        let body_ran = Arc::new(AtomicUsize::new(0));
+        let waiter = {
+            let registry = Arc::clone(&registry);
+            let gate = Arc::clone(&gate);
+            let body_ran = Arc::clone(&body_ran);
+            tokio::spawn(async move {
+                let guard = registry.begin(KIND_GROWTH, "victim", None, "t").await?;
+                body_ran.fetch_add(1, AtomicOrdering::SeqCst);
+                gate.arrive();
+                gate.wait_open(Duration::from_secs(10))
+                    .await
+                    .map_err(AppError::Conflict)?;
+                guard.finish_done("victim done");
+                Ok::<(), AppError>(())
+            })
+        };
+        assert!(
+            wait_state(&registry, "growth:victim:-", STATE_QUEUED, Duration::from_secs(5)).await,
+            "排队者应停在 queued"
+        );
+
+        assert_eq!(
+            registry.cancel("growth:victim:-").unwrap(),
+            Some(STATE_CANCELLED),
+            "排队取消胜出"
+        );
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == "growth:victim:-")
+            .expect("取消记录在册");
+        assert_eq!(view.state, STATE_CANCELLED, "终态立即落账");
+        assert_eq!(view.queue_position, None, "取消后不再带排队位次");
+        assert_eq!(registry.gate_readout().queued, 0, "排队位随取消释放");
+
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+        let result = waiter.await.unwrap();
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains(CANCELLED_MESSAGE)),
+            "排队取消 = 取消错误（body 零执行）：{result:?}"
+        );
+        assert_eq!(body_ran.load(AtomicOrdering::SeqCst), 0, "body 零执行");
+
+        // 容量未泄漏：满编 5 可再次全部准入。
+        let gate2 = TestGate::new();
+        let fillers2 = fill_capacity(&registry, Arc::clone(&gate2), "b", TASK_GATE_LIMIT);
+        assert!(
+            gate2.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await,
+            "取消后容量应完整可用"
+        );
+        gate2.open();
+        for handle in fillers2 {
+            handle.await.unwrap().unwrap();
+        }
+    }
+
+    /// 排队取消竞速压力（learnhub 同名测试移植）：N 轮「提交者提交（容量满，
+    /// 必然排队）+ 主线程尽快 cancel」全交错压力。不变式：cancel 落在排队段
+    /// （返回 Some）⇒ body 零执行且提交以取消错误终；cancel 落在提交前
+    /// （返回 None）⇒ 任务照常排队、放行后跑完——坏实现（排队期取消丢失
+    /// 窗口）会让 body 在放行潮里被准入跑掉，执行计数当场暴露。
+    /// 多线程运行时：提交与取消真并发，交错窗口才真实存在。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_during_submission_never_lets_queued_body_run() {
+        const ROUNDS: usize = 60;
+        for round in 0..ROUNDS {
+            let registry = gated_registry();
+            let gate = TestGate::new();
+            let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+            assert!(
+                gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await,
+                "第 {round} 轮：占位任务应全部在跑：{:?}",
+                registry.snapshot()
+            );
+
+            let body_ran = Arc::new(AtomicUsize::new(0));
+            let submitter = {
+                let registry = Arc::clone(&registry);
+                let gate = Arc::clone(&gate);
+                let body_ran = Arc::clone(&body_ran);
+                tokio::spawn(async move {
+                    let guard = registry.begin(KIND_GROWTH, "race", None, "t").await?;
+                    body_ran.fetch_add(1, AtomicOrdering::SeqCst);
+                    gate.arrive();
+                    gate.wait_open(Duration::from_secs(10))
+                        .await
+                        .map_err(AppError::Conflict)?;
+                    guard.finish_done("race done");
+                    Ok::<(), AppError>(())
+                })
+            };
+            // 尽快取消：与提交侧全交错（注册临界区前/内/后），坏窗口只在
+            // 高速交错下出现。
+            let cancelled = registry.cancel("growth:race:-");
+            gate.open();
+            let submit_result = submitter.await.unwrap();
+            match cancelled {
+                Ok(Some(_)) => {
+                    assert_eq!(
+                        body_ran.load(AtomicOrdering::SeqCst),
+                        0,
+                        "第 {round} 轮：排队期取消返回 Some 而 body 执行（排队取消丢失）"
+                    );
+                    assert!(
+                        submit_result
+                            .as_ref()
+                            .is_err_and(|error| error.to_string().contains(CANCELLED_MESSAGE)),
+                        "第 {round} 轮：排队取消应返回取消错误：{submit_result:?}"
+                    );
+                }
+                _ => {
+                    // cancel 抢在注册之前（键不存在 = None）：任务随后照常
+                    // 排队、跑完、收 done，本轮无取消语义可言。
+                    submit_result.unwrap();
+                    assert_eq!(body_ran.load(AtomicOrdering::SeqCst), 1);
+                }
+            }
+            for handle in fillers {
+                handle.await.unwrap().unwrap();
+            }
+        }
+    }
+
+    /// m7 panic 容量防漏（RAII 臂）：任务体 panic → guard 随 unwind drop，
+    /// 许可归还 + failed 留痕；事发后满编 5 个并发全部准入（若泄漏一个许可
+    /// 这里到点不足 5）；同键随后可重新提交。
+    #[tokio::test]
+    async fn body_panic_releases_the_permit_and_marks_failed() {
+        let registry = gated_registry();
+        let handle = {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move {
+                let guard = registry
+                    .begin(KIND_GROWTH, "panic", None, "t")
+                    .await
+                    .expect("begin should acquire immediately");
+                let _guard = guard;
+                panic!("爆炸：任务体内部错误");
+            })
+        };
+        let join = handle.await;
+        assert!(join.is_err_and(|error| error.is_panic()), "panic 原样上抛");
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == "growth:panic:-")
+            .expect("panic 任务也在册");
+        assert_eq!(view.state, STATE_FAILED, "guard drop 收 failed 终态");
+
+        // 容量未泄漏：满编并发全准入 = 在跑计数已归零。
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(
+            gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await,
+            "panic 后许可应归还（5 个并发全准入）：{:?}",
+            registry.snapshot()
+        );
+        gate.open();
+        for filler in fillers {
+            filler.await.unwrap().unwrap();
+        }
+        assert_eq!(registry.gate_readout().running, 0);
+
+        // 同键新尝试照常（记录可替换，容量可用）。
+        let again = registry
+            .begin(KIND_GROWTH, "panic", None, "t2")
+            .await
+            .expect("panic 终态后同键重新提交");
+        again.finish_done("ok");
+        assert_eq!(
+            registry
+                .snapshot()
+                .into_iter()
+                .find(|task| task.key == "growth:panic:-")
+                .unwrap()
+                .state,
+            STATE_DONE
+        );
+    }
+
+    /// m7 键级互斥回归：排队态同样拒绝同键并发 begin（防双击双跑面扩大到
+    /// queued）。
+    #[tokio::test]
+    async fn same_key_rejection_covers_queued_records() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+
+        let queued = {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move { registry.begin(KIND_GROWTH, "dup", None, "a").await })
+        };
+        assert!(
+            wait_state(&registry, "growth:dup:-", STATE_QUEUED, Duration::from_secs(5)).await,
+            "排队者在册"
+        );
+        let second = registry.begin(KIND_GROWTH, "dup", None, "b").await;
+        assert!(second.is_err(), "同键排队态同样拒绝（排队态也在互斥面）");
+
+        registry.cancel("growth:dup:-").unwrap();
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+        assert!(queued.await.unwrap().is_err(), "排队取消收尾");
+    }
+
+    /// m7 off 臂：`NOMI_LEARNING_TASK_GATE=off` = 无上限直跑（闸前行为）——
+    /// 8 并发全部立即 running（超 cap 5）、零排队、读数为直跑形态。
+    #[tokio::test]
+    async fn off_arm_runs_unbounded_without_queue() {
+        let registry = Arc::new(GenerationTaskRegistry::with_gate(false, TASK_GATE_LIMIT));
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "c", 8);
+        assert!(
+            gate.wait_arrived(8, Duration::from_secs(5)).await,
+            "off 臂无上限：8 个占位应全部立即在跑"
+        );
+        let readout = registry.gate_readout();
+        assert!(!readout.enabled, "off 臂闸不在场");
+        assert_eq!(readout.queued, 0, "off 臂无排队");
+        assert_eq!(readout.queued_peak, 0);
+        assert_eq!(
+            readout.running_peak, 8,
+            "off 臂 running_peak 超 cap（直跑形态）"
+        );
+        // 快照无 queued 投影字段。
+        let snapshot = registry.snapshot();
+        assert!(snapshot.iter().all(|task| task.state == STATE_RUNNING));
+        assert!(snapshot.iter().all(|task| task.queue_position.is_none()));
+        assert!(snapshot.iter().all(|task| task.queued_at_ms.is_none()));
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+    }
+
+    /// m7 FIFO 排队：位次按注册序；放行单个空位时队头先准入（非插队）。
+    #[tokio::test]
+    async fn queued_tasks_report_fifo_positions_and_acquire_in_order() {
+        let registry = gated_registry();
+        let shared = TestGate::new();
+        let mut handles = fill_capacity(&registry, Arc::clone(&shared), "s", TASK_GATE_LIMIT - 1);
+        // 第五个占位用独享闸，便于单独放行一枚许可。
+        let solo = TestGate::new();
+        handles.push(fill_capacity(&registry, Arc::clone(&solo), "z", 1).pop().unwrap());
+        assert!(shared.wait_arrived(TASK_GATE_LIMIT - 1, Duration::from_secs(5)).await);
+        assert!(solo.wait_arrived(1, Duration::from_secs(5)).await);
+
+        // 两个排队者：位次按提交序。
+        let victims = TestGate::new();
+        let spawn_victim = |registry: Arc<GenerationTaskRegistry>, key: &'static str| {
+            let victims = Arc::clone(&victims);
+            tokio::spawn(async move {
+                let guard = registry.begin(KIND_GROWTH, key, None, "victim").await?;
+                victims.arrive();
+                victims.wait_open(Duration::from_secs(10))
+                    .await
+                    .map_err(AppError::Conflict)?;
+                guard.finish_done("victim done");
+                Ok::<(), AppError>(())
+            })
+        };
+        let first = spawn_victim(Arc::clone(&registry), "first");
+        assert!(
+            wait_state(&registry, "growth:first:-", STATE_QUEUED, Duration::from_secs(5)).await,
+            "first 应排队"
+        );
+        let second = spawn_victim(Arc::clone(&registry), "second");
+        assert!(
+            wait_state(&registry, "growth:second:-", STATE_QUEUED, Duration::from_secs(5)).await,
+            "second 应排队"
+        );
+        let position_of = |key: &str| {
+            registry
+                .snapshot()
+                .into_iter()
+                .find(|task| task.key == key)
+                .and_then(|task| task.queue_position)
+        };
+        assert_eq!(position_of("growth:first:-"), Some(1), "先提交者位次 1");
+        assert_eq!(position_of("growth:second:-"), Some(2), "后提交者位次 2");
+
+        // 放行一枚许可：队头（first）先准入，second 顶上位次 1。
+        solo.open();
+        assert!(
+            wait_state(&registry, "growth:first:-", STATE_RUNNING, Duration::from_secs(5)).await,
+            "队头应先准入：{:?}",
+            registry.snapshot()
+        );
+        assert_eq!(position_of("growth:second:-"), Some(1));
+
+        victims.open();
+        shared.open();
+        let mut all = handles;
+        all.push(first);
+        all.push(second);
+        for handle in all {
+            handle.await.unwrap().unwrap();
+        }
     }
 
     /// CancellationCompleter：调用中取消 → 内层恰被调一次、结果丢弃。

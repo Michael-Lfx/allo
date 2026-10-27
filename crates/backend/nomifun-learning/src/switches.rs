@@ -37,4 +37,20 @@ mod tests {
             assert!(!is_off_switch_value(value), "{value:?} 不关闭");
         }
     }
+
+    #[test]
+    fn task_gate_switch_delegates_to_off_values() {
+        for value in ["off", "0", "false", " OFF ", "False"] {
+            assert!(
+                is_task_gate_disabled_value(value),
+                "{value:?} = 闸关（直跑）"
+            );
+        }
+        for value in ["on", "1", "true", ""] {
+            assert!(
+                !is_task_gate_disabled_value(value),
+                "{value:?} = 闸开（cap 5 + 排队）"
+            );
+        }
+    }
 }

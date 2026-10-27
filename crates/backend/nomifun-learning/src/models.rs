@@ -125,6 +125,23 @@ pub struct LearningGraphGenerationStatus {
     pub running: bool,
     pub topic: Option<String>,
     pub elapsed_secs: Option<u64>,
+    /// 排队任务数（m7 资源闸排队可见；off 臂恒 0）。
+    pub queued: usize,
+}
+
+/// 任务资源闸读数（m7，smoke 对照卡数据源）：闸状态 + 在跑/排队的当前值与
+/// 峰值。判据形态：on 臂 `running_peak <= limit` 恒成立；off 臂 `queued` 恒
+/// 0、`running_peak` 可超 limit（直跑形态读数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningTaskGateReadout {
+    /// 闸是否在场（`NOMI_LEARNING_TASK_GATE` 未关）。
+    pub enabled: bool,
+    /// 在跑上限（常量 5）。
+    pub limit: usize,
+    pub running: usize,
+    pub running_peak: usize,
+    pub queued: usize,
+    pub queued_peak: usize,
 }
 
 impl GenerateCourseRequest {
