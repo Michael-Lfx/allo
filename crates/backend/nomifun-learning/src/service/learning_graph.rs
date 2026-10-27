@@ -1617,6 +1617,9 @@ impl LearningService {
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
         let mut batch_rulings: Option<HashMap<String, String>> = None;
         let mut attempts_used = 0usize;
+        // 挂号表机械校验读数（m3 smoke rows/invalid/retried/degraded）：
+        // 跨预算轮累加，随 growth stats 落内存态（读数面非门禁）。
+        let mut provenance_readout = crate::learning_graph::provenance::ProvenanceReadout::default();
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
             attempts_used = attempt;
@@ -1786,8 +1789,10 @@ impl LearningService {
                 &candidate,
                 &context,
                 &candidates_text,
+                &outcome.provenance_known.iter().cloned().collect::<Vec<_>>(),
             )
             .await;
+            provenance_readout.merge(&review.provenance);
             // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
             // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
             // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
@@ -2071,7 +2076,7 @@ impl LearningService {
             stop_reason = "success";
             break;
         }
-        self.record_growth_stats(attempts_used, stop_reason);
+        self.record_growth_stats(attempts_used, stop_reason, provenance_readout);
         if stop_reason == "cancelled" {
             return Err(cancel_err());
         }
@@ -2137,13 +2142,23 @@ impl LearningService {
         sections.join("\n")
     }
 
-    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据
-    /// 源；读数面非门禁）。内存态，仅诊断。
-    pub(crate) fn record_growth_stats(&self, attempts_used: usize, stop_reason: &str) {
+    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 与 m3 挂
+    /// 号表读数行 rows/invalid/retried/degraded 的数据源；读数面非门禁）。
+    /// 内存态，仅诊断。
+    pub(crate) fn record_growth_stats(
+        &self,
+        attempts_used: usize,
+        stop_reason: &str,
+        provenance: crate::learning_graph::provenance::ProvenanceReadout,
+    ) {
         if let Ok(mut stats) = self.growth_run_stats.lock() {
             *stats = Some(GrowthRunStats {
                 attempts_used,
                 stop_reason: stop_reason.to_owned(),
+                review_provenance_rows: provenance.rows,
+                review_provenance_invalid: provenance.invalid,
+                review_provenance_retried: provenance.retried,
+                review_provenance_degraded: provenance.degraded,
             });
         }
     }
@@ -2679,6 +2694,26 @@ impl LearningService {
         }
         // 深度水位门已退役（g3：档位比较是精度剧场）——难度诚实性由 AI 概念
         // 评审门作语义兜底。
+        // 评审挂号表的已知名池（m3）：已教账 ∪ 登记表活跃名+别名 ∪ 本批
+        // 铸名/提名（小写折叠）——机械校验所需的已知名字池，评审上下文已
+        // 装配的机械面输入原样复用（learnhub `ReviewInput.known_names` 同缝）。
+        let mut provenance_known: HashSet<String> = coverage.keys().cloned().collect();
+        provenance_known.extend(registry_names.iter().cloned());
+        for mint in &batch.mints {
+            provenance_known.insert(mint.canonical.trim().to_lowercase());
+            for alias in &mint.aliases {
+                let alias = alias.trim();
+                if !alias.is_empty() {
+                    provenance_known.insert(alias.to_lowercase());
+                }
+            }
+        }
+        for nomination in &batch.new_aliases {
+            let name = nomination.name.trim();
+            if !name.is_empty() {
+                provenance_known.insert(name.to_lowercase());
+            }
+        }
         Ok(crate::learning_graph::GateOutcome {
             errors,
             nominations,
@@ -2688,6 +2723,7 @@ impl LearningService {
                 .collect(),
             registry_name_hosts,
             auto_reusals,
+            provenance_known,
         })
     }
 
