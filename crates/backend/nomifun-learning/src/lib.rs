@@ -77,9 +77,9 @@ pub use learning_graph::structure_contract::{
 pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, CourseDetail,
-    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, ConceptAuditCycle,
-    ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, DiagnosticItem, DiagnosticPlan,
+    ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, CourseDetail,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DeclareBasisRequest,
+    DeclarationResultView, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,

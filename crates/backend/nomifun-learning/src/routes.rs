@@ -17,7 +17,7 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
     QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
@@ -81,6 +81,13 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/graph/structure",
             get(get_structure_view),
         )
+        // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点）
+        // + 读数 + 撤销（概念留池）。off 开关 = 409 如实拒绝（service 侧执法）。
+        .route(
+            "/api/learning/courses/{id}/basis/declare",
+            post(declare_basis),
+        )
+        .route("/api/learning/courses/{id}/basis", get(get_basis).delete(revoke_basis))
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}", patch(rename_course))

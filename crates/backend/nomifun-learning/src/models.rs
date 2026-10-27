@@ -1867,6 +1867,14 @@ pub struct GraphConceptRowView {
     pub refs: Vec<GraphConceptRefView>,
     /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
     pub other_courses: Vec<String>,
+    /// 铸造出处（attestation 簿记，068：可空；`basis-declaration` =
+    /// 已会声明铸入——前端据此出「已会声明」来源徽标）。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 本课已会声明覆盖该概念（声明锚反查；无节点也入表——声明概念的
+    /// 表内位置）。
+    #[serde(default)]
+    pub declared: bool,
 }
 
 /// 一条活跃别名（j04）：名字 + 该名字的意义（投影角度定义，缺席 = 与概念

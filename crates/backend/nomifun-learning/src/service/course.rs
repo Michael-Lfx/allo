@@ -691,6 +691,13 @@ impl LearningService {
             .execute(&mut *transaction)
             .await
             .map_err(internal)?;
+        // 已会声明锚随课删（m2，逻辑引用 Cascade 的应用侧执行面——声明是本
+        // 课事实；铸出的概念留池不受影响，「声明可撤、概念不灭」）。
+        sqlx::query("DELETE FROM learning_basis_declarations WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(internal)?;
         // 软删除：课程行留作墓碑（名称即标识、deleted_at 即删除状态位），
         // 遗留数据凭 course_id 归账，后续清理时有据可查。
         sqlx::query(
