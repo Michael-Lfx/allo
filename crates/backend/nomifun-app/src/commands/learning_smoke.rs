@@ -1288,6 +1288,16 @@ async fn run_grow(
     }
 
     for round in 1..=batches {
+        // 自动补批判定读数（m10，读数面非门禁）：裁决结果 + ready 数——
+        // 双臂对照卡数据源（on 臂 due + 批后 ready 上升；off 臂 disabled
+        // 如实）。读不到不拦流程（冒烟对象是生长管线本身）。
+        match wiring.service.growth_verdict(&wiring.owner, &course_id).await {
+            Ok(view) => println!(
+                "[auto-refill] round {round} pre  verdict={} ready={} trigger={} enabled={} stalled={}",
+                view.verdict, view.ready_count, view.trigger, view.enabled, view.stalled
+            ),
+            Err(error) => println!("[auto-refill] round {round} pre verdict readout unavailable: {error}"),
+        }
         if round > 1 {
             // 确定性学习者替身：首节点完成、其余跳过（两种满足路径都过，
             // 进度事件自动触发下一轮生长——与真实学习者同线）。
