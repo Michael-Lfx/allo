@@ -58,6 +58,8 @@ pub struct VoiceCompanionStatus {
     pub playback_ready: bool,
     #[serde(default)]
     pub task_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<nomifun_api_types::voice::VoiceCapabilityReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +83,34 @@ struct VoiceCompanionPersistedConfig {
 struct AudioRecovery {
     attempts: u8,
     next_attempt_ms: Option<i64>,
+}
+
+/// Bounded automatic daemon restart budget: 2s / 5s / 15s, at most three
+/// attempts. A stable run of 60 seconds clears the budget.
+#[derive(Default)]
+struct RestartBudget {
+    attempts: u8,
+    next_attempt: Option<tokio::time::Instant>,
+    running_since: Option<tokio::time::Instant>,
+    exhausted_reported: bool,
+}
+
+impl RestartBudget {
+    const MAX_ATTEMPTS: u8 = 3;
+
+    fn delay(attempt: u8) -> std::time::Duration {
+        match attempt {
+            0 => std::time::Duration::from_secs(2),
+            1 => std::time::Duration::from_secs(5),
+            _ => std::time::Duration::from_secs(15),
+        }
+    }
+}
+
+enum RestartDecision {
+    Wait(std::time::Duration),
+    StartNow,
+    Exhausted,
 }
 
 impl AudioRecovery {
@@ -1270,12 +1300,168 @@ impl HandledStartOutcome {
     }
 }
 
+#[derive(Clone)]
+struct StoredCapabilities {
+    report: nomifun_api_types::voice::VoiceCapabilityReport,
+    attempt: u64,
+    expires_at_ms: i64,
+    signature: String,
+}
+
+fn readiness_runtime_scope_valid(
+    snapshot: &nomifun_api_types::voice::VoiceSessionSnapshot,
+    now_ms: i64,
+) -> bool {
+    let audio = snapshot.audio.as_ref();
+    let recent_pcm = audio.is_some_and(|value| {
+        value.frames_received > 0
+            && value
+                .last_frame_at_ms
+                .is_some_and(|at| now_ms.saturating_sub(at) <= 2_000)
+            && value.capture_state != "closed"
+    });
+    snapshot.enabled
+        && snapshot.connection == VoiceConnectionState::Connected
+        && snapshot.acoustic_ready
+        && snapshot.playback_ready
+        && recent_pcm
+        && audio.is_some_and(|value| value.asr_ready && value.vad_ready)
+}
+fn tts_self_check_languages_valid(
+    response: &nomifun_api_types::voice::VoiceTtsSelfCheckResponse,
+) -> bool {
+    ["zh-CN", "en-US"].iter().all(|language| {
+        response.languages.iter().any(|entry| {
+            let expected_ms = (entry.samples as u64).saturating_mul(1_000)
+                / u64::from(entry.sample_rate.max(1));
+            entry.language == *language
+                && entry.ok
+                && (8_000..=48_000).contains(&entry.sample_rate)
+                && entry.samples > 0
+                && (100..=30_000).contains(&entry.duration_ms)
+                && entry.duration_ms.abs_diff(expected_ms) <= 100
+                && (entry.rms_milli >= 5 || entry.peak_milli >= 20)
+        })
+    })
+}
+/// Dropping an unfinished readiness check releases the host admission flag and
+/// cancels the daemon-side fixed-sample playback/work for this check id.
+struct SelfCheckFlight {
+    manager: std::sync::Weak<VoiceCompanionProcessManager>,
+    check_id: String,
+    finished: bool,
+}
+
+impl Drop for SelfCheckFlight {
+    fn drop(&mut self) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        manager.self_check_active.store(false, Ordering::Release);
+        if self.finished {
+            return;
+        }
+        let check_id = self.check_id.clone();
+        let origin = manager.daemon_origin.clone();
+        let token = manager.control_token.clone();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        handle.spawn(async move {
+            let client = match reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+            {
+                Ok(client) => client,
+                Err(_) => return,
+            };
+            if let Err(error) = client
+                .post(format!(
+                    "{origin}/api/voice/diagnostics/tts-self-check/cancel"
+                ))
+                .header("x-ai-mate-control-token", token)
+                .json(&serde_json::json!({ "check_id": check_id }))
+                .send()
+                .await
+            {
+                tracing::warn!(%error, "voice_self_check_cancel_failed");
+            }
+        });
+    }
+}
+/// Holds the host-side model-write gate. Dropping it re-opens call admission
+/// and restarts the daemon only when the user's enable intent is still valid.
+pub struct ModelWriteGuard {
+    manager: std::sync::Weak<VoiceCompanionProcessManager>,
+    resume_daemon: bool,
+    released: bool,
+}
+
+impl std::fmt::Debug for ModelWriteGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelWriteGuard")
+            .field("resume_daemon", &self.resume_daemon)
+            .field("released", &self.released)
+            .finish()
+    }
+}
+
+impl Drop for ModelWriteGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        manager.resource_write_active.store(false, Ordering::Release);
+        if !self.resume_daemon {
+            return;
+        }
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(error) = manager.resume_after_model_write().await {
+                        warn!(%error, "voice_daemon_restart_after_model_write_failed");
+                    }
+                });
+            }
+            Err(error) => warn!(%error, "voice_model_write_guard_dropped_without_runtime"),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct ChildExitObservation {
+    pub pid: u32,
+    pub code: Option<i32>,
+    pub observed_at_ms: i64,
+}
+
 pub struct VoiceCompanionProcessManager {
     audio_recovery:std::sync::Mutex<AudioRecovery>,
+    resource_write_active:AtomicBool,
+    self_check_lock:tokio::sync::Mutex<()>,
+    self_check_active:AtomicBool,
+    self_check_cancel_signal:tokio::sync::Notify,
+    self_check_attempt:AtomicU64,
+    capabilities:std::sync::RwLock<Option<StoredCapabilities>>,
+    restart_budget:std::sync::Mutex<RestartBudget>,
     prompted_approvals:std::sync::Mutex<std::collections::VecDeque<String>>,
     revoked_sessions: RwLock<std::collections::VecDeque<String>>,
     task_feedback: std::sync::Mutex<TaskFeedbackTracker>,
     daemon_origin: String,
+    #[cfg(test)]
+    test_daemon_port: Option<u16>,
+    #[cfg(test)]
+    last_child_exit: Arc<std::sync::Mutex<Option<ChildExitObservation>>>,
+    #[cfg(test)]
+    test_child_pid: Arc<std::sync::atomic::AtomicU32>,
     tasks: Option<Arc<VoiceTaskService>>,
     data_dir: PathBuf,
     task_projection_started: AtomicBool,
@@ -1327,6 +1513,665 @@ impl VoiceCompanionProcessManager {
             || self.dialogue_recorder.as_ref().and_then(|r| r.current_call_reservation()).is_some_and(|r| r.conversation_id == id)
     }
 
+    async fn push_admission(&self, scope: &str, allowed: bool, expires_at_ms: i64) {
+        let client = match reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return,
+        };
+        if let Err(error) = client
+            .post(format!("{}/api/voice/admission", self.daemon_origin))
+            .header("x-ai-mate-control-token", &self.control_token)
+            .json(&serde_json::json!({
+                "scope": scope,
+                "allowed": allowed,
+                "expires_at_ms": expires_at_ms,
+            }))
+            .send()
+            .await
+        {
+            tracing::warn!(%error, "voice_wake_admission_push_failed");
+        }
+    }
+    async fn refresh_wake_admission(&self) {
+        if self.self_check_active.load(Ordering::Acquire) {
+            self.push_admission("wake", false, 0).await;
+            self.push_admission("call", false, 0).await;
+            return;
+        }
+        let capabilities = self.current_capabilities().await;
+        let expires_at_ms = capabilities
+            .as_ref()
+            .and_then(|report| report.checked_at_ms)
+            .map(|checked| checked.saturating_add(60_000))
+            .unwrap_or(0);
+        let wake = capabilities.as_ref().is_some_and(|report| report.can_wake);
+        let call = capabilities
+            .as_ref()
+            .is_some_and(|report| report.can_start_full_call);
+        self.push_admission("wake", wake, if wake { expires_at_ms } else { 0 })
+            .await;
+        self.push_admission("call", call, if call { expires_at_ms } else { 0 })
+            .await;
+    }
+    fn invalidate_capabilities_if(&self, attempt: u64, generation: u64) {
+        let mut guard = self
+            .capabilities
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        if guard
+            .as_ref()
+            .is_some_and(|stored| stored.attempt == attempt && stored.report.generation == generation)
+        {
+            *guard = None;
+        }
+    }
+    fn invalidate_capabilities(&self) {
+        *self
+            .capabilities
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+    }
+
+    async fn capability_signature(&self) -> String {
+        let status = self.models_manager.get_status().await;
+        let snapshot = self.snapshot();
+        let dialogue = match &self.dialogue_completer {
+            Some(completer) => completer.configuration_revision().await,
+            None => "unconfigured".into(),
+        };
+        let tts = snapshot
+            .tts
+            .as_ref()
+            .map(|value| {
+                format!(
+                    "{}:{}:{}",
+                    value.provider,
+                    value.voice.as_deref().unwrap_or(""),
+                    value.online
+                )
+            })
+            .unwrap_or_else(|| "unknown".into());
+        let audio = snapshot.audio.as_ref();
+        let daemon_instance_id = self
+            .source
+            .read()
+            .ok()
+            .and_then(|s| s.as_ref().map(|(id, _)| id.clone()))
+            .unwrap_or_else(|| "none".into());
+        let worker_epoch = snapshot.worker_epoch.unwrap_or(0);
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            snapshot.instance_id,
+            daemon_instance_id,
+            worker_epoch,
+            self.generation.load(Ordering::Acquire),
+            status.state.status_name(),
+            status.models_dir.display(),
+            status.total_size_bytes,
+            self.models_manager.identity_revision(),
+            snapshot.dialogue_ready,
+            dialogue,
+            tts,
+            snapshot.playback_ready,
+            audio.is_some_and(|value| value.asr_ready),
+            audio.is_some_and(|value| value.vad_ready),
+            audio
+                .map(|value| value.capture_state.as_str())
+                .unwrap_or("none")
+        )
+    }
+
+    /// Returns the stored report only while its attempt, version signature and
+    /// TTL are still current. Expiry never runs a background check or hangs up
+    /// an established call.
+    pub async fn current_capabilities(
+        &self,
+    ) -> Option<nomifun_api_types::voice::VoiceCapabilityReport> {
+        let stored = self
+            .capabilities
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()?;
+        let observed_attempt = stored.attempt;
+        let observed_generation = stored.report.generation;
+        if nomifun_common::now_ms() > stored.expires_at_ms
+            || observed_attempt != self.self_check_attempt.load(Ordering::Acquire)
+            || observed_generation != self.generation.load(Ordering::Acquire)
+            || stored.signature != self.capability_signature().await
+        {
+            self.invalidate_capabilities_if(observed_attempt, observed_generation);
+            return None;
+        }
+        // The cached report must still describe the current runtime: a 60s TTL
+        // alone cannot hide a dead microphone, sink or engine between reads.
+        if !readiness_runtime_scope_valid(&self.snapshot(), nomifun_common::now_ms()) {
+            self.invalidate_capabilities_if(observed_attempt, observed_generation);
+            return None;
+        }
+        // A newer check may have published while this read was validating.
+        let still_current = self
+            .capabilities
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|current| {
+                current.attempt == observed_attempt && current.signature == stored.signature
+            });
+        if !still_current {
+            return None;
+        }
+        Some(stored.report)
+    }
+
+    /// Explicit user-triggered full check. Capture comes from fresh PCM; TTS and
+    /// playback come from the production daemon provider; the LLM check is a
+    /// fixed, tool-free, context-free request and is opt-in because it may cost.
+    /// Cancels the current explicit readiness check (including its fixed-sample
+    /// playback) without touching an established voice call.
+    pub fn cancel_self_check(&self) {
+        self.self_check_cancel_signal.notify_waiters();
+    }
+
+    pub async fn run_self_check(
+        self: &Arc<Self>,
+        include_llm: bool,
+    ) -> Result<nomifun_api_types::voice::VoiceCapabilityReport, String> {
+        self.run_self_check_with_locale_and_stage(include_llm, None, None).await
+    }
+
+    pub async fn run_self_check_with_locale_and_stage(
+        self: &Arc<Self>,
+        include_llm: bool,
+        locale: Option<String>,
+        stage: Option<String>,
+    ) -> Result<nomifun_api_types::voice::VoiceCapabilityReport, String> {
+        tokio::select! {
+            biased;
+            _ = self.self_check_cancel_signal.notified() => Err("self_check_cancelled".into()),
+            result = self.run_self_check_inner(include_llm, locale, stage) => result,
+        }
+    }
+
+    async fn run_self_check_inner(
+        self: &Arc<Self>,
+        include_llm: bool,
+        locale: Option<String>,
+        stage: Option<String>,
+    ) -> Result<nomifun_api_types::voice::VoiceCapabilityReport, String> {
+        use nomifun_api_types::voice::{
+            VoiceCapabilityEvidence, VoiceCapabilityReport, VoiceCapabilityStatus,
+            VoiceEngineSelfCheckResponse, VoiceTtsSelfCheckResponse,
+        };
+        let _guard = self.self_check_lock.lock().await;
+        {
+            let _admission = self.call_start_lock.lock().await;
+            if self.self_check_active.load(Ordering::Acquire) {
+                return Err("self_check_in_progress".into());
+            }
+            if self.voice_suite_in_use() {
+                return Err("voice_suite_in_use".into());
+            }
+            self.self_check_active.store(true, Ordering::Release);
+        }
+        let attempt = self.self_check_attempt.fetch_add(1, Ordering::AcqRel) + 1;
+        let checked_at_ms = nomifun_common::now_ms();
+        let generation = self.generation.load(Ordering::Acquire);
+        let snapshot = self.snapshot();
+        let check_id = format!("{}-{}", snapshot.instance_id, attempt);
+        let mut flight = SelfCheckFlight {
+            manager: Arc::downgrade(self),
+            check_id,
+            finished: false,
+        };
+        self.push_admission("wake", false, 0).await;
+        self.push_admission("call", false, 0).await;
+        let signature = self.capability_signature().await;
+        let evidence = |status: VoiceCapabilityStatus,
+                        reason_code: Option<&str>,
+                        evidence: &str| VoiceCapabilityEvidence {
+            status,
+            reason_code: reason_code.map(str::to_owned),
+            evidence: evidence.into(),
+            checked_at_ms: Some(checked_at_ms),
+        };
+        let audio = snapshot.audio.as_ref();
+        let recent_pcm = audio.is_some_and(|value| {
+            value.frames_received > 0
+                && value
+                    .last_frame_at_ms
+                    .is_some_and(|at| checked_at_ms.saturating_sub(at) <= 2_000)
+                && value.capture_state != "closed"
+        });
+        let capture = if recent_pcm {
+            evidence(VoiceCapabilityStatus::Ready, None, "recent_pcm")
+        } else {
+            evidence(
+                VoiceCapabilityStatus::Failed,
+                Some("capture_no_recent_pcm"),
+                "recent_pcm",
+            )
+        };
+        let daemon_source = self.source.read().ok().and_then(|s| s.clone());
+        let daemon_instance_id = daemon_source.as_ref().map(|(id, _)| id.clone());
+        let expected_worker_epoch = snapshot.worker_epoch.unwrap_or(0);
+        let engine_request_id = format!("engine-{}-{}", snapshot.instance_id, attempt);
+        let model_revision = self.models_manager.identity_revision();
+        let (engine_response, engine_bind_reason): (Option<VoiceEngineSelfCheckResponse>, Option<&str>) = {
+            let client = match reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(90))
+                .build()
+            {
+                Ok(client) => client,
+                Err(_) => return Err("engine_check_client_failed".into()),
+            };
+            let sent = client
+                .get(format!(
+                    "{}/api/voice/diagnostics/engine-self-check?request_id={}&timeout_ms=45000",
+                    self.daemon_origin, engine_request_id
+                ))
+                .header("x-ai-mate-control-token", &self.control_token)
+                .header("x-voice-check-request", &engine_request_id)
+                .header("x-voice-check-instance", &snapshot.instance_id)
+                .header("x-voice-check-model-revision", &model_revision)
+                .send()
+                .await;
+            match sent {
+                Ok(response) if response.status().is_success() => {
+                    match response.json::<VoiceEngineSelfCheckResponse>().await {
+                        Ok(parsed)
+                            if parsed.request_id == engine_request_id
+                                && daemon_instance_id.as_deref() == Some(&parsed.instance_id)
+                                && parsed.worker_epoch > 0
+                                && expected_worker_epoch > 0
+                                && parsed.worker_epoch == expected_worker_epoch
+                                && parsed.model_revision == model_revision =>
+                        {
+                            (Some(parsed), None)
+                        }
+                        Ok(_) => (None, Some("engine_response_stale")),
+                        Err(_) => (None, Some("engine_response_invalid")),
+                    }
+                }
+                _ => (None, Some("engine_check_unreachable")),
+            }
+        };        let (kws, vad, asr) = match engine_response {
+            Some(response) if response.fixtures_available => (
+                if response.kws_ok {
+                    evidence(VoiceCapabilityStatus::Ready, None, "fixed_audio_inference")
+                } else {
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some("kws_inference_failed"),
+                        "fixed_audio_inference",
+                    )
+                },
+                if response.vad_ok {
+                    evidence(VoiceCapabilityStatus::Ready, None, "fixed_audio_inference")
+                } else {
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some("vad_inference_failed"),
+                        "fixed_audio_inference",
+                    )
+                },
+                if response.asr_ok {
+                    evidence(VoiceCapabilityStatus::Ready, None, "fixed_audio_inference")
+                } else {
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some("asr_inference_failed"),
+                        "fixed_audio_inference",
+                    )
+                },
+            ),
+            Some(response) => {
+                let reason = response
+                    .reason
+                    .unwrap_or_else(|| "fixed_audio_missing".into());
+                (
+                    evidence(
+                        VoiceCapabilityStatus::Unsupported,
+                        Some(&reason),
+                        "fixed_audio_inference",
+                    ),
+                    evidence(
+                        VoiceCapabilityStatus::Unsupported,
+                        Some(&reason),
+                        "fixed_audio_inference",
+                    ),
+                    evidence(
+                        VoiceCapabilityStatus::Unsupported,
+                        Some(&reason),
+                        "fixed_audio_inference",
+                    ),
+                )
+            }
+            None => {
+                let reason = engine_bind_reason.unwrap_or("engine_check_unreachable");
+                (
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some(reason),
+                        "fixed_audio_inference",
+                    ),
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some(reason),
+                        "fixed_audio_inference",
+                    ),
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some(reason),
+                        "fixed_audio_inference",
+                    ),
+                )
+            }        };
+
+        let tts_response: Result<VoiceTtsSelfCheckResponse, String> = {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(40))
+                .build()
+                .map_err(|_| "tts_check_client_failed".to_string())?;
+            match client
+                .post(format!(
+                    "{}/api/voice/diagnostics/tts-self-check",
+                    self.daemon_origin
+                ))
+                .header("x-ai-mate-control-token", &self.control_token)
+                .json(&serde_json::json!({ "check_id": flight.check_id, "locale": locale, "stage": stage }))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => response
+                    .json::<VoiceTtsSelfCheckResponse>()
+                    .await
+                    .map_err(|_| "tts_bad_response".to_string()),
+                Ok(response) => {
+                    let status_code = response.status().as_u16();
+                    tracing::warn!(status = status_code, "voice_tts_self_check_rejected");
+                    Err(format!("tts_http_{status_code}"))
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "voice_tts_self_check_unreachable");
+                    Err("tts_check_unreachable".into())
+                }
+            }
+        };
+        let (tts, playback) = match tts_response {
+            Ok(response) => {
+                let languages_valid = tts_self_check_languages_valid(&response);
+                let tts_valid = response.ok && languages_valid;
+                (
+                    if tts_valid {
+                        evidence(VoiceCapabilityStatus::Ready, None, "tts_decoded")
+                    } else {
+                        evidence(
+                            VoiceCapabilityStatus::Failed,
+                            Some(if response.ok {
+                                "tts_inconsistent_response"
+                            } else {
+                                response.reason.as_deref().unwrap_or("tts_failed")
+                            }),
+                            "tts_decoded",
+                        )
+                    },
+                    if tts_valid && response.playback_ok {
+                        evidence(VoiceCapabilityStatus::Ready, None, "sink_consumed")
+                    } else {
+                        evidence(
+                            VoiceCapabilityStatus::Failed,
+                            Some(if tts_valid {
+                                "playback_not_consumed"
+                            } else {
+                                "playback_without_valid_synthesis"
+                            }),
+                            "sink_consumed",
+                        )
+                    },
+                )
+            }
+            Err(reason) => (
+                evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some(&reason),
+                    "tts_decoded",
+                ),
+                evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some("playback_not_checked"),
+                    "sink_consumed",
+                ),
+            ),
+        };
+
+        let llm = if !include_llm {
+            evidence(
+                VoiceCapabilityStatus::Unknown,
+                Some("llm_check_not_run"),
+                "live_response",
+            )
+        } else if let Some(completer) = &self.dialogue_completer {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(12),
+                completer.complete("Reply with exactly: OK", None),
+            )
+            .await
+            {
+                Ok(Ok(reply)) if !reply.trim().is_empty() => {
+                    evidence(VoiceCapabilityStatus::Ready, None, "live_response")
+                }
+                Ok(Ok(_)) => evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some("llm_empty_response"),
+                    "live_response",
+                ),
+                Ok(Err(error)) => {
+                    let reason = if error.contains("401") || error.contains("403") {
+                        "llm_auth_failed"
+                    } else if error.contains("429") {
+                        "llm_rate_limited"
+                    } else if error.contains("timeout") {
+                        "llm_timeout"
+                    } else {
+                        "llm_failed"
+                    };
+                    evidence(
+                        VoiceCapabilityStatus::Failed,
+                        Some(reason),
+                        "live_response",
+                    )
+                }
+                Err(_) => evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some("llm_timeout"),
+                    "live_response",
+                ),
+            }
+        } else {
+            evidence(
+                VoiceCapabilityStatus::Unsupported,
+                Some("dialogue_unconfigured"),
+                "live_response",
+            )
+        };
+
+        let ready = |value: &VoiceCapabilityEvidence| {
+            value.status == VoiceCapabilityStatus::Ready
+        };
+        let can_start_full_call = ready(&capture)
+            && ready(&vad)
+            && ready(&asr)
+            && ready(&llm)
+            && ready(&tts)
+            && ready(&playback);
+        let reason_code = if can_start_full_call {
+            None
+        } else {
+            [&capture, &vad, &asr, &llm, &tts, &playback]
+                .into_iter()
+                .find(|value| !ready(value))
+                .and_then(|value| value.reason_code.clone())
+                .or_else(|| Some("self_check_incomplete".into()))
+        };
+        let mut report = VoiceCapabilityReport {
+            capture,
+            kws,
+            vad,
+            asr,
+            llm,
+            tts,
+            playback,
+            checked_at_ms: Some(checked_at_ms),
+            generation,
+            can_start_full_call,
+            can_wake: false,
+            can_transcribe: false,
+            reason_code,
+            degraded_text_only: false,
+        };
+        report.can_wake = ready(&report.kws)
+            && ready(&report.vad)
+            && ready(&report.asr)
+            && ready(&report.capture);
+        report.can_transcribe =
+            ready(&report.vad) && ready(&report.asr) && ready(&report.capture);
+        report.degraded_text_only = !report.can_start_full_call && report.can_transcribe;
+
+        {
+            let _admission = self.call_start_lock.lock().await;
+            let current_signature = self.capability_signature().await;
+            let current_daemon_source = self.source.read().ok().and_then(|s| s.clone());
+            let current = attempt == self.self_check_attempt.load(Ordering::Acquire)
+                && generation == self.generation.load(Ordering::Acquire)
+                && signature == current_signature
+                && daemon_source.is_some()
+                && daemon_source.as_ref().map(|(id, _)| id) == current_daemon_source.as_ref().map(|(id, _)| id)
+                && readiness_runtime_scope_valid(&self.snapshot(), nomifun_common::now_ms());
+            if current {
+                *self
+                    .capabilities
+                    .write()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(StoredCapabilities {
+                    report: report.clone(),
+                    attempt,
+                    expires_at_ms: checked_at_ms.saturating_add(60_000),
+                    signature,
+                });
+            } else {
+                report.can_start_full_call = false;
+                report.reason_code = Some("self_check_superseded".into());
+            }
+            self.self_check_active.store(false, Ordering::Release);
+            flight.finished = true;
+        }
+        self.push_admission(
+            "wake",
+            report.can_wake,
+            if report.can_wake {
+                checked_at_ms.saturating_add(60_000)
+            } else {
+                0
+            },
+        )
+        .await;
+        self.push_admission(
+            "call",
+            report.can_start_full_call,
+            if report.can_start_full_call {
+                checked_at_ms.saturating_add(60_000)
+            } else {
+                0
+            },
+        )
+        .await;
+        Ok(report)
+    }
+
+    /// Host authority for model writes: an active call, an unsettled task or a
+    /// pending tool approval owns the acoustic suite until it finishes.
+    pub fn voice_suite_in_use(&self) -> bool {
+        let snapshot = self.snapshot();
+        let active_call = snapshot.session_id.is_some()
+            && snapshot.ended_reason.is_none()
+            && snapshot.phase != VoiceSessionPhase::Idle;
+        let unsettled_task = snapshot.task.as_ref().is_some_and(|task| {
+            matches!(
+                task.status,
+                nomifun_api_types::voice::VoiceTaskStatus::Queued
+                    | nomifun_api_types::voice::VoiceTaskStatus::Delivering
+                    | nomifun_api_types::voice::VoiceTaskStatus::Unknown
+                    | nomifun_api_types::voice::VoiceTaskStatus::Accepted
+                    | nomifun_api_types::voice::VoiceTaskStatus::Cancelling
+            )
+        });
+        let pending_approval = snapshot
+            .confirmation
+            .as_ref()
+            .is_some_and(|confirmation| !confirmation.approval_id.is_empty());
+        let pending_queue = !snapshot.queue.is_empty();
+        let pending_start = self
+            .dialogue_recorder
+            .as_ref()
+            .and_then(|recorder| recorder.current_call_reservation())
+            .is_some();
+        active_call || unsettled_task || pending_approval || pending_queue || pending_start
+    }
+
+    /// Atomically closes call/task admission, verifies nothing owns the suite,
+    /// then releases the daemon (and its native model handles) before a write.
+    pub async fn begin_model_write(self: &Arc<Self>) -> Result<ModelWriteGuard, String> {
+        let _call = self.call_start_lock.lock().await;
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err("voice_resource_write_in_progress".into());
+        }
+        if self.self_check_active.load(Ordering::Acquire) {
+            return Err("voice_self_check_in_progress".into());
+        }
+        if self.voice_suite_in_use() {
+            return Err("voice_suite_in_use".into());
+        }
+        self.resource_write_active.store(true, Ordering::Release);
+        self.invalidate_capabilities();
+        let resume_daemon =
+            !self.shutdown_requested.load(Ordering::Acquire) && self.read_autostart_config();
+
+        let released = {
+            let mut child = self.child.lock().await;
+            match child.take() {
+                Some(mut process) => process.shutdown().await,
+                None => Ok(()),
+            }
+        };
+        if let Err(error) = released {
+            self.resource_write_active.store(false, Ordering::Release);
+            return Err(format!("daemon_release_failed: {error}"));
+        }
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.process_changed.notify_one();
+        self.disconnected();
+        Ok(ModelWriteGuard {
+            manager: Arc::downgrade(self),
+            resume_daemon,
+            released: false,
+        })
+    }
+
+    async fn resume_after_model_write(self: Arc<Self>) -> Result<(), String> {
+        if self.shutdown_requested.load(Ordering::Acquire) || !self.read_autostart_config() {
+            return Ok(());
+        }
+        self.start_child(false).await
+    }
+
     pub fn global() -> Option<Arc<Self>> {
         GLOBAL_COMPANION_MANAGER.get().cloned()
     }
@@ -1342,10 +2187,23 @@ impl VoiceCompanionProcessManager {
         let (events, _) = broadcast::channel(128);
         Self {
             audio_recovery:std::sync::Mutex::new(AudioRecovery::default()),
+            resource_write_active:AtomicBool::new(false),
+            self_check_lock:tokio::sync::Mutex::new(()),
+            self_check_active:AtomicBool::new(false),
+            self_check_cancel_signal:tokio::sync::Notify::new(),
+            self_check_attempt:AtomicU64::new(0),
+            capabilities:std::sync::RwLock::new(None),
+            restart_budget:std::sync::Mutex::new(RestartBudget::default()),
             prompted_approvals:std::sync::Mutex::new(std::collections::VecDeque::new()),
             revoked_sessions:RwLock::new(std::collections::VecDeque::new()),
             task_feedback: std::sync::Mutex::new(TaskFeedbackTracker::new()),
             daemon_origin: "http://127.0.0.1:18080".into(),
+            #[cfg(test)]
+            test_daemon_port: None,
+            #[cfg(test)]
+            last_child_exit: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            test_child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             tasks: None,
             data_dir: data_dir.to_path_buf(),
             task_projection_started: AtomicBool::new(false),
@@ -1906,6 +2764,9 @@ impl VoiceCompanionProcessManager {
     }
 
     async fn submit_task(self: &Arc<Self>, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err("voice_resource_write_in_progress".into());
+        }
         let tasks = self.tasks.clone().ok_or("runtime_unavailable")?;
         let snapshot = self.snapshot();
         if request.instance_id != snapshot.instance_id {return Err("task_scope_changed".into());}
@@ -2194,6 +3055,14 @@ impl VoiceCompanionProcessManager {
     }
 
     #[cfg(test)]
+    #[cfg(test)]
+    fn with_test_daemon_port(mut self, port: u16) -> Self {
+        self.daemon_origin = format!("http://127.0.0.1:{port}");
+        self.test_daemon_port = Some(port);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_replay_daemon(mut self, origin: String) -> Self {
         self.daemon_origin = origin;
         self.projection_started.store(true, Ordering::Release);
@@ -2304,6 +3173,65 @@ impl VoiceCompanionProcessManager {
         let _ = self.events.send(snapshot.clone());
     }
 
+    fn mark_daemon_running(&self, now: tokio::time::Instant) {
+        let mut budget = self
+            .restart_budget
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(since) = budget.running_since else {
+            budget.running_since = Some(now);
+            budget.next_attempt = None;
+            return;
+        };
+        if now.duration_since(since) >= std::time::Duration::from_secs(60) {
+            *budget = RestartBudget {
+                running_since: Some(now),
+                ..RestartBudget::default()
+            };
+        }
+    }
+
+    fn restart_decision(&self, now: tokio::time::Instant) -> RestartDecision {
+        let mut budget = self
+            .restart_budget
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        budget.running_since = None;
+        if let Some(at) = budget.next_attempt {
+            if now < at {
+                return RestartDecision::Wait(at.duration_since(now));
+            }
+            budget.next_attempt = None;
+            return RestartDecision::StartNow;
+        }
+        if budget.attempts >= RestartBudget::MAX_ATTEMPTS {
+            return RestartDecision::Exhausted;
+        }
+        let delay = RestartBudget::delay(budget.attempts);
+        budget.attempts += 1;
+        budget.next_attempt = Some(now + delay);
+        RestartDecision::Wait(delay)
+    }
+
+    fn note_restart_exhausted(&self) -> bool {
+        let mut budget = self
+            .restart_budget
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if budget.exhausted_reported {
+            return false;
+        }
+        budget.exhausted_reported = true;
+        true
+    }
+
+    fn reset_restart_budget(&self) {
+        *self
+            .restart_budget
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = RestartBudget::default();
+    }
+
     fn starting(&self) {
         let mut snapshot = self.snapshot.write().unwrap_or_else(|err| err.into_inner());
         snapshot.enabled = self.read_autostart_config();
@@ -2336,14 +3264,55 @@ impl VoiceCompanionProcessManager {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     continue;
                 }
-                if !manager.status().await.running {
+                let status = manager.status().await;
+                if !status.running {
                     manager.disconnected();
-                    if manager.read_autostart_config() {
-                        manager.auto_start_if_enabled().await;
+                    if manager.shutdown_requested.load(Ordering::Acquire)
+                        || !manager.read_autostart_config()
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        continue;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    continue;
+                    // Missing assets are not a crash loop: do not consume the
+                    // restart budget while the suite still needs installation.
+                    if !status.models_ready {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    match manager.restart_decision(tokio::time::Instant::now()) {
+                        RestartDecision::Wait(delay) => {
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        RestartDecision::Exhausted => {
+                            if manager.note_restart_exhausted() {
+                                let mut snapshot = manager
+                                    .snapshot
+                                    .write()
+                                    .unwrap_or_else(|err| err.into_inner());
+                                snapshot.error = Some(VoiceSessionError {
+                                    stage: "connection".into(),
+                                    code: "daemon_restart_exhausted".into(),
+                                });
+                                snapshot.seq += 1;
+                                let _ = manager.events.send(snapshot.clone());
+                                warn!(
+                                    "Voice companion restart budget exhausted; awaiting explicit retry"
+                                );
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            continue;
+                        }
+                        RestartDecision::StartNow => {
+                            if let Err(error) = manager.start_child(false).await {
+                                warn!(%error, "Voice companion automatic restart failed");
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            continue;
+                        }
+                    }
                 }
+                manager.mark_daemon_running(tokio::time::Instant::now());
                 let generation = manager.generation.load(Ordering::Acquire);
                 let response = client
                     .get(format!("{}/api/voice/events",manager.daemon_origin))
@@ -2357,6 +3326,7 @@ impl VoiceCompanionProcessManager {
                     let mut buffer = Vec::new();
                     let mut recovery_tick=tokio::time::interval(std::time::Duration::from_secs(1));
                     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut admission_ticks = 0u8;
                     loop {
                         let chunk = tokio::select! {
                             biased;
@@ -2367,6 +3337,10 @@ impl VoiceCompanionProcessManager {
                                     || manager.recover_audio_if_needed().await {break;}
                                 if let Err(error) = manager.reconcile_empty_placeholders().await {
                                     tracing::debug!(%error, "voice placeholder cleanup deferred");
+                                }
+                                admission_ticks = admission_ticks.wrapping_add(1);
+                                if admission_ticks % 2 == 0 {
+                                    manager.refresh_wake_admission().await;
                                 }
                                 continue;
                             },
@@ -2483,6 +3457,28 @@ impl VoiceCompanionProcessManager {
         request: nomifun_api_types::voice::VoiceCallStartRequest,
     ) -> Result<nomifun_api_types::voice::VoiceCallStartResponse, (axum::http::StatusCode, String)> {
         let _start_lock = self.call_start_lock.lock().await;
+        if self.resource_write_active.load(Ordering::Acquire) {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                serde_json::json!({
+                    "code": "voice_resource_write_in_progress",
+                    "message": "Voice models are being installed or removed; wait for the write to finish"
+                })
+                .to_string(),
+            ));
+        }
+        if self.self_check_active.load(Ordering::Acquire) {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                serde_json::json!({
+                    "code": "voice_self_check_in_progress",
+                    "reason_code": "self_check_in_progress",
+                    "requires_check": false,
+                    "message": "A readiness check is using the acoustic suite; wait for it to finish"
+                })
+                .to_string(),
+            ));
+        }
 
         let status = self.status().await;
         if !status.running {
@@ -2661,6 +3657,37 @@ impl VoiceCompanionProcessManager {
             }).to_string()));
         }
 
+        // A connected daemon authorizes a new full call only with a current,
+        // attributed self-check report. Missing/expired/old reports reject
+        // before any Conversation placeholder is created.
+        if snap.enabled {
+            let capabilities = self.current_capabilities().await;
+            let can_start = capabilities
+                .as_ref()
+                .is_some_and(|report| report.can_start_full_call);
+            if !can_start {
+                let reason_code = capabilities
+                    .as_ref()
+                    .and_then(|report| report.reason_code.clone())
+                    .unwrap_or_else(|| "self_check_required".into());
+                let degraded = capabilities
+                    .as_ref()
+                    .is_some_and(|report| report.degraded_text_only);
+                return Err((
+                    axum::http::StatusCode::CONFLICT,
+                    serde_json::json!({
+                        "code": "voice_suite_not_ready",
+                        "reason_code": reason_code,
+                        "requires_check": capabilities.is_none(),
+                        "degraded_text_only": degraded,
+                        "capabilities": capabilities,
+                        "message": "The voice suite has not passed its current local capability checks for a full call"
+                    })
+                    .to_string(),
+                ));
+            }
+        }
+
         let (conversation_id, memory_owner) = recorder
             .resolve_call_target(&request.target, request.session_mode.as_deref(), Some(&request.request_id))
             .await
@@ -2713,7 +3740,13 @@ impl VoiceCompanionProcessManager {
             .post(format!("{}/api/voice/wake", self.daemon_origin))
             .header("x-ai-mate-control-token", &self.control_token)
             .timeout(std::time::Duration::from_secs(3))
-            .json(&serde_json::json!({ "request_id": request.request_id }))
+            .json(&{
+                let mut body = serde_json::json!({ "request_id": request.request_id });
+                if let Some(locale) = &request.locale {
+                    body["locale"] = serde_json::Value::String(locale.clone());
+                }
+                body
+            })
             .send()
             .await;
 
@@ -2894,6 +3927,14 @@ impl VoiceCompanionProcessManager {
     }
 
     /// Queries the real running status of the background companion daemon.
+    #[cfg(test)]
+    pub(crate) fn last_child_exit(&self) -> Option<ChildExitObservation> {
+        self.last_child_exit
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
     pub async fn status(&self) -> VoiceCompanionStatus {
         let models_ready = self.models_manager.get_status().await.state.is_ready();
         let autostart = self.read_autostart_config();
@@ -2905,7 +3946,19 @@ impl VoiceCompanionProcessManager {
         if let Some(ref mut child) = *lock {
             match child.try_wait() {
                 Ok(Some(exit_status)) => {
-                    info!(?exit_status, "Voice companion child process has terminated");
+                    #[cfg(test)]
+                    {
+                        *self.last_child_exit.lock().unwrap_or_else(|error| error.into_inner()) = Some(ChildExitObservation {
+                            pid: self.test_child_pid.load(Ordering::Acquire),
+                            code: exit_status.code(),
+                            observed_at_ms: nomifun_common::now_ms(),
+                        });
+                    }
+                    info!(
+                        exit_code = exit_status.code(),
+                        ?exit_status,
+                        "Voice companion child process has terminated"
+                    );
                     *lock = None;
                 }
                 Ok(None) => {
@@ -2919,6 +3972,8 @@ impl VoiceCompanionProcessManager {
             }
         }
 
+        drop(lock);
+        let capabilities = self.current_capabilities().await;
         VoiceCompanionStatus {
             running,
             pid,
@@ -2929,12 +3984,14 @@ impl VoiceCompanionProcessManager {
             dialogue_ready: running && self.snapshot().dialogue_ready,
             playback_ready: running && self.snapshot().playback_ready,
             task_ready: self.snapshot().task_ready,
+            capabilities,
         }
     }
 
     /// Launches the `ai-mate` companion daemon under whole-tree supervision.
     pub async fn start(self: &Arc<Self>) -> Result<(), String> {
         self.shutdown_requested.store(false, Ordering::Release);
+        self.reset_restart_budget();
         self.start_child(true).await
     }
 
@@ -2972,9 +4029,18 @@ impl VoiceCompanionProcessManager {
 
         let mut builder = ChildProcessBuilder::new(&bin_path);
         builder.arg("--bypass-pairing");
-        builder.arg("--host").arg("127.0.0.1:18080");
+        #[cfg(test)]
+        let host = self.test_daemon_port.map(|port| format!("127.0.0.1:{port}")).unwrap_or_else(|| "127.0.0.1:18080".into());
+        #[cfg(not(test))]
+        let host = "127.0.0.1:18080".to_string();
+        builder.arg("--host").arg(host);
         builder.env("VOICE_COMPANION_MODEL_DIR", self.models_manager.models_dir());
         builder.env("AI_MATE_MODEL_DIR", self.models_manager.models_dir());
+        builder.env("VOICE_COMPANION_SUPERVISED", "1");
+        #[cfg(test)]
+        for key in ["NOMIFUN_VOICE_FAULT_BLOCK_ASR", "NOMIFUN_VOICE_FAULT_HEADLESS", "VOICE_COMPANION_NATIVE_STUCK_GRACE_MS", "NOMIFUN_VOICE_NATIVE_LEASE_GRACE_MS", "NOMIFUN_VOICE_SELF_CHECK_AUDIO_DIR"] {
+            if let Some(value) = std::env::var_os(key) { builder.env(key, value); }
+        }
         builder.env("VOICE_COMPANION_CONTROL_TOKEN", &self.control_token);
         builder.env("AI_MATE_CONTROL_TOKEN", &self.control_token);
         builder.env("VOICE_COMPANION_FEEDBACK_CONFIG", &feedback_config);
@@ -3028,6 +4094,8 @@ impl VoiceCompanionProcessManager {
             .map_err(|e| format!("Failed to spawn ai-mate process: {e}"))?;
 
         let pid = managed.id();
+        #[cfg(test)]
+        self.test_child_pid.store(pid.unwrap_or(0), Ordering::Release);
         info!(?pid, "AI Mate voice companion daemon successfully started");
 
         *lock = Some(managed);
@@ -3063,6 +4131,7 @@ impl VoiceCompanionProcessManager {
     pub async fn stop(&self) -> Result<(), String> {
         self.task_feedback.lock().unwrap_or_else(|e| e.into_inner()).clear_pending();
         self.shutdown_requested.store(true, Ordering::Release);
+        self.reset_restart_budget();
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.process_changed.notify_one();
 
@@ -3111,6 +4180,7 @@ impl VoiceCompanionProcessManager {
         }
     }
 }
+
 
 async fn private_task_submit(
     axum::extract::State(weak): axum::extract::State<std::sync::Weak<VoiceCompanionProcessManager>>,
@@ -3501,6 +4571,159 @@ fn clean_inline_markdown(line: &str) -> String {
     out
 }
 
+/// Host-side gate for the model install/delete routes. It runs before the
+/// models crate so the daemon's native file handles are released before a
+/// writer touches the canonical directory.
+pub async fn model_write_guard_middleware(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let method = request.method().clone();
+    let path = request.uri().path();
+    let is_model_write = (method == axum::http::Method::POST
+        && path == "/api/voice/models/install")
+        || (method == axum::http::Method::DELETE
+            && (path == "/api/voice/models" || path == "/api/voice/models/"));
+    if !is_model_write {
+        return next.run(request).await;
+    }
+    match manager.begin_model_write().await {
+        Ok(guard) => {
+            let response = next.run(request).await;
+            drop(guard);
+            response
+        }
+        Err(code) => {
+            let message = match code.as_str() {
+                "voice_suite_in_use" => "A voice call, task or approval is using the models",
+                "voice_resource_write_in_progress" => "Another voice model write is in progress",
+                _ => "The voice models are busy",
+            };
+            (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({
+                    "error": format!("{code}: {message}"),
+                    "code": code,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+async fn companion_capabilities_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+) -> axum::Json<Option<nomifun_api_types::voice::VoiceCapabilityReport>> {
+    axum::Json(manager.current_capabilities().await)
+}
+
+async fn companion_prepare_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+    axum::Json(request): axum::Json<nomifun_api_types::voice::VoiceSelfCheckRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !manager.status().await.running {
+        if !manager.models_manager.get_status().await.state.is_ready() {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({
+                    "code": "models_not_installed",
+                    "error": "models_not_installed"
+                })),
+            )
+                .into_response();
+        }
+        // Explicit user action: persist enabled intent and start the daemon.
+        if manager.write_autostart_config(true).is_err() {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "code": "configuration_write_failed" })),
+            )
+                .into_response();
+        }
+        if let Err(error) = manager.start_child(true).await {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                axum::Json(serde_json::json!({ "code": "daemon_start_failed", "error": error })),
+            )
+                .into_response();
+        }
+        for _ in 0..60 {
+            let snapshot = manager.snapshot();
+            let audio = snapshot.audio.as_ref();
+            let ready = snapshot.connection == VoiceConnectionState::Connected
+                && audio.is_some_and(|value| {
+                    value.frames_received > 0
+                        && value
+                            .last_frame_at_ms
+                            .is_some_and(|at| nomifun_common::now_ms().saturating_sub(at) <= 2_000)
+                });
+            if ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        manager.run_self_check_with_locale_and_stage(
+            request.include_llm,
+            request.locale,
+            request.stage.or_else(|| Some("preparing".into())),
+        ),
+    )
+    .await
+    {
+        Ok(Ok(report)) => axum::Json(report).into_response(),
+        Ok(Err(code)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({ "code": code, "error": code })),
+        )
+            .into_response(),
+        Err(_) => (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(serde_json::json!({
+                "code": "self_check_budget_exhausted",
+                "error": "self_check_budget_exhausted"
+            })),
+        )
+            .into_response(),
+    }
+}
+async fn companion_self_check_handler(
+    axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
+    axum::Json(request): axum::Json<nomifun_api_types::voice::VoiceSelfCheckRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        manager.run_self_check_with_locale_and_stage(
+            request.include_llm,
+            request.locale,
+            request.stage,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(report)) => axum::Json(report).into_response(),
+        Ok(Err(code)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({ "code": code, "error": code })),
+        )
+            .into_response(),
+        Err(_) => (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(serde_json::json!({
+                "code": "self_check_budget_exhausted",
+                "error": "self_check_budget_exhausted"
+            })),
+        )
+            .into_response(),
+    }
+}
+
 pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axum::Router {
     use axum::routing::{get, post};
     manager.start_projection();
@@ -3528,6 +4751,18 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
             post(companion_preview_feedback_handler),
         )
         .route("/api/voice/companion/status", get(companion_status_handler))
+        .route(
+            "/api/voice/companion/capabilities",
+            get(companion_capabilities_handler),
+        )
+        .route(
+            "/api/voice/companion/self-check",
+            post(companion_self_check_handler),
+        )
+        .route(
+            "/api/voice/companion/prepare",
+            post(companion_prepare_handler),
+        )
         .route(
             "/api/voice/companion/toggle",
             post(companion_toggle_handler),
@@ -3927,6 +5162,376 @@ async fn companion_wake_handler(
 mod tests {
     use super::*;
 
+    fn verify_feature_headless_binary() {
+        let binary = std::env::var_os("VOICE_COMPANION_BIN")
+            .map(std::path::PathBuf::from)
+            .expect("feature headless binary");
+        assert_eq!(
+            binary.file_name().and_then(|name| name.to_str()),
+            Some("voice-companion-headless.exe"),
+            "refuse non-feature-headless artifact path before spawn"
+        );
+        let expected = std::env::var("VOICE_COMPANION_R13_HEADLESS_SHA")
+            .expect("expected feature headless SHA");
+        let actual = nomifun_voice_models::verifier::compute_sha256(
+            &std::fs::read(&binary).expect("read feature binary"),
+        );
+        assert_eq!(actual, expected, "refuse unexpected feature binary SHA before spawn");
+    }
+
+    fn test_port_closed(port: u16) -> bool {
+        std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            std::time::Duration::from_millis(300),
+        )
+        .is_err()
+    }
+
+    async fn run_headless_case<F, Fut>(
+        manager: Arc<VoiceCompanionProcessManager>,
+        port: u16,
+        health_timeout: std::time::Duration,
+        case_timeout: std::time::Duration,
+        body: F,
+    ) where
+        F: FnOnce(Arc<VoiceCompanionProcessManager>, String, String) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use futures_util::FutureExt as _;
+        let origin = format!("http://127.0.0.1:{port}");
+        let token = manager.control_token.clone();
+        let owned_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let run_manager = manager.clone();
+        let run_pid = owned_pid.clone();
+        let run = async move {
+            run_manager.write_autostart_config(true).unwrap();
+            run_manager.start_projection();
+            run_manager.start().await.unwrap();
+            let started_pid = run_manager.status().await.pid.unwrap_or(0);
+            run_pid.store(started_pid, Ordering::Release);
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(2))
+                .build()
+                .unwrap();
+            let healthy = tokio::time::timeout(health_timeout, async {
+                loop {
+                    if client
+                        .get(format!("{origin}/healthz"))
+                        .send()
+                        .await
+                        .is_ok_and(|response| response.status().is_success())
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .is_ok();
+            assert!(healthy, "daemon health stage did not become ready");
+            body(run_manager, origin, token).await;
+        };
+        let outcome = tokio::time::timeout(
+            case_timeout,
+            std::panic::AssertUnwindSafe(run).catch_unwind(),
+        )
+        .await;
+
+        let mut cleanup_errors = Vec::new();
+        match tokio::time::timeout(std::time::Duration::from_secs(10), manager.stop()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup_errors.push(format!("stop_error:{error}")),
+            Err(_) => cleanup_errors.push("stop_timeout".into()),
+        }
+        let mut closed = false;
+        for _ in 0..20 {
+            if test_port_closed(port) {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if !closed {
+            cleanup_errors.push(format!("port_still_open:{port}"));
+        }
+        // Longer than the projection loop's 1s recovery tick: a delayed restart
+        // must not appear after stop completed.
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        let after = manager.status().await;
+        if after.running || after.pid.is_some() || !test_port_closed(port) {
+            cleanup_errors.push("delayed_restart_or_port_reopen".into());
+        }
+        if !cleanup_errors.is_empty() {
+            panic!("cleanup_failed:{cleanup_errors:?}; owned_pid={}", owned_pid.load(Ordering::Acquire));
+        }
+        eprintln!("cleanup_case_ok owned_pid={} port={port} port_closed=true", owned_pid.load(Ordering::Acquire));
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(_) => panic!("case_timeout_after_cleanup:owned_pid={}", owned_pid.load(Ordering::Acquire)),
+        }
+    }
+    struct FixtureCompleter {
+        result: Result<String, String>,
+    }
+    #[async_trait::async_trait]
+    impl VoiceDialogueCompleter for FixtureCompleter {
+        async fn resolve_model(
+            &self,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<nomifun_api_types::voice::VoiceModelRef, String> {
+            Ok(nomifun_api_types::voice::VoiceModelRef {
+                provider_id: "fixture".into(),
+                model: "fixture".into(),
+            })
+        }
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<String, String> {
+            self.result.clone()
+        }
+    }
+
+    struct ConfigurableCompleter {
+        revision: Arc<std::sync::Mutex<String>>,
+    }
+    #[async_trait::async_trait]
+    impl VoiceDialogueCompleter for ConfigurableCompleter {
+        async fn resolve_model(
+            &self,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<nomifun_api_types::voice::VoiceModelRef, String> {
+            Ok(nomifun_api_types::voice::VoiceModelRef {
+                provider_id: "fixture".into(),
+                model: "fixture".into(),
+            })
+        }
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<String, String> {
+            Ok("OK".into())
+        }
+        async fn configuration_revision(&self) -> String {
+            self.revision
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        }
+    }
+    struct BarrierCompleter {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        revision: String,
+    }
+    #[async_trait::async_trait]
+    impl VoiceDialogueCompleter for BarrierCompleter {
+        async fn resolve_model(
+            &self,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<nomifun_api_types::voice::VoiceModelRef, String> {
+            Ok(nomifun_api_types::voice::VoiceModelRef {
+                provider_id: "fixture".into(),
+                model: "fixture".into(),
+            })
+        }
+        async fn complete(
+            &self,
+            _prompt: &str,
+            _choice: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        ) -> Result<String, String> {
+            Ok("OK".into())
+        }
+        async fn configuration_revision(&self) -> String {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.revision.clone()
+        }
+    }
+    fn populate_checked_suite(models_dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+        let mut manifest = std::collections::HashMap::new();
+        for &relative in nomifun_voice_models::EXPECTED_FILES {
+            let path = models_dir.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let content = format!("capability-suite-{relative}").into_bytes();
+            std::fs::write(&path, &content).unwrap();
+            if nomifun_voice_models::verifier::DOWNLOAD_FILES.contains(&relative) {
+                manifest.insert(
+                    relative.to_owned(),
+                    nomifun_voice_models::verifier::compute_sha256(&content),
+                );
+            }
+        }
+        manifest
+    }
+
+    fn engine_payload(
+        headers: &axum::http::HeaderMap,
+        kws_ok: bool,
+        vad_ok: bool,
+        asr_ok: bool,
+    ) -> axum::Json<serde_json::Value> {
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+        };
+        axum::Json(serde_json::json!({
+            "kws_ok": kws_ok,
+            "vad_ok": vad_ok,
+            "asr_ok": asr_ok,
+            "fixtures_available": true,
+            "kws_hits": 4,
+            "asr_text": "zh=今天天气怎么样？;en=Hello world, Hey friend.",
+            "request_id": header("x-voice-check-request"),
+            "instance_id": "fixture-daemon-instance-1",
+            "worker_epoch": 7,
+            "model_revision": header("x-voice-check-model-revision"),
+        }))
+    }
+    async fn tts_fixture(status: u16, body: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/api/voice/diagnostics/engine-self-check",
+                axum::routing::get(
+                    |headers: axum::http::HeaderMap| async move {
+                        engine_payload(&headers, true, true, true)
+                    },
+                ),
+            )
+            .route(
+            "/api/voice/diagnostics/tts-self-check",
+            axum::routing::post(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+            }),
+        );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (origin, handle)
+    }
+
+    async fn tts_fixture_with_failed_engine(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/api/voice/diagnostics/engine-self-check",
+                axum::routing::get(
+                    |headers: axum::http::HeaderMap| async move {
+                        engine_payload(&headers, true, true, false)
+                    },
+                ),
+            )
+            .route(
+                "/api/voice/diagnostics/tts-self-check",
+                axum::routing::post(move || async move {
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        [("content-type", "application/json")],
+                        body,
+                    )
+                }),
+            );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (origin, handle)
+    }
+
+    async fn tts_fixture_with_stale_engine(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/api/voice/diagnostics/engine-self-check",
+                axum::routing::get(|| async {
+                    axum::Json(serde_json::json!({
+                        "kws_ok": true,
+                        "vad_ok": true,
+                        "asr_ok": true,
+                        "fixtures_available": true,
+                        "kws_hits": 4,
+                        "request_id": "another-check",
+                        "instance_id": "another-instance",
+                        "worker_epoch": 9,
+                        "model_revision": "another-revision",
+                    }))
+                }),
+            )
+            .route(
+                "/api/voice/diagnostics/tts-self-check",
+                axum::routing::post(move || async move {
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        [("content-type", "application/json")],
+                        body,
+                    )
+                }),
+            );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (origin, handle)
+    }
+
+    async fn tts_fixture_without_engine(
+        status: u16,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().route(
+            "/api/voice/diagnostics/tts-self-check",
+            axum::routing::post(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+            }),
+        );
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (origin, handle)
+    }
+    fn capability_snapshot(manager: &VoiceCompanionProcessManager, last_frame_at_ms: i64) {
+        let mut snapshot = manager.snapshot.write().unwrap();
+        snapshot.enabled = true;
+        snapshot.connection = VoiceConnectionState::Connected;
+        snapshot.acoustic_ready = true;
+        snapshot.playback_ready = true;
+        snapshot.worker_epoch = Some(7);
+        snapshot.audio = Some(nomifun_api_types::voice::VoiceAudioDiagnostics {
+            frames_received: 5,
+            last_frame_at_ms: Some(last_frame_at_ms),
+            capture_state: "running".into(),
+            kws_ready: true,
+            vad_ready: true,
+            asr_ready: true,
+            ..Default::default()
+        });
+        *manager.source.write().unwrap() = Some(("fixture-daemon-instance-1".into(), 1));
+    }
+
     #[test]
     fn voice_projection_rejects_missing_and_foreign_turn_sessions_without_dropping_valid_speech() {
         let dir = tempfile::tempdir().unwrap();
@@ -3947,6 +5552,867 @@ mod tests {
         assert_eq!(snapshot.conversation.len(), 1);
         assert_eq!(snapshot.conversation[0].turn_id, "valid");
         assert_eq!(snapshot.conversation[0].session_id.as_deref(), Some("session-b"));
+    }
+
+    #[test]
+    fn automatic_daemon_restart_is_bounded_and_resets_after_stable_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        );
+        let base = tokio::time::Instant::now();
+        let seconds = |value: u64| base + std::time::Duration::from_secs(value);
+
+        assert!(matches!(
+            manager.restart_decision(seconds(0)),
+            RestartDecision::Wait(delay) if delay == std::time::Duration::from_secs(2)
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(2)),
+            RestartDecision::StartNow
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(3)),
+            RestartDecision::Wait(delay) if delay == std::time::Duration::from_secs(5)
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(8)),
+            RestartDecision::StartNow
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(9)),
+            RestartDecision::Wait(delay) if delay == std::time::Duration::from_secs(15)
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(24)),
+            RestartDecision::StartNow
+        ));
+        assert!(matches!(
+            manager.restart_decision(seconds(25)),
+            RestartDecision::Exhausted
+        ));
+
+        manager.mark_daemon_running(seconds(30));
+        manager.mark_daemon_running(seconds(91));
+        assert!(matches!(
+            manager.restart_decision(seconds(92)),
+            RestartDecision::Wait(delay) if delay == std::time::Duration::from_secs(2)
+        ));
+    }
+
+    #[tokio::test]
+    async fn self_check_attributes_capture_tts_playback_and_llm_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#,
+        )
+        .await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+
+        let report = manager.run_self_check(true).await.unwrap();
+        assert_eq!(
+            report.capture.evidence, "recent_pcm",
+            "capture must be attributed to fresh PCM"
+        );
+        assert_eq!(report.tts.evidence, "tts_decoded");
+        assert_eq!(report.playback.evidence, "sink_consumed");
+        assert_eq!(report.llm.evidence, "live_response");
+        assert!(report.can_start_full_call, "all attributed capabilities are ready");
+        assert!(manager.current_capabilities().await.is_some());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn self_check_rejects_engine_evidence_from_another_request_instance_or_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let body = r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#;
+        let (origin, server) = tts_fixture_with_stale_engine(200, body).await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter { result: Ok("OK".into()) })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let report = manager.run_self_check(false).await.unwrap();
+        assert_eq!(report.kws.reason_code.as_deref(), Some("engine_response_stale"));
+        assert_eq!(report.vad.reason_code.as_deref(), Some("engine_response_stale"));
+        assert_eq!(report.asr.reason_code.as_deref(), Some("engine_response_stale"));
+        assert!(!report.can_wake);
+        assert!(!report.can_start_full_call);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn self_check_accepts_distinct_daemon_id_and_invalidates_cache_on_daemon_source_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let body = r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#;
+        let (origin, server) = tts_fixture(200, body).await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+
+        // 1. Host projection ID is distinct from daemon source ID ("fixture-daemon-instance-1")
+        assert_ne!(manager.snapshot().instance_id, "fixture-daemon-instance-1");
+        let report = manager.run_self_check(true).await.unwrap();
+        assert!(report.can_start_full_call, "distinct daemon instance is accepted");
+        assert!(manager.current_capabilities().await.is_some());
+
+        // 2. Daemon restarts and acquires a new instance ID: previous capabilities cache must be invalidated
+        *manager.source.write().unwrap() = Some(("restarted-daemon-instance-2".into(), 1));
+        assert!(manager.current_capabilities().await.is_none(), "cache must invalidate when daemon source changes");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn self_check_rejects_stale_worker_epoch_even_if_daemon_instance_id_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let body = r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#;
+        let (origin, server) = tts_fixture(200, body).await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        manager.snapshot.write().unwrap().worker_epoch = Some(7);
+
+        // 1. Initially matches epoch 7: report succeeds and is cached.
+        let report = manager.run_self_check(true).await.unwrap();
+        assert!(report.can_start_full_call, "epoch 7 is accepted");
+        assert!(manager.current_capabilities().await.is_some(), "capabilities cached");
+
+        // 2. Underlying worker is replaced/reloaded -> worker_epoch bumps to 8 on the host side,
+        // while daemon ID remains "fixture-daemon-instance-1".
+        manager.snapshot.write().unwrap().worker_epoch = Some(8);
+
+        // 3. Cache signature must immediately invalidate because worker epoch changed.
+        assert!(manager.current_capabilities().await.is_none(), "cache must invalidate when worker_epoch changes");
+
+        // 4. If daemon responds with stale worker_epoch (7 < 8), self check must reject it as engine_response_stale.
+        let stale_report = manager.run_self_check(false).await.unwrap();
+        assert_eq!(stale_report.kws.reason_code.as_deref(), Some("engine_response_stale"));
+        assert_eq!(stale_report.vad.reason_code.as_deref(), Some("engine_response_stale"));
+        assert_eq!(stale_report.asr.reason_code.as_deref(), Some("engine_response_stale"));
+        assert!(!stale_report.can_start_full_call);
+        assert!(!stale_report.can_wake);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn prepare_without_models_fails_before_starting_or_creating_a_session() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let app = voice_companion_routes(manager.clone());
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/voice/companion/prepare")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"include_llm":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 16_384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "models_not_installed");
+        assert!(manager.child.lock().await.is_none());
+        assert!(manager.snapshot().session_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn self_check_routes_share_the_stored_report_with_status() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#,
+        )
+        .await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let app = voice_companion_routes(manager.clone());
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/voice/companion/self-check")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(r#"{"include_llm":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 65_536).await.unwrap();
+        let report: nomifun_api_types::voice::VoiceCapabilityReport =
+            serde_json::from_slice(&body).unwrap();
+        assert!(report.can_start_full_call);
+
+        let capabilities = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/voice/companion/capabilities")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capabilities.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(capabilities.into_body(), 65_536).await.unwrap();
+        let stored: Option<nomifun_api_types::voice::VoiceCapabilityReport> =
+            serde_json::from_slice(&body).unwrap();
+        assert!(stored.is_some_and(|value| value.can_start_full_call));
+        // The check must not open a session, task, memory or wake projection.
+        assert!(manager.snapshot().session_id.is_none());
+        assert!(manager.snapshot().task.is_none());
+        assert!(manager.snapshot().queue.is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn self_check_reports_stale_capture_and_classified_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture(200, "not-json").await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Err("401 unauthorized".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms() - 5_000);
+
+        let report = manager.run_self_check(true).await.unwrap();
+        assert_eq!(report.capture.reason_code.as_deref(), Some("capture_no_recent_pcm"));
+        assert!(!report.can_start_full_call);
+        assert_eq!(report.tts.reason_code.as_deref(), Some("tts_bad_response"));
+        assert_eq!(report.llm.reason_code.as_deref(), Some("llm_auth_failed"));
+        assert!(report.degraded_text_only == false);
+        server.abort();
+
+        let (origin, server) = tts_fixture(429, "{}").await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::with_config(
+                    dir.path(),
+                    Vec::new(),
+                    std::collections::HashMap::new(),
+                )),
+                dir.path(),
+            )
+            .with_replay_daemon(origin)
+            .with_dialogue(Arc::new(FixtureCompleter {
+                result: Err("429 too many requests".into()),
+            })),
+        );
+        let report = manager.run_self_check(true).await.unwrap();
+        assert_eq!(report.llm.reason_code.as_deref(), Some("llm_rate_limited"));
+        assert_eq!(report.tts.reason_code.as_deref(), Some("tts_http_429"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_engine_inference_blocks_full_call_and_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture_with_failed_engine(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#,
+        )
+        .await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let report = manager.run_self_check(false).await.unwrap();
+        assert!(!report.can_start_full_call);
+        // Wake requires the same verified local chain; engine_loaded alone is
+        // not enough.
+        assert!(!report.can_wake);
+        assert!(!report.can_transcribe);
+        assert_eq!(report.asr.reason_code.as_deref(), Some("asr_inference_failed"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn loaded_engines_without_inference_evidence_cannot_authorize_call_or_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture_without_engine(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#,
+        )
+        .await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let report = manager.run_self_check(false).await.unwrap();
+        assert!(!report.can_start_full_call);
+        assert!(!report.can_wake);
+        assert!(!report.can_transcribe);
+        assert_eq!(
+            report.asr.reason_code.as_deref(),
+            Some("engine_check_unreachable")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn host_rejects_a_top_level_ok_with_silent_or_incomplete_tts_proof() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":0,"peak_milli":0}]}"#,
+        )
+        .await;
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(FixtureCompleter {
+                    result: Ok("OK".into()),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let report = manager.run_self_check(true).await.unwrap();
+        assert!(!report.can_start_full_call);
+        assert_eq!(
+            report.tts.reason_code.as_deref(),
+            Some("tts_inconsistent_response")
+        );
+        assert_eq!(
+            report.playback.reason_code.as_deref(),
+            Some("playback_without_valid_synthesis")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_reader_cannot_clear_a_newer_published_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+                dir.path(),
+            )
+            .with_dialogue(Arc::new(BarrierCompleter {
+                entered: entered.clone(),
+                release: release.clone(),
+                revision: "old".into(),
+            })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        manager.self_check_attempt.store(1, Ordering::Release);
+        let old_report = nomifun_api_types::voice::VoiceCapabilityReport {
+            generation: manager.generation.load(Ordering::Acquire),
+            can_start_full_call: true,
+            ..Default::default()
+        };
+        *manager.capabilities.write().unwrap() = Some(StoredCapabilities {
+            report: old_report,
+            attempt: 1,
+            expires_at_ms: nomifun_common::now_ms() + 60_000,
+            signature: "stale-signature".into(),
+        });
+
+        let reader = manager.clone();
+        let read = tokio::spawn(async move { reader.current_capabilities().await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("old read must enter configuration_revision");
+
+        let new_report = nomifun_api_types::voice::VoiceCapabilityReport {
+            generation: manager.generation.load(Ordering::Acquire),
+            can_start_full_call: true,
+            ..Default::default()
+        };
+        *manager.capabilities.write().unwrap() = Some(StoredCapabilities {
+            report: new_report,
+            attempt: 2,
+            expires_at_ms: nomifun_common::now_ms() + 60_000,
+            signature: "new-signature".into(),
+        });
+        release.notify_waiters();
+
+        let result = read.await.unwrap();
+        assert!(result.is_none(), "the stale read must not return its old report");
+        let cached = manager.capabilities.read().unwrap().clone();
+        assert_eq!(
+            cached.as_ref().map(|stored| stored.attempt),
+            Some(2),
+            "an old read must not clear a newer report"
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_report_is_invalidated_by_fresh_pcm_and_config_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let (origin, server) = tts_fixture(
+            200,
+            r#"{"ok":true,"provider":"fixture","online":true,"playback_ok":true,"languages":[{"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},{"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}]}"#,
+        )
+        .await;
+        let revision = Arc::new(std::sync::Mutex::new("rev-1".to_string()));
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(ConfigurableCompleter {
+                    revision: revision.clone(),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        assert!(manager.run_self_check(true).await.unwrap().can_start_full_call);
+        assert!(manager.current_capabilities().await.is_some());
+
+        manager
+            .snapshot
+            .write()
+            .unwrap()
+            .audio
+            .as_mut()
+            .unwrap()
+            .last_frame_at_ms = Some(nomifun_common::now_ms() - 5_000);
+        assert!(manager.current_capabilities().await.is_none());
+
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        assert!(manager.run_self_check(true).await.unwrap().can_start_full_call);
+        *revision.lock().unwrap() = "rev-2".to_string();
+        assert!(manager.current_capabilities().await.is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn readiness_check_atomically_blocks_new_calls_and_model_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        manager.self_check_active.store(true, Ordering::Release);
+        let call = manager
+            .start_call(VoiceCallStartRequest { locale: None,
+                request_id: "during-check".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+                session_mode: None,
+            })
+            .await
+            .expect_err("a new call must be rejected during a readiness check");
+        assert_eq!(call.0, axum::http::StatusCode::CONFLICT);
+        assert!(call.1.contains("voice_self_check_in_progress"));
+        assert_eq!(
+            manager.begin_model_write().await.unwrap_err(),
+            "voice_self_check_in_progress"
+        );
+        manager.self_check_active.store(false, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn cancelled_readiness_check_releases_admission_and_cancels_daemon_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = populate_checked_suite(dir.path());
+        let models = Arc::new(nomifun_voice_models::ModelManager::with_config(
+            dir.path(),
+            Vec::new(),
+            manifest,
+        ));
+        let cancels = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancels_for_route = cancels.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new()
+            .route(
+                "/api/voice/diagnostics/tts-self-check",
+                axum::routing::post(|| async {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    axum::Json(serde_json::json!({
+                        "ok": true, "provider": "fixture", "online": true, "playback_ok": true,
+                        "languages": [
+                            {"language":"zh-CN","voice":"zh","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50},
+                            {"language":"en-US","voice":"en","ok":true,"sample_rate":24000,"samples":2400,"duration_ms":100,"rms_milli":30,"peak_milli":50}
+                        ]
+                    }))
+                }),
+            )
+            .route(
+                "/api/voice/diagnostics/tts-self-check/cancel",
+                axum::routing::post(move || {
+                    let cancels = cancels_for_route.clone();
+                    async move {
+                        cancels.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        axum::Json(serde_json::json!({ "cancelled": true }))
+                    }
+                }),
+            );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(models, dir.path())
+                .with_replay_daemon(origin)
+                .with_dialogue(Arc::new(ConfigurableCompleter {
+                    revision: Arc::new(std::sync::Mutex::new("rev".into())),
+                })),
+        );
+        capability_snapshot(&manager, nomifun_common::now_ms());
+        let check_manager = manager.clone();
+        let task = tokio::spawn(async move { check_manager.run_self_check(false).await });
+        for _ in 0..50 {
+            if manager.self_check_active.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        manager.cancel_self_check();
+        let _ = task.await;
+        for _ in 0..50 {
+            if !manager.self_check_active.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!manager.self_check_active.load(Ordering::Acquire));
+        for _ in 0..50 {
+            if cancels.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(cancels.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn capabilities_expire_with_generation_and_ttl_without_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let report = nomifun_api_types::voice::VoiceCapabilityReport {
+            generation: manager.generation.load(Ordering::Acquire),
+            can_start_full_call: true,
+            ..Default::default()
+        };
+        *manager.capabilities.write().unwrap() = Some(StoredCapabilities {
+            report,
+            attempt: 1,
+            expires_at_ms: nomifun_common::now_ms() - 1,
+            signature: String::new(),
+        });
+        assert!(
+            manager.current_capabilities().await.is_none(),
+            "an expired report must not authorize a call"
+        );
+
+        let report = nomifun_api_types::voice::VoiceCapabilityReport {
+            generation: manager.generation.load(Ordering::Acquire),
+            can_start_full_call: true,
+            ..Default::default()
+        };
+        *manager.capabilities.write().unwrap() = Some(StoredCapabilities {
+            report,
+            attempt: 2,
+            expires_at_ms: nomifun_common::now_ms() + 60_000,
+            signature: manager.capability_signature().await,
+        });
+        manager.generation.fetch_add(1, Ordering::AcqRel);
+        assert!(
+            manager.current_capabilities().await.is_none(),
+            "a daemon generation change must invalidate the previous evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connected_but_incomplete_suite_rejects_before_any_placeholder() {
+        struct GateRecorder {
+            resolutions: std::sync::atomic::AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl VoiceDialogueRecorder for GateRecorder {
+            async fn preflight(&self, _: &VoiceDialogueRequest) -> Result<VoiceDialoguePreflight, VoiceDialogueRecorderError> {
+                unreachable!("the admission gate must run before preflight")
+            }
+            async fn record_pair(&self, _: &str, _: &VoiceDialogueRequest, _: &str) -> Result<(), VoiceDialogueRecorderError> {
+                Ok(())
+            }
+            async fn resolve_call_target(&self, _: &VoiceCallTarget, _: Option<&str>, _: Option<&str>) -> Result<(String, Option<String>), VoiceDialogueRecorderError> {
+                self.resolutions.fetch_add(1, Ordering::SeqCst);
+                Ok(("conversation".into(), None))
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(GateRecorder { resolutions: std::sync::atomic::AtomicUsize::new(0) });
+        let manager = VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        )
+        .with_recorder(recorder.clone());
+        let builder = if cfg!(windows) {
+            let mut builder = nomi_process_runtime::ChildProcessBuilder::new("cmd.exe");
+            builder.args(["/c", "ping", "-n", "10", "127.0.0.1"]);
+            builder
+        } else {
+            let mut builder = nomi_process_runtime::ChildProcessBuilder::new("sleep");
+            builder.arg("10");
+            builder
+        };
+        if let Some(child) = builder.spawn_managed().ok() {
+            *manager.child.lock().await = Some(child);
+        }
+        {
+            let mut snapshot = manager.snapshot.write().unwrap();
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+            snapshot.acoustic_ready = true;
+            snapshot.dialogue_ready = true;
+            snapshot.playback_ready = false;
+        }
+        let error = manager
+            .start_call(VoiceCallStartRequest { locale: None,
+                request_id: "gate-1".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+                session_mode: None,
+            })
+            .await
+            .expect_err("a connected suite without playback must reject a new full call");
+        assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
+        assert!(error.1.contains("voice_suite_not_ready"));
+        assert_eq!(
+            recorder.resolutions.load(Ordering::SeqCst),
+            0,
+            "no Conversation placeholder may be created before the gate passes"
+        );
+        assert!(recorder.current_call_reservation().is_none());
+    }
+
+    #[tokio::test]
+    async fn model_write_rejects_an_active_call_without_touching_the_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        {
+            let mut snapshot = manager.snapshot.write().unwrap();
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+            snapshot.session_id = Some("active-session".into());
+            snapshot.phase = VoiceSessionPhase::Listening;
+        }
+        assert_eq!(
+            manager.begin_model_write().await.unwrap_err(),
+            "voice_suite_in_use"
+        );
+        assert!(!manager.resource_write_active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn http_model_write_is_rejected_while_a_call_is_active() {
+        use tower::ServiceExt;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        {
+            let mut snapshot = manager.snapshot.write().unwrap();
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+            snapshot.session_id = Some("active-session".into());
+            snapshot.phase = VoiceSessionPhase::Listening;
+        }
+        let app = nomifun_voice_models::voice_model_routes(manager.models_manager.clone()).layer(
+            axum::middleware::from_fn_with_state(
+                manager.clone(),
+                model_write_guard_middleware,
+            ),
+        );
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/voice/models/install")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 16_384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "voice_suite_in_use");
+        assert!(json["error"].as_str().unwrap().contains("voice_suite_in_use"));
+    }
+
+    #[tokio::test]
+    async fn model_write_stops_an_idle_daemon_and_blocks_new_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let builder = if cfg!(windows) {
+            let mut builder = nomi_process_runtime::ChildProcessBuilder::new("cmd.exe");
+            builder.args(["/c", "ping", "-n", "10", "127.0.0.1"]);
+            builder
+        } else {
+            let mut builder = nomi_process_runtime::ChildProcessBuilder::new("sleep");
+            builder.arg("10");
+            builder
+        };
+        *manager.child.lock().await = builder.spawn_managed().ok();
+        {
+            let mut snapshot = manager.snapshot.write().unwrap();
+            snapshot.enabled = true;
+            snapshot.connection = VoiceConnectionState::Connected;
+            snapshot.acoustic_ready = true;
+            snapshot.dialogue_ready = true;
+            snapshot.playback_ready = true;
+        snapshot.worker_epoch = Some(7);
+        }
+
+        let guard = manager.begin_model_write().await.unwrap();
+        assert!(manager.resource_write_active.load(Ordering::Acquire));
+        assert!(
+            manager.child.lock().await.is_none(),
+            "the idle daemon must release its native model handles before the write"
+        );
+        let error = manager
+            .start_call(VoiceCallStartRequest { locale: None,
+                request_id: "during-write".into(),
+                target: VoiceCallTarget::DefaultWorkspace,
+                session_mode: None,
+            })
+            .await
+            .expect_err("a new call must be rejected while models are being written");
+        assert_eq!(error.0, axum::http::StatusCode::CONFLICT);
+        assert!(error.1.contains("voice_resource_write_in_progress"));
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!manager.resource_write_active.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn model_write_does_not_restart_after_the_user_disables_voice() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        manager.write_autostart_config(true).unwrap();
+        let guard = manager.begin_model_write().await.unwrap();
+        // The user turns the switch off while the write is still running.
+        manager.write_autostart_config(false).unwrap();
+        drop(guard);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!manager.resource_write_active.load(Ordering::Acquire));
+        assert!(
+            manager.child.lock().await.is_none(),
+            "a disabled preference must not be undone by the write completion path"
+        );
     }
 
     #[tokio::test]
@@ -4307,6 +6773,7 @@ mod tests {
             dialogue_ready: false,
             playback_ready: false,
             task_ready: false,
+            capabilities: None,
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"running\":true"));
@@ -5026,7 +7493,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-1".into(),
                 target: VoiceCallTarget::DefaultWorkspace,
@@ -5144,7 +7611,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-invalid".into(),
                 target: VoiceCallTarget::Workspace { workspace: "invalid_dir".into() },
@@ -5154,7 +7621,7 @@ mod tests {
         assert_eq!(resp_invalid.status(), axum::http::StatusCode::BAD_REQUEST);
 
         // A definite daemon rejection is replayed in exactly the same structured form.
-        let rejected_request=VoiceCallStartRequest {request_id:"req-rejected".into(),target:VoiceCallTarget::CurrentSelection,session_mode:None};
+        let rejected_request=VoiceCallStartRequest { locale: None,request_id:"req-rejected".into(),target:VoiceCallTarget::CurrentSelection,session_mode:None};
         let first_rejection=manager_with_rec.start_call(rejected_request.clone()).await.unwrap_err();
         assert_eq!(first_rejection.0,axum::http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(serde_json::from_str::<serde_json::Value>(&first_rejection.1).unwrap()["code"],"daemon_wake_rejected");
@@ -5168,7 +7635,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-valid".into(),
                 target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
@@ -5208,7 +7675,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-valid".into(),
                 target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
@@ -5222,7 +7689,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-valid".into(),
                 target: VoiceCallTarget::DefaultWorkspace,
@@ -5231,7 +7698,7 @@ mod tests {
         let resp_target_conflict = app_running.clone().oneshot(req_target_conflict).await.unwrap();
         assert_eq!(resp_target_conflict.status(), axum::http::StatusCode::BAD_REQUEST);
 
-        let changed_mode = manager_with_rec.start_call(VoiceCallStartRequest {
+        let changed_mode = manager_with_rec.start_call(VoiceCallStartRequest { locale: None,
             request_id:"req-valid".into(), target:VoiceCallTarget::Workspace { workspace:"D:\\valid_ws".into() },
             session_mode:Some("default".into()),
         }).await.unwrap_err();
@@ -5242,7 +7709,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-different".into(),
                 target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
@@ -5255,7 +7722,7 @@ mod tests {
         if let Some(HandledStartOutcome::Starting {reserved_at_epoch_ms, ..}) = manager_with_rec.handled_start_requests.write().unwrap().get_mut("req-valid") {
             *reserved_at_epoch_ms -= 11_000;
         }
-        let unknown = manager_with_rec.start_call(VoiceCallStartRequest {
+        let unknown = manager_with_rec.start_call(VoiceCallStartRequest { locale: None,
             request_id:"req-valid".into(), target:VoiceCallTarget::Workspace {workspace:"D:\\valid_ws".into()}, session_mode:None,
         }).await.unwrap_err();
         assert!(unknown.1.contains("voice_call_start_unknown"));
@@ -5279,7 +7746,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-same".into(),
                 target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
@@ -5298,7 +7765,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-valid".into(),
                 target: VoiceCallTarget::Workspace { workspace: "D:\\valid_ws".into() },
@@ -5316,7 +7783,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-valid".into(),
                 target: VoiceCallTarget::DefaultWorkspace,
@@ -5331,7 +7798,7 @@ mod tests {
             .method("POST")
             .uri("/api/voice/companion/session/start")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest {
+            .body(axum::body::Body::from(serde_json::to_string(&VoiceCallStartRequest { locale: None,
                 session_mode: None,
                 request_id: "req-diff".into(),
                 target: VoiceCallTarget::VoiceConversation { conversation_id: "other-conversation".into() },
@@ -5570,7 +8037,7 @@ mod tests {
             model: None,
             preset_id: None,
         };
-        let recover_request = nomifun_api_types::voice::VoiceCallStartRequest {
+        let recover_request = nomifun_api_types::voice::VoiceCallStartRequest { locale: None,
             request_id: "req-cache-recover".into(),
             target: recover_target.clone(),
             session_mode: None,
@@ -5597,7 +8064,7 @@ mod tests {
         // proceed without waiting in real time.
         recorder.take_call_reservation("req-cache-recover");
         let closed_start = manager
-            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest { locale: None,
                 request_id: "req-cache-closed".into(),
                 target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
                     workspace: None,
@@ -5619,7 +8086,7 @@ mod tests {
         // A changed session mode for the same request_id must conflict.
         recorder.take_call_reservation("req-cache-closed");
         let mode_start = manager
-            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest { locale: None,
                 request_id: "req-cache-mode".into(),
                 target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
                     workspace: None,
@@ -5758,7 +8225,7 @@ mod tests {
         // Simulate the replay's starting window elapsing.
         recorder.take_call_reservation("req-cache-recover");
         let closed_error = manager
-            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest { locale: None,
                 request_id: "req-cache-closed".into(),
                 target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
                     workspace: None,
@@ -5784,7 +8251,7 @@ mod tests {
         );
 
         let mode_error = manager
-            .start_call(nomifun_api_types::voice::VoiceCallStartRequest {
+            .start_call(nomifun_api_types::voice::VoiceCallStartRequest { locale: None,
                 request_id: "req-cache-mode".into(),
                 target: nomifun_api_types::voice::VoiceCallTarget::NewVoiceConversation {
                     workspace: None,
@@ -5919,5 +8386,425 @@ mod tests {
         let receipts=manager.handled_start_requests.read().unwrap();
         assert!(matches!(receipts.get("new-request"),Some(HandledStartOutcome::Stopped {..})));
         assert!(matches!(receipts.get("old-request"),Some(HandledStartOutcome::Bound {..})));
+    }
+    #[tokio::test]
+    #[ignore = "requires feature-enabled daemon binary, read-only models, isolated port and env-set fault injection"]
+    async fn supervised_native_stuck_exits_and_exhausts_restart_budget() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        assert!(models_dir.join("asr/model.int8.onnx").is_file(), "real read-only model suite required");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)),
+                dir.path(),
+            )
+            .with_test_daemon_port(port),
+        );
+        run_headless_case(
+            manager.clone(),
+            port,
+            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(180),
+            |manager, origins, token| async move {
+                let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
+                let mut exhausted = false;
+                for round in 0..5u32 {
+                    let mut running = false;
+                    let mut current_pid = 0u32;
+                    for _ in 0..100 {
+                        let status = manager.status().await;
+                        if status.running { running = true; current_pid = status.pid.unwrap_or(0); break; }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    if !running {
+                        if manager.snapshot().error.as_ref().is_some_and(|error| error.code == "daemon_restart_exhausted") { exhausted = true; break; }
+                        panic!("round {round}: daemon did not become running");
+                    }
+                    let mut healthy = false;
+                    for _ in 0..80 {
+                        if client.get(format!("{origins}/healthz")).send().await.is_ok_and(|r| r.status().is_success()) { healthy = true; break; }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    assert!(healthy, "round {round}: daemon did not become healthy");
+                    let hardware: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    assert_eq!(hardware["mic_attempts"], serde_json::json!(0));
+                    assert_eq!(hardware["speaker_attempts"], serde_json::json!(0));
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let response = client.get(format!("{origins}/api/voice/diagnostics/engine-self-check?request_id=r16-{round}&timeout_ms=500")).header("x-ai-mate-control-token", &token).send().await;
+                    let status = response.as_ref().ok().map(|response| response.status());
+                    let body: serde_json::Value = match response { Ok(response) => response.json().await.unwrap_or_default(), Err(_) => serde_json::Value::Null };
+                    assert_eq!(status, Some(reqwest::StatusCode::OK), "round {round}: bounded engine check must return a failure body");
+                    let reason = body.get("reason").and_then(|value| value.as_str());
+                    if reason != Some("engine_check_timeout") {
+                        for _ in 0..20 {
+                            if !manager.status().await.running { break; }
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        }
+                        let observed = manager.last_child_exit().map(|exit| (exit.pid, exit.code));
+                        eprintln!("r16 unexpected_native_outcome round={round} reason={reason:?} observed_exit={observed:?}");
+                    }
+                    assert_eq!(reason, Some("engine_check_timeout"));
+                    assert_ne!(body.get("asr_ok").and_then(|value| value.as_bool()), Some(true));
+                    let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    assert!(after["fault_asr_entered"].as_u64().unwrap_or(0) > 0, "round {round}: blocking ASR must actually be entered");
+                    let observation = &after["fault_observation"];
+                    assert_eq!(observation["native_busy"], serde_json::json!(true), "round {round}: blocking job must still be owned");
+                    let job = &observation["job"];
+                    assert_eq!(job["request_id"], serde_json::json!(format!("r16-{round}")), "round {round}: job request attribution");
+                    assert_eq!(job["worker_epoch"], body["worker_epoch"], "round {round}: job worker attribution");
+                    assert_eq!(job["instance_id"], body["instance_id"], "round {round}: job instance attribution");
+                    assert_eq!(job["pid"], serde_json::json!(current_pid), "round {round}: job PID attribution");
+                    assert!(job["job_epoch"].as_u64().unwrap_or(0) > 0, "round {round}: job epoch missing");
+                    assert_eq!(job["still_blocking"], serde_json::json!(true), "round {round}: job must remain owned until watchdog");
+                    let mut stopped = false;
+                    for _ in 0..20 {
+                        if !manager.status().await.running { stopped = true; break; }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    assert!(stopped, "round {round}: supervised daemon did not exit");
+                    let exit = manager.last_child_exit().expect("observed child exit");
+                    assert_eq!(exit.code, Some(75), "round {round}: exit must be watchdog 75, got {:?}", exit.code);
+                    assert_eq!(exit.pid, current_pid, "round {round}: exit observation must bind the running PID");
+                    eprintln!("r16 round={round} pid={} exit={:?} instance={} worker_epoch={} request={} job_epoch={} busy={} still_blocking={}", current_pid, exit.code, body.get("instance_id").and_then(|v| v.as_str()).unwrap_or(""), body.get("worker_epoch").and_then(|v| v.as_u64()).unwrap_or(0), job["request_id"].as_str().unwrap_or(""), job["job_epoch"].as_u64().unwrap_or(0), observation["native_busy"], job["still_blocking"]);
+                    if manager.snapshot().error.as_ref().is_some_and(|error| error.code == "daemon_restart_exhausted") { exhausted = true; break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                assert!(exhausted, "restart budget must exhaust");
+            },
+        )
+        .await;
+    }
+    #[tokio::test]
+    #[ignore = "requires feature headless daemon; ordinary cancel must retain native lease"]
+    async fn ordinary_cancel_does_not_release_native_lease() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        assert!(models_dir.join("asr/model.int8.onnx").is_file(), "real read-only model suite required");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            VoiceCompanionProcessManager::new(
+                Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)),
+                dir.path(),
+            )
+            .with_test_daemon_port(port),
+        );
+        run_headless_case(
+            manager.clone(),
+            port,
+            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(120),
+            |manager, origins, token| async move {
+                let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
+                let first_pid = manager.status().await.pid.expect("first daemon pid");
+                let first_instance = manager.snapshot().instance_id.clone();
+                let first = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                assert_eq!(first.status(), reqwest::StatusCode::OK);
+                let mut observation = serde_json::Value::Null;
+                for _ in 0..40 {
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("ordinary-a")
+                        && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                assert_eq!(observation["fault_observation"]["native_busy"], serde_json::json!(true));
+                assert_eq!(observation["fault_observation"]["job"]["request_id"], serde_json::json!("ordinary-a"));
+                assert_eq!(observation["fault_observation"]["job"]["pid"], serde_json::json!(first_pid));
+                assert_eq!(observation["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
+
+                let second = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=ordinary-b")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                assert_eq!(second.status(), reqwest::StatusCode::OK);
+                let after_cancel: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                assert_eq!(after_cancel["fault_observation"]["native_busy"], serde_json::json!(true));
+                assert_eq!(after_cancel["fault_observation"]["job"]["request_id"], serde_json::json!("ordinary-a"));
+                assert_eq!(after_cancel["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
+
+                let mut exited = None;
+                for _ in 0..240 {
+                    if let Some(observed) = manager.last_child_exit()
+                        && observed.pid == first_pid
+                    {
+                        exited = Some(observed);
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                let exit = exited.expect("ordinary stuck daemon must exit");
+                assert_eq!(exit.pid, first_pid);
+                assert_eq!(exit.code, Some(75));
+                let mut restarted = false;
+                for _ in 0..80 {
+                    let status = manager.status().await;
+                    if status.running && status.pid != Some(first_pid) {
+                        restarted = true;
+                        let mut new_instance = String::new();
+                        for _ in 0..40 {
+                            if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                                && let Ok(snapshot) = response.json::<serde_json::Value>().await
+                                && let Some(instance) = snapshot["instance_id"].as_str()
+                                && instance != first_instance
+                            {
+                                new_instance = instance.to_owned();
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        assert!(!new_instance.is_empty(), "new daemon instance must be non-empty");
+                        assert_ne!(new_instance, first_instance, "new daemon instance must differ");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                assert!(restarted, "manager must replace the stuck instance");
+                eprintln!("r17 ordinary_request={} pid={} exit={:?} new_instance={} still_blocking_after_cancel={}", observation["fault_observation"]["job"]["request_id"], first_pid, exit.code, manager.snapshot().instance_id.as_str(), after_cancel["fault_observation"]["job"]["still_blocking"]);
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires feature headless daemon; healthy A then healthy B must not be killed"]
+    async fn healthy_ordinary_a_then_b_completes() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        assert!(models_dir.join("asr/model.int8.onnx").is_file());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)),
+            dir.path(),
+        ).with_test_daemon_port(port));
+        run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(60), |manager, origins, token| async move {
+            let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
+            for request_id in ["health-a", "health-b"] {
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id={request_id}")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::OK);
+                let payload: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(payload["started"], serde_json::json!(true));
+                for _ in 0..40 {
+                    let observation: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    if observation["fault_observation"]["native_busy"] == serde_json::json!(false) { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            assert!(manager.status().await.running, "healthy A/B must keep daemon alive");
+            assert!(manager.last_child_exit().is_none(), "healthy A/B must not be watchdog-exited");
+            eprintln!("r20 healthy_a_b still_running=true exit=None");
+        }).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires feature headless daemon; cancelled A without B must retain lease"]
+    async fn ordinary_cancel_without_b_retains_lease() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        assert!(models_dir.join("asr/model.int8.onnx").is_file());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)),
+            dir.path(),
+        ).with_test_daemon_port(port));
+        run_headless_case(manager.clone(), port, std::time::Duration::from_secs(20), std::time::Duration::from_secs(120), |manager, origins, token| async move {
+            let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
+            let first_pid = manager.status().await.pid.expect("cancel child pid");
+            let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=cancel-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            let mut observation = serde_json::Value::Null;
+            for _ in 0..40 {
+                observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("cancel-a") && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true) { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            assert_eq!(observation["fault_observation"]["native_busy"], serde_json::json!(true));
+            let cancelled = client.post(format!("{origins}/api/voice/diagnostics/test-cancel")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+            assert_eq!(cancelled.status(), reqwest::StatusCode::OK);
+            let after: serde_json::Value = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+            assert_eq!(after["fault_observation"]["native_busy"], serde_json::json!(true));
+            assert_eq!(after["fault_observation"]["job"]["request_id"], serde_json::json!("cancel-a"));
+            assert_eq!(after["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
+            let mut exited = None;
+            for _ in 0..240 {
+                if let Some(observed) = manager.last_child_exit() && observed.pid == first_pid { exited = Some(observed); break; }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            let exit = exited.expect("cancelled A without B must self-watchdog");
+            assert_eq!(exit.code, Some(75));
+            eprintln!("r20 cancel_without_b pid={} exit={:?} still_after_cancel={}", first_pid, exit.code, after["fault_observation"]["job"]["still_blocking"]);
+        }).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires feature headless daemon; a single ordinary stuck job must self-watchdog"]
+    async fn single_ordinary_stuck_exits_without_second_request() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        assert!(models_dir.join("asr/model.int8.onnx").is_file());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)),
+            dir.path(),
+        ).with_test_daemon_port(port));
+        run_headless_case(
+            manager.clone(),
+            port,
+            std::time::Duration::from_secs(20),
+            std::time::Duration::from_secs(120),
+            |manager, origins, token| async move {
+                let client = reqwest::Client::builder().no_proxy().timeout(std::time::Duration::from_secs(3)).build().unwrap();
+                let first_pid = manager.status().await.pid.expect("single child pid");
+                assert!(!manager.snapshot().instance_id.is_empty());
+                let first_instance = manager.snapshot().instance_id.clone();
+                let response = client.post(format!("{origins}/api/voice/diagnostics/test-utterance?request_id=single-a")).header("x-ai-mate-control-token", &token).send().await.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::OK);
+                let mut observation = serde_json::Value::Null;
+                for _ in 0..40 {
+                    observation = client.get(format!("{origins}/api/voice/diagnostics/test-hardware-calls")).header("x-ai-mate-control-token", &token).send().await.unwrap().json().await.unwrap();
+                    if observation["fault_observation"]["job"]["request_id"] == serde_json::json!("single-a")
+                        && observation["fault_observation"]["job"]["still_blocking"] == serde_json::json!(true)
+                    { break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                assert_eq!(observation["fault_observation"]["job"]["request_id"], serde_json::json!("single-a"));
+                assert_eq!(observation["fault_observation"]["job"]["pid"], serde_json::json!(first_pid));
+                assert_eq!(observation["fault_observation"]["job"]["still_blocking"], serde_json::json!(true));
+                assert_eq!(observation["fault_observation"]["native_busy"], serde_json::json!(true));
+                let mut exited = None;
+                for _ in 0..240 {
+                    if let Some(observed) = manager.last_child_exit()
+                        && observed.pid == first_pid
+                    { exited = Some(observed); break; }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                let exit = exited.expect("single A must self-watchdog without B");
+                assert_eq!(exit.pid, first_pid);
+                assert_eq!(exit.code, Some(75));
+                let mut new_instance = String::new();
+                let mut new_pid = None;
+                for _ in 0..80 {
+                    let status = manager.status().await;
+                    if status.running && status.pid != Some(first_pid) {
+                        new_pid = status.pid;
+                        if let Ok(response) = client.get(format!("{origins}/api/voice/snapshot")).header("x-ai-mate-control-token", &token).send().await
+                            && let Ok(snapshot) = response.json::<serde_json::Value>().await
+                            && let Some(instance) = snapshot["instance_id"].as_str()
+                            && !instance.is_empty()
+                            && instance != first_instance
+                        { new_instance = instance.to_owned(); break; }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                assert!(!new_instance.is_empty(), "new instance must be non-empty");
+                assert_ne!(new_instance, first_instance);
+                assert_eq!(new_pid, manager.status().await.pid);
+                assert_ne!(new_pid, Some(first_pid));
+                eprintln!("r18 single request={} pid={} exit={:?} new_pid={:?} new_instance={}", observation["fault_observation"]["job"]["request_id"], first_pid, exit.code, new_pid, new_instance);
+            },
+        ).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "intentional nonzero verifier: requires feature headless daemon; run through R14 cleanup runner"]
+    async fn forced_cleanup_failure_must_exit_nonzero() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)), dir.path()).with_test_daemon_port(port));
+        let mode = std::env::var("R13_CLEANUP_FAILURE_MODE").unwrap_or_else(|_| "assertion".into());
+        let timeout = if mode == "timeout" { std::time::Duration::from_secs(20) } else { std::time::Duration::from_secs(30) };
+        run_headless_case(manager, port, std::time::Duration::from_secs(20), timeout, |_, _, _| async move {
+            if mode == "timeout" {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            } else {
+                panic!("forced_main_assertion");
+            }
+        })
+        .await;
+        panic!("forced_failure_must_not_return_normally");
+    }
+
+    #[tokio::test]
+    #[ignore = "intentional nonzero verifier: requires feature headless daemon; health stage must fail and clean"]
+    async fn forced_health_stage_failure_must_exit_nonzero() {
+        verify_feature_headless_binary();
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(Arc::new(nomifun_voice_models::ModelManager::new(&models_dir)), dir.path()).with_test_daemon_port(port));
+        run_headless_case(manager, port, std::time::Duration::from_millis(1), std::time::Duration::from_secs(30), |_, _, _| async move {
+            panic!("health_body_must_not_run");
+        })
+        .await;
+        panic!("health_failure_must_not_return_normally");
+    }
+    #[test]
+    #[ignore = "requires feature-enabled daemon binary and read-only models"]
+    fn feature_daemon_without_headless_refuses_before_hardware() {
+        verify_feature_headless_binary();
+        let bin = std::env::var_os("VOICE_COMPANION_BIN").map(std::path::PathBuf::from).expect("feature daemon binary");
+        let models_dir = std::env::var_os("FLOWY_VOICE_R11_MODELS").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("D:/tmp/flowy-dev/models"));
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, format!("[models]\nmodels_dir = '{}'\nauto_download = false\n", models_dir.display())).unwrap();
+        let mut child = std::process::Command::new(bin)
+            .arg("--config").arg(&config)
+            .arg("--host").arg("127.0.0.1:0")
+            .arg("--bypass-pairing")
+            .env("NOMIFUN_VOICE_FAULT_BLOCK_ASR", "0")
+            .env_remove("NOMIFUN_VOICE_FAULT_HEADLESS")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn feature negative control");
+        let mut status = None;
+        for _ in 0..50 {
+            if let Some(observed) = child.try_wait().expect("wait feature negative control") {
+                status = Some(observed);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let output = match status {
+            Some(_) => child.wait_with_output().expect("collect feature negative output"),
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("feature negative control exceeded 5s and was reaped");
+            }
+        };
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("native_fault_feature_requires_valid_headless"));
     }
 }

@@ -5,11 +5,13 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button, Message, Switch } from '@arco-design/web-react';
 import { CheckOne, CloseOne, Info } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
-import { subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import { requestDictationIntent } from '@/renderer/pages/guid/dictationIntent';
+import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
@@ -82,6 +84,19 @@ export interface VoiceModelStatusResponse {
 export interface VoiceModelProgressEvent {
   event: string;
   data: ModelInstallStateWire;
+}
+
+export interface VoiceModelInstallResponse {
+  accepted: boolean;
+  state: ModelInstallStateWire;
+  message?: string;
+}
+
+export interface VoiceModelDeleteResponse {
+  success: boolean;
+  freed_bytes: number;
+  state: ModelInstallStateWire;
+  message?: string;
 }
 
 /** 200ms throttle window per ui-motion.zh.md §3 */
@@ -236,8 +251,21 @@ function encodeWavPcm(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
   return buffer;
 }
 
+export const VoiceModelOperationAlert: React.FC<{ message: string | null; hidden?: boolean }> = ({
+  message,
+  hidden = false,
+}) =>
+  message && !hidden ? (
+    <div
+      role='alert'
+      className='border-t border-t-solid border-[var(--border-base)] bg-fill-1 px-4 py-3 text-12px text-danger-6'
+    >
+      {message}
+    </div>
+  ) : null;
 const VoiceSettings: React.FC = () => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [modelStatus, setModelStatus] = useState<VoiceModelInstallStatus>('NotInstalled');
   const [downloadDetail, setDownloadDetail] = useState<DownloadingDetail | null>(null);
   const [verifyDetail, setVerifyDetail] = useState<VerifyingDetail | null>(null);
@@ -250,6 +278,9 @@ const VoiceSettings: React.FC = () => {
   const [isTogglingCompanion, setIsTogglingCompanion] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [operationError, setOperationError] = useState<string | null>(null);
+  const [capabilities, setCapabilities] = useState<VoiceCapabilityReport | null>(null);
+  const [checkingCapabilities, setCheckingCapabilities] = useState(false);
 
   // Diagnostics & testing state
   const [micStatus, setMicStatus] = useState<VoiceDeviceStatus | null>(null);
@@ -403,21 +434,9 @@ const VoiceSettings: React.FC = () => {
           for (const line of lines) {
             const trimmed = line.trim();
             if (trimmed.startsWith('data:')) {
-              const jsonStr = trimmed.slice(5).trim();
-              if (jsonStr) {
-                try {
-                  const eventData = JSON.parse(jsonStr) as ModelInstallStateWire | VoiceModelProgressEvent;
-                  const statePayload =
-                    'data' in eventData && typeof eventData.data === 'object'
-                      ? eventData.data
-                      : (eventData as ModelInstallStateWire);
-
-                  if (statePayload && typeof statePayload.status === 'string') {
-                    applyStateUpdate(statePayload);
-                  }
-                } catch {
-                  // Ignore malformed SSE heartbeat chunks
-                }
+              const statePayload = parseVoiceModelProgressLine(trimmed);
+              if (statePayload) {
+                applyStateUpdate(statePayload as ModelInstallStateWire);
               }
             }
           }
@@ -480,11 +499,17 @@ const VoiceSettings: React.FC = () => {
     };
   }, [fetchStatus, fetchCompanionStatus]);
 
+  const operationErrorText = useCallback((fallback: string, error?: string, code?: string) => {
+    if (code === 'voice_suite_in_use') return t('voice.errors.suiteInUse');
+    if (code === 'voice_resource_write_in_progress') return t('voice.errors.resourceBusy');
+    return error || fallback;
+  }, [t]);
+
   // Trigger POST /api/voice/models/install
   const handleInstall = useCallback(async (force = false) => {
     setIsStarting(true);
+    setOperationError(null);
     try {
-      connectProgressStream();
       const response = await fetch(`${getBaseUrl()}/api/voice/models/install`, {
         method: 'POST',
         headers: {
@@ -493,60 +518,110 @@ const VoiceSettings: React.FC = () => {
         },
         body: JSON.stringify({ prefer_mirror: 'auto', force: Boolean(force) }),
       });
-      if (response.ok || response.status === 202) {
-        setModelStatus('ProbingSource');
-      } else {
-        const errJson = (await response.json().catch(() => ({}))) as { error?: string };
+      // Decode exactly once: a second response.json() would consume the body and
+      // erase the backend's 409 / removal-failure reason.
+      const outcome = parseVoiceModelOperation('install', response.status, await response.text());
+      if (!outcome.ok) {
+        setOperationError(operationErrorText(t('voice.errors.downloadFailed'), outcome.error, outcome.code));
+        return;
+      }
+      const state = outcome.receipt?.state as ModelInstallStateWire | undefined;
+      if (!state) {
+        setOperationError(t('voice.errors.operationFailed'));
+        return;
+      }
+      // The backend may reject a duplicate/already-ready request; always render
+      // the authoritative state it returned instead of forcing ProbingSource.
+      applyStateUpdate(state, true);
+      if (outcome.connectProgressStream) {
+        connectProgressStream();
+      } else if (state.status === 'Failed') {
         setFailedDetail({
-          reason: errJson.error || t('voice.errors.downloadFailed'),
+          reason: outcome.receipt?.message || t('voice.errors.downloadFailed'),
           recoverable: true,
         });
-        setModelStatus('Failed');
       }
     } catch (e) {
-      setFailedDetail({
-        reason: e instanceof Error ? e.message : t('voice.errors.downloadFailed'),
-        recoverable: true,
-      });
-      setModelStatus('Failed');
+      setOperationError(e instanceof Error ? e.message : t('voice.errors.downloadFailed'));
     } finally {
       setIsStarting(false);
     }
-  }, [connectProgressStream, t]);
+  }, [applyStateUpdate, connectProgressStream, operationErrorText, t]);
 
   // Trigger DELETE /api/voice/models to free disk space
   const handleDelete = useCallback(async () => {
-    setModelStatus('Removing');
+    setOperationError(null);
     try {
       const response = await fetch(`${getBaseUrl()}/api/voice/models`, {
         method: 'DELETE',
         headers: buildBackendAuthHeaders('DELETE'),
       });
-      if (response.ok || response.status === 204) {
-        setModelStatus('NotInstalled');
+      const outcome = parseVoiceModelOperation('delete', response.status, await response.text());
+      if (!outcome.ok) {
+        setOperationError(operationErrorText(t('voice.errors.unknownError'), outcome.error, outcome.code));
+        return;
+      }
+      const state = outcome.receipt?.state as ModelInstallStateWire | undefined;
+      if (!state) {
+        setOperationError(t('voice.errors.operationFailed'));
+        return;
+      }
+      // Never claim NotInstalled from a bare 2xx: honor the deletion receipt.
+      applyStateUpdate(state, true);
+      if (outcome.receipt?.success) {
         setDownloadDetail(null);
         setVerifyDetail(null);
         setFailedDetail(null);
       } else {
-        const errJson = (await response.json().catch(() => ({}))) as { error?: string };
-        setFailedDetail({
-          reason: errJson.error || t('voice.errors.unknownError'),
-          recoverable: true,
-        });
-        setModelStatus('Failed');
+        setOperationError(t('voice.errors.deleteIncomplete', {
+          reason: outcome.receipt?.message || t('voice.errors.unknownError'),
+        }));
       }
     } catch (e) {
-      setFailedDetail({
-        reason: e instanceof Error ? e.message : t('voice.errors.unknownError'),
-        recoverable: true,
-      });
-      setModelStatus('Failed');
+      setOperationError(e instanceof Error ? e.message : t('voice.errors.unknownError'));
     }
-  }, [t]);
+  }, [applyStateUpdate, operationErrorText, t]);
 
   // Inline two-step confirmation per ui-motion.zh.md §3:
   // First click shows "确认释放？" with a 3-second auto-revert timer.
   // Second click within 3 seconds confirms deletion and calls DELETE.
+  const fetchCapabilities = useCallback(async () => {
+    try {
+      setCapabilities(await getVoiceCapabilities());
+    } catch {
+      setCapabilities(null);
+    }
+  }, []);
+
+  const handleSelfCheck = useCallback(async () => {
+    setCheckingCapabilities(true);
+    try {
+      // Explicit user action: may make one short, tool-free request through the
+      // configured dialogue provider and synthesize fixed check sentences.
+      const report = await runVoiceSelfCheck(true);
+      setCapabilities(report);
+      if (report.can_start_full_call) {
+        Message.success(t('voice.capabilities.fullReady'));
+      } else {
+        Message.warning(t('voice.capabilities.notReady'));
+      }
+    } catch (e) {
+      Message.error(e instanceof Error ? e.message : t('voice.capabilities.checkFailed'));
+    } finally {
+      setCheckingCapabilities(false);
+    }
+  }, [t]);
+
+  const handleUseTextReply = useCallback(() => {
+    const intent = requestDictationIntent('/');
+    navigate('/', { state: { dictationIntentId: intent.id } });
+  }, [navigate]);
+  useEffect(() => {
+    if (modelStatus === 'Ready') {
+      void fetchCapabilities();
+    }
+  }, [modelStatus, fetchCapabilities]);
+
   const handleReleaseClick = useCallback(() => {
     if (!isConfirmingRelease) {
       setIsConfirmingRelease(true);
@@ -934,8 +1009,10 @@ const VoiceSettings: React.FC = () => {
                 />
               </div>
 
+              <VoiceModelOperationAlert message={operationError} hidden={modelStatus === 'Failed'} />
+
               {/*
-                ui-motion.zh.md §3 contract:
+                ui-motion.zh.md ��3 contract:
                 2px hairline track permanently rendered at the bottom of the row.
                 Driven solely by transform: scaleX() (strictly never animates width/height).
               */}
@@ -959,6 +1036,75 @@ const VoiceSettings: React.FC = () => {
             </div>
           </SettingsList>
         </SettingsSection>
+
+        {modelStatus === 'Ready' && (
+          <SettingsSection
+            title={t('voice.capabilities.title')}
+            description={t('voice.capabilities.description')}
+          >
+            <SettingsList>
+              <SettingsRow
+                label={t('voice.capabilities.title')}
+                description={
+                  capabilities
+                    ? (capabilities.can_start_full_call
+                        ? t('voice.capabilities.fullReady')
+                        : t('voice.capabilities.notReady'))
+                    : t('voice.capabilities.notChecked')
+                }
+                controlLayout='actions'
+                control={
+                  <Button
+                    type='primary'
+                    size='small'
+                    loading={checkingCapabilities}
+                    onClick={handleSelfCheck}
+                  >
+                    {t('voice.capabilities.run')}
+                  </Button>
+                }
+              />
+            </SettingsList>
+            {capabilities && (
+              <div className='flex flex-col gap-2 px-4 pb-3 text-12px' role='status'>
+                {(['capture', 'kws', 'vad', 'asr', 'llm', 'tts', 'playback'] as const).map((name) => {
+                  const item = capabilities[name];
+                  return (
+                    <div key={name} className='flex items-start justify-between gap-3'>
+                      <span className='text-t-secondary'>{t(`voice.capabilities.item.${name}`)}</span>
+                      <span
+                        className={
+                          item.status === 'ready'
+                            ? 'text-success-6'
+                            : item.status === 'failed'
+                              ? 'text-danger-6'
+                              : 'text-t-tertiary'
+                        }
+                      >
+                        {t(`voice.capabilities.status.${item.status}`)}
+                        {item.reason_code && item.status !== 'ready'
+                          ? ` · ${t(`voice.capabilities.reason.${item.reason_code}`, { defaultValue: item.reason_code })}`
+                          : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+                {!capabilities.can_start_full_call && (
+                  <div className='mt-1 flex flex-col gap-2 border-t border-t-solid border-[var(--border-base)] pt-2'>
+                    <div role='alert' className='text-danger-6'>
+                      {capabilities.degraded_text_only
+                        ? t('voice.capabilities.textOnly')
+                        : t('voice.capabilities.fixHint')}
+                    </div>
+                    <Button size='small' onClick={handleUseTextReply}>
+                      {t('voice.capabilities.useTextReply')}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+          </SettingsSection>
+        )}
 
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
         <p className='m-0 text-12px text-t-secondary' role='status'>

@@ -19,7 +19,16 @@ use nomifun_api_types::voice::{
     VoiceModelDeleteResponse, VoiceModelInstallRequest, VoiceModelStatusResponse,
 };
 
-use crate::manager::ModelManager;
+use crate::manager::{ModelManager, ModelManagerError};
+
+fn model_error_response(err: ModelManagerError) -> (StatusCode, Json<serde_json::Value>) {
+    let status = if matches!(err, ModelManagerError::Conflict(_)) {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(serde_json::json!({ "error": err.to_string() })))
+}
 
 /// Builds the Axum router providing REST and SSE endpoints for voice models.
 ///
@@ -79,11 +88,7 @@ async fn install_handler(
 ) -> impl IntoResponse {
     match manager.install(payload.map(|Json(req)| req)).await {
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": err.to_string() })),
-        )
-            .into_response(),
+        Err(err) => model_error_response(err).into_response(),
     }
 }
 
@@ -91,10 +96,5 @@ async fn install_handler(
 async fn delete_handler(
     State(manager): State<Arc<ModelManager>>,
 ) -> Result<Json<VoiceModelDeleteResponse>, (StatusCode, Json<serde_json::Value>)> {
-    manager.remove().await.map(Json).map_err(|err| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": err.to_string() })),
-        )
-    })
+    manager.remove().await.map(Json).map_err(model_error_response)
 }

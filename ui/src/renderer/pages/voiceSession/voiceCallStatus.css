@@ -8,24 +8,23 @@
   animation: voice-call-wave 1600ms ease-in-out infinite;
 }
 
-/* Reserve actions before interaction: only opacity changes on hover/focus. */
+/* Default trailing slot: 20px wide in idle state with zero reserved blank space.
+   Expands smoothly on desktop hover/focus for active calls so the waveform glides left. */
 .conversation-voice-trailing {
   display: inline-flex;
   flex: 0 0 20px;
   align-items: center;
+  justify-content: flex-start;
   height: 20px;
+  overflow: visible;
+  transition: flex-basis 220ms var(--flowy-ease-move, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .conversation-voice-marker {
   width: 20px;
   height: 20px;
   opacity: 1;
-  transition: opacity 120ms var(--flowy-ease-move);
-}
-
-.conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-batch='true'])[data-voice-call-active='true'] .conversation-voice-trailing,
-.conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-batch='true'])[data-voice-mobile='true'] .conversation-voice-trailing {
-  flex-basis: 44px;
+  transition: opacity 160ms var(--flowy-ease-move, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
 .conversation-item--voice:not([data-voice-collapsed='true']) > .session-row-actions {
@@ -33,9 +32,30 @@
 }
 
 @media (hover: hover) {
+  /* On desktop hover / focus-within / menu open: active call wave smoothly expands trailing to 44px,
+     gliding the waveform icon to the left to make room for the more action button. */
+  .conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-batch='true'])[data-voice-call-active='true']:is(:hover, :focus-within, [data-voice-menu-open='true']) .conversation-voice-trailing {
+    flex-basis: 44px;
+  }
+
+  /* Inactive voice conversation: marker fades out on hover to yield the slot to the more button */
   .conversation-item--voice[data-voice-call-active='false'][data-voice-mobile='false'][data-voice-batch='false'][data-voice-collapsed='false']:is(:hover, :focus-within, [data-voice-menu-open='true']) .conversation-voice-marker {
     opacity: 0;
     pointer-events: none;
+  }
+
+  /* Micro-interaction: more button smoothly slides & fades in beside the shifted waveform */
+  .conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-mobile='true']) > .session-row-actions {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%) translateX(6px) scale(0.94);
+    transition: opacity 180ms ease, transform 180ms var(--flowy-ease-move, cubic-bezier(0.22, 1, 0.36, 1));
+  }
+
+  .conversation-item--voice:not([data-voice-collapsed='true']):not([data-voice-mobile='true']):is(:hover, :focus-within, [data-voice-menu-open='true']) > .session-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(-50%) translateX(0) scale(1);
   }
 }
 
@@ -47,7 +67,7 @@
 
 /* Touch has no hover reveal. Keep both type and actions discoverable. */
 @media (hover: none) {
-  .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'] .conversation-voice-trailing {
+  .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'][data-voice-call-active='true'] .conversation-voice-trailing {
     flex-basis: 44px;
   }
 
@@ -59,10 +79,13 @@
   .conversation-item--voice[data-voice-collapsed='false'][data-voice-batch='false'] > .session-row-actions {
     opacity: 1;
     pointer-events: auto;
+    transform: translateY(-50%);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .voice-call-wave { animation: none; }
+  .conversation-voice-trailing { transition: none; }
   .conversation-voice-marker { transition: none; }
+  .conversation-item--voice > .session-row-actions { transition: none; }
 }

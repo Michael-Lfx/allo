@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -249,6 +249,7 @@ pub async fn voice_events_handler(
 pub struct VoiceWakeRequest {
     pub keyword: Option<String>,
     pub request_id: Option<String>,
+    pub locale: Option<String>,
 }
 
 /// `POST /api/voice/wake`: External wake trigger (e.g. from desktop cascade recognizer).
@@ -258,7 +259,13 @@ pub async fn voice_wake_handler(
 ) -> impl IntoResponse {
     let kw = payload.keyword.unwrap_or_else(|| "Hey Flowy".to_string());
     if let Some(ref rt) = state.voice_runtime {
-        match rt.handle_wake_request(&kw, payload.request_id.as_deref()).await {
+        match rt
+            .handle_wake_request_with_locale(
+                &kw,
+                payload.request_id.as_deref(),
+                payload.locale.as_deref(),
+            )
+            .await {
             Ok(()) => (
                 StatusCode::OK,
                 Json(json!({"success": true, "keyword": kw})),
@@ -417,6 +424,189 @@ async fn voice_preview_feedback_handler(
     }
 }
 
+#[derive(Debug, serde::Deserialize, Default)]
+struct TtsSelfCheckRequest {
+    #[serde(default)]
+    check_id: Option<String>,
+    #[serde(default)]
+    locale: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+}
+
+async fn voice_tts_self_check_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<TtsSelfCheckRequest>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let result = runtime
+        .self_check_tts_with_options(
+            request.check_id.as_deref().filter(|s| !s.is_empty()),
+            request.locale.as_deref().filter(|s| !s.is_empty()),
+            request.stage.as_deref().filter(|s| !s.is_empty()),
+        )
+        .await;
+    match result {
+        Ok(response) => Json(response).into_response(),
+        Err(code) => (StatusCode::CONFLICT, Json(json!({ "code": code }))).into_response(),
+    }
+}
+
+async fn voice_tts_self_check_cancel_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<TtsSelfCheckRequest>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(check_id) = request.check_id.filter(|value| !value.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "check_id_required" }))).into_response();
+    };
+    if runtime.cancel_self_check(&check_id).await {
+        Json(json!({ "cancelled": true })).into_response()
+    } else {
+        (StatusCode::CONFLICT, Json(json!({ "code": "self_check_not_active" }))).into_response()
+    }
+}
+#[derive(Debug, serde::Deserialize)]
+struct VoiceAdmissionRequest {
+    #[serde(default)]
+    scope: Option<String>,
+    allowed: bool,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+}
+
+async fn voice_admission_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<VoiceAdmissionRequest>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let expires_at_ms = request
+        .expires_at_ms
+        .unwrap_or_else(|| nomifun_common::now_ms().saturating_add(60_000));
+    let scope = request.scope.as_deref().unwrap_or("wake");
+    runtime.set_admission(scope, request.allowed, expires_at_ms);
+    Json(json!({ "scope": scope, "allowed": request.allowed, "expires_at_ms": expires_at_ms }))
+        .into_response()
+}
+#[derive(Debug, serde::Deserialize, Default)]
+struct EngineSelfCheckQuery {
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+struct EngineSelfCheckCancelRequest {
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+async fn voice_engine_self_check_handler(
+    State(state): State<ServerState>,
+    Query(query): Query<EngineSelfCheckQuery>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    #[cfg(feature = "native-fault-injection")]
+    if let Ok(code) = std::env::var("NOMIFUN_VOICE_FAULT_EXIT_CODE")
+        && let Ok(code) = code.parse::<i32>()
+        && code != 75
+    {
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            std::process::exit(code);
+        });
+    }
+    let timeout = std::time::Duration::from_millis(
+        query.timeout_ms.unwrap_or(45_000).clamp(2_000, 120_000),
+    );
+    Json(
+        runtime
+            .self_check_engines_with_request(query.request_id, timeout)
+            .await,
+    )
+    .into_response()
+}
+
+async fn voice_engine_self_check_cancel_handler(
+    State(state): State<ServerState>,
+    Json(request): Json<EngineSelfCheckCancelRequest>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(request_id) = request.request_id.filter(|value| !value.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "code": "request_id_required" })),
+        )
+            .into_response();
+    };
+    if runtime.cancel_engine_check(&request_id).await {
+        Json(json!({ "cancelled": true, "request_id": request_id })).into_response()
+    } else {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({ "code": "engine_check_not_active" })),
+        )
+            .into_response()
+    }
+}
+async fn voice_test_cancel_handler(State(state): State<ServerState>) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    #[cfg(feature = "native-fault-injection")]
+    {
+        Json(json!({ "cancelled": runtime.test_abort_ordinary_turn() })).into_response()
+    }
+    #[cfg(not(feature = "native-fault-injection"))]
+    {
+        let _ = runtime;
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+async fn voice_test_hardware_calls_handler() -> Response {
+    #[cfg(feature = "native-fault-injection")]
+    {
+        let (mic, speaker) = crate::voice::hardware_attempts();
+        Json(json!({ "mic_attempts": mic, "speaker_attempts": speaker, "fault_asr_entered": crate::voice::FAULT_ASR_ENTERED.load(std::sync::atomic::Ordering::Acquire), "fault_observation": crate::voice::fault_job_observation() })).into_response()
+    }
+    #[cfg(not(feature = "native-fault-injection"))]
+    {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+async fn voice_test_ordinary_utterance_handler(
+    State(state): State<ServerState>,
+    Query(query): Query<EngineSelfCheckQuery>,
+) -> Response {
+    let Some(runtime) = state.voice_runtime else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    #[cfg(feature = "native-fault-injection")]
+    {
+        let request_id = query.request_id.unwrap_or_else(|| "ordinary-test".into());
+        let started = runtime.test_start_ordinary_utterance(&request_id);
+        Json(json!({ "started": started, "request_id": request_id })).into_response()
+    }
+    #[cfg(not(feature = "native-fault-injection"))]
+    {
+        let _ = (runtime, query);
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 /// Construct the Axum HTTP router with default OOBE manager.
 pub fn build_router(config: &Config, manager: Arc<ModelManager>) -> Router {
     build_router_with_oobe(config, manager, OobeManager::new())
@@ -464,6 +654,38 @@ pub fn build_router_full(
         .route("/api/voice/stop", axum::routing::post(voice_stop_handler))
         .route("/api/voice/events", get(voice_events_handler))
         .route("/api/voice/wake", axum::routing::post(voice_wake_handler))
+        .route(
+            "/api/voice/diagnostics/tts-self-check",
+            axum::routing::post(voice_tts_self_check_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/tts-self-check/cancel",
+            axum::routing::post(voice_tts_self_check_cancel_handler),
+        )
+        .route(
+            "/api/voice/admission",
+            axum::routing::post(voice_admission_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/engine-self-check",
+            axum::routing::get(voice_engine_self_check_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/test-hardware-calls",
+            axum::routing::get(voice_test_hardware_calls_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/test-utterance",
+            axum::routing::post(voice_test_ordinary_utterance_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/test-cancel",
+            axum::routing::post(voice_test_cancel_handler),
+        )
+        .route(
+            "/api/voice/diagnostics/engine-self-check/cancel",
+            axum::routing::post(voice_engine_self_check_cancel_handler),
+        )
         .with_state(state.clone());
 
     Router::new()

@@ -148,6 +148,28 @@ pub enum DownloaderError {
     UnexpectedStatus(StatusCode),
 }
 
+/// Parses `Content-Range: bytes <start>-<end>/<total|*>`.
+fn parse_content_range(value: &str) -> Option<(u64, u64, Option<u64>)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    let start = start.trim().parse::<u64>().ok()?;
+    let end = end.trim().parse::<u64>().ok()?;
+    let total = match total.trim() {
+        "*" => None,
+        total => Some(total.parse::<u64>().ok()?),
+    };
+    Some((start, end, total))
+}
+
+async fn remove_if_exists(path: &Path) {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(path = %path.display(), %error, "Failed to discard partial download"),
+    }
+}
+
 /// Downloader coordinating mirror probing, HTTP Range resumption, and failover.
 #[derive(Debug, Clone)]
 pub struct ModelDownloader {
@@ -288,6 +310,7 @@ impl ModelDownloader {
             }
         }
 
+        let mut requested_start = existing_bytes;
         let mut req = self.client.get(&url);
         if existing_bytes > 0 {
             req = req.header(RANGE, format!("bytes={existing_bytes}-"));
@@ -295,42 +318,96 @@ impl ModelDownloader {
 
         let resp = req.send().await?;
         let resp = if resp.status() == StatusCode::RANGE_NOT_SATISFIABLE {
-            let min_size = crate::layout::min_expected_size(rel_path, true);
-            if target_path.exists() {
-                if let Ok(meta) = tokio::fs::metadata(target_path).await {
-                    if meta.len() >= min_size {
-                        return Ok(meta.len());
-                    }
-                }
-                let _ = tokio::fs::remove_file(target_path).await;
-            }
-            if part_path.exists() {
-                let _ = tokio::fs::remove_file(&part_path).await;
-            }
-            // Re-request full content from scratch without Range header
+            // A 416 means the local partial no longer matches the remote object.
+            // Never promote it from a size guess: discard it and fetch from zero.
+            warn!(
+                rel_path,
+                local_partial_bytes = existing_bytes,
+                "Range not satisfiable; restarting the transfer from zero"
+            );
+            remove_if_exists(&part_path).await;
+            requested_start = 0;
             self.client.get(&url).send().await?
         } else {
             resp
         };
 
         let status = resp.status();
-        let (mut file, start_offset, expected_total) = match status {
+        let (mut file, start_offset, expected_total, expected_body) = match status {
             StatusCode::PARTIAL_CONTENT => {
-                let total = resp
+                let (range_start, range_end, total) = resp
                     .headers()
                     .get(CONTENT_RANGE)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.split('/').last())
-                    .and_then(|s| s.parse::<u64>().ok());
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(parse_content_range)
+                    .ok_or_else(|| {
+                        DownloaderError::Interrupted(
+                            "206 response is missing a valid Content-Range".into(),
+                        )
+                    })?;
+                if range_start != requested_start {
+                    remove_if_exists(&part_path).await;
+                    return Err(DownloaderError::Interrupted(format!(
+                        "Content-Range start mismatch: requested {requested_start}, server returned {range_start}"
+                    )));
+                }
+                if range_end < range_start {
+                    remove_if_exists(&part_path).await;
+                    return Err(DownloaderError::Interrupted(format!(
+                        "Content-Range is inverted: {range_start}-{range_end}"
+                    )));
+                }
+                let expected_body = match range_end
+                    .checked_sub(range_start)
+                    .and_then(|length| length.checked_add(1))
+                {
+                    Some(length) => length,
+                    None => {
+                        remove_if_exists(&part_path).await;
+                        return Err(DownloaderError::Interrupted(
+                            "Content-Range length overflows u64".into(),
+                        ));
+                    }
+                };
+                if total.is_some_and(|total| {
+                    range_end
+                        .checked_add(1)
+                        .is_none_or(|end| total < end)
+                }) {
+                    remove_if_exists(&part_path).await;
+                    return Err(DownloaderError::Interrupted(
+                        "Content-Range total is smaller than its own end offset".into(),
+                    ));
+                }
+                if let Some(declared) = resp
+                    .headers()
+                    .get(CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    if declared != expected_body {
+                        remove_if_exists(&part_path).await;
+                        return Err(DownloaderError::Interrupted(format!(
+                            "206 Content-Length {declared} does not match Content-Range length {expected_body}"
+                        )));
+                    }
+                }
 
                 let file = tokio::fs::OpenOptions::new()
                     .write(true)
                     .append(true)
                     .open(&part_path)
                     .await?;
-                (file, existing_bytes, total)
+                (file, range_start, total, Some(expected_body))
             }
             StatusCode::OK => {
+                if requested_start > 0 {
+                    warn!(
+                        rel_path,
+                        requested_start,
+                        "Server ignored Range; restarting the transfer from zero"
+                    );
+                }
                 let total = resp
                     .headers()
                     .get(CONTENT_LENGTH)
@@ -343,24 +420,52 @@ impl ModelDownloader {
                     .truncate(true)
                     .open(&part_path)
                     .await?;
-                (file, 0, total)
+                (file, 0, total, None)
             }
             other => return Err(DownloaderError::UnexpectedStatus(other)),
         };
 
         let mut stream = resp.bytes_stream();
         let mut downloaded_bytes = start_offset;
+        let mut body_bytes: u64 = 0;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
             file.write_all(&chunk).await?;
-            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            let chunk_len = chunk.len() as u64;
+            body_bytes = body_bytes.checked_add(chunk_len).ok_or_else(|| {
+                DownloaderError::Interrupted("Response body length overflows u64".into())
+            })?;
+            downloaded_bytes = downloaded_bytes.checked_add(chunk_len).ok_or_else(|| {
+                DownloaderError::Interrupted("Downloaded length overflows u64".into())
+            })?;
         }
         file.flush().await?;
         drop(file);
 
+        // A 206 body must match the declared range even when the total is `*`.
+        if let Some(expected) = expected_body {
+            if body_bytes != expected {
+                if body_bytes > expected {
+                    remove_if_exists(&part_path).await;
+                    return Err(DownloaderError::Interrupted(format!(
+                        "206 body exceeded the declared range: got {body_bytes} bytes, expected {expected}"
+                    )));
+                }
+                return Err(DownloaderError::Interrupted(format!(
+                    "206 body truncated: got {body_bytes} bytes, expected {expected}"
+                )));
+            }
+        }
+
         if let Some(expected) = expected_total {
-            if downloaded_bytes < expected {
+            if downloaded_bytes != expected {
+                if downloaded_bytes > expected {
+                    remove_if_exists(&part_path).await;
+                    return Err(DownloaderError::Interrupted(format!(
+                        "Stream exceeded the declared size: got {downloaded_bytes} bytes, expected {expected}"
+                    )));
+                }
                 return Err(DownloaderError::Interrupted(format!(
                     "Stream truncated: got {downloaded_bytes} bytes, expected {expected}"
                 )));
@@ -368,7 +473,7 @@ impl ModelDownloader {
         }
 
         if target_path.exists() {
-            let _ = tokio::fs::remove_file(target_path).await;
+            remove_if_exists(target_path).await;
         }
         tokio::fs::rename(&part_path, target_path).await?;
         Ok(downloaded_bytes)

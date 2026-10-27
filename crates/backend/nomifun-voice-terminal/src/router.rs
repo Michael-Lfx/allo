@@ -146,8 +146,11 @@ impl OpenAiCompatibleVoiceRouter {
             router.append_turn(&pair[0].content, &pair[1].content);
         }
         let mut request = scope.clone();
-        request.prompt = format!("对话上下文：\n{}\n{}",router.history.iter()
-            .map(|m|format!("{}: {}",m.role,m.content)).collect::<Vec<_>>().join("\n"),router.build_prompt(input,task_status));
+        let is_en = scope.locale.as_deref().is_some_and(|l| l.starts_with("en"));
+        let context_header = if is_en { "Dialogue context:\n" } else { "对话上下文：\n" };
+        request.prompt = format!("{}{}\n{}", context_header, router.history.iter()
+            .map(|m|format!("{}: {}",m.role,m.content)).collect::<Vec<_>>().join("\n"),
+            router.build_prompt_with_locale(input, task_status, scope.locale.as_deref()));
         let result=match sentences {Some(sender)=>client.complete_stream(&request,sender).await,None=>client.complete(&request).await};
         match result {
             Ok(content) => (self.parse_and_validate(&content),Some(content)),
@@ -413,29 +416,67 @@ impl OpenAiCompatibleVoiceRouter {
 
     /// Builds the complete single-pass routing prompt with dynamic Task FSM status and schema instructions.
     pub fn build_prompt(&self, user_input: &str, task_fsm_status: Option<&str>) -> String {
+        self.build_prompt_with_locale(user_input, task_fsm_status, None)
+    }
+
+    pub fn build_prompt_with_locale(&self, user_input: &str, task_fsm_status: Option<&str>, locale: Option<&str>) -> String {
+        let is_en = locale.is_some_and(|l| l.starts_with("en"));
         let task_status_str = match task_fsm_status {
-            Some(s) if !s.trim().is_empty() => format!("[当前后台任务状态]: {}", s.trim()),
-            _ => "[当前后台任务状态]: 空闲，无正在运行任务".to_string(),
+            Some(s) if !s.trim().is_empty() => {
+                if is_en {
+                    format!("[Current background task status]: {}", s.trim())
+                } else {
+                    format!("[当前后台任务状态]: {}", s.trim())
+                }
+            }
+            _ => {
+                if is_en {
+                    "[Current background task status]: idle, no active task".to_string()
+                } else {
+                    "[当前后台任务状态]: 空闲，无正在运行任务".to_string()
+                }
+            }
         };
 
-        format!(
-            "你是一个高精度语音意图识别与路由中枢。基于用户最新语音输入及对话上下文，直接输出严格符合下列 JSON Schema 规范的纯 JSON 对象（不要使用 Markdown 代码块，不要包含任何前导或后置解释）：\n\
-            ```json\n\
-            {}\n\
-            ```\n\
-            字段说明与约束：\n\
-            - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" 之一。\n\
-            - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。用于闲聊短答、日常问候、知识常识或追问澄清。\n\
-            - 涉及实时天气（且指定了具体城市或位置）、文件读写查找、桌面或系统操作、代码执行、多步业务等需要工具的能力，必须归为 \"agent_task\"，委派给软件会话执行。严禁在没有工具的情况下编造实时数据（如假天气、假文件内容）。\n\
-            - 如果用户询问天气但未指明城市（如“今天天气怎么样”），应归为 \"chat\"，并在 reply_tts 中一句话友好追问（例如“请问你想查询哪个城市的天气？”）。\n\
-            - 对可理解的输入，必须同时提供 understood_request：用一句自然语言忠实整理用户的问题或需求，保留关键对象和条件，不补造地点、日期或未说出的事实。reply_tts 直接回答该需求，不要求用户再确认；同一次输出同时返回理解和回答。\n\
-            - 当 intent_type 为 \"agent_task\" 时，必须提供 task_goal (规整的目标描述) 和 spoken_ack (接单口语回执，<=25字)，requires_confirmation 标明是否涉及高危或破坏性操作。\n\
-            - 当 intent_type 为 \"task_control\" 时，必须提供 task_control_action (\"query_status\" 或 \"cancel_task\")。\n\
-            - 当用户输入无关噪音或无意义内容时，intent_type 为 \"ignore\"。\n\
-            {}\n\
-            最新语音输入: \"{}\"",
-            VOICE_DECISION_SCHEMA, task_status_str, user_input
-        )
+        if is_en {
+            format!(
+                "You are a high-precision voice intent recognition and routing hub. Based on the user's latest voice input and dialogue context, directly output a raw JSON object strictly conforming to the following JSON Schema (do not use Markdown code blocks, do not include any leading or trailing explanations):\n\
+                ```json\n\
+                {}\n\
+                ```\n\
+                Field specifications and constraints:\n\
+                - intent_type: Must be one of \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\".\n\
+                - When intent_type is \"chat\", reply_tts must be provided (concise spoken answer, <= 60 words). Used for casual conversation, daily greetings, general knowledge, or clarifying questions. Natural language reply and understood_request must default to English unless the user explicitly requests another language; respect explicit user requests for a different language while preserving original proper nouns, code, and numbers.\n\
+                - Capabilities requiring tools, such as real-time weather (with a specific city or location), reading/writing/searching files, desktop or system operations, code execution, multi-step business logic, must be classified as \"agent_task\" and delegated to the software session. Strictly forbid fabricating real-time data without tools (e.g. fake weather, fake file contents).\n\
+                - If the user asks about weather without specifying a city (e.g. \"how is the weather today\"), classify as \"chat\", and ask a single friendly follow-up question in reply_tts (e.g. \"Which city's weather would you like to check?\").\n\
+                - For understandable input, you must also provide understood_request: faithfully summarize the user's request or intent in one natural sentence, preserving key entities and conditions, without fabricating unmentioned facts. reply_tts directly addresses this need without asking the user for re-confirmation; both understanding and answer are returned in the same output.\n\
+                - When intent_type is \"agent_task\", task_goal (clear goal description) and spoken_ack (spoken acknowledgement receipt, <= 25 words) must be provided; requires_confirmation indicates whether high-risk or destructive actions are involved.\n\
+                - When intent_type is \"task_control\", task_control_action must be provided (\"query_status\" or \"cancel_task\").\n\
+                - When user input is irrelevant noise or meaningless, intent_type is \"ignore\".\n\
+                {}\n\
+                Latest voice input: \"{}\"",
+                VOICE_DECISION_SCHEMA, task_status_str, user_input
+            )
+        } else {
+            format!(
+                "你是一个高精度语音意图识别与路由中枢。基于用户最新语音输入及对话上下文，直接输出严格符合下列 JSON Schema 规范的纯 JSON 对象（不要使用 Markdown 代码块，不要包含任何前导或后置解释）：\n\
+                ```json\n\
+                {}\n\
+                ```\n\
+                字段说明与约束：\n\
+                - intent_type: 必须为 \"ignore\" | \"chat\" | \"agent_task\" | \"task_control\" 之一。\n\
+                - 当 intent_type 为 \"chat\" 时，必须提供 reply_tts (简短口语回答，<=60字)。用于闲聊短答、日常问候、知识常识或追问澄清。\n\
+                - 涉及实时天气（且指定了具体城市或位置）、文件读写查找、桌面或系统操作、代码执行、多步业务等需要工具的能力，必须归为 \"agent_task\"，委派给软件会话执行。严禁在没有工具的情况下编造实时数据（如假天气、假文件内容）。\n\
+                - 如果用户询问天气但未指明城市（如“今天天气怎么样”），应归为 \"chat\"，并在 reply_tts 中一句话友好追问（例如“请问你想查询哪个城市的天气？”）。\n\
+                - 对可理解的输入，必须同时提供 understood_request：用一句自然语言忠实整理用户的问题或需求，保留关键对象和条件，不补造地点、日期或未说出的事实。reply_tts 直接回答该需求，不要求用户再确认；同一次输出同时返回理解和回答。\n\
+                - 当 intent_type 为 \"agent_task\" 时，必须提供 task_goal (规整的目标描述) 和 spoken_ack (接单口语回执，<=25字)，requires_confirmation 标明是否涉及高危或破坏性操作。\n\
+                - 当 intent_type 为 \"task_control\" 时，必须提供 task_control_action (\"query_status\" 或 \"cancel_task\")。\n\
+                - 当用户输入无关噪音或无意义内容时，intent_type 为 \"ignore\"。\n\
+                {}\n\
+                最新语音输入: \"{}\"",
+                VOICE_DECISION_SCHEMA, task_status_str, user_input
+            )
+        }
     }
 
     /// Parses raw model JSON response and validates against C3 VoiceDecisionContract JSON Schema.
@@ -734,5 +775,23 @@ mod tests {
         let decision_with_city = fallback.route_with_status("查询杭州今天的天气", None).await.unwrap();
         assert_eq!(decision_with_city.intent_type, crate::contract::IntentType::AgentTask);
         assert_eq!(decision_with_city.spoken_ack.as_deref(), Some("收到，正在查询天气。"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_locale_routing() {
+        let router = QwenVoiceRouter::new();
+        let prompt_zh = router.build_prompt_with_locale("你好", None, Some("zh-CN"));
+        assert!(prompt_zh.contains("你是一个高精度语音意图识别与路由中枢"));
+        assert!(prompt_zh.contains("[当前后台任务状态]: 空闲，无正在运行任务"));
+        assert!(prompt_zh.contains("最新语音输入: \"你好\""));
+
+        let prompt_en = router.build_prompt_with_locale("hello world", None, Some("en-US"));
+        assert!(prompt_en.contains("You are a high-precision voice intent recognition and routing hub"));
+        assert!(prompt_en.contains("[Current background task status]: idle, no active task"));
+        assert!(prompt_en.contains("Natural language reply and understood_request must default to English"));
+        assert!(prompt_en.contains("Latest voice input: \"hello world\""));
+
+        let prompt_default = router.build_prompt("测试", None);
+        assert!(prompt_default.contains("你是一个高精度语音意图识别与路由中枢"));
     }
 }

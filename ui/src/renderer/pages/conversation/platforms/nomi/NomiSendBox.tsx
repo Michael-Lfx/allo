@@ -5,7 +5,7 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
+import { prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
 import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
@@ -20,7 +20,7 @@ import {
 } from './nomiSendDispatch';
 import type { IEditResubmitObservation, ISendMessageResult } from '@/common/adapter/ipcBridge';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
-import { uuid, uuidv7 } from '@/common/utils';
+import { resolveLocaleKey, uuid, uuidv7 } from '@/common/utils';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
 import AutoTierSelector from '@/renderer/components/agent/AutoTierSelector';
 import ReasoningEffortSelector from '@/renderer/components/agent/ReasoningEffortSelector';
@@ -334,7 +334,8 @@ const NomiSendBox: React.FC<{
   const isMobile = Boolean(layout?.isMobile);
   const conversationContext = useConversationContextSafe();
   const loadedMcpStatuses = conversationContext?.loadedMcpStatuses ?? [];
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const localeKey = resolveLocaleKey(i18n.language);
   const { cache } = useSWRConfig();
   const providerLabel = useModelSelectorProviderLabel();
   const { current_model } = modelSelection;
@@ -389,17 +390,59 @@ const NomiSendBox: React.FC<{
       await navigate(`/conversation/${encodeURIComponent(activeVoiceConversationId)}`);
       return;
     }
+    const activeLocale = typeof localeKey !== 'undefined'
+      ? localeKey
+      : ((globalThis as any).localeKey || (typeof i18n !== 'undefined' ? resolveLocaleKey(i18n.language) : 'zh-CN'));
+    const prepareVoice = typeof prepareVoiceSession !== 'undefined'
+      ? prepareVoiceSession
+      : (globalThis as any).prepareVoiceSession;
+    const retryAbandoned = typeof retryAbandonedVoiceCallIntent !== 'undefined'
+      ? retryAbandonedVoiceCallIntent
+      : (globalThis as any).retryAbandonedVoiceCallIntent;
+
     setIsVoiceConnecting(true);
     const generation=lifecycleGenerationRef.current;
     try {
-      await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id });
+      await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
     } catch (err: unknown) {
       if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
-      const errorObj = err as { code?: string; active_conversation_id?: string } | undefined;
+      const errorObj = err as { code?: string; active_conversation_id?: string; reason_code?: string; degraded_text_only?: boolean } | undefined;
+      if (errorObj?.code === 'voice_call_cancel_unknown') {
+        const recovered = await retryAbandoned();
+        if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+        Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
+        return;
+      }
+      const needsPrepare =
+        errorObj?.code === 'voice_companion_not_running' ||
+        errorObj?.code === 'voice_suite_not_ready';
       if (errorObj?.code === 'voice_call_conflict') {
         Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
         if (errorObj.active_conversation_id && errorObj.active_conversation_id !== conversation_id) {
           await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+        }
+      } else if (needsPrepare) {
+        try {
+          const report = await prepareVoice(true, activeLocale, 'preparing');
+          if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+          if (!report.can_start_full_call) {
+            const reason = report.reason_code
+              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
+              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
+            Message.warning(
+              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
+            );
+            return;
+          }
+          await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
+        } catch (prepareError) {
+          if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
+          const failure = prepareError as { code?: string; message?: string };
+          Message.error(
+            failure.code === 'models_not_installed'
+              ? t('voice.errors.modelMissing')
+              : failure.message || t('voice.capabilities.checkFailed'),
+          );
         }
       } else {
         Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
@@ -407,7 +450,7 @@ const NomiSendBox: React.FC<{
     } finally {
       if (mountedRef.current && lifecycleGenerationRef.current===generation) setIsVoiceConnecting(false);
     }
-  }, [conversation_id, isVoiceActiveElsewhere, activeVoiceConversationId, navigate, t]);
+  }, [conversation_id, isVoiceActiveElsewhere, activeVoiceConversationId, navigate, t, localeKey]);
 
   const handleStopVoiceCall = useCallback(async () => {
     if (!voiceSnapshot) return;

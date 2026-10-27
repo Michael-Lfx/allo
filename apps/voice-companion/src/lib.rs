@@ -4,6 +4,7 @@ pub mod config;
 pub mod net_preboot;
 pub mod oobe;
 pub mod provision;
+pub mod self_check_audio;
 pub mod server;
 pub mod voice;
 #[cfg(feature = "voice-skeleton")]

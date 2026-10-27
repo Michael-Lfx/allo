@@ -287,7 +287,7 @@
     "downloadingFile": "Downloading {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "Verifying integrity ({{current}}/{{total}})",
     "ready": "Ready",
-    "readyDesc": "Voice companion is standing by in the background, say \"Hey Flowy\" to wake up",
+    "readyDesc": "Models are installed and integrity-verified. Wake availability is shown by the service status below.",
     "standbyDesc": "Voice engine ready. Turn on switch to start listening in background",
     "removing": "Releasing disk space",
     "failed": "Installation or verification encountered an issue"
@@ -328,7 +328,12 @@
     "networkTimeout": "Network request timed out. Please retry",
     "pairingCodeInvalid": "Invalid pairing code. Please enter again",
     "pairingCodeLocked": "Too many failed attempts. Locked, please retry in {{remaining}}",
-    "unknownError": "An unknown error occurred"
+    "unknownError": "An unknown error occurred",
+    "modelMissing": "The voice model suite is not installed. Download and verify it in Voice settings first.",
+    "operationFailed": "The voice suite operation failed. The installed state below is unchanged.",
+    "suiteInUse": "A voice call, task or approval is using the models. Finish it before downloading or deleting.",
+    "resourceBusy": "Another model write is in progress for this directory. Wait for it to finish.",
+    "deleteIncomplete": "Delete did not complete; some files are still present: {{reason}}"
   },
   "pairing": {
     "title": "AI Mate Device Pairing",
@@ -446,6 +451,11 @@
   },
   "entry": {
     "start": "Voice call",
+    "checking": "Checking voice setup",
+    "setup": "Set up voice",
+    "setupRequired": "Voice models are missing, unverified, or voice is disabled. Open Voice settings to download, verify, or enable voice.",
+    "cancelRecovered": "The previous call request was resolved.",
+    "cancelUnknown": "The previous call request is still unconfirmed. Retry after the voice service recovers; no new request was created.",
     "listMarker": "Voice conversation",
     "openActive": "Open active voice conversation",
     "voiceCall": "Voice Call",
@@ -455,7 +465,10 @@
     "callActiveMarker": "In Call",
     "endBeforeDelete": "End the call before deleting",
     "moreActions": "More actions",
-    "callConflictActive": "Another voice call is already active; switched to active call"
+    "callConflictActive": "Another voice call is already active; switched to active call",
+    "suiteNotReady": "The voice suite has not passed its local capability checks. Run the check or repair it in Voice settings.",
+    "daemonNotRunning": "The voice service is not running. Enable it in Voice settings first.",
+    "prepareHint": "Preparing and checking the voice suite. This may make one short request through your configured model and use a small amount of quota."
   },
   "presentation": {
     "petBootFailed": "The desktop pet could not finish loading. Retry from pet settings.",
@@ -468,5 +481,56 @@
     "ttsFallback": "Fallback synthesis selected",
     "online": "Online",
     "local": "Local"
+  },
+  "capabilities": {
+    "title": "Full call readiness",
+    "description": "Run an explicit check before a new full voice call. It uses a fixed, tool-free request through your configured model and fixed bilingual speech samples; it may use a small amount of model quota.",
+    "run": "Check and prepare",
+    "notChecked": "Not checked yet. A full call needs current evidence for microphone, speech recognition, dialogue, synthesis and playback.",
+    "fullReady": "All required capabilities passed their current checks.",
+    "notReady": "A full call is not available yet; text replies remain available.",
+    "checkFailed": "The readiness check could not be completed.",
+    "textOnly": "You can still use voice input with text replies; speech playback and full-call admission stay off.",
+    "fixHint": "Open the failing item, repair the models or service, then run the check again.",
+    "useTextReply": "Use voice input with text replies",
+    "textReplyUnavailable": "The dictation control is not available yet. Check speech-to-text settings and try again.",
+    "textReplyAlreadyRecording": "Dictation is already recording; the existing recording was left unchanged.",
+    "textReplyExpired": "The dictation request expired or was cancelled before it could start.",
+    "item": {
+      "capture": "Microphone PCM",
+      "kws": "Wake engine",
+      "vad": "Speech detection",
+      "asr": "Speech recognition",
+      "llm": "Dialogue model",
+      "tts": "Speech synthesis",
+      "playback": "Playback sink"
+    },
+    "status": {
+      "unknown": "Unknown",
+      "checking": "Checking",
+      "ready": "Ready",
+      "failed": "Failed",
+      "unsupported": "Unsupported"
+    },
+    "reason": {
+      "capture_no_recent_pcm": "no recent microphone frames",
+      "kws_not_loaded": "wake engine not loaded",
+      "vad_not_loaded": "speech detector not loaded",
+      "asr_not_loaded": "recognition engine not loaded",
+      "tts_check_unreachable": "speech service unreachable",
+      "tts_bad_response": "speech service returned an invalid response",
+      "playback_not_consumed": "playback device did not consume audio",
+      "playback_not_checked": "playback was not verified",
+      "llm_check_not_run": "dialogue check not run",
+      "llm_auth_failed": "dialogue credentials rejected",
+      "llm_rate_limited": "dialogue service rate limited",
+      "llm_timeout": "dialogue check timed out",
+      "llm_failed": "dialogue check failed",
+      "dialogue_unconfigured": "no dialogue model configured",
+      "self_check_required": "readiness check required",
+      "self_check_incomplete": "some capabilities are not verified",
+      "self_check_superseded": "the check was superseded by a newer state",
+      "voice_busy": "a call is active"
+    }
   }
 }

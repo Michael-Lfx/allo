@@ -126,7 +126,15 @@ async fn c1_concurrent_install_has_one_owner_and_remove_reaps_it() {
         manager.get_status().await.state,
         ModelInstallState::NotInstalled
     );
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    let remaining: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != ".voice-suite-write.lock")
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "only the OS lock file may remain after remove: {remaining:?}"
+    );
     assert_eq!(
         accepted, 1,
         "simultaneous requests must not own the same .part files"

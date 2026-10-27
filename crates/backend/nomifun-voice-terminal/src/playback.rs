@@ -229,6 +229,59 @@ pub struct PlaybackPipeline {
 }
 
 impl PlaybackPipeline {
+    /// Explicit self-check playback: writes the fixed sample and waits for the
+    /// sink to actually consume it. A flush/discard must never be reported as
+    /// successful playback; interruption and drain failure fail closed.
+    pub async fn play_wav_for_self_check(&self, wav: Vec<u8>) -> Result<(), AudioSinkError> {
+        self.play_wav_for_self_check_with_timeout(
+            wav,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    }
+
+    async fn play_wav_for_self_check_with_timeout(
+        &self,
+        wav: Vec<u8>,
+        drain_timeout: std::time::Duration,
+    ) -> Result<(), AudioSinkError> {
+        if !self.sink.is_available() {
+            return Err(AudioSinkError::Write("speaker_unavailable".into()));
+        }
+        let generation = self.generation_id();
+        let (tx, rx) = mpsc::channel(1);
+        tx.send(wav)
+            .await
+            .map_err(|error| AudioSinkError::Write(error.to_string()))?;
+        drop(tx);
+        self.play_stream(rx).await?;
+        if self.generation_id() != generation {
+            return Err(AudioSinkError::Write("self_check_cancelled".into()));
+        }
+        // A caller may poll this immediate-sink contract without a Tokio
+        // runtime (the independent diagnosis probe does). Timers require a
+        // runtime, so only arm the bounded timeout when one exists.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            match tokio::time::timeout(drain_timeout, self.sink.drain()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let _ = self.sink.flush().await;
+                    return Err(error);
+                }
+                Err(_) => {
+                    let _ = self.sink.flush().await;
+                    return Err(AudioSinkError::Write("self_check_drain_timeout".into()));
+                }
+            }
+        } else if let Err(error) = self.sink.drain().await {
+            let _ = self.sink.flush().await;
+            return Err(error);
+        }
+        if self.generation_id() != generation {
+            return Err(AudioSinkError::Write("self_check_cancelled".into()));
+        }
+        Ok(())
+    }
     pub fn is_available(&self) -> bool {
         self.sink.is_available()
     }
@@ -434,8 +487,16 @@ impl PlaybackPipeline {
 
     /// One reply owns output and drains once; only one subsequent synthesis is prefetched.
     pub async fn speak_sentence_stream(
+        &self,tts:&dyn crate::tts::TtsProvider,sentences:mpsc::Receiver<String>,expected_gen:u64,
+        cancelled:tokio::sync::watch::Receiver<bool>,started:impl FnOnce()+Send,
+    )->Result<(),AudioSinkError> {
+        self.speak_sentence_stream_with_voice(tts, sentences, expected_gen, cancelled, "", started).await
+    }
+
+    /// Speaks sentence stream with a specific voice selection (e.g. for locale-specific TTS).
+    pub async fn speak_sentence_stream_with_voice(
         &self,tts:&dyn crate::tts::TtsProvider,mut sentences:mpsc::Receiver<String>,expected_gen:u64,
-        mut cancelled:tokio::sync::watch::Receiver<bool>,started:impl FnOnce()+Send,
+        mut cancelled:tokio::sync::watch::Receiver<bool>,voice:&str,started:impl FnOnce()+Send,
     )->Result<(),AudioSinkError> {
         let (audio,mut ready)=mpsc::channel(1);
         let synthesize=async {
@@ -445,7 +506,7 @@ impl PlaybackPipeline {
                 if failed {continue;}
                 let Ok(permit)=audio.reserve().await else {break;};
                 let began=std::time::Instant::now();
-                let result=tts.synthesize_stream(&text,"").await.map_err(Self::synthesis_error);
+                let result=tts.synthesize_stream(&text,voice).await.map_err(Self::synthesis_error);
                 tracing::info!(generation=expected_gen,chars=text.chars().count(),elapsed_ms=began.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_sentence_synthesis_finished");
                 failed=result.is_err();permit.send(result);
             }
@@ -565,6 +626,101 @@ impl PlaybackPipeline {
 
 #[cfg(test)]
 mod tests {
+    #[derive(Default)]
+    struct CountingSink {
+        queued: std::sync::Mutex<usize>,
+        consumed: std::sync::Mutex<usize>,
+        discarded: std::sync::Mutex<usize>,
+        drain_error: bool,
+        hang_drain: bool,
+        slow_write_ms: u64,
+    }
+
+    #[async_trait::async_trait]
+    impl AudioSink for CountingSink {
+        fn has_pending_audio(&self) -> bool {
+            *self.queued.lock().unwrap() > 0
+        }
+        async fn write_frame(&self, frame: Vec<u8>) -> Result<(), AudioSinkError> {
+            if self.slow_write_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.slow_write_ms)).await;
+            }
+            *self.queued.lock().unwrap() += frame.len();
+            Ok(())
+        }
+        async fn drain(&self) -> Result<(), AudioSinkError> {
+            if self.hang_drain {
+                std::future::pending::<()>().await;
+            }
+            if self.drain_error {
+                return Err(AudioSinkError::Write("drain_failed".into()));
+            }
+            let mut queued = self.queued.lock().unwrap();
+            *self.consumed.lock().unwrap() += *queued;
+            *queued = 0;
+            Ok(())
+        }
+        async fn flush(&self) -> Result<(), AudioSinkError> {
+            let mut queued = self.queued.lock().unwrap();
+            *self.discarded.lock().unwrap() += *queued;
+            *queued = 0;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn self_check_playback_waits_for_real_drain_consumption() {
+        let sink = Arc::new(CountingSink::default());
+        let pipeline = PlaybackPipeline::new(sink.clone());
+        pipeline
+            .play_wav_for_self_check_with_timeout(
+                vec![1; 100],
+                std::time::Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(*sink.consumed.lock().unwrap(), 100);
+        assert_eq!(*sink.discarded.lock().unwrap(), 0);
+        assert_eq!(*sink.queued.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn self_check_playback_fails_closed_on_drain_error_or_timeout() {
+        for sink in [
+            CountingSink { drain_error: true, ..Default::default() },
+            CountingSink { hang_drain: true, ..Default::default() },
+        ] {
+            let sink = Arc::new(sink);
+            let pipeline = PlaybackPipeline::new(sink.clone());
+            let result = pipeline
+                .play_wav_for_self_check_with_timeout(
+                    vec![1; 100],
+                    std::time::Duration::from_millis(50),
+                )
+                .await;
+            assert!(result.is_err(), "an invalid drain must not report success");
+            assert_eq!(*sink.consumed.lock().unwrap(), 0);
+            assert_eq!(*sink.discarded.lock().unwrap(), 100);
+        }
+    }
+
+    #[tokio::test]
+    async fn self_check_playback_cancel_is_not_success() {
+        let sink = Arc::new(CountingSink {
+            slow_write_ms: 50,
+            ..Default::default()
+        });
+        let pipeline = Arc::new(PlaybackPipeline::new(sink.clone()));
+        let play = pipeline.clone();
+        let task = tokio::spawn(async move { play.play_wav_for_self_check(vec![1; 100]).await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        pipeline.interrupt().await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_err(), "cancelled playback must not report sink_consumed");
+    }
     use super::*;
     use crate::tts::NullTts;
 
@@ -906,5 +1062,45 @@ mod tests {
             }
             other => panic!("expected RateLimited, got {other:?}"),
         }
+    }
+
+    struct CapturingTts {
+        captured_voice: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    }
+    #[async_trait]
+    impl crate::tts::TtsProvider for CapturingTts {
+        async fn synthesize_stream(
+            &self,
+            _text: &str,
+            voice: &str,
+        ) -> Result<mpsc::Receiver<Vec<u8>>, crate::tts::TtsError> {
+            *self.captured_voice.lock().unwrap() = Some(voice.to_string());
+            let (tx, rx) = mpsc::channel(1);
+            tx.send(vec![1, 2, 3]).await.unwrap();
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_speak_sentence_stream_with_voice_passes_voice() {
+        let sink = Arc::new(TestAudioSink::new());
+        let pipeline = PlaybackPipeline::new(sink);
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tts = CapturingTts {
+            captured_voice: captured.clone(),
+        };
+        let (tx, rx) = mpsc::channel(1);
+        tx.send("Hello world".to_string()).await.unwrap();
+        drop(tx);
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let expected_gen = pipeline.generation_id();
+        pipeline
+            .speak_sentence_stream_with_voice(&tts, rx, expected_gen, cancel_rx, "en-US-JennyNeural", || {})
+            .await
+            .unwrap();
+        assert_eq!(
+            captured.lock().unwrap().as_deref(),
+            Some("en-US-JennyNeural")
+        );
     }
 }

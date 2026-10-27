@@ -34,6 +34,67 @@ pub enum ModelManagerError {
     Conflict(String),
 }
 
+/// Cross-manager/cross-process write lease for one canonical models directory.
+/// The OS lock is held by the open file handle, so a hard process exit releases
+/// it automatically. The lock file may remain on disk; its existence is not
+/// evidence that a writer is active.
+#[derive(Debug)]
+struct DirectoryWriteLease {
+    _file: std::fs::File,
+}
+
+impl DirectoryWriteLease {
+    fn acquire(models_dir: &Path) -> Result<Self, ModelManagerError> {
+        // Create then canonicalize so aliases, trailing separators and `..`
+        // all resolve to the exact same lock inode.
+        std::fs::create_dir_all(models_dir)?;
+        let canonical_dir = std::fs::canonicalize(models_dir)?;
+        let path = canonical_dir.join(".voice-suite-write.lock");
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        match file.try_lock() {
+            Ok(()) => {
+                use std::io::{Seek, SeekFrom, Write};
+                let _ = file.set_len(0);
+                let _ = file.seek(SeekFrom::Start(0));
+                let _ = writeln!(
+                    file,
+                    "pid={} at_ms={}",
+                    std::process::id(),
+                    nomifun_common::now_ms()
+                );
+                Ok(Self { _file: file })
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                Err(ModelManagerError::Conflict(format!(
+                    "models_directory_busy: another voice model writer owns {}",
+                    canonical_dir.display()
+                )))
+            }
+            Err(std::fs::TryLockError::Error(error)) => Err(ModelManagerError::Io(error)),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct InUseGuard(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl Default for InUseGuard {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl std::fmt::Debug for InUseGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("InUseGuard")
+    }
+}
+
 /// Core manager coordinating local voice model assets, state, and progress events.
 #[derive(Debug, Clone)]
 pub struct ModelManager {
@@ -44,6 +105,7 @@ pub struct ModelManager {
     verifier: Arc<ModelVerifier>,
     install_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     checked_files: Arc<RwLock<Option<Vec<(u64, SystemTime)>>>>,
+    in_use_guard: Arc<std::sync::RwLock<InUseGuard>>,
 }
 
 impl ModelManager {
@@ -74,7 +136,26 @@ impl ModelManager {
             verifier: Arc::new(ModelVerifier::with_manifest(baseline_manifest)),
             install_task: Arc::new(Mutex::new(None)),
             checked_files: Arc::new(RwLock::new(None)),
+            in_use_guard: Arc::new(std::sync::RwLock::new(InUseGuard::default())),
         }
+    }
+
+    /// Installs a host-owned predicate that reports active calls, tasks or
+    /// approvals. Model writes are refused while the suite is in use.
+    pub fn set_in_use_guard(&self, guard: Arc<dyn Fn() -> bool + Send + Sync>) {
+        *self
+            .in_use_guard
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = InUseGuard(Some(guard));
+    }
+
+    fn suite_in_use(&self) -> bool {
+        self.in_use_guard
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .0
+            .as_ref()
+            .is_some_and(|guard| guard())
     }
 
     /// Returns the models directory path.
@@ -82,6 +163,32 @@ impl ModelManager {
         &self.models_dir
     }
 
+    /// Stable, secret-free identity for the installed files used by readiness
+    /// evidence. It is not a substitute for SHA verification; it detects
+    /// replacement/provision changes between a check and later operations.
+    pub fn identity_revision(&self) -> String {
+        let stable_dir = match std::fs::canonicalize(&self.models_dir) {
+            Ok(canonical) => canonical.to_string_lossy().to_string(),
+            Err(_) => format!("unresolved:{}", self.models_dir.display()),
+        };
+        let mut parts = Vec::new();
+        for &relative in EXPECTED_FILES {
+            let path = self.models_dir.join(relative);
+            match std::fs::metadata(&path) {
+                Ok(metadata) => {
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_millis())
+                        .unwrap_or_default();
+                    parts.push(format!("{relative}:{}:{modified}", metadata.len()));
+                }
+                Err(_) => parts.push(format!("{relative}:missing")),
+            }
+        }
+        format!("{}|{}", stable_dir, parts.join(","))
+    }
     /// Returns the current status response of local voice models.
     pub async fn get_status(&self) -> VoiceModelStatusResponse {
         let _operation = self.install_task.lock().await;
@@ -168,6 +275,13 @@ impl ModelManager {
             });
         }
 
+        if self.suite_in_use() {
+            return Err(ModelManagerError::Conflict(
+                "voice_suite_in_use: finish the active voice call, task or approval before installing models"
+                    .into(),
+            ));
+        }
+
         // 2. Check actual disk layout state in addition to in-memory state
         let (disk_state, _, _) = inspect_model_files(&self.models_dir);
         let current_state = self.refresh_integrity(disk_state.clone()).await;
@@ -181,13 +295,17 @@ impl ModelManager {
             });
         }
 
-        // 3. Mark state as ProbingSource and broadcast event
+        // 3. Take the cross-process directory lease before changing any file.
+        let lease = DirectoryWriteLease::acquire(&self.models_dir)?;
+
+        // 4. Mark state as ProbingSource and broadcast event
         *self.checked_files.write().await = None;
         self.set_state(ModelInstallState::ProbingSource).await;
 
-        // 4. Spawn background install task
+        // 5. Spawn background install task; it owns the lease until completion.
         let this = self.clone();
         let handle = tokio::spawn(async move {
+            let _lease = lease;
             this.run_install_pipeline(force).await;
         });
 
@@ -396,45 +514,101 @@ impl ModelManager {
         self.verify_files().await;
     }
 
-    /// Deletes installed model files and resets the state to `NotInstalled`.
+    /// Deletes installed model files and reports what was actually removed.
+    ///
+    /// A locked or otherwise undeletable asset must never be reported as a
+    /// successful removal, and `freed_bytes` only counts files that disappeared.
     pub async fn remove(&self) -> Result<VoiceModelDeleteResponse, ModelManagerError> {
-        // Abort running install task if active
+        if self.suite_in_use() {
+            return Err(ModelManagerError::Conflict(
+                "voice_suite_in_use: finish the active voice call, task or approval before removing models"
+                    .into(),
+            ));
+        }
+
+        // Abort running install task if active so its lease is dropped first.
         let mut task_guard = self.install_task.lock().await;
         if let Some(handle) = task_guard.take() {
             handle.abort();
             let _ = handle.await;
         }
 
+        // The directory lease is held for the whole removal, not just admission.
+        let _lease = DirectoryWriteLease::acquire(&self.models_dir)?;
+
         *self.checked_files.write().await = None;
         self.set_state(ModelInstallState::Removing).await;
 
-        let (_, _, freed_bytes) = inspect_model_files(&self.models_dir);
+        let mut freed_bytes: u64 = 0;
+        let mut failures: Vec<String> = Vec::new();
 
-        if self.models_dir.exists() {
-            // Delete all expected model assets and part files
-            for &rel in EXPECTED_FILES {
-                let p = self.models_dir.join(rel);
-                if p.is_file() {
-                    let _ = tokio::fs::remove_file(&p).await;
-                }
-                let part = PathBuf::from(format!("{}.part", p.display()));
-                if part.is_file() {
-                    let _ = tokio::fs::remove_file(&part).await;
-                }
+        let mut targets: Vec<PathBuf> = Vec::new();
+        for &rel in EXPECTED_FILES {
+            let path = self.models_dir.join(rel);
+            targets.push(path.clone());
+            targets.push(PathBuf::from(format!("{}.part", path.display())));
+        }
+        targets.push(self.models_dir.join("checksums.sha256"));
+
+        for path in targets {
+            if !path.exists() {
+                continue;
             }
-            let _ = tokio::fs::remove_file(self.models_dir.join("checksums.sha256")).await;
-            let _ = tokio::fs::remove_dir(self.models_dir.join("kws")).await;
-            let _ = tokio::fs::remove_dir(self.models_dir.join("vad")).await;
-            let _ = tokio::fs::remove_dir(self.models_dir.join("asr")).await;
+            let metadata = match tokio::fs::metadata(&path).await {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", path.display()));
+                    continue;
+                }
+            };
+            if !metadata.is_file() {
+                failures.push(format!("{}: not a regular file", path.display()));
+                continue;
+            }
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => freed_bytes = freed_bytes.saturating_add(metadata.len()),
+                Err(error) => failures.push(format!("{}: {error}", path.display())),
+            }
         }
 
-        self.set_state(ModelInstallState::NotInstalled).await;
+        for directory in ["kws", "vad", "asr"] {
+            let _ = tokio::fs::remove_dir(self.models_dir.join(directory)).await;
+        }
+
+        let remaining: Vec<String> = EXPECTED_FILES
+            .iter()
+            .map(|rel| self.models_dir.join(rel))
+            .filter(|path| path.exists())
+            .map(|path| path.display().to_string())
+            .collect();
+        let (disk_state, _, _) = inspect_model_files(&self.models_dir);
+        let success = failures.is_empty() && remaining.is_empty();
+        // When removal failed, keep the state that the disk actually shows.
+        let state = if success {
+            ModelInstallState::NotInstalled
+        } else {
+            disk_state
+        };
+        self.set_state(state.clone()).await;
+
+        let message = if success {
+            "Models deleted successfully".to_string()
+        } else {
+            format!(
+                "Removal incomplete: {} expected asset(s) still present; {} removal error(s)",
+                remaining.len(),
+                failures.len()
+            )
+        };
+        if !failures.is_empty() {
+            warn!(failures = ?failures, "Voice model removal reported incomplete");
+        }
 
         Ok(VoiceModelDeleteResponse {
-            success: true,
+            success,
             freed_bytes,
-            state: ModelInstallState::NotInstalled,
-            message: Some("Models deleted successfully".into()),
+            state,
+            message: Some(message),
         })
     }
 
@@ -455,5 +629,76 @@ impl ModelManager {
         let _ = self
             .progress_tx
             .send(VoiceModelProgressEvent::new(new_state));
+    }
+}
+
+#[cfg(test)]
+mod write_lease_tests {
+    use super::*;
+
+    #[test]
+    fn one_canonical_directory_has_exactly_one_writer_across_managers() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        // Two independent managers (and any other process) share the directory
+        // lease; a second writer must fail closed before touching files.
+        let _first_manager = ModelManager::new(&models);
+        let _second_manager = ModelManager::new(&models);
+
+        let lease = DirectoryWriteLease::acquire(&models).unwrap();
+        let error = DirectoryWriteLease::acquire(&models).unwrap_err();
+        assert!(
+            matches!(&error, ModelManagerError::Conflict(message) if message.contains("models_directory_busy")),
+            "second writer must report a canonical-directory conflict, got {error:?}"
+        );
+        // Different aliases/trailing separators must target the same OS lock.
+        let alias = models.join("..").join("models");
+        assert!(
+            matches!(
+                DirectoryWriteLease::acquire(&alias),
+                Err(ModelManagerError::Conflict(_))
+            ),
+            "an equivalent path alias must not acquire a second writer lock"
+        );        drop(lease);
+        assert!(
+            DirectoryWriteLease::acquire(&models).is_ok(),
+            "the lease must be reusable after the first writer finishes"
+        );
+    }
+
+    #[test]
+    fn identity_revision_is_consistent_across_path_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        let slash_str = models.to_string_lossy().to_string();
+        let fwd_path = std::path::PathBuf::from(slash_str.replace('\\', "/"));
+        let dot_path = models.join(".").join("..").join("models");
+
+        let m1 = ModelManager::new(&fwd_path);
+        let m3 = ModelManager::new(&dot_path);
+
+        let r1 = m1.identity_revision();
+        let r3 = m3.identity_revision();
+        assert_eq!(r1, r3, "relative dot-dot aliases must produce identical identity_revision");
+
+        #[cfg(windows)]
+        {
+            let back_path = std::path::PathBuf::from(slash_str.replace('/', "\\"));
+            let m2 = ModelManager::new(&back_path);
+            let r2 = m2.identity_revision();
+            assert_eq!(
+                r1, r2,
+                "forward and backward slash aliases must produce identical identity_revision on Windows"
+            );
+        }
+
+        // Non-existent distinct directories must not share identity
+        let non_existent1 = dir.path().join("non_existent_1");
+        let non_existent2 = dir.path().join("non_existent_2");
+        let m_ne1 = ModelManager::new(&non_existent1);
+        let m_ne2 = ModelManager::new(&non_existent2);
+        assert_ne!(m_ne1.identity_revision(), m_ne2.identity_revision());
     }
 }

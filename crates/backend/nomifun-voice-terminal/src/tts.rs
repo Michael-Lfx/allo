@@ -61,6 +61,29 @@ pub fn parse_retry_after(
     None
 }
 
+/// Builds the Edge Read Aloud handshake URL. The upstream endpoint expects the
+/// public DRM `TrustedClientToken`; the old subscription-key parameter is only
+/// accepted by the retired `msedgeservices` route.
+fn edge_request_url(endpoint: &str, request_id: &str, unix_seconds: u64) -> String {
+    // A bare `ws://host:port` has no path; HTTP request targets must begin with
+    // `/` even when only a query follows.
+    let endpoint = if endpoint
+        .split_once("://")
+        .is_some_and(|(_, authority_and_path)| !authority_and_path.contains('/'))
+    {
+        format!("{endpoint}/")
+    } else {
+        endpoint.to_string()
+    };
+    let separator = if endpoint.contains('?') { '&' } else { '?' };
+    format!(
+        "{endpoint}{separator}ConnectionId={request_id}&TrustedClientToken={}&Sec-MS-GEC={}&Sec-MS-GEC-Version=2-{}",
+        crate::edge_protocol::CLIENT_TOKEN,
+        crate::edge_protocol::gec(unix_seconds),
+        crate::edge_protocol::CLIENT_VERSION
+    )
+}
+
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> { None }
@@ -90,7 +113,7 @@ pub struct EdgeTtsProvider {
 
 impl EdgeTtsProvider {
     pub const DEFAULT_ENDPOINT: &'static str =
-        "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1";
+        "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
     pub const DEFAULT_VOICE: &'static str = "zh-CN-XiaoxiaoNeural";
     pub const DEFAULT_FORMAT: &'static str = "audio-24khz-48kbitrate-mono-mp3";
 
@@ -278,21 +301,11 @@ impl EdgeTtsProvider {
             return Err(TtsError::Synthesis("empty_text".into()));
         }
         let req_id = uuid::Uuid::now_v7().simple().to_string();
-        let url = if self.endpoint == Self::DEFAULT_ENDPOINT {
-            let seconds = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| TtsError::Network(err.to_string()))?
-                .as_secs();
-            format!(
-                "{}?ConnectionId={req_id}&Ocp-Apim-Subscription-Key={}&Sec-MS-GEC={}&Sec-MS-GEC-Version=2-{}",
-                self.endpoint,
-                crate::edge_protocol::CLIENT_TOKEN,
-                crate::edge_protocol::gec(seconds),
-                crate::edge_protocol::CLIENT_VERSION
-            )
-        } else {
-            self.endpoint.clone()
-        };
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|err| TtsError::Network(err.to_string()))?
+            .as_secs();
+        let url = edge_request_url(&self.endpoint, &req_id, seconds);
         let mut request = url
             .into_client_request()
             .map_err(|err| TtsError::Network(err.to_string()))?;
@@ -342,21 +355,26 @@ impl EdgeTtsProvider {
         let (ws_stream, _) =
             tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
                 .await
-                .map_err(|e| {
-                    if let tokio_tungstenite::tungstenite::Error::Http(response) = &e {
+                .map_err(|e| match &e {
+                    tokio_tungstenite::tungstenite::Error::Http(response) => {
                         let status = response.status().as_u16();
                         tracing::warn!(status, "edge_tts_handshake_rejected");
                         if status == 429 {
                             let retry_after = parse_retry_after(response.headers());
-                            return TtsError::RateLimited {
+                            TtsError::RateLimited {
                                 status,
                                 retry_after,
-                            };
+                            }
+                        } else {
+                            TtsError::Network(format!(
+                                "Edge-TTS handshake rejected: HTTP {status}"
+                            ))
                         }
-                    } else {
-                        tracing::warn!("edge_tts_connection_failed");
                     }
-                    TtsError::Network(format!("Failed to connect to Edge-TTS: {e}"))
+                    _ => {
+                        tracing::warn!("edge_tts_connection_failed");
+                        TtsError::Network(format!("Failed to connect to Edge-TTS: {e}"))
+                    }
                 })?;
 
         let (mut write, mut read) = ws_stream.split();
@@ -557,6 +575,67 @@ mod transport_tests {
         (url, server)
     }
 
+    #[test]
+    fn default_endpoint_is_edge_readaloud_upstream() {
+        assert_eq!(
+            EdgeTtsProvider::DEFAULT_ENDPOINT,
+            "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1",
+            "the current msedgeservices endpoint rejects the handshake with HTTP 200; \
+             the upstream readaloud endpoint is the verified Edge contract"
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_request_uses_readaloud_token_and_reports_http_200() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let read = socket.read(&mut buffer).await.unwrap();
+            let request_line = String::from_utf8_lossy(&buffer[..read])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            request_line
+        });
+        let result = EdgeTtsProvider::new()
+            .with_endpoint(endpoint)
+            .synthesize_stream("连接测试", "")
+            .await;
+        let request_line = server.await.unwrap();
+        assert!(
+            request_line.contains("TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4"),
+            "Edge readaloud expects TrustedClientToken, got: {request_line}"
+        );
+        assert!(
+            request_line.contains("ConnectionId=") && request_line.contains("Sec-MS-GEC="),
+            "handshake must keep a per-request id and the GEC checksum: {request_line}"
+        );
+        assert!(
+            !request_line.contains("Ocp-Apim-Subscription-Key"),
+            "the readaloud endpoint does not accept the subscription-key parameter: {request_line}"
+        );
+        match result {
+            Err(error) => {
+                let text = error.to_string();
+                assert!(
+                    text.contains("200") && text.contains("handshake"),
+                    "HTTP 200 must be reported as an explicit handshake rejection, got: {text}"
+                );
+            }
+            Ok(_) => panic!("an HTTP 200 handshake must not be reported as success"),
+        }
+    }
+
     #[tokio::test]
     async fn empty_synthesis_is_an_error_instead_of_successful_playback() {
         let (endpoint, server) = fixture(None).await;
@@ -650,6 +729,25 @@ mod transport_tests {
         h3.insert("retry-after", date_str.parse().unwrap());
         let parsed = parse_retry_after(&h3).unwrap();
         assert!(parsed.as_secs() >= 40 && parsed.as_secs() <= 46);
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit online probe; fixed English sentence, no microphone or playback"]
+    async fn edge_online_english_synthesis_probe() {
+        let mut audio = EdgeTtsProvider::new()
+            .synthesize_stream("This is a voice connection test.", "en-US-JennyNeural")
+            .await
+            .unwrap();
+        let wav = audio.recv().await.unwrap();
+        let (pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(&wav);
+        assert_eq!(rate, 24000);
+        assert!(pcm.len() > 2400);
+        assert!(pcm.iter().any(|sample| sample.abs() > 0.001));
+        println!(
+            "Edge returned decoded English speech: {} samples at {} Hz",
+            pcm.len(),
+            rate
+        );
     }
 
     #[tokio::test]

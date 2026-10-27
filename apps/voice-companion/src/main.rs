@@ -139,8 +139,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(config) = feedback {
         config.validate()?;
     }
-    let voice_runtime =
-        VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone());
+    let markers = voice_companion::voice::parse_startup_markers(
+        std::env::var_os("NOMIFUN_VOICE_FAULT_HEADLESS").as_deref(),
+        std::env::var_os("NOMIFUN_VOICE_FAULT_BLOCK_ASR").as_deref(),
+        std::env::var_os("NOMIFUN_VOICE_FAULT_EXIT_CODE").as_deref(),
+    );
+    let startup_mode =
+        voice_companion::voice::startup_mode(cfg!(feature = "native-fault-injection"), markers)?;
+    let voice_runtime = match startup_mode {
+        voice_companion::voice::StartupMode::HeadlessTest => {
+            #[cfg(feature = "native-fault-injection")]
+            {
+                VoiceCompanionRuntime::assemble_headless(
+                    model_manager.clone(),
+                    oobe_manager.clone(),
+                )
+            }
+            #[cfg(not(feature = "native-fault-injection"))]
+            {
+                return Err("native_headless_unavailable".into());
+            }
+        }
+        voice_companion::voice::StartupMode::Default => {
+            VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone())
+        }
+    };
     if let Some(config) = feedback {
         voice_runtime.update_feedback(config.into())?;
     }

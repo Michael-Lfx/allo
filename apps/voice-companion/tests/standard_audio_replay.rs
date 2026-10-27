@@ -8,10 +8,7 @@ use nomifun_audio::{
     recorder::SttCallback,
     voice_pipeline::{PipelineConfig, VoiceCapturePipeline},
 };
-use nomifun_voice_terminal::{
-    driver::StubVoiceRouter,
-    tts::{EdgeTtsProvider, TtsProvider},
-};
+use nomifun_voice_terminal::driver::StubVoiceRouter;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
@@ -26,16 +23,19 @@ fn fixtures() -> PathBuf {
         .join("../../docs/architecture/voice-agent/execution/audio-fixtures")
 }
 
-async fn standard_pcm(name: &str, text: &str, voice: &str) -> Vec<f32> {
-    let path = fixtures().join(format!("{name}.wav"));
-    if !path.is_file() {
-        std::fs::create_dir_all(fixtures()).unwrap();
-        let mut stream = EdgeTtsProvider::new()
-            .synthesize_stream(text, voice)
-            .await
-            .unwrap();
-        std::fs::write(&path, stream.recv().await.unwrap()).unwrap();
+fn require_fixed_audio(path: &std::path::Path) -> Result<(), String> {
+    if path.is_file() {
+        return Ok(());
     }
+    Err(format!(
+        "missing_fixed_audio_asset: {}; prepare the fixture offline instead of synthesizing it through Edge",
+        path.display()
+    ))
+}
+
+async fn standard_pcm(name: &str) -> Vec<f32> {
+    let path = fixtures().join(format!("{name}.wav"));
+    require_fixed_audio(&path).unwrap_or_else(|error| panic!("{error}"));
     let (pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(&std::fs::read(path).unwrap());
     assert!(pcm.iter().any(|sample| sample.abs() > 0.001));
     // Use the same normalization pipeline as live capture, with an offline
@@ -64,10 +64,25 @@ async fn standard_pcm(name: &str, text: &str, voice: &str) -> Vec<f32> {
     normalized
 }
 
+#[test]
+fn missing_fixed_audio_is_reported_without_network_synthesis() {
+    let path = std::env::temp_dir().join(format!(
+        "flowy-voice-missing-fixture-{}.wav",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let error = require_fixed_audio(&path).unwrap_err();
+    assert!(error.contains("missing_fixed_audio_asset"));
+    assert!(
+        !path.exists(),
+        "reporting a missing fixture must not create or download audio"
+    );
+}
+
 #[tokio::test]
 #[ignore = "explicit synthetic audio and installed real ASR; no microphone or speaker"]
 async fn standard_command_is_recognized_by_real_asr() {
-    let pcm = standard_pcm("command", "今天天气怎么样？", "zh-CN-XiaoxiaoNeural").await;
+    let pcm = standard_pcm("command").await;
     let asr = nomifun_audio::stt::try_load_sherpa(Some(&models()))
         .unwrap()
         .unwrap();
@@ -83,11 +98,8 @@ async fn standard_command_is_recognized_by_real_asr() {
 #[ignore = "explicit standard wake audio with installed neural KWS"]
 async fn standard_wake_is_detected_by_real_kws() {
     let mut passed = 0;
-    for (name, voice) in [
-        ("wake-jenny", "en-US-JennyNeural"),
-        ("wake-guy", "en-US-GuyNeural"),
-    ] {
-        let mut pcm = standard_pcm(name, "Hey Flowy", voice).await;
+    for name in ["wake-jenny", "wake-guy"] {
+        let mut pcm = standard_pcm(name).await;
         pcm.extend(vec![0.0; 16000]);
         for gain in [1.0, 0.25] {
             let mut kws = KwsEngine::new(KwsEngineConfig {
@@ -117,13 +129,63 @@ async fn standard_wake_is_detected_by_real_kws() {
 }
 
 #[tokio::test]
+#[ignore = "explicit English fixture and installed real ASR; no microphone or speaker"]
+async fn english_fixture_is_recognized_by_real_asr() {
+    let pcm = standard_pcm("non-wake").await;
+    let asr = nomifun_audio::stt::try_load_sherpa(Some(&models()))
+        .unwrap()
+        .unwrap();
+    let text = asr
+        .transcribe(AudioChannel::Mic, pcm, 16000)
+        .await
+        .unwrap();
+    println!("ENGLISH ASR: {text}");
+    let lowered = text.to_lowercase();
+    assert!(
+        lowered.contains("hello") && lowered.contains("friend"),
+        "the same SenseVoice model must recognize the English fixture, got: {text}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "installed real Silero VAD; fixed speech and silence fixtures"]
+async fn silence_and_speech_are_separated_by_real_vad() {
+    use nomifun_audio::vad::{SherpaVad, VadBackend};
+    let mut vad = SherpaVad::load(&models()).expect("real Silero VAD model required");
+    let silence = vec![0.0f32; 512];
+    for _ in 0..30 {
+        assert!(
+            !vad.process_frame(&silence),
+            "silence must not open a speech segment"
+        );
+    }
+    let pcm = standard_pcm("command").await;
+    let mut started = false;
+    for frame in pcm.chunks(512) {
+        if frame.len() < 512 {
+            break;
+        }
+        if vad.process_frame(frame) {
+            started = true;
+            break;
+        }
+    }
+    assert!(started, "real Silero VAD must detect the fixed speech sample");
+    let mut ended = false;
+    for _ in 0..120 {
+        if !vad.process_frame(&silence) {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "real Silero VAD must close the segment after silence");
+}
+
+#[tokio::test]
 #[ignore = "real KWS negative controls with standard audio"]
 async fn standard_non_wake_speech_does_not_trigger_kws() {
-    for (name, text, voice) in [
-        ("command", "今天天气怎么样？", "zh-CN-XiaoxiaoNeural"),
-        ("non-wake", "Hello world. Hey friend.", "en-US-JennyNeural"),
-    ] {
-        let mut pcm = standard_pcm(name, text, voice).await;
+    for name in ["command", "non-wake"] {
+        let mut pcm = standard_pcm(name).await;
         pcm.extend(vec![0.0; 16000]);
         let mut kws = KwsEngine::new(KwsEngineConfig {
             model_dir: Some(models()),
@@ -147,9 +209,9 @@ async fn standard_non_wake_speech_does_not_trigger_kws() {
 #[ignore = "real ASR and neural KWS through production worker, paced audio, mock only dialogue"]
 async fn standard_wake_and_command_reach_the_production_worker() {
     let mut pcm = vec![0.0; 8000];
-    pcm.extend(standard_pcm("wake-jenny", "Hey Flowy", "en-US-JennyNeural").await);
+    pcm.extend(standard_pcm("wake-jenny").await);
     pcm.extend(vec![0.0; 1280]);
-    pcm.extend(standard_pcm("command", "今天天气怎么样？", "zh-CN-XiaoxiaoNeural").await);
+    pcm.extend(standard_pcm("command").await);
     pcm.extend(vec![0.0; 32000]);
     std::fs::write(
         fixtures().join("wake-and-command-16k.wav"),
@@ -163,14 +225,7 @@ async fn standard_wake_and_command_reach_the_production_worker() {
 #[ignore = "one uninterrupted real utterance through production KWS and ASR"]
 async fn standard_continuous_command_keeps_the_first_word() {
     let mut pcm = vec![0.0; 8000];
-    pcm.extend(
-        standard_pcm(
-            "continuous-command",
-            "Hey Flowy，今天天气怎么样？",
-            "zh-CN-XiaoxiaoNeural",
-        )
-        .await,
-    );
+    pcm.extend(standard_pcm("continuous-command").await);
     pcm.extend(vec![0.0; 32000]);
     let asr = nomifun_audio::stt::try_load_sherpa(Some(&models()))
         .unwrap()
@@ -185,7 +240,7 @@ async fn standard_continuous_command_keeps_the_first_word() {
 #[tokio::test]
 #[ignore = "quiet post-wake speech through production capture and real ASR; no microphone or speaker"]
 async fn quiet_post_wake_command_reaches_asr() {
-    let command = standard_pcm("command", "今天天气怎么样？", "zh-CN-XiaoxiaoNeural").await;
+    let command = standard_pcm("command").await;
     let quiet: Vec<f32> = command.iter().map(|s| s * 0.03).collect();
     let rms = (quiet.iter().map(|s| s * s).sum::<f32>() / quiet.len() as f32).sqrt();
     println!("quiet command rms={rms}");
@@ -211,7 +266,7 @@ async fn quiet_post_wake_command_reaches_asr() {
 #[ignore = "speech starting within six seconds must continue beyond the wake deadline"]
 async fn late_starting_speech_is_not_cut_off_at_the_wake_deadline() {
     let mut pcm = vec![0.0; 16000 * 4 + 8000];
-    pcm.extend(standard_pcm("command", "今天天气怎么样？", "zh-CN-XiaoxiaoNeural").await);
+    pcm.extend(standard_pcm("command").await);
     pcm.extend(vec![0.0; 32000]);
     assert_worker(pcm, true).await;
 }

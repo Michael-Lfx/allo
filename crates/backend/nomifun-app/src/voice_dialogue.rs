@@ -26,6 +26,31 @@ pub trait VoiceDialogueCompleter: Send + Sync {
         prompt: &str,
         choice: Option<&VoiceModelRef>,
     ) -> Result<String, String>;
+
+    async fn complete_with_locale(
+        &self,
+        prompt: &str,
+        choice: Option<&VoiceModelRef>,
+        _locale: Option<&str>,
+    ) -> Result<String, String> {
+        self.complete(prompt, choice).await
+    }
+
+    async fn complete_stream_with_locale(
+        &self,
+        prompt: &str,
+        choice: Option<&VoiceModelRef>,
+        on_sentence: VoiceSentenceCallback,
+        _locale: Option<&str>,
+    ) -> Result<String, String> {
+        self.complete_stream(prompt, choice, on_sentence).await
+    }
+
+    /// Stable, secret-free revision of the provider/model/endpoint parameters
+    /// that a readiness check actually used.
+    async fn configuration_revision(&self) -> String {
+        "unspecified".into()
+    }
 }
 
 pub struct ProviderVoiceDialogue {
@@ -95,23 +120,46 @@ impl VoiceDialogueCompleter for ProviderVoiceDialogue {
     }
 
     async fn complete(&self,prompt:&str,choice:Option<&VoiceModelRef>)->Result<String,String> {
-        self.complete_mode(prompt,choice,None).await
+        self.complete_mode(prompt,choice,None,None).await
     }
     async fn complete_stream(&self,prompt:&str,choice:Option<&VoiceModelRef>,on_sentence:VoiceSentenceCallback)->Result<String,String> {
-        self.complete_mode(prompt,choice,Some(on_sentence)).await
+        self.complete_mode(prompt,choice,Some(on_sentence),None).await
+    }
+    async fn complete_with_locale(&self,prompt:&str,choice:Option<&VoiceModelRef>,locale:Option<&str>)->Result<String,String> {
+        self.complete_mode(prompt,choice,None,locale).await
+    }
+    async fn complete_stream_with_locale(&self,prompt:&str,choice:Option<&VoiceModelRef>,on_sentence:VoiceSentenceCallback,locale:Option<&str>)->Result<String,String> {
+        self.complete_mode(prompt,choice,Some(on_sentence),locale).await
+    }
+
+    async fn configuration_revision(&self)->String {
+        let Ok(selected)=self.resolve_model(None).await else {return "unavailable".into();};
+        let Ok(Some(provider))=self.provider_repo.find_by_id(&selected.provider_id).await else {return format!("{}:{}:provider_unavailable",selected.provider_id,selected.model);};
+        let rows=self.provider_model_repo.list_for_provider(&selected.provider_id).await.unwrap_or_default();
+        let row=rows.iter().find(|row|row.model==selected.model);
+        format!("{}|{}|{}|{}|{}|{}",selected.provider_id,selected.model,provider.base_url,provider.updated_at,row.map(|row|row.updated_at).unwrap_or_default(),row.map(|row|row.params.as_str()).unwrap_or(""))
     }
 
 }
 
 impl ProviderVoiceDialogue {
-    async fn complete_mode(&self,prompt:&str,choice:Option<&VoiceModelRef>,on_sentence:Option<VoiceSentenceCallback>)->Result<String,String> {
+    async fn complete_mode(&self,prompt:&str,choice:Option<&VoiceModelRef>,on_sentence:Option<VoiceSentenceCallback>,locale:Option<&str>)->Result<String,String> {
         let selected=self.resolve_model(choice).await?;
         let config=nomifun_ai_agent::resolve_provider_config(&self.provider_repo,&self.provider_model_repo,&self.encryption_key,&selected.provider_id,&selected.model,&self.workspace)
             .await.map_err(|_|"model_unavailable")?;
         tracing::info!(provider_id=%selected.provider_id,model=%selected.model,"voice_dialogue_model_selected");
-        let system=if on_sentence.is_some() {
+        let is_en = locale.is_some_and(|l| l.starts_with("en"));
+        let system = if is_en {
+            if on_sentence.is_some() {
+                "Please follow the user's voice decision JSON contract. This is low-latency JSONL mode, outputting only continuous JSON objects without Markdown. The first object must strictly follow the VoiceDecision schema and immediately terminate: for chat, reply_tts must contain only the first complete short sentence (8 to 20 words, do not merge multiple sentences), understood_request must summarize the user's need in under 20 words. Natural language reply and understood_request must default to English unless the user explicitly requests another language; respect explicit user requests for a different language while preserving original proper nouns, code, and numbers. If a second sentence is needed, it must start a new JSON object, and each subsequent object must only be {\"reply_delta\":\"next complete short sentence\"}. Chat total must not exceed 60 words and 4 sentences. Non-chat intents have only the first object, subsequent sentences are strictly forbidden. Subsequent objects must not alter intent, task, or understanding. Do not output reasoning or thinking process. For tasks requiring external tools (weather, file operations, system actions, multi-step tasks), you must output agent_task to delegate execution; fabricating real-time data is strictly forbidden."
+            } else {
+                "Please follow the user's voice decision JSON contract and output raw JSON only. Natural language reply and understood_request must default to English unless the user explicitly requests another language; respect explicit user requests for a different language while preserving original proper nouns, code, and numbers. For tasks requiring external tools (weather, file operations, system actions), you must output agent_task to delegate execution; fabricating real-time data is strictly forbidden."
+            }
+        } else if on_sentence.is_some() {
             "请遵循用户提供的语音决策 JSON 契约。这是低延迟 JSONL 模式，只输出连续 JSON 对象，不加 Markdown。第一对象必须遵循用户的 VoiceDecision 契约，立即结束这个对象：chat 时 reply_tts 只能给首个完整短句（8至16字，禁止把多句合并），understood_request 只用20字内概括；如果需要第二句，必须另起对象，每个后续对象只能是 {\"reply_delta\":\"下一完整短句\"}。chat 合计最多60字、最多4句。非chat只有第一对象，禁止后续句子。后续对象不能改变意图、任务或理解。不要输出思考过程。对于天气、文件读写、系统操作等多步或需要外部工具的任务，必须输出 agent_task 委派执行，严禁编造实时数据。"
-        } else {"请遵循用户提供的语音决策 JSON 契约，仅输出 JSON。对于天气、文件读写、系统操作等需要外部工具的任务，必须输出 agent_task 委派执行，严禁编造实时数据。"};
+        } else {
+            "请遵循用户提供的语音决策 JSON 契约，仅输出 JSON。对于天气、文件读写、系统操作等需要外部工具的任务，必须输出 agent_task 委派执行，严禁编造实时数据。"
+        };
         let started=std::time::Instant::now();let mut first=true;
         let mut parser=nomifun_api_types::voice::VoiceDecisionStream::default();
         let invalid=tokio::sync::Notify::new();let mut stream_error=None;
@@ -444,7 +492,7 @@ async fn complete(
     if request.stream {return stream_response(state,request,choice,ready_conversation_id,generated,attribution);}
     let result = if let Some(content)=generated {Ok(Ok(content))} else {tokio::time::timeout(
         state.timeout.min(DEFAULT_VOICE_DIALOGUE_TIMEOUT),
-        nomifun_ai_agent::with_flowy_proxy_attribution(attribution, {use tracing::Instrument;state.completer.complete(&request.prompt, choice.as_ref()).instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id))}),
+        nomifun_ai_agent::with_flowy_proxy_attribution(attribution, {use tracing::Instrument;state.completer.complete_with_locale(&request.prompt, choice.as_ref(), request.locale.as_deref()).instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id))}),
     )
     .await};
     match result {
@@ -499,7 +547,7 @@ fn stream_response(state:DialogueState,request:VoiceDialogueRequest,choice:Optio
                     Ok(())
                 });
                 use tracing::Instrument;
-                let completion=nomifun_ai_agent::with_flowy_proxy_attribution(attribution, state.completer.complete_stream(&request.prompt,choice.as_ref(),callback)
+                let completion=nomifun_ai_agent::with_flowy_proxy_attribution(attribution, state.completer.complete_stream_with_locale(&request.prompt,choice.as_ref(),callback,request.locale.as_deref())
                     .instrument(tracing::info_span!("voice_dialogue",session_id=?request.session_id,turn_id=?request.turn_id,record_id=?request.voice_record_id)));
                 tokio::pin!(completion);
                 let idle=tokio::time::sleep(state.timeout.min(VOICE_FIRST_RESPONSE_TIMEOUT));tokio::pin!(idle);
@@ -759,6 +807,87 @@ mod tests {
             assert_eq!(reply.content, format!("{model}:question"));
         }
         assert_eq!(completer.0.load(Ordering::SeqCst), 2);
+    }
+
+    struct LocaleCapturingCompleter {
+        captured_locale: Arc<std::sync::Mutex<Option<String>>>,
+    }
+    #[async_trait]
+    impl VoiceDialogueCompleter for LocaleCapturingCompleter {
+        async fn resolve_model(&self, _: Option<&VoiceModelRef>) -> Result<VoiceModelRef, String> {
+            Ok(VoiceModelRef {
+                provider_id: "test".into(),
+                model: "test-model".into(),
+            })
+        }
+        async fn complete(&self, _: &str, _: Option<&VoiceModelRef>) -> Result<String, String> {
+            Ok("{\"intent_type\":\"chat\",\"reply_tts\":\"hi\"}".into())
+        }
+        async fn complete_with_locale(
+            &self,
+            _: &str,
+            _: Option<&VoiceModelRef>,
+            locale: Option<&str>,
+        ) -> Result<String, String> {
+            *self.captured_locale.lock().unwrap() = locale.map(|s| s.to_string());
+            Ok("{\"intent_type\":\"chat\",\"reply_tts\":\"hi\"}".into())
+        }
+        async fn complete_stream_with_locale(
+            &self,
+            _: &str,
+            _: Option<&VoiceModelRef>,
+            _callback: VoiceSentenceCallback,
+            locale: Option<&str>,
+        ) -> Result<String, String> {
+            *self.captured_locale.lock().unwrap() = locale.map(|s| s.to_string());
+            Ok("{\"intent_type\":\"chat\",\"reply_tts\":\"hi\"}".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn locale_propagates_through_voice_dialogue_bridge() {
+        let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+        let completer = Arc::new(LocaleCapturingCompleter {
+            captured_locale: captured.clone(),
+        });
+        let bridge = VoiceDialogueBridge::start_internal(
+            completer,
+            Arc::new(RwLock::new(None)),
+            "locale-token".into(),
+            Router::new(),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        let mut req = VoiceDialogueRequest::scoped("test-session", "test-turn", "Hello");
+        req.locale = Some("en-US".into());
+        req.prompt = "Hello prompt".into();
+
+        // Non-streaming test
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let resp = client
+            .post(&bridge.endpoint)
+            .header("x-ai-mate-control-token", "locale-token")
+            .json(&req)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(captured.lock().unwrap().as_deref(), Some("en-US"));
+
+        // Streaming test
+        req.stream = true;
+        let resp_stream = client
+            .post(&bridge.endpoint)
+            .header("x-ai-mate-control-token", "locale-token")
+            .json(&req)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp_stream.status(), StatusCode::OK);
+        assert_eq!(captured.lock().unwrap().as_deref(), Some("en-US"));
     }
 
     #[tokio::test]

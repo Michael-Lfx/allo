@@ -894,12 +894,26 @@ pub fn create_router_with_all_state(
     crate::voice_companion_manager::VoiceCompanionProcessManager::register_global(
         voice_companion_manager.clone(),
     );
+    {
+        let weak_companion = Arc::downgrade(&voice_companion_manager);
+        voice_models_manager.set_in_use_guard(Arc::new(move || {
+            weak_companion
+                .upgrade()
+                .is_some_and(|manager| manager.voice_suite_in_use())
+        }));
+    }
     let companion_mgr_clone = voice_companion_manager.clone();
     tokio::spawn(async move {
         companion_mgr_clone.auto_start_if_enabled().await;
     });
 
-    let voice_all_routes = nomifun_voice_models::voice_model_routes(voice_models_manager)
+    let voice_model_routes = nomifun_voice_models::voice_model_routes(voice_models_manager).layer(
+        axum::middleware::from_fn_with_state(
+            voice_companion_manager.clone(),
+            crate::voice_companion_manager::model_write_guard_middleware,
+        ),
+    );
+    let voice_all_routes = voice_model_routes
         .merge(nomifun_audio::voice_diagnostics_routes_with_dir(Some(voice_models_dir)))
         .merge(crate::voice_companion_manager::voice_companion_routes(voice_companion_manager));
 

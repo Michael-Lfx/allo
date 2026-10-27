@@ -6,6 +6,7 @@ import {AppMessage as Message} from '@renderer/components/notifications';
 import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
+import { DictationIntentRouteGuard } from '@renderer/components/layout/DictationIntentRouteGuard';
 import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -320,6 +321,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
 
   return (
     <HashRouter>
+      <DictationIntentRouteGuard />
       <Routes>
         <Route
           path='/login'

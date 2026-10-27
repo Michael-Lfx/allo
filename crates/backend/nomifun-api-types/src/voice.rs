@@ -394,6 +394,8 @@ fn voice_stream_disabled(value:&bool)->bool {!value}
 pub struct VoiceDialogueRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
     #[serde(default,skip_serializing_if="voice_stream_disabled")]
     pub stream: bool,
 
@@ -543,6 +545,8 @@ pub struct VoiceCallStartRequest {
     pub target: VoiceCallTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -722,6 +726,8 @@ pub enum VoiceReplyState {Streaming,Complete,Interrupted}
 pub struct VoiceSessionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
     #[serde(default, skip_serializing_if="Option::is_none")]
     pub tts: Option<VoiceTtsDiagnostic>,
     /// Host-authoritative completed projections, used to retire live transcript placeholders.
@@ -753,6 +759,8 @@ pub struct VoiceSessionSnapshot {
     pub connection: VoiceConnectionState,
     pub instance_id: String,
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_epoch: Option<u64>,
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
     pub phase: VoiceSessionPhase,
@@ -803,6 +811,8 @@ pub enum VoiceCompanionEvent {
         keyword: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locale: Option<String>,
     },
     Listening,
     ListeningReady {
@@ -1095,4 +1105,134 @@ pub struct VoiceAsrTestResponse {
     /// Error message if ASR failed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceCapabilityStatus {
+    #[default]
+    Unknown,
+    Checking,
+    Ready,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct VoiceCapabilityEvidence {
+    pub status: VoiceCapabilityStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    /// Stable evidence kind, e.g. `recent_pcm`, `tts_decoded`, `live_response`,
+    /// `engine_loaded`. It is not a substitute for the evidence itself.
+    pub evidence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+}
+
+impl VoiceCapabilityEvidence {
+    pub fn unknown(evidence: &str) -> Self {
+        Self {
+            status: VoiceCapabilityStatus::Unknown,
+            reason_code: None,
+            evidence: evidence.into(),
+            checked_at_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceCapabilityReport {
+    pub capture: VoiceCapabilityEvidence,
+    pub kws: VoiceCapabilityEvidence,
+    pub vad: VoiceCapabilityEvidence,
+    pub asr: VoiceCapabilityEvidence,
+    pub llm: VoiceCapabilityEvidence,
+    pub tts: VoiceCapabilityEvidence,
+    pub playback: VoiceCapabilityEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at_ms: Option<i64>,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub can_start_full_call: bool,
+    #[serde(default)]
+    pub can_wake: bool,
+    #[serde(default)]
+    pub can_transcribe: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub degraded_text_only: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceSelfCheckRequest {
+    /// Explicit opt-in: the check may call the configured dialogue provider.
+    #[serde(default)]
+    pub include_llm: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceTtsSelfCheckLanguage {
+    pub language: String,
+    pub voice: String,
+    pub ok: bool,
+    pub sample_rate: u32,
+    pub samples: usize,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub rms_milli: u16,
+    #[serde(default)]
+    pub peak_milli: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceEngineSelfCheckResponse {
+    pub kws_ok: bool,
+    pub vad_ok: bool,
+    pub asr_ok: bool,
+    pub fixtures_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub kws_hits: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_text: Option<String>,
+    /// Echoed request identity; a late reply for another check is discarded.
+    #[serde(default)]
+    pub request_id: String,
+    /// Daemon runtime instance that owns the worker.
+    #[serde(default)]
+    pub instance_id: String,
+    /// Worker generation; a restarted worker cannot satisfy an old check.
+    #[serde(default)]
+    pub worker_epoch: u64,
+    /// Installed model identity observed by the worker that ran the check.
+    #[serde(default)]
+    pub model_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixtures_source: Option<String>,
+    #[serde(default)]
+    pub fixtures_online: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixtures_generated_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VoiceTtsSelfCheckResponse {
+    pub ok: bool,
+    pub provider: String,
+    pub online: bool,
+    pub playback_ok: bool,
+    pub languages: Vec<VoiceTtsSelfCheckLanguage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }

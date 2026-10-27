@@ -141,9 +141,38 @@ describe('VoiceSettings structure & ui-motion contract (T0-16 / bsk-0-01)', () =
 });
 
 
+test('install/delete render the backend receipt instead of a bare 2xx success', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  expect(source).toContain('parseVoiceModelOperation');
+  expect(source).toContain('await response.text()');
+  expect(source).toContain('outcome.receipt');
+  expect(source).toContain('connectProgressStream');
+  // The old unconditional 2xx rewrite must stay gone.
+  expect(source).not.toMatch(/response\.ok\s*\|\|\s*response\.status === 202/);
+});
+test('full-call readiness exposes an explicit check and repair reason', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  expect(source).toContain('runVoiceSelfCheck');
+  expect(source).toContain("voice.capabilities.title");
+  expect(source).toContain("voice.capabilities.textOnly");
+  expect(source).toContain("handleSelfCheck");
+  expect(source).toContain("useTextReply");
+  expect(source).toContain("requestDictationIntent('/')");
+  expect(source).not.toContain("activateExistingDictation");
+  expect(source).not.toMatch(/setTimeout\([\s\S]{0,120}activateExistingDictation/);
+  expect(source).not.toContain("onClick={handleUseTextReply}>\\n");
+});
+test('first-call failure exposes an explicit prepare action', () => {
+  const source = readFileSync(componentUrl, 'utf8');
+  const guid = readFileSync(new URL('../guid/GuidPage.tsx', import.meta.url), 'utf8');
+  expect(guid).toContain('prepareVoiceSession');
+  expect(guid).not.toContain('voice.entry.prepareHint');
+});
+
 test('voice settings keep model identifiers inside advanced diagnostics and remove wake overclaims',()=>{
  const source=readFileSync(componentUrl,'utf8');
  expect(source.indexOf('<VoiceDialogueStatusSection')).toBeGreaterThan(source.indexOf("voice.diagnostics.advancedTitle"));
  expect(source).not.toContain('voice.dashboard.tipContent');
  expect(source).not.toContain('voice.dashboard.activeKeywordsList');
 });
+

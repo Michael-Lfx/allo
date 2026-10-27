@@ -10,6 +10,7 @@ path = "src/lib.rs"
 default = []
 # Explicit replay fixtures; never enabled by the production binary's defaults.
 voice-skeleton = ["nomifun-voice-terminal/voice-skeleton"]
+native-fault-injection = ["dep:async-trait", "voice-skeleton"]
 
 [[bin]]
 name = "voice-companion"
@@ -33,6 +34,7 @@ axum = { workspace = true }
 tower-http = { workspace = true }
 rand.workspace = true
 chrono.workspace = true
+async-trait = { workspace = true, optional = true }
 sysinfo.workspace = true
 
 [dev-dependencies]

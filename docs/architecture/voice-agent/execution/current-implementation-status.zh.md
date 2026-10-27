@@ -1,3 +1,16 @@
+> **2026-10-27 Round 8 实施与全链路代码审查闭环（最新事实）**：
+> 1. **中断与重开链路解耦**：彻底区分“停止任务”、“打断播报”与“挂断通话”，任务停止后语音通话保持在线可继续；修复了丢代快照、Guid 首页准备单飞及离页取消安全性。
+> 2. **代码审查 5 项闭环修复**：
+>    - `[Required]` 修复 `voiceCompanion.ts` 中弃置通话 Intent 状态永久锁死缺陷，重试耗尽且确认无后端 session 时主动清理，解除前端死锁。
+>    - `[Optional]` `server.rs` 的 `/api/voice/diagnostics/test-hardware-calls` 增加 `#[cfg(feature = "native-fault-injection")]` 门禁，避免生产环境暴露故障注入结构。
+>    - `[Optional]` 修复 `voice.rs` 原生工作者参数 `_native_request_id` 与 `NativeBusyGuard.job` 在非测试构建下的编译器警告。
+>    - `[Optional]` 修复 `voice_companion_manager.rs` 中 `with_replay_daemon` 增加 `#[cfg(test)]` 消除死代码警告。
+>    - `[FYI]` 修复 `playback.rs` 自检回放非 Tokio 运行时分支的 `drain` 失败对称 `flush` 清理。
+> 3. **UI 体验与交互微动效优化**：移除新建对话启动通话时的右下角准备弹窗（`Message.info(prepareHint)`）；左侧通话中波纹动效由硬编码 44px 占位重构为常态 20px 靠右贴边，悬浮时平滑向左滑动展开并优雅淡入“更多”菜单操作按钮。
+> 4. **验证结果**：定向测试（`voiceCompanion.callIntent.test.ts` 3 passed、`GuidVoiceAutoPrepare.test.ts` 10 passed、`ConversationRow.voice.test.tsx` 3 passed、`rev3Probes.test.tsx` 7 passed、`VoiceSettings.structure.test.ts` 17 passed、`nomifun-voice-terminal` 48 passed、`reproduction_task_cancellation_and_interrupt_closure` passed），`cargo check --workspace` 0 警告干净通过。交付产物 `build.voice-review-evidence.noindex/opencode-suite-readiness-20261025/implementation-round8/target-delivery/debug/voice-companion.exe`（SHA256: `4DFA4E4F12FB306246F68DA165FEECC835F9D7079172A98A072ACF328A54D5AB`）。未提交、未推送。
+>
+> **2026-10-25 实机故障与完整性复审（优先）**：当前 HEAD `5875d361b` 的生产 daemon 启动仍有 0xC00000FD，小栈真实 provision 反例已失败；当前 TTS 端点实际返回 HTTP 200 握手失败，上游端点及参数的隔离对照成功，本机无离线 TTS 资源。新增下载/卸载反例再次实跑：错误 206 Range 被拼接并推广、Windows 文件锁删除失败仍返回 success=true，两项均 RED；后续 SHA 门禁未被宣称绕过。本轮只补[全链路修复方案 rev2](voice-ux-rev3/VOICE-SUITE-READINESS-AND-RECOVERY-PLAN-2026-10-25.zh.md)与 30 项验收，未修业务代码、未改模型/当前产品进程，未提交/推送。旧定向测试通过不等于当前生产链路可用，不能继续按下方历史“修复完成”签核。
+
 > **2026-10-25 R1–R4 本地交付**：按用户指令，修复代码、正式测试及文档在 `feat/voice-next` 以 `fix(voice): 修复模型生命周期与语音收音摘要边界` 同批提交，未推送；精确 SHA 以 Git 为准。[交付记录](voice-ux-rev3/VOICE-BOUNDARY-REPAIRS-2026-10-25.zh.md) 保留验证证据和未签核边界。此前 129+93+34 项通过、14 项既有忽略及桌面编译结果已复核；本次仅补充文档交付状态，没有改动通过验证后的业务源码。下方“未提交”属于提交前历史。
 
 > **2026-10-25 分支审查 R1–R4 修复更新**：模型 SHA 失败/重开门禁、并发安装与卸载任务归属、初始长静音截句、英文摘要否定/限制丢失已修复。daemon 在原生 KWS/VAD 初始化前等待模型验证就绪；首次 SHA 后按文件大小/mtime 缓存，文件变化重新校验。正式模型反例和真实采集 worker 反例已 RED→GREEN；最终模型+worker 129 passed / 11 既有 ignored，宿主 voice 93 passed / 3 既有 ignored，对话集成 34 passed，桌面编译与本轮差异检查通过。无新增依赖/迁移/计费或普通会话业务改动；物理音频、AEC 与原生显示未签核。未提交、未推送。详见 [四项边界修复与验证](voice-ux-rev3/VOICE-BOUNDARY-REPAIRS-2026-10-25.zh.md)。下方历史结论原文保留。

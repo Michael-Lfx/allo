@@ -12,6 +12,7 @@ pub(crate) struct VoiceEventHub {
     feedback: Mutex<nomifun_api_types::voice::VoiceFeedbackConfig>,
     context: Mutex<Vec<nomifun_voice_terminal::router::ChatMessage>>,
     last_task_seq: std::sync::atomic::AtomicU64,
+    worker_epoch: std::sync::atomic::AtomicU64,
 }
 
 fn current_turn_mut(state: &mut VoiceSessionSnapshot) -> Option<&mut VoiceConversationTurn> {
@@ -27,6 +28,7 @@ impl VoiceEventHub {
             feedback: Mutex::new(Default::default()),
             context: Mutex::new(Vec::new()),
             last_task_seq: std::sync::atomic::AtomicU64::new(0),
+            worker_epoch: std::sync::atomic::AtomicU64::new(0),
             state: Mutex::new(VoiceSessionSnapshot {
                 instance_id: nomifun_common::generate_id(),
                 enabled: true,
@@ -54,11 +56,28 @@ impl VoiceEventHub {
     pub fn set_feedback(&self, config: nomifun_api_types::voice::VoiceFeedbackConfig) {
         *self.feedback.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
+
+    pub fn set_worker_epoch(&self, epoch: u64) {
+        self.worker_epoch.store(epoch, std::sync::atomic::Ordering::Release);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.worker_epoch = (epoch > 0).then_some(epoch);
+    }
+
+    #[allow(dead_code)]
+    pub fn worker_epoch(&self) -> u64 {
+        self.worker_epoch.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn snapshot(&self) -> VoiceSessionSnapshot {
-        self.state
+        let mut state = self.state
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .clone()
+            .clone();
+        let epoch = self.worker_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if epoch > 0 {
+            state.worker_epoch = Some(epoch);
+        }
+        state
     }
 
     pub fn update_task(&self, task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>) {
@@ -70,17 +89,21 @@ impl VoiceEventHub {
         task: Option<nomifun_api_types::voice::VoiceTaskSnapshot>,
         instance_id: Option<&str>,
         seq: Option<u64>,
-    ) {
+    ) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let epoch = self.worker_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if epoch > 0 {
+            state.worker_epoch = Some(epoch);
+        }
         if let Some(inst) = instance_id {
             if !state.instance_id.is_empty() && inst != state.instance_id {
-                return;
+                return false;
             }
         }
         if let Some(s) = seq {
             let last = self.last_task_seq.load(std::sync::atomic::Ordering::SeqCst);
             if s < last {
-                return;
+                return false;
             }
             self.last_task_seq.store(s, std::sync::atomic::Ordering::SeqCst);
         }
@@ -97,12 +120,13 @@ impl VoiceEventHub {
                         | nomifun_api_types::voice::VoiceTaskStatus::Failed
                 );
                 if current_is_terminal && !new_is_terminal {
-                    return;
+                    return false;
                 }
             }
         }
         state.task = task;
         state.seq += 1;
+        true
     }
 
     pub fn send(
@@ -114,6 +138,10 @@ impl VoiceEventHub {
             return self.tx.send(event);
         }
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let epoch = self.worker_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if epoch > 0 {
+            state.worker_epoch = Some(epoch);
+        }
         if let VoiceCompanionEvent::TtsSource {session_id, turn_id, ..} = &event {
             if state.session_id != *session_id || state.turn_id != *turn_id || state.ended_reason.is_some() {
                 return Ok(0);
@@ -173,7 +201,7 @@ impl VoiceEventHub {
                 state.dialogue_ready = *dialogue_ready;
                 state.playback_ready = *playback_ready;
             }
-            VoiceCompanionEvent::WakeHit { request_id, .. } => {
+            VoiceCompanionEvent::WakeHit { request_id, locale, .. } => {
                 self.context
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -181,6 +209,7 @@ impl VoiceEventHub {
                 state.conversation.clear();
                 state.ended_reason = None;
                 state.call_request_id = request_id.clone();
+                state.locale = locale.clone();
                 state.feedback = None;
                 state.tts = None;
                 state.session_id = Some(nomifun_common::generate_id());
@@ -410,10 +439,10 @@ mod tests {
     #[test]
     fn wake_identity_is_published_atomically_and_not_inherited_by_kws() {
         let hub=VoiceEventHub::new();
-        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:Some("start-p".into())});
+        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:Some("start-p".into()),locale:None});
         let first=hub.snapshot();
         assert_eq!(first.call_request_id.as_deref(),Some("start-p"));
-        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:None});
+        let _=hub.send(VoiceCompanionEvent::WakeHit {keyword:"Hey Flowy".into(),request_id:None,locale:None});
         assert_ne!(hub.snapshot().session_id,first.session_id);
         assert!(hub.snapshot().call_request_id.is_none());
     }
@@ -422,7 +451,7 @@ mod tests {
     fn ignored_input_is_removed_without_ending_or_erasing_valid_context() {
         let hub = VoiceEventHub::new();
         let mut events = hub.sender().subscribe();
-        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None, locale: None }).unwrap();
         let session = hub.snapshot().session_id;
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         hub.send(VoiceCompanionEvent::SpeechRecognized { text: "深圳，不是北京".into() }).unwrap();
@@ -450,7 +479,7 @@ mod tests {
     #[test]
     fn partial_reply_and_its_error_stay_bound_to_the_failed_turn() {
         let hub=VoiceEventHub::new();let _listener=hub.sender().subscribe();
-        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None,locale:None}).unwrap();
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         hub.send(VoiceCompanionEvent::SpeechRecognized{text:"问题".into()}).unwrap();
         hub.send(VoiceCompanionEvent::ReplySentence{text:"第一句。".into(),understood_request:Some("需求".into())}).unwrap();
@@ -462,7 +491,7 @@ mod tests {
         assert_eq!(snap.conversation[0].reply_state,Some(nomifun_api_types::voice::VoiceReplyState::Interrupted));
         assert_eq!(snap.conversation[0].error.as_ref().unwrap().code,"model_timeout");
         assert_eq!(snap.conversation[0].assistant_text.as_deref(),Some("第一句。"));
-        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None}).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit{keyword:"Hey Flowy".into(),request_id:None,locale:None}).unwrap();
         assert!(hub.snapshot().conversation.is_empty());
         assert!(hub.snapshot().error.is_none());
     }
@@ -471,7 +500,7 @@ mod tests {
     fn notices_do_not_overwrite_real_turn_or_replace_active_session() {
         let hub = VoiceEventHub::new();
         let _listener = hub.sender().subscribe();
-        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None, locale: None }).unwrap();
         hub.send(VoiceCompanionEvent::Transcribing).unwrap();
         hub.send(VoiceCompanionEvent::SpeechRecognized { text: "真实问题".into() }).unwrap();
         hub.send(VoiceCompanionEvent::IntentDecided { intent: "Chat".into(), reply: Some("真实回答".into()), understood_request: None }).unwrap();
@@ -485,7 +514,7 @@ mod tests {
         assert_eq!(after.conversation.len(), 1);
         assert_eq!(after.conversation[0].user_text, original.conversation[0].user_text);
         assert_eq!(after.conversation[0].assistant_text, original.conversation[0].assistant_text);
-        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None }).unwrap();
+        hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None, locale: None }).unwrap();
         assert!(hub.snapshot().conversation.is_empty(), "KWS must clear volatile old turns too");
     }
 
@@ -521,6 +550,7 @@ mod tests {
             hub.send(VoiceCompanionEvent::WakeHit {
                 request_id: None,
                 keyword: "Hey Flowy".into(),
+                locale: None,
             })
             .unwrap();
             hub.send(VoiceCompanionEvent::Transcribing).unwrap();
@@ -544,5 +574,21 @@ mod tests {
                 Some("这是本轮回答")
             );
         }
+    }
+
+    #[test]
+    fn worker_epoch_is_preserved_on_ordinary_events_and_snapshots() {
+        let hub = VoiceEventHub::new();
+        assert_eq!(hub.worker_epoch(), 0);
+        assert_eq!(hub.snapshot().worker_epoch, None);
+
+        hub.set_worker_epoch(42);
+        assert_eq!(hub.worker_epoch(), 42);
+        assert_eq!(hub.snapshot().worker_epoch, Some(42));
+
+        let _listener = hub.sender().subscribe();
+        hub.send(VoiceCompanionEvent::Transcribing).unwrap();
+        let snap = hub.snapshot();
+        assert_eq!(snap.worker_epoch, Some(42));
     }
 }

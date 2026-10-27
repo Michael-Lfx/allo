@@ -1,6 +1,6 @@
 
 
-import SpeechInputButton from '@/renderer/components/chat/SpeechInputButton';
+import SpeechInputButton, { type DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
 import { autoWorkStartDisabled } from '@/renderer/pages/guid/hooks/autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
@@ -19,6 +19,7 @@ export type ComposerSubmitClusterProps = {
   speechLocale?: string;
   onSend: () => void;
   onSpeechTranscript: (text: string) => void;
+  dictationActivation?: DictationActivationRequest;
   showStop?: boolean;
   onStop?: (clickDetail: number) => void;
   stopPending?: boolean;
@@ -83,6 +84,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   speechLocale,
   onSend,
   onSpeechTranscript,
+  dictationActivation,
   showStop = false,
   onStop,
   stopPending = false,
@@ -135,6 +137,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
     disabled: speechDisabled,
     locale: speechLocale,
     onTranscript: onSpeechTranscript,
+    activationRequest: dictationActivation,
   };
 
   return (

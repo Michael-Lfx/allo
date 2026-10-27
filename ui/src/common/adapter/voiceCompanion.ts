@@ -288,6 +288,7 @@ export interface VoiceCallStartRequest {
   request_id: string;
   target: VoiceCallTarget;
   session_mode?: 'default' | 'auto_edit' | 'yolo';
+  locale?: string;
 }
 
 export interface VoiceCallStartResponse {
@@ -311,6 +312,9 @@ export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceC
     const errorBody = (await response.json().catch(() => ({}))) as {
       code?: string;
       active_conversation_id?: string;
+      reason_code?: string;
+      requires_check?: boolean;
+      degraded_text_only?: boolean;
       message?: string;
     };
     const conflictErr = new Error(errorBody.message || 'voice_call_conflict');
@@ -318,6 +322,9 @@ export async function startVoiceCall(req: VoiceCallStartRequest): Promise<VoiceC
       status: response.status,
       code: errorBody.code || 'voice_call_conflict',
       active_conversation_id: errorBody.active_conversation_id,
+      reason_code: errorBody.reason_code,
+      requires_check: errorBody.requires_check,
+      degraded_text_only: errorBody.degraded_text_only,
     });
     throw conflictErr;
   }
@@ -348,7 +355,7 @@ export function updateActiveVoiceCallConversationId(next: string | null) {
   }
 }
 
-let pendingCallIntent: {request:VoiceCallStartRequest; conversationId:string|null; inFlight:Promise<VoiceCallStartResponse>|null} | null = null;
+let pendingCallIntent: {request:VoiceCallStartRequest; conversationId:string|null; inFlight:Promise<VoiceCallStartResponse>|null; abandoned:boolean} | null = null;
 const callIntentListeners = new Set<()=>void>();
 export const getPendingVoiceCallIntent = () => pendingCallIntent?.request ?? null;
 export const getPendingVoiceCallConversationId = () => pendingCallIntent?.conversationId ?? null;
@@ -356,6 +363,55 @@ export function subscribeVoiceCallIntent(listener:()=>void) {
   callIntentListeners.add(listener);
   return ()=>{callIntentListeners.delete(listener);};
 }
+export async function abandonPendingVoiceCallIntent(): Promise<void> {
+  const intent = pendingCallIntent;
+  if (!intent) return;
+  intent.abandoned = true;
+  if (!intent.inFlight) await cancelCallByRequestId(intent.request.request_id);
+}
+
+/** Retry an unknown abandoned request without allocating a new request id. */
+export async function retryAbandonedVoiceCallIntent(): Promise<boolean> {
+  const intent = pendingCallIntent;
+  if (!intent || !intent.abandoned) return true;
+  const outcome = await cancelCallByRequestId(intent.request.request_id);
+  if (outcome.authoritative && !outcome.recovered && pendingCallIntent === intent) {
+    // Only if lookup retry authoritatively confirms there is no active session,
+    // clear it so the dead intent is safely unblocked without losing unknown intent.
+    clearPendingCallIntent();
+  }
+  return outcome.recovered;
+}
+
+async function cancelCallByRequestId(requestId: string): Promise<{ recovered: boolean; authoritative: boolean }> {
+  let authoritative = false;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 150 : 500));
+    try {
+      const response = await fetch(`${getBaseUrl()}/api/voice/companion/session`, {
+        headers: buildBackendAuthHeaders('GET'), credentials: 'same-origin', signal: AbortSignal.timeout(2000),
+      });
+      if (response.status === 404 || response.status === 409) {
+        authoritative = true;
+        break;
+      }
+      if (!response.ok) continue;
+      authoritative = true;
+      const snapshot = await response.json() as VoiceSnapshot;
+      const active = snapshot.session_id && !snapshot.ended_reason && snapshot.phase !== 'idle';
+      if (active && snapshot.call_request_id === requestId) {
+        await stopVoiceSession(snapshot);
+        if (pendingCallIntent?.request.request_id === requestId) clearPendingCallIntent();
+        return { recovered: true, authoritative: true };
+      }
+      if (!active || snapshot.call_request_id !== requestId) {
+        return { recovered: false, authoritative: true };
+      }
+    } catch { /* retry owned request; never guess a session */ }
+  }
+  return { recovered: false, authoritative };
+}
+
 function clearPendingCallIntent() {
   pendingCallIntent=null;
   callIntentListeners.forEach(listener=>listener());
@@ -388,7 +444,17 @@ function reconcilePendingCall(snapshot: VoiceSnapshot, stopConfirmed = false): v
   updateActiveVoiceCallConversationId(activeId);
 }
 /** One unresolved start owns its target and mode, including across renderer route changes. */
-export function startVoiceCallIntent(target:VoiceCallTarget, session_mode?:VoiceCallStartRequest['session_mode']):Promise<VoiceCallStartResponse> {
+export function startVoiceCallIntent(
+  target: VoiceCallTarget,
+  session_mode?: VoiceCallStartRequest['session_mode'],
+  locale?: string,
+): Promise<VoiceCallStartResponse> {
+  if (pendingCallIntent?.abandoned) {
+    return Promise.reject(Object.assign(new Error('voice_call_cancel_unknown'), {
+      code: 'voice_call_cancel_unknown',
+      request_id: pendingCallIntent.request.request_id,
+    }));
+  }
   const resumeResolvedTarget = pendingCallIntent && target.kind === 'voice_conversation'
     && pendingCallIntent.conversationId === target.conversation_id
     && (session_mode === undefined || session_mode === pendingCallIntent.request.session_mode);
@@ -396,21 +462,34 @@ export function startVoiceCallIntent(target:VoiceCallTarget, session_mode?:Voice
     return Promise.reject(Object.assign(new Error('voice_call_starting'),{code:'voice_call_starting'}));
   }
   if (!pendingCallIntent) {
-    pendingCallIntent={request:{request_id:crypto.randomUUID(),target,session_mode},conversationId:target.kind==='voice_conversation'?target.conversation_id:null,inFlight:null};
+    pendingCallIntent={request:{request_id:crypto.randomUUID(),target,session_mode,locale},conversationId:target.kind==='voice_conversation'?target.conversation_id:null,inFlight:null,abandoned:false};
     callIntentListeners.forEach(listener=>listener());
   }
   const intent = pendingCallIntent;
-  if (!intent.inFlight) intent.inFlight = startVoiceCall(intent.request).then(result=>{
+  if (!intent.inFlight) intent.inFlight = startVoiceCall(intent.request).then(async result=>{
+    if (intent.abandoned) {
+      await cancelCallByRequestId(intent.request.request_id);
+      return result;
+    }
     if (result.status==='starting' && pendingCallIntent===intent && intent.conversationId!==result.conversation_id) {
       intent.conversationId=result.conversation_id;
       callIntentListeners.forEach(listener=>listener());
     }
     if(result.status!=='starting' && pendingCallIntent===intent) clearPendingCallIntent();
     return result;
-  }).catch(error=>{
+  }).catch(async error=>{
     const known = error as {status?:number;code?:string};
-    if ((known.status && known.status<500) || known.code==='daemon_wake_rejected' || known.code==='voice_call_already_stopped' || known.code==='voice_call_conflict') {
+    if (
+      (known.status && known.status<500) ||
+      known.code==='daemon_wake_rejected' ||
+      known.code==='voice_call_already_stopped' ||
+      known.code==='voice_call_conflict' ||
+      known.code==='voice_companion_not_running' ||
+      known.code==='voice_suite_not_ready'
+    ) {
       if(pendingCallIntent===intent)clearPendingCallIntent();
+    } else if (intent.abandoned) {
+      await cancelCallByRequestId(intent.request.request_id);
     }
     throw error;
   }).finally(()=>{intent.inFlight=null;});
@@ -450,6 +529,16 @@ export async function openVoiceTask(conversationId: string): Promise<void> {
   await main.setFocus();
 }
 
+if (typeof globalThis !== 'undefined') {
+  (globalThis as any).prepareVoiceSession = prepareVoiceSession;
+  (globalThis as any).retryAbandonedVoiceCallIntent = retryAbandonedVoiceCallIntent;
+  (globalThis as any).startVoiceCallIntent = startVoiceCallIntent;
+  if (!(globalThis as any).localeKey) {
+    (globalThis as any).localeKey = 'zh-CN';
+  }
+}
+
+
 export interface VoiceTargetConfig { mode:'voice_home'|'companion'; companion_id?:string|null }
 export interface VoiceTargetSettings { requested:VoiceTargetConfig; effective:VoiceTargetConfig; effective_conversation_id?:string|null; reason?:string|null }
 export interface VoiceTaskNotification { command_id:string;notification_id:string;attempt_id:string;status:string;result_summary:string;created_at:number }
@@ -462,4 +551,201 @@ export async function reportVoiceCandidate(conversationId:string|null, workspace
   if(!isTauriRuntime())return;
   const {invoke}=await import('@tauri-apps/api/core');
   await invoke('report_voice_context',{conversationId,workspace,sequence:++voiceContextSequence,viewOnly});
+}
+export interface VoiceModelOperationState {
+  status: string;
+  detail?: unknown;
+}
+
+export interface VoiceModelOperationReceipt {
+  state?: VoiceModelOperationState;
+  accepted?: boolean;
+  success?: boolean;
+  message?: string;
+}
+
+export interface ParsedVoiceModelOperation {
+  ok: boolean;
+  receipt?: VoiceModelOperationReceipt;
+  error?: string;
+  code?: string;
+  connectProgressStream: boolean;
+}
+
+const MODEL_OPERATION_STREAM_STATES = new Set([
+  'ProbingSource',
+  'Downloading',
+  'VerifyingSha256',
+]);
+
+/**
+ * Decode a model install/delete response exactly once. The caller must pass the
+ * response body text (not a second `json()` call) so 409 reasons survive.
+ */
+export function parseVoiceModelOperation(
+  kind: 'install' | 'delete',
+  status: number,
+  bodyText: string,
+): ParsedVoiceModelOperation {
+  let body: Record<string, unknown> = {};
+  let parsed = false;
+  if (bodyText.trim()) {
+    try {
+      const candidate = JSON.parse(bodyText);
+      if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+        body = candidate as Record<string, unknown>;
+        parsed = true;
+      }
+    } catch {
+      parsed = false;
+    }
+  }
+  const message = typeof body.message === 'string' ? body.message : undefined;
+  const reason = typeof body.error === 'string' ? body.error : message;
+  const code = typeof body.code === 'string' ? body.code : undefined;
+  if (status >= 400) {
+    return {
+      ok: false,
+      error: reason || `http_${status}`,
+      code,
+      connectProgressStream: false,
+    };
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      error: reason || 'invalid_model_operation_response',
+      code,
+      connectProgressStream: false,
+    };
+  }
+  const receipt: VoiceModelOperationReceipt = {
+    state:
+      body.state && typeof body.state === 'object' && typeof (body.state as { status?: unknown }).status === 'string'
+        ? (body.state as VoiceModelOperationState)
+        : undefined,
+    accepted: typeof body.accepted === 'boolean' ? body.accepted : undefined,
+    success: typeof body.success === 'boolean' ? body.success : undefined,
+    message,
+  };
+  if (!receipt.state) {
+    return {
+      ok: false,
+      error: reason || 'invalid_model_operation_response',
+      code,
+      connectProgressStream: false,
+    };
+  }
+  if (kind === 'install') {
+    return {
+      ok: true,
+      receipt,
+      connectProgressStream:
+        receipt.accepted === true || MODEL_OPERATION_STREAM_STATES.has(receipt.state.status),
+    };
+  }
+  return { ok: true, receipt, connectProgressStream: false };
+}
+export type VoiceCapabilityStatus = 'unknown' | 'checking' | 'ready' | 'failed' | 'unsupported';
+export interface VoiceCapabilityEvidence {
+  status: VoiceCapabilityStatus;
+  reason_code?: string | null;
+  evidence: string;
+  checked_at_ms?: number | null;
+}
+export interface VoiceCapabilityReport {
+  capture: VoiceCapabilityEvidence;
+  kws: VoiceCapabilityEvidence;
+  vad: VoiceCapabilityEvidence;
+  asr: VoiceCapabilityEvidence;
+  llm: VoiceCapabilityEvidence;
+  tts: VoiceCapabilityEvidence;
+  playback: VoiceCapabilityEvidence;
+  checked_at_ms?: number | null;
+  generation: number;
+  can_start_full_call: boolean;
+  can_wake: boolean;
+  can_transcribe: boolean;
+  reason_code?: string | null;
+  degraded_text_only: boolean;
+}
+
+export interface VoiceCompanionStatus {
+  running: boolean;
+  autostart: boolean;
+  models_ready: boolean;
+  acoustic_ready?: boolean;
+  error?: string | null;
+}
+
+export async function getVoiceCompanionStatus(): Promise<VoiceCompanionStatus> {
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/status`, { headers: buildBackendAuthHeaders('GET'), credentials: 'same-origin' });
+  if (!response.ok) throw Object.assign(new Error('voice_status_unavailable'), { code: 'voice_status_unavailable' });
+  return response.json() as Promise<VoiceCompanionStatus>;
+}
+
+export async function getVoiceCapabilities(): Promise<VoiceCapabilityReport | null> {
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/capabilities`, {
+    headers: buildBackendAuthHeaders('GET'),
+  });
+  if (!response.ok) throw Object.assign(new Error('capabilities_unavailable'), { code: 'capabilities_unavailable' });
+  return (await response.json()) as VoiceCapabilityReport | null;
+}
+
+export async function prepareVoiceSession(
+  includeLlm: boolean,
+  locale?: string,
+  stage?: string,
+): Promise<VoiceCapabilityReport> {
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildBackendAuthHeaders('POST') },
+    body: JSON.stringify({ include_llm: includeLlm, locale, stage }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { code?: string; error?: string };
+    throw Object.assign(new Error(body.error || body.code || 'prepare_failed'), {
+      code: body.code || 'prepare_failed',
+      status: response.status,
+    });
+  }
+  return (await response.json()) as VoiceCapabilityReport;
+}
+export async function runVoiceSelfCheck(
+  includeLlm: boolean,
+  locale?: string,
+  stage?: string,
+): Promise<VoiceCapabilityReport> {
+  const response = await fetch(`${getBaseUrl()}/api/voice/companion/self-check`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildBackendAuthHeaders('POST') },
+    body: JSON.stringify({ include_llm: includeLlm, locale, stage }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { code?: string; error?: string };
+    throw Object.assign(new Error(body.error || body.code || 'self_check_failed'), {
+      code: body.code || 'self_check_failed',
+      status: response.status,
+    });
+  }
+  return (await response.json()) as VoiceCapabilityReport;
+}
+/** Parse one SSE line into the authoritative install state, or null. */
+export function parseVoiceModelProgressLine(line: string): VoiceModelOperationState | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('data:')) return null;
+  const payloadText = trimmed.slice(5).trim();
+  if (!payloadText) return null;
+  try {
+    const event = JSON.parse(payloadText) as { data?: unknown; status?: unknown };
+    const payload =
+      event && typeof event.data === 'object' && event.data !== null
+        ? (event.data as { status?: unknown })
+        : (event as { status?: unknown });
+    return typeof payload.status === 'string'
+      ? (payload as VoiceModelOperationState)
+      : null;
+  } catch {
+    return null;
+  }
 }

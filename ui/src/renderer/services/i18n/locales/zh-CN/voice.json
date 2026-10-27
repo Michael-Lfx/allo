@@ -287,7 +287,7 @@
     "downloadingFile": "正在下载 {{file}} ({{current}}/{{total}})",
     "verifyingSha256": "正在校验完整性 ({{current}}/{{total}})",
     "ready": "已就绪",
-    "readyDesc": "语音伴侣已在后台就绪，请说 Hey Flowy 唤醒",
+    "readyDesc": "模型已安装并通过完整性校验；唤醒可用性以下方服务状态为准",
     "standbyDesc": "语音引擎已就绪，打开开关即可在后台呼叫唤醒",
     "removing": "正在释放磁盘空间",
     "failed": "下载或校验遇到问题"
@@ -328,7 +328,12 @@
     "networkTimeout": "网络连接超时，请重试",
     "pairingCodeInvalid": "配对码错误，请重新输入",
     "pairingCodeLocked": "连续输错已锁定，请在 {{remaining}} 后重试",
-    "unknownError": "发生未知错误"
+    "unknownError": "发生未知错误",
+    "modelMissing": "语音模型套件尚未安装，请先在语音设置下载并校验。",
+    "operationFailed": "语音套件操作失败，下方安装状态仍以磁盘实际结果为准。",
+    "suiteInUse": "语音通话、任务或审批正在占用模型，请结束后再下载或删除。",
+    "resourceBusy": "该目录已有另一个模型写入操作，请等待完成。",
+    "deleteIncomplete": "删除未完成，仍有文件存在：{{reason}}"
   },
   "pairing": {
     "title": "AI Mate 设备配对",
@@ -446,6 +451,11 @@
   },
   "entry": {
     "start": "语音通话",
+    "checking": "正在检查语音设置",
+    "setup": "设置语音",
+    "setupRequired": "语音模型缺失、未校验或语音已停用。请前往语音设置下载、校验或启用。",
+    "cancelRecovered": "上一次通话请求已处理。",
+    "cancelUnknown": "上一次通话请求仍未确认；已保留原请求，请等服务恢复后重试，不会创建新请求。",
     "listMarker": "语音会话",
     "openActive": "返回当前语音会话",
     "voiceCall": "语音通话",
@@ -455,7 +465,10 @@
     "callActiveMarker": "通话中",
     "endBeforeDelete": "请先挂断通话再删除",
     "moreActions": "更多操作",
-    "callConflictActive": "当前已有正在进行的语音通话，已为您切换"
+    "callConflictActive": "当前已有正在进行的语音通话，已为您切换",
+    "suiteNotReady": "语音套件尚未通过本地能力检查，请先在语音设置完成检查或修复",
+    "daemonNotRunning": "语音服务尚未启动，请先在语音设置启用",
+    "prepareHint": "正在准备并检查语音套件；检查会通过已配置模型发送一条短请求，可能产生少量额度。"
   },
   "presentation": {
     "petBootFailed": "桌宠暂未加载完成，请在桌宠设置中重试。",
@@ -468,5 +481,56 @@
     "ttsFallback": "已切换备用合成来源",
     "online": "在线",
     "local": "本地"
+  },
+  "capabilities": {
+    "title": "完整通话就绪",
+    "description": "新建完整语音通话前运行一次显式检查。检查会通过已配置模型发送一条固定、无工具、无私有上下文的短请求，并使用固定中英短句验证合成；可能产生少量模型额度。",
+    "run": "检查并准备",
+    "notChecked": "尚未检查。完整通话需要麦克风、识别、对话、合成和播放的当前证据。",
+    "fullReady": "所有必需能力已通过当前检查。",
+    "notReady": "完整通话尚不可用；文字回复仍可继续使用。",
+    "checkFailed": "未能完成就绪检查。",
+    "textOnly": "仍可使用语音输入并查看文字回复；语音播报与完整通话准入保持关闭。",
+    "fixHint": "请展开失败项，修复模型或服务后再次运行检查。",
+    "useTextReply": "使用语音输入、文字回复",
+    "textReplyUnavailable": "听写控件暂不可用，请检查语音转文字设置后重试。",
+    "textReplyAlreadyRecording": "听写正在录音，已保持当前录音状态。",
+    "textReplyExpired": "听写请求已过期或已取消，未启动麦克风。",
+    "item": {
+      "capture": "麦克风 PCM",
+      "kws": "唤醒引擎",
+      "vad": "语音检测",
+      "asr": "语音识别",
+      "llm": "对话模型",
+      "tts": "语音合成",
+      "playback": "播放设备"
+    },
+    "status": {
+      "unknown": "未知",
+      "checking": "检查中",
+      "ready": "就绪",
+      "failed": "失败",
+      "unsupported": "不支持"
+    },
+    "reason": {
+      "capture_no_recent_pcm": "没有最近的麦克风帧",
+      "kws_not_loaded": "唤醒引擎未加载",
+      "vad_not_loaded": "语音检测未加载",
+      "asr_not_loaded": "识别引擎未加载",
+      "tts_check_unreachable": "语音合成服务不可达",
+      "tts_bad_response": "语音合成返回了无效响应",
+      "playback_not_consumed": "播放设备未消费音频",
+      "playback_not_checked": "尚未验证播放",
+      "llm_check_not_run": "尚未运行对话检查",
+      "llm_auth_failed": "对话凭据被拒绝",
+      "llm_rate_limited": "对话服务限流",
+      "llm_timeout": "对话检查超时",
+      "llm_failed": "对话检查失败",
+      "dialogue_unconfigured": "尚未配置对话模型",
+      "self_check_required": "需要先运行就绪检查",
+      "self_check_incomplete": "部分能力尚未验证",
+      "self_check_superseded": "检查已被更新的状态取代",
+      "voice_busy": "通话正在进行"
+    }
   }
 }

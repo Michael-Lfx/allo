@@ -12,8 +12,9 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tracing::{info, warn};
+use crate::self_check_audio::SelfCheckAudio;
 
 use nomifun_audio::EarconKind;
 use nomifun_audio::capture::CaptureReadResult;
@@ -152,10 +153,311 @@ fn detect_task_control(input: &str) -> Option<nomifun_api_types::voice::VoiceTas
 /// to ensure the leading onset of user speech is not clipped upon barge-in interruption.
 const BARGE_IN_PREROLL_SAMPLES: usize = 8_000;
 
+struct WorkerEngineCheck {
+    request_id: String,
+    deadline: std::time::Instant,
+    cancel: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+    native_busy: Arc<AtomicBool>,
+    native_job_epoch: Arc<AtomicU64>,
+    fixtures: SelfCheckAudio,
+    reply: oneshot::Sender<Result<WorkerEngineCheckResult, String>>,
+}
+
+struct NativeBusyGuard {
+    busy: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    #[cfg_attr(not(feature = "native-fault-injection"), allow(dead_code))]
+    job: u64,
+}
+
+impl NativeBusyGuard {
+    fn new(busy: Arc<AtomicBool>, epoch: Arc<AtomicU64>) -> Self {
+        let job = epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        Self::attach(busy, epoch, job)
+    }
+
+    fn attach(busy: Arc<AtomicBool>, epoch: Arc<AtomicU64>, job: u64) -> Self {
+        busy.store(true, Ordering::Release);
+        #[cfg(feature = "native-fault-injection")]
+        {
+            FAULT_NATIVE_BUSY.store(true, Ordering::Release);
+            FAULT_CURRENT_EPOCH.store(job, Ordering::Release);
+        }
+        Self { busy, epoch, job }
+    }
+}
+impl Drop for NativeBusyGuard {
+    fn drop(&mut self) {
+        // Retire the old generation before opening the reservation window.
+        // Clear the observation while the old owner still excludes newcomers;
+        // otherwise A could clear B's freshly attached busy flag.
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        #[cfg(feature = "native-fault-injection")]
+        if FAULT_CURRENT_EPOCH.load(Ordering::Acquire) == self.job {
+            FAULT_NATIVE_BUSY.store(false, Ordering::Release);
+        }
+        self.busy.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Debug)]
+struct WorkerEngineCheckResult {
+    kws_ok: bool,
+    vad_ok: bool,
+    asr_ok: bool,
+    kws_hits: u32,
+    asr_text: Option<String>,
+}
+
+#[cfg(feature = "native-fault-injection")]
+struct FaultBlockingStt;
+
+#[cfg(feature = "native-fault-injection")]
+#[async_trait::async_trait]
+impl SttCallback for FaultBlockingStt {
+    async fn transcribe(
+        &self,
+        _channel: AudioChannel,
+        _pcm: Vec<f32>,
+        _sample_rate: u32,
+    ) -> Option<String> {
+        // The lease-bound wrapper records this job before entry. Here we also
+        // record inside the blocking thread to bind the worker thread identity.
+        let _ = tokio::task::spawn_blocking(|| {
+            FAULT_ASR_ENTERED.fetch_add(1, Ordering::AcqRel);
+            record_fault_job_entry(1, None);
+            std::thread::sleep(std::time::Duration::from_secs(120));
+        })
+        .await;
+        Some("fault-blocking-asr".into())
+    }
+}
+
+#[cfg(feature = "native-fault-injection")]
+struct BoundStt {
+    inner: Arc<dyn SttCallback>,
+    job: u64,
+    context: Option<NativeCallContext>,
+    entered: AtomicBool,
+}
+
+#[cfg(feature = "native-fault-injection")]
+#[async_trait::async_trait]
+impl SttCallback for BoundStt {
+    async fn transcribe(
+        &self,
+        channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Option<String> {
+        if !self.entered.swap(true, Ordering::AcqRel) {
+            record_fault_job_entry(self.job, self.context.as_ref());
+        }
+        self.inner.transcribe(channel, pcm, sample_rate).await
+    }
+}
+
+#[cfg(feature = "native-fault-injection")]
+#[derive(Clone)]
+struct FaultBoundary {
+    request_id: String,
+    worker_epoch: u64,
+    instance_id: String,
+}
+
+#[cfg(feature = "native-fault-injection")]
+#[derive(Clone)]
+struct FaultJobRecord {
+    request_id: String,
+    worker_epoch: u64,
+    instance_id: String,
+    pid: u32,
+    job_epoch: u64,
+    entered_unix_ms: u128,
+}
+
+#[cfg(feature = "native-fault-injection")]
+#[derive(Clone)]
+struct NativeCallContext {
+    request_id: String,
+    worker_epoch: u64,
+    instance_id: String,
+}
+
+#[cfg(feature = "native-fault-injection")]
+static FAULT_BOUNDARY: std::sync::Mutex<Option<FaultBoundary>> = std::sync::Mutex::new(None);
+#[cfg(feature = "native-fault-injection")]
+static FAULT_JOB_BOUNDARIES: std::sync::Mutex<Vec<(u64, FaultBoundary)>> =
+    std::sync::Mutex::new(Vec::new());
+#[cfg(feature = "native-fault-injection")]
+static FAULT_JOB_RECORD: std::sync::Mutex<Option<FaultJobRecord>> = std::sync::Mutex::new(None);
+#[cfg(feature = "native-fault-injection")]
+pub static FAULT_NATIVE_BUSY: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "native-fault-injection")]
+static FAULT_CURRENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "native-fault-injection")]
+fn bind_fault_boundary(request_id: &str, worker_epoch: u64, instance_id: &str) {
+    *FAULT_BOUNDARY.lock().unwrap_or_else(|error| error.into_inner()) = Some(FaultBoundary {
+        request_id: request_id.to_owned(),
+        worker_epoch,
+        instance_id: instance_id.to_owned(),
+    });
+}
+
+#[cfg(feature = "native-fault-injection")]
+fn bind_fault_job(job: u64, context: &NativeCallContext) {
+    FAULT_JOB_BOUNDARIES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((
+            job,
+            FaultBoundary {
+                request_id: context.request_id.clone(),
+                worker_epoch: context.worker_epoch,
+                instance_id: context.instance_id.clone(),
+            },
+        ));
+}
+
+#[cfg(feature = "native-fault-injection")]
+fn record_fault_job_entry(job_epoch: u64, context: Option<&NativeCallContext>) {
+    let boundary = context
+        .map(|context| FaultBoundary {
+            request_id: context.request_id.clone(),
+            worker_epoch: context.worker_epoch,
+            instance_id: context.instance_id.clone(),
+        })
+        .or_else(|| {
+            FAULT_JOB_BOUNDARIES
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .find(|(job, _)| *job == job_epoch)
+                .map(|(_, boundary)| boundary.clone())
+        })
+        .or_else(|| {
+            FAULT_BOUNDARY
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        });
+    let Some(boundary) = boundary else { return };
+    let entered_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    *FAULT_JOB_RECORD.lock().unwrap_or_else(|error| error.into_inner()) = Some(FaultJobRecord {
+        request_id: boundary.request_id,
+        worker_epoch: boundary.worker_epoch,
+        instance_id: boundary.instance_id,
+        pid: std::process::id(),
+        job_epoch,
+        entered_unix_ms,
+    });
+}
+
+#[derive(Clone)]
+struct EngineCheckControl {
+    id: String,
+    epoch: u64,
+    cancel: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
+}
+
 enum ReplyPlayback {
     Played,
     Interrupted,
     Muted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartupMode {
+    Default,
+    HeadlessTest,
+}
+
+/// Decides the startup path before any device assembly. Any retained fault or
+/// headless marker is fail-closed unless this is the explicit test feature and
+/// the headless marker is present. Production defaults never fall through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartupMarkers {
+    pub headless_present: bool,
+    pub headless_valid: bool,
+    pub fault_present: bool,
+    pub exit_code_present: bool,
+}
+
+pub fn parse_startup_markers(
+    headless: Option<&std::ffi::OsStr>,
+    fault: Option<&std::ffi::OsStr>,
+    exit_code: Option<&std::ffi::OsStr>,
+) -> StartupMarkers {
+    StartupMarkers {
+        headless_present: headless.is_some(),
+        headless_valid: headless.is_some_and(|value| value == "1"),
+        fault_present: fault.is_some(),
+        exit_code_present: exit_code.is_some(),
+    }
+}
+
+pub fn startup_mode(
+    feature_enabled: bool,
+    markers: StartupMarkers,
+) -> Result<StartupMode, &'static str> {
+    if markers.headless_present || markers.fault_present || markers.exit_code_present {
+        if !feature_enabled {
+            return Err("native_fault_marker_requires_feature_and_headless");
+        }
+        if !markers.headless_valid {
+            return Err("native_fault_feature_requires_valid_headless");
+        }
+        return Ok(StartupMode::HeadlessTest);
+    }
+    if feature_enabled {
+        return Err("native_fault_feature_requires_headless");
+    }
+    Ok(StartupMode::Default)
+}
+
+pub static HARDWARE_MIC_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+pub static HARDWARE_SPEAKER_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+pub static FAULT_ASR_ENTERED: AtomicU64 = AtomicU64::new(0);
+pub static FAULT_INIT_ENTERED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-fault-injection")]
+pub fn fault_job_observation() -> serde_json::Value {
+    let job = FAULT_JOB_RECORD
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let busy = FAULT_NATIVE_BUSY.load(Ordering::Acquire);
+    let current_epoch = FAULT_CURRENT_EPOCH.load(Ordering::Acquire);
+    serde_json::json!({
+        "fault_asr_entered": FAULT_ASR_ENTERED.load(Ordering::Acquire),
+        "fault_init_entered": FAULT_INIT_ENTERED.load(Ordering::Acquire),
+        "native_busy": busy,
+        "job": job.map(|job| serde_json::json!({
+            "request_id": job.request_id,
+            "worker_epoch": job.worker_epoch,
+            "instance_id": job.instance_id,
+            "pid": job.pid,
+            "job_epoch": job.job_epoch,
+            "entered_unix_ms": job.entered_unix_ms,
+            "still_blocking": busy && current_epoch == job.job_epoch,
+        })),
+    })
+}
+#[cfg(not(feature = "native-fault-injection"))]
+pub fn fault_job_observation() -> serde_json::Value {
+    serde_json::json!({ "fault_asr_entered": FAULT_ASR_ENTERED.load(Ordering::Acquire),
+        "fault_init_entered": FAULT_INIT_ENTERED.load(Ordering::Acquire), "native_busy": false, "job": null })
+}
+pub fn hardware_attempts() -> (u64, u64) {
+    (
+        HARDWARE_MIC_ATTEMPTS.load(Ordering::Acquire),
+        HARDWARE_SPEAKER_ATTEMPTS.load(Ordering::Acquire),
+    )
 }
 
 /// Production voice companion pipeline assembly and runtime controller.
@@ -172,6 +474,19 @@ pub struct VoiceCompanionRuntime {
     transcriber: Option<Arc<dyn SttCallback>>,
     capture_pipeline: Arc<Mutex<VoiceCapturePipeline>>,
     acoustic_ready: Arc<AtomicBool>,
+    self_check_active: Arc<AtomicBool>,
+    self_check_cancel: Arc<AtomicBool>,
+    self_check_id: Arc<std::sync::Mutex<Option<String>>>,
+    engine_check_active: Arc<AtomicBool>,
+    engine_check_native_busy: Arc<AtomicBool>,
+    native_recovery_scheduled: Arc<AtomicU64>,
+    native_job_epoch: Arc<AtomicU64>,
+    engine_check_control: Arc<std::sync::Mutex<Option<EngineCheckControl>>>,
+    worker_epoch: Arc<AtomicU64>,
+    engine_check_tx: std::sync::Mutex<Option<mpsc::Sender<WorkerEngineCheck>>>,
+    engine_check_rx: std::sync::Mutex<Option<mpsc::Receiver<WorkerEngineCheck>>>,
+    wake_admission_until_ms: Arc<AtomicU64>,
+    call_admission_until_ms: Arc<AtomicU64>,
     event_tx: Arc<VoiceEventHub>,
     active_turn: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     input_generation: Arc<AtomicU64>,
@@ -206,6 +521,46 @@ impl Drop for VoiceCompanionRuntime {
     }
 }
 
+fn validate_self_check_pcm(pcm: &[f32], sample_rate: u32) -> Result<(u64, u16, u16), String> {
+    if !(8_000..=48_000).contains(&sample_rate) {
+        return Err("tts_invalid_sample_rate".into());
+    }
+    if pcm.is_empty() {
+        return Err("tts_empty_pcm".into());
+    }
+    if pcm.iter().any(|sample| !sample.is_finite()) {
+        return Err("tts_non_finite_pcm".into());
+    }
+    let duration_ms = (pcm.len() as u64).saturating_mul(1_000) / u64::from(sample_rate);
+    if !(100..=30_000).contains(&duration_ms) {
+        return Err("tts_duration_out_of_bounds".into());
+    }
+    let peak = pcm.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
+    let rms = (pcm.iter().map(|sample| sample * sample).sum::<f32>() / pcm.len() as f32).sqrt();
+    let peak_milli = (peak * 1_000.0).round().clamp(0.0, 65_535.0) as u16;
+    let rms_milli = (rms * 1_000.0).round().clamp(0.0, 65_535.0) as u16;
+    if peak < 0.02 && rms < 0.005 {
+        return Err("tts_silent_pcm".into());
+    }
+    Ok((duration_ms, rms_milli, peak_milli))
+}
+struct SelfCheckGuard {
+    active: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+    id: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl Drop for SelfCheckGuard {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+        self.cancel.store(false, Ordering::Release);
+        *self.id.lock().unwrap_or_else(|error| error.into_inner()) = None;
+    }
+}
+fn admission_valid_for(until: &Arc<AtomicU64>) -> bool {
+    let now = nomifun_common::now_ms().max(0) as u64;
+    now < until.load(Ordering::Acquire)
+}
 impl VoiceCompanionRuntime {
     fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider) {
         if let Some(diagnostic) = tts.diagnostic("") {
@@ -217,6 +572,7 @@ impl VoiceCompanionRuntime {
     }
     /// Assembles the complete voice pipeline with capture, playback, session driver, and router.
     pub fn assemble(model_manager: Arc<ModelManager>, oobe_manager: Arc<OobeManager>) -> Self {
+        HARDWARE_MIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
         let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::new(16_000) {
             Ok(mic) => {
                 info!("Hardware microphone successfully initialized for AI Mate");
@@ -231,12 +587,14 @@ impl VoiceCompanionRuntime {
             }
         };
 
+        HARDWARE_SPEAKER_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
         let sink = Arc::new(PhysicalAudioSink::open_default());
         let playback = Arc::new(PlaybackPipeline::new(sink));
 
         let driver = Arc::new(Mutex::new(VoiceSessionDriver::new()));
         let router = Arc::new(QwenVoiceRouter::new());
         let event_tx = Arc::new(VoiceEventHub::new());
+        let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
 
         Self {
             pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
@@ -268,6 +626,19 @@ impl VoiceCompanionRuntime {
             transcriber: None,
             capture_pipeline,
             acoustic_ready: Arc::new(AtomicBool::new(false)),
+            self_check_active: Arc::new(AtomicBool::new(false)),
+            self_check_cancel: Arc::new(AtomicBool::new(false)),
+            self_check_id: Arc::new(std::sync::Mutex::new(None)),
+            engine_check_active: Arc::new(AtomicBool::new(false)),
+            engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+            native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
+            native_job_epoch: Arc::new(AtomicU64::new(0)),
+            engine_check_control: Arc::new(std::sync::Mutex::new(None)),
+            worker_epoch: Arc::new(AtomicU64::new(0)),
+            engine_check_tx: std::sync::Mutex::new(Some(engine_check_tx)),
+            engine_check_rx: std::sync::Mutex::new(Some(engine_check_rx)),
+            wake_admission_until_ms: Arc::new(AtomicU64::new(0)),
+            call_admission_until_ms: Arc::new(AtomicU64::new(0)),
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
             input_generation: Arc::new(AtomicU64::new(0)),
@@ -278,6 +649,46 @@ impl VoiceCompanionRuntime {
             #[cfg(any(test, feature = "voice-skeleton"))]
             replay_barge_in: false,
         }
+    }
+
+    /// Test-only headless assembly: no microphone, speaker, device enumeration or
+    /// hardware probe. Fixed owned PCM feeds the real capture pipeline; the
+    /// worker still loads real KWS/VAD and the injected non-cooperative STT.
+    #[cfg(feature = "native-fault-injection")]
+    pub fn assemble_headless(
+        model_manager: Arc<ModelManager>,
+        oobe_manager: Arc<OobeManager>,
+    ) -> Self {
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        tokio::spawn(async move {
+            let mut phase = 0.0_f32;
+            loop {
+                let mut pcm = [0.0_f32; 160];
+                for sample in &mut pcm {
+                    *sample = (phase * std::f32::consts::TAU).sin() * 0.02;
+                    phase = (phase + 440.0 / 16_000.0) % 1.0;
+                }
+                producer.push(&pcm);
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+        let headless_transcriber: Arc<dyn SttCallback> =
+            if std::env::var("NOMIFUN_VOICE_FAULT_BLOCK_ASR").ok().as_deref() == Some("1") {
+                Arc::new(FaultBlockingStt)
+            } else {
+                Arc::new(nomifun_audio::stt::NullSttCallback)
+            };
+        let (mut runtime, _) = Self::from_capture(
+            model_manager,
+            oobe_manager,
+            Arc::new(Mutex::new(capture)),
+            headless_transcriber,
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        runtime.replay_capture = false;
+        runtime.replay_barge_in = false;
+        runtime.acoustic_ready.store(false, Ordering::Release);
+        runtime
     }
 
     /// Assemble the same worker with an owned capture source and STT/router dependencies.
@@ -292,6 +703,7 @@ impl VoiceCompanionRuntime {
     ) -> (Self, tokio::sync::mpsc::Receiver<Vec<u8>>) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let event_tx = Arc::new(VoiceEventHub::new());
+        let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
         (
             Self {
                 pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
@@ -311,6 +723,19 @@ impl VoiceCompanionRuntime {
                 pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
                 mic_source: None,
                 acoustic_ready: Arc::new(AtomicBool::new(true)),
+                self_check_active: Arc::new(AtomicBool::new(false)),
+                self_check_cancel: Arc::new(AtomicBool::new(false)),
+                self_check_id: Arc::new(std::sync::Mutex::new(None)),
+                engine_check_active: Arc::new(AtomicBool::new(false)),
+                engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+                native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
+                native_job_epoch: Arc::new(AtomicU64::new(0)),
+                engine_check_control: Arc::new(std::sync::Mutex::new(None)),
+                worker_epoch: Arc::new(AtomicU64::new(0)),
+                engine_check_tx: std::sync::Mutex::new(Some(engine_check_tx)),
+                engine_check_rx: std::sync::Mutex::new(Some(engine_check_rx)),
+                wake_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
+                call_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
                 replay_capture: true,
                 replay_barge_in: false,
             },
@@ -355,7 +780,58 @@ impl VoiceCompanionRuntime {
         instance_id: Option<&str>,
         seq: Option<u64>,
     ) {
-        self.event_tx.update_task_versioned(task, instance_id, seq);
+        let is_terminal = task.as_ref().is_some_and(|t| {
+            matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Completed | nomifun_api_types::voice::VoiceTaskStatus::Failed)
+        });
+        let expected = task.as_ref().map(|task| {
+            (
+                task.command_id.clone(),
+                task.session_id.clone(),
+                task.acoustic_turn_id.clone(),
+            )
+        });
+        let accepted = self.event_tx.update_task_versioned(task, instance_id, seq);
+        if is_terminal && accepted {
+            let Some((command_id, session_id, turn_id)) = expected else { return; };
+            let driver = self.driver.clone();
+            let event_tx = self.event_tx.clone();
+            let playback = self.playback.clone();
+            let generation = playback.generation_id();
+            tokio::spawn(async move {
+                let snapshot = event_tx.snapshot();
+                let still_owned = snapshot.task.as_ref().is_some_and(|task| {
+                    task.command_id == command_id
+                        && task.session_id == session_id
+                        && task.acoustic_turn_id == turn_id
+                })
+                    && snapshot.session_id.as_ref().is_none_or(|value| value == &session_id)
+                    && snapshot.turn_id.as_ref().is_none_or(|value| value == &turn_id);
+                if !still_owned || playback.generation_id() != generation {
+                    return;
+                }
+                let mut d = driver.lock().await;
+                if playback.generation_id() != generation
+                    || event_tx.snapshot().task.as_ref().is_none_or(|task| {
+                        task.command_id != command_id
+                            || task.session_id != session_id
+                            || task.acoustic_turn_id != turn_id
+                    })
+                {
+                    return;
+                }
+                if d.current_state() == AcousticState::DispatchingTask {
+                    let _ = d.handle_event(AcousticEvent::TaskAccepted);
+                    let _ = d.handle_event(AcousticEvent::PlaybackDone);
+                    if d.current_state() == AcousticState::Idle {
+                        let _ = d.handle_event(AcousticEvent::WakeHit);
+                        if d.begin_listening_window() {
+                            let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                            let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+                        }
+                    }
+                }
+            });
+        }
     }
 
     pub async fn announce_task_result(&self, request: nomifun_api_types::voice::VoiceTaskResultAnnouncement) -> Result<(), &'static str> {
@@ -450,8 +926,744 @@ impl VoiceCompanionRuntime {
             })
     }
 
+    pub fn set_admission(&self, scope: &str, allowed: bool, expires_at_ms: i64) {
+        let value = if allowed {
+            u64::try_from(expires_at_ms.max(0)).unwrap_or(0)
+        } else {
+            0
+        };
+        match scope {
+            "call" => self.call_admission_until_ms.store(value, Ordering::Release),
+            _ => self.wake_admission_until_ms.store(value, Ordering::Release),
+        }
+    }
+
+    pub fn set_wake_admission(&self, allowed: bool, expires_at_ms: i64) {
+        self.set_admission("wake", allowed, expires_at_ms);
+    }
+
+    fn admission_valid(&self, scope: &str) -> bool {
+        let now = nomifun_common::now_ms().max(0) as u64;
+        let until = match scope {
+            "call" => self.call_admission_until_ms.load(Ordering::Acquire),
+            _ => self.wake_admission_until_ms.load(Ordering::Acquire),
+        };
+        now < until
+    }
+
+    /// Explicit current-instance inference check for KWS/VAD/ASR. The work is
+    /// scheduled onto the live capture worker so a transient diagnostic loader
+    /// cannot stand in for the engines that actually consume capture.
+    pub async fn self_check_engines(
+        &self,
+    ) -> nomifun_api_types::voice::VoiceEngineSelfCheckResponse {
+        self.self_check_engines_with_request(None, std::time::Duration::from_secs(45))
+            .await
+    }
+
+    pub async fn self_check_engines_with_request(
+        &self,
+        request_id: Option<String>,
+        timeout: std::time::Duration,
+    ) -> nomifun_api_types::voice::VoiceEngineSelfCheckResponse {
+        use nomifun_api_types::voice::VoiceEngineSelfCheckResponse;
+        let request_id = request_id.unwrap_or_else(nomifun_common::generate_id);
+        let deadline = std::time::Instant::now() + timeout;
+        let snapshot = self.snapshot();
+        let instance_id = snapshot.instance_id.clone();
+        let worker_epoch = self.worker_epoch.load(Ordering::Acquire);
+        let model_revision = self.model_manager.identity_revision();
+        let failure = |reason: &str| VoiceEngineSelfCheckResponse {
+            kws_ok: false,
+            vad_ok: false,
+            asr_ok: false,
+            fixtures_available: false,
+            reason: Some(reason.into()),
+            kws_hits: 0,
+            asr_text: None,
+            request_id: request_id.clone(),
+            instance_id: instance_id.clone(),
+            worker_epoch,
+            model_revision: model_revision.clone(),
+            fixtures_source: None,
+            fixtures_online: false,
+            fixtures_generated_at_ms: None,
+        };
+        let session_active = snapshot.session_id.is_some()
+            && snapshot.ended_reason.is_none()
+            && snapshot.phase != nomifun_api_types::voice::VoiceSessionPhase::Idle;
+        if session_active {
+            return failure("voice_busy");
+        }
+        if self.self_check_active.load(Ordering::Acquire) {
+            return failure("self_check_in_progress");
+        }
+        if self.engine_check_native_busy.load(Ordering::Acquire) {
+            return failure("engine_check_native_busy");
+        }
+        if self
+            .engine_check_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return failure("engine_check_in_progress");
+        }
+        let epoch = self
+            .worker_epoch
+            .load(Ordering::Acquire)
+            .wrapping_mul(1_000_000)
+            .saturating_add(nomifun_common::now_ms().max(0) as u64);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_notify = Arc::new(Notify::new());
+        *self
+            .engine_check_control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(EngineCheckControl {
+            id: request_id.clone(),
+            epoch,
+            cancel: cancel.clone(),
+            cancel_notify: cancel_notify.clone(),
+        });
+        let release = || {
+            *self
+                .engine_check_control
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
+            self.engine_check_active.store(false, Ordering::Release);
+        };
+
+        if worker_epoch == 0 {
+            release();
+            return failure("worker_not_ready");
+        }
+        let Some(tx) = self
+            .engine_check_tx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+        else {
+            release();
+            return failure("worker_unavailable");
+        };
+        let fixtures = match crate::self_check_audio::load_or_generate_until(
+            &model_revision,
+            self.tts.as_ref(),
+            cancel.as_ref(),
+            cancel_notify.as_ref(),
+            deadline,
+        )
+        .await
+        {
+            Ok(fixtures) => fixtures,
+            Err(reason) => {
+                release();
+                let mut response = failure(&reason);
+                response.fixtures_source = Some("unavailable".into());
+                return response;
+            }
+        };
+        let fixtures_source = fixtures.source.clone();
+        let fixtures_online = fixtures.online;
+        let fixtures_generated_at_ms = fixtures.generated_at_ms;
+        if let Some(reason) = if cancel.load(Ordering::Acquire) {
+            Some("engine_check_cancelled")
+        } else if std::time::Instant::now() >= deadline {
+            Some("engine_check_timeout")
+        } else {
+            None
+        } {
+            release();
+            let mut response = failure(reason);
+            response.fixtures_available = true;
+            response.fixtures_source = Some(fixtures_source);
+            response.fixtures_online = fixtures_online;
+            response.fixtures_generated_at_ms = fixtures_generated_at_ms;
+            return response;
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = WorkerEngineCheck {
+            request_id: request_id.clone(),
+            deadline,
+            cancel: cancel.clone(),
+            cancel_notify: cancel_notify.clone(),
+            native_busy: self.engine_check_native_busy.clone(),
+            native_job_epoch: self.native_job_epoch.clone(),
+            fixtures,
+            reply: reply_tx,
+        };
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tx.send(command),
+        )
+        .await
+        .is_err()
+        {
+            release();
+            return failure("worker_unavailable");
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let result = match tokio::time::timeout(remaining, reply_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("worker_dropped_check".to_string()),
+            Err(_) => {
+                cancel.store(true, Ordering::Release);
+                cancel_notify.notify_waiters();
+                Err("engine_check_timeout".to_string())
+            }
+        };
+        let current_epoch = self
+            .engine_check_control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|control| control.id == request_id && control.epoch == epoch);
+        let released = {
+            let mut control = self
+                .engine_check_control
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if control.as_ref().is_some_and(|value| value.id == request_id) {
+                *control = None;
+            }
+            self.engine_check_active.store(false, Ordering::Release);
+            true
+        };
+        debug_assert!(released);
+        if !current_epoch {
+            let mut response = failure("engine_check_superseded");
+            response.fixtures_available = true;
+            response.fixtures_source = Some(fixtures_source);
+            response.fixtures_online = fixtures_online;
+            response.fixtures_generated_at_ms = fixtures_generated_at_ms;
+            return response;
+        }
+        if self.engine_check_native_busy.load(Ordering::Acquire) {
+            self.schedule_supervised_native_recovery();
+        }
+        match result {
+            Ok(result) if !cancel.load(Ordering::Acquire) => VoiceEngineSelfCheckResponse {
+                kws_ok: result.kws_ok,
+                vad_ok: result.vad_ok,
+                asr_ok: result.asr_ok,
+                fixtures_available: true,
+                reason: if result.kws_ok && result.vad_ok && result.asr_ok {
+                    None
+                } else {
+                    Some("engine_inference_failed".into())
+                },
+                kws_hits: result.kws_hits,
+                asr_text: result.asr_text,
+                request_id,
+                instance_id,
+                worker_epoch,
+                model_revision,
+                fixtures_source: Some(fixtures_source),
+                fixtures_online,
+                fixtures_generated_at_ms,
+            },
+            Ok(_) => {
+                let mut response = failure("engine_check_cancelled");
+                response.fixtures_available = true;
+                response.fixtures_source = Some(fixtures_source);
+                response.fixtures_online = fixtures_online;
+                response.fixtures_generated_at_ms = fixtures_generated_at_ms;
+                response
+            }
+            Err(reason) => {
+                let mut response = failure(&reason);
+                response.fixtures_available = true;
+                response.fixtures_source = Some(fixtures_source);
+                response.fixtures_online = fixtures_online;
+                response.fixtures_generated_at_ms = fixtures_generated_at_ms;
+                response
+            }
+        }
+    }
+
+    fn schedule_supervised_native_recovery(&self) {
+        if std::env::var("VOICE_COMPANION_SUPERVISED").ok().as_deref() != Some("1") {
+            return;
+        }
+        let job_epoch = self.native_job_epoch.clone();
+        let job = job_epoch.load(Ordering::Acquire);
+        if job == 0 || self.native_recovery_scheduled.swap(job, Ordering::AcqRel) == job {
+            return;
+        }
+        let busy = self.engine_check_native_busy.clone();
+        let scheduled = self.native_recovery_scheduled.clone();
+        let grace_ms = std::env::var("VOICE_COMPANION_NATIVE_STUCK_GRACE_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(5_000)
+            .clamp(250, 30_000);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
+            if busy.load(Ordering::Acquire) && job_epoch.load(Ordering::Acquire) == job {
+                tracing::error!(
+                    grace_ms,
+                    "voice_engine_native_stuck_exiting_for_supervised_restart"
+                );
+                std::process::exit(75);
+            }
+            let _ = scheduled.compare_exchange(job, 0, Ordering::AcqRel, Ordering::Acquire);
+        });
+    }
+
+    pub async fn cancel_engine_check(&self, request_id: &str) -> bool {
+        let control = self
+            .engine_check_control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        match control {
+            Some(control) if control.id == request_id => {
+                control.cancel.store(true, Ordering::Release);
+                control.cancel_notify.notify_waiters();
+                true
+            }
+            _ => false,
+        }
+    }    /// Cancels the matching explicit TTS self-check and interrupts its output.
+    pub async fn cancel_self_check(&self, check_id: &str) -> bool {
+        let matches = self
+            .self_check_id
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_deref()
+            == Some(check_id);
+        if !matches {
+            return false;
+        }
+        self.self_check_cancel.store(true, Ordering::Release);
+        let _ = self.playback.interrupt().await;
+        true
+    }
+    async fn worker_engine_check(
+        kws: &mut KwsEngine,
+        vad: &mut dyn VadBackend,
+        transcriber: &Option<Arc<dyn SttCallback>>,
+        fixtures: &SelfCheckAudio,
+        cancel: &AtomicBool,
+        cancel_notify: &Notify,
+        native_busy: &Arc<AtomicBool>,
+        native_job_epoch: &Arc<AtomicU64>,
+        deadline: std::time::Instant,
+    ) -> Result<WorkerEngineCheckResult, String> {
+        let stopped = || {
+            cancel.load(Ordering::Acquire)
+                || std::time::Instant::now() >= deadline
+        };
+        if stopped() {
+            return Err("engine_check_cancelled".into());
+        }
+        kws.reset();
+        let mut wake_hits = 0u32;
+        for chunk in fixtures.wake.chunks(320) {
+            if stopped() {
+                return Err("engine_check_cancelled".into());
+            }
+            if kws.process_pcm_chunk(chunk).is_some() {
+                wake_hits = wake_hits.saturating_add(1);
+            }
+        }
+        let mut negative_hits = 0u32;
+        for pcm in [&fixtures.command, &fixtures.non_wake] {
+            kws.reset();
+            for chunk in pcm.chunks(320) {
+                if stopped() {
+                    return Err("engine_check_cancelled".into());
+                }
+                if kws.process_pcm_chunk(chunk).is_some() {
+                    negative_hits = negative_hits.saturating_add(1);
+                }
+            }
+        }
+        let kws_ok = kws.is_initialized() && wake_hits > 0 && negative_hits == 0;
+
+        vad.reset();
+        let silence = vec![0.0f32; 512];
+        let silent_start = (0..30).all(|_| !vad.process_frame(&silence));
+        let mut speech = false;
+        for frame in fixtures.command.chunks(512) {
+            if stopped() {
+                return Err("engine_check_cancelled".into());
+            }
+            if frame.len() < 512 {
+                break;
+            }
+            if vad.process_frame(frame) {
+                speech = true;
+                break;
+            }
+        }
+        let mut ended = false;
+        for _ in 0..120 {
+            if stopped() {
+                return Err("engine_check_cancelled".into());
+            }
+            if !vad.process_frame(&silence) {
+                ended = true;
+                break;
+            }
+        }
+        let vad_ok = silent_start && speech && ended;
+        vad.reset();
+
+        let (asr_ok, asr_text) = match transcriber {
+            Some(asr) => {
+                let zh = Self::transcribe_cancelable(
+                    asr.clone(),
+                    fixtures.command.clone(),
+                    cancel,
+                    cancel_notify,
+                    native_busy,
+                    native_job_epoch,
+                    deadline,
+                    false,
+                    #[cfg(feature = "native-fault-injection")]
+                    None,
+                )
+                .await?
+                .unwrap_or_default();
+                if stopped() {
+                    return Err("engine_check_cancelled".into());
+                }
+                let en = Self::transcribe_cancelable(
+                    asr.clone(),
+                    fixtures.non_wake.clone(),
+                    cancel,
+                    cancel_notify,
+                    native_busy,
+                    native_job_epoch,
+                    deadline,
+                    false,
+                    #[cfg(feature = "native-fault-injection")]
+                    None,
+                )
+                .await?
+                .unwrap_or_default();
+                let lowered = en.to_lowercase();
+                (
+                    zh.contains("天气") && lowered.contains("hello") && lowered.contains("friend"),
+                    Some(format!("zh={zh};en={en}")),
+                )
+            }
+            None => (false, None),
+        };
+        if stopped() {
+            return Err("engine_check_cancelled".into());
+        }
+        Ok(WorkerEngineCheckResult {
+            kws_ok,
+            vad_ok,
+            asr_ok,
+            kws_hits: wake_hits,
+            asr_text,
+        })
+    }
+
+    async fn load_worker_asr(
+        transcriber: &mut Option<Arc<dyn SttCallback>>,
+        models: &Arc<ModelManager>,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        native_busy: &Arc<AtomicBool>,
+        native_job_epoch: &Arc<AtomicU64>,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("engine_check_cancelled".into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("engine_check_timeout".into());
+        }
+        if native_busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("engine_check_native_busy".into());
+        }
+        let busy = native_busy.clone();
+        let job_epoch = native_job_epoch.clone();
+        let dir = models.models_dir().to_path_buf();
+        let mut task = tokio::task::spawn_blocking(move || {
+            let _guard = NativeBusyGuard::new(busy, job_epoch);
+            nomifun_audio::stt::try_load_sherpa(Some(&dir))
+        });
+        let loaded = tokio::select! {
+            _ = notify.notified() => return Err("engine_check_cancelled".into()),
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                return Err("engine_check_timeout".into())
+            }
+            result = &mut task => result.map_err(|error| format!("worker_asr_load_join_failed:{error}"))?,
+        };
+        match loaded {
+            Ok(Some(stt)) => *transcriber = Some(Arc::new(stt)),
+            Ok(None) => {}
+            Err(error) => return Err(format!("worker_asr_load_failed:{error}")),
+        }
+        Ok(())
+    }
+
+    fn schedule_job_watchdog(native_busy: &Arc<AtomicBool>, native_job_epoch: &Arc<AtomicU64>, job: u64) {
+        if std::env::var("VOICE_COMPANION_SUPERVISED").ok().as_deref() != Some("1") {
+            return;
+        }
+        let busy = native_busy.clone();
+        let epoch = native_job_epoch.clone();
+        std::thread::spawn(move || {
+            let grace_ms = std::env::var("NOMIFUN_VOICE_NATIVE_LEASE_GRACE_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(30_000)
+                .clamp(250, 60_000);
+            std::thread::sleep(std::time::Duration::from_millis(grace_ms));
+            if busy.load(Ordering::Acquire) && epoch.load(Ordering::Acquire) == job {
+                tracing::error!(grace_ms, job, "voice_native_lease_stuck_exiting_for_supervised_restart");
+                std::process::exit(75);
+            }
+        });
+    }
+
+    async fn transcribe_with_lease(
+        asr: Arc<dyn SttCallback>,
+        pcm: Vec<f32>,
+        native_busy: &Arc<AtomicBool>,
+        native_job_epoch: &Arc<AtomicU64>,
+        budget: std::time::Duration,
+        #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
+    ) -> Result<Option<String>, String> {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        Self::transcribe_cancelable(
+            asr,
+            pcm,
+            &cancel,
+            &notify,
+            native_busy,
+            native_job_epoch,
+            std::time::Instant::now() + budget,
+            true,
+            #[cfg(feature = "native-fault-injection")]
+            context,
+        )
+        .await
+    }
+
+    async fn transcribe_cancelable(
+        asr: Arc<dyn SttCallback>,
+        pcm: Vec<f32>,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        native_busy: &Arc<AtomicBool>,
+        native_job_epoch: &Arc<AtomicU64>,
+        deadline: std::time::Instant,
+        watchdog: bool,
+        #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
+    ) -> Result<Option<String>, String> {
+        if cancel.load(Ordering::Acquire) {
+            return Err("engine_check_cancelled".into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("engine_check_timeout".into());
+        }
+        if native_busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("engine_check_native_busy".into());
+        }
+        let job = native_job_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        #[cfg(feature = "native-fault-injection")]
+        if let Some(context) = context {
+            bind_fault_job(job, context);
+        }
+        if watchdog {
+            Self::schedule_job_watchdog(native_busy, native_job_epoch, job);
+        }
+        #[cfg(feature = "native-fault-injection")]
+        let asr: Arc<dyn SttCallback> = Arc::new(BoundStt {
+            inner: asr,
+            job,
+            context: context.cloned(),
+            entered: AtomicBool::new(false),
+        });
+        let busy = native_busy.clone();
+        let job_epoch = native_job_epoch.clone();
+        let mut task = tokio::spawn(async move {
+            let _guard = NativeBusyGuard::attach(busy, job_epoch, job);
+            asr.transcribe(AudioChannel::Mic, pcm, 16_000).await
+        });
+        tokio::select! {
+            _ = notify.notified() => Err("engine_check_cancelled".into()),
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                Err("engine_check_timeout".into())
+            }
+            result = &mut task => result.map_err(|error| format!("worker_asr_join_failed:{error}")),
+        }
+    }
+
     pub fn snapshot(&self) -> VoiceSessionSnapshot {
         self.event_tx.snapshot()
+    }
+
+    /// Explicit user-triggered TTS check. It uses the production provider and
+    /// fixed, non-private bilingual sentences; no user text or session context.
+    pub async fn self_check_tts(
+        &self,
+    ) -> Result<nomifun_api_types::voice::VoiceTtsSelfCheckResponse, String> {
+        self.self_check_tts_inner(None, None, None).await
+    }
+
+    pub async fn self_check_tts_with_id(
+        &self,
+        check_id: &str,
+    ) -> Result<nomifun_api_types::voice::VoiceTtsSelfCheckResponse, String> {
+        self.self_check_tts_inner(Some(check_id), None, None).await
+    }
+
+    pub async fn self_check_tts_with_options(
+        &self,
+        check_id: Option<&str>,
+        locale: Option<&str>,
+        stage: Option<&str>,
+    ) -> Result<nomifun_api_types::voice::VoiceTtsSelfCheckResponse, String> {
+        self.self_check_tts_inner(check_id, locale, stage).await
+    }
+
+    async fn self_check_tts_inner(
+        &self,
+        check_id: Option<&str>,
+        locale: Option<&str>,
+        stage: Option<&str>,
+    ) -> Result<nomifun_api_types::voice::VoiceTtsSelfCheckResponse, String> {
+        if self.engine_check_active.load(Ordering::Acquire) {
+            return Err("engine_check_in_progress".into());
+        }
+        if self.self_check_active.swap(true, Ordering::AcqRel) {
+            return Err("self_check_in_progress".into());
+        }
+        let _self_check_guard = SelfCheckGuard {
+            active: self.self_check_active.clone(),
+            cancel: self.self_check_cancel.clone(),
+            id: self.self_check_id.clone(),
+        };
+        self.self_check_cancel.store(false, Ordering::Release);
+        *self
+            .self_check_id
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = check_id.map(str::to_owned);
+        let snapshot = self.snapshot();
+        let active = snapshot.session_id.is_some()
+            && snapshot.ended_reason.is_none()
+            && snapshot.phase != nomifun_api_types::voice::VoiceSessionPhase::Idle;
+        if active {
+            return Err("voice_busy".into());
+        }
+        let is_en = locale.is_some_and(|l| l.starts_with("en"));
+        let (zh_text, en_text) = match stage {
+            Some("prepare") => ("正在准备语音通话。", "Preparing your voice call."),
+            Some("task") | Some("create_task") => ("创建语音任务中", "Creating voice task..."),
+            _ => ("语音连接测试。", "Voice connection test."),
+        };
+        let cases = [
+            ("zh-CN", "zh-CN-XiaoxiaoNeural", zh_text),
+            ("en-US", "en-US-JennyNeural", en_text),
+        ];
+        let mut languages = Vec::new();
+        let mut playback_ok = false;
+        let mut first_error = None;
+        let is_muted = !self.event_tx.feedback().speak_replies;
+        for (language, voice, text) in cases {
+            if self.self_check_cancel.load(Ordering::Acquire) {
+                return Err("self_check_cancelled".into());
+            }
+            let play_this = if is_en { language == "en-US" } else { language == "zh-CN" };
+            let result: Result<(u32, usize, u64, u16, u16), String> = async {
+                let mut stream = self
+                    .tts
+                    .synthesize_stream(text, voice)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let wav = tokio::time::timeout(
+                    std::time::Duration::from_secs(25),
+                    stream.recv(),
+                )
+                .await
+                .map_err(|_| "tts_timeout".to_string())?
+                .ok_or_else(|| "tts_no_audio".to_string())?;
+                let (pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(&wav);
+                let (duration_ms, rms_milli, peak_milli) = validate_self_check_pcm(&pcm, rate)?;
+                if self.self_check_cancel.load(Ordering::Acquire) {
+                    return Err("self_check_cancelled".into());
+                }
+                if play_this {
+                    if is_muted {
+                        let silent_pcm = vec![0.0f32; pcm.len()];
+                        let silent_wav = nomifun_audio::pcm_to_wav(&silent_pcm, rate);
+                        self.playback
+                            .play_wav_for_self_check(silent_wav)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    } else {
+                        self.playback
+                            .play_wav_for_self_check(wav)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
+                    playback_ok = true;
+                }
+                Ok((rate, pcm.len(), duration_ms, rms_milli, peak_milli))
+            }
+            .await;
+            match result {
+                Ok((sample_rate, samples, duration_ms, rms_milli, peak_milli)) => {
+                    languages.push(nomifun_api_types::voice::VoiceTtsSelfCheckLanguage {
+                        language: language.into(),
+                        voice: voice.into(),
+                        ok: true,
+                        sample_rate,
+                        samples,
+                        duration_ms,
+                        rms_milli,
+                        peak_milli,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error.clone());
+                    }
+                    languages.push(nomifun_api_types::voice::VoiceTtsSelfCheckLanguage {
+                        language: language.into(),
+                        voice: voice.into(),
+                        ok: false,
+                        sample_rate: 0,
+                        samples: 0,
+                        duration_ms: 0,
+                        rms_milli: 0,
+                        peak_milli: 0,
+                        error: Some(error),
+                    });
+                }
+            }
+        }
+        let diagnostic = self.tts.diagnostic("");
+        let provider = diagnostic
+            .as_ref()
+            .map(|value| value.provider.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let online = diagnostic.as_ref().is_some_and(|value| value.online);
+        let ok = languages.iter().all(|language| language.ok);
+        Ok(nomifun_api_types::voice::VoiceTtsSelfCheckResponse {
+            ok,
+            provider,
+            online,
+            playback_ok,
+            languages,
+            reason: if ok { None } else { first_error },
+        })
     }
 
     pub fn feedback(&self) -> nomifun_api_types::voice::VoiceFeedbackConfig {
@@ -615,6 +1827,15 @@ impl VoiceCompanionRuntime {
     }
 
     pub async fn handle_wake_request(&self, keyword: &str, request_id: Option<&str>) -> Result<(), VoiceWakeError> {
+        self.handle_wake_request_with_locale(keyword, request_id, None).await
+    }
+
+    pub async fn handle_wake_request_with_locale(
+        &self,
+        keyword: &str,
+        request_id: Option<&str>,
+        locale: Option<&str>,
+    ) -> Result<(), VoiceWakeError> {
         if !self.oobe_manager.is_paired().await {
             warn!("Wake received but device is not yet paired via OOBE");
             let _ = self.playback.play_earcon(EarconKind::Alert).await;
@@ -627,6 +1848,12 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
+        if self.self_check_active.load(Ordering::Acquire) {
+            return Err(VoiceWakeError::Busy);
+        }
+        if !self.admission_valid("call") {
+            return Err(VoiceWakeError::Busy);
+        }
         if !self.capture_available() {
             return Err(VoiceWakeError::MicrophoneUnavailable);
         }
@@ -634,7 +1861,7 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
-        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id).await
+        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id, locale).await
     }
 
     async fn accept_wake(
@@ -643,6 +1870,7 @@ impl VoiceCompanionRuntime {
         events: &Arc<VoiceEventHub>,
         keyword: &str,
         request_id: Option<&str>,
+        locale: Option<&str>,
     ) -> Result<(), VoiceWakeError> {
         let mut d = driver.lock().await;
         let next = d
@@ -657,6 +1885,7 @@ impl VoiceCompanionRuntime {
         let _ = events.send(VoiceCompanionEvent::WakeHit {
             keyword: keyword.to_string(),
             request_id: request_id.map(str::to_owned),
+            locale: locale.map(str::to_owned),
         });
         let _ = events.send(VoiceCompanionEvent::Listening);
         drop(d);
@@ -684,7 +1913,12 @@ impl VoiceCompanionRuntime {
         generation:u64,
     ) -> Result<ReplyPlayback, &'static str> {
         let guard=driver.lock().await;
-        if playback.generation_id()!=generation {return Ok(ReplyPlayback::Interrupted);}
+        if playback.generation_id()!=generation {
+            // A stale turn must not advance the current turn's FSM, even when
+            // both happen to be in the same Speaking/Dispatching state.
+            drop(guard);
+            return Ok(ReplyPlayback::Interrupted);
+        }
         info!("voice_response_playback_started");
         let _=event_tx.send(VoiceCompanionEvent::ResponseReady {text:reply_text.to_owned()});
         drop(guard);
@@ -696,8 +1930,10 @@ impl VoiceCompanionRuntime {
             text: reply_text.to_string(),
         });
         let started = std::time::Instant::now();
+        let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
+        let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
         let result = playback
-            .speak_text_for_generation(tts.as_ref(), reply_text, "", generation, || {
+            .speak_text_for_generation(tts.as_ref(), reply_text, voice_name, generation, || {
                 Self::report_tts_source(event_tx, tts.as_ref());
                 let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
@@ -705,7 +1941,16 @@ impl VoiceCompanionRuntime {
             })
             .await;
         info!(elapsed_ms=started.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_playback_finished");
-        if playback.generation_id() != generation { return Ok(ReplyPlayback::Interrupted); }
+        if playback.generation_id() != generation {
+            let mut d = driver.lock().await;
+            if matches!(d.current_state(), AcousticState::SpeakingFast | AcousticState::SpeakingSummary | AcousticState::SpeakingControl) {
+                let _ = d.handle_event(AcousticEvent::PlaybackDone);
+                if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
+                    let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                }
+            }
+            return Ok(ReplyPlayback::Interrupted);
+        }
         Self::finish_response_playback(result,driver,playback,event_tx,generation).await?;
         Ok(ReplyPlayback::Played)
     }
@@ -856,6 +2101,9 @@ impl VoiceCompanionRuntime {
         task_client: &Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         generation: u64,
         pending_utterances: &Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
+        native_busy: &Arc<AtomicBool>,
+        native_job_epoch: &Arc<AtomicU64>,
+        _native_request_id: &str,
     ) {
         if playback.generation_id() != generation {
             return;
@@ -865,8 +2113,29 @@ impl VoiceCompanionRuntime {
         let mut task_context:Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>,String>=Ok(None);
         info!(session_id = ?scope.session_id, turn_id = ?scope.turn_id, samples = utterance_pcm.len(), sample_rate = 16000, "voice_asr_started");
         let text_opt = if let Some(stt) = transcriber {
-            stt.transcribe(AudioChannel::Mic, utterance_pcm.to_vec(), 16_000)
-                .await
+            #[cfg(feature = "native-fault-injection")]
+            let call_context = NativeCallContext {
+                request_id: _native_request_id.to_owned(),
+                worker_epoch: event_tx.worker_epoch(),
+                instance_id: scope.instance_id.clone(),
+            };
+            match Self::transcribe_with_lease(
+                stt.clone(),
+                utterance_pcm.to_vec(),
+                native_busy,
+                native_job_epoch,
+                std::time::Duration::from_secs(30),
+                #[cfg(feature = "native-fault-injection")]
+                Some(&call_context),
+            )
+            .await
+            {
+                Ok(text) => text,
+                Err(reason) => {
+                    warn!(reason, "voice_ordinary_asr_failed");
+                    None
+                }
+            }
         } else {
             None
         }
@@ -944,6 +2213,7 @@ impl VoiceCompanionRuntime {
                     scope.turn_id.as_deref().unwrap_or(""),
                     &clean_input,
                 );
+                req.locale = scope.locale.clone();
                 req.call_request_id = scope.call_request_id.clone();
 
                 let mut router_guard = AbortOnDrop(Some(tokio::spawn({
@@ -959,6 +2229,8 @@ impl VoiceCompanionRuntime {
                 let speak_replies = event_tx.feedback().speak_replies;
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
+                let is_en = scope.locale.as_deref().is_some_and(|l| l.starts_with("en"));
+                let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -978,7 +2250,7 @@ impl VoiceCompanionRuntime {
                         }
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
-                        playback.speak_sentence_stream(tts.as_ref(), speech_rx, expected_generation, cancel_rx, on_started).await
+                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, voice_name, on_started).await
                     })))
                 } else {
                     AbortOnDrop(None)
@@ -1247,6 +2519,10 @@ impl VoiceCompanionRuntime {
                 });
                 info!(intent = ?dec.intent_type, has_understanding = dec.understood_request.is_some(), "voice_intent_decided");
             }
+            if playback.generation_id()!=generation {
+                drop(d);
+                return;
+            }
             match dec.intent_type {
                 IntentType::Ignore => {
                     drop(d);
@@ -1295,17 +2571,32 @@ impl VoiceCompanionRuntime {
                         Ok(request) => task_client.as_ref().unwrap().control(request).await,
                         Err(code) => Err(code),
                     };
-                    if playback.generation_id()!=generation {return;}
+                    if playback.generation_id()!=generation {
+                        return;
+                    }
                     match result {
                         Ok(task) => {
-                            let text=match task.status {
-                                VoiceTaskStatus::Queued => "任务已排队，等待上一任务结束。".into(),
-                                VoiceTaskStatus::Delivering => "任务正在提交，尚未核实接单。".into(),
-                                VoiceTaskStatus::Unknown => "任务状态尚未核实，正在核对原回执。".into(),
-                                VoiceTaskStatus::Accepted => "任务已接受，正在等待执行结果。".into(),
-                                VoiceTaskStatus::Cancelling => "正在取消任务，等待执行侧确认。".into(),
-                                VoiceTaskStatus::Completed => format!("任务已完成。{}",task.result_text.as_deref().unwrap_or("请查看任务详情。").chars().take(220).collect::<String>()),
-                                VoiceTaskStatus::Failed => format!("任务已结束，执行结果未成功。{}",task.result_text.as_deref().unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()),
+                            let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
+                            let text = if is_en {
+                                match task.status {
+                                    VoiceTaskStatus::Queued => "The task is queued, waiting for previous task to finish.".into(),
+                                    VoiceTaskStatus::Delivering => "Submitting the task, receipt verification pending.".into(),
+                                    VoiceTaskStatus::Unknown => "Task status not verified yet, checking receipt.".into(),
+                                    VoiceTaskStatus::Accepted => "Task accepted, waiting for execution results.".into(),
+                                    VoiceTaskStatus::Cancelling => "Cancelling the task, awaiting execution confirmation.".into(),
+                                    VoiceTaskStatus::Completed => format!("Task completed. {}", task.result_text.as_deref().unwrap_or("Please check task details.").chars().take(220).collect::<String>()),
+                                    VoiceTaskStatus::Failed => format!("Task ended, execution was unsuccessful. {}", task.result_text.as_deref().unwrap_or("Please check task details for reasons.").chars().take(220).collect::<String>()),
+                                }
+                            } else {
+                                match task.status {
+                                    VoiceTaskStatus::Queued => "任务已排队，等待上一任务结束。".into(),
+                                    VoiceTaskStatus::Delivering => "任务正在提交，尚未核实接单。".into(),
+                                    VoiceTaskStatus::Unknown => "任务状态尚未核实，正在核对原回执。".into(),
+                                    VoiceTaskStatus::Accepted => "任务已接受，正在等待执行结果。".into(),
+                                    VoiceTaskStatus::Cancelling => "正在取消任务，等待执行侧确认。".into(),
+                                    VoiceTaskStatus::Completed => format!("任务已完成。{}",task.result_text.as_deref().unwrap_or("请查看任务详情。").chars().take(220).collect::<String>()),
+                                    VoiceTaskStatus::Failed => format!("任务已结束，执行结果未成功。{}",task.result_text.as_deref().unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()),
+                                }
                             };
                             let _ = Self::play_response(&text,driver,playback,event_tx,tts,generation).await;
                         },
@@ -1345,7 +2636,11 @@ impl VoiceCompanionRuntime {
                     let result = task_client.as_ref().unwrap().submit(VoiceTaskSubmitRequest {
                         instance_id:scope.instance_id,command:command.clone(),
                     }).await;
-                    if playback.generation_id() != generation { return; }
+                    if playback.generation_id() != generation {
+                        return;
+                    }
+                    let is_en = event_tx.snapshot().locale.as_deref().is_some_and(|l| l.starts_with("en"));
+                    let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
                     let code = match result {
                         Ok(delivery) if delivery.task.command_id != command.command_id
                             || delivery.task.session_id != command.session_id
@@ -1353,22 +2648,22 @@ impl VoiceCompanionRuntime {
                         Ok(delivery) if delivery.task.status == VoiceTaskStatus::Failed => Some(delivery.task.error_code.unwrap_or_else(||"task_failed".into())),
                         Ok(delivery) if delivery.freshly_accepted && delivery.task.status == VoiceTaskStatus::Accepted
                             && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
-                            let text = "任务已接单，正在执行。";
+                            let text = if is_en { "Task accepted, executing now." } else { "任务已接单，正在执行。" };
                             let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {text:text.into()});
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(),text,"", generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(),text,voice_name, generation, || {
                                     let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {text:text.into()});
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
                         }
                         Ok(delivery) if delivery.task.status == VoiceTaskStatus::Queued
                             && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
-                            let text = "当前有任务正在执行，新任务已排队。";
+                            let text = if is_en { "A task is currently running, the new task is queued." } else { "当前有任务正在执行，新任务已排队。" };
                             let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
                             let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing { text: text.into() });
                             if event_tx.feedback().speak_replies {
-                                playback.speak_text_for_generation(tts.as_ref(), text, "", generation, || {
+                                playback.speak_text_for_generation(tts.as_ref(), text, voice_name, generation, || {
                                     let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text: text.into() });
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
@@ -1384,7 +2679,9 @@ impl VoiceCompanionRuntime {
                         Ok(_) => None,
                         Err(code) => Some(code),
                     };
-                    if playback.generation_id() != generation {return;}
+                    if playback.generation_id() != generation {
+                        return;
+                    }
                     let mut driver_guard = driver.lock().await;
                     let _ = driver_guard.handle_event(AcousticEvent::TaskAccepted);
                     drop(driver_guard);
@@ -1446,6 +2743,49 @@ impl VoiceCompanionRuntime {
         }
     }
 
+    /// Feature-only ordinary caller entry for reverse acceptance. It uses the
+    /// real start_utterance/process_utterance/ASR path, not a diagnostic helper.
+    #[cfg(feature = "native-fault-injection")]
+    pub fn test_start_ordinary_utterance(&self, request_id: &str) -> bool {
+        let Some(stt) = self.transcriber.clone() else {
+            return false;
+        };
+        Self::start_utterance(
+            vec![0.1f32; 16_000],
+            self.driver.clone(),
+            self.router.clone(),
+            Some(stt),
+            self.playback.clone(),
+            self.event_tx.clone(),
+            self.tts.clone(),
+            self.task_client.clone(),
+            &self.active_turn,
+            self.input_generation.clone(),
+            self.playback.generation_id(),
+            self.pending_utterances.clone(),
+            self.event_tx.snapshot().session_id.clone(),
+            self.engine_check_native_busy.clone(),
+            self.native_job_epoch.clone(),
+            Some(request_id.to_owned()),
+        );
+        true
+    }
+
+    #[cfg(feature = "native-fault-injection")]
+    pub fn test_abort_ordinary_turn(&self) -> bool {
+        let turn = self
+            .active_turn
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(turn) = turn {
+            turn.abort();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Keeps capture consuming frames while a turn awaits the model or speaker.
     fn start_utterance(
         pcm: Vec<f32>,
@@ -1461,6 +2801,9 @@ impl VoiceCompanionRuntime {
         generation: u64,
         pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
         session_id: Option<String>,
+        native_busy: Arc<AtomicBool>,
+        native_job_epoch: Arc<AtomicU64>,
+        native_request_id: Option<String>,
     ) {
         let mut active = active_turn.lock().unwrap_or_else(|e| e.into_inner());
         if playback.generation_id() != generation {
@@ -1485,6 +2828,9 @@ impl VoiceCompanionRuntime {
                 &task_client,
                 generation,
                 &pending_clone,
+                &native_busy,
+                &native_job_epoch,
+                native_request_id.as_deref().unwrap_or("ordinary-turn"),
             ))
             .catch_unwind()
             .await;
@@ -1549,6 +2895,9 @@ impl VoiceCompanionRuntime {
                                 next_gen,
                                 pending_clone.clone(),
                                 next_item.session_id,
+                                native_busy.clone(),
+                                native_job_epoch.clone(),
+                                None,
                             );
                         } else {
                             while let Some(_) = pending.pop_front() {
@@ -1574,6 +2923,18 @@ impl VoiceCompanionRuntime {
         let pending_confirmation=self.pending_confirmation.clone();
         let mut transcriber = self.transcriber.clone();
         let acoustic_ready = self.acoustic_ready.clone();
+        let self_check_active = self.self_check_active.clone();
+        let engine_check_active = self.engine_check_active.clone();
+        let native_busy = self.engine_check_native_busy.clone();
+        let native_job_epoch = self.native_job_epoch.clone();
+        let mut engine_check_rx = self
+            .engine_check_rx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let worker_epoch = self.worker_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        self.event_tx.set_worker_epoch(worker_epoch);
+        let wake_admission_until_ms = self.wake_admission_until_ms.clone();
         let capture_available = self.capture_available();
         let replay = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -1608,6 +2969,10 @@ impl VoiceCompanionRuntime {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
+            #[cfg(feature = "native-fault-injection")]
+            if std::env::var("NOMIFUN_VOICE_FAULT_BLOCK_ASR").ok().as_deref() == Some("1") {
+                transcriber = Some(Arc::new(FaultBlockingStt));
+            }
             let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                 model_dir: Some(models.models_dir().to_path_buf()),
                 ..Default::default()
@@ -1637,8 +3002,7 @@ impl VoiceCompanionRuntime {
                     });
                     return;
                 }
-            };
-            info!(silence_ms = 800, "voice_vad_loaded");
+            };            info!(silence_ms = 800, "voice_vad_loaded");
             let mut utterance_pcm = Vec::<f32>::new();
             let mut speech_started = false;
             let mut listen_start: Option<std::time::Instant> = None;
@@ -1659,6 +3023,81 @@ impl VoiceCompanionRuntime {
             let mut reminded_session: Option<String> = None;
 
             loop {
+                if let Some(receiver) = engine_check_rx.as_mut() {
+                    while let Ok(command) = receiver.try_recv() {
+                        let WorkerEngineCheck {
+                            request_id,
+                            deadline,
+                            cancel,
+                            cancel_notify,
+                            native_busy,
+                            native_job_epoch,
+                            fixtures,
+                            reply,
+                        } = command;
+                        #[cfg(feature = "native-fault-injection")]
+                        if std::env::var("NOMIFUN_VOICE_FAULT_BLOCK_ASR").ok().as_deref() == Some("1") {
+                            bind_fault_boundary(&request_id, worker_epoch, &event_tx.snapshot().instance_id);
+                        }
+                        let load_result = if transcriber.is_none() {
+                            Self::load_worker_asr(
+                                &mut transcriber,
+                                &models,
+                                cancel.as_ref(),
+                                cancel_notify.as_ref(),
+                                &native_busy,
+                                &native_job_epoch,
+                                deadline,
+                            )
+                            .await
+                        } else {
+                            Ok(())
+                        };
+                        tracing::info!(
+                            request_id = %request_id,
+                            worker_epoch = worker_epoch,
+                            "voice_engine_check_started"
+                        );
+                        let result = match load_result {
+                            Ok(()) => Self::worker_engine_check(
+                                &mut kws,
+                                vad.as_mut(),
+                                &transcriber,
+                                &fixtures,
+                                cancel.as_ref(),
+                                cancel_notify.as_ref(),
+                                &native_busy,
+                                &native_job_epoch,
+                                deadline,
+                            )
+                            .await,
+                            Err(reason) => Err(reason),
+                        };
+                        kws.reset();
+                        vad.reset();
+                        utterance_pcm.clear();
+                        speech_started = false;
+                        listen_start = None;
+                        pending_utterances
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .clear();
+                        while let CaptureReadResult::Chunk(_) = {
+                            let mut cap = capture.lock().await;
+                            cap.try_next_chunk()
+                        } {}
+                        let _ = reply.send(result);
+                        continue;
+                    }
+                }
+                if engine_check_active.load(Ordering::Acquire) {
+                    let _ = {
+                        let mut cap = capture.lock().await;
+                        cap.try_next_chunk()
+                    };
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    continue;
+                }
                 let session = event_tx.snapshot().session_id;
                 if session != observed_session {
                     observed_session = session.clone();
@@ -1672,7 +3111,6 @@ impl VoiceCompanionRuntime {
                     kws.reset();
                 }
                 if !replay
-                    && capture_available
                     && last_model_check
                         .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(1))
                 {
@@ -1997,9 +3435,23 @@ impl VoiceCompanionRuntime {
                             } else if !utterance_pcm.is_empty() {
                                 if utterance_pcm.len() >= 4_000 {
                                     let snippet = std::mem::take(&mut utterance_pcm);
+                                    #[cfg(feature = "native-fault-injection")]
+                                    let cascade_context = NativeCallContext {
+                                        request_id: "standby-cascade".into(),
+                                        worker_epoch: event_tx.worker_epoch(),
+                                        instance_id: event_tx.snapshot().instance_id,
+                                    };
                                     if let Some(stt) = &transcriber
-                                        && let Some(text) =
-                                            stt.transcribe(AudioChannel::Mic, snippet, 16_000).await
+                                        && let Ok(Some(text)) = Self::transcribe_with_lease(
+                                            stt.clone(),
+                                            snippet,
+                                            &native_busy,
+                                            &native_job_epoch,
+                                            std::time::Duration::from_secs(30),
+                                            #[cfg(feature = "native-fault-injection")]
+                                            Some(&cascade_context),
+                                        )
+                                        .await
                                     {
                                         if nomifun_audio::is_wake_phrase_match(&text) {
                                             info!("Cascade wake hit accepted via SenseVoice");
@@ -2021,8 +3473,14 @@ impl VoiceCompanionRuntime {
                             } else if !acoustic_ready.load(Ordering::Acquire) {
                                 warn!("Wake received but voice models are not yet installed");
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
+                            } else if self_check_active.load(Ordering::Acquire)
+                                || engine_check_active.load(Ordering::Acquire)
+                            {
+                                info!("Wake ignored while an explicit self-check owns the runtime");
+                            } else if !admission_valid_for(&wake_admission_until_ms) {
+                                info!("Wake hit ignored because host readiness admission is absent or expired");
                             } else {
-                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None)
+                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref())
                                     .await
                                     .is_ok()
                                 {
@@ -2053,9 +3511,28 @@ impl VoiceCompanionRuntime {
                         if speech_started && !active {
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms)))};
                             if let Some((response,generation,deadline_ms))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_epoch=native_job_epoch.clone();
                                 let turn=tokio::spawn(async move {
-                                    let text=match stt {Some(stt)=>stt.transcribe(AudioChannel::Mic,pcm,16000).await,None=>None};
+                                    let text=match stt {
+                                        Some(stt)=>{
+                                            #[cfg(feature = "native-fault-injection")]
+                                            let confirmation_context = NativeCallContext {
+                                                request_id: "confirmation".into(),
+                                                worker_epoch: events.worker_epoch(),
+                                                instance_id: events.snapshot().instance_id,
+                                            };
+                                            Self::transcribe_with_lease(
+                                                stt,
+                                                pcm,
+                                                &lease_busy,
+                                                &lease_epoch,
+                                                std::time::Duration::from_secs(30),
+                                                #[cfg(feature = "native-fault-injection")]
+                                                Some(&confirmation_context),
+                                            ).await.unwrap_or(None)
+                                        },
+                                        None=>None,
+                                    };
                                     let guard=states.lock().await;
                                     if output.generation_id()==generation && chrono::Utc::now().timestamp_millis()<deadline_ms && guard.current_state()==AcousticState::ListeningConfirm {
                                         if let Some(text)=&text {let _=events.send(VoiceCompanionEvent::ConfirmationHeard {text:text.clone()});}
@@ -2123,6 +3600,9 @@ impl VoiceCompanionRuntime {
                                     generation,
                                     pending_utterances.clone(),
                                     session.clone(),
+                                    native_busy.clone(),
+                                    native_job_epoch.clone(),
+                                    None,
                                 );
                                 utterance_pcm.clear();
                                 kws.reset();
@@ -2192,6 +3672,9 @@ impl VoiceCompanionRuntime {
                                     generation,
                                     pending_utterances.clone(),
                                     session.clone(),
+                                    native_busy.clone(),
+                                    native_job_epoch.clone(),
+                                    None,
                                 );
                                 utterance_pcm.clear();
                                 kws.reset();
@@ -2323,6 +3806,123 @@ mod tests {
     use nomifun_voice_terminal::contract::AcousticState;
     use tempfile::tempdir;
 
+    #[test]
+    fn startup_guard_fails_closed_before_any_device_assembly() {
+        use std::ffi::OsStr;
+        let absent = parse_startup_markers(None, None, None);
+        assert_eq!(startup_mode(false, absent), Ok(StartupMode::Default));
+        for value in ["", "0", "false", "unknown"] {
+            let marker = parse_startup_markers(Some(OsStr::new(value)), None, None);
+            assert!(marker.headless_present && !marker.headless_valid);
+            assert!(startup_mode(false, marker).is_err(), "default must reject {value:?}");
+            assert!(startup_mode(true, marker).is_err(), "feature must require headless=1");
+            let block = parse_startup_markers(None, Some(OsStr::new(value)), None);
+            assert!(startup_mode(false, block).is_err(), "default must reject block marker {value:?}");
+            let exit_code = parse_startup_markers(None, None, Some(OsStr::new(value)));
+            assert!(startup_mode(false, exit_code).is_err(), "default must reject exit marker {value:?}");
+        }
+        let valid = parse_startup_markers(
+            Some(OsStr::new("1")),
+            Some(OsStr::new("1")),
+            Some(OsStr::new("1")),
+        );
+        assert_eq!(startup_mode(true, valid), Ok(StartupMode::HeadlessTest));
+        assert!(startup_mode(false, valid).is_err());
+        let feature_no_marker = parse_startup_markers(None, None, None);
+        assert!(startup_mode(true, feature_no_marker).is_err());
+        let combined = parse_startup_markers(None, Some(OsStr::new("1")), Some(OsStr::new("1")));
+        assert!(startup_mode(false, combined).is_err());
+    }
+
+    #[test]
+    fn sequential_reservation_retires_old_generation_before_new_owner_can_claim() {
+        for _ in 0..100_000 {
+            let busy = Arc::new(AtomicBool::new(false));
+            let epoch = Arc::new(AtomicU64::new(0));
+            assert!(busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok());
+            let a_job = epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            let a = NativeBusyGuard::attach(busy.clone(), epoch.clone(), a_job);
+            assert!(busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err(), "B must not acquire A's lease");
+            drop(a);
+            assert!(busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok());
+            let b_job = epoch.fetch_add(1, Ordering::AcqRel) + 1;
+            assert_eq!(epoch.load(Ordering::Acquire), b_job, "old drop must not retire B generation");
+            let b = NativeBusyGuard::attach(busy.clone(), epoch.clone(), b_job);
+            assert_eq!(epoch.load(Ordering::Acquire), b_job);
+            drop(b);
+        }
+    }
+
+    #[cfg(feature = "native-fault-injection")]
+    #[test]
+    fn concurrent_completion_never_clears_new_owner_observation() {
+        use std::sync::Barrier;
+        const ITERATIONS: usize = 100_000;
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let start = Arc::new(Barrier::new(2));
+        let done = Arc::new(Barrier::new(2));
+        std::thread::scope(|scope| {
+            let a_busy = busy.clone();
+            let a_epoch = epoch.clone();
+            let a_start = start.clone();
+            let a_done = done.clone();
+            let a = scope.spawn(move || {
+                for _ in 0..ITERATIONS {
+                    let job = a_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                    let owner = NativeBusyGuard::attach(a_busy.clone(), a_epoch.clone(), job);
+                    a_start.wait();
+                    drop(owner);
+                    a_done.wait();
+                }
+            });
+            let b_busy = busy.clone();
+            let b_epoch = epoch.clone();
+            let b_start = start.clone();
+            let b_done = done.clone();
+            let b = scope.spawn(move || {
+                for _ in 0..ITERATIONS {
+                    b_start.wait();
+                    while b_busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                        std::hint::spin_loop();
+                    }
+                    let job = b_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                    let owner = NativeBusyGuard::attach(b_busy.clone(), b_epoch.clone(), job);
+                    assert_eq!(FAULT_NATIVE_BUSY.load(Ordering::Acquire), true, "old owner cleared B observation");
+                    assert_eq!(FAULT_CURRENT_EPOCH.load(Ordering::Acquire), job);
+                    drop(owner);
+                    b_done.wait();
+                }
+            });
+            a.join().unwrap();
+            b.join().unwrap();
+        });
+    }
+
+    #[cfg(feature = "native-fault-injection")]
+    #[test]
+    fn fault_observation_tracks_current_lease_not_stale_history() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        bind_fault_boundary("lease-a", 1, "instance-a");
+        let first = NativeBusyGuard::new(busy.clone(), epoch.clone());
+        record_fault_job_entry(1, None);
+        let active = fault_job_observation();
+        assert_eq!(active["native_busy"], serde_json::json!(true));
+        assert_eq!(active["job"]["request_id"], serde_json::json!("lease-a"));
+        assert_eq!(active["job"]["still_blocking"], serde_json::json!(true));
+        drop(first);
+        let completed = fault_job_observation();
+        assert_eq!(completed["native_busy"], serde_json::json!(false));
+        assert_eq!(completed["job"]["still_blocking"], serde_json::json!(false), "completed history must not remain active");
+        let second = NativeBusyGuard::new(busy.clone(), epoch.clone());
+        let stale_a_new_b = fault_job_observation();
+        assert_eq!(stale_a_new_b["native_busy"], serde_json::json!(true));
+        assert_eq!(stale_a_new_b["job"]["request_id"], serde_json::json!("lease-a"));
+        assert_eq!(stale_a_new_b["job"]["still_blocking"], serde_json::json!(false), "A history must not claim B ownership");
+        drop(second);
+    }
+
     #[tokio::test]
     async fn test_voice_runtime_assembly() {
         let dir = tempdir().unwrap();
@@ -2362,6 +3962,89 @@ mod tests {
         handle.abort();
     }
 
+    struct FailingStt;
+    #[async_trait::async_trait]
+    impl SttCallback for FailingStt {
+        async fn transcribe(
+            &self,
+            _channel: AudioChannel,
+            _pcm: Vec<f32>,
+            _sample_rate: u32,
+        ) -> Option<String> {
+            None
+        }
+    }
+
+    fn fixture_pcm(name: &str) -> Vec<f32> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/architecture/voice-agent/execution/audio-fixtures").join(name);
+        let bytes = std::fs::read(path).unwrap();
+        let (pcm, rate) = nomifun_audio::parse_audio_frame_to_pcm(&bytes);
+        assert_eq!(rate, 16_000, "fixture must be 16 kHz");
+        pcm
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the real D:/tmp/flowy-dev/models suite and repository audio fixtures"]
+    async fn actual_worker_engine_failure_is_not_masked_by_a_fresh_reload() {
+        let models_dir = std::path::PathBuf::from("D:/tmp/flowy-dev/models");
+        assert!(models_dir.join("asr/model.int8.onnx").is_file());
+        assert!(models_dir.join("kws/encoder.int8.onnx").is_file());
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(&models_dir)),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(FailingStt),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = Arc::new(runtime);
+        let worker = runtime.start_worker();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(runtime.worker_epoch.load(Ordering::Acquire) > 0);
+
+        let fixtures = SelfCheckAudio {
+            wake: fixture_pcm("wake-jenny-16k.wav"),
+            command: fixture_pcm("command-16k.wav"),
+            non_wake: fixture_pcm("non-wake-16k.wav"),
+            source: "test_fixture".into(),
+            online: false,
+            generated_at_ms: None,
+        };
+        let (reply_tx, reply_rx) = oneshot::channel();
+        runtime
+            .engine_check_tx
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .unwrap()
+            .send(WorkerEngineCheck {
+                request_id: "actual-worker-failure".into(),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(20),
+                cancel: Arc::new(AtomicBool::new(false)),
+                cancel_notify: Arc::new(Notify::new()),
+                native_busy: Arc::new(AtomicBool::new(false)),
+                native_job_epoch: Arc::new(AtomicU64::new(0)),
+                fixtures,
+                reply: reply_tx,
+            })
+            .await
+            .unwrap();
+        let result = reply_rx.await.unwrap().expect("worker ran the check");
+        assert!(result.kws_ok, "the actual worker KWS must be exercised");
+        assert!(result.vad_ok, "the actual worker VAD must be exercised");
+        assert!(!result.asr_ok, "the failing actual worker transcriber must not be replaced");
+        let reload = tokio::task::spawn_blocking(move || {
+            nomifun_audio::stt::try_load_sherpa(Some(&models_dir))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(reload.is_some(), "a transient reload would have succeeded");
+        worker.abort();
+        let _ = worker.await;
+        producer.close();
+    }
+
     #[tokio::test]
     async fn voice_worker_waits_for_verified_assets_before_native_initialization() {
         let dir = tempdir().unwrap();
@@ -2396,6 +4079,505 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum InvalidSpeech {
+        Silent,
+        NonFinite,
+        TooShort,
+        Empty,
+    }
+
+    struct InvalidSpeechProvider(InvalidSpeech);
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for InvalidSpeechProvider {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let pcm = match self.0 {
+                InvalidSpeech::Silent => vec![0.0; 2400],
+                InvalidSpeech::NonFinite => vec![f32::NAN; 2400],
+                InvalidSpeech::TooShort => vec![0.05; 100],
+                InvalidSpeech::Empty => Vec::new(),
+            };
+            tx.try_send(nomifun_audio::pcm_to_wav(&pcm, 24000)).unwrap();
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_engine_check_cancel_and_deadline_fail_before_inference() {
+        let root = tempdir().unwrap();
+        let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+            model_dir: Some(root.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+        let mut vad = EnergyVad::new(VadConfig::default());
+        let fixtures = SelfCheckAudio {
+            wake: vec![0.1; 3_200],
+            command: vec![0.1; 3_200],
+            non_wake: vec![0.1; 3_200],
+            source: "test".into(),
+            online: false,
+            generated_at_ms: None,
+        };
+        let cancelled = AtomicBool::new(true);
+        let notify = Notify::new();
+        let busy = Arc::new(AtomicBool::new(false));
+        let job_epoch = Arc::new(AtomicU64::new(0));
+        let result = VoiceCompanionRuntime::worker_engine_check(
+            &mut kws,
+            &mut vad,
+            &None,
+            &fixtures,
+            &cancelled,
+            &notify,
+            &busy,
+            &job_epoch,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "engine_check_cancelled");
+        let result = VoiceCompanionRuntime::worker_engine_check(
+            &mut kws,
+            &mut vad,
+            &None,
+            &fixtures,
+            &AtomicBool::new(false),
+            &notify,
+            &busy,
+            &job_epoch,
+            std::time::Instant::now() - std::time::Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "engine_check_cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancel_engine_check_only_matches_the_request_id() {
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        *runtime.engine_check_control.lock().unwrap() = Some(EngineCheckControl {
+            id: "current".into(),
+            epoch: 1,
+            cancel: cancel.clone(),
+            cancel_notify: Arc::new(Notify::new()),
+        });
+        assert!(!runtime.cancel_engine_check("other").await);
+        assert!(!cancel.load(Ordering::Acquire));
+        assert!(runtime.cancel_engine_check("current").await);
+        assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn wake_and_call_admission_are_separate_scopes() {
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        runtime.set_admission("wake", true, nomifun_common::now_ms() + 60_000);
+        runtime.set_admission("call", false, 0);
+        assert!(runtime.admission_valid("wake"));
+        assert!(!runtime.admission_valid("call"));
+        runtime.set_admission("wake", false, 0);
+        runtime.set_admission("call", true, nomifun_common::now_ms() + 60_000);
+        assert!(!runtime.admission_valid("wake"));
+        assert!(runtime.admission_valid("call"));
+    }
+    #[test]
+    fn host_pushed_wake_admission_expires_without_background_checks() {
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        assert!(runtime.admission_valid("wake"), "test replay starts explicitly admitted");
+        runtime.set_wake_admission(false, 0);
+        assert!(!runtime.admission_valid("wake"));
+        runtime.set_wake_admission(true, nomifun_common::now_ms() + 60_000);
+        assert!(runtime.admission_valid("wake"));
+        runtime.set_wake_admission(true, nomifun_common::now_ms() - 1);
+        assert!(!runtime.admission_valid("wake"), "an expired push must deny wake");
+    }
+    struct GatedStt {
+        blocking: Arc<AtomicBool>,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl SttCallback for GatedStt {
+        async fn transcribe(
+            &self,
+            _channel: AudioChannel,
+            _pcm: Vec<f32>,
+            _sample_rate: u32,
+        ) -> Option<String> {
+            self.entered.notify_one();
+            if self.blocking.load(Ordering::Acquire) {
+                self.release.notified().await;
+            }
+            Some("今天天气 hello friend".into())
+        }
+    }
+
+    fn engine_command(
+        request_id: &str,
+        deadline: std::time::Instant,
+        cancel: Arc<AtomicBool>,
+        native_busy: Arc<AtomicBool>,
+    ) -> (WorkerEngineCheck, oneshot::Receiver<Result<WorkerEngineCheckResult, String>>) {
+        let (reply, rx) = oneshot::channel();
+        (
+            WorkerEngineCheck {
+                request_id: request_id.into(),
+                deadline,
+                cancel,
+                cancel_notify: Arc::new(Notify::new()),
+                native_busy,
+                native_job_epoch: Arc::new(AtomicU64::new(0)),
+                fixtures: SelfCheckAudio {
+                    wake: vec![0.1; 3_200],
+                    command: vec![0.1; 3_200],
+                    non_wake: vec![0.1; 3_200],
+                    source: "test".into(),
+                    online: false,
+                    generated_at_ms: None,
+                },
+                reply,
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_second_request_is_rejected_while_native_work_is_still_owned() {
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        runtime.engine_check_native_busy.store(true, Ordering::Release);
+        let response = runtime.self_check_engines().await;
+        assert_eq!(response.reason.as_deref(), Some("engine_check_native_busy"));
+        assert!(!response.kws_ok && !response.vad_ok && !response.asr_ok);
+        assert!(!runtime.engine_check_active.load(Ordering::Acquire));
+        runtime.engine_check_native_busy.store(false, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_worker_asr_returns_bounded_and_keeps_native_busy_until_release() {
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let blocking = Arc::new(AtomicBool::new(true));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let stt = GatedStt {
+            blocking: blocking.clone(),
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(stt),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = Arc::new(runtime);
+        let worker = runtime.start_worker();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let busy = runtime.engine_check_native_busy.clone();
+        let (command, reply) = engine_command(
+            "cancel-during-asr",
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            cancel.clone(),
+            busy.clone(),
+        );
+        let notify = command.cancel_notify.clone();
+        runtime
+            .engine_check_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(command)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .expect("worker ASR started");
+        cancel.store(true, Ordering::Release);
+        notify.notify_waiters();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), reply)
+            .await
+            .expect("cancel must return promptly")
+            .unwrap();
+        assert_eq!(result.unwrap_err(), "engine_check_cancelled");
+        assert!(busy.load(Ordering::Acquire), "native decode must still be owned");
+        blocking.store(false, Ordering::Release);
+        release.notify_waiters();
+        for _ in 0..50 {
+            if !busy.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!busy.load(Ordering::Acquire), "native ownership must clear only on completion");
+
+        let (command, reply) = engine_command(
+            "recovered",
+            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            Arc::new(AtomicBool::new(false)),
+            busy.clone(),
+        );
+        runtime
+            .engine_check_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(command)
+            .await
+            .unwrap();
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(2), reply)
+            .await
+            .expect("next check must recover")
+            .unwrap()
+            .expect("next check must run");
+        assert!(recovered.asr_ok);
+        worker.abort();
+        let _ = worker.await;
+        producer.close();
+    }
+
+    #[tokio::test]
+    async fn timeout_during_worker_asr_does_not_grant_and_keeps_ownership() {
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let blocking = Arc::new(AtomicBool::new(true));
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(GatedStt {
+                blocking: blocking.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = Arc::new(runtime);
+        let worker = runtime.start_worker();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let busy = runtime.engine_check_native_busy.clone();
+        let (command, reply) = engine_command(
+            "timeout-during-asr",
+            std::time::Instant::now() + std::time::Duration::from_millis(750),
+            Arc::new(AtomicBool::new(false)),
+            busy.clone(),
+        );
+        runtime
+            .engine_check_tx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .send(command)
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .expect("worker ASR started");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), reply)
+            .await
+            .expect("deadline must return promptly")
+            .unwrap();
+        assert_eq!(result.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        blocking.store(false, Ordering::Release);
+        release.notify_waiters();
+        for _ in 0..50 {
+            if !busy.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!busy.load(Ordering::Acquire));
+        worker.abort();
+        let _ = worker.await;
+        producer.close();
+    }
+
+    #[tokio::test]
+    async fn tts_self_check_is_excluded_by_an_engine_check() {
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        runtime.engine_check_active.store(true, Ordering::Release);
+        assert_eq!(
+            runtime.self_check_tts().await.unwrap_err(),
+            "engine_check_in_progress"
+        );
+        runtime.engine_check_active.store(false, Ordering::Release);
+    }
+
+    #[tokio::test]
+    async fn wake_is_rejected_while_a_fixed_self_check_owns_the_runtime() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(std::sync::atomic::AtomicUsize::new(0)))),
+        );
+        runtime.self_check_active.store(true, Ordering::Release);
+        let result = runtime.handle_wake_request("Hey Flowy", None).await;
+        assert!(matches!(result, Err(VoiceWakeError::Busy)));
+        runtime.self_check_active.store(false, Ordering::Release);
+    }
+
+    struct SlowSpeech;
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for SlowSpeech {
+        async fn synthesize_stream(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.try_send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).unwrap();
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn daemon_cancel_stops_the_matching_self_check() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        let root = tempdir().unwrap();
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(SlowSpeech),
+        ));
+        let check = runtime.clone();
+        let task = tokio::spawn(async move { check.self_check_tts_with_id("check-cancel").await });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(runtime.cancel_self_check("check-cancel").await);
+        let result = task.await.unwrap();
+        assert!(matches!(result, Err(reason) if reason == "self_check_cancelled"));
+        assert!(!runtime.self_check_active.load(Ordering::Acquire));
+    }
+    #[tokio::test]
+    async fn tts_self_check_rejects_silent_nonfinite_short_and_empty_audio() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+
+        for case in [
+            InvalidSpeech::Silent,
+            InvalidSpeech::NonFinite,
+            InvalidSpeech::TooShort,
+            InvalidSpeech::Empty,
+        ] {
+            let root = tempdir().unwrap();
+            let models = Arc::new(ModelManager::new(root.path()));
+            let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+            let (runtime, _) = VoiceCompanionRuntime::from_capture(
+                models,
+                Arc::new(OobeManager::new_bypassed()),
+                Arc::new(Mutex::new(capture)),
+                Arc::new(nomifun_audio::stt::NullSttCallback),
+                Arc::new(QwenVoiceRouter::new()),
+            );
+            let runtime = runtime.with_test_playback(
+                Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+                Arc::new(InvalidSpeechProvider(case)),
+            );
+            let result = runtime.self_check_tts().await.unwrap();
+            assert!(!result.ok, "invalid audio must fail the check");
+            assert!(!result.playback_ok, "invalid audio must never be played");
+            assert!(result.languages.iter().all(|language| !language.ok));
+        }
+    }
+    #[tokio::test]
+    async fn tts_self_check_reports_bilingual_decode_and_sink_consumption() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let runtime = runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(calls.clone())),
+        );
+
+        let result = runtime.self_check_tts().await.unwrap();
+        assert!(result.ok, "both fixed languages must decode");
+        assert!(result.playback_ok, "the fixed sample must reach the sink");
+        assert_eq!(result.languages.len(), 2);
+        assert!(result.languages.iter().all(|language| language.ok));
+        assert!(result.languages.iter().all(|language| language.samples > 0));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
     #[tokio::test]
     async fn test_progress_must_not_block_final_result_of_same_task() {
         use nomifun_api_types::voice::{VoiceTaskResultAnnouncement, VoiceSessionControlRequest, VoiceSessionPhase};
@@ -2740,5 +4922,65 @@ mod tests {
         }
         assert!(saw_error_event, "error event must be emitted on TTS synthesis failure");
         assert!(saw_error_cue, "hardcoded local error cue must play on TTS failure");
+    }
+
+    #[tokio::test]
+    async fn reproduction_task_cancellation_and_interrupt_closure() {
+        use nomifun_voice_terminal::playback::TestAudioSink;
+        let root = tempdir().unwrap();
+        let models = Arc::new(ModelManager::new(root.path()));
+        let (capture, _) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            models,
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::NullSttCallback),
+            Arc::new(QwenVoiceRouter::new()),
+        );
+        let playback = Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new())));
+        let runtime = Arc::new(runtime.with_test_playback(playback.clone(), Arc::new(FailingTts)));
+
+        // Setup a simulated task dispatching state
+        {
+            let mut d = runtime.driver.lock().await;
+            let _ = d.handle_event(AcousticEvent::WakeHit);
+            let _ = d.handle_event(AcousticEvent::SpeechEnd);
+            let _ = d.handle_event(AcousticEvent::IntentAgentTask);
+            assert_eq!(d.current_state(), AcousticState::DispatchingTask);
+        }
+
+        // Simulate interruption/generation bump while in DispatchingTask
+        playback.interrupt().await.unwrap();
+
+        // Check update_task_status_versioned cleans up DispatchingTask
+        runtime.update_task_status_versioned(
+            Some(nomifun_api_types::voice::VoiceTaskSnapshot {
+                command_id: "cmd-test".into(),
+                session_id: "s-1".into(),
+                acoustic_turn_id: "t-1".into(),
+                status: nomifun_api_types::voice::VoiceTaskStatus::Failed,
+                error_code: Some("cancelled".into()),
+                conversation_id: None,
+                message_id: None,
+                result_text: None,
+                runtime_turn_id: None,
+                result_ok: None,
+            }),
+            None,
+            Some(1),
+        );
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let state = runtime.driver.lock().await.current_state();
+        assert_ne!(
+            state,
+            AcousticState::DispatchingTask,
+            "driver must not be trapped in DispatchingTask when task is interrupted or cancelled"
+        );
+        assert!(
+            matches!(state, AcousticState::Listening | AcousticState::Idle),
+            "driver must recover to Listening or Idle so future voice turns can proceed"
+        );
     }
 }
