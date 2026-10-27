@@ -1,12 +1,11 @@
 import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import { defaultSkillHubMarketSource, useSkillHubMarket } from '@/renderer/pages/settings/skill/useSkillHubMarket';
 import { openExternalUrl } from '@/renderer/utils/platform';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Button } from '@arco-design/web-react';
-import { LinkOne, Refresh } from '@icon-park/react';
+import { LinkOne } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
@@ -40,8 +39,6 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
   searchQuery: searchQueryProp,
 }) => {
   const { t, i18n } = useTranslation();
-  const layout = useLayoutContext();
-  const isMobile = layout?.isMobile ?? false;
   const locale = i18n.language || 'zh-CN';
   const isChinese = locale.toLowerCase().startsWith('zh');
   const defaultSource = defaultSkillHubMarketSource(locale);
@@ -65,7 +62,7 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
     : market.source === 'skillhub'
       ? 'SkillHub'
       : t('settings.skillsMarket.allSources', { defaultValue: '全部来源' });
-  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const { beginInstallation, markInstalled, clearInstallationStatus } = market;
 
   useEffect(() => {
@@ -203,32 +200,6 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
   return (
     <div className='w-full pb-16px' data-market-status={`${market.dataStatus}:${market.installationStatus}`}>
       {messageContext}
-      <div className='mb-16px flex flex-col gap-12px pt-4px'>
-        <div className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
-          <div className='min-w-0'>
-            <h2 className='m-0 text-18px font-semibold text-t-primary'>
-              {t('settings.skillsMarket.title', { defaultValue: '技能市场' })}
-            </h2>
-            <p className='m-0 mt-4px max-w-[720px] text-13px leading-20px text-t-tertiary'>
-              {t('settings.skillsMarket.description', {
-                defaultValue: '仅展示 SkillHub 技能，可按分类、API Key 条件、热度和更新时间筛选。',
-              })}
-            </p>
-          </div>
-          <div className='flex shrink-0 items-center gap-8px'>
-            <Button
-              type='text'
-              size='small'
-              data-testid='btn-sync-skill-market'
-              className='flex !h-34px !w-34px items-center justify-center !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-              icon={<Refresh size={16} fill='currentColor' className={market.loading ? 'animate-spin' : ''} />}
-              onClick={() => void market.refresh()}
-              title={t('common.refresh', { defaultValue: '刷新' })}
-            />
-          </div>
-        </div>
-      </div>
-
       <SkillHubMarketToolbar
         source={market.source}
         onSourceChange={market.setSource}
@@ -241,6 +212,9 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
         onSortChange={market.setSortBy}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        resultCount={market.total}
+        refreshing={market.loading}
+        onRefresh={() => void market.refresh()}
         categoriesLoading={market.categoriesLoading}
         categoriesError={Boolean(market.categoriesError)}
         onRetryCategories={() => void market.retryCategories()}
@@ -264,7 +238,7 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
 
       {viewModels.length > 0 ? (
         viewMode === 'list' ? (
-          <div className='min-w-0' data-testid='skillhub-market-list'>
+          <div className='flex min-w-0 flex-col gap-8px' data-testid='skillhub-market-list'>
             {viewModels.map((item) => (
               <SkillMarketListRow
                 key={item.id}
@@ -319,7 +293,9 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
           ))}
         </div>
       ) : (
-        <div className='py-40px text-center text-t-secondary'>{emptyText}</div>
+        <div className='flex min-h-280px flex-col items-center justify-center rounded-16px border border-dashed border-arco-2 px-24px py-40px text-center'>
+          <p className='m-0 max-w-420px text-14px leading-22px text-t-secondary'>{emptyText}</p>
+        </div>
       )}
 
       {market.hasMore && (

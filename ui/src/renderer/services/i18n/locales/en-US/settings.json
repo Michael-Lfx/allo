@@ -96,8 +96,8 @@
     "marketTab": "Skill Market"
   },
   "skillsMarket": {
-    "title": "Skill Market",
-    "description": "Skills from the SkillHub market. Filter by content source, category, API key requirement, popularity, or update time.",
+    "title": "Skills",
+    "description": "Pick a skill for the job. After you install it, chats and presets can use it directly.",
     "syncSuccess": "Skill Market updated",
     "syncKeptCache": "No new ranking data was fetched. Kept the cached list.",
     "syncEmpty": "No ranking data was found.",

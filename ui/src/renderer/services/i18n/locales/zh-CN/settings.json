@@ -96,8 +96,8 @@
     "marketTab": "技能市场"
   },
   "skillsMarket": {
-    "title": "技能市场",
-    "description": "SkillHub 市场内的技能，可按内容来源、分类、API Key 条件、热度和更新时间筛选。",
+    "title": "技能",
+    "description": "按场景挑选可安装的技能，装好之后可以在对话和设定里直接使用。",
     "syncSuccess": "技能市场已更新",
     "syncKeptCache": "未获取到新榜单，已保留本地缓存。",
     "syncEmpty": "未采集到榜单数据。",

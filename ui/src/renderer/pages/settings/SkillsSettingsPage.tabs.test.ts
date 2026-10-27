@@ -4,11 +4,13 @@ import { describe, expect, test } from 'bun:test';
 const readSource = (url: URL) => readFileSync(url, 'utf8');
 
 describe('SkillsSettingsPage hub chrome', () => {
-  test('uses the shared capability hub instead of inner library/market tabs', () => {
+  test('uses the skill store page instead of the settings capability tabs', () => {
     const source = readSource(new URL('./SkillsSettingsPage.tsx', import.meta.url));
 
-    expect(source).toContain('<CapabilityHubShell');
-    expect(source).toContain("hub='skills'");
+    expect(source).toContain('<HubPageShell');
+    expect(source).toContain("useCapabilityHubRoute('skills')");
+    expect(source).toContain('settings.skillsMarket.title');
+    expect(source).not.toContain('<CapabilityHubShell');
     expect(source).not.toContain('setActiveTab(nextTab);');
     expect(source).not.toContain('flowy-settings-tabs');
     expect(source).not.toContain('lazyload');

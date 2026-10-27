@@ -1,0 +1,36 @@
+.play,
+.stack > * {
+  animation: skillDetailRise 0.62s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.stack > *:nth-child(1) { animation-delay: 0.08s; }
+.stack > *:nth-child(2) { animation-delay: 0.14s; }
+.stack > *:nth-child(3) { animation-delay: 0.2s; }
+.stack > *:nth-child(4) { animation-delay: 0.26s; }
+.stack > *:nth-child(5) { animation-delay: 0.32s; }
+.stack > *:nth-child(6) { animation-delay: 0.38s; }
+.stack > *:nth-child(7) { animation-delay: 0.44s; }
+.stack > *:nth-child(8) { animation-delay: 0.5s; }
+
+.footer {
+  animation-delay: 0.28s;
+}
+
+@keyframes skillDetailRise {
+  from {
+    opacity: 0;
+    transform: translate3d(28px, 22px, 0) rotate(3deg);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play,
+  .stack > * {
+    animation: none;
+  }
+}
