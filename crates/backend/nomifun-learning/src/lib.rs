@@ -67,7 +67,7 @@ pub use generation::{
 
 pub use learning_graph::ConceptTier;
 pub use learning_graph::basis_declaration::{
-    BASIS_DECLARATION_SWITCH_ENV, DECLARATION_SOURCE, DeclaredConceptView,
+    BASIS_DECLARATION_SWITCH_ENV, DECLARATION_SOURCE, DECLARATION_SYSTEM, DeclaredConceptView,
     is_basis_declaration_disabled_value,
 };
 pub use learning_graph::AutoRefillVerdict;

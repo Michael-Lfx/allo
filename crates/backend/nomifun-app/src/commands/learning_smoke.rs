@@ -3302,14 +3302,33 @@ async fn run_basis(
         !concept_rows.is_empty() && concept_rows.iter().all(|row| row.declared),
         "declared concepts must surface in the concept table read-side"
     );
-    // 观测存档：声明调用档案在场（task = basis-declaration）。
+    // 观测存档：声明调用档案在场。判据断在铸造系统提示词的立场句
+    // （DECLARATION_SYSTEM，声明调用独有）上——任务字面量 `basis-declaration`
+    // 到不了存档：它是观测面注册表键（PromptSpec::task），装配
+    // （structure_prompts::assemble）剥离携带它的头注后只发正文；Archiver
+    // 存档行只记方法名与模型面字段（system/user/response），LearningCompleter
+    // 特征不带任务上下文，声明又是同步端点（不进生成任务注册表，
+    // learning-tasks.jsonl 的 begin/finish 观测只覆盖长任务）——该字面量
+    // 按实现恒不在场（真机 m2 对照卡缺口①），故以系统提示词签名为判据
+    // （按 system 字段逐行计，k03 读数面同款纪律）。
     if let Some(archive) = archiving.as_ref() {
         let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
             .unwrap_or_default();
+        let declaration_calls = calls
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| {
+                value
+                    .get("system")
+                    .and_then(|system| system.as_str())
+                    .is_some_and(|system| system.contains(nomifun_learning::DECLARATION_SYSTEM))
+            })
+            .count();
         anyhow::ensure!(
-            calls.contains("basis-declaration"),
-            "observation archive must contain the basis-declaration call"
+            declaration_calls >= 1,
+            "observation archive must contain the declaration mint call (system = DECLARATION_SYSTEM)"
         );
+        println!("archive read-out: declaration_calls={declaration_calls}");
     }
 
     // ③ 下游就绪投影翻转：assume 声明概念的节点由未就绪翻就绪。
