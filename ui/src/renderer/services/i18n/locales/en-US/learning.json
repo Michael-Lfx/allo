@@ -52,6 +52,8 @@
   "genNotRunning": "No generation in progress",
   "genCancelled": "Generation cancelled",
   "genBgRunning": "Generating course",
+  "genBgQueued": "Course queued",
+  "genQueuedNotice": "Task submitted; waiting in the queue for a free slot. You can cancel while queued.",
   "genBgFailed": "Generation failed",
   "genBgDone": "Generation complete",
   "genView": "View",
