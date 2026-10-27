@@ -15,13 +15,13 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 仓库级基础词表（编译期嵌入；人工维护，提交即生效）。
+/// 定义用语表（仓库级基础用语）：编译期嵌入；人工维护，提交即生效。
 pub const BASE_YAML: &str = include_str!("../../lexicon/base.yaml");
 
 /// 课程层在 `structure_json` 快照信封里的旁键名。
 pub const COURSE_LEXICON_KEY: &str = "lexicon";
 
-/// 仓库级基础词表（解析形态）。
+/// 定义用语表（仓库级基础用语）的解析形态。
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaseLexicon {
     #[serde(default)]

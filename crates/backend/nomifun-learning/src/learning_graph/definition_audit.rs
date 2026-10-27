@@ -23,7 +23,7 @@
 pub const FUNCTION_CHARS: &str = "的了是在和与及或把被从向到为以对之于之其这那有无不可能会要需称记作表所示取等若则即按照由此每两三一二零几个份种也又而并将已未很最更再还都只就才者地得着过们它他她我你使让用自至而且还是就是只是已经正在没有不是不会不必不用";
 
 /// 候选术语:CJK 1–4 字 n-gram,排除「恰为已知词」与「纯虚字组合」,去重保序。
-/// `known` = 已注册名 ∪ 基础词表 ∪ 课程增词(有着落的词,不再是缺口)。
+/// `known` = 已注册名 ∪ 定义用语表（仓库级基础用语）∪ 课程增词(有着落的词,不再是缺口)。
 /// 已知词的**超串保留**(如 已知「整数」而「整数加法」未在册——它正是候选)。
 pub fn candidate_terms(definition: &str, known: &[String]) -> Vec<String> {
     let known: std::collections::BTreeSet<&str> = known.iter().map(String::as_str).collect();
