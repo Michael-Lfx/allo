@@ -17,6 +17,7 @@ pub(super) use serde_json::Value;
 pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
+pub(super) use flowy_web::provider::SearchProvider;
 pub(super) use crate::events::LearningEventEmitter;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
@@ -122,6 +123,13 @@ pub struct LearningService {
     /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
     /// 读数面）。内存态，仅诊断。
     growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
+    /// 铸名门外部证据搜索提供方（m11，ADR-0030 门内增强）：`None` = 零搜
+    /// 索（fail-open 无证据）。组合根接线 DDG 无 key 提供方；开关
+    /// `NOMI_LEARNING_MINT_RESEARCH` 在机制内再闸一道。
+    mint_search: Arc<RwLock<Option<Arc<dyn SearchProvider>>>>,
+    /// 最近一次生长的铸名门外部证据读数（搜索/命中/扩邻/降级，m11 smoke
+    /// grow 读数面；读数面非门禁）。内存态，仅诊断。
+    mint_research_stats: Arc<Mutex<Option<crate::learning_graph::mint_evidence::MintResearchStats>>>,
     /// companion XP 桥（j05 统一账）：结算落账后的同步授予接缝。缺省
     /// `None`（测试/CLI/无伙伴花名册）——只落学习账，companion 余额滞后。
     companion_xp_sink: Arc<RwLock<Option<Arc<dyn CompanionXpSink>>>>,
@@ -154,6 +162,8 @@ impl LearningService {
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
             generation_tasks: Arc::new(GenerationTaskRegistry::new()),
             growth_run_stats: Arc::new(Mutex::new(None)),
+            mint_search: Arc::new(RwLock::new(None)),
+            mint_research_stats: Arc::new(Mutex::new(None)),
             companion_xp_sink: Arc::new(RwLock::new(None)),
         }
     }
@@ -165,6 +175,15 @@ impl LearningService {
         observer: Arc<dyn Fn(&str) + Send + Sync>,
     ) {
         self.generation_tasks.set_observer(observer);
+    }
+
+    /// 注入铸名门外部证据搜索提供方（m11；不注入 = 零搜索零证据，fail-open
+    /// 同律）。组合根接 `DuckDuckGoSearchProvider`（无 key，代理感知）。
+    pub fn set_mint_search_provider(&self, provider: Arc<dyn SearchProvider>) {
+        *self
+            .mint_search
+            .write()
+            .expect("learning mint search lock poisoned") = Some(provider);
     }
 
     pub fn set_generation_dependencies(

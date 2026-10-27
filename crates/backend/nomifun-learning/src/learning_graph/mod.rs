@@ -30,6 +30,7 @@ pub mod alias_records;
 pub mod defnear;
 pub mod growth_contract;
 pub mod growth_retry;
+pub mod mint_evidence;
 pub mod mounting;
 pub mod structure_contract;
 pub mod structure_gen;
@@ -820,8 +821,13 @@ pub struct NominationPlan {
     pub name: String,
     /// 定义归一化直定宿主（Option；Some = 绕过评审直接复用该概念）。
     pub direct_host: Option<String>,
-    /// 近邻候选集（词面补位保证非空——登记表非空时）。
+    /// 近邻候选集（词面补位保证非空——登记表非空时；m11 起证据标题命中
+    /// 可由代码补入行，basis=「外部证据命中：<标题>」）。
     pub candidates: Vec<defnear::NeighborCandidate>,
+    /// 外部通行名证据（m11，ADR-0030；空 = 无证据——开关关/搜索失败/
+    /// 零结果/非歧义案，照常评审）。只进参考面：随候选集注入通道渲染，
+    /// 判据与输出契约零改动。
+    pub evidence: Vec<mint_evidence::ExternalEvidence>,
 }
 
 /// 结构门产出：语义门错误 + 提名候选装配。
@@ -829,6 +835,9 @@ pub struct NominationPlan {
 pub struct GateOutcome {
     pub errors: Vec<GateError>,
     pub nominations: Vec<NominationPlan>,
+    /// 登记表活跃条目投影（m11 外部证据扩邻的匹配域；`registry_entries()`
+    /// 单源产出，deprecated = 0 已滤）。
+    pub mint_registry: Vec<defnear::RegistryEntry>,
     /// 登记表现存概念 id 全集（评审复用裁决的事实边界：候选集只是可见面，
     /// 裁决宿主只要求在这里存在）。
     pub registry_concept_ids: HashSet<String>,

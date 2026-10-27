@@ -13,6 +13,17 @@ pub fn is_off_switch_value(value: &str) -> bool {
     )
 }
 
+/// 铸名门外部通行名证据开关（m11，ADR-0030 门内增强）：未设/其它取值 =
+/// 开启；`off` = 零搜索零证据 = 现行为（证据获取器 fail-open 的总闸）。
+pub const MINT_RESEARCH_SWITCH_ENV: &str = "NOMI_LEARNING_MINT_RESEARCH";
+
+/// 铸名门外部证据开关判定（[`is_off_switch_value`] 同款语义）。
+pub fn mint_research_enabled() -> bool {
+    std::env::var(MINT_RESEARCH_SWITCH_ENV)
+        .map(|value| !is_off_switch_value(&value))
+        .unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
