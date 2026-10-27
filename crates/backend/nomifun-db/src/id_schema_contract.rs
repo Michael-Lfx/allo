@@ -66,6 +66,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "knowledge_tags",
     "learning_activities",
     "learning_attempts",
+    "learning_basis_declarations",
     "learning_concept_registry",
     "learning_course_tags",
     "learning_courses",
@@ -941,6 +942,10 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 维护水位（migration 070）：findings 消费记账是派生面——随课删
     // （Cascade；留痕本身仍 KeepHistory 保留）。
     historical_text_ref!("learning_maintenance_state", "course_id" => "learning_courses", "course_id", false, "idx_learning_maintenance_state_course", Cascade),
+    // 已会声明锚（migration 071）：一行一次声明，声明是本课事实——随课删
+    // （Cascade）；锚行里铸出/复用的 concept_id 只作出处留痕（KeepHistory，
+    // 概念留池「声明可撤、概念不灭」——撤销只删锚行，登记表不动）。
+    text_ref!("learning_basis_declarations", "course_id" => "learning_courses", "course_id", false, "idx_learning_basis_declarations_course", Cascade),
     // quiz 回合（migration 068 的 quiz 段）：学习者行为历史——用户删除随账（Cascade）；
     // 课程删除（墓碑式）后回合记录原样保留（KeepHistory，与 XP 账本同律：
     // 行为历史不追删）。
@@ -1073,6 +1078,15 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "learning_growth_batches", "node_ids_json", "$[]",
         "SELECT item.value AS value FROM learning_growth_batches, json_each(learning_growth_batches.node_ids_json) item" =>
         "learning_lessons", "lesson_id", "idx_learning_growth_batches_nodes", Cascade, RequireParent
+    ),
+    // 已会声明锚（migration 071）的铸造出处面：锚行的 concept_ids_json 指向
+    // 概念登记表。概念留池（撤销声明不回滚登记表），声明引用不追删——
+    // 概念被废弃/移除后锚行原样保留（KeepHistory + 容忍缺失父行，XP 账本
+    // 同律；读侧解析失败 = Broken 如实降级不炸）。
+    json_text_ref!(
+        "learning_basis_declarations", "concept_ids_json", "$[]",
+        "SELECT item.value AS value FROM learning_basis_declarations, json_each(learning_basis_declarations.concept_ids_json) item" =>
+        "learning_concept_registry", "concept_id", "idx_learning_basis_declarations_concepts", KeepHistory, AllowMissingHistoricalParent
     ),
     json_text_ref!(
         "client_preferences", "value", "$ (idmm_backup_provider_id)",
