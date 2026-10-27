@@ -3,6 +3,7 @@ import type {
   AttemptResult,
   CalendarStats,
   CheckinStatus,
+  ConceptAuditReport,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
@@ -86,6 +87,13 @@ export const learningApi = {
     httpRequest<GraphConceptRowView[]>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+  // 缺口片段/自指/互指环；概念表行级标记的数据源
+  conceptAudit: (courseId: string) =>
+    httpRequest<ConceptAuditReport>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/concepts/audit`
     ),
   // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
   // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口

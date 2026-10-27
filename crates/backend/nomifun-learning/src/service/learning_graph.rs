@@ -201,10 +201,23 @@ impl LearningService {
                         crate::service::CANCELLED_MESSAGE.to_owned(),
                     ));
                 }
-                let envelope = crate::learning_graph::structure_gen::snapshot_envelope(
+                let mut envelope = crate::learning_graph::structure_gen::snapshot_envelope(
                     &artifacts.structure,
                     &artifacts.terrain,
                     now_ms(),
+                );
+                // 课程层旁键（m9）：重跑覆盖整信封重建时，lexicon 旁键从旧
+                // 快照原样带过（本课程 slot 锁在手，无并发结构写）。
+                let previous_snapshot: Option<String> = sqlx::query_scalar(
+                    "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+                )
+                .bind(course_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+                crate::learning_graph::lexicon::carry_lexicon_side_key(
+                    &mut envelope,
+                    previous_snapshot.as_deref(),
                 );
                 let snapshot = serde_json::to_string(&envelope).map_err(internal)?;
                 sqlx::query(
@@ -882,13 +895,18 @@ impl LearningService {
             }
             (candidate, cascade)
         };
-        let new_structure_raw = serde_json::to_string(&serde_json::json!({
+        let mut next_envelope = serde_json::json!({
             "version": envelope.get("version").cloned().unwrap_or(serde_json::json!(1)),
             "generated_at": envelope.get("generated_at").cloned().unwrap_or(serde_json::json!(now_ms())),
             "structure": new_structure,
             "terrain": terrain,
-        }))
-        .map_err(internal)?;
+        });
+        // 课程层旁键（m9）：修补重写信封时 lexicon 旁键原样带过。
+        crate::learning_graph::lexicon::attach_lexicon_side_key(
+            &mut next_envelope,
+            envelope.get(crate::learning_graph::lexicon::COURSE_LEXICON_KEY),
+        );
+        let new_structure_raw = serde_json::to_string(&next_envelope).map_err(internal)?;
         let new_hash = crate::learning_graph::mounting::fnv1a_64(new_structure_raw.as_bytes());
         if !noop {
             // 结构快照原子写（唯一权威）+ 修补审计行。
@@ -3545,6 +3563,120 @@ impl LearningService {
             });
         }
         Ok(rows)
+    }
+
+    /// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+    /// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）→ 缺口片段/自指/互指环。
+    /// 「读侧先看见」——审计是缺口标记不是拦截门；概念表 Tab 的行级标记
+    /// 以 concept_id join 本报告。课程层损坏 = fail loud（旁键坏了不能
+    /// 悄悄放行）。
+    pub async fn concept_audit(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::ConceptAuditReport, AppError> {
+        // 概念表入口同款守卫：现存、未软删、未归档的学习图课程（课程层
+        // 豁免/增词挂在本课 structure_json 的 lexicon 旁键上）。
+        self.require_live_graph_course(course_id).await?;
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_lexicon =
+            crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
+                .map_err(AppError::Internal)?;
+        let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
+
+        let rows = sqlx::query(
+            "SELECT concept_id, canonical, aliases_json, definition \
+             FROM learning_concept_registry \
+             WHERE deprecated = 0 ORDER BY canonical, concept_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // 已知面 = 登记表活跃名（正名 + 活跃别名，退役名不掩码）∪ base
+        // ∪ 课程增词。译名（英文）永不匹配 CJK 片段，进已知面无害；
+        // 中文名必须进（掩码面）。
+        let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
+        let mut entries: Vec<(String, String, String)> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+            let canonical: String = row.try_get("canonical").map_err(internal)?;
+            known.push(canonical.clone());
+            let aliases_json: String = row.try_get("aliases_json").map_err(internal)?;
+            for record in
+                crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
+            {
+                if record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                    && !record.name.is_empty()
+                {
+                    known.push(record.name);
+                }
+            }
+            let definition: String = row.try_get("definition").map_err(internal)?;
+            entries.push((concept_id, canonical, definition));
+        }
+
+        // 自指与互指控 (正名, 定义) 对做纯图/字符串检查（跨域零失败）。
+        let pairs: Vec<(String, String)> = entries
+            .iter()
+            .map(|(_, name, definition)| (name.clone(), definition.clone()))
+            .collect();
+        let self_ref_names = crate::learning_graph::definition_audit::self_references(&pairs);
+        let cycles = crate::learning_graph::definition_audit::mutual_cycles(&pairs);
+        let id_of: HashMap<String, String> = entries
+            .iter()
+            .map(|(concept_id, name, _)| (name.clone(), concept_id.clone()))
+            .collect();
+        let self_refs = self_ref_names
+            .iter()
+            .filter_map(|name| {
+                id_of.get(name).map(|concept_id| crate::models::ConceptAuditSelfRef {
+                    concept_id: concept_id.clone(),
+                    name: name.clone(),
+                })
+            })
+            .collect();
+        let mutual_cycles = cycles
+            .iter()
+            .filter_map(|(a, b)| {
+                Some(crate::models::ConceptAuditCycle {
+                    a_concept_id: id_of.get(a)?.clone(),
+                    a_name: a.clone(),
+                    b_concept_id: id_of.get(b)?.clone(),
+                    b_name: b.clone(),
+                })
+            })
+            .collect();
+
+        // 缺口片段：最长优先掩码 → 课程豁免过滤（含豁免词的片段视而不见）；
+        // 零片段的概念不占行，有缺口的按片段数降序（learnhub 同款读数形）。
+        let mut flagged = Vec::new();
+        for (concept_id, canonical, definition) in &entries {
+            let fragments = crate::learning_graph::lexicon::apply_ignores(
+                &crate::learning_graph::definition_audit::grounding_runs(definition, &known),
+                &course_lexicon,
+            );
+            if !fragments.is_empty() {
+                flagged.push(crate::models::ConceptAuditEntry {
+                    concept_id: concept_id.clone(),
+                    canonical: canonical.clone(),
+                    definition: definition.clone(),
+                    fragments,
+                });
+            }
+        }
+        flagged.sort_by_key(|entry| std::cmp::Reverse(entry.fragments.len()));
+        Ok(crate::models::ConceptAuditReport {
+            concept_count: entries.len() as u32,
+            flagged,
+            self_refs,
+            mutual_cycles,
+        })
     }
 
     // ── Status/cancel（generation_tasks 注册表薄封装，端点不变）────────────

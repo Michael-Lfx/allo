@@ -27,9 +27,11 @@
 
 pub mod advice_alias;
 pub mod alias_records;
+pub mod definition_audit;
 pub mod defnear;
 pub mod growth_contract;
 pub mod growth_retry;
+pub mod lexicon;
 pub mod mounting;
 pub mod provenance;
 pub mod structure_contract;

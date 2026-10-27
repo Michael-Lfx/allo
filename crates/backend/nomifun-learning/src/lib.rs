@@ -62,6 +62,8 @@ pub use generation::{
 };
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::definition_audit;
+pub use learning_graph::lexicon;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
 pub use learning_graph::structure_contract::{
     reconcile_doors as reconcile_structure_doors,
@@ -72,7 +74,8 @@ pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, CourseDetail,
-    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, ConceptAuditCycle,
+    ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
