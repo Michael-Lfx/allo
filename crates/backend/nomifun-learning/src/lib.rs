@@ -15,7 +15,8 @@ mod tutorial;
 
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
-    AUTO_REFILL_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    lexicon_enforce_enabled, lexicon_enforce_enabled_value, AUTO_REFILL_SWITCH_ENV,
+    LEXICON_ENFORCE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
 };
 
 pub use completer::LearningCompleter;

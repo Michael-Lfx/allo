@@ -1331,12 +1331,14 @@ async fn run_grow(
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
         // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
         // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
+        // 碎片裁决读数行（m9 补接）：total/rows/unhandled/degraded——同款观测面。
         let stats = wiring.service.growth_run_stats();
         match stats {
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
                  [provenance: rows={} invalid={} retried={} degraded={}]  \
+                 [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [review_state: {} injections={}]",
                 stats.attempts_used,
                 stats.stop_reason,
@@ -1344,6 +1346,10 @@ async fn run_grow(
                 stats.review_provenance_invalid,
                 stats.review_provenance_retried,
                 stats.review_provenance_degraded,
+                stats.review_fragments_total,
+                stats.review_fragments_rows,
+                stats.review_fragments_unhandled,
+                stats.review_fragments_degraded,
                 if stats.review_state { "on" } else { "off" },
                 stats.review_state_injections
             ),
