@@ -3644,6 +3644,174 @@ async fn growth_stall_suppresses_auto_but_not_force() {
     assert!(forced, "manual force must bypass the stall arm");
 }
 
+// ── Auto Refill（m10：verdict 显式化 + 触发② + 设置开关 + 重入集）────────
+
+/// 偏好写侧的最小夹具（maintenance 读侧测试同款 upsert）。
+async fn set_client_pref(service: &LearningService, key: &str, value: &str) {
+    sqlx::query(
+        "INSERT INTO client_preferences (key, value, updated_at) VALUES (?, ?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .bind(now_ms())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+}
+
+/// 设置读侧（m10）：`learning.autoRefillEnabled` 缺省开；false 生效；坏布尔
+/// 读侧回退缺省开（写侧拒绝在 nomifun-system 的单测里锁，k02 同纪律）。
+#[tokio::test]
+async fn auto_refill_setting_default_and_overrides() {
+    let (service, _knowledge, _owner) = job_test_service().await;
+    assert!(
+        service.auto_refill_enabled().await,
+        "缺省开（DEFAULT_AUTO_REFILL_ENABLED）"
+    );
+    set_client_pref(&service, "learning.autoRefillEnabled", "false").await;
+    assert!(!service.auto_refill_enabled().await, "false 生效");
+    set_client_pref(&service, "learning.autoRefillEnabled", "17").await;
+    assert!(
+        service.auto_refill_enabled().await,
+        "坏布尔读侧回退缺省开"
+    );
+}
+
+/// 自动臂（force=false）消费 verdict 的两态（重构等价 + 开关臂同测）：
+/// 缺省开关组合下水位居下（ready=2 < 3）自动触发（与重构前 READY_TRIGGER
+/// 门同语义）；设置关 = Disabled → 同水位同课形不再触发。手动 force 不进
+/// 裁决——补批开关只管自动臂，手动补充永远可达。
+#[tokio::test]
+async fn auto_arm_consumes_verdict_and_setting_off_disables() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let user_id = owner; // job_test_service 的第三个返回值本来就是 UserId
+    // 夹具课：2 节点未完成 → ready=2 < 3（水位以下）、非空图（非停摆）。
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 读数面（触发②端点同源）：due + enabled + 非停摆。
+    let view = service.growth_verdict(&user_id, &course).await.unwrap();
+    assert_eq!(view.verdict, "due");
+    assert!(view.enabled, "缺省开");
+    assert!(!view.stalled, "夹具课非空图");
+    assert_eq!(view.ready_count, 2);
+    assert_eq!(view.trigger, crate::learning_graph::READY_TRIGGER);
+    // 默认开关组合：自动臂触发（Ok(true) 即已进入生长管道）。
+    let kicked = service
+        .kick_growth(&user_id, &course, false, None)
+        .await
+        .unwrap();
+    assert!(kicked, "水位以下 + 缺省开 = Due，自动臂触发");
+}
+
+/// 设置关 = Disabled：同水位（ready=2 < 3）自动臂不再触发；手动 force
+/// 不进裁决，开关关也不拦手动补充。
+#[tokio::test]
+async fn setting_off_disables_auto_trigger_but_not_manual() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let user_id = owner; // job_test_service 的第三个返回值本来就是 UserId
+    set_client_pref(&service, "learning.autoRefillEnabled", "false").await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let view = service.growth_verdict(&user_id, &course).await.unwrap();
+    assert_eq!(view.verdict, "disabled", "开关关：端点如实读数");
+    assert!(!view.enabled);
+    let kicked = service
+        .kick_growth(&user_id, &course, false, None)
+        .await
+        .unwrap();
+    assert!(!kicked, "Disabled：自动臂不触发");
+    let forced = service
+        .kick_growth(&user_id, &course, true, None)
+        .await
+        .unwrap();
+    assert!(forced, "手动 force 不进裁决：开关关不拦手动补充");
+}
+
+/// 重入集（每课每裁决轮至多一批）的后端双保险之一：课级 slot 锁——第一批
+/// 在跑时同课的第二次自动裁决快速退出（Ok(false)），不重复触发。任务注册表
+/// 同键 Conflict 是第二保险（m7 已落地：begin_growth_task 键 growth:{course}:-）。
+#[tokio::test]
+async fn auto_refill_reentry_slot_lock_blocks_second_batch_same_cycle() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let user_id = owner; // job_test_service 的第三个返回值本来就是 UserId
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let idle = r#"{ "nodes": [], "mints": [], "note": "无新增" }"#;
+    *service.course_completer.write().unwrap() = Some(ScriptedCompleter::new(idle, false));
+    let first = service
+        .kick_growth(&user_id, &course, false, None)
+        .await
+        .unwrap();
+    assert!(first, "第一批触发（slot 同步占住）");
+    // 第一批在跑：同课二次自动裁决不重复触发（slot 锁即重入集的后端臂）。
+    let second = service
+        .kick_growth(&user_id, &course, false, None)
+        .await
+        .unwrap();
+    assert!(!second, "同轮二次裁决不重复触发");
+}
+
+/// 停摆臂与非图课程的 verdict 读数（触发②端点的边臂）：空图课水位照判
+/// （ready=0 < 3 = due）但 stalled=true 如实随行——前端以此抑制自动补批
+///（ADR-0010 只留空图臂）；非图课程过 require_live_graph_course 守卫报
+/// NotFound（与 grow 同语义）。
+#[tokio::test]
+async fn growth_verdict_reports_stalled_and_non_graph_courses() {
+    let (service, _knowledge, owner) = job_test_service().await;
+    let user_id = owner; // job_test_service 的第三个返回值本来就是 UserId
+    // 臂一：零节点图（无课时）→ due + stalled。
+    let empty_course = nomifun_common::LearningCourseId::new();
+    let module_id = nomifun_common::LearningModuleId::new();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, '空图课', '', 'general', 1, 'learning_graph', '目标', '', ?, ?)",
+    )
+    .bind(empty_course.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, position) \
+         VALUES (?, ?, '学习图', 0)",
+    )
+    .bind(module_id.as_str())
+    .bind(empty_course.as_str())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let view = service.growth_verdict(&user_id, &empty_course).await.unwrap();
+    assert_eq!(view.verdict, "due", "水位照判：ready=0 < 3");
+    assert!(view.stalled, "空图 = 停摆臂如实随行");
+    // 臂二：传统课程 → NotFound（生长是图课程专属）。
+    let traditional = nomifun_common::LearningCourseId::new();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, course_kind, learning_goal, \
+          learning_scope, created_at, updated_at) \
+         VALUES (?, '传统课', '', 'general', 1, 'traditional', '目标', '', ?, ?)",
+    )
+    .bind(traditional.as_str())
+    .bind(now)
+    .bind(now)
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+    let error = service
+        .growth_verdict(&user_id, &traditional)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("learning graph course"),
+        "{error:?}"
+    );
+}
+
 /// 空手批（0 节点）：pending 行删除不落档案——就绪已满时生长干净退出，
 /// 不留历史噪音。
 #[tokio::test]

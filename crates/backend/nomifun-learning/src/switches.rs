@@ -23,6 +23,16 @@ pub fn is_task_gate_disabled_value(value: &str) -> bool {
     is_off_switch_value(value)
 }
 
+/// m10 自动补批的环境闸环境变量（`NOMI_LEARNING_AUTO_REFILL`）：off/0/false
+/// = 自动补批关（verdict 恒 Disabled、端点如实读数）；未设或其它取值 = 开
+/// （设置开关 `learning.autoRefillEnabled` 正常起作用）。
+pub const AUTO_REFILL_SWITCH_ENV: &str = "NOMI_LEARNING_AUTO_REFILL";
+
+/// 自动补批环境闸关闭判定（off/0/false，大小写与首尾空白宽容）。
+pub fn is_auto_refill_disabled_value(value: &str) -> bool {
+    is_off_switch_value(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +59,24 @@ mod tests {
             assert!(
                 !is_task_gate_disabled_value(value),
                 "{value:?} = 闸开（cap 5 + 排队）"
+            );
+        }
+    }
+
+    /// m10 自动补批环境闸：off 系 = 关（verdict 恒 Disabled）；on 系/未设
+    /// 面的宽容值 = 开。
+    #[test]
+    fn auto_refill_switch_delegates_to_off_values() {
+        for value in ["off", "0", "false", " OFF ", "False"] {
+            assert!(
+                is_auto_refill_disabled_value(value),
+                "{value:?} = 自动补批关"
+            );
+        }
+        for value in ["on", "1", "true", ""] {
+            assert!(
+                !is_auto_refill_disabled_value(value),
+                "{value:?} = 自动补批开"
             );
         }
     }
