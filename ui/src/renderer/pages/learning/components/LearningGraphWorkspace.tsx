@@ -580,10 +580,15 @@ const LearningGraphWorkspace: React.FC<{
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
           <StructureGraphTab
             view={structure}
+            basis={basis}
             onMount={() => void mountStructure()}
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            onDeclareBasis={(doors) => void declareBasis(doors)}
+            declaringBasis={declaringBasis}
+            onRevokeBasis={() => void revokeBasis()}
+            revokingBasis={revokingBasis}
           />
         </Tabs.TabPane>
       </Tabs>
@@ -820,7 +825,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 160,
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='min-w-0'>
-              <div className='truncate font-500 text-[var(--color-text-1)]'>{row.canonical}</div>
+              <div className='flex items-center gap-4px'>
+                <span className='min-w-0 truncate font-500 text-[var(--color-text-1)]'>
+                  {row.canonical}
+                </span>
+                {row.source === 'basis-declaration' && (
+                  <Tag size='small' color='green' className='!mx-0 shrink-0'>
+                    {t('learning.learningGraphConceptSourceDeclaration')}
+                  </Tag>
+                )}
+              </div>
               {row.aliases.length > 0 && (
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
@@ -838,6 +852,11 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           dataIndex: 'refs',
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='flex flex-col gap-2px'>
+              {row.refs.length === 0 && row.declared && (
+                <span className='text-12px text-t-tertiary'>
+                  {t('learning.learningGraphConceptDeclaredOnly')}
+                </span>
+              )}
               {row.refs.map((reference) => (
                 <div key={`${reference.lesson_id}:${reference.role}`} className='flex items-center gap-6px text-12px'>
                   <Tag
