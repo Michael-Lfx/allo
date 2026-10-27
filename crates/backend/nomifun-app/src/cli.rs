@@ -558,6 +558,22 @@ pub enum LearningSmokeCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// 已会声明冒烟（m2，ADR-0032 移植）：种一门带地形门口与 door_refs 的
+    /// 图课程 → 真实声明（LLM 铸概念）→ 硬判据：登记表增行且**零节点/批次
+    /// 写入**（计数守恒）、下游就绪投影翻转、幂等重跑 noop 零 LLM、撤销后
+    /// 投影复原（概念留池）、off 臂端点拒绝。无凭据时声明调用如实非零
+    /// （mount/repair 档先例）。
+    Basis {
+        /// SQLite 库路径（缺省从零临时库）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --model 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[cfg(test)]
