@@ -44,7 +44,8 @@ pub use agent_execution::{
     ParticipantAssignmentSource, PlanGate, StepFailurePolicy, UnknownAgentExecutionValue,
     MAX_AGENT_DELEGATION_DEPTH, MAX_AGENT_EXECUTION_MODELS,
     MAX_AGENT_EXECUTION_PARALLELISM, MAX_AGENT_EXECUTION_PARTICIPANTS,
-    MAX_AGENT_EXECUTION_STEPS,
+    MAX_AGENT_EXECUTION_STEPS, lead_session_mode, plan_gate_for_lead_session_mode,
+    strictest_plan_gate,
 };
 pub use nomi_types::agent::{
     AgentDelegationModel, AgentDelegationTask, ParallelDelegationRequest,

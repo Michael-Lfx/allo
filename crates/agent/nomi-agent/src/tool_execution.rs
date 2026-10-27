@@ -594,9 +594,9 @@ fn confirm_call(
 
     match result {
         ConfirmResult::Approved => Ok(None),
-        ConfirmResult::Denied => Ok(Some(ContentBlock::ToolResult {
+        ConfirmResult::Denied(reason) => Ok(Some(ContentBlock::ToolResult {
             tool_use_id: id.clone(),
-            content: "Tool execution denied by user".to_string(),
+            content: reason.message().to_string(),
             is_error: true,
             images: Vec::new(),
         })),
