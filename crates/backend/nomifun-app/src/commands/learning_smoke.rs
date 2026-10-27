@@ -1320,12 +1320,19 @@ async fn run_grow(
         }
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
         // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
+        // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
         let stats = wiring.service.growth_run_stats();
         match stats {
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
-                 [retry: attempts_used={}, stop_reason={}]",
-                stats.attempts_used, stats.stop_reason
+                 [retry: attempts_used={}, stop_reason={}]  \
+                 [provenance: rows={} invalid={} retried={} degraded={}]",
+                stats.attempts_used,
+                stats.stop_reason,
+                stats.review_provenance_rows,
+                stats.review_provenance_invalid,
+                stats.review_provenance_retried,
+                stats.review_provenance_degraded
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
         }
@@ -2894,6 +2901,33 @@ async fn run_maintenance(
         first.idle,
         first.courses.len()
     );
+    // m7 任务资源闸读数（对照卡数据源）：tick 提交的 mount/repair 过闸占并发
+    // 账。判据形态——on 臂 running_peak ≤ limit 恒成立；off 臂 queued 恒 0、
+    // running 可超 limit（直跑形态读数）。
+    let gate = service.generation_gate_readout();
+    println!(
+        "gate read-out: enabled={} limit={} running={} running_peak={} queued={} queued_peak={}",
+        gate.enabled,
+        gate.limit,
+        gate.running,
+        gate.running_peak,
+        gate.queued,
+        gate.queued_peak
+    );
+    if gate.enabled {
+        anyhow::ensure!(
+            gate.running_peak <= gate.limit,
+            "gated arm running_peak must stay within the cap (got {} > {})",
+            gate.running_peak,
+            gate.limit
+        );
+    } else {
+        anyhow::ensure!(
+            gate.queued_peak == 0,
+            "off arm must never queue (queued_peak={})",
+            gate.queued_peak
+        );
+    }
     anyhow::ensure!(
         first.scanned == 1,
         "archived course must not be scanned (scanned={})",
@@ -2965,6 +2999,22 @@ async fn run_maintenance(
         second.scanned,
         second.idle,
         second.courses.len()
+    );
+    // m7 闸读数（收尾行）：两回合全部退出后在跑/排队应归零（许可不随异常
+    // 退出泄漏的 smoke 面投影）。
+    let gate_after = service.generation_gate_readout();
+    println!(
+        "gate read-out after tick2: running={} running_peak={} queued={} queued_peak={}",
+        gate_after.running,
+        gate_after.running_peak,
+        gate_after.queued,
+        gate_after.queued_peak
+    );
+    anyhow::ensure!(
+        gate_after.running == 0 && gate_after.queued == 0,
+        "gate must drain after ticks (running={} queued={})",
+        gate_after.running,
+        gate_after.queued
     );
     if watermark_enabled {
         anyhow::ensure!(

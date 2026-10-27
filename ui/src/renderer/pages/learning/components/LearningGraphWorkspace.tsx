@@ -13,6 +13,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -28,6 +29,7 @@ import { errorMessage } from '../utils';
 import type {
   Activity,
   AttemptRecord,
+  ConceptAuditReport,
   CourseDetail,
   GraphBatchView,
   GraphConceptRowView,
@@ -634,10 +636,11 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
   );
 };
 
-/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源。 */
+/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计行级标记。 */
 const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
   const [rows, setRows] = useState<GraphConceptRowView[] | null>(null);
+  const [audit, setAudit] = useState<ConceptAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -647,6 +650,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
         .graphConcepts(courseId)
         .then((view) => {
           if (!cancelled) setRows(view);
+        })
+        .catch((loadError) => {
+          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        });
+      // 定义审计（m9 只读）：与行表并行拉取，任一失败都明示（审计缺席是
+      // 静默误导——缺口看不见不等于没有缺口）。
+      learningApi
+        .conceptAudit(courseId)
+        .then((report) => {
+          if (!cancelled) setAudit(report);
         })
         .catch((loadError) => {
           if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -663,6 +676,22 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     };
   }, [courseId]);
 
+  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名）。
+  const auditMarkers = useMemo(() => {
+    const fragments = new Map<string, string[]>();
+    const selfRefs = new Set<string>();
+    const mutualWith = new Map<string, string>();
+    if (audit) {
+      for (const entry of audit.flagged) fragments.set(entry.concept_id, entry.fragments);
+      for (const entry of audit.self_refs) selfRefs.add(entry.concept_id);
+      for (const pair of audit.mutual_cycles) {
+        mutualWith.set(pair.a_concept_id, pair.b_name);
+        mutualWith.set(pair.b_concept_id, pair.a_name);
+      }
+    }
+    return { fragments, selfRefs, mutualWith };
+  }, [audit]);
+
   if (error) {
     return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
   }
@@ -676,6 +705,45 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   if (rows.length === 0) {
     return <Empty description={t('learning.learningGraphConceptsEmpty')} />;
   }
+  const renderAuditMarkers = (row: GraphConceptRowView) => {
+    const fragments = auditMarkers.fragments.get(row.concept_id) ?? [];
+    const isSelfRef = auditMarkers.selfRefs.has(row.concept_id);
+    const mutualPartner = auditMarkers.mutualWith.get(row.concept_id);
+    if (fragments.length === 0 && !isSelfRef && !mutualPartner) {
+      return <span className='text-12px text-t-tertiary'>—</span>;
+    }
+    return (
+      <div className='flex flex-wrap items-center gap-4px'>
+        {isSelfRef && (
+          <Tooltip content={t('learning.learningGraphAuditSelfRefTooltip')}>
+            <Tag size='small' color='red' className='!mx-0'>
+              {t('learning.learningGraphAuditSelfRef')}
+            </Tag>
+          </Tooltip>
+        )}
+        {mutualPartner && (
+          <Tooltip
+            content={t('learning.learningGraphAuditMutualTooltip', { name: mutualPartner })}
+          >
+            <Tag size='small' color='purple' className='!mx-0'>
+              {t('learning.learningGraphAuditMutual', { name: mutualPartner })}
+            </Tag>
+          </Tooltip>
+        )}
+        {fragments.length > 0 && (
+          <Tooltip
+            content={t('learning.learningGraphAuditFragmentsTooltip', {
+              fragments: fragments.join('、'),
+            })}
+          >
+            <Tag size='small' color='orange' className='!mx-0'>
+              {t('learning.learningGraphAuditFragments', { count: fragments.length })}
+            </Tag>
+          </Tooltip>
+        )}
+      </div>
+    );
+  };
   return (
     <Table
       size='small'
@@ -747,6 +815,12 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             ) : (
               <span className='text-12px text-t-tertiary'>—</span>
             ),
+        },
+        {
+          title: t('learning.learningGraphConceptAudit'),
+          dataIndex: 'audit',
+          width: 200,
+          render: (_: unknown, row: GraphConceptRowView) => renderAuditMarkers(row),
         },
       ]}
     />

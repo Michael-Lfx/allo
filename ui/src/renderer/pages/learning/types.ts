@@ -61,11 +61,14 @@ export interface GenerateCourseRequest {
 }
 
 /** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
- * 生长在后台任务执行——注册表让运行对外可发现、可取消。 */
+ * 生长在后台任务执行——注册表让运行对外可发现、可取消。m7 资源闸：
+ * `queued` = 排队中的任务数（闸开时提交先落排队，空闲许可就位才开跑；
+ * off 臂恒 0）。无在跑任务时 `topic` 回退最新排队主题。 */
 export interface LearningGraphGenerationStatus {
   running: boolean;
   topic: string | null;
   elapsed_secs: number | null;
+  queued: number;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
@@ -728,7 +731,8 @@ export interface SpineView {
 }
 
 /** 块视图行：layer = assumes 前置链深度（L0 起算，层号不是排期）；
- * no_prereq = 本块不做任何 assumes 边之源 */
+ * no_prereq = 本块不做任何 assumes 边之源；
+ * door_refs = 门位标签（覆盖本块主题的门口编号，旧快照无键 = 空数组） */
 export interface BlockView {
   name: string;
   slug: string;
@@ -738,6 +742,7 @@ export interface BlockView {
   note: string;
   layer: number;
   no_prereq: boolean;
+  door_refs: string[];
 }
 
 export interface StructureEdgeView {
@@ -792,6 +797,8 @@ export interface TerrainDoorView {
   criterion: string;
   /** hard | self_check */
   kind: 'hard' | 'self_check';
+  /** 块覆盖统计：结构中被该门口 door_refs 标注覆盖的块数（无标注 = 0） */
+  covered_blocks: number;
 }
 
 /** 学习记录视图：批次时间线（倒序）——生长史即课程史 */
@@ -849,6 +856,41 @@ export interface GraphConceptRefView {
   /** 投影名（j04）：节点引用该概念时使用的名字；老行为 null（回退正名） */
   ref_name: string | null;
   status: LessonStatus;
+}
+
+/** 定义审计条目（m9 只读报告）：概念 + 机械点名片段（课程豁免过滤后） */
+export interface ConceptAuditEntry {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  /** 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声） */
+  fragments: string[];
+}
+
+/** 定义审计自指条目：定义含自身正名（ISO 704 禁止） */
+export interface ConceptAuditSelfRef {
+  concept_id: string;
+  name: string;
+}
+
+/** 定义审计互指对（循环定义的最短形态 A↔B） */
+export interface ConceptAuditCycle {
+  a_concept_id: string;
+  a_name: string;
+  b_concept_id: string;
+  b_name: string;
+}
+
+/** 定义审计报告（只读，零 LLM 零写入）：登记表全量 × 用语表三层的机械读数 */
+export interface ConceptAuditReport {
+  /** 审计的概念总数（登记表全量、非废弃） */
+  concept_count: number;
+  /** 有缺口的概念条目（零片段的概念不占行；按片段数降序） */
+  flagged: ConceptAuditEntry[];
+  /** 自指概念（定义含自身正名） */
+  self_refs: ConceptAuditSelfRef[];
+  /** 两两互指（按 (a, b) 字典序） */
+  mutual_cycles: ConceptAuditCycle[];
 }
 
 /** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */

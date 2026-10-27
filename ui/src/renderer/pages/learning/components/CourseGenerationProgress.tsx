@@ -39,8 +39,9 @@ const MODERN_VISIBLE_PHASES = [
 
 /** 课程生成过程视图：CreateCourseDialog 提交后就地展示。
  * 过程事件经 WS best-effort 推送（不重放不补发），事件流只是增强——
- * 终态一律以同步 HTTP 响应（status/result/error）为准。运行中可取消，
- * 关闭对话框不会终止生成（后台继续，右下角指示条可回到这里）。
+ * 终态一律以同步 HTTP 响应（status/result/error）为准。排队中（m7 资源闸）
+ * 与运行中可取消（排队取消 = 释放排队位，body 零执行），关闭对话框不会
+ * 终止生成（后台继续，右下角指示条可回到这里）。
  *
  * t5 新管线（知识库流：清点分诊 → 来源结构计划 → 分批展开）观察首帧
  * triage 阶段即切换新步骤条与读数行；描述流/旧客户端走旧五段，零回归。 */
@@ -53,7 +54,7 @@ export function CourseGenerationProgress({
   onRetry,
   onCancel,
 }: {
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   result: CourseDetail | null;
   error: string | null;
   /** 多知识库（t4）：来源库名（「来源：库A、库B」；空 = 不展示） */
@@ -86,6 +87,9 @@ export function CourseGenerationProgress({
   const legacy = useMemo(() => deriveStep(events), [events]);
   const modernStep = useMemo(() => deriveModernStep(events), [events]);
   const running = status === 'running';
+  // m7 资源闸排队中：任务已受理、等空闲许可——步骤条停在起点（wait），
+  // 活动流无事件（生成循环尚未开跑），展示排队提示而非空转 spinner。
+  const queued = status === 'queued';
   // 「无可见事件」的判定不能是 events.length===0：循环开始等事件（如
   // started/generating）会被收进列表但渲染为空行，把等待提示挤掉。
   const visibleCount = events.filter((event) =>
@@ -121,11 +125,13 @@ export function CourseGenerationProgress({
         status={
           running
             ? 'process'
-            : status === 'failed'
-              ? 'error'
-              : status === 'cancelled'
-                ? 'wait'
-                : 'finish'
+            : queued
+              ? 'wait'
+              : status === 'failed'
+                ? 'error'
+                : status === 'cancelled'
+                  ? 'wait'
+                  : 'finish'
         }
       >
         {steps.map((label) => (
@@ -150,6 +156,12 @@ export function CourseGenerationProgress({
           <div className='flex items-center justify-center gap-8px py-24px'>
             <Spin size={16} />
             <Text type='secondary'>{t('learning.genWaitingEvents')}</Text>
+          </div>
+        )}
+        {visibleCount === 0 && queued && (
+          <div className='flex items-center justify-center gap-8px py-24px'>
+            <Spin size={16} />
+            <Text type='secondary'>{t('learning.genQueuedNotice')}</Text>
           </div>
         )}
         {events.map((event, index) => {
@@ -313,11 +325,13 @@ export function CourseGenerationProgress({
         })}
       </div>
 
-      {running && (
+      {(running || queued) && (
         <div className='flex items-center justify-between gap-8px'>
           <div className='flex items-center gap-8px'>
             <Spin size={16} />
-            <Text type='secondary'>{t('learning.genRunningHint')}</Text>
+            <Text type='secondary'>
+              {running ? t('learning.genRunningHint') : t('learning.genQueuedNotice')}
+            </Text>
           </div>
           <Button size='mini' status='danger' onClick={onCancel}>
             {t('learning.genCancel')}

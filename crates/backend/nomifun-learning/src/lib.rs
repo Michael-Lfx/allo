@@ -13,7 +13,7 @@ mod state;
 mod switches;
 mod tutorial;
 
-pub use switches::is_off_switch_value;
+pub use switches::{is_off_switch_value, is_task_gate_disabled_value, TASK_GATE_SWITCH_ENV};
 
 pub use completer::LearningCompleter;
 
@@ -62,6 +62,8 @@ pub use generation::{
 };
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::definition_audit;
+pub use learning_graph::lexicon;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
 pub use learning_graph::structure_contract::{
     reconcile_doors as reconcile_structure_doors,
@@ -72,7 +74,8 @@ pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, CourseDetail,
-    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, ConceptAuditCycle,
+    ConceptAuditEntry, ConceptAuditReport, ConceptAuditSelfRef, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,
@@ -85,6 +88,7 @@ pub use models::{
 };
 pub use models::{
     MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
+    LearningGraphGenerationStatus, LearningTaskGateReadout,
 };
 pub use service::{
     DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,

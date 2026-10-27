@@ -125,6 +125,23 @@ pub struct LearningGraphGenerationStatus {
     pub running: bool,
     pub topic: Option<String>,
     pub elapsed_secs: Option<u64>,
+    /// 排队任务数（m7 资源闸排队可见；off 臂恒 0）。
+    pub queued: usize,
+}
+
+/// 任务资源闸读数（m7，smoke 对照卡数据源）：闸状态 + 在跑/排队的当前值与
+/// 峰值。判据形态：on 臂 `running_peak <= limit` 恒成立；off 臂 `queued` 恒
+/// 0、`running_peak` 可超 limit（直跑形态读数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningTaskGateReadout {
+    /// 闸是否在场（`NOMI_LEARNING_TASK_GATE` 未关）。
+    pub enabled: bool,
+    /// 在跑上限（常量 5）。
+    pub limit: usize,
+    pub running: usize,
+    pub running_peak: usize,
+    pub queued: usize,
+    pub queued_peak: usize,
 }
 
 impl GenerateCourseRequest {
@@ -1710,7 +1727,9 @@ pub struct SpineView {
 }
 
 /// 块视图行：`layer` = assumes 前置链深度（L0 起算，层号不是排期）；
-/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）。
+/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）；
+/// `door_refs` = 门位标签（m1，learnhub #165 v2.14：覆盖本块主题的门口
+/// 编号，语义 =「能满足判据必已会本块」；旧快照无键 = 空数组）。
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockView {
     pub name: String,
@@ -1720,6 +1739,8 @@ pub struct BlockView {
     pub note: String,
     pub layer: usize,
     pub no_prereq: bool,
+    #[serde(default)]
+    pub door_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1778,6 +1799,10 @@ pub struct TerrainDoorView {
     pub id: String,
     pub criterion: String,
     pub kind: String,
+    /// 块覆盖统计（m1）：本块结构中被该门口 door_refs 标注覆盖的块数
+    /// （过门自检读侧的机械读数；无标注 = 0）。
+    #[serde(default)]
+    pub covered_blocks: usize,
 }
 
 /// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位
@@ -1866,6 +1891,46 @@ pub struct GraphConceptRefView {
     /// 概念正名）。
     pub ref_name: Option<String>,
     pub status: LessonStatus,
+}
+
+/// 定义审计条目（m9 只读报告）：概念 + 机械点名片段。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditEntry {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声；课程豁免过滤后）。
+    pub fragments: Vec<String>,
+}
+
+/// 定义审计自指条目：定义含自身正名（ISO 704 禁止）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditSelfRef {
+    pub concept_id: String,
+    pub name: String,
+}
+
+/// 定义审计互指对（循环定义的最短形态 A↔B）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditCycle {
+    pub a_concept_id: String,
+    pub a_name: String,
+    pub b_concept_id: String,
+    pub b_name: String,
+}
+
+/// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+/// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditReport {
+    /// 审计的概念总数（登记表全量、非废弃）。
+    pub concept_count: u32,
+    /// 有缺口的概念条目（零片段的概念不占行；按片段数降序）。
+    pub flagged: Vec<ConceptAuditEntry>,
+    /// 自指概念（定义含自身正名）。
+    pub self_refs: Vec<ConceptAuditSelfRef>,
+    /// 两两互指（按 (a, b) 字典序）。
+    pub mutual_cycles: Vec<ConceptAuditCycle>,
 }
 
 #[derive(Debug, Clone, Serialize)]

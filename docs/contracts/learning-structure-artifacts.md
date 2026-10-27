@@ -1,9 +1,9 @@
 ---
 contract: learning-structure-artifacts
-version: "1.5"
-date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）
-sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
+version: "1.6"
+date: 2026-10-26
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）
+sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
 ---
 
 # 学习结构产物契约 v1.0
@@ -81,7 +81,8 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
   ],
   "blocks": [
     { "name": "<块名>", "slug": "<英文标识>", "spine": "<主干名>",
-      "stage": "入门 | 进阶 | 高级", "note": "<一句话主题描述>" }
+      "stage": "入门 | 进阶 | 高级", "note": "<一句话主题描述>",
+      "door_refs": ["G1"] }
   ],
   "edges": [
     { "source": "<块名>", "target": "<块名>", "type": "assumes | composes | contrasts",
@@ -93,10 +94,16 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 ```
 
 **块 = 原子教学主题单元**（能独立解释一个现象或完成一个操作）。字段只有身份与
-结构位（五键纪律）——定义/操作/实例/易错/source 等判据形字段一律不进块；块不是
-概念，`note` 明令非判据、永不进登记表。**一物一名**：名字禁并列连词与并列分隔符
-（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词不是连词，词中
-位才计并列——learnhub #53 留痕的机械读法放宽）。薄干声明随主干给
+结构位（五键纪律）加**唯一可选键 `door_refs`**（v1.6，learnhub #165 契约
+v2.14 门位标签）——定义/操作/实例/易错/source 等其余判据形字段一律不进块；
+块不是概念，`note` 明令非判据、永不进登记表。**door_refs 语义** =「学习者能
+满足这些门口判据，就必然已会本块」：入门档各块被某条门口判据**整体覆盖**才标
+（编号逐字取自 `domain.prerequisite_doors`，一块可引多条），**宁缺勿滥**——
+错标比漏标严重；进阶/高级（正式内容段）不标；旧快照无键合法（键可选）。消费
+面 = 过门自检读侧（TerrainView 覆盖统计 + 结构 Tab 门口→覆盖块映射 + 块详情
+door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一名**：名字禁并列连词
+与并列分隔符（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词
+不是连词，词中位才计并列——learnhub #53 留痕的机械读法放宽）。薄干声明随主干给
 （`thin_spine: true` + 非空 `reason` 豁免每干配额）。
 
 **边方向语义**（learnhub #42 定案）：`assumes` 的**源 = 需求方、目标 = 前置**，
@@ -118,7 +125,8 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 | gd.spines.count | spines 条数 ∈ 6..=12 |
 | gd.spines.required | 每条 name/definition/instance 非空、key_points ≥1；键 ⊆ {name, definition, key_points, instance, thin_spine, reason}；name 在产物内唯一 |
 | gd.blocks.count | 条数 < 40 红、> 100 红；80 < n ≤ 100 记「越档」**警告**（不拒收） |
-| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note}（判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
+| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
+| gd.blocks.door_refs | `door_refs` 逐条形态 `G<数字>` 且块内不重复；跨产物解析（引用 ⊆ 地形门口产出 **且** ⊆ 本课声明课程门）归 §4 对账面（悬挂/越出 = 红，learnhub `check_door_references` 同款） |
 | gd.blocks.one_name | 块名不含并列标记（与/和/及/、/,/，/斜杠），「…」段内豁免、词边「和」豁免 |
 | gd.blocks.slug | slug 匹配 `^[a-z0-9-]+$`；name 唯一、slug 唯一 |
 | gd.blocks.spine_ref | 每块 spine ∈ spines 名集 |
@@ -166,11 +174,24 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 从门口贴地起排，门口与入门档之间不留无主地带。地形由此收缩为**地板以下与临门自检**
 两类判据（`hard` / `self_check`），由生长循环自己教出来的部分照旧归生长。
 
+**门口梯队口径（v1.6 注记，learnhub #165 契约 v2.14 措辞域中立化）**：门口不是
+单条起步线，而是一支**入门段梯队**——首门贴真实起步地板，其余各门沿入门段内容带
+向上立，每条判据覆盖一段**可整体自检**的内容带；带分不清或判据写不实就不硬凑门
+（宁缺勿滥；allo 量级档维持 4–8 条）。梯队各门是**自检参考**，不是进入闸门、不是
+免学承诺——带内内容照常进知识结构、由课程教出。door_refs 标注面 =「入门档各块被
+哪条梯队判据**整体**覆盖才标」（§2.1）。
+
 ## 4 门口对账
 
 structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors 定义里解析，
 悬挂 = 红（违规代码仍记 `gd.domain.doors`，消息携带已知门口清单）。对账失败 =
 两份产物一起重生成（生成侧机械对账，堵引用悬空——g2 裁决）。
+
+**叉积核验（v1.6，learnhub `check_door_references` 同款）**：块级 `door_refs`
+门位标签逐条过双臂——①引用 ⊆ 地形 doors 产出（悬空 = 红，`gd.blocks.door_refs`，
+消息指名块与编号 + 已知门口清单）；②引用 ⊆ 本课声明课程门
+（`prerequisite_doors`，越出 = 永不满足的死标签，红）。两臂都走既有「逐条款
+报告进反馈重试」回路，零新机制。对账同样进修补回合的 `st.ops.apply` 全量重过。
 
 ## 5 存储与快照信封
 
