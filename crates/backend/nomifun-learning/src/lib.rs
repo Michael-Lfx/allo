@@ -62,6 +62,10 @@ pub use generation::{
 };
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::basis_declaration::{
+    BASIS_DECLARATION_SWITCH_ENV, DECLARATION_SOURCE, DeclaredConceptView,
+    is_basis_declaration_disabled_value,
+};
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
 pub use learning_graph::structure_contract::{
     reconcile_doors as reconcile_structure_doors,
@@ -71,8 +75,9 @@ pub use learning_graph::structure_contract::{
 pub use learning_graph::structure_gen::StructureInput;
 
 pub use models::{
-    ActivityKind, ActivityView, AttemptResult, CourseDetail,
-    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DiagnosticItem, DiagnosticPlan,
+    ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, CourseDetail,
+    CourseGenerationMode, CourseKind, CoursePack, CourseSummary, DeclareBasisRequest,
+    DeclarationResultView, DiagnosticItem, DiagnosticPlan,
     DueReview, GenerateCourseRequest, GenerateLessonRequest,
     GraphBatchView, GraphBlockedView, GraphConceptRefView, GraphConceptRowView,
     GraphHistoryView, GraphNodeHistoryView, LearningGraphView, LessonStatus,

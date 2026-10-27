@@ -523,6 +523,8 @@ pub(crate) use generation_tasks::{
 };
 
 #[cfg(test)]
+mod basis_tests;
+#[cfg(test)]
 mod tests;
 
 use self::course::CourseKbSources;

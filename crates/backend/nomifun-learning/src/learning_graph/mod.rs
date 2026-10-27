@@ -27,6 +27,7 @@
 
 pub mod advice_alias;
 pub mod alias_records;
+pub mod basis_declaration;
 pub mod defnear;
 pub mod growth_contract;
 pub mod growth_retry;
