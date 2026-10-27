@@ -52,6 +52,8 @@
   "genNotRunning": "当前没有进行中的生成",
   "genCancelled": "生成已取消",
   "genBgRunning": "课程生成中",
+  "genBgQueued": "课程排队中",
+  "genQueuedNotice": "任务已提交，正在排队等待空闲资源槽；排队期可取消。",
   "genBgFailed": "生成失败",
   "genBgDone": "生成完成",
   "genView": "查看",

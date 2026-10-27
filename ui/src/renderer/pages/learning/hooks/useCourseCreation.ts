@@ -16,11 +16,11 @@ import { errorMessage, type Translate } from '../utils';
  * ——t2 采样预算按库分摊，5 库时每库 8 文件仍有完整的结构预算。 */
 export const MAX_COURSE_KNOWLEDGE_BASES = 5;
 
-/** 对话框内生成视图的一次完整尝试：运行中 / 已完成（课程入库）/
- * 失败 / 已取消（用户主动取消，重试即重新发起）。
- * request 保留用于失败后的「重试」。 */
+/** 对话框内生成视图的一次完整尝试：排队中（m7 资源闸：提交已受理、
+ * 等空闲许可，排队期可取消）/ 运行中 / 已完成（课程入库）/ 失败 /
+ * 已取消（用户主动取消，重试即重新发起）。request 保留用于失败后的「重试」。 */
 export interface CourseGenerationState {
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   request: GenerateCourseRequest;
   result: CourseDetail | null;
   error: string | null;
@@ -96,7 +96,9 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   // 运行中保持不变（重开对话框回到进度视图）。悬浮指示条的「查看」仍走
   // openGenerator，保留查看终态详情的入口。
   const openCreateForm = useCallback(() => {
-    setGeneration((current) => (current && current.status === 'running' ? current : null));
+    setGeneration((current) =>
+      current && (current.status === 'running' || current.status === 'queued') ? current : null
+    );
     void openGenerator();
   }, [openGenerator]);
 
@@ -236,16 +238,17 @@ export function useCourseCreation({ navigate, t, setBusyId }: UseCourseCreationO
   }, [generateCourse, generation]);
 
   // 页面挂载时恢复后台生成状态：对话框状态是易失的（切页即丢），服务端
-  // 注册表是事实来源。running 时重建 generation 状态，让悬浮指示条与对话
-  // 框进度视图恢复；完成/失败态无法可靠恢复（进程内会话可能已终结），由
-  // 用户从课程列表查看或重新发起。
+  // 注册表是事实来源。running 时重建 running 态；m7 资源闸排队中（无在跑、
+  // queued>0）重建 queued 态——排队期同样可从指示条回到进度视图并取消。
+  // 完成/失败态无法可靠恢复（进程内会话可能已终结），由用户从课程列表查看
+  // 或重新发起。
   const refreshGenerationStatus = useCallback(async () => {
     if (generation) return;
     try {
       const status = await learningApi.generationStatus();
-      if (status.running && status.topic) {
+      if (status.topic && (status.running || status.queued > 0)) {
         setGeneration({
-          status: 'running',
+          status: status.running ? 'running' : 'queued',
           request: { course_kind: 'learning_graph', description: status.topic },
           result: null,
           error: null,

@@ -4,7 +4,8 @@ import { Button, Card, Spin, Tag, Typography } from '@arco-design/web-react';
 const { Text } = Typography;
 
 /** 后台生成悬浮指示条：创建对话框关闭后，生成仍在 HTTP 请求内继续——
- * 运行中/失败/取消/完成四种状态都从这里回到对话框进度视图，运行中可取消。
+ * 排队中（m7 资源闸）/运行中/失败/取消/完成五种状态都从这里回到对话框
+ * 进度视图，排队期与运行中都可取消（排队取消 = 释放排队位，body 零执行）。
  * 多知识库（t4）：sources 非空时展示「来源：库A、库B」（名称由调用方按库 id 解析）。 */
 export function CourseGenerationPill({
   status,
@@ -13,7 +14,7 @@ export function CourseGenerationPill({
   onView,
   onCancel,
 }: {
-  status: 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   topic: string;
   sources?: string[];
   onView: () => void;
@@ -21,18 +22,20 @@ export function CourseGenerationPill({
 }) {
   const { t } = useTranslation();
   const label =
-    status === 'running'
-      ? t('learning.genBgRunning')
-      : status === 'failed'
-        ? t('learning.genBgFailed')
-        : status === 'cancelled'
-          ? t('learning.genCancelled')
-          : t('learning.genBgDone');
+    status === 'queued'
+      ? t('learning.genBgQueued')
+      : status === 'running'
+        ? t('learning.genBgRunning')
+        : status === 'failed'
+          ? t('learning.genBgFailed')
+          : status === 'cancelled'
+            ? t('learning.genCancelled')
+            : t('learning.genBgDone');
   return (
     <div className='fixed right-24px bottom-24px z-100'>
       <Card size='small' className='shadow-lg'>
         <div className='flex items-center gap-12px'>
-          {status === 'running' ? (
+          {status === 'running' || status === 'queued' ? (
             <Spin size={14} />
           ) : (
             <Tag
@@ -61,7 +64,7 @@ export function CourseGenerationPill({
           <Button size='mini' type='secondary' onClick={onView}>
             {t('learning.genView')}
           </Button>
-          {status === 'running' && (
+          {(status === 'running' || status === 'queued') && (
             <Button size='mini' status='danger' onClick={onCancel}>
               {t('learning.genCancel')}
             </Button>
