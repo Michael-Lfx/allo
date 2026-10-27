@@ -1,12 +1,14 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
+  BasisView,
   CalendarStats,
   CheckinStatus,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
+  DeclarationResultView,
   DueReview,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
@@ -125,6 +127,26 @@ export const learningApi = {
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/repair`,
       request
+    ),
+  // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点、
+  // 不排课、不计 XP）；幂等增量——已声明门口自动剔除，全已声明 = noop
+  declareBasis: (courseId: string, doors: string[]) =>
+    httpRequest<DeclarationResultView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
+      { doors }
+    ),
+  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露
+  basisView: (courseId: string) =>
+    httpRequest<BasisView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
+    ),
+  // 撤销本课全部已会声明（删锚行；概念留池——声明可撤、概念不灭）
+  revokeBasis: (courseId: string) =>
+    httpRequest<{ revoked: number }>(
+      'DELETE',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
     ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),

@@ -834,6 +834,62 @@ export interface GraphConceptRowView {
   refs: GraphConceptRefView[];
   /** 其他还在教该概念的课程标题（跨课程就绪的来源可见性） */
   other_courses: string[];
+  /** 铸造出处（attestation 簿记；'basis-declaration' = 已会声明铸入） */
+  source?: string | null;
+  /** 本课已会声明覆盖该概念（声明锚反查；无节点也入表） */
+  declared?: boolean;
+}
+
+// ── 已会声明（Declared Known，m2）──────────────────────────────────────────
+
+/** 一次已会声明的返回面（noop = 幂等空跑，全空清单） */
+export interface DeclarationResultView {
+  course_id: string;
+  /** 本次实际声明的门口（差集；noop = 空） */
+  doors: string[];
+  /** 本次命中的目标块显示名（AND 口径） */
+  blocks: string[];
+  /** 本次铸出或复用的概念 */
+  concepts: DeclaredConceptView[];
+  minted: number;
+  reused: number;
+  /** 幂等空跑（勾选全部已声明）：零 LLM 零写 */
+  noop: boolean;
+  /** 铸造软提示（人面，如清单截断） */
+  warnings: string[];
+}
+
+export interface DeclaredConceptView {
+  concept_id: string;
+  name: string;
+  /** 新铸 | 复用（复用 = 命名门撞既有概念，入池不重铸） */
+  minted: boolean;
+}
+
+/** 已会声明读数（GET basis）：累计声明 + 概念回显 + 解析失败披露 */
+export interface BasisView {
+  course_id: string;
+  /** 累计已声明门口（全部锚行并集） */
+  doors: string[];
+  /** 累计命中块 slug（全部锚行并集） */
+  blocks: string[];
+  /** 已声明概念（正名 + 铸造出处） */
+  concepts: BasisConceptView[];
+  /** 锚行里已无法在登记表解析的概念 id（概念被移除后的如实披露） */
+  unresolved_concept_ids: string[];
+  /** 累计声明次数（锚行数） */
+  declarations: number;
+  /** 机制开关状态（off 时端点 409，读数照常可读） */
+  enabled: boolean;
+}
+
+export interface BasisConceptView {
+  concept_id: string;
+  canonical: string;
+  /** 声明来源标记（恒 'basis-declaration'；来源保留不抹） */
+  source: string | null;
+  /** 该概念出现在几次声明里 */
+  declaration_count: number;
 }
 
 /** 一条活跃别名（j04）：该名字的意义（缺席 = 与概念定义同义）与出处 */

@@ -28,6 +28,7 @@ import { errorMessage } from '../utils';
 import type {
   Activity,
   AttemptRecord,
+  BasisView,
   CourseDetail,
   GraphBatchView,
   GraphConceptRowView,
@@ -226,6 +227,84 @@ const LearningGraphWorkspace: React.FC<{
       setRepairing(false);
     }
   }, [detail.course.id, refetchStructure, t]);
+
+  // ── 已会声明（Declared Known，m2）：读数 + 声明 + 撤销 ──────────────────
+  const [basis, setBasis] = useState<BasisView | null>(null);
+  const [declaringBasis, setDeclaringBasis] = useState(false);
+  const [revokingBasis, setRevokingBasis] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      learningApi
+        .basisView(detail.course.id)
+        .then((view) => {
+          if (!cancelled) setBasis(view);
+        })
+        .catch(() => {
+          // 读数缺席不挡结构 Tab：保留 null（声明入口按未声明渲染）。
+          if (!cancelled) setBasis(null);
+        });
+    };
+    load();
+    // 声明/撤销/生长经 WS course-generation 流（basis_declared /
+    // basis_revoked 复用既有事件面）驱动重拉。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === detail.course.id) load();
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [detail.course.id]);
+
+  const declareBasis = useCallback(
+    async (doors: string[]) => {
+      setDeclaringBasis(true);
+      try {
+        const result = await learningApi.declareBasis(detail.course.id, doors);
+        if (result.noop) {
+          Modal.info({ title: t('learning.learningGraphBasisDeclareNoop') });
+        } else {
+          Modal.info({
+            title: t('learning.learningGraphBasisDeclareDoneTitle'),
+            content: t('learning.learningGraphBasisDeclareDone', {
+              doors: result.doors.join('、'),
+              blocks: result.blocks.join('、'),
+              minted: result.minted,
+              reused: result.reused,
+            }),
+          });
+        }
+        const view = await learningApi.basisView(detail.course.id);
+        setBasis(view);
+      } catch (actionError) {
+        Modal.error({
+          title: t('learning.learningGraphBasisDeclareFailed'),
+          content: errorMessage(t, actionError),
+        });
+      } finally {
+        setDeclaringBasis(false);
+      }
+    },
+    [detail.course.id, t]
+  );
+
+  const revokeBasis = useCallback(async () => {
+    setRevokingBasis(true);
+    try {
+      await learningApi.revokeBasis(detail.course.id);
+      const view = await learningApi.basisView(detail.course.id);
+      setBasis(view);
+    } catch (actionError) {
+      Modal.error({
+        title: t('learning.learningGraphBasisRevokeFailed'),
+        content: errorMessage(t, actionError),
+      });
+    } finally {
+      setRevokingBasis(false);
+    }
+  }, [detail.course.id, t]);
 
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
@@ -516,10 +595,15 @@ const LearningGraphWorkspace: React.FC<{
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
           <StructureGraphTab
             view={structure}
+            basis={basis}
             onMount={() => void mountStructure()}
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            onDeclareBasis={(doors) => void declareBasis(doors)}
+            declaringBasis={declaringBasis}
+            onRevokeBasis={() => void revokeBasis()}
+            revokingBasis={revokingBasis}
           />
         </Tabs.TabPane>
       </Tabs>
@@ -690,7 +774,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 160,
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='min-w-0'>
-              <div className='truncate font-500 text-[var(--color-text-1)]'>{row.canonical}</div>
+              <div className='flex items-center gap-4px'>
+                <span className='min-w-0 truncate font-500 text-[var(--color-text-1)]'>
+                  {row.canonical}
+                </span>
+                {row.source === 'basis-declaration' && (
+                  <Tag size='small' color='green' className='!mx-0 shrink-0'>
+                    {t('learning.learningGraphConceptSourceDeclaration')}
+                  </Tag>
+                )}
+              </div>
               {row.aliases.length > 0 && (
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
@@ -708,6 +801,11 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           dataIndex: 'refs',
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='flex flex-col gap-2px'>
+              {row.refs.length === 0 && row.declared && (
+                <span className='text-12px text-t-tertiary'>
+                  {t('learning.learningGraphConceptDeclaredOnly')}
+                </span>
+              )}
               {row.refs.map((reference) => (
                 <div key={`${reference.lesson_id}:${reference.role}`} className='flex items-center gap-6px text-12px'>
                   <Tag
