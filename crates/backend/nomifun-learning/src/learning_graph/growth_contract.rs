@@ -349,7 +349,8 @@ pub fn validate_proposal(value: &Value) -> Vec<ContractViolation> {
                         violations.push(red(
                             "ng.aliases.atomic_name",
                             format!(
-                                "别名提名「{name}」与批内既有名字（节点/铸名/别名）互撞——一物一名"
+                                "别名提名「{name}」与批内既有名字（节点/铸名/别名）互撞——一物一名；\
+                                 多个概念拆成多条提名（每个概念一条、各自下定义），或改写绕开撞名"
                             ),
                         ));
                     }
@@ -550,14 +551,29 @@ pub fn proposal_schema() -> Value {
     })
 }
 
-/// 概念评审输出的 JSON Schema。
+/// 概念评审输出的 JSON Schema。`term_provenance` 为 required（m3）：serde
+/// 解析面 `#[serde(default)]` 容旧包/存量录制，schema 侧约束最大化。
 pub fn review_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["verdict"],
+        "required": ["verdict", "term_provenance"],
         "properties": {
             "verdict": { "enum": REVIEW_VERDICTS },
+            "term_provenance": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["concept", "term", "source"],
+                    "properties": {
+                        "concept": { "type": "string", "minLength": 1 },
+                        "term": { "type": "string", "minLength": 1 },
+                        "source": { "enum": crate::learning_graph::provenance::TERM_SOURCES },
+                        "ref": { "type": "string" },
+                    },
+                },
+            },
             "problems": {
                 "type": "array",
                 "maxItems": REVIEW_PROBLEMS_MAX,
@@ -738,6 +754,50 @@ mod tests {
         assert!(validate_review(&reject).iter().any(|v| v.code == "ng.review.problems"));
     }
 
+    /// #176 原子名出路指引：atomic_name 违规消息带「拆成多条提名」——终杀
+    /// 复合名的门不再只说禁不说路（learnhub validator.rs 同款）。
+    #[test]
+    fn atomic_name_violation_carries_the_split_way_out() {
+        let clash = json!({
+            "nodes": [],
+            "mints": [{ "canonical": "十字相乘", "definition": "d" }],
+            "new_aliases": [{ "name": "十字相乘", "definition": "另一个定义", "source": "s" }],
+            "note": "n"
+        });
+        let violations = validate_proposal(&clash);
+        let message = violations
+            .iter()
+            .find(|violation| violation.code == "ng.aliases.atomic_name")
+            .expect("atomic_name 红条在场")
+            .message
+            .clone();
+        assert!(
+            message.contains("多个概念拆成多条提名"),
+            "违规消息须带出路指引（拆条）：{message}"
+        );
+        assert!(
+            message.contains("一物一名"),
+            "违规消息保留一物一名判词：{message}"
+        );
+    }
+
+    /// #176 定义原子性条款：COACH_SYSTEM 概念纪律段的关键短语（条款覆盖
+    /// 断言——删条款 = 本测试红）。
+    #[test]
+    fn coach_system_carries_the_definition_atomicity_clause() {
+        let system = crate::learning_graph::coach_system();
+        for phrase in [
+            "一条提名只定义一个对象",
+            "不得顺带给第二个概念下定义",
+            "单列提名",
+            "改写绕开",
+            "把提名拆成两半",
+            "概念严格原子，学习节点允许复合",
+        ] {
+            assert!(system.contains(phrase), "COACH_SYSTEM 缺「{phrase}」");
+        }
+    }
+
     /// 互钉：schema 的词表/键集/量级与 validator 常量同源。
     #[test]
     fn schema_is_pinned_to_validator_constants() {
@@ -757,6 +817,18 @@ mod tests {
             json!(REVIEW_FIELDS)
         );
         assert_eq!(review["properties"]["problems"]["maxItems"], json!(REVIEW_PROBLEMS_MAX));
+        // 挂号表（m3）：新包 schema required——serde 解析面容旧（缺席 = 空），
+        // 必填性 = schema required + 提示词 + 重试执法（learnhub「schema 侧
+        // 约束最大化」同款）。source 词表与 provenance 解析面互钉。
+        assert_eq!(review["required"], json!(["verdict", "term_provenance"]));
+        assert_eq!(
+            review["properties"]["term_provenance"]["items"]["properties"]["source"]["enum"],
+            json!(crate::learning_graph::provenance::TERM_SOURCES)
+        );
+        assert_eq!(
+            review["properties"]["term_provenance"]["items"]["required"],
+            json!(["concept", "term", "source"])
+        );
     }
 
     /// 金样反钉：golden 批必须逐键落在 schema 的白名单内。

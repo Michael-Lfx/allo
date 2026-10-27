@@ -133,6 +133,12 @@ pub struct GrowthRunStats {
     pub attempts_used: usize,
     /// success | early_stop | exhausted | cancelled。
     pub stop_reason: String,
+    /// 挂号表机械校验读数（m3）：评审接受的表行数 / 判「结论不可用」次数 /
+    /// 带死因重试次数 / 两连败 Degraded 保守放行。
+    pub review_provenance_rows: usize,
+    pub review_provenance_invalid: usize,
+    pub review_provenance_retried: usize,
+    pub review_provenance_degraded: bool,
 }
 
 /// 生成注册的内部状态（见 [`LearningService::generation_tasks`]）。
