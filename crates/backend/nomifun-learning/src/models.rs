@@ -1868,6 +1868,46 @@ pub struct GraphConceptRefView {
     pub status: LessonStatus,
 }
 
+/// 定义审计条目（m9 只读报告）：概念 + 机械点名片段。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditEntry {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声；课程豁免过滤后）。
+    pub fragments: Vec<String>,
+}
+
+/// 定义审计自指条目：定义含自身正名（ISO 704 禁止）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditSelfRef {
+    pub concept_id: String,
+    pub name: String,
+}
+
+/// 定义审计互指对（循环定义的最短形态 A↔B）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditCycle {
+    pub a_concept_id: String,
+    pub a_name: String,
+    pub b_concept_id: String,
+    pub b_name: String,
+}
+
+/// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+/// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditReport {
+    /// 审计的概念总数（登记表全量、非废弃）。
+    pub concept_count: u32,
+    /// 有缺口的概念条目（零片段的概念不占行；按片段数降序）。
+    pub flagged: Vec<ConceptAuditEntry>,
+    /// 自指概念（定义含自身正名）。
+    pub self_refs: Vec<ConceptAuditSelfRef>,
+    /// 两两互指（按 (a, b) 字典序）。
+    pub mutual_cycles: Vec<ConceptAuditCycle>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CourseDetail {
     pub course: CourseSummary,
