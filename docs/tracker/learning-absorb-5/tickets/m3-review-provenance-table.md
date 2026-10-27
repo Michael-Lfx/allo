@@ -2,8 +2,8 @@
 id: m3
 title: "评审挂号表 term_provenance 程序化 + 定义原子性条款（#169/#176）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -96,3 +96,9 @@ learnhub 立票缘由（ADR-0033）：评审判据文本逐字在场、flash 仍
 （三角形批第二次复发）——「判据在场」到「判据被执行」的鸿沟只能靠程序化
 闭环填。allo k07 对照卡若出现同形态（fixture 有挂号缺口而评审零发现），
 即本票的前置证据。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m3-review-provenance，c8a77c082 等）：ReviewOutcome 必填 `term_provenance` 表（serde default 容旧包）+ 机械校验器七项全实现（ref 可解析/自教∈teaches≠自身/已教不指本批/常识无 ref 不命中池/全覆盖/concept∈提名/term_grounded 逐字）+ 恰一次带死因重试 → Degraded + #176 定义原子性条款与原子名出路 + 同形词盲区头注 + NOMI_LEARNING_REVIEW_PROVENANCE 开关 + smoke `[provenance: rows= invalid= retried= degraded=]`。
+- **双臂对照（开关臂）**：assets/m3-review-provenance-comparison-card.md——on 臂 rows=21 invalid=0、档案 term_provenance ×3；**自然重试真机触发**（「方程」未逐字出现在「方程的根」定义——verdict 对照定义核实正确）；常识行 3/3 真常识、缺失行 = 真缺口；off 臂零表零档。
+- **code-review 修复**：term_grounded 空定义豁免系实现漂移——learnhub 参考核实为无条件校验后对齐（ccde92700，红绿钉 + 三个夹具补可落地定义）。

@@ -2,8 +2,8 @@
 id: m7
 title: "学习任务资源闸——并发上限 + 排队 + 取消窗口（#144/#145 缩编版）"
 type: task
-status: open
-assignee:
+status: closed
+assignee: zhangyj
 blocked_by: []
 part_of: ../map.md
 ---
@@ -98,3 +98,8 @@ part_of: ../map.md
 learnhub #145 迁移教训：**会话内层零资源防嵌套死锁**（外层持 Registry 再进
 内层会自锁）——allo 缩编版只有一层 permit，天然无此坑，但 m6 若把补批循环
 放进闸内，循环里再提交任务就是同形态嵌套——票内已注记依赖方向。
+
+## Resolution（2026-10-27 关票，implement-spec 波收口）
+
+- **交付**（learn-v5/m7-task-gate，e6e565062 等）：Semaphore(5) FIFO + TaskRecord queued 状态机（queued_at/position 进 GET /generation-tasks）+ 双侧闭合取消窗口（learnhub `cancel_during_submission_never_lets_queued_body_run` 60 轮压力移植）+ RAII GenerationTaskGuard 容量防漏（选型理由入提交）+ 键级互斥保持 + 维护 tick 任务过闸 + NOMI_LEARNING_TASK_GATE 开关 + 前端 queued 渲染 + i18n。
+- **双臂对照（开关臂）**：assets/m7-task-resource-gate-comparison-card.md——on 臂 `enabled=true limit=5 running_peak=1 queued=1 → 收尾 0/0`；off 臂直跑形态 queued 恒 0。**如实缺口**：>5 并发制造夹具未自然达成（维护臂峰值 1）——闸面 14 单测（含 6 提交 5 跑 1 排队）覆盖机械面，制造并发实测留人工项。
