@@ -8,9 +8,9 @@ const { Text } = Typography;
 
 /**
  * 结构块详情（投影非权威标注收敛到详情层）：五键结构位 + 所在主干/阶段 +
- * 依赖层 + 关联关系（三型边，双向列出）+ 固定文案。点图上的块节点弹出。
- * 块 stage 是契约闭词表中文字面（入门/进阶/高级）——展示走 i18n 映射，
- * 不直出（en-US 红线）。
+ * 依赖层 + 门位标签（door_refs，m1 过门自检读侧）+ 关联关系（三型边，双向
+ * 列出）+ 固定文案。点图上的块节点弹出。块 stage 是契约闭词表中文字面
+ * （入门/进阶/高级）——展示走 i18n 映射，不直出（en-US 红线）。
  */
 export function BlockDetail({
   block,
@@ -82,6 +82,18 @@ export function BlockDetail({
       </div>
       {block.note.trim() !== '' && (
         <div className='mt-6px text-12px text-[var(--color-text-2)]'>{block.note}</div>
+      )}
+      {block.door_refs.length > 0 && (
+        <div className='mt-6px flex flex-wrap items-center gap-4px text-11px'>
+          <Text type='secondary' className='text-11px'>
+            {t('learningGraphStructDoorRefsLabel')}
+          </Text>
+          {block.door_refs.map((door) => (
+            <Tag key={door} size='small' color='green' className='!mx-0'>
+              {door}
+            </Tag>
+          ))}
+        </div>
       )}
       <div className='mt-6px text-11px text-t-tertiary'>slug: {block.slug}</div>
       {relations.length > 0 && (

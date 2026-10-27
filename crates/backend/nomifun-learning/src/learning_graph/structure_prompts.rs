@@ -413,6 +413,12 @@ mod tests {
             "练习载体",
             "块链连续性自检",
             "不留悬空环节",
+            // m1（learnhub #165 v2.14）：door_refs 门位标签标注条款——入门档
+            // 全块过一遍、判据整体覆盖才标、宁缺勿滥、正式内容段不标。
+            "door_refs",
+            "整体覆盖",
+            "宁缺勿滥",
+            "必然已会本块",
         ] {
             assert!(goal_body.contains(phrase), "goal prompt missing「{phrase}」");
         }
@@ -428,6 +434,11 @@ mod tests {
             "不可自检豁免",
             "不是进入闸门",
             "进门前提",
+            // m1（learnhub #165 v2.14）：门口梯队句——首门贴地板、梯队沿入门
+            // 段内容带向上立、宁缺勿滥不硬凑门。
+            "入门段梯队",
+            "宁缺勿滥",
+            "硬凑门",
         ] {
             assert!(terrain_body.contains(phrase), "terrain prompt missing「{phrase}」");
         }
