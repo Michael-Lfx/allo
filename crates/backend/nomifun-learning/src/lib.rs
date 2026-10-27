@@ -105,6 +105,9 @@ pub use models::{
 };
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+pub use learning_graph::mint_evidence::MintResearchStats;
+/// 铸名门外部证据开关（m11）：`NOMI_LEARNING_MINT_RESEARCH` 判定与取值。
+pub use switches::{MINT_RESEARCH_SWITCH_ENV, mint_research_enabled};
 pub use settle::{
     QUIZ_EXCELLENT_RATIO, QUIZ_HALF_RATIO, QUIZ_PASS_RATIO, QUIZ_QUESTION_BUDGET,
     QUIZ_TRIGGER_SETTLEMENTS,
