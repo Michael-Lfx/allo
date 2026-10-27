@@ -14,8 +14,9 @@ mod switches;
 mod tutorial;
 
 pub use switches::{
-    is_off_switch_value, is_task_gate_disabled_value, lexicon_enforce_enabled,
-    lexicon_enforce_enabled_value, LEXICON_ENFORCE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
+    lexicon_enforce_enabled, lexicon_enforce_enabled_value, AUTO_REFILL_SWITCH_ENV,
+    LEXICON_ENFORCE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
 };
 
 pub use completer::LearningCompleter;
@@ -65,6 +66,7 @@ pub use generation::{
 };
 
 pub use learning_graph::ConceptTier;
+pub use learning_graph::AutoRefillVerdict;
 pub use learning_graph::definition_audit;
 pub use learning_graph::lexicon;
 pub use learning_graph::mounting::fnv1a_64 as learning_graph_hash;
@@ -91,10 +93,10 @@ pub use models::{
 };
 pub use models::{
     MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
-    LearningGraphGenerationStatus, LearningTaskGateReadout,
+    LearningGraphGenerationStatus, LearningTaskGateReadout, GrowthVerdictView,
 };
 pub use service::{
-    DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
+    DEFAULT_AUTO_REFILL_ENABLED, DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
     FINDINGS_WATERMARK_SWITCH_ENV, MAINTENANCE_INTERVAL_MINUTES,
     is_findings_watermark_disabled_value,
 };

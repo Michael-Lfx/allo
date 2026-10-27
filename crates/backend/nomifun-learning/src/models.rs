@@ -2493,6 +2493,22 @@ pub struct MaintenanceSettings {
     pub interval_minutes: i64,
 }
 
+/// 自动补批判定读数（m10 触发②端点）：`verdict` ∈ due | below_threshold |
+/// disabled（[`crate::learning_graph::AutoRefillVerdict`] 的机器名）；纯读
+/// 零副作用，Disabled 臂与停摆臂都如实随行——前端据此决定是否自动补批。
+#[derive(Debug, Clone, Serialize)]
+pub struct GrowthVerdictView {
+    pub verdict: String,
+    /// 就绪存量（水位口径，裁决输入原样回显）。
+    pub ready_count: usize,
+    /// 触发水位（READY_TRIGGER，与门同源的唯一数字）。
+    pub trigger: usize,
+    /// 开关合力（环境闸 ∧ 设置开关）。
+    pub enabled: bool,
+    /// 停摆臂（空图）：自动触发不进入（ADR-0010 只留空图臂）。
+    pub stalled: bool,
+}
+
 /// Memory-health dashboard: one snapshot over the active card pool and the
 /// review log, in review-day semantics (02:00 rollover).
 #[derive(Debug, Clone, Serialize)]

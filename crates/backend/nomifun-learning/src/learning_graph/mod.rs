@@ -59,6 +59,53 @@ pub(crate) const READY_TRIGGER: usize = 3;
 /// 单批新增节点上限（提示词与门同源，超过整批拒收）。
 pub(crate) const MAX_BATCH_NODES: usize = 5;
 
+// ── Auto Refill（自动补批判定，m10）────────────────────────────────────────
+
+/// 自动补批判定三态（learnhub 同名域中立化，m6 定案）：阈值仍是
+/// [`READY_TRIGGER`]（无新量纲）、无暂停线。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoRefillVerdict {
+    /// 面不够：就绪存量低于触发水位，补一批。
+    Due,
+    /// 水位以上：就绪存量不低于触发水位，无需补批。
+    BelowThreshold,
+    /// 开关关闭：设置开关与环境闸任一关闭（合力 false）即 Disabled。
+    Disabled,
+}
+
+impl AutoRefillVerdict {
+    /// 读数面的机器名（裁决端点与 smoke 读数行同源）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Due => "due",
+            Self::BelowThreshold => "below_threshold",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+/// 自动补批判定纯函数（裁决纯读零 LLM）：输入就绪存量与开关合力
+/// （设置 ∧ 环境闸）。裁决日志必带 ready 数字（一行）。
+pub fn auto_refill_verdict(ready_count: usize, enabled: bool) -> AutoRefillVerdict {
+    let verdict = if !enabled {
+        AutoRefillVerdict::Disabled
+    } else if ready_count < READY_TRIGGER {
+        AutoRefillVerdict::Due
+    } else {
+        AutoRefillVerdict::BelowThreshold
+    };
+    tracing::info!("auto_refill: ready={ready_count} verdict={}", verdict.as_str());
+    verdict
+}
+
+/// 环境闸读数（`NOMI_LEARNING_AUTO_REFILL`）：off/0/false = 关（verdict 恒
+/// Disabled）；未设或其它取值 = 开（设置开关正常起作用）。
+pub(crate) fn auto_refill_env_enabled() -> bool {
+    std::env::var(crate::switches::AUTO_REFILL_SWITCH_ENV)
+        .map(|value| !crate::switches::is_auto_refill_disabled_value(&value))
+        .unwrap_or(true)
+}
+
 // ── Tiers ──────────────────────────────────────────────────────────────────
 
 /// 概念掌握档位：知道 < 会用 < 能教。DB 与线上均存 locale 无关代码；中文
@@ -1747,6 +1794,40 @@ mod tests {
 
     fn batch_of(nodes: Vec<ProposedNode>) -> ProposedBatch {
         ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
+    }
+
+    // ── Auto Refill（m10）────────────────────────────────────────────────────
+
+    /// 裁决三态（m6 定案阈值不动：READY_TRIGGER=3）：就绪 ≥ 触发水位 =
+    /// BelowThreshold（水位以上，无需补批）；就绪 < 水位 = Due（面不够，
+    /// 补一批）；开关合力 false = Disabled（恒，水位以下也不再补）。
+    #[test]
+    fn auto_refill_verdict_three_states() {
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER, true),
+            AutoRefillVerdict::BelowThreshold
+        );
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER + 2, true),
+            AutoRefillVerdict::BelowThreshold
+        );
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER - 1, true),
+            AutoRefillVerdict::Due
+        );
+        assert_eq!(auto_refill_verdict(0, true), AutoRefillVerdict::Due);
+        assert_eq!(auto_refill_verdict(0, false), AutoRefillVerdict::Disabled);
+        assert_eq!(
+            auto_refill_verdict(READY_TRIGGER - 1, false),
+            AutoRefillVerdict::Disabled
+        );
+        // 读数面机器名（端点/smoke 读数行同源）。
+        assert_eq!(AutoRefillVerdict::Due.as_str(), "due");
+        assert_eq!(
+            AutoRefillVerdict::BelowThreshold.as_str(),
+            "below_threshold"
+        );
+        assert_eq!(AutoRefillVerdict::Disabled.as_str(), "disabled");
     }
 
     #[test]
