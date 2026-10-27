@@ -3226,7 +3226,7 @@ async fn growth_applies_a_gated_batch_to_registry_and_lessons() {
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
-            {"canonical": "求导法则", "aliases": [], "definition": ""}
+            {"canonical": "求导法则", "aliases": [], "definition": "求极限所用的运算法则"}
         ],
         "note": "首批两节点"
     }"#;
@@ -3313,7 +3313,7 @@ const VALID_BATCH: &str = r#"{
     ],
     "mints": [
         {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
-        {"canonical": "求导法则", "aliases": [], "definition": ""}
+        {"canonical": "求导法则", "aliases": [], "definition": "求极限所用的运算法则"}
     ],
     "note": "首批两节点"
 }"#;
@@ -3534,7 +3534,9 @@ fn set_learning_env(env_var: &'static str, value: &str) -> impl Drop {
 }
 
 /// 概念评审的打回结论（挂号表合规：批内两条铸名各一行常识行；problems
-/// 只点名甲节点——点名集的脚本面）。
+/// 只点名甲节点——点名集的脚本面）。常识行的逐字落地对照域 = 提名定义，
+/// 故夹具里被挂常识行的铸名定义都非空且含对应名词（空定义无处逐字落地 =
+/// 行伪，provenance 机械校验照判——learnhub 同构）。
 fn review_reject_verdict() -> String {
     serde_json::to_string(&json!({
         "verdict": "reject",
@@ -3682,7 +3684,7 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
-            {"canonical": "求导法则", "aliases": [], "definition": ""}
+            {"canonical": "求导法则", "aliases": [], "definition": "求极限所用的运算法则"}
         ],
         "note": "越权稿一"
     }"#;
@@ -3697,7 +3699,7 @@ async fn guard_violation_attempt_failure_carries_the_review_history() {
         ],
         "mints": [
             {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
-            {"canonical": "求导法则", "aliases": [], "definition": ""}
+            {"canonical": "求导法则", "aliases": [], "definition": "求极限所用的运算法则"}
         ],
         "note": "越权稿二"
     }"#;
