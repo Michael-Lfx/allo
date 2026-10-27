@@ -4,7 +4,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Progress, Button, Tag, Spin } from '@arco-design/web-react';
 import { classifyFailure } from '../classifyFailure';
-import { eventElapsed, formatElapsedClock, coalesceProgressEvents } from '../progressEventElapsed';
+import { RollingDuration, TimedPhrase, timerSlot } from '@renderer/components/base/Counter';
+import { eventElapsed, coalesceProgressEvents } from '../progressEventElapsed';
 import { statusLabel, statusTagColor } from './SessionCard';
 import { stageLabel } from '../stageI18n';
 import { useDocumentHidden, useRunStatusFull } from '../useRunStatusFeed';
@@ -28,7 +29,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
   models,
   creditsConsumed,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const status = useRunStatusFull();
   const hidden = useDocumentHidden();
   const chronological = status?.events ?? [];
@@ -221,8 +222,6 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                 updatedAt: status.updated_at,
                 untilIndex: index + count,
               });
-              const clock =
-                elapsed.secs == null ? '' : formatElapsedClock(elapsed.secs);
               // Never show backend Chinese messages in the activity log — stage label is enough.
               return (
                 <div
@@ -242,7 +241,7 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                   >
                     {label}
                   </span>
-                  {clock ? (
+                  {elapsed.secs != null ? (
                     <span
                       className={[
                         'shrink-0 tabular-nums',
@@ -252,15 +251,20 @@ const ProgressTimeline: React.FC<ProgressTimelineProps> = ({
                       ].join(' ')}
                       aria-live={elapsed.live ? 'polite' : undefined}
                     >
-                      {elapsed.live
-                        ? t('videoGeneration.workspace.progress.elapsedLive', {
-                            time: clock,
-                            defaultValue: '{{time}}',
-                          })
-                        : t('videoGeneration.workspace.progress.elapsedDone', {
-                            time: clock,
-                            defaultValue: '耗时 {{time}}',
-                          })}
+                      <TimedPhrase
+                        text={
+                          elapsed.live
+                            ? t('videoGeneration.workspace.progress.elapsedLive', {
+                                time: timerSlot.time,
+                                defaultValue: '{{time}}',
+                              })
+                            : t('videoGeneration.workspace.progress.elapsedDone', {
+                                time: timerSlot.time,
+                                defaultValue: '耗时 {{time}}',
+                              })
+                        }
+                        slots={{ [timerSlot.time]: <RollingDuration seconds={elapsed.secs} locale={i18n.language} /> }}
+                      />
                     </span>
                   ) : null}
                 </div>

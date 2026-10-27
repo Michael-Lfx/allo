@@ -4,6 +4,7 @@ import { Button, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import React, { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { RollingDuration } from '@renderer/components/base/Counter';
 import {
   useSpeechInput,
   type SpeechInputAvailability,
@@ -66,14 +67,6 @@ const getErrorMessageKey = (errorCode: SpeechInputErrorCode) => {
   }
 };
 
-const formatSpeechDuration = (durationMs: number): string => {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-};
-
 const getTooltipKey = (availability: SpeechInputAvailability, isListening: boolean, isProcessing: boolean) => {
   if (isProcessing) {
     return 'conversation.chat.speech.processing';
@@ -94,7 +87,7 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
   locale,
   onTranscript,
 }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const {
     availability,
     clearError,
@@ -206,7 +199,14 @@ const SpeechInputButton: React.FC<SpeechInputButtonProps> = ({
           <span className='speech-input-feedback__label'>
             {isProcessing
               ? t('conversation.chat.speech.transcribingShort')
-              : formatSpeechDuration(recordingDurationMs)}
+              : (
+                  <RollingDuration
+                    seconds={recordingDurationMs / 1000}
+                    hours='never'
+                    padMinutes={false}
+                    locale={locale || i18n.language}
+                  />
+                )}
           </span>
         </div>
       )}

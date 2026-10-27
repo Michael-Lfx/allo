@@ -6,7 +6,8 @@ import { ArrowLeft, Download } from '@icon-park/react';
 import { trackFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 import BriefingModelFields from '../home/BriefingModelFields';
 import type { BriefingModelPick } from '../home/types';
-import { formatElapsedClock, parseEventMs } from '../progressEventElapsed';
+import { RollingDuration, TimedPhrase, timerSlot } from '@renderer/components/base/Counter';
+import { parseEventMs } from '../progressEventElapsed';
 import {
   cancelBriefing,
   getBriefing,
@@ -113,7 +114,7 @@ function composeStartedMs(run: BriefingRunSnapshot | null): number | null {
 
 export default function BriefingWorkspacePage() {
   const { id = '' } = useParams();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const [session, setSession] = useState<BriefingSession | null>(null);
   const [plan, setPlan] = useState<BriefingPlan | null>(null);
@@ -232,11 +233,11 @@ export default function BriefingWorkspacePage() {
         return t('videoGeneration.briefing.composeWait');
     }
   })();
-  const composeClock = (() => {
+  const composeElapsedSecs = (() => {
     if (!composing) return null;
     const start = composeStartedMs(run);
-    if (start == null) return formatElapsedClock(0);
-    return formatElapsedClock((nowMs - start) / 1000);
+    if (start == null) return 0;
+    return Math.max(0, (nowMs - start) / 1000);
   })();
   const busyRef = useRef(false);
 
@@ -399,9 +400,16 @@ export default function BriefingWorkspacePage() {
                 {t('videoGeneration.briefing.sourceCount', { count: session.source_urls.length })}
               </span>
             </div>
-            {composing && composeClock ? (
+            {composing && composeElapsedSecs != null ? (
               <p className={styles.summary}>
-                {t('videoGeneration.briefing.composeElapsed', { clock: composeClock })}
+                <TimedPhrase
+                  text={t('videoGeneration.briefing.composeElapsed', { clock: timerSlot.clock })}
+                  slots={{
+                    [timerSlot.clock]: (
+                      <RollingDuration seconds={composeElapsedSecs} locale={i18n.language} />
+                    ),
+                  }}
+                />
               </p>
             ) : session.summary ? (
               <p className={styles.summary}>{session.summary}</p>
@@ -497,9 +505,16 @@ export default function BriefingWorkspacePage() {
                         style={{ width: `${composePercent(composeMeta)}%` }}
                       />
                     </div>
-                    {composeClock ? (
+                    {composeElapsedSecs != null ? (
                       <p className={styles.composeElapsed}>
-                        {t('videoGeneration.briefing.composeElapsed', { clock: composeClock })}
+                        <TimedPhrase
+                          text={t('videoGeneration.briefing.composeElapsed', { clock: timerSlot.clock })}
+                          slots={{
+                            [timerSlot.clock]: (
+                              <RollingDuration seconds={composeElapsedSecs} locale={i18n.language} />
+                            ),
+                          }}
+                        />
                       </p>
                     ) : null}
                   </div>

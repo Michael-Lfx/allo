@@ -3,6 +3,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import type { ReactNode } from "react";
 import { AlertCircle, BookOpenCheck, Bookmark, CheckCircle2, ChevronRight, Clapperboard, Clock3, FileText, Image as ImageIcon, LoaderCircle, Lock, Maximize2, Music2, Pencil, Play, Download, RefreshCw, ScanSearch, Settings2, Square, Star, Type, Video } from "lucide-react";
 
+import Counter, { TimedPhrase, tickingCounterProps, timerSlot } from "@renderer/components/base/Counter";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { craftCover, PLAYBOOK_BY_QUALIFIED } from "@oc/lib/canvas/craft/catalog";
 import { CanvasStyleCoverSwatch } from "@oc/components/canvas/canvas-style-cover";
@@ -650,7 +651,7 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
     const taskId = node.metadata?.taskId;
     const progress = typeof node.metadata?.taskProgress === "number" ? Math.max(0, Math.min(100, Math.round(node.metadata.taskProgress))) : null;
     const statusLabel = taskStatusLabel(node.metadata?.taskStatus);
-    const elapsed = useTaskElapsed(node.metadata?.taskCreatedAt);
+    const elapsed = <TaskElapsed createdAt={node.metadata?.taskCreatedAt} />;
     return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-5 text-center" style={{ color: theme.node.activeStroke }}>
             <div className="size-10 animate-spin rounded-full border-2" style={{ borderColor: theme.node.stroke, borderTopColor: theme.node.activeStroke }} />
@@ -679,18 +680,55 @@ function LoadingContent({ node, theme, onCancelTask, onOpenTaskDetails }: Pick<N
     );
 }
 
-function useTaskElapsed(createdAt?: string) {
+function TaskElapsed({ createdAt }: { createdAt?: string }) {
+    const { i18n } = useTranslation();
     const [, setTick] = useState(0);
+    // useEffect必要性：window.setInterval；目的：生成任务进行中时每秒刷新已等待时间。allo 未依赖 ahooks。
     useEffect(() => {
         if (!createdAt) return;
         const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
         return () => window.clearInterval(timer);
     }, [createdAt]);
-    if (!createdAt) return canvasT("videoCanvas.nodeUi.justNow", "刚刚");
+    const digit = (value: number) => (
+        <Counter value={value} locale={i18n.language} {...tickingCounterProps} />
+    );
+    if (!createdAt) return <>{canvasT("videoCanvas.nodeUi.justNow", "刚刚")}</>;
     const seconds = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
-    if (seconds < 60) return canvasT("videoCanvas.nodeUi.seconds", "{{n}}秒", { n: seconds });
+    if (seconds < 60) {
+        return (
+            <TimedPhrase
+                text={canvasT("videoCanvas.nodeUi.seconds", "{{n}}秒", { n: timerSlot.seconds })}
+                slots={{ [timerSlot.seconds]: digit(seconds) }}
+            />
+        );
+    }
     const minutes = Math.floor(seconds / 60);
-    return minutes < 60 ? canvasT("videoCanvas.nodeUi.minutesSeconds", "{{m}}分{{s}}秒", { m: minutes, s: seconds % 60 }) : canvasT("videoCanvas.nodeUi.hoursMinutes", "{{h}}时{{m}}分", { h: Math.floor(minutes / 60), m: minutes % 60 });
+    if (minutes < 60) {
+        return (
+            <TimedPhrase
+                text={canvasT("videoCanvas.nodeUi.minutesSeconds", "{{m}}分{{s}}秒", {
+                    m: timerSlot.minutes,
+                    s: timerSlot.seconds,
+                })}
+                slots={{
+                    [timerSlot.minutes]: digit(minutes),
+                    [timerSlot.seconds]: digit(seconds % 60),
+                }}
+            />
+        );
+    }
+    return (
+        <TimedPhrase
+            text={canvasT("videoCanvas.nodeUi.hoursMinutes", "{{h}}时{{m}}分", {
+                h: timerSlot.hours,
+                m: timerSlot.minutes,
+            })}
+            slots={{
+                [timerSlot.hours]: digit(Math.floor(minutes / 60)),
+                [timerSlot.minutes]: digit(minutes % 60),
+            }}
+        />
+    );
 }
 
 function taskStatusLabel(status?: string) {

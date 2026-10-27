@@ -1,4 +1,6 @@
+import Counter, { tickingCounterProps } from '@renderer/components/base/Counter';
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 import shimmerStyles from '../textShimmer.module.css';
 import { formatLoadingElapsed } from './loadingStateModel';
 import styles from './loadingState.module.css';
@@ -52,20 +54,30 @@ const variantGlyph = (variant: LoadingStateVariant): React.ReactNode => {
   }
 };
 
-const LoadingState: React.FC<LoadingStateProps> = ({ variant, label, elapsedSeconds }) => (
-  <div
-    className={styles.root}
-    data-testid='beautiful-ui-loading-state'
-    data-variant={variant}
-    role='status'
-    aria-live='polite'
-  >
-    <span className={styles.glyph}>{variantGlyph(variant)}</span>
-    <span className={`${styles.label} ${shimmerStyles.shimmer}`}>{label}</span>
-    {elapsedSeconds !== undefined ? (
-      <span className={styles.elapsed}>{formatLoadingElapsed(elapsedSeconds)}</span>
-    ) : null}
-  </div>
-);
+const LoadingState: React.FC<LoadingStateProps> = ({ variant, label, elapsedSeconds }) => {
+  const { i18n } = useTranslation();
+  return (
+    <div
+      className={styles.root}
+      data-testid='beautiful-ui-loading-state'
+      data-variant={variant}
+      role='status'
+      aria-live='polite'
+    >
+      <span className={styles.glyph}>{variantGlyph(variant)}</span>
+      <span className={`${styles.label} ${shimmerStyles.shimmer}`}>{label}</span>
+      {elapsedSeconds !== undefined ? (
+        <span className={styles.elapsed} aria-label={formatLoadingElapsed(elapsedSeconds)}>
+          <Counter
+            value={Math.max(0, Math.floor(elapsedSeconds))}
+            suffix='s'
+            locale={i18n.language}
+            {...tickingCounterProps}
+          />
+        </span>
+      ) : null}
+    </div>
+  );
+};
 
 export default LoadingState;
