@@ -1577,7 +1577,7 @@ impl LearningService {
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
-            redraft_guard_violation, should_stop_early,
+            redraft_guard_violation, review_history_round, review_point_names, should_stop_early,
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
@@ -1620,6 +1620,22 @@ impl LearningService {
         // 挂号表机械校验读数（m3 smoke rows/invalid/retried/degraded）：
         // 跨预算轮累加，随 growth stats 落内存态（读数面非门禁）。
         let mut provenance_readout = crate::learning_graph::provenance::ProvenanceReadout::default();
+        // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
+        // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
+        // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
+        // （已过不翻案）。off 臂（NOMI_LEARNING_REVIEW_STATE=off）= 不积累
+        // 不回灌（m5 前行为）。
+        let review_state = crate::learning_graph::review_state_enabled();
+        let mut review_history: Vec<String> = Vec::new();
+        let mut review_state_injections = 0usize;
+        // 上一条反馈是否已内嵌评审意见段（m5 #175C：守卫/输出违约收口时
+        // into_feedback 注入；重排处据此免二次注入——评审打回路的意见段由
+        // 重排 prior 参数独立注入）。
+        let mut feedback_has_review_section = false;
+        // 点名集（m5 #175A 机械面）：评审问题清单各条的 node 字段集（批级
+        // 意见不点名任何节点）；门/契约等散文报告 = None（守卫退回子串口
+        // 径）。守卫文案不得扩张点名集——原地重试期间保持评审集不变。
+        let mut point_names: Option<HashSet<String>> = None;
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
             attempts_used = attempt;
@@ -1636,15 +1652,46 @@ impl LearningService {
                 }
                 let drafted = match previous.as_ref() {
                     Some(previous) => {
+                        // 前轮评审意见回灌（m5 #175C）：非首轮评审打回史在场
+                        // 且开关开启 = 重排带独立意见段 + 反乒乓纪律句；反馈
+                        // 已内嵌意见段（守卫/契约收口）时免二次注入。
+                        let prior_review =
+                            if review_state && !review_history.is_empty() && !feedback_has_review_section
+                            {
+                                review_state_injections += 1;
+                                tracing::info!(
+                                    course = course_id.as_str(),
+                                    attempt,
+                                    rounds = review_history.len(),
+                                    "coach redraft carries prior review opinions — stateful re-review active"
+                                );
+                                review_history.join("\n")
+                            } else {
+                                if feedback_has_review_section {
+                                    review_state_injections += 1;
+                                }
+                                String::new()
+                            };
                         crate::learning_graph::coach_redraft(
                             completer,
                             model_override,
                             &context,
                             previous,
                             &feedback,
+                            &prior_review,
                         )
                         .await
-                        .map_err(|error| AttemptFail::generation(error.to_string()))
+                        .map_err(|error| {
+                            // 输出违约上抛（m5 #175C 契约命中路）：前轮评审
+                            // 意见随失败携带，经 into_feedback 作独立段回灌
+                            // ——重排不只剩 ng.* 固定文案。
+                            let fail = AttemptFail::generation(error.to_string());
+                            if review_state && !review_history.is_empty() {
+                                fail.with_review_history(Some(review_history.join("\n")))
+                            } else {
+                                fail
+                            }
+                        })
                     }
                     None => crate::learning_graph::coach_draft(
                         completer,
@@ -1658,14 +1705,19 @@ impl LearningService {
                 let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
                     match drafted {
                         Ok(candidate) => {
-                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比）。
+                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比；
+                            // 全量枚举 + 点名集口径 = m5 #175A/#175B）。
                             if let Some(prev_ref) = previous.as_ref() {
-                                if let Some(violation) =
-                                    redraft_guard_violation(prev_ref, &candidate, &feedback)
-                                {
+                                if let Some(violation) = redraft_guard_violation(
+                                    prev_ref,
+                                    &candidate,
+                                    &feedback,
+                                    point_names.as_ref(),
+                                ) {
                                     if !in_place_retried {
                                         // 原地重试恰一次（不占轮预算）：带守
-                                        // 卫原因对最新一稿点修，评审上下文保留。
+                                        // 卫原因对最新一稿点修，评审上下文保留；
+                                        // 点名集不因守卫文案扩张。
                                         in_place_retried = true;
                                         tracing::warn!(
                                             course = course_id.as_str(),
@@ -1677,13 +1729,20 @@ impl LearningService {
                                         continue 'drafting;
                                     }
                                     // 二次越权 = 本 attempt 失败，计轮推进
-                                    //（guard 豁免早停——固定文案 ≠ 同输出）。
+                                    //（guard 豁免早停——固定文案 ≠ 同输出）；
+                                    // 前轮评审意见随失败回灌（m5 #175C 守卫
+                                    // 违约路：重装不只剩守卫固定文案）。
                                     tracing::warn!(
                                         course = course_id.as_str(),
                                         attempt,
                                         "coach redraft violated the point-edit guard twice — attempt consumed"
                                     );
-                                    Err(AttemptFail::guard(violation))
+                                    let fail = AttemptFail::guard(violation);
+                                    Err(if review_state && !review_history.is_empty() {
+                                        fail.with_review_history(Some(review_history.join("\n")))
+                                    } else {
+                                        fail
+                                    })
                                 } else {
                                     Ok(candidate)
                                 }
@@ -1705,7 +1764,9 @@ impl LearningService {
                 let candidate = match outcome {
                     Ok(candidate) => candidate,
                     Err(fail) => {
-                        // 本 attempt 失败收口：早停判据 + 报告回灌。
+                        // 本 attempt 失败收口：早停判据 + 报告回灌。指纹只取
+                        // `report`——前轮评审意见（#175C）走独立段，逐轮漂移
+                        // 不得击穿同指纹早停。
                         let guard = fail.guard;
                         let fingerprint = normalize_report(&fail.report);
                         if should_stop_early(
@@ -1725,7 +1786,8 @@ impl LearningService {
                         }
                         prev_fingerprint = if guard { None } else { Some(fingerprint) };
                         last = fail.report.clone();
-                        feedback = fail.report;
+                        feedback_has_review_section = fail.review_history.is_some();
+                        feedback = fail.into_feedback();
                         tracing::warn!(
                             course = course_id.as_str(),
                             attempt,
@@ -1759,7 +1821,10 @@ impl LearningService {
                     "stage": "gates",
                     "problems": report,
                 }));
-                // 指纹 = 门报告结构化序列化（字段序稳定即确定性）。
+                // 指纹 = 门报告结构化序列化（字段序稳定即确定性）；门报告是
+                // 散文（无 node 字段面），点名集退回子串口径。
+                point_names = None;
+                feedback_has_review_section = false;
                 let fingerprint = serde_json::to_string(&outcome.errors)
                     .unwrap_or_else(|_| normalize_report(&report));
                 if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
@@ -1987,6 +2052,14 @@ impl LearningService {
                     "stage": "concept_review",
                     "problems": report,
                 }));
+                // 点名集 = 评审问题清单各条的 node 字段（m5 #175A 机械面）；
+                // 评审往返记录随 attempt 传递（m5 #175C，off 臂不积累）。
+                point_names = Some(review_point_names(&review.problems));
+                feedback_has_review_section = false;
+                if review_state {
+                    let round = review_history.len() + 1;
+                    review_history.push(review_history_round(round, &report));
+                }
                 let fingerprint = serde_json::to_string(&review.problems)
                     .unwrap_or_else(|_| normalize_report(&report));
                 if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
@@ -2005,6 +2078,12 @@ impl LearningService {
                 previous = Some(candidate);
                 continue;
             }
+            // 评审放行 = 前轮意见全部有着落：往返记录就地清空（已过不翻案
+            // ——放行后的别名/落库打回不带陈旧意见）；点名集随之退回散文口
+            // 径（后续反馈非评审问题清单）。
+            review_history.clear();
+            point_names = None;
+            feedback_has_review_section = false;
             // new_alias 必须裁复用或直定宿主，否则整批打回指点改走 mints
             // （rulings 已在 problems 处置前核验构建；直定宿主在此并入）。
             let mut reuse_failures: Vec<String> = Vec::new();
@@ -2076,7 +2155,13 @@ impl LearningService {
             stop_reason = "success";
             break;
         }
-        self.record_growth_stats(attempts_used, stop_reason, provenance_readout);
+        self.record_growth_stats(
+            attempts_used,
+            stop_reason,
+            provenance_readout,
+            review_state,
+            review_state_injections,
+        );
         if stop_reason == "cancelled" {
             return Err(cancel_err());
         }
@@ -2143,13 +2228,15 @@ impl LearningService {
     }
 
     /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 与 m3 挂
-    /// 号表读数行 rows/invalid/retried/degraded 的数据源；读数面非门禁）。
-    /// 内存态，仅诊断。
+    /// 号表读数行 rows/invalid/retried/degraded 的数据源；m5 增有状态复审臂
+    /// `review_state` 与前轮意见回灌次数。读数面非门禁）。内存态，仅诊断。
     pub(crate) fn record_growth_stats(
         &self,
         attempts_used: usize,
         stop_reason: &str,
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
+        review_state: bool,
+        review_state_injections: usize,
     ) {
         if let Ok(mut stats) = self.growth_run_stats.lock() {
             *stats = Some(GrowthRunStats {
@@ -2159,6 +2246,8 @@ impl LearningService {
                 review_provenance_invalid: provenance.invalid,
                 review_provenance_retried: provenance.retried,
                 review_provenance_degraded: provenance.degraded,
+                review_state,
+                review_state_injections,
             });
         }
     }
