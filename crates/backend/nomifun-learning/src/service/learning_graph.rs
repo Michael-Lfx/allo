@@ -1847,6 +1847,18 @@ impl LearningService {
                 stop_reason = "cancelled";
                 return Err(cancel_err());
             }
+            // 铸名门外部通行名证据（m11，ADR-0030 纪律移植）：歧义多候选案
+            // 恰一次搜索（flowy-web 无 key 缝，查询词机械派生），证据标题
+            // 命中扩候选集 + 证据块随 j04 候选集注入通道进评审 user 消息。
+            // fail-open：开关关/无提供方/搜索失败/零结果 = 无证据照常评审，
+            // 判据条款与评审输出契约零改动；off 臂读数记显式零。
+            let mint_stats = crate::learning_graph::mint_evidence::attach_evidence(
+                &mut outcome.nominations,
+                &outcome.mint_registry,
+                self.mint_search_provider().as_deref(),
+            )
+            .await;
+            self.record_mint_research_stats(mint_stats);
             let candidates_text = Self::render_nomination_candidates(&outcome.nominations);
             let mut review = crate::learning_graph::concept_review(
                 completer,
@@ -2365,7 +2377,9 @@ impl LearningService {
         .await
     }
 
-    /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明。
+    /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明；
+    /// 外部通行名证据块（m11）随同一节进评审 user 消息（判据面零污染：
+    /// 只加参考段，判据条款一字不动）。
     fn render_nomination_candidates(
         nominations: &[crate::learning_graph::NominationPlan],
     ) -> String {
@@ -2382,6 +2396,11 @@ impl LearningService {
                     "- {}（{}）：{}",
                     candidate.canonical, candidate.concept_id, candidate.reason
                 ));
+            }
+            if let Some(block) =
+                crate::learning_graph::mint_evidence::render_evidence_block(&plan.evidence)
+            {
+                lines.push(block);
             }
             sections.push(format!("提名「{}」的候选：\n{}", plan.name, lines.join("\n")));
         }
@@ -2937,6 +2956,7 @@ impl LearningService {
                 name: name.to_owned(),
                 direct_host,
                 candidates,
+                evidence: Vec::new(),
             });
         };
         for mint in &batch.mints {
@@ -2985,10 +3005,8 @@ impl LearningService {
         Ok(crate::learning_graph::GateOutcome {
             errors,
             nominations,
-            registry_concept_ids: registry_entries
-                .iter()
-                .map(|entry| entry.concept_id.clone())
-                .collect(),
+            mint_registry: registry_entries,
+            registry_concept_ids,
             registry_name_hosts,
             auto_reusals,
             provenance_known,
@@ -3945,8 +3963,9 @@ impl LearningService {
 
     /// 登记表全名集合（canonical ∪ 别名，小写、未退役）。
     /// 登记表活跃条目（j04 复用通道的装配面）：canonical + 定义 + 活跃别名
-    /// （退役不占）。deprecated = 0 单源口径。
-    async fn registry_entries(
+    /// （退役不占）。deprecated = 0 单源口径。pub(super) 供服务侧投影测试
+    /// （m11：deprecated 排除是扩邻匹配域的前置机械保证）。
+    pub(super) async fn registry_entries(
         &self,
     ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(

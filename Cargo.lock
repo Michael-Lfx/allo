@@ -7859,6 +7859,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "flowy-web",
  "fsrs",
  "futures",
  "nomifun-api-types",

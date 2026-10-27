@@ -13,6 +13,9 @@ nomifun-common.workspace = true
 nomifun-db.workspace = true
 nomifun-knowledge.workspace = true
 nomifun-realtime.workspace = true
+# 铸名门外部通行名证据（m11）：无 key 搜索缝（SearchProvider + DDG）。
+# backend → flowy-web 直依赖先例 = nomifun-briefing（Cargo.toml 同款）。
+flowy-web.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
