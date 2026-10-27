@@ -5553,8 +5553,9 @@ async fn reuse_ruling_pools_the_name_instead_of_minting() {
     let batch_json = format!(
         r#"{{"nodes": [{{"title": "用向量视角重看排布", "purpose": "从座位调换切入", "est": 15, "teaches": [{{"name": "向量代数", "tier": "know"}}], "assumes": []}}], "mints": [{{"canonical": "向量代数", "aliases": [], "definition": "用向量语言改写既有对象关系"}}], "new_aliases": [], "note": "复用稿"}}"#
     );
-    let review_json =
-        format!(r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}]}}"#);
+    let review_json = format!(
+        r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}],"term_provenance":[{{"concept":"向量代数","term":"向量语言","source":"常识"}}]}}"#
+    );
     let completer = SequencedCompleter::new(vec![batch_json, review_json]);
     *service.course_completer.write().unwrap() = Some(completer);
     service
@@ -5641,8 +5642,9 @@ async fn reuse_ruling_accepts_registry_host_outside_the_candidate_set() {
         "new_aliases": [],
         "note": "候选集外复用稿"
     }"#;
-    let review_json =
-        format!(r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}]}}"#);
+    let review_json = format!(
+        r#"{{"verdict":"pass","reuse":[{{"name":"向量代数","concept_id":"{host}"}}],"term_provenance":[{{"concept":"向量代数","term":"向量语言","source":"常识"}}]}}"#
+    );
     let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json]);
     *service.course_completer.write().unwrap() = Some(completer);
     service
@@ -5717,7 +5719,7 @@ async fn review_advice_mechanically_converts_to_reuse() {
         "note": "建议转化稿"
     }"#;
     let review_json = format!(
-        r#"{{"verdict":"reject","problems":[{{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与登记表既有概念「向量基础」内涵重叠——应复用既有名，不新铸。","advice":"把「向量代数」裁为复用「向量基础」的别名，不另铸新行。"}}]}}"#
+        r#"{{"verdict":"reject","problems":[{{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与登记表既有概念「向量基础」内涵重叠——应复用既有名，不新铸。","advice":"把「向量代数」裁为复用「向量基础」的别名，不另铸新行。"}}],"term_provenance":[{{"concept":"向量代数","term":"向量语言","source":"常识"}}]}}"#
     );
     let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json]);
     *service.course_completer.write().unwrap() = Some(completer);
@@ -5774,7 +5776,7 @@ async fn unparseable_advice_stays_a_rejection() {
         "new_aliases": [],
         "note": "不可解析稿"
     }"#;
-    let review_json = r#"{"verdict":"reject","problems":[{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与某个不在登记表里的概念「向量算术语言」内涵重叠——应复用。","advice":"把「向量代数」裁为复用「向量算术语言」的别名。"}]}"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"用向量视角重看排布","field":"mints","issue":"铸名「向量代数」与某个不在登记表里的概念「向量算术语言」内涵重叠——应复用。","advice":"把「向量代数」裁为复用「向量算术语言」的别名。"}],"term_provenance":[{"concept":"向量代数","term":"向量语言","source":"常识"}]}"#;
     let completer = SequencedCompleter::new(vec![
         batch_json.to_owned(),
         review_json.to_owned(),
@@ -5936,7 +5938,7 @@ async fn review_removal_advice_drops_the_node_instead_of_redrafting() {
         "new_aliases": [],
         "note": "摘除稿"
     }"#;
-    let review_json = r#"{"verdict":"reject","problems":[{"node":"验证两种展开的同一数值","field":"assumes","issue":"内容实际依赖同批兄弟教出的概念，同批无先后。","advice":"把该节点移出本批，放到前提已入账之后的批次。"}]}"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"验证两种展开的同一数值","field":"assumes","issue":"内容实际依赖同批兄弟教出的概念，同批无先后。","advice":"把该节点移出本批，放到前提已入账之后的批次。"}],"term_provenance":[{"concept":"位权读数","term":"位权","source":"常识"},{"concept":"展开对照","term":"展开","source":"常识"}]}"#;
     let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
     *service.course_completer.write().unwrap() = Some(completer);
     service
@@ -5995,7 +5997,7 @@ async fn removal_advice_without_exact_match_stays_a_rejection() {
         "new_aliases": [],
         "note": "不匹配稿"
     }"#;
-    let review_json = r#"{"verdict":"reject","problems":[{"node":"不存在的节点标题","field":"assumes","issue":"内容依赖同批概念。","advice":"把该节点移出本批。"}]}"#;
+    let review_json = r#"{"verdict":"reject","problems":[{"node":"不存在的节点标题","field":"assumes","issue":"内容依赖同批概念。","advice":"把该节点移出本批。"}],"term_provenance":[{"concept":"位权读数","term":"位权","source":"常识"}]}"#;
     let completer = SequencedCompleter::new(vec![
         batch_json.to_owned(),
         review_json.to_owned(),
@@ -6092,7 +6094,7 @@ async fn new_alias_without_reuse_ruling_returns_the_batch_with_pointer() {
         ],
         "note": "n"
     }"#;
-    let review_json = r#"{"verdict":"pass"}"#;
+    let review_json = r#"{"verdict":"pass","term_provenance":[{"concept":"新名","term":"独立定义","source":"常识"}]}"#;
     let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
     *service.course_completer.write().unwrap() = Some(completer.clone());
     service
