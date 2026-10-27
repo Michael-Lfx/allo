@@ -1326,13 +1326,16 @@ async fn run_grow(
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
-                 [provenance: rows={} invalid={} retried={} degraded={}]",
+                 [provenance: rows={} invalid={} retried={} degraded={}]  \
+                 [review_state: {} injections={}]",
                 stats.attempts_used,
                 stats.stop_reason,
                 stats.review_provenance_rows,
                 stats.review_provenance_invalid,
                 stats.review_provenance_retried,
-                stats.review_provenance_degraded
+                stats.review_provenance_degraded,
+                if stats.review_state { "on" } else { "off" },
+                stats.review_state_injections
             ),
             None => println!("  round {round}: batch #{seq}, {nodes} nodes, criteria green"),
         }

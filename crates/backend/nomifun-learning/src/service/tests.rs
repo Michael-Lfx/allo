@@ -3515,6 +3515,238 @@ async fn guard_failure_retries_in_place_once_then_counts_the_round() {
     assert_eq!(stats.attempts_used, 3);
 }
 
+// ── 有状态复审（m5 #175C）+ advice 范围点名集（m5 #175A）────────────────────
+
+/// 评审开关的进程全局态守卫（service 侧局部帮手；Drop 恢复原值）。
+fn set_learning_env(env_var: &'static str, value: &str) -> impl Drop {
+    struct Restore(&'static str, Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.1.take() {
+                Some(value) => unsafe { std::env::set_var(self.0, value) },
+                None => unsafe { std::env::remove_var(self.0) },
+            }
+        }
+    }
+    let previous = std::env::var(env_var).ok();
+    unsafe { std::env::set_var(env_var, value) };
+    Restore(env_var, previous)
+}
+
+/// 概念评审的打回结论（挂号表合规：批内两条铸名各一行常识行；problems
+/// 只点名甲节点——点名集的脚本面）。
+fn review_reject_verdict() -> String {
+    serde_json::to_string(&json!({
+        "verdict": "reject",
+        "problems": [
+            {"node": "用定义计算极限", "field": "teaches",
+             "issue": "「极限」的定义未给出可核查的逼近语境",
+             "advice": "在 purpose 写明逼近载体，或补挂 assumes"}
+        ],
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"},
+            {"concept": "求导法则", "term": "法则", "source": "常识"}
+        ]
+    }))
+    .unwrap()
+}
+
+/// 概念评审的放行结论（同款挂号表）。
+fn review_pass_verdict() -> String {
+    serde_json::to_string(&json!({
+        "verdict": "pass",
+        "term_provenance": [
+            {"concept": "极限", "term": "值", "source": "常识"},
+            {"concept": "求导法则", "term": "法则", "source": "常识"}
+        ]
+    }))
+    .unwrap()
+}
+
+/// 有状态复审 on 臂（learnhub ReviewInput.prior_review 同构）：评审打回 →
+/// 重排提示词携带「前轮评审意见」独立段（往返记录 + 反乒乓纪律句 + 点名集
+/// 定义句），下一轮过评审落位；smoke 读数记回灌次数。
+#[tokio::test]
+#[serial_test::serial]
+async fn review_rejection_redraft_carries_prior_review_opinions() {
+    let _env = set_learning_env(crate::learning_graph::REVIEW_STATE_SWITCH_ENV, "on");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        review_reject_verdict(),
+        VALID_BATCH.to_owned(),
+        review_pass_verdict(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "the second-round redraft lands");
+    // 调用序列：起草 → 评审拒 → 重裁 → 评审过 = 4。
+    assert_eq!(completer.call_count(), 4);
+    // 第三次调用（第一轮评审打回后的重裁）= 前轮意见的注入面。
+    let redraft_prompt = completer.prompt(2).expect("redraft prompt recorded");
+    assert!(
+        redraft_prompt.contains("【前轮评审意见"),
+        "on 臂重排须带独立意见段：{redraft_prompt}"
+    );
+    assert!(
+        redraft_prompt.contains("已修不重提") && redraft_prompt.contains("已过不翻案"),
+        "反乒乓纪律句随段注入：{redraft_prompt}"
+    );
+    assert!(
+        redraft_prompt.contains("第 1 轮评审打回") && redraft_prompt.contains("逼近载体"),
+        "往返记录（点名 + 结论）随段回灌：{redraft_prompt}"
+    );
+    assert!(
+        redraft_prompt.contains("点名集 = 打回问题清单各条的 node 字段"),
+        "点名集定义句（m5 #175A）恒在：{redraft_prompt}"
+    );
+    assert!(
+        redraft_prompt.contains("批级意见不点名任何节点")
+            && redraft_prompt.contains("不构成点名"),
+        "advice 范围口径进重排面：{redraft_prompt}"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 2);
+    assert!(stats.review_state);
+    assert_eq!(stats.review_state_injections, 1, "恰一次回灌（重裁轮）");
+}
+
+/// off 臂（NOMI_LEARNING_REVIEW_STATE=off）= m5 前行为：重排不带意见段、
+/// 不带反乒乓句；点名集定义句（机械面随行的模型面条款）恒在；读数回灌
+/// 恒零。机械守卫面不受开关影响。
+#[tokio::test]
+#[serial_test::serial]
+async fn review_state_off_arm_keeps_the_redraft_prompt_free_of_prior_opinions() {
+    let _env = set_learning_env(crate::learning_graph::REVIEW_STATE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let completer = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        review_reject_verdict(),
+        VALID_BATCH.to_owned(),
+        review_pass_verdict(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let redraft_prompt = completer.prompt(2).expect("redraft prompt recorded");
+    assert!(
+        !redraft_prompt.contains("前轮评审意见") && !redraft_prompt.contains("已修不重提"),
+        "off 臂零注入：{redraft_prompt}"
+    );
+    // 打回问题照旧回灌（评审意见作为反馈本体 = 既有行为保留）。
+    assert!(
+        redraft_prompt.contains("逼近载体"),
+        "off 臂打回问题照常注入：{redraft_prompt}"
+    );
+    assert!(
+        redraft_prompt.contains("点名集 = 打回问题清单各条的 node 字段"),
+        "点名集定义句恒在（不走开关）：{redraft_prompt}"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert!(!stats.review_state);
+    assert_eq!(stats.review_state_injections, 0);
+}
+
+/// 守卫违规路（m5 #175C 三路之一，服务级）：评审打回后的重裁越权改乙 →
+/// 原地重试再越权（改乙另一处）→ 本 attempt 失败计轮，第三轮重排同时携带
+/// 守卫文案与前轮评审意见段（重装不只剩守卫固定文案）。
+#[tokio::test]
+#[serial_test::serial]
+async fn guard_violation_attempt_failure_carries_the_review_history() {
+    let _env = set_learning_env(crate::learning_graph::REVIEW_STATE_SWITCH_ENV, "on");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 越权稿一：乙（未点名）est 被改。
+    let q1 = r#"{
+        "nodes": [
+            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "用极限法则求切线", "purpose": "衔接节点", "est": 25,
+             "teaches": [{"name": "求导法则", "tier": "apply"}],
+             "assumes": [{"name": "向量基础", "tier": "know"}]}
+        ],
+        "mints": [
+            {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
+            {"canonical": "求导法则", "aliases": [], "definition": ""}
+        ],
+        "note": "越权稿一"
+    }"#;
+    // 越权稿二：乙另一处（purpose）再被改 → 二次越权计轮。
+    let q2 = r#"{
+        "nodes": [
+            {"title": "用定义计算极限", "purpose": "首批基节点", "est": 15,
+             "teaches": [{"name": "极限", "tier": "know"}], "assumes": []},
+            {"title": "用极限法则求切线", "purpose": "被偷改的衔接用途", "est": 25,
+             "teaches": [{"name": "求导法则", "tier": "apply"}],
+             "assumes": [{"name": "向量基础", "tier": "know"}]}
+        ],
+        "mints": [
+            {"canonical": "极限", "aliases": ["Limits"], "definition": "无限逼近的值"},
+            {"canonical": "求导法则", "aliases": [], "definition": ""}
+        ],
+        "note": "越权稿二"
+    }"#;
+    let completer = SequencedCompleter::new(vec![
+        VALID_BATCH.to_owned(),
+        review_reject_verdict(),
+        q1.to_owned(),
+        q2.to_owned(),
+        // 计轮重裁 = 原地基准（q1）逐字复原：守卫对照的是原地重试留下的
+        // 基准稿，重蹈 q1 即过守卫，est=25 照常过门落库。
+        q1.to_owned(),
+        review_pass_verdict(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    service.kick_growth(&owner, &course, true, None).await.unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches \
+         WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "the third-attempt point-fix lands");
+    // 序列：起草 → 评审拒 → 重裁(越权一) → 原地重试(越权二) → 计轮重裁 → 评审过。
+    assert_eq!(completer.call_count(), 6);
+    // 原地重试（第 4 次调用）：意见段由 prior 参数独立注入，守卫文案不扩张点名集。
+    let in_place_prompt = completer.prompt(3).expect("in-place retry prompt recorded");
+    assert!(in_place_prompt.contains("ng.redraft.scope"), "{in_place_prompt}");
+    assert!(
+        in_place_prompt.contains("【前轮评审意见"),
+        "原地重试带独立意见段：{in_place_prompt}"
+    );
+    // 计轮重裁（第 5 次调用）：反馈 = 守卫文案 + 前轮评审意见段（into_feedback
+    // 独立段，重装不再只剩守卫固定文案）。
+    let next_attempt_prompt = completer.prompt(4).expect("post-guard redraft prompt recorded");
+    assert!(next_attempt_prompt.contains("ng.redraft.scope"), "{next_attempt_prompt}");
+    assert!(
+        next_attempt_prompt.contains("【前轮评审意见")
+            && next_attempt_prompt.contains("第 1 轮评审打回"),
+        "守卫违规路上抛随评审意见：{next_attempt_prompt}"
+    );
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(stats.stop_reason, "success");
+    assert_eq!(stats.attempts_used, 3, "guard violation consumed one attempt");
+    assert_eq!(stats.review_state_injections, 3, "三次重排均带意见面");
+}
+
 /// mid-call 取消（三轮 t2 真中断）：取消在 LLM 调用内触发 → wrapper 丢弃
 /// 回包 → 本批零落库、批行转 failed、任务终态 cancelled、内层恰被调一次。
 #[tokio::test]

@@ -671,17 +671,23 @@ pub(crate) async fn coach_draft(
 /// from the rejected draft that never reached the registry (the 2026-09-29
 /// math-course burn: draft 3 assumed six names it never minted, 16 gate
 /// errors). The repair discipline is point-editing, not re-planning.
+///
+/// `prior_review` = 前轮评审意见的回灌段（m5 #175C 有状态复审；空串 = 首轮
+/// 或开关 off，零注入、字节回到既有形态）。段由 [`prior_review_section`]
+/// 装配：独立注入段 + 反乒乓纪律句（已修不重提、已过不翻案）。
 pub(crate) async fn coach_redraft(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     context: &CoachContext,
     previous: &ProposedBatch,
     problems: &str,
+    prior_review: &str,
 ) -> Result<ProposedBatch, AppError> {
     let previous_json = serde_json::to_string_pretty(previous).unwrap_or_default();
     let user = format!(
-        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
-        context.render()
+        "{}\n\n【上一稿（整批被打回、未落库：其 mints 也未进登记表，本稿要引用就得随批重新铸名）】\n{previous_json}\n\n【打回问题，逐条修复】\n{problems}{}\n\n【修订纪律】\n- 点修不是重写：未被点名的节点、概念引用与 est 原样保留，只改被点名的地方。\n- 点名集怎么算：点名集 = 打回问题清单各条的 node 字段（评审问题清单以各条的 node 字段为准——批级意见不点名任何节点，问题文字里提到的其它节点名不构成点名），照改必撞机械比对；批级问题只许改随批 mints / new_aliases 提名自身。\n- 打回问题让你补充的每个新概念：进本批某节点的 teaches 就随批 mints 铸名；要被 assume 的只有已教账里已有的才合法——既往批次没教过的，把依赖它的节点移出本批（留到下一批），本批改长教它的铺垫节点。\n- 这批修不动就缩小它：减少节点数，先教最缺的台阶——缩小比重写更可能过门。\n- 重新输出完整批次 JSON。",
+        context.render(),
+        prior_review_section(prior_review)
     );
     let raw = crate::generation::complete_json_coach(
         completer,
@@ -693,6 +699,21 @@ pub(crate) async fn coach_redraft(
     )
     .await?;
     parse_coach_reply(&raw)
+}
+
+/// 前轮评审意见的注入段（m5 #175C 有状态复审）：空 = 首轮/开关 off，零
+/// 注入（重排提示词字节回到既有形态）；非空 = 独立段（不与打回问题并段）
+/// + 反乒乓纪律句（已修不重提、已过不翻案）。
+fn prior_review_section(prior_review: &str) -> String {
+    if prior_review.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n【前轮评审意见（随重试回灌；前轮批已打回未落库，本轮重排后评审会复审）】\n\
+         【反乒乓纪律】已修不重提：前轮已点名、上一稿已按建议修正的地方保持修正，不要回退重写；\
+         已过不翻案：前轮评审已放行的内容不要推翻重改；注意力放本轮打回点的修复与前轮意见的落实上。\n\
+         {prior_review}"
+    )
 }
 
 // ── AI concept review (advisory-but-blocking once) ─────────────────────────
@@ -758,6 +779,17 @@ const TABLE_OUTPUT_CONTRACT: &str = r#"
 - **同形词盲区注记**：机械核行只认字面、无词义维度——常识行的 term 逐字命中已教账/登记表名池即判事实矛盾，哪怕词义不同；确属同形异义时按已教行挂该名字的 `ref`（机械面绿），词义出入写进 findings 留痕供数据面复核。
 "#;
 
+/// advice 范围条款（m5 #175A，learnhub node-growth-review.md「advice 范围
+/// (点修守卫对齐)」同构）：问题定位与点修守卫的点名集对齐——`node` 字段是
+/// 唯一点名通道，守卫机械比对只认它。两臂（挂号表 on/off）同文：条款管
+/// problems 输出形状，与挂号表面正交。
+const ADVICE_SCOPE_CLAUSE: &str = r#"
+【advice 范围（点修守卫对齐）】
+- 修法需要改动**某个节点**的任何字段（teaches、标题、est、difficulty、assumes）= 该条问题的 `node` 必须填那个节点的标题；要动几个节点就单列几条。
+- 不需要改动任何具体节点的问题（只动随批 mints / new_aliases 提名自身：改写定义、改名字、词条提案），`node` 填空串——批级意见不点名任何节点，advice 也不得要求改动任何节点。
+- advice 文字里提到的节点名不构成点名：点修的机械比对只认各条问题的 `node` 字段，批级意见的修法去动节点 = 整批打回。
+"#;
+
 const CONCEPT_REVIEW_TAIL: &str = r#"2. 前提足够：把「已教账 ∪ 节点声明的 assumes」当作学习者此刻已知的全部（本批 teaches 不算——同批互不依赖），逐节点问：凭这些，学得了这条节点的内容吗？内容真实依赖、却既无出处也未声明的对象/方法/记号，就是跳步——打回，并指名缺的是哪一个。**禁则：批内兄弟节点教出的概念不算已教，不得以「批内兄弟会教」为由建议任何节点挂 assumes**——那类建议与结构门直接矛盾（同批无先后、必须同时就绪），报了就是让教练自造机械矛盾；真缺前提的正路是建议把依赖方移出本批。
 3. 命名与内涵一致：铸名的定义说的就是名字所指的东西；同一概念用了两个不同名字（应复用既有名）时，**不要打回**——按【复用裁决】写进 `reuse` 数组（concept_id 用评审材料里出现过的真实登记表 id：本提名的候选，或相关提名候选里指向同一概念的那个），该名字会落为既有概念的活跃别名，代码侧机械改写、不折返模型；只有重叠对象在材料里没有任何 concept_id 可指时才打回，并在 issue 里点名疑似宿主。
 4. 难度诚实与阶段/档位相符：节点申报的 difficulty 与内容实际相符——形式化/证明类内容（记号体系、严格推理）不得压 1-2 档；节点内容与【结构参考材料】里同名块的档位明显背离时点名。内容过载（一个节点塞进多个核心概念）可附拆分建议。
@@ -820,20 +852,39 @@ fn review_provenance_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// 有状态复审的运维开关（m5 #175C，learnhub ReviewInput.prior_review 同构）：
+/// 置 off/0/false = 评审往返记录不积累、前轮评审意见不随失败回灌重排
+/// （off 臂 = m5 前行为）；未设/其它值 = 开启。机械守卫面（点名守卫全量
+/// 枚举、点名集 node 字段口径）是纯确定性改进，不走开关。
+pub const REVIEW_STATE_SWITCH_ENV: &str = "NOMI_LEARNING_REVIEW_STATE";
+
+/// 有状态复审开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_review_state_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 有状态复审是否开启（未设/其它值 = 开启）。
+pub(crate) fn review_state_enabled() -> bool {
+    std::env::var(REVIEW_STATE_SWITCH_ENV)
+        .map(|value| !is_review_state_disabled_value(&value))
+        .unwrap_or(true)
+}
+
 /// 挂号表评审整路尝试上限（含首轮；「重试恰一次」= 2，learnhub
 /// REVIEW_MAX_ATTEMPTS 同款）。只作用于挂号表机械校验判「结论不可用」的
 /// 路径（表缺失/行伪/表键解析失败）；调用失败与整体解析失败的降级口径
 /// 维持现状（保守放行，当场生效）——外层 j03 预算与指纹早停不动。
 const REVIEW_PROVENANCE_ATTEMPTS: usize = 2;
 
-/// 评审系统提示词装配（k07 判据①两臂 + m3 挂号表臂）：挂号表开 = V2 框定
-/// 措辞 + 按表核对程序句 + 表输出契约段（V2 off 不改表臂——V1 并句把「随批
-/// 铸名」算出处，与表的「批内提名不是出处」矛盾）；挂号表关 = k07 后行为
-/// 原样（表条款与机械校验都不在）。
+/// 评审系统提示词装配（k07 判据①两臂 + m3 挂号表臂 + m5 advice 范围条
+/// 款）：挂号表开 = V2 框定措辞 + 按表核对程序句 + 表输出契约段（V2 off
+/// 不改表臂——V1 并句把「随批铸名」算出处，与表的「批内提名不是出处」矛
+/// 盾）；挂号表关 = k07 后行为原样（表条款与机械校验都不在）。advice 范
+/// 围条款（#175A）两臂同织——它管 problems 输出形状，与挂号表面正交。
 pub(crate) fn concept_review_system() -> String {
     if review_provenance_enabled() {
         return format!(
-            "{CONCEPT_REVIEW_HEAD}{CRITERION_ONE_V2}{CRITERION_ONE_TABLE_CLAUSE}{CONCEPT_REVIEW_TAIL}{TABLE_OUTPUT_CONTRACT}"
+            "{CONCEPT_REVIEW_HEAD}{CRITERION_ONE_V2}{CRITERION_ONE_TABLE_CLAUSE}{CONCEPT_REVIEW_TAIL}{TABLE_OUTPUT_CONTRACT}{ADVICE_SCOPE_CLAUSE}"
         );
     }
     let criterion = if review_v2_enabled() {
@@ -841,7 +892,7 @@ pub(crate) fn concept_review_system() -> String {
     } else {
         CRITERION_ONE_V1
     };
-    format!("{CONCEPT_REVIEW_HEAD}{criterion}{CONCEPT_REVIEW_TAIL}")
+    format!("{CONCEPT_REVIEW_HEAD}{criterion}{CONCEPT_REVIEW_TAIL}{ADVICE_SCOPE_CLAUSE}")
 }
 
 /// 评审产出（j04 扩权）：问题条 + 复用裁决。fails-open 降级 = 两者皆空。
@@ -2110,6 +2161,106 @@ mod tests {
         assert!(review_provenance_enabled());
         unsafe { std::env::set_var(REVIEW_PROVENANCE_SWITCH_ENV, "off") };
         assert!(!review_provenance_enabled());
+    }
+
+    /// advice 范围条款（m5 #175A，learnhub node-growth-review「advice 范围
+    /// (点修守卫对齐)」同构）：两臂（挂号表 on/off）同织——条款管 problems
+    /// 输出形状，与挂号表面正交。条款覆盖短语断言：删条款/改措辞 = 本测试红。
+    #[test]
+    #[serial_test::serial]
+    fn advice_scope_clause_is_in_both_review_arms() {
+        let _on = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let system = concept_review_system();
+        for phrase in [
+            "advice 范围（点修守卫对齐）",
+            "该条问题的 `node` 必须填那个节点的标题",
+            "批级意见不点名任何节点",
+            "advice 文字里提到的节点名不构成点名",
+            "只动随批 mints / new_aliases 提名自身",
+        ] {
+            assert!(system.contains(phrase), "on 臂缺「{phrase}」");
+        }
+        let _off = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "off");
+        let plain = concept_review_system();
+        for phrase in [
+            "advice 范围（点修守卫对齐）",
+            "批级意见不点名任何节点",
+            "advice 文字里提到的节点名不构成点名",
+        ] {
+            assert!(plain.contains(phrase), "off 臂缺「{phrase}」");
+        }
+    }
+
+    /// 有状态复审开关（m5 #175C）：取值判定只认 off/0/false；未设 = 开启。
+    #[test]
+    #[serial_test::serial]
+    fn review_state_switch_predicate_follows_off_convention() {
+        for value in ["off", "OFF", "0", "false", " False "] {
+            assert!(is_review_state_disabled_value(value), "{value:?} 关闭");
+        }
+        for value in ["on", "1", "true", "", "disable"] {
+            assert!(!is_review_state_disabled_value(value), "{value:?} 不关闭");
+        }
+        let _restore = set_env(REVIEW_STATE_SWITCH_ENV, "on");
+        assert!(review_state_enabled());
+        drop(_restore);
+        let _off = set_env(REVIEW_STATE_SWITCH_ENV, "off");
+        assert!(!review_state_enabled());
+        unsafe { std::env::remove_var(REVIEW_STATE_SWITCH_ENV) };
+        assert!(review_state_enabled(), "未设 = 开启（默认臂）");
+    }
+
+    /// 重排提示词（m5 #175A/#175C）：点名集定义句恒在（#175A 模型面，两臂
+    /// 同文）；前轮评审意见段随 `prior_review` 非空注入（独立段 + 反乒乓纪
+    /// 律句 + 往返记录原文），空 = 零注入、字节回到既有形态（off 臂面）。
+    #[tokio::test]
+    async fn redraft_prompt_carries_point_name_clause_and_prior_review_section() {
+        let history = "第 1 轮评审打回：\n- [teaches] 用定义计算极限: 缺前提（建议：补挂 assumes）";
+        // 空脚本：回包缺失按调用失败处理——prompt 已先记录，装配面照样可断言。
+        let completer = ScriptedReview(std::sync::Mutex::new((Vec::new().into_iter(), Vec::new())));
+        let previous = batch_of(vec![node(
+            "用定义计算极限",
+            vec![reference("极限", ConceptTier::Know)],
+            vec![],
+        )]);
+        let _ = coach_redraft(
+            &completer,
+            None,
+            &CoachContext::default(),
+            &previous,
+            "- [teaches] 用定义计算极限: 缺前提（建议：补挂 assumes）",
+            history,
+        )
+        .await;
+        let _ = coach_redraft(
+            &completer,
+            None,
+            &CoachContext::default(),
+            &previous,
+            "- [ng.refs.resolvable] 节点「甲」引用未铸名概念",
+            "",
+        )
+        .await;
+        let prompts = completer.0.lock().unwrap().1.clone();
+        assert_eq!(prompts.len(), 2);
+        // on 臂面：独立意见段 + 反乒乓纪律 + 往返记录原文 + 点名集定义句。
+        assert!(prompts[0].contains("【前轮评审意见"), "on 臂须带意见段：{}", prompts[0]);
+        assert!(prompts[0].contains("已修不重提") && prompts[0].contains("已过不翻案"));
+        assert!(prompts[0].contains("第 1 轮评审打回") && prompts[0].contains("补挂 assumes"));
+        // off 臂面（prior 为空）：零注入，意见段不在；点名集定义句恒在。
+        assert!(
+            !prompts[1].contains("前轮评审意见") && !prompts[1].contains("已修不重提"),
+            "空 prior 零注入：{}",
+            prompts[1]
+        );
+        for prompt in &prompts {
+            assert!(
+                prompt.contains("点名集 = 打回问题清单各条的 node 字段"),
+                "点名集定义句恒在：{prompt}"
+            );
+            assert!(prompt.contains("批级意见不点名任何节点"));
+            assert!(prompt.contains("不构成点名"));
+        }
     }
 
     #[test]
