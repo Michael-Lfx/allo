@@ -46,9 +46,12 @@
     "untitled": "Untitled session",
     "briefingKind": "Spoken briefing",
     "importProject": "Import project",
+    "importCanvas": "Import canvas",
+    "importFilter": "Flowy project (short drama / canvas)",
     "importDesktopOnly": "Importing a project is only available in the desktop app.",
     "importOk": "Project imported",
     "importFailed": "Import failed",
+    "importUnsupported": "Choose a short-drama project (.nomivimax) or an infinite-canvas project (.nomiccanvas).",
     "empty": {
       "title": "Your first film starts above",
       "desc": "Describe a scene or story and Flowy will create an editable storyboard first."
