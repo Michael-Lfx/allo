@@ -750,17 +750,25 @@ pub(crate) async fn coach_redraft(
     parse_coach_reply(&raw)
 }
 
+/// 反乒乓纪律句（单源）：前轮评审意见的两个注入面——重排提示词的独立段
+/// （[`prior_review_section`]）与重试反馈的附加段
+/// （[`growth_retry::AttemptFail::into_feedback`]）——共用这份逐字文本。
+/// 历史曾各写一份且已漂移（尾句只有重排面带）；union 取含尾句版：尾句是
+/// 「注意力放本轮修复与前轮落实」的定向指令，两个注入面同样成立。段头
+/// （【前轮评审意见（随重试/失败回灌…）】）不进本常量——随什么回灌是各
+/// 注入面自己的机制描述，就地书写。
+pub(crate) const ANTI_PING_PONG_DISCIPLINE: &str = "【反乒乓纪律】已修不重提：前轮已点名、上一稿已按建议修正的地方保持修正，不要回退重写；已过不翻案：前轮评审已放行的内容不要推翻重改；注意力放本轮打回点的修复与前轮意见的落实上。";
+
 /// 前轮评审意见的注入段（m5 #175C 有状态复审）：空 = 首轮/开关 off，零
 /// 注入（重排提示词字节回到既有形态）；非空 = 独立段（不与打回问题并段）
-/// + 反乒乓纪律句（已修不重提、已过不翻案）。
+/// + 反乒乓纪律句（[`ANTI_PING_PONG_DISCIPLINE`]）。
 fn prior_review_section(prior_review: &str) -> String {
     if prior_review.trim().is_empty() {
         return String::new();
     }
     format!(
         "\n\n【前轮评审意见（随重试回灌；前轮批已打回未落库，本轮重排后评审会复审）】\n\
-         【反乒乓纪律】已修不重提：前轮已点名、上一稿已按建议修正的地方保持修正，不要回退重写；\
-         已过不翻案：前轮评审已放行的内容不要推翻重改；注意力放本轮打回点的修复与前轮意见的落实上。\n\
+         {ANTI_PING_PONG_DISCIPLINE}\n\
          {prior_review}"
     )
 }
@@ -2848,6 +2856,8 @@ mod tests {
         // on 臂面：独立意见段 + 反乒乓纪律 + 往返记录原文 + 点名集定义句。
         assert!(prompts[0].contains("【前轮评审意见"), "on 臂须带意见段：{}", prompts[0]);
         assert!(prompts[0].contains("已修不重提") && prompts[0].contains("已过不翻案"));
+        // 纪律句单源：注入的必须是共享常量的逐字全文（与 into_feedback 同文）。
+        assert!(prompts[0].contains(ANTI_PING_PONG_DISCIPLINE), "{}", prompts[0]);
         assert!(prompts[0].contains("第 1 轮评审打回") && prompts[0].contains("补挂 assumes"));
         // off 臂面（prior 为空）：零注入，意见段不在；点名集定义句恒在。
         assert!(
