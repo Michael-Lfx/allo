@@ -13,7 +13,7 @@ mod state;
 mod switches;
 mod tutorial;
 
-pub use switches::is_off_switch_value;
+pub use switches::{is_off_switch_value, is_task_gate_disabled_value, TASK_GATE_SWITCH_ENV};
 
 pub use completer::LearningCompleter;
 
@@ -85,6 +85,7 @@ pub use models::{
 };
 pub use models::{
     MaintenanceCourseOutcome, MaintenanceNeedsView, MaintenanceSettings, MaintenanceTickReport,
+    LearningGraphGenerationStatus, LearningTaskGateReadout,
 };
 pub use service::{
     DEFAULT_MAINTENANCE_ENABLED, DEFAULT_MAINTENANCE_INTERVAL_MINUTES,

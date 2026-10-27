@@ -164,7 +164,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "知识结构生成",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("structure", "正在生成知识结构与前置地形…");
         self.emit_graph_event(
@@ -360,7 +360,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "结构挂载",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("mount", "正在挂载节点到结构块…");
         self.emit_graph_event(
@@ -632,7 +632,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "结构修补",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("repair", "正在按留痕与观察修补结构…");
         self.emit_graph_event(
@@ -3513,30 +3513,37 @@ impl LearningService {
 
     // ── Status/cancel（generation_tasks 注册表薄封装，端点不变）────────────
 
-    /// 登记一个长任务（三轮 t2 统一注册表）：同键并发拒绝（Conflict），
-    /// 守卫 drop 未收尾按 failed 留痕；token 供任务体接取消检查点。
-    pub(crate) fn begin_generation_task(
+    /// 登记一个长任务（三轮 t2 统一注册表；m7 起异步过闸）：同键并发拒绝
+    /// （Conflict，排队态同样拒绝），守卫 drop 未收尾按 failed 留痕；token
+    /// 供任务体接取消检查点。排队期取消 = Err（取消冲突文案，body 零执行）。
+    pub(crate) async fn begin_generation_task(
         &self,
         kind: &'static str,
         course_key: &str,
         node_id: Option<&str>,
         topic: &str,
     ) -> Result<crate::service::GenerationTaskGuard, AppError> {
-        self.generation_tasks.begin(kind, course_key, node_id, topic)
+        self.generation_tasks
+            .begin(kind, course_key, node_id, topic)
+            .await
     }
 
-    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数。
+    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数；
+    /// 无在跑而有排队时回退最新排队主题（m7 排队可见），queued = 排队计数。
     pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
+        let (queued, queued_topic) = self.generation_tasks.queued_summary();
         match self.generation_tasks.running_newest() {
             Some((topic, elapsed_secs)) => crate::models::LearningGraphGenerationStatus {
                 running: true,
                 topic: Some(topic),
                 elapsed_secs: Some(elapsed_secs),
+                queued,
             },
             None => crate::models::LearningGraphGenerationStatus {
                 running: false,
-                topic: None,
+                topic: queued_topic,
                 elapsed_secs: None,
+                queued,
             },
         }
     }
@@ -3544,6 +3551,11 @@ impl LearningService {
     /// 长任务快照（`GET /api/learning/generation-tasks`）。
     pub fn generation_task_snapshot(&self) -> Vec<crate::service::GenerationTaskView> {
         self.generation_tasks.snapshot()
+    }
+
+    /// 任务资源闸读数（m7，smoke 对照卡数据源）。
+    pub fn generation_gate_readout(&self) -> crate::models::LearningTaskGateReadout {
+        self.generation_tasks.gate_readout()
     }
 
     /// 统一取消（按任务键）：取消胜出 = cancelled 终态；任务已终态（竞速
@@ -3606,6 +3618,7 @@ impl LearningService {
                 title = title.unwrap_or_else(|| course_id.as_str().to_owned())
             ),
         )
+        .await
     }
 
     fn emit_graph_event(&self, course_id: &LearningCourseId, event: &str, mut fields: Value) {
