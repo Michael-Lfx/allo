@@ -851,6 +851,41 @@ export interface GraphConceptRefView {
   status: LessonStatus;
 }
 
+/** 定义审计条目（m9 只读报告）：概念 + 机械点名片段（课程豁免过滤后） */
+export interface ConceptAuditEntry {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  /** 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声） */
+  fragments: string[];
+}
+
+/** 定义审计自指条目：定义含自身正名（ISO 704 禁止） */
+export interface ConceptAuditSelfRef {
+  concept_id: string;
+  name: string;
+}
+
+/** 定义审计互指对（循环定义的最短形态 A↔B） */
+export interface ConceptAuditCycle {
+  a_concept_id: string;
+  a_name: string;
+  b_concept_id: string;
+  b_name: string;
+}
+
+/** 定义审计报告（只读，零 LLM 零写入）：登记表全量 × 用语表三层的机械读数 */
+export interface ConceptAuditReport {
+  /** 审计的概念总数（登记表全量、非废弃） */
+  concept_count: number;
+  /** 有缺口的概念条目（零片段的概念不占行；按片段数降序） */
+  flagged: ConceptAuditEntry[];
+  /** 自指概念（定义含自身正名） */
+  self_refs: ConceptAuditSelfRef[];
+  /** 两两互指（按 (a, b) 字典序） */
+  mutual_cycles: ConceptAuditCycle[];
+}
+
 /** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */
 export interface MemoryLoadDay {
   review_day: number;
