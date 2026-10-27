@@ -1638,6 +1638,9 @@ impl LearningService {
         // 挂号表机械校验读数（m3 smoke rows/invalid/retried/degraded）：
         // 跨预算轮累加，随 growth stats 落内存态（读数面非门禁）。
         let mut provenance_readout = crate::learning_graph::provenance::ProvenanceReadout::default();
+        // 碎片裁决机械读数（m9 补接 smoke total/rows/unhandled/degraded）：
+        // 同款跨轮累加（读数面非门禁）。
+        let mut fragment_readout = crate::learning_graph::fragment_verdict::FragmentReadout::default();
         // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
         // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
         // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
@@ -1878,6 +1881,17 @@ impl LearningService {
             .await;
             self.record_mint_research_stats(mint_stats);
             let candidates_text = Self::render_nomination_candidates(&outcome.nominations);
+            // 碎片点名清单（m9 补接，learnhub ReviewInput.naming_list 同缝）：
+            // 本批提名定义 × 已知面（已教账 ∪ 登记表 ∪ 本批 ∪ base ∪ 课程增
+            // 词）→ 未着落片段；课程豁免的片段视而不见。off 臂零派生（整面
+            // 休眠，连 DB 读都没有）；课程层损坏 = fail loud（旁键坏了不能
+            // 悄悄放行，与审计面同律）。
+            let naming_list = if crate::learning_graph::review_fragments_enabled() {
+                self.derive_naming_list(course_id, &candidate, &outcome.provenance_known)
+                    .await?
+            } else {
+                Vec::new()
+            };
             let mut review = crate::learning_graph::concept_review(
                 completer,
                 model_override,
@@ -1885,9 +1899,12 @@ impl LearningService {
                 &context,
                 &candidates_text,
                 &outcome.provenance_known.iter().cloned().collect::<Vec<_>>(),
+                &naming_list,
+                crate::lexicon_enforce_enabled(),
             )
             .await;
             provenance_readout.merge(&review.provenance);
+            fragment_readout.merge(&review.fragments);
             // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
             // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
             // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
@@ -2189,6 +2206,7 @@ impl LearningService {
             attempts_used,
             stop_reason,
             provenance_readout,
+            fragment_readout,
             review_state,
             review_state_injections,
         );
@@ -2295,6 +2313,7 @@ impl LearningService {
         attempts_used: usize,
         stop_reason: &str,
         provenance: crate::learning_graph::provenance::ProvenanceReadout,
+        fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
         review_state: bool,
         review_state_injections: usize,
     ) {
@@ -2306,6 +2325,10 @@ impl LearningService {
                 review_provenance_invalid: provenance.invalid,
                 review_provenance_retried: provenance.retried,
                 review_provenance_degraded: provenance.degraded,
+                review_fragments_total: fragments.fragments,
+                review_fragments_rows: fragments.rows,
+                review_fragments_unhandled: fragments.unhandled,
+                review_fragments_degraded: fragments.degraded,
                 review_state,
                 review_state_injections,
             });
@@ -2877,6 +2900,35 @@ impl LearningService {
             auto_reusals,
             provenance_known,
         })
+    }
+
+    /// 碎片点名清单派生（m9 补接；纯函数在
+    /// [`crate::learning_graph::fragment_verdict::derive_naming_list`]，本
+    /// 方法只管取数）：读本课 `structure_json` 的课程层旁键（损坏 = fail
+    /// loud）∪ 仓库 base ∪ gate 装配的已知名池（已教账 ∪ 登记表活跃名+别名
+    /// ∪ 本批铸名/提名）→ 本批提名定义的未着落片段。
+    async fn derive_naming_list(
+        &self,
+        course_id: &LearningCourseId,
+        batch: &crate::learning_graph::ProposedBatch,
+        provenance_known: &HashSet<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_lexicon =
+            crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
+                .map_err(AppError::Internal)?;
+        let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
+        let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
+        known.extend(provenance_known.iter().cloned());
+        Ok(crate::learning_graph::fragment_verdict::derive_naming_list(
+            batch, &known, &course_lexicon,
+        ))
     }
 
     /// 落库：铸名（含复用落池）→ 节点 → 概念网 → 完成裁决 → 批次档案，单事务。

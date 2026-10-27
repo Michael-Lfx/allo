@@ -6037,6 +6037,141 @@ async fn unparseable_advice_stays_a_rejection() {
     assert_eq!(applied, 0, "the batch must not land");
 }
 
+// ── 评审碎片裁决面（m9 补接）─────────────────────────────────────────────
+
+/// 碎片点名 → 未处置 report-only（v1 缺省臂）：机械派生点名清单（本批铸名
+/// 定义 × 已知面），评审旧形态回包（不带 fragments）→ 未处置片段逐条落
+/// findings（j09 通道，source='concept-review'、field='fragments'），批照常
+/// 放行落库；读数记 total/rows/unhandled。
+#[tokio::test]
+#[serial_test::serial]
+async fn fragment_misses_land_report_only_findings_and_do_not_block() {
+    let _face = set_learning_env(crate::learning_graph::REVIEW_FRAGMENTS_SWITCH_ENV, "on");
+    let _enforce = set_learning_env(crate::LEXICON_ENFORCE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    // 铸名定义里留未着落片段「线段」（base 语料无此词、登记表/已教账无人
+    // 教）——机械点名必报；评审回包不带 fragments（旧形态）= 全部未处置。
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "认识三角形", "purpose": "从图形切入", "est": 15,
+             "teaches": [{"name": "三角形", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "三角形", "aliases": [], "definition": "线段首尾相接围成，有三个内角"}
+        ],
+        "new_aliases": [],
+        "note": "碎片稿"
+    }"#;
+    let review_json = r#"{"verdict":"pass","term_provenance":[{"concept":"三角形","term":"线段","source":"常识"}]}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+
+    // report-only 不打回：批照常落库。
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "report-only 留痕不打回");
+    // 未处置片段落 findings（j09 通道）：field='fragments'，issue 点名片段。
+    let fragment_findings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_findings \
+         WHERE course_id = ? AND source = 'concept-review' AND field = 'fragments'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        fragment_findings >= 1,
+        "未处置片段必须落 findings 留痕（j09 通道）"
+    );
+    let named: String = sqlx::query_scalar(
+        "SELECT issue FROM learning_structure_findings \
+         WHERE course_id = ? AND source = 'concept-review' AND field = 'fragments' \
+           AND issue LIKE '%线段%' LIMIT 1",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(named.contains("未处置"), "留痕点未处置：{named}");
+    // 读数：点名数 = 未处置数（旧形态回包零裁决行）。
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert!(
+        stats.review_fragments_total >= 1 && stats.review_fragments_rows == 0,
+        "读数记点名清单与裁决行：{stats:?}"
+    );
+    assert_eq!(
+        stats.review_fragments_unhandled, stats.review_fragments_total,
+        "全部未处置：{stats:?}"
+    );
+    assert!(!stats.review_fragments_degraded, "{stats:?}");
+}
+
+/// 碎片面 off（`NOMI_LEARNING_REVIEW_FRAGMENTS=off`）= 整面休眠：不派生点
+/// 名清单、不落 fragments findings，读数恒零——同一夹具两臂对照。
+#[tokio::test]
+#[serial_test::serial]
+async fn fragments_face_off_leaves_no_trace() {
+    let _face = set_learning_env(crate::learning_graph::REVIEW_FRAGMENTS_SWITCH_ENV, "off");
+    let _enforce = set_learning_env(crate::LEXICON_ENFORCE_SWITCH_ENV, "off");
+    let (service, _knowledge, owner) = job_test_service().await;
+    let (course_id, _a, _b) = seed_graph_course(&service).await;
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "认识三角形", "purpose": "从图形切入", "est": 15,
+             "teaches": [{"name": "三角形", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "三角形", "aliases": [], "definition": "线段首尾相接围成，有三个内角"}
+        ],
+        "new_aliases": [],
+        "note": "碎片稿"
+    }"#;
+    let review_json = r#"{"verdict":"pass","term_provenance":[{"concept":"三角形","term":"线段","source":"常识"}]}"#;
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json.to_owned()]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, &course_id).await;
+    let applied: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ? AND status = 'applied'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(applied, 1, "off 臂照常落库");
+    let fragment_findings: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_structure_findings \
+         WHERE course_id = ? AND source = 'concept-review' AND field = 'fragments'",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(fragment_findings, 0, "off 臂零碎片留痕（整面休眠）");
+    let stats = service.growth_run_stats().expect("growth stats recorded");
+    assert_eq!(
+        stats.review_fragments_total,
+        0,
+        "off 臂零派生零读数：{stats:?}"
+    );
+}
+
 /// 铸名撞登记表现有名 → 门面机械复用（run-1792402566347 实录的红条死
 /// 路）：ng.mints.collision 被吸收为 auto-ruling，不铸新行、引用落宿主。
 #[tokio::test]

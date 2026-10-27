@@ -13,7 +13,10 @@ mod state;
 mod switches;
 mod tutorial;
 
-pub use switches::{is_off_switch_value, is_task_gate_disabled_value, TASK_GATE_SWITCH_ENV};
+pub use switches::{
+    is_off_switch_value, is_task_gate_disabled_value, lexicon_enforce_enabled,
+    lexicon_enforce_enabled_value, LEXICON_ENFORCE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+};
 
 pub use completer::LearningCompleter;
 
