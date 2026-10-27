@@ -81,6 +81,10 @@
     "searchPlaceholder": "搜索作品...",
     "featuredTitle": "精选",
     "loadMore": "加载更多",
+    "view": {
+      "thumbnails": "切换缩略图",
+      "sphere": "切换球面"
+    },
     "sort": {
       "latest": "最新",
       "likes": "最多赞"

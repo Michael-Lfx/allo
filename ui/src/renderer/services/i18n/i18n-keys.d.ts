@@ -10701,6 +10701,8 @@ export type I18nKey =
   | 'videoGeneration.tvShow.subtitleChannel'
   | 'videoGeneration.tvShow.subtitleMine'
   | 'videoGeneration.tvShow.title'
+  | 'videoGeneration.tvShow.view.sphere'
+  | 'videoGeneration.tvShow.view.thumbnails'
   | 'videoGeneration.workflow.action2video.desc'
   | 'videoGeneration.workflow.action2video.title'
   | 'videoGeneration.workflow.canvas.desc'

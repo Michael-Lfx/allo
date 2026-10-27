@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Modal, Spin } from '@arco-design/web-react';
-import { Like } from '@icon-park/react';
+import { Button, Modal, Popconfirm, Spin } from '@arco-design/web-react';
+import { Delete, Like } from '@icon-park/react';
 import type { TvShowVideo } from '../types';
 import { tvShowWorkflowLabel } from './SessionCard';
 
@@ -15,6 +15,8 @@ interface TvShowInspectorProps {
   onImport: () => void;
   onToggleLike: () => void;
   onLogin: () => void;
+  onDelete?: () => void;
+  deleting?: boolean;
   onPrev?: () => void;
   onNext?: () => void;
 }
@@ -29,6 +31,8 @@ const TvShowInspector: React.FC<TvShowInspectorProps> = ({
   onImport,
   onToggleLike,
   onLogin,
+  onDelete,
+  deleting,
   onPrev,
   onNext,
 }) => {
@@ -119,6 +123,22 @@ const TvShowInspector: React.FC<TvShowInspectorProps> = ({
             >
               {t('videoGeneration.tvShow.actions.remix', { defaultValue: '用这个做一支' })}
             </Button>
+            {onDelete ? (
+              <Popconfirm
+                title={t('videoGeneration.tvShow.actions.deleteConfirm', {
+                  defaultValue: '确定删除该发布？',
+                })}
+                disabled={deleting}
+                onOk={onDelete}
+              >
+                <Button type='outline' status='danger' size='small' loading={deleting}>
+                  <span className='inline-flex items-center gap-4px'>
+                    <Delete theme='outline' size={14} fill='currentColor' />
+                    {t('videoGeneration.actions.delete', { defaultValue: '删除' })}
+                  </span>
+                </Button>
+              </Popconfirm>
+            ) : null}
           </div>
         </div>
       ) : null}
