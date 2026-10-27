@@ -17,6 +17,7 @@ import {
   Tag,
   Typography,
 } from '@arco-design/web-react';
+import { RollingDuration, TimedPhrase, timerSlot } from '@renderer/components/base/Counter';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import { Attention, Edit, Plus, ReduceOne, Robot, Speed } from '@icon-park/react';
@@ -30,13 +31,6 @@ const PAIRING_POLL_INTERVAL = 5_000;
 const PAIRING_TIMEOUT = 5 * 60 * 1000;
 
 type PairingState = 'idle' | 'handshaking' | 'pending' | 'timeout';
-
-const formatTimeLeft = (ms: number): string => {
-  const totalSec = Math.ceil(ms / 1000);
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  return `${min}:${sec.toString().padStart(2, '0')}`;
-};
 
 const statusColor = (status?: string): string => {
   switch (status) {
@@ -62,7 +56,7 @@ const RemoteAgentFormModal: React.FC<{
   onClose: () => void;
   onSaved: () => void;
 }> = ({ visible, editAgent, onClose, onSaved }) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [form] = Form.useForm<RemoteAgentInput>();
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -268,7 +262,19 @@ const RemoteAgentFormModal: React.FC<{
               </Typography.Text>
               <Typography.Text type='secondary'>{t('settings.remoteAgent.pendingApprovalHint')}</Typography.Text>
               <Typography.Text type='secondary' className='text-12px'>
-                {t('settings.remoteAgent.pendingTimeRemaining', { time: formatTimeLeft(pairingTimeLeft) })}
+                <TimedPhrase
+                  text={t('settings.remoteAgent.pendingTimeRemaining', { time: timerSlot.time })}
+                  slots={{
+                    [timerSlot.time]: (
+                      <RollingDuration
+                        seconds={Math.ceil(pairingTimeLeft / 1000)}
+                        hours='never'
+                        padMinutes={false}
+                        locale={i18n.language}
+                      />
+                    ),
+                  }}
+                />
               </Typography.Text>
             </>
           ) : (

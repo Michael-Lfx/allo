@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconLock, IconMore, IconPushpin, IconQuestionCircle } from '@arco-design/web-react/icon';
+import Counter, { TimedPhrase, tickingCounterProps, timerSlot } from '@renderer/components/base/Counter';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -53,13 +54,14 @@ export function ReviewCard({
   onArchive: (review: DueReview) => void;
   onDelete: (review: DueReview) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [response, setResponse] = useState<unknown>();
   const [result, setResult] = useState<ReviewAnswerResult | null>(null);
   const [wasForgot, setWasForgot] = useState(false);
   // 卡面展示计时：驱动「忘记」申报的回忆门，同时作为作答耗时上报
   const [shownAt, setShownAt] = useState(() => Date.now());
   const [nowTick, setNowTick] = useState(() => Date.now());
+  // useEffect必要性：window.setInterval；目的：复习卡展示期间刷新「忘记」按钮的剩余秒数。allo 未依赖 ahooks。
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 500);
     return () => clearInterval(timer);
@@ -237,7 +239,18 @@ export function ReviewCard({
           </Button>
           {forgotGateLocked && !locked && (
             <span className='text-12px text-t-tertiary'>
-              {t('learning.reviewForgotGate', { seconds: Math.ceil((FORGOT_GATE_MS - gateElapsed) / 1000) })}
+              <TimedPhrase
+                text={t('learning.reviewForgotGate', { seconds: timerSlot.seconds })}
+                slots={{
+                  [timerSlot.seconds]: (
+                    <Counter
+                      {...tickingCounterProps}
+                      value={Math.max(0, Math.ceil((FORGOT_GATE_MS - gateElapsed) / 1000))}
+                      locale={i18n.language}
+                    />
+                  ),
+                }}
+              />
             </span>
           )}
           <Button

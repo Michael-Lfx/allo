@@ -3,6 +3,7 @@ import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/r
 import { ChevronDown, ChevronUp, Clock3, Coins, ListTodo, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { RollingDuration } from "@renderer/components/base/Counter";
 import { formatCredits } from "@oc/constant/credits";
 import { aceternityMotion } from "@oc/lib/aceternity-motion";
 import { formatTaskKind, statusLabel } from "@oc/lib/generation-task-display";
@@ -111,10 +112,18 @@ export function CanvasActiveTaskPanel({ tasks, align = "right" }: { tasks: Gener
 }
 
 function ActiveTaskCard({ task, now, theme, expanded, onToggle, reducedMotion, creditsEnabled }: { task: GenerationTask; now: number; theme: (typeof canvasThemes)[keyof typeof canvasThemes]; expanded: boolean; onToggle: () => void; reducedMotion: boolean; creditsEnabled: boolean }) {
+    const { i18n } = useTranslation();
     const progress = typeof task.progress === "number" ? Math.max(0, Math.min(100, Math.round(task.progress))) : task.status === "queued" ? 0 : undefined;
     const startedAt = task.startedAt || task.createdAt;
     const elapsedMs = Math.max(0, now - parseTime(startedAt));
-    const durationLabel = `${task.status === "queued" ? canvasT("videoCanvas.tasks.waited", "已等待") : canvasT("videoCanvas.tasks.ran", "已运行")} ${formatDuration(elapsedMs)}`;
+    const durationPrefix = task.status === "queued" ? canvasT("videoCanvas.tasks.waited", "已等待") : canvasT("videoCanvas.tasks.ran", "已运行");
+    const durationLabel = `${durationPrefix} ${formatDuration(elapsedMs)}`;
+    const durationNode = (
+        <span className="inline-flex min-w-0 items-baseline gap-1">
+            <span className="truncate">{durationPrefix}</span>
+            <RollingDuration seconds={elapsedMs / 1000} locale={i18n.language} />
+        </span>
+    );
     const billingLabel = task.billing ? canvasT("videoCanvas.tasks.frozenCredits", "冻结 {{amount}} 积分", { amount: formatCredits(task.billing.amountMicrocredits) }) : canvasT("videoCanvas.tasks.unbilled", "未计费");
     const statusTone = task.status === "running" ? theme.accent.primary : theme.node.muted;
     const transition = reducedMotion ? { duration: 0 } : aceternityMotion.spring.panel;
@@ -173,12 +182,12 @@ function ActiveTaskCard({ task, now, theme, expanded, onToggle, reducedMotion, c
                 {/* 进度百分比显示（对应 #98 决策3：列表视图）*/}
                 {progress !== undefined && task.status === "running" ? (
                     <div className="mt-1 flex items-center justify-between text-[var(--fs-micro)]" style={{ color: theme.node.muted }}>
-                        <span>{durationLabel}</span>
+                        <span>{durationNode}</span>
                         <span className="font-medium tabular-nums" style={{ color: statusTone }}>{progress}%</span>
                     </div>
                 ) : (
                     <div className={`mt-3 grid gap-2 text-[var(--fs-tiny)] ${creditsEnabled ? "grid-cols-2" : "grid-cols-1"}`} style={{ color: theme.node.muted }}>
-                        <span className="inline-flex min-w-0 items-center gap-1 truncate" title={durationLabel}><Clock3 className="size-3 shrink-0" />{durationLabel}</span>
+                        <span className="inline-flex min-w-0 items-center gap-1 truncate" title={durationLabel}><Clock3 className="size-3 shrink-0" />{durationNode}</span>
                         {creditsEnabled ? <span className="inline-flex min-w-0 items-center justify-end gap-1 truncate" title={billingLabel}><Coins className="size-3 shrink-0" />{billingLabel}</span> : null}
                     </div>
                 )}
