@@ -25,6 +25,9 @@ const SEARCH_PLACEHOLDER_KEYS: Record<CapabilityHubId, I18nKey> = {
   mcp: 'settings.capabilityHub.searchMcp',
 };
 
+/** Skill store lives on the primary rail, so Settings only switches presets and MCP. */
+const SETTINGS_CAPABILITY_TABS = CAPABILITY_HUB_IDS.filter((id) => id !== 'skills');
+
 const TAB_LABEL_DEFAULTS: Record<CapabilityHubId, string> = {
   presets: 'Presets',
   skills: 'Skills',
@@ -66,7 +69,7 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
     <div className='capability-hub-header' data-testid='capability-hub-header'>
       <div className='capability-hub-tabs-row'>
         <div className='capability-hub-tabs' role='tablist' aria-label={t('settings.groupCapabilityExtensions')}>
-          {CAPABILITY_HUB_IDS.map((id) => {
+          {SETTINGS_CAPABILITY_TABS.map((id) => {
             const Icon = TAB_ICONS[id];
             const selected = id === hub;
             return (

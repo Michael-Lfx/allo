@@ -81,7 +81,7 @@ type RouteFallbackProps = {
   fullscreen?: boolean;
 };
 
-const SETTINGS_CAPABILITY_PATHS = ['/presets', '/skills', '/mcp'];
+const SETTINGS_CAPABILITY_PATHS = ['/presets', '/mcp'];
 
 const isSettingsSurfacePath = (pathname: string): boolean =>
   pathname === '/settings' ||
@@ -165,6 +165,12 @@ const LegacyExtensionsRedirect: React.FC = () => {
 
 /** Plugin management is retired from the user-facing capability surface. */
 const DisabledPluginsRedirect: React.FC = () => <Navigate to='/settings/presets' replace />;
+
+/** The skill store moved to the primary rail; keep old settings links working. */
+const LegacySettingsSkillsRedirect: React.FC = () => {
+  const { search } = useLocation();
+  return <Navigate to={`/skills${search}`} replace />;
+};
 
 // Legacy `/requirements/:id/edit` deep links → open the workspace with the
 // requirement pre-selected in edit mode (the new shell hosts editing in a
@@ -354,7 +360,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/display' element={<Navigate to='/settings/system' replace />} />
           <Route path='/settings/webui' element={<Navigate to='/open-capabilities' replace />} />
           <Route path='/settings/presets' element={withRouteFallback(PresetSettings)} />
-          <Route path='/settings/skills' element={withRouteFallback(SkillsSettingsPage)} />
+          <Route path='/settings/skills' element={<LegacySettingsSkillsRedirect />} />
           <Route path='/settings/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/settings/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/settings/system' element={withRouteFallback(SystemSettings)} />

@@ -27,18 +27,20 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("testId='sider-video-module-row'")).toBe(true);
     expect(siderSource.includes("testId='sider-companion-module-row'")).toBe(true);
 
-    // Video then companion, as full-width rows. Projects stay in the list below.
+    // Video, skill store, then companion, as full-width rows. Projects stay in the list below.
     expect(siderSource.includes('<MessageOne')).toBe(false);
     expect(siderSource.includes('<VideoOne')).toBe(true);
     expect(siderSource.includes('<Ghost')).toBe(true);
     expect(siderSource.includes('🐱')).toBe(false);
     const videoRow = siderSource.indexOf("testId='sider-video-module-row'");
+    const skillStoreRow = siderSource.indexOf("testId='sider-skill-store-row'");
     const companionRow = siderSource.indexOf("testId='sider-companion-module-row'");
     const knowledgeRow = siderSource.indexOf('<SiderKnowledgeEntry');
     const learningRow = siderSource.indexOf('<SiderLearningEntry');
     const scheduledRow = siderSource.indexOf('<SiderScheduledEntry');
     expect(videoRow).toBeGreaterThan(-1);
-    expect(videoRow).toBeLessThan(companionRow);
+    expect(videoRow).toBeLessThan(skillStoreRow);
+    expect(skillStoreRow).toBeLessThan(companionRow);
     expect(companionRow).toBeLessThan(knowledgeRow);
     expect(knowledgeRow).toBeLessThan(learningRow);
     expect(learningRow).toBeLessThan(scheduledRow);

@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { AlarmClock, BookOne, BookOpen, Experiment, Ghost, VideoOne } from '@icon-park/react';
+import { AlarmClock, BookOne, BookOpen, Experiment, Ghost, Puzzle, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
@@ -42,6 +42,7 @@ import SettingsSiderErrorBoundary from '../SettingsSiderErrorBoundary';
 import { prefetchLearningPage } from '@renderer/pages/learning/prefetch';
 import { prefetchNomiPage } from '@renderer/pages/nomi/prefetch';
 import { prefetchVideoGenerationHome } from '@renderer/pages/videoGeneration/prefetch';
+import { prefetchSkillsStore } from '@renderer/pages/settings/prefetch';
 import GooeyNav, { type GooeyNavItem } from '@renderer/components/base/GooeyNav';
 
 const SettingsSider = React.lazy(() => import('@renderer/pages/settings/components/SettingsSider'));
@@ -269,6 +270,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
 
   const isVideoRoute = pathname.startsWith('/video-generation');
   const isCompanionRoute = pathname.startsWith('/nomi');
+  const isSkillStoreRoute = pathname === '/skills' || pathname.startsWith('/skills/');
 
   const activeBar2Module: SiderHistoryTab | null = useMemo(
     () => activeHistoryTabForRoute(pathname, activeHistoryTab),
@@ -425,6 +427,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       prefetchLearningPage();
       prefetchNomiPage();
       prefetchVideoGenerationHome();
+      prefetchSkillsStore();
     };
     if (typeof idleWindow.requestIdleCallback === 'function') {
       const idleId = idleWindow.requestIdleCallback(warmIdleRoutes, {
@@ -442,7 +445,10 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
   };
   const handleRequirementsClick = () => navTo('/requirements');
   const handlePresetClick = () => navTo('/presets');
-  const handleSkillsClick = () => navTo('/skills');
+  const handleSkillsClick = () => {
+    setOptimisticBar2Module(null);
+    navTo('/skills');
+  };
   const handleMcpClick = () => navTo('/mcp');
   
   const handleSettingsClick = () => {
@@ -570,7 +576,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
             data-testid='sider-primary-nav'
             className={`${styles.primaryNav} shrink-0 flex flex-col gap-2px`}
           >
-            {/* 新建任务、视频、桌宠各占一整行，样式与新建任务按钮一致 */}
+            {/* 新建任务、视频、技能、桌宠各占一整行，样式与新建任务按钮一致 */}
             <div className='flex flex-col gap-4px mb-4px' role='tablist'>
               <SiderNewConversationEntry
                 isMobile={isMobile}
@@ -590,6 +596,24 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onPointerEnter={() => prefetchVideoGenerationHome()}
                     icon={
                       <VideoOne
+                        theme='outline'
+                        size='16'
+                        fill='currentColor'
+                        className='block leading-none shrink-0'
+                        style={{ lineHeight: 0 }}
+                      />
+                    }
+                  />
+                  <SiderModuleRow
+                    collapsed={false}
+                    active={isSkillStoreRoute}
+                    label={t('settings.skillsMarket.title', { defaultValue: '技能' })}
+                    testId='sider-skill-store-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleSkillsClick}
+                    onPointerEnter={() => prefetchSkillsStore()}
+                    icon={
+                      <Puzzle
                         theme='outline'
                         size='16'
                         fill='currentColor'
@@ -646,6 +670,24 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onOpenClipTask={handleOpenRecentClipTask}
                     onOpenCanvasProject={handleOpenRecentCanvasProject}
                     onOpenBriefing={handleOpenRecentBriefing}
+                  />
+                  <SiderModuleRow
+                    collapsed
+                    active={isSkillStoreRoute}
+                    label={t('settings.skillsMarket.title', { defaultValue: '技能' })}
+                    testId='sider-skill-store-row'
+                    siderTooltipProps={siderTooltipProps}
+                    onClick={handleSkillsClick}
+                    onPointerEnter={() => prefetchSkillsStore()}
+                    icon={
+                      <Puzzle
+                        theme='outline'
+                        size='16'
+                        fill='currentColor'
+                        className='block leading-none shrink-0'
+                        style={{ lineHeight: 0 }}
+                      />
+                    }
                   />
                 </>
               )}

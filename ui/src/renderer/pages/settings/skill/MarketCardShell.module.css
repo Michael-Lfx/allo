@@ -1,0 +1,69 @@
+.stage {
+  display: flex;
+  min-width: 0;
+  perspective: 900px;
+}
+
+.plate {
+  position: relative;
+  width: 100%;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--color-bg-1) 88%, white), var(--color-bg-2));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 72%, transparent),
+    0 16px 32px -24px color-mix(in srgb, var(--color-text-1) 42%, transparent);
+  transform: translate3d(0, 0, 0) rotateX(var(--rc-rx, 0deg)) rotateY(var(--rc-ry, 0deg));
+  transform-style: preserve-3d;
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.15s ease;
+}
+
+.plate:hover {
+  will-change: transform;
+}
+
+.glare,
+.rim {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.glare {
+  z-index: 1;
+  background: radial-gradient(
+    240px circle at var(--rc-gx, 28%) var(--rc-gy, 0%),
+    color-mix(in srgb, white 48%, transparent),
+    transparent 58%
+  );
+  opacity: var(--rc-glare, 0);
+  transition: opacity 0.22s ease;
+}
+
+.rim {
+  z-index: 2;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--color-text-1) 7%, transparent);
+}
+
+.content {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plate {
+    transform: none;
+    transition: none;
+  }
+
+  .glare {
+    display: none;
+  }
+}

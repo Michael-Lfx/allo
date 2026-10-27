@@ -1,6 +1,6 @@
 import { Button, Dropdown, Menu, Tag } from '@arco-design/web-react';
 import { Check, LinkOne, More, Plus } from '@icon-park/react';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { normalizeTestId } from './skillPresentation';
 import MarketCardShell from './MarketCardShell';
@@ -46,13 +46,8 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   const { t, i18n } = useTranslation();
   const testId = normalizeTestId(item.id);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
-  const [avatarBroken, setAvatarBroken] = useState(false);
-
-  useEffect(() => {
-    setAvatarBroken(false);
-  }, [item.avatar]);
-
-  const avatarSrc = item.avatar && !avatarBroken ? item.avatar : undefined;
+  const [brokenAvatar, setBrokenAvatar] = useState<string | undefined>();
+  const avatarSrc = item.avatar && brokenAvatar !== item.avatar ? item.avatar : undefined;
   const isCompleted = actionState === 'completed';
   const isChecking = actionState === 'checking';
   let actionText = actionLabel;
@@ -65,10 +60,57 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
   }
 
   return (
-    <MarketCardShell testId={`skill-market-card-${testId}`}>
-      <header className='grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-12px'>
+    <MarketCardShell reflective testId={`skill-market-card-${testId}`}>
+      <header className='flex items-center gap-8px text-12px leading-18px'>
+        <span className='inline-flex min-w-0 items-center gap-4px font-medium text-t-primary'>
+          <Check theme='outline' size={14} fill='currentColor' />
+          <span className='truncate'>
+            {item.marketSource === 'clawhub'
+              ? 'ClawHub'
+              : item.marketSource === 'skillhub'
+                ? 'SkillHub'
+                : item.upstreamSource || t('settings.skillsMarket.sourceUnknown', { defaultValue: '来源未知' })}
+          </span>
+        </span>
+        {isCompleted ? (
+          <span className='ml-auto inline-flex items-center gap-6px text-t-tertiary'>
+            <span className='h-6px w-6px rounded-full bg-[rgb(var(--success-6))]' />
+            {completedLabel ?? actionLabel}
+          </span>
+        ) : item.skillHub ? (
+          <span className='ml-auto shrink-0 text-t-tertiary'>v{item.skillHub.version}</span>
+        ) : null}
+        <span className={isCompleted || item.skillHub ? undefined : 'ml-auto'}>
+          <Dropdown
+            trigger='click'
+            droplist={
+              <Menu>
+                <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
+                  <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
+                </Menu.Item>
+                {showInstallCommand && (
+                  <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
+                    {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
+                  </Menu.Item>
+                )}
+              </Menu>
+            }
+          >
+            <Button
+              ref={moreButtonRef}
+              size='mini'
+              type='text'
+              aria-label={t('common.more', { defaultValue: '更多操作' })}
+              className='!h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!scale-96 motion-reduce:active:!transform-none'
+              icon={<More theme='outline' size={16} fill='currentColor' />}
+            />
+          </Dropdown>
+        </span>
+      </header>
+
+      <div className='mt-16px grid grid-cols-[auto_minmax(0,1fr)] items-start gap-12px'>
         <span
-          className='flex h-40px w-40px min-w-40px items-center justify-center overflow-hidden rounded-10px bg-[var(--color-fill-2)] text-12px font-semibold text-t-secondary'
+          className='flex h-40px w-40px min-w-40px items-center justify-center overflow-hidden rounded-10px bg-[var(--color-fill-2)] text-12px font-semibold text-t-secondary shadow-[inset_0_1px_0_color-mix(in_srgb,white_70%,transparent)]'
           aria-label={item.rank ? `${t('settings.market.rank', { defaultValue: '排名' })} ${item.rank}` : undefined}
         >
           {avatarSrc ? (
@@ -79,7 +121,7 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
               height={40}
               referrerPolicy='no-referrer'
               className='h-40px w-40px object-contain'
-              onError={() => setAvatarBroken(true)}
+              onError={() => setBrokenAvatar(item.avatar)}
             />
           ) : item.rank ? (
             `#${item.rank}`
@@ -87,99 +129,42 @@ const SkillMarketCard: React.FC<SkillMarketCardProps> = ({
             '–'
           )}
         </span>
-        <div className='min-w-0 pt-2px'>
-          <h3
-            className='m-0 overflow-hidden text-15px font-semibold leading-22px text-t-primary'
-            title={item.title}
-            style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
-          >
-            {item.title}
-          </h3>
-          {item.skillHub && (
-            <div className='mt-3px truncate text-11px text-t-tertiary'>v{item.skillHub.version}</div>
-          )}
-          <div className='mt-4px'>
-            <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-t-secondary !text-10px'>
-              {item.marketSource === 'clawhub'
-                ? 'ClawHub'
-                : item.marketSource === 'skillhub'
-                  ? 'SkillHub'
-                  : item.upstreamSource || t('settings.skillsMarket.sourceUnknown', { defaultValue: '来源未知' })}
-            </Tag>
-          </div>
-          {(item.requiresApi || item.noApi || item.apiKeyUnknown) && (
-            <div className='mt-4px flex flex-wrap items-center gap-4px'>
-              <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-t-secondary !text-10px'>
-                {item.requiresApi
-                  ? t('settings.skillsMarket.requiresApi', { defaultValue: '需要 API Key' })
-                  : item.noApi
-                    ? t('settings.skillsMarket.noApi', { defaultValue: '无需 API Key' })
-                    : t('settings.skillsMarket.apiKeyUnknown', { defaultValue: 'API Key 状态未知' })}
-              </Tag>
-            </div>
-          )}
-        </div>
-        <Dropdown
-          trigger='click'
-          droplist={
-            <Menu>
-              <Menu.Item key='open-source' onClick={() => onOpenSource(item)}>
-                <LinkOne size={14} fill='currentColor' /> {t('settings.market.openSource', { defaultValue: '打开来源' })}
-              </Menu.Item>
-              {showInstallCommand && (
-                <Menu.Item key='copy-command' onClick={() => onCopyInstallCommand(item)}>
-                  {t('settings.market.copyInstallCommand', { defaultValue: '复制安装命令' })}
-                </Menu.Item>
-              )}
-            </Menu>
-          }
+        <h3
+          className='m-0 overflow-hidden text-16px font-medium leading-22px tracking-[-0.02em] text-t-primary'
+          title={item.title}
+          style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
         >
-          <Button
-            ref={moreButtonRef}
-            size='mini'
-            type='text'
-            aria-label={t('common.more', { defaultValue: '更多操作' })}
-            className='!h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary active:!scale-96 motion-reduce:active:!transform-none'
-            icon={<More theme='outline' size={16} fill='currentColor' />}
-          />
-        </Dropdown>
-      </header>
+          {item.title}
+        </h3>
+      </div>
 
-      {item.compactStats && <div className='mt-8px truncate text-12px text-t-tertiary'>{item.compactStats}</div>}
-
-      {item.skillHub && (
-        <div className='mt-8px flex min-w-0 flex-wrap gap-6px text-11px text-t-tertiary'>
-          {item.skillHub.category && <span className='truncate'>{item.skillHub.category}</span>}
-          {item.skillHub.subCategories.slice(0, 2).map((category) => (
-            <span key={category.key} className='truncate'>{category.name}</span>
-          ))}
-        </div>
-      )}
-
-      {item.skillHub && (
-        <div className='mt-8px flex flex-wrap gap-x-10px gap-y-4px text-11px text-t-tertiary'>
-          <span title={item.skillHub.downloads.toLocaleString(i18n.language)}>{formatSkillHubMarketCount(item.skillHub.downloads)} {t('settings.skillsMarket.downloadUnit', { defaultValue: '下载' })}</span>
-          <span>{t('settings.skillsMarket.installs', { count: item.skillHub.installs, defaultValue: '{{count}} 安装' })}</span>
-          <span>{t('settings.skillsMarket.stars', { count: item.skillHub.stars, defaultValue: '{{count}} 收藏' })}</span>
-          <span>{t('settings.skillsMarket.score', { score: item.skillHub.score.toFixed(1), defaultValue: '热度分 {{score}}' })}</span>
-          {item.skillHub.updatedAt && (
-            <span>
-              {t('settings.skillsMarket.updatedAt', {
-                time: new Date(item.skillHub.updatedAt).toLocaleDateString(i18n.language),
-                defaultValue: '更新 {{time}}',
-              })}
-            </span>
-          )}
+      {item.requiresApi && (
+        <div className='mt-8px'>
+          <Tag size='small' bordered={false} className='!rounded-6px !bg-fill-2 !text-10px !text-t-secondary'>
+            {t('settings.skillsMarket.requiresApi', { defaultValue: '需要 API Key' })}
+          </Tag>
         </div>
       )}
 
       <p
-        className='mb-0 mt-10px overflow-hidden text-13px leading-20px text-t-secondary'
+        className='mb-0 mt-10px min-h-40px overflow-hidden text-13px leading-20px text-t-secondary'
         title={item.summary || undefined}
         style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
       >
         {item.summary || t('settings.skillsMarket.noDescription', { defaultValue: '暂无描述。' })}
       </p>
+
+      {item.skillHub ? (
+        <div className='mt-10px flex min-w-0 flex-wrap items-center gap-x-8px gap-y-4px text-12px text-t-tertiary'>
+          {item.skillHub.category && <span className='max-w-full truncate'>{item.skillHub.category}</span>}
+          <span title={item.skillHub.downloads.toLocaleString(i18n.language)}>
+            {formatSkillHubMarketCount(item.skillHub.downloads)} {t('settings.skillsMarket.downloadUnit', { defaultValue: '下载' })}
+          </span>
+          <span>{t('settings.skillsMarket.score', { score: item.skillHub.score.toFixed(1), defaultValue: '热度分 {{score}}' })}</span>
+        </div>
+      ) : item.compactStats ? (
+        <div className='mt-10px truncate text-12px text-t-tertiary'>{item.compactStats}</div>
+      ) : null}
 
       {item.visibleTags.length > 0 && (
         <div className='mt-12px flex flex-wrap items-center gap-8px'>
