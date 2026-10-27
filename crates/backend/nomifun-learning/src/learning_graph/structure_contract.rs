@@ -87,8 +87,18 @@ pub const SCALAR_KEYS: &[&str] = &[
     "disclaimer",
 ];
 
-/// 块条目键白名单（五键纪律：禁六件套与任何判据形字段——块不是概念）。
+/// 块条目必填键（五键纪律：禁六件套与任何判据形字段——块不是概念）。
 pub const BLOCK_KEYS: &[&str] = &["name", "slug", "spine", "stage", "note"];
+
+/// 块条目唯一可选键（m1，learnhub #165 契约 v2.14 门位标签）：覆盖本块主题
+/// 的门口编号（G-id 数组，逐字取自 domain.prerequisite_doors 声明的门口）；
+/// 语义 =「学习者能满足这些门口判据，就必然已会本块」——宁缺勿滥。
+pub const BLOCK_OPTIONAL_KEYS: &[&str] = &["door_refs"];
+
+/// 块条目键白名单 = 必填五键 + 唯一可选键。
+pub fn block_key_allowed(key: &str) -> bool {
+    BLOCK_KEYS.contains(&key) || BLOCK_OPTIONAL_KEYS.contains(&key)
+}
 
 /// 主干条目键白名单（thin_spine + reason = 每干块数不足的豁免声明）。
 pub const SPINE_KEYS: &[&str] = &["name", "definition", "key_points", "instance", "thin_spine", "reason"];
@@ -381,11 +391,11 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
             continue;
         };
         for key in block_map.keys() {
-            if !BLOCK_KEYS.contains(&key.as_str()) {
+            if !block_key_allowed(key) {
                 violations.push(ContractViolation::red(
                     "gd.blocks.fields",
                     format!(
-                        "{at} 含禁入键「{key}」——块只有五键 {}，判据形字段一律不进块（块不是概念）",
+                        "{at} 含禁入键「{key}」——块只有五键 {} 加唯一可选键 door_refs，判据形字段一律不进块（块不是概念）",
                         BLOCK_KEYS.join("/")
                     ),
                 ));
@@ -449,6 +459,31 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
                 "gd.blocks.fields",
                 format!("块「{name}」的 note（一句话主题描述）为空"),
             ));
+        }
+        // gd.blocks.door_refs（m1，learnhub #165 契约 v2.14 门位标签）：形态
+        // G<数字> + 块内去重；跨产物解析（引用 ⊆ 地形门口产出 且 ⊆ 本课
+        // 声明课程门）归对账面 reconcile_doors。
+        let door_refs = string_array(block, "door_refs");
+        let mut seen_block_doors: Vec<&str> = Vec::new();
+        for (door_index, door) in door_refs.iter().enumerate() {
+            let door = door.trim();
+            if !door_id_valid(door) {
+                violations.push(ContractViolation::red(
+                    "gd.blocks.door_refs",
+                    format!(
+                        "{at} 的 door_refs[{door_index}]「{door}」必须是 G<数字> 形——门位标签只准引用前置地形产物定义的门口"
+                    ),
+                ));
+                continue;
+            }
+            if seen_block_doors.contains(&door) {
+                violations.push(ContractViolation::red(
+                    "gd.blocks.door_refs",
+                    format!("{at} 的 door_refs[{door_index}]「{door}」块内重复引用"),
+                ));
+            } else {
+                seen_block_doors.push(door);
+            }
         }
     }
     for spine in &spine_names {
@@ -685,8 +720,12 @@ fn truncate_for_report(text: &str, max: usize) -> String {
     }
 }
 
-/// 门口对账（g2 裁决：structure 的 prerequisite_doors 只准引用地形门口）：
-/// 逐个编号必须能在地形的 doors 定义里解析，悬挂 = 红。
+/// 门口对账（g2 裁决：structure 的 prerequisite_doors 只准引用地形门口；
+/// m1 扩叉积——learnhub #165 `check_door_references` 同款）：①课程门逐个
+/// 编号必须能在地形的 doors 定义里解析；②块级 door_refs 门位标签逐条解析
+/// 进地形门口集（悬空 = 红）**且** ⊆ 本课声明课程门（越出 = 永不满足的
+/// 死标签，红）。悬挂/越出消息都指名（编号 + 已知清单），走既有反馈重试
+/// 回路，零新机制。
 pub fn reconcile_doors(structure: &Value, terrain: &Value) -> Vec<ContractViolation> {
     let mut violations = Vec::new();
     let defined: Vec<String> = terrain
@@ -700,6 +739,7 @@ pub fn reconcile_doors(structure: &Value, terrain: &Value) -> Vec<ContractViolat
                 .collect()
         })
         .unwrap_or_default();
+    let known = if defined.is_empty() { "无".to_owned() } else { defined.join("、") };
     let referenced = structure
         .get("domain")
         .map(|domain| string_array(domain, "prerequisite_doors"))
@@ -713,10 +753,58 @@ pub fn reconcile_doors(structure: &Value, terrain: &Value) -> Vec<ContractViolat
             violations.push(ContractViolation::red(
                 "gd.domain.doors",
                 format!(
-                    "门口「{door}」在前置地形产物里无定义（已知：{}）——重生成两产物对齐门口编号",
-                    if defined.is_empty() { "无".to_owned() } else { defined.join("、") }
+                    "门口「{door}」在前置地形产物里无定义（已知：{known}）——重生成两产物对齐门口编号"
                 ),
             ));
+        }
+    }
+    // 块级门位标签叉积（m1）：引用 ⊆ 地形门口产出 且 ⊆ 课程门。
+    let gate: Vec<String> = structure
+        .get("domain")
+        .map(|domain| {
+            string_array(domain, "prerequisite_doors")
+                .into_iter()
+                .map(|door| door.trim().to_owned())
+                .filter(|door| !door.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let block_name = |block: &Value| -> String {
+        block
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("(未命名块)")
+            .to_owned()
+    };
+    for block in structure
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| blocks.as_slice())
+        .unwrap_or_default()
+    {
+        for door in string_array(block, "door_refs") {
+            let door = door.trim();
+            if door.is_empty() {
+                continue;
+            }
+            if !defined.iter().any(|defined| defined == door) {
+                violations.push(ContractViolation::red(
+                    "gd.blocks.door_refs",
+                    format!(
+                        "块「{}」的门位标签「{door}」在前置地形产物里无定义（已知：{known}）——重生成两产物对齐门口编号",
+                        block_name(block)
+                    ),
+                ));
+            } else if !gate.iter().any(|gate| gate == door) {
+                violations.push(ContractViolation::red(
+                    "gd.blocks.door_refs",
+                    format!(
+                        "块「{}」的门位标签「{door}」越出本课声明的课程门（{}）——门位标签只能引用 prerequisite_doors 里声明的门口，越出即永不满足的死标签",
+                        block_name(block),
+                        if gate.is_empty() { "空".to_owned() } else { gate.join("、") }
+                    ),
+                ));
+            }
         }
     }
     violations
@@ -937,6 +1025,11 @@ pub fn structure_schema() -> Value {
                         "spine": non_empty_string_schema(),
                         "stage": enum_schema(STAGES),
                         "note": non_empty_string_schema(),
+                        // 唯一可选键（m1 门位标签）：G-id 数组，形态同课程门。
+                        "door_refs": {
+                            "type": "array",
+                            "items": { "type": "string", "pattern": "^G[0-9]+$" },
+                        },
                     },
                 },
             },
@@ -1401,6 +1494,75 @@ mod tests {
         assert!(violations[0].message.contains("G9") && violations[0].message.contains("G1、G2"));
     }
 
+    // ── m1（learnhub #165，契约 v2.14）：块级 door_refs 门位标签 ────────────
+
+    /// 合法 door_refs：G-id 形态、块内不重复、引用地形门口且 ⊆ 课程门——
+    /// validate_structure 与 reconcile_doors 双闸全过。
+    #[test]
+    fn block_door_refs_legal_references_pass_both_gates() {
+        let mut structure = golden_structure();
+        structure["blocks"][0]["door_refs"] = json!(["G1"]);
+        structure["blocks"][7]["door_refs"] = json!(["G1"]);
+        assert!(
+            validate_structure(&structure).is_empty(),
+            "{:?}",
+            validate_structure(&structure)
+        );
+        assert!(reconcile_doors(&structure, &golden_terrain()).is_empty());
+    }
+
+    /// 旧快照无键兼容：door_refs 是唯一可选键——五键块照常过门。
+    #[test]
+    fn block_door_refs_absent_is_legal_for_old_snapshots() {
+        assert!(validate_structure(&golden_structure()).is_empty());
+        assert!(reconcile_doors(&golden_structure(), &golden_terrain()).is_empty());
+    }
+
+    /// 形态与去重（gd.blocks.door_refs，红）：非 G<数字> 形、块内重复引用
+    /// 各自打回。
+    #[test]
+    fn block_door_refs_enforces_shape_and_within_block_dedup() {
+        let mut malformed = golden_structure();
+        malformed["blocks"][0]["door_refs"] = json!(["门1"]);
+        let violations = validate_structure(&malformed);
+        assert!(violations.iter().any(|violation| violation.code == "gd.blocks.door_refs"
+            && !violation.warning), "{violations:?}");
+
+        let mut duplicated = golden_structure();
+        duplicated["blocks"][0]["door_refs"] = json!(["G1", "G1"]);
+        let violations = validate_structure(&duplicated);
+        assert!(violations.iter().any(|violation| violation.code == "gd.blocks.door_refs"
+            && violation.message.contains("重复")), "{violations:?}");
+    }
+
+    /// 叉积核验（对账门面，悬空 = 红）：door_refs 引用的 G-id 必须在
+    /// 地形门口集内——悬空打回且消息指名（悬空编号 + 已知门口清单）。
+    #[test]
+    fn reconcile_doors_rejects_dangling_block_refs_by_name() {
+        let mut structure = golden_structure();
+        structure["blocks"][0]["door_refs"] = json!(["G1", "G9"]);
+        let violations = reconcile_doors(&structure, &golden_terrain());
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].code, "gd.blocks.door_refs");
+        assert!(violations[0].message.contains("G9"), "{:?}", violations[0].message);
+        assert!(violations[0].message.contains("G1、G2"), "{:?}", violations[0].message);
+        assert!(violations[0].message.contains("块00"), "{:?}", violations[0].message);
+    }
+
+    /// 叉积核验（死标签臂，learnhub check_door_references 同款）：door_refs
+    /// 解析进地形门口但越出本课声明课程门（prerequisite_doors）= 永不满足
+    /// 的死标签，红。
+    #[test]
+    fn reconcile_doors_rejects_refs_outside_declared_course_gate() {
+        let mut structure = golden_structure();
+        structure["domain"]["prerequisite_doors"] = json!(["G1"]);
+        structure["blocks"][0]["door_refs"] = json!(["G2"]);
+        let violations = reconcile_doors(&structure, &golden_terrain());
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].code, "gd.blocks.door_refs");
+        assert!(violations[0].message.contains("G2"), "{:?}", violations[0].message);
+    }
+
     /// 互钉：schema 的词表/键集/数量档与 validator 常量同源——schema 不是
     /// 手抄的第二份事实。
     #[test]
@@ -1418,6 +1580,19 @@ mod tests {
         assert_eq!(properties["blocks"]["maxItems"], json!(BLOCKS_MAX));
         assert_eq!(properties["blocks"]["items"]["required"], json!(BLOCK_KEYS));
         assert_eq!(properties["blocks"]["items"]["properties"]["stage"]["enum"], json!(STAGES));
+        // door_refs 唯一可选键：进 properties 不进 required（可选性钉死）。
+        assert_eq!(
+            properties["blocks"]["items"]["properties"]["door_refs"]["items"]["pattern"],
+            json!("^G[0-9]+$")
+        );
+        assert!(
+            !properties["blocks"]["items"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == "door_refs"),
+            "door_refs must stay optional in schema required"
+        );
         assert_eq!(properties["edges"]["items"]["properties"]["type"]["enum"], json!(EDGE_TYPES));
         assert_eq!(properties["edges"]["items"]["properties"]["tier"]["enum"], json!(EDGE_TIERS));
         assert_eq!(properties["gaps"]["minItems"], json!(MIN_GAPS));
