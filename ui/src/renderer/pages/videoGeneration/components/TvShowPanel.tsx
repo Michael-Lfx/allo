@@ -6,6 +6,7 @@ import { Button, Result, Spin } from '@arco-design/web-react';
 import { Search } from '@icon-park/react';
 import { isInvalidCloudSessionError } from '@/common/adapter/httpBridge';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
+import { useThemeContext } from '@renderer/hooks/context/ThemeContext';
 import { useArcoMessage } from '@renderer/utils/ui/useArcoMessage';
 import {
   deleteTvShow,
@@ -26,7 +27,16 @@ import {
   type TvShowListSort,
   type TvShowTab,
 } from '../campaign';
+import {
+  TV_SHOW_LIST_VIEW_STORAGE_KEY,
+  readTvShowListView,
+  tvShowMenuItem,
+  type TvShowListView,
+} from '../tvShowListView';
+import { tvShowWorkflowLabel } from './SessionCard';
 import FilterPills from './FilterPills';
+import InfiniteMenu from './InfiniteMenu';
+import menuStyles from './InfiniteMenu.module.css';
 import TvShowCard from './TvShowCard';
 import TvShowEmptyState from './TvShowEmptyState';
 import TvShowInspector from './TvShowInspector';
@@ -42,6 +52,7 @@ interface TvShowPanelProps {
 
 const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const { t } = useTranslation();
+  const { theme } = useThemeContext();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { status: cloudStatus, logout } = useCloudAuth();
@@ -58,6 +69,13 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listView, setListView] = useState<TvShowListView>(() => {
+    try {
+      return readTvShowListView(window.localStorage.getItem(TV_SHOW_LIST_VIEW_STORAGE_KEY));
+    } catch {
+      return 'sphere';
+    }
+  });
   const [keywordInput, setKeywordInput] = useState('');
   const [keyword, setKeyword] = useState('');
   const [sort, setSort] = useState<TvShowListSort>('latest');
@@ -77,7 +95,6 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         { key: 'script2video' as const, label: t('videoGeneration.tvShow.channel.script2video', { defaultValue: '剧本' }) },
         { key: 'novel2video' as const, label: t('videoGeneration.tvShow.channel.novel2video', { defaultValue: '小说' }) },
         { key: 'canvas' as const, label: t('videoGeneration.tvShow.channel.canvas', { defaultValue: '画布' }) },
-        { key: 'action2video' as const, label: t('videoGeneration.tvShow.channel.action2video', { defaultValue: '动作' }) },
         { key: 'campaign' as const, label: t('videoGeneration.tvShow.channel.campaign', { defaultValue: '活动' }) },
         { key: 'mine' as const, label: t('videoGeneration.tvShow.channel.mine', { defaultValue: '我的' }) },
       ] satisfies { key: TvShowTab; label: string }[],
@@ -174,8 +191,21 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   );
 
   useEffect(() => {
-    setTab(urlTab);
+    setTab(urlTab === 'action2video' ? 'all' : urlTab);
   }, [urlTab]);
+
+  // useEffect必要性：地址栏；目的：去掉「动作」筛选后，旧链接不再停在没有按钮的频道上。不能在渲染阶段改 search params。
+  useEffect(() => {
+    if (urlTab !== 'action2video') return;
+    setSearchParams(
+      (prev) => {
+        const nextParams = new URLSearchParams(prev);
+        writeTvShowTab(nextParams, 'all');
+        return nextParams;
+      },
+      { replace: true }
+    );
+  }, [setSearchParams, urlTab]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setKeyword(keywordInput.trim()), 300);
@@ -211,17 +241,50 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
   }, [channel, enabled, keyword, scope]);
 
   const featuredIds = useMemo(() => new Set(featured.map((v) => v.id)), [featured]);
-  const displayed = videos.filter((v) => {
-    if (scope === 'plaza' && featuredIds.has(v.id)) return false;
-    if (scope !== 'mine') return true;
-    const q = keywordInput.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      (v.title ?? '').toLowerCase().includes(q) ||
-      String(v.workflow).toLowerCase().includes(q) ||
-      String(v.status).toLowerCase().includes(q)
-    );
-  });
+  const displayed = useMemo(
+    () =>
+      videos.filter((v) => {
+        if (scope === 'plaza' && featuredIds.has(v.id)) return false;
+        if (scope !== 'mine') return true;
+        const q = keywordInput.trim().toLowerCase();
+        if (!q) return true;
+        return (
+          (v.title ?? '').toLowerCase().includes(q) ||
+          String(v.workflow).toLowerCase().includes(q) ||
+          String(v.status).toLowerCase().includes(q)
+        );
+      }),
+    [featuredIds, keywordInput, scope, videos]
+  );
+  const sphereVideos = useMemo(() => uniqueVideosById(featured, displayed), [displayed, featured]);
+  const menuItems = useMemo(
+    () =>
+      sphereVideos.map((video) =>
+        tvShowMenuItem(video, [
+          featuredIds.has(video.id)
+            ? t('videoGeneration.tvShow.featuredTitle', { defaultValue: '精选' })
+            : '',
+          video.author?.name?.trim() ?? '',
+          tvShowWorkflowLabel(video, t),
+          scope === 'mine'
+            ? t(`videoGeneration.tvShow.status.${video.status || 'pending'}`, {
+                defaultValue: String(video.status || 'pending'),
+              })
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' · '))
+      ),
+    [featuredIds, scope, sphereVideos, t]
+  );
+  const chooseListView = useCallback((next: TvShowListView) => {
+    setListView(next);
+    try {
+      window.localStorage.setItem(TV_SHOW_LIST_VIEW_STORAGE_KEY, next);
+    } catch {
+      /* Storage can be unavailable in private mode. The in-memory choice still applies. */
+    }
+  }, []);
 
   const inspectorItems = uniqueVideosById(featured, displayed);
   const inspectorIndex = detail ? inspectorItems.findIndex((v) => v.id === detail.id) : -1;
@@ -368,6 +431,23 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         <FilterPills items={tabItems} active={tab} onChange={handleTabChange} />
         {scope === 'campaign' ? null : (
           <div className='flex flex-wrap items-center gap-8px'>
+            <button
+              type='button'
+              className='m-0 flex h-32px w-32px cursor-pointer items-center justify-center border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] rd-10px p-0 text-[var(--color-text-2)] hover:border-[rgb(var(--primary-5))]'
+              title={
+                listView === 'sphere'
+                  ? t('videoGeneration.tvShow.view.thumbnails', { defaultValue: '切换缩略图' })
+                  : t('videoGeneration.tvShow.view.sphere', { defaultValue: '切换球面' })
+              }
+              aria-label={
+                listView === 'sphere'
+                  ? t('videoGeneration.tvShow.view.thumbnails', { defaultValue: '切换缩略图' })
+                  : t('videoGeneration.tvShow.view.sphere', { defaultValue: '切换球面' })
+              }
+              onClick={() => chooseListView(listView === 'sphere' ? 'grid' : 'sphere')}
+            >
+              {listView === 'sphere' ? <ThumbnailIcon /> : <SphereIcon />}
+            </button>
             {scope === 'plaza' ? (
               <FilterPills
                 items={[
@@ -440,7 +520,31 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
         </div>
       ) : (
         <>
-          {scope === 'plaza' && featured.length > 0 ? (
+          {listView === 'sphere' && sphereVideos.length > 0 ? (
+            <div className={menuStyles.stage}>
+              <InfiniteMenu
+                items={menuItems}
+                count={160}
+                tileSize={0.63}
+                roundness={0.2}
+                zoom={1}
+                pullBack={1}
+                stretch={0.6}
+                inertia={0.6}
+                autoplay={detail ? 0 : 3}
+                grayscale
+                dim={0.5}
+                intro
+                showInfo
+                theme={theme === 'light' ? 'light' : 'dark'}
+                onItemClick={(_item, index) => {
+                  const video = sphereVideos[index];
+                  if (video) void openDetail(video);
+                }}
+              />
+            </div>
+          ) : null}
+          {listView === 'grid' && scope === 'plaza' && featured.length > 0 ? (
             <section className='flex flex-col gap-10px'>
               <h2 className='m-0 text-15px font-650 text-[var(--color-text-1)]'>
                 {t('videoGeneration.tvShow.featuredTitle', { defaultValue: '精选' })}
@@ -470,7 +574,7 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
               }
               action={createCta}
             />
-          ) : displayed.length > 0 ? (
+          ) : listView === 'grid' && displayed.length > 0 ? (
             <>
               {renderGrid(displayed, scope === 'mine')}
             </>
@@ -497,6 +601,10 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
           if (detail) void handleToggleLike(detail);
         }}
         onLogin={goLogin}
+        onDelete={
+          scope === 'mine' && detail?.isMine ? () => void handleDelete(detail) : undefined
+        }
+        deleting={deletingId === detail?.id}
         onPrev={
           inspectorIndex > 0
             ? () => void openDetail(inspectorItems[inspectorIndex - 1])
@@ -511,5 +619,26 @@ const TvShowPanel: React.FC<TvShowPanelProps> = ({ enabled }) => {
     </div>
   );
 };
+
+function ThumbnailIcon() {
+  return (
+    <svg width='15' height='15' viewBox='0 0 16 16' fill='none' aria-hidden='true'>
+      <rect x='1.2' y='1.2' width='5.6' height='5.6' rx='1.2' stroke='currentColor' strokeWidth='1.4' />
+      <rect x='9.2' y='1.2' width='5.6' height='5.6' rx='1.2' stroke='currentColor' strokeWidth='1.4' />
+      <rect x='1.2' y='9.2' width='5.6' height='5.6' rx='1.2' stroke='currentColor' strokeWidth='1.4' />
+      <rect x='9.2' y='9.2' width='5.6' height='5.6' rx='1.2' stroke='currentColor' strokeWidth='1.4' />
+    </svg>
+  );
+}
+
+function SphereIcon() {
+  return (
+    <svg width='15' height='15' viewBox='0 0 16 16' fill='none' aria-hidden='true'>
+      <circle cx='8' cy='8' r='6.1' stroke='currentColor' strokeWidth='1.4' />
+      <ellipse cx='8' cy='8' rx='2.5' ry='6.1' stroke='currentColor' strokeWidth='1.2' />
+      <path d='M2.1 8h11.8' stroke='currentColor' strokeWidth='1.2' />
+    </svg>
+  );
+}
 
 export default TvShowPanel;

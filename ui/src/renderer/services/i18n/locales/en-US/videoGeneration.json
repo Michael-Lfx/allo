@@ -81,6 +81,10 @@
     "searchPlaceholder": "Search films...",
     "featuredTitle": "Featured",
     "loadMore": "Load more",
+    "view": {
+      "thumbnails": "Switch to thumbnails",
+      "sphere": "Switch to sphere"
+    },
     "sort": {
       "latest": "Latest",
       "likes": "Most liked"
