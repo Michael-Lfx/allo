@@ -176,6 +176,10 @@ export type ConfigKeyMap = {
   // 越界写入被后端拒绝、读侧回退缺省）。后端学习服务读取。
   'learning.maintenanceAutoEnabled': boolean | undefined;
   'learning.maintenanceIntervalMinutes': number | undefined;
+  // 自动补批（m10）：开关（缺省开）。图课程工作区加载时调纯读裁决端点，
+  // Due 即自动补一批（后台）；环境闸 NOMI_LEARNING_AUTO_REFILL 兜底
+  // （off = 恒 Disabled）。后端学习服务读取。
+  'learning.autoRefillEnabled': boolean | undefined;
   // Local-time offset in minutes east of UTC for review-day boundaries
   // (02:00 rollover), reported by the frontend on startup as
   // `-Date().getTimezoneOffset()`. Read by the backend learning service.
