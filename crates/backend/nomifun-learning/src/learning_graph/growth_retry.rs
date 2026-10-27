@@ -59,15 +59,14 @@ impl AttemptFail {
     /// 重试反馈（learnhub `into_feedback` 同构）：`report` 为主文；前轮
     /// 评审意见（若有）作**独立段**追加——段不并入 `report`，同指纹早停
     /// 的指纹只取 `report`。段头与重排 prior 参数的注入段同标记
-    /// （【前轮评审意见】，smoke 存档单标记可 grep）。
+    /// （【前轮评审意见】，smoke 存档单标记可 grep）；纪律句单源
+    /// （[`super::ANTI_PING_PONG_DISCIPLINE`]）。
     pub fn into_feedback(self) -> String {
         let mut text = self.report;
         if let Some(history) = &self.review_history {
-            text.push_str(
-                "\n\n【前轮评审意见（随失败回灌；前轮批已打回未落库，本轮重排后评审会复审）】\n\
-                 【反乒乓纪律】已修不重提：前轮已点名、上一稿已按建议修正的地方保持修正，不要回退重写；\
-                 已过不翻案：前轮评审已放行的内容不要推翻重改。\n",
-            );
+            text.push_str("\n\n【前轮评审意见（随失败回灌；前轮批已打回未落库，本轮重排后评审会复审）】\n");
+            text.push_str(super::ANTI_PING_PONG_DISCIPLINE);
+            text.push('\n');
             text.push_str(history);
         }
         text
@@ -397,6 +396,11 @@ mod tests {
         assert!(feedback.starts_with("守卫文案"), "report 是主文：{feedback}");
         assert!(feedback.contains("【前轮评审意见"), "{feedback}");
         assert!(feedback.contains("已修不重提") && feedback.contains("已过不翻案"), "{feedback}");
+        // 纪律句单源：反馈携带的必须是共享常量的逐字全文（改常量即两处同改）。
+        assert!(
+            feedback.contains(crate::learning_graph::ANTI_PING_PONG_DISCIPLINE),
+            "{feedback}"
+        );
         assert!(feedback.contains("第 1 轮评审打回") && feedback.contains("补挂 assumes"), "{feedback}");
 
         // 空白意见 = 无意见（不产生空段）。
