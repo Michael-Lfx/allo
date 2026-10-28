@@ -31,10 +31,11 @@ pub use course_outline::draft::{
 };
 
 pub use lesson_draft::{
-    EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext,
-    LessonContentAgentEngine, LessonDraftView, LessonExcerpt, LessonGenerationContext,
-    LessonInspectView, LessonOp, LessonPatchReport, est_budget_enabled,
-    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
+    EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
+    LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
+    LessonPatchReport, LessonPrecedent, est_budget_enabled, is_est_budget_disabled_value,
+    normalize_capacity_note, render_est_budget_line, render_known_names_line,
+    render_precedent_block, render_teaches_tier_line,
 };
 
 pub use generation::{

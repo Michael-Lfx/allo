@@ -4387,8 +4387,9 @@ impl LearningService {
     // （`taught_ledger` / 生长语义门 coverage / 教练已教账三面同源并网）。
     // 撤销 = 删锚行；概念留池，「声明可撤、概念不灭」。
 
-    /// 声明锚行（course_id 维度；声明是本课事实）。
-    async fn declared_anchor_rows_for_course(
+    /// 声明锚行（course_id 维度；声明是本课事实）。pub(super)：已知概念
+    /// （Known Names，n3）的声明半边经它读锚（service/lesson.rs 消费）。
+    pub(super) async fn declared_anchor_rows_for_course(
         &self,
         course_id: &LearningCourseId,
     ) -> Result<Vec<(String, String, String)>, AppError> {
