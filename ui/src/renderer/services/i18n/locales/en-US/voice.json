@@ -81,7 +81,7 @@
       "unknown": "Acceptance not yet verified. Checking the original receipt.",
       "accepted": "Task accepted; waiting for the execution result",
       "cancelling": "Cancelling; waiting for the execution receipt",
-      "completed": "Task completed",
+      "completed": "Execution finished",
       "failed": "Task failed or was cancelled"
     },
     "noActive": "There is no voice task to query or cancel."

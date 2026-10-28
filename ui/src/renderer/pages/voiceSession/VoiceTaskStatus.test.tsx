@@ -28,6 +28,8 @@ for (const [locale, dictionary] of [['zh-CN',zh],['en-US',en]] as const) {
     const render = (value: VoiceTaskSnapshot) => renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceTaskStatus task={value} errorCode={null}/></I18nextProvider>);
     const html = render(task);
     expect(html).toContain('fresh workspace content');
+    expect(html).toContain(locale==='zh-CN'?'执行已结束':'Execution finished');
+    expect(html).not.toContain(locale==='zh-CN'?'任务已完成':'Task completed');
     expect(html).toContain(locale==='zh-CN'?'查看完整任务':'Open full task');
     expect(html).not.toContain('voice.');
     const queued = render({...task,status:'queued',result_ok:null,result_text:null});
@@ -35,9 +37,11 @@ for (const [locale, dictionary] of [['zh-CN',zh],['en-US',en]] as const) {
     expect(queued).not.toContain('voice.');
     const unknown = render({...task,status:'unknown',result_ok:null,result_text:null});
     expect(unknown).toContain(locale==='zh-CN'?'接单状态待核对':'Acceptance not yet verified');
+    expect(unknown).not.toContain(locale==='zh-CN'?'执行已结束':'Execution finished');
     expect(unknown).not.toContain(locale==='zh-CN'?'任务已完成':'Task completed');
     const failed = render({...task,status:'failed',result_ok:false,error_code:'tool_denied',result_text:'read was denied'});
     expect(failed).toContain('read was denied');
+    expect(failed).not.toContain(locale==='zh-CN'?'执行已结束':'Execution finished');
     expect(failed).not.toContain(locale==='zh-CN'?'任务已完成':'Task completed');
   });
 }

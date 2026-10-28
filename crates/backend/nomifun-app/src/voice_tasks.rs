@@ -140,15 +140,6 @@ pub(crate) struct VoiceTaskService {
     active_in_session: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
-fn is_explicit_goal_failure(text: &str) -> bool {
-    const FAILURE_INDICATORS: &[&str] = &[
-        "未能获取", "未能查询", "无法获取", "无法查询", "未能找到", "查询失败",
-        "获取失败", "调用失败", "未成功", "未能成功", "抱歉，未能", "抱歉，无法",
-        "未能为您", "无法为您", "未能完成", "很抱歉，未能", "很抱歉，无法",
-    ];
-    FAILURE_INDICATORS.iter().any(|k| text.contains(k))
-}
-
 impl VoiceTaskService {
     pub fn new(owner: String, path: PathBuf, runtime: Arc<dyn VoiceTaskRuntime>) -> Self {
         Self { owner, path, runtime, timeout_ms: DEFAULT_VOICE_TASK_TIMEOUT_MS, operation: Mutex::new(()), progress: Default::default(), active_in_session: Arc::new(std::sync::Mutex::new(Default::default())) }
@@ -270,7 +261,7 @@ impl VoiceTaskService {
         Ok(true)
     }
 
-    pub fn notification_for(&self, command_id: &str) -> Result<Option<VoiceTaskNotification>, String> {
+    pub fn notification_for(&self, command_id: &str, locale: Option<&str>) -> Result<Option<VoiceTaskNotification>, String> {
         let record = match self.read_command(command_id)? {
             Some(record) => record,
             None => return Ok(None),
@@ -280,11 +271,12 @@ impl VoiceTaskService {
         }
         let notification_id = record.notification_id.unwrap_or_else(|| format!("voice-notif:{}", command_id));
         let attempt_id = record.attempt_id.unwrap_or_else(|| format!("voice-attempt:{}:0", command_id));
-        let summary = record.task.result_text.unwrap_or_else(|| {
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
+        let summary = record.task.result_text.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
             if record.task.status == VoiceTaskStatus::Completed {
-                "任务已完成".into()
+                if is_en { "Execution finished" } else { "执行已结束" }.into()
             } else {
-                "任务未完成".into()
+                if is_en { "Execution was unsuccessful" } else { "任务未完成" }.into()
             }
         });
         Ok(Some(VoiceTaskNotification {
@@ -420,19 +412,10 @@ impl VoiceTaskService {
         }
         record.task.message_id = Some(receipt.message_id);
         if let Some(turn) = receipt.runtime_turn_id { record.task.runtime_turn_id = Some(turn); }
-        let effective_ok = match receipt.result_ok {
-            Some(true) => {
-                if let Some(text) = &receipt.result_text {
-                    if is_explicit_goal_failure(text) {
-                        Some(false)
-                    } else {
-                        Some(true)
-                    }
-                } else {
-                    Some(true)
-                }
-            }
-            other => other,
+        let effective_ok = if receipt.error_code.is_some() || receipt.result_ok == Some(false) {
+            Some(false)
+        } else {
+            receipt.result_ok
         };
         if receipt.completed {
             record.task.status = match effective_ok {
@@ -1391,15 +1374,15 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("task.json");let runtime=Arc::new(Runtime::default());
         let tasks=service(path.clone(),runtime.clone());tasks.submit(command(),config()).await.unwrap();
         *runtime.receipt.lock().unwrap()=Some(receipt(true));tasks.status().await.unwrap();
-        assert_eq!(tasks.notification_for("command-a").unwrap().unwrap().status,"pending");
+        assert_eq!(tasks.notification_for("command-a", None).unwrap().unwrap().status,"pending");
         tasks.claim_announcement("command-a",true).await.unwrap();
-        let first=tasks.notification_for("command-a").unwrap().unwrap();assert_eq!(first.status,"dispatched");
+        let first=tasks.notification_for("command-a", None).unwrap().unwrap();assert_eq!(first.status,"dispatched");
         assert_eq!(tasks.request_replay("command-a","new-replay").await.unwrap_err(),"voice_busy");
         tasks.finish_announcement("command-a",&first.attempt_id,"failed").await.unwrap();
-        let restored=service(path,runtime.clone());assert_eq!(restored.notification_for("command-a").unwrap().unwrap().status,"failed");
+        let restored=service(path,runtime.clone());assert_eq!(restored.notification_for("command-a", None).unwrap().unwrap().status,"failed");
         assert_eq!(restored.status_for("command-a").await.unwrap().status,VoiceTaskStatus::Completed);
         assert!(restored.request_replay("command-a","new-replay").await.unwrap());
-        restored.claim_announcement("command-a",true).await.unwrap();let next=restored.notification_for("command-a").unwrap().unwrap();
+        restored.claim_announcement("command-a",true).await.unwrap();let next=restored.notification_for("command-a", None).unwrap().unwrap();
         assert_ne!(first.attempt_id,next.attempt_id);assert_eq!(first.notification_id,next.notification_id);
         assert!(!restored.request_replay("command-a","new-replay").await.unwrap());
         assert_eq!(restored.finish_announcement("command-a",&first.attempt_id,"played").await.unwrap_err(),"task_scope_changed");
@@ -1417,10 +1400,10 @@ mod tests {
             *runtime.receipt.lock().unwrap() = Some(receipt(true));
             tasks.status().await.unwrap();
             tasks.claim_announcement("command-a", true).await.unwrap();
-            let attempt = tasks.notification_for("command-a").unwrap().unwrap().attempt_id;
+            let attempt = tasks.notification_for("command-a", None).unwrap().unwrap().attempt_id;
             tasks.finish_announcement("command-a", &attempt, status).await.unwrap();
             let restored = service(path, runtime.clone());
-            assert_eq!(restored.notification_for("command-a").unwrap().unwrap().status, status);
+            assert_eq!(restored.notification_for("command-a", None).unwrap().unwrap().status, status);
             assert!(restored.unresolved_announcements().unwrap().is_empty());
             assert!(restored.request_replay("command-a", "explicit-replay").await.unwrap());
             assert_eq!(runtime.sent.load(Ordering::SeqCst), 1);
@@ -1514,7 +1497,7 @@ mod tests {
 
         // 2. First notification claim assigns stable notification_id and first attempt_id
         assert!(tasks.claim_announcement("command-a", true).await.unwrap());
-        let notif1 = tasks.notification_for("command-a").unwrap().unwrap();
+        let notif1 = tasks.notification_for("command-a", None).unwrap().unwrap();
         assert_eq!(notif1.command_id, "command-a");
         assert_eq!(notif1.notification_id, "voice-notif:command-a");
         assert_eq!(notif1.attempt_id, "voice-attempt:command-a:1");
@@ -1531,7 +1514,7 @@ mod tests {
 
         // 4. Retry / Re-listen attempt advances attempt_id while keeping the same notification_id
         assert!(tasks.claim_announcement("command-a", true).await.unwrap());
-        let notif2 = tasks.notification_for("command-a").unwrap().unwrap();
+        let notif2 = tasks.notification_for("command-a", None).unwrap().unwrap();
         assert_eq!(notif2.notification_id, notif1.notification_id, "logic notification_id must be stable");
         assert_eq!(notif2.attempt_id, "voice-attempt:command-a:2", "attempt_id must be independent and advanced");
         assert_eq!(notif2.result_summary, result_payload);
@@ -1738,21 +1721,160 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn goal_failure_in_result_text_is_not_reported_as_success() {
+    async fn structured_failure_in_receipt_is_reported_as_failed() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(Runtime::default());
         let tasks = service(dir.path().join("task.json"), runtime.clone());
         tasks.submit(command(), config()).await.unwrap();
 
         let mut failed_turn = receipt(true);
-        failed_turn.result_ok = Some(true); // Runtime turn succeeded
-        failed_turn.result_text = Some("很抱歉，未能获取到北京的天气信息。".into()); // But goal was unfulfilled
+        failed_turn.result_ok = Some(false);
+        failed_turn.error_code = None;
+        failed_turn.result_text = Some("很抱歉，未能获取到北京的天气信息。".into());
         *runtime.receipt.lock().unwrap() = Some(failed_turn);
 
         let state = tasks.status().await.unwrap().unwrap();
-        assert_eq!(state.status, VoiceTaskStatus::Failed, "must be failed when goal is unfulfilled");
+        assert_eq!(state.status, VoiceTaskStatus::Failed, "must be failed when structured result_ok is false");
         assert_eq!(state.result_ok, Some(false));
         assert_eq!(state.error_code.as_deref(), Some("goal_unfulfilled"));
+    }
+
+    #[tokio::test]
+    async fn successful_receipt_with_quoted_failure_keywords_is_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut success_turn = receipt(true);
+        success_turn.result_ok = Some(true);
+        success_turn.error_code = None;
+        success_turn.result_text = Some("已完成修复，并增加了‘调用失败’的提示。".into());
+        *runtime.receipt.lock().unwrap() = Some(success_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Completed, "successful receipt quoting failure words must be completed");
+        assert_eq!(state.result_ok, Some(true));
+        assert_eq!(state.error_code, None);
+        assert_eq!(state.result_text.as_deref(), Some("已完成修复，并增加了‘调用失败’的提示。"));
+    }
+
+    #[tokio::test]
+    async fn successful_receipt_negating_failure_is_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut success_turn = receipt(true);
+        success_turn.result_ok = Some(true);
+        success_turn.error_code = None;
+        success_turn.result_text = Some("任务已完成，未出现错误，没有失败。".into());
+        *runtime.receipt.lock().unwrap() = Some(success_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Completed, "successful receipt negating failure must be completed");
+        assert_eq!(state.result_ok, Some(true));
+        assert_eq!(state.error_code, None);
+        assert_eq!(state.result_text.as_deref(), Some("任务已完成，未出现错误，没有失败。"));
+    }
+
+    #[tokio::test]
+    async fn structured_failure_receipt_with_english_error_code_is_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut failed_turn = receipt(true);
+        failed_turn.result_ok = Some(false);
+        failed_turn.error_code = Some("tool_execution_failed".into());
+        failed_turn.result_text = Some("Sorry, I could not retrieve the requested information.".into());
+        *runtime.receipt.lock().unwrap() = Some(failed_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Failed);
+        assert_eq!(state.result_ok, Some(false));
+        assert_eq!(state.error_code.as_deref(), Some("tool_execution_failed"));
+    }
+
+    #[tokio::test]
+    async fn structured_failure_receipt_with_chinese_error_code_is_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut failed_turn = receipt(true);
+        failed_turn.result_ok = Some(false);
+        failed_turn.error_code = Some("接口调用失败".into());
+        failed_turn.result_text = Some("很抱歉，查询未能成功完成。".into());
+        *runtime.receipt.lock().unwrap() = Some(failed_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Failed);
+        assert_eq!(state.result_ok, Some(false));
+        assert_eq!(state.error_code.as_deref(), Some("接口调用失败"));
+    }
+
+    #[tokio::test]
+    async fn empty_result_text_completed_receipt_is_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut success_turn = receipt(true);
+        success_turn.result_ok = Some(true);
+        success_turn.error_code = None;
+        success_turn.result_text = Some("".into());
+        *runtime.receipt.lock().unwrap() = Some(success_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Completed);
+        assert_eq!(state.result_ok, Some(true));
+        assert_eq!(state.error_code, None);
+    }
+
+    #[tokio::test]
+    async fn result_ok_none_boundary_receipt_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let mut unknown_turn = receipt(true);
+        unknown_turn.result_ok = None;
+        unknown_turn.error_code = None;
+        unknown_turn.result_text = Some("正在执行中间处理...".into());
+        *runtime.receipt.lock().unwrap() = Some(unknown_turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Unknown);
+        assert_eq!(state.result_ok, None);
+        assert_eq!(state.error_code.as_deref(), Some("task_result_unverified"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_task_receipt_is_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+        tasks.submit(command(), config()).await.unwrap();
+
+        let cancelling = tasks.cancel("command-a").await.unwrap();
+        assert_eq!(cancelling.status, VoiceTaskStatus::Cancelling);
+
+        let mut cancel_receipt = receipt(true);
+        cancel_receipt.result_ok = Some(false);
+        cancel_receipt.error_code = Some("task_cancelled".into());
+        cancel_receipt.result_text = Some("任务已取消".into());
+        *runtime.receipt.lock().unwrap() = Some(cancel_receipt);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Failed);
+        assert_eq!(state.result_ok, Some(false));
+        assert_eq!(state.error_code.as_deref(), Some("task_cancelled"));
     }
 
     #[tokio::test]
@@ -1958,5 +2080,102 @@ mod tests {
             Some("dedicated-conversation".into()),
         ).await.unwrap_err();
         assert_eq!(err_display, "task_command_conflict");
+    }
+
+    #[tokio::test]
+    async fn neutral_presentation_matrix_for_completed_unachieved_and_empty_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(Runtime::default());
+        let tasks = service(dir.path().join("task.json"), runtime.clone());
+
+        // 1. Normal execution ended (result_ok=Some(true)), but Chinese text clearly states goal unachieved
+        tasks.submit(command(), config()).await.unwrap();
+        let mut turn = receipt(true);
+        turn.result_ok = Some(true);
+        turn.error_code = None;
+        turn.result_text = Some("抱歉，未能获取天气信息。".into());
+        *runtime.receipt.lock().unwrap() = Some(turn);
+
+        let state = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state.status, VoiceTaskStatus::Completed);
+        assert_eq!(state.result_ok, Some(true));
+        assert_eq!(state.result_text.as_deref(), Some("抱歉，未能获取天气信息。"), "original text must be preserved unchanged");
+
+        let notif = tasks.notification_for("command-a", None).unwrap().unwrap();
+        assert_eq!(notif.result_summary, "抱歉，未能获取天气信息。");
+
+        // 2. Empty text completed receipt should have neutral summary "执行已结束", not "任务已完成"
+        let mut cmd_b = command();
+        cmd_b.command_id = "command-b".into();
+        tasks.submit(cmd_b, config()).await.unwrap();
+
+        let mut empty_turn = receipt(true);
+        empty_turn.result_ok = Some(true);
+        empty_turn.error_code = None;
+        empty_turn.result_text = None;
+        *runtime.receipt.lock().unwrap() = Some(empty_turn);
+
+        let state_b = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state_b.status, VoiceTaskStatus::Completed);
+        assert_eq!(state_b.result_text, None);
+
+        let notif_empty = tasks.notification_for("command-b", None).unwrap().unwrap();
+        assert_eq!(notif_empty.result_summary, "执行已结束", "empty completed text must use neutral summary '执行已结束', not '任务已完成'");
+        assert_eq!(tasks.notification_for("command-b", Some("en-US")).unwrap().unwrap().result_summary, "Execution finished");
+
+        // 3. Normal execution ended with English unachieved goal text
+        let mut cmd_c = command();
+        cmd_c.command_id = "command-c".into();
+        tasks.submit(cmd_c, config()).await.unwrap();
+
+        let mut en_turn = receipt(true);
+        en_turn.result_ok = Some(true);
+        en_turn.error_code = None;
+        en_turn.result_text = Some("Sorry, could not find any records.".into());
+        *runtime.receipt.lock().unwrap() = Some(en_turn);
+
+        let state_c = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state_c.status, VoiceTaskStatus::Completed);
+        assert_eq!(state_c.result_text.as_deref(), Some("Sorry, could not find any records."), "English original text must be preserved unchanged");
+
+        let notif_c = tasks.notification_for("command-c", None).unwrap().unwrap();
+        assert_eq!(notif_c.result_summary, "Sorry, could not find any records.");
+
+        // 4. Normal success text
+        let mut cmd_d = command();
+        cmd_d.command_id = "command-d".into();
+        tasks.submit(cmd_d, config()).await.unwrap();
+
+        let mut success_turn = receipt(true);
+        success_turn.result_ok = Some(true);
+        success_turn.error_code = None;
+        success_turn.result_text = Some("已为您查询到北京天气晴朗。".into());
+        *runtime.receipt.lock().unwrap() = Some(success_turn);
+
+        let state_d = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state_d.status, VoiceTaskStatus::Completed);
+        assert_eq!(state_d.result_ok, Some(true));
+        assert_eq!(state_d.result_text.as_deref(), Some("已为您查询到北京天气晴朗。"));
+        let notif_d = tasks.notification_for("command-d", None).unwrap().unwrap();
+        assert_eq!(notif_d.result_summary, "已为您查询到北京天气晴朗。");
+
+        // 5. Structured failure receipt (result_ok=Some(false))
+        let mut cmd_e = command();
+        cmd_e.command_id = "command-e".into();
+        tasks.submit(cmd_e, config()).await.unwrap();
+
+        let mut fail_turn = receipt(true);
+        fail_turn.result_ok = Some(false);
+        fail_turn.error_code = Some("tool_execution_failed".into());
+        fail_turn.result_text = Some("无法连接到外部服务。".into());
+        *runtime.receipt.lock().unwrap() = Some(fail_turn);
+
+        let state_e = tasks.status().await.unwrap().unwrap();
+        assert_eq!(state_e.status, VoiceTaskStatus::Failed);
+        assert_eq!(state_e.result_ok, Some(false));
+        assert_eq!(state_e.error_code.as_deref(), Some("tool_execution_failed"));
+        assert_eq!(state_e.result_text.as_deref(), Some("无法连接到外部服务。"));
+        let notif_e = tasks.notification_for("command-e", None).unwrap().unwrap();
+        assert_eq!(notif_e.result_summary, "无法连接到外部服务。");
     }
 }

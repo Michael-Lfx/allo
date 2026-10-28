@@ -1211,7 +1211,6 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         action: nomifun_api_types::voice::VoiceTaskControlAction,
         result: &Result<nomifun_api_types::voice::VoiceTaskSnapshot, String>,
     ) -> Result<(), VoiceDialogueRecorderError> {
-        use nomifun_api_types::voice::VoiceTaskStatus;
         let session = scope.session_id.as_deref().filter(|value| !value.is_empty())
             .ok_or_else(|| VoiceDialogueRecorderError::BindingInvalid("scope_required".into()))?;
         let turn = scope.turn_id.as_deref().filter(|value| !value.is_empty())
@@ -1310,27 +1309,9 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 let is_en = nomifun_api_types::voice::is_english_locale(
                     records[record_index].request.locale.as_deref().or(locale),
                 );
-                let display = match task.status {
-                    VoiceTaskStatus::Queued => if is_en { "The task is queued, waiting for previous task to finish." } else { "任务已排队，等待上一任务结束。" }.to_string(),
-                    VoiceTaskStatus::Delivering => if is_en { "Submitting the task, receipt verification pending." } else { "任务正在提交，尚未核实接单。" }.to_string(),
-                    VoiceTaskStatus::Unknown => if is_en { "Task status not verified yet, checking receipt." } else { "任务状态尚未核实，正在核对原回执。" }.to_string(),
-                    VoiceTaskStatus::Accepted => if is_en { "Task accepted, waiting for execution results." } else { "任务已接受，正在等待执行结果。" }.to_string(),
-                    VoiceTaskStatus::Cancelling => if is_en { "Cancelling the task, awaiting execution confirmation." } else { "正在取消任务，等待执行侧确认。" }.to_string(),
-                    VoiceTaskStatus::Completed => format!(
-                        "{}{}",
-                        if is_en { "Task completed. " } else { "任务已完成。" },
-                        task.result_text.as_deref().unwrap_or(if is_en { "Please check task details." } else { "请查看任务详情。" }).chars().take(220).collect::<String>(),
-                    ),
-                    VoiceTaskStatus::Failed if action == nomifun_api_types::voice::VoiceTaskControlAction::CancelTask
-                        && task.error_code.as_deref() == Some("task_cancelled") => {
-                        if is_en { "Task cancelled." } else { "任务已取消。" }.to_string()
-                    }
-                    VoiceTaskStatus::Failed => format!(
-                        "{}{}",
-                        if is_en { "Task ended, execution was unsuccessful. " } else { "任务已结束，执行结果未成功。" },
-                        task.result_text.as_deref().unwrap_or(if is_en { "Please check task details for reasons." } else { "请查看任务详情了解原因。" }).chars().take(220).collect::<String>(),
-                    ),
-                };
+                let is_cancelled = action == nomifun_api_types::voice::VoiceTaskControlAction::CancelTask
+                    && task.error_code.as_deref() == Some("task_cancelled");
+                let display = format_task_status_text(&task, is_en, is_cancelled);
                 let assistant_message_id = self.conversation_service
                     .project_assistant_message_idempotent_with_epoch(
                         &self.user_id, &conversation_id, &operation_id, &display,
@@ -2819,7 +2800,7 @@ impl VoiceCompanionProcessManager {
                     Ok(Some(task))=>{
                         manager.project_task(task.clone());
                         let progress=if matches!(task.status,VoiceTaskStatus::Accepted|VoiceTaskStatus::Cancelling) {tasks.progress_for(&task).ok()}else{None};
-                        let notification=tasks.notification_for(&task.command_id).ok().flatten();
+                        let notification=tasks.notification_for(&task.command_id, manager.snapshot().locale.as_deref()).ok().flatten();
                         {
                             let mut snapshot=manager.snapshot.write().unwrap_or_else(|e|e.into_inner());
                             if snapshot.task_progress!=progress || snapshot.task_notification!=notification {
@@ -2945,19 +2926,11 @@ impl VoiceCompanionProcessManager {
         if !matches!(source.phase, VoiceSessionPhase::Idle | VoiceSessionPhase::Listening | VoiceSessionPhase::FollowUp)
             || source.ended_reason == Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop)
             || source.audio.as_ref().is_some_and(|audio| audio.speech_detected) {return Ok(());}
-        let full_text = task.result_text.as_deref().filter(|text|!text.trim().is_empty())
-            .unwrap_or(if task.status==VoiceTaskStatus::Completed {"任务已完成，详情请查看会话。"} else {"任务未完成，详情请查看会话。"});
-        let summary = extract_spoken_summary(full_text, task.status);
-        let spoken_goal: String = goal.chars().take(25).collect();
-        let text = if !spoken_goal.trim().is_empty() {
-            format!("任务「{spoken_goal}」的结果：{summary}")
-        } else {
-            summary
-        };
+        let text = format_task_result_announcement(task, goal, nomifun_api_types::voice::is_english_locale(source.locale.as_deref()));
         // Claim durably before dispatch: a lost response or host restart must
         // not replay a result as a new announcement. Text remains in the task.
         if !tasks.claim_announcement(&task.command_id,true).await? {return Ok(());}
-        let notification=tasks.notification_for(&task.command_id)?.ok_or("task_announcement_failed")?;
+        let notification=tasks.notification_for(&task.command_id, source.locale.as_deref())?.ok_or("task_announcement_failed")?;
         let request = nomifun_api_types::voice::VoiceTaskResultAnnouncement {
             scope:VoiceSessionControlRequest {instance_id:source.instance_id,session_id:source.session_id,turn_id:source.turn_id},
             command_id:task.command_id.clone(),
@@ -4615,6 +4588,54 @@ async fn private_task_control(
     }
 }
 
+/// Formats spoken/display task status response text across languages and terminal outcomes.
+fn format_task_status_text(task: &nomifun_api_types::voice::VoiceTaskSnapshot, is_en: bool, is_cancelled: bool) -> String {
+    use nomifun_api_types::voice::VoiceTaskStatus;
+    if is_cancelled && task.status == VoiceTaskStatus::Failed {
+        if is_en { "Task cancelled." } else { "任务已取消。" }.to_string()
+    } else if is_en {
+        match task.status {
+            VoiceTaskStatus::Queued => "The task is queued, waiting for previous task to finish.".into(),
+            VoiceTaskStatus::Delivering => "Submitting the task, receipt verification pending.".into(),
+            VoiceTaskStatus::Unknown => "Task status not verified yet, checking receipt.".into(),
+            VoiceTaskStatus::Accepted => "Task accepted, waiting for execution results.".into(),
+            VoiceTaskStatus::Cancelling => "Cancelling the task, awaiting execution confirmation.".into(),
+            VoiceTaskStatus::Completed => format!(
+                "Execution finished. {}",
+                task.result_text.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("Please check task details.").chars().take(220).collect::<String>()
+            ),
+            VoiceTaskStatus::Failed => format!(
+                "Task ended, execution was unsuccessful. {}",
+                task.result_text.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("Please check task details for reasons.").chars().take(220).collect::<String>()
+            ),
+        }
+    } else {
+        match task.status {
+            VoiceTaskStatus::Queued => "任务已排队，等待上一任务结束。".into(),
+            VoiceTaskStatus::Delivering => "任务正在提交，尚未核实接单。".into(),
+            VoiceTaskStatus::Unknown => "任务状态尚未核实，正在核对原回执。".into(),
+            VoiceTaskStatus::Accepted => "任务已接受，正在等待执行结果。".into(),
+            VoiceTaskStatus::Cancelling => "正在取消任务，等待执行侧确认。".into(),
+            VoiceTaskStatus::Completed => format!(
+                "执行已结束。{}",
+                task.result_text.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("请查看任务详情。").chars().take(220).collect::<String>()
+            ),
+            VoiceTaskStatus::Failed => format!(
+                "任务已结束，执行结果未成功。{}",
+                task.result_text.as_deref().filter(|t| !t.trim().is_empty()).unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()
+            ),
+        }
+    }
+}
+
+fn format_task_result_announcement(task: &VoiceTaskSnapshot, goal: &str, is_en: bool) -> String {
+    let summary = extract_spoken_summary(task.result_text.as_deref().unwrap_or(""), task.status, is_en);
+    let spoken_goal: String = goal.chars().take(25).collect();
+    if spoken_goal.trim().is_empty() { summary }
+    else if is_en { format!("Result for ‘{spoken_goal}’: {summary}") }
+    else { format!("任务「{spoken_goal}」的结果：{summary}") }
+}
+
 /// Extracts a concise, high-signal spoken summary (50-80 chars) suitable for TTS playback.
 ///
 /// Preserves:
@@ -4622,15 +4643,20 @@ async fn private_task_control(
 /// - Vital parameters (temperatures, numbers, dates, locations, units);
 /// - Negations ("不", "未", "无", "失败", "没有", "无法") - never drops or inverts polarity;
 /// - Strips markdown noise, code blocks, and stage directions.
-pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
+fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus, is_en: bool) -> String {
     let text = strip_markdown_and_noise(raw);
     let text = text.trim();
     if text.is_empty() {
-        return match status {
-            VoiceTaskStatus::Completed => "任务已完成，详情请在会话中查看。".into(),
-            _ => "任务未完成，详情请在会话中查看。".into(),
+        return match (status, is_en) {
+            (VoiceTaskStatus::Completed, true) => "Execution finished. See conversation for details.".into(),
+            (VoiceTaskStatus::Completed, false) => "执行已结束，详情请在会话中查看。".into(),
+            (_, true) => "Execution was unsuccessful. See conversation for details.".into(),
+            (_, false) => "任务未完成，详情请在会话中查看。".into(),
         };
     }
+    let details = if is_en { ". See conversation for details." } else { "，详情请在会话中查看。" };
+    let restrictions = if is_en { "Do not act on a shortened result. Review the full details and restrictions." }
+        else { "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。" };
     // If it's already concise enough (under 80 chars), speak as is.
     if text.chars().count() <= 80 {
         return text.to_string();
@@ -4650,16 +4676,16 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
             .collect::<Vec<_>>()
             .join(". ");
         return if critical.is_empty() || critical.chars().count() > 60 {
-            "Do not act on a shortened result. Review the full details and restrictions.".into()
+            restrictions.into()
         } else {
-            format!("{critical}. See full details.")
+            format!("{critical}{details}")
         };
     }
     if sentences.is_empty() {
         let truncated: String = text.chars().take(MAX_TARGET_CHARS).collect();
-        let res = format!("{truncated}，详情请在会话中查看。");
+        let res = format!("{truncated}{details}");
         if has_failure && !is_negation_or_failure(&res) {
-            return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+            return restrictions.to_string();
         }
         return res;
     }
@@ -4746,9 +4772,9 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
                 };
                 let first_part: String = target_clause.chars().take(MAX_TARGET_CHARS).collect();
                 let trimmed = first_part.trim_end_matches(['，', ',']);
-                let res = format!("{trimmed}，详情请在会话中查看。");
+                let res = format!("{trimmed}{details}");
                 if has_failure && !is_negation_or_failure(&res) {
-                    return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+                    return restrictions.to_string();
                 }
                 return res;
             }
@@ -4759,15 +4785,15 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
                 let c = clauses[c_idx].trim();
                 if !c.is_empty() {
                     if !clause_summary.is_empty() && !clause_summary.ends_with(['，', ',']) {
-                        clause_summary.push('，');
+                        clause_summary.push_str(if is_en { ", " } else { "，" });
                     }
                     clause_summary.push_str(c);
                 }
             }
             let trimmed = clause_summary.trim_end_matches(['，', ',']);
-            let res = format!("{trimmed}，详情请在会话中查看。");
+            let res = format!("{trimmed}{details}");
             if has_failure && !is_negation_or_failure(&res) {
-                return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+                return restrictions.to_string();
             }
             return res;
         }
@@ -4779,7 +4805,7 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
         let s = sentences[idx].trim();
         if !s.is_empty() {
             if !summary.is_empty() && !summary.ends_with(['。', '！', '!', '？', '?', '；', ';', '，', ',']) {
-                summary.push('，');
+                summary.push_str(if is_en { ", " } else { "，" });
             }
             summary.push_str(s);
         }
@@ -4787,12 +4813,12 @@ pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus) -> String {
 
     let summary = summary.trim_end_matches(['。', '！', '!', '？', '?', '；', ';', '，', ',']);
     let result = if summary.chars().count() < text.chars().count() {
-        format!("{summary}，详情请在会话中查看。")
+        format!("{summary}{details}")
     } else {
         summary.to_string()
     };
     if has_failure && !is_negation_or_failure(&result) {
-        return "任务执行结果包含未完成事项与重要说明，详情请在会话中查看。".to_string();
+        return restrictions.to_string();
     }
     result
 }
@@ -5345,7 +5371,7 @@ async fn companion_task_notification_handler(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let Some(tasks) = &manager.tasks else {return task_api_error("runtime_unavailable".into());};
-    match tasks.notification_for(&command_id) {
+    match tasks.notification_for(&command_id, manager.snapshot().locale.as_deref()) {
         Ok(Some(notif)) => axum::Json(notif).into_response(),
         Ok(None) => (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({"code": "notification_not_found"}))).into_response(),
         Err(code) => task_api_error(code),
@@ -7883,7 +7909,7 @@ mod tests {
 
         // 2. Claim announcement, which generates attempt:1
         tasks.claim_announcement("cmd-replay-test", true).await.unwrap();
-        let notif_claimed = tasks.notification_for("cmd-replay-test").unwrap().unwrap();
+        let notif_claimed = tasks.notification_for("cmd-replay-test", None).unwrap().unwrap();
         assert_eq!(notif_claimed.attempt_id, "voice-attempt:cmd-replay-test:1");
 
         // A playback still marked dispatched cannot be replayed under a new attempt.
@@ -7898,21 +7924,40 @@ mod tests {
         tasks.finish_announcement("cmd-replay-test",&notif_claimed.attempt_id,"failed").await.unwrap();
         let resp=app.clone().oneshot(request(&manager.snapshot().instance_id,"replay-one")).await.unwrap();assert_eq!(resp.status(),axum::http::StatusCode::SERVICE_UNAVAILABLE);
         let again=app.oneshot(request(&manager.snapshot().instance_id,"replay-one")).await.unwrap();assert_eq!(again.status(),axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(tasks.notification_for("cmd-replay-test").unwrap().unwrap().status,"failed","offline replay cannot claim acceptance or change playback history");
+        assert_eq!(tasks.notification_for("cmd-replay-test", None).unwrap().unwrap().status,"failed","offline replay cannot claim acceptance or change playback history");
     }
 
     #[test]
     fn test_spoken_summary_concise_text_preserved() {
         let text = "北京今天晴，气温 15 到 25 度，北风 2 级。";
-        let summary = extract_spoken_summary(text, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(text, VoiceTaskStatus::Completed, false);
         assert_eq!(summary, text);
         assert!(summary.chars().count() <= 80);
     }
 
     #[test]
+    fn result_announcement_uses_call_locale_for_wrappers_and_empty_results() {
+        let mut task: VoiceTaskSnapshot = serde_json::from_value(serde_json::json!({
+            "command_id":"command", "session_id":"session", "acoustic_turn_id":"turn",
+            "conversation_id":"conversation", "status":"completed", "result_ok":true
+        })).unwrap();
+        assert_eq!(format_task_result_announcement(&task, "", true), "Execution finished. See conversation for details.");
+        assert_eq!(format_task_result_announcement(&task, "", false), "执行已结束，详情请在会话中查看。");
+        task.result_text = Some("Sorry, could not find any records.".into());
+        assert_eq!(format_task_result_announcement(&task, "find records", true), "Result for ‘find records’: Sorry, could not find any records.");
+        assert_eq!(format_task_result_announcement(&task, "查询记录", false), "任务「查询记录」的结果：Sorry, could not find any records.");
+        task.result_text = Some("The query returned 125 records and the report is available in the requested output directory, with all records sorted by date and ready for review.".into());
+        let text = format_task_result_announcement(&task, "report", true);
+        assert!(!text.contains("详情") && !text.contains("任务"), "{text}");
+        task.status = VoiceTaskStatus::Failed;
+        task.result_text = None;
+        assert_eq!(format_task_result_announcement(&task, "", true), "Execution was unsuccessful. See conversation for details.");
+    }
+
+    #[test]
     fn test_spoken_summary_preserves_english_failure_and_restrictions() {
         let raw = "The deployment validation and health checks completed successfully for all 120 configured records. However the database backup was NOT created and you must NOT delete the previous backup.";
-        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed, true);
         assert!(!summary.contains("completed success"), "must not speak only the successful preamble: {summary}");
         assert!(summary.to_ascii_lowercase().contains("not") || summary.contains("conditions"), "must preserve the restriction or defer to full details: {summary}");
         assert!(summary.chars().count() <= 80);
@@ -7922,10 +7967,10 @@ mod tests {
         assert!(!is_negation_or_failure("A notable success notification"));
         assert_eq!(split_sentences("Backup failed. Keep version 1.25 unchanged."), vec!["Backup failed", "Keep version 1.25 unchanged"]);
         let with_number = "All deployment preparation and validation checks completed successfully across the workspace. Backup failed at 1.25 GB.";
-        let summary = extract_spoken_summary(with_number, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(with_number, VoiceTaskStatus::Completed, true);
         assert!(summary.contains("Backup failed at 1.25 GB"), "must keep the failure and decimal: {summary}");
         let no_error = "All deployment preparation and validation checks completed successfully across the workspace. No errors occurred.";
-        let summary = extract_spoken_summary(no_error, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(no_error, VoiceTaskStatus::Completed, true);
         assert!(summary.contains("No errors occurred"), "a negation is not proof of a failed task: {summary}");
     }
 
@@ -7938,7 +7983,7 @@ mod tests {
 {"city": "Beijing", "temp": "15-26C", "air": "good"}
 ```
 详细的天气趋势和未来一周预测已保存在会话上下文，用户可随时在界面滚动查看。"#;
-        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed, false);
         assert!(summary.contains("完成") || summary.contains("查询到"));
         assert!(summary.contains("北京") || summary.contains("天气"));
         assert!(summary.contains("15") && summary.contains("26"));
@@ -7951,7 +7996,7 @@ mod tests {
     #[test]
     fn test_spoken_summary_strictly_preserves_negation() {
         let raw = "任务执行失败：未能找到您指定的备份目录，请检查路径是否正确，或者重新指定要备份的文件夹。详细错误日志已经写入系统控制台。";
-        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Failed);
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Failed, false);
         assert!(summary.contains("失败"), "summary must retain negation/failure marker");
         assert!(summary.contains("未能") || summary.contains("未"), "summary must retain negation marker");
         assert!(summary.chars().count() <= 80);
@@ -7959,16 +8004,63 @@ mod tests {
 
     #[test]
     fn test_spoken_summary_handles_empty_fallback() {
-        let summary_done = extract_spoken_summary("", VoiceTaskStatus::Completed);
-        assert_eq!(summary_done, "任务已完成，详情请在会话中查看。");
-        let summary_failed = extract_spoken_summary("   ", VoiceTaskStatus::Failed);
+        let summary_done = extract_spoken_summary("", VoiceTaskStatus::Completed, false);
+        assert_eq!(summary_done, "执行已结束，详情请在会话中查看。");
+        let summary_failed = extract_spoken_summary("   ", VoiceTaskStatus::Failed, false);
         assert_eq!(summary_failed, "任务未完成，详情请在会话中查看。");
+    }
+
+    #[test]
+    fn test_format_task_status_text_neutral_presentation() {
+        let mut task = nomifun_api_types::voice::VoiceTaskSnapshot {
+            command_id: "cmd-1".into(),
+            session_id: "sess-1".into(),
+            acoustic_turn_id: "turn-1".into(),
+            conversation_id: Some("conv-1".into()),
+            message_id: Some("msg-1".into()),
+            runtime_turn_id: Some("rt-1".into()),
+            status: VoiceTaskStatus::Completed,
+            result_ok: Some(true),
+            result_text: Some("抱歉，未能获取天气信息。".into()),
+            error_code: None,
+        };
+
+        // 1. Chinese completed with unachieved text: neutral prefix + raw text preserved
+        let zh_text = format_task_status_text(&task, false, false);
+        assert_eq!(zh_text, "执行已结束。抱歉，未能获取天气信息。");
+
+        // 2. English completed with unachieved text: neutral prefix + raw text preserved
+        task.result_text = Some("Sorry, could not find any records.".into());
+        let en_text = format_task_status_text(&task, true, false);
+        assert_eq!(en_text, "Execution finished. Sorry, could not find any records.");
+
+        // 3. Completed with empty/None text
+        task.result_text = None;
+        assert_eq!(format_task_status_text(&task, false, false), "执行已结束。请查看任务详情。");
+        assert_eq!(format_task_status_text(&task, true, false), "Execution finished. Please check task details.");
+
+        // 4. Cancelled
+        task.status = VoiceTaskStatus::Failed;
+        task.error_code = Some("task_cancelled".into());
+        assert_eq!(format_task_status_text(&task, false, true), "任务已取消。");
+        assert_eq!(format_task_status_text(&task, true, true), "Task cancelled.");
+
+        // 5. Failed
+        task.result_text = Some("Tool execution failed".into());
+        assert_eq!(format_task_status_text(&task, false, false), "任务已结束，执行结果未成功。Tool execution failed");
+        assert_eq!(format_task_status_text(&task, true, false), "Task ended, execution was unsuccessful. Tool execution failed");
+
+        // 6. Normal success text
+        task.status = VoiceTaskStatus::Completed;
+        task.result_text = Some("已为您创建日程。".into());
+        assert_eq!(format_task_status_text(&task, false, false), "执行已结束。已为您创建日程。");
+        assert_eq!(format_task_status_text(&task, true, false), "Execution finished. 已为您创建日程。");
     }
 
     #[test]
     fn test_spoken_summary_must_not_drop_actual_backup_failure() {
         let raw = "目录扫描已完成，已检查全部文件并统计文件数量和大小以及当前磁盘空间使用情况并生成了详细目录结构和待处理文件清单用于下一步执行，但是备份失败没有复制任何文件且目标目录仍然为空，请勿删除原始文件以免丢失数据。";
-        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed);
+        let summary = extract_spoken_summary(raw, VoiceTaskStatus::Completed, false);
         assert!(summary.contains("备份失败") || summary.contains("没有复制"), "spoken summary lost the actual failure: {summary}");
         assert!(summary.chars().count() <= 80, "summary must be <= 80 chars, got: {}", summary.chars().count());
     }

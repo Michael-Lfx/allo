@@ -32,6 +32,7 @@ export type ComposerSubmitClusterProps = {
   isVoiceActiveElsewhere?: boolean;
   isVoiceConnecting?: boolean;
   isVoiceStartUncertain?: boolean;
+  voiceCallLabel?: string;
   onStartVoiceCall?: () => void;
   onStopVoiceCall?: () => void;
   phoneCallTestId?: string;
@@ -97,6 +98,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
   isVoiceActiveElsewhere = false,
   isVoiceConnecting = false,
   isVoiceStartUncertain = false,
+  voiceCallLabel,
   onStartVoiceCall,
   onStopVoiceCall,
   phoneCallTestId = 'composer-phone-btn',
@@ -251,8 +253,8 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               onClick={onStartVoiceCall}
               data-testid={phoneCallTestId}
               data-layout-part='phone'
-              aria-label={t(isVoiceStartUncertain?'voice.composer.retryStart':isVoiceActiveElsewhere?'voice.entry.openActive':'voice.session.startCall')}
-              title={t(isVoiceStartUncertain?'voice.composer.retryStart':isVoiceActiveElsewhere?'voice.entry.openActive':'voice.session.startCall')}
+              aria-label={voiceCallLabel || t(isVoiceStartUncertain ? 'voice.composer.retryStart' : isVoiceActiveElsewhere ? 'voice.entry.openActive' : 'voice.session.startCall')}
+              title={voiceCallLabel || t(isVoiceStartUncertain ? 'voice.composer.retryStart' : isVoiceActiveElsewhere ? 'voice.entry.openActive' : 'voice.session.startCall')}
             />
           )
         ) : null}

@@ -365,7 +365,15 @@ const GuidPage: React.FC = () => {
     try {
       const [status, report] = await Promise.all([getVoiceCompanionStatus(), getVoiceCapabilities()]);
       setVoiceFailureReason(report?.reason_code ?? null);
-      setVoicePrerequisite(!status.models_ready || !status.autostart ? 'unavailable' : report?.can_start_full_call ? 'ready' : report ? 'failed' : 'setup');
+      if (!status.models_ready || !status.autostart) {
+        setVoicePrerequisite('unavailable');
+      } else if (report?.can_start_full_call) {
+        setVoicePrerequisite('ready');
+      } else if (!report || report.reason_code === 'self_check_required') {
+        setVoicePrerequisite('setup');
+      } else {
+        setVoicePrerequisite('failed');
+      }
     } catch {
       setVoicePrerequisite('unavailable');
     }
@@ -1348,7 +1356,15 @@ const GuidPage: React.FC = () => {
       onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
       isVoiceConnecting={isVoiceConnecting || (!isVoiceActive && voicePrerequisite === 'loading')}
       isVoiceActive={isVoiceActive}
-      voiceCallLabel={t(isVoiceActive ? 'voice.entry.openActive' : voicePrerequisite === 'loading' ? 'voice.entry.checking' : voicePrerequisite === 'ready' ? 'voice.entry.start' : 'voice.entry.setup')}
+      voiceCallLabel={t(
+        isVoiceActive
+          ? 'voice.entry.openActive'
+          : voicePrerequisite === 'loading'
+            ? 'voice.entry.checking'
+            : (voicePrerequisite === 'ready' || voicePrerequisite === 'setup')
+              ? 'voice.entry.start'
+              : 'voice.entry.setup'
+      )}
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
       modelSelectorIsChat={isGeminiMode}

@@ -39,6 +39,6 @@ describe('Guid composer entry strip', () => {
     expect(source.includes('onStartVoiceCall')).toBe(false);
     expect(actions.includes('onStartVoiceCall={onStartVoiceCall}')).toBe(true);
     expect(actions.includes('isVoiceConnecting={isVoiceConnecting}')).toBe(true);
-    expect(actions.includes("t('voice.entry.start')")).toBe(true);
+    expect(actions.includes('voiceCallLabel={voiceCallLabel}')).toBe(true);
   });
 });

@@ -3504,7 +3504,7 @@ impl VoiceCompanionRuntime {
                                     VoiceTaskStatus::Unknown => "Task status not verified yet, checking receipt.".into(),
                                     VoiceTaskStatus::Accepted => "Task accepted, waiting for execution results.".into(),
                                     VoiceTaskStatus::Cancelling => "Cancelling the task, awaiting execution confirmation.".into(),
-                                    VoiceTaskStatus::Completed => format!("Task completed. {}", task.result_text.as_deref().unwrap_or("Please check task details.").chars().take(220).collect::<String>()),
+                                    VoiceTaskStatus::Completed => format!("Execution finished. {}", task.result_text.as_deref().unwrap_or("Please check task details.").chars().take(220).collect::<String>()),
                                     VoiceTaskStatus::Failed => format!("Task ended, execution was unsuccessful. {}", task.result_text.as_deref().unwrap_or("Please check task details for reasons.").chars().take(220).collect::<String>()),
                                 }
                             } else {
@@ -3514,7 +3514,7 @@ impl VoiceCompanionRuntime {
                                     VoiceTaskStatus::Unknown => "任务状态尚未核实，正在核对原回执。".into(),
                                     VoiceTaskStatus::Accepted => "任务已接受，正在等待执行结果。".into(),
                                     VoiceTaskStatus::Cancelling => "正在取消任务，等待执行侧确认。".into(),
-                                    VoiceTaskStatus::Completed => format!("任务已完成。{}",task.result_text.as_deref().unwrap_or("请查看任务详情。").chars().take(220).collect::<String>()),
+                                    VoiceTaskStatus::Completed => format!("执行已结束。{}",task.result_text.as_deref().unwrap_or("请查看任务详情。").chars().take(220).collect::<String>()),
                                     VoiceTaskStatus::Failed => format!("任务已结束，执行结果未成功。{}",task.result_text.as_deref().unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()),
                                 }
                             };

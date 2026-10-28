@@ -272,6 +272,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           isVoiceConversation={Boolean(onStartVoiceCall) && !autoWorkMode}
           isVoiceConnecting={isVoiceConnecting}
           isVoiceActiveElsewhere={isVoiceActive}
+          voiceCallLabel={voiceCallLabel}
           onStartVoiceCall={onStartVoiceCall}
           hasDraft={hasDraft}
           loading={loading}

@@ -40,7 +40,26 @@ class FakeAudioContext {
   async close() {}
 }
 
-const globalsToRestore = ["Element","HTMLElement","Node","Event","MouseEvent","KeyboardEvent","DocumentFragment","Blob","File","window","document","navigator","MediaRecorder","AudioContext","IS_REACT_ACT_ENVIRONMENT"] as const;
+const globalsToRestore = [
+  "Element",
+  "HTMLElement",
+  "Node",
+  "Event",
+  "MouseEvent",
+  "KeyboardEvent",
+  "DocumentFragment",
+  "Blob",
+  "File",
+  "window",
+  "document",
+  "navigator",
+  "MediaRecorder",
+  "AudioContext",
+  "IS_REACT_ACT_ENVIRONMENT",
+  "getComputedStyle",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+] as const;
 const originalGlobals = new Map<string, PropertyDescriptor | undefined>();
 for (const name of globalsToRestore) originalGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
 const dom = (() => {
@@ -65,15 +84,41 @@ const dom = (() => {
   Object.defineProperty(globalThis, 'MediaRecorder', { configurable: true, value: FakeMediaRecorder });
   Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: FakeAudioContext });
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
+  const raf = (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 16) as unknown as number;
+  const caf = (id: number) => clearTimeout(id);
+  Object.defineProperty(win, 'requestAnimationFrame', { configurable: true, value: raf });
+  Object.defineProperty(win, 'cancelAnimationFrame', { configurable: true, value: caf });
+  Object.defineProperty(globalThis, 'getComputedStyle', { configurable: true, value: win.getComputedStyle.bind(win) });
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: raf });
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', { configurable: true, value: caf });
   container = win.document.getElementById('root') as HTMLElement;
   return domInstance;
 })();
 
-
+afterAll(async () => {
+  if (root) {
+    await act(async () => {
+      root!.unmount();
+    });
+    root = null;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  for (const [name, descriptor] of originalGlobals.entries()) {
+    if (descriptor) {
+      Object.defineProperty(globalThis, name, descriptor);
+    } else {
+      delete (globalThis as Record<string, unknown>)[name];
+    }
+  }
+});
 
 function reset() {
-  root?.unmount();
-  root = null;
+  if (root) {
+    act(() => {
+      root!.unmount();
+    });
+    root = null;
+  }
   container.innerHTML = '<div id="mount"></div>';
   getUserMediaCalls = 0;
   stopCalls = 0;
