@@ -14,7 +14,9 @@ part_of: ../map.md
 画像四角、先例摘要行），提示词条款域中立移植（构件词边界/表述工具在场收窄/
 意图画像与容量预算/取材池/练习形态按档位/规划即雄心），k03 capacity_note
 语义换血，smoke content 判据升级到 learnhub 6 判据档。零迁移（纯提示词 +
-计算投影）。**按 n2 裁决执行**；实施顺序先收窄（R12）后注入（名单）。
+计算投影）。**n2 已关（2026-10-28 七裁决全按推荐落定，见 n2 Resolution）；
+实施顺序先收窄（R12）后注入（名单）。**术语锚：Known Names / Precedent /
+Node Intent Overload 三词条已进 CONTEXT.md。
 
 ## allo 现状（落点地图，file:line 为准）
 

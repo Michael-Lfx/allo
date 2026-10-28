@@ -2,7 +2,7 @@
 id: n4
 title: "开放题判分重写 grilling——判底来源 / 失败出口 / 分数形态 / 模型档 / 范围与不对称"
 type: grilling
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -123,3 +123,27 @@ allo 判分生产零观测档；ArchivingCompleter 冒烟档全文落盘零脱�
 - 九裁决点全部落 Resolution（推荐项默认裁决标注可复议）。
 - D1(b)/D2 结构化三态若被裁决后置，票面写明触发条件。
 - n5 票面按裁决更新后才能开工。
+
+## Resolution（2026-10-28 关票，grill-with-docs 单轮 18 问全按推荐落定）
+
+- **D1**：判底走阶梯——n5 落 **explanation 判底**（零契约变更、零迁移、
+  存量即刻受益）；「参考答案+要点进契约」后置独立票，触发条件 = n5 对照卡
+  显示判分质量不足。
+- **D2**：**保留 fail-loud 出口 + 修三重脆弱**（90s×3 重试环带原因回灌 +
+  complete_json 族 + 显式超时）；机械兜底层不移植（allo 无 keywords 无存在
+  条件）；结构化 unavailable 三态后置，触发 = 真机重试后仍高失败；
+  JudgeExhausted 绝不静默判错照搬。
+- **D3**：**保留 0–10 连续分 + 增补 missing_points**（schema
+  `{score, feedback, missing_points}`，score≥及格 ⇔ missing 必空——判对-
+  缺失互斥的连续分适配）；二值化不做。
+- **D4**：重复提交本波不动，折叠/幂等入雾区（频率数据先行）。
+- **D5**：**EvidenceTier 显式不引入**（题型白名单已实现自动性证据纯度，
+  不动 015 migration 高风险线），豁免理由记 n5 票面。
+- **D6**：**修 node XP 分子/分母对称**——answered/passed 子查询补
+  AI-graded 过滤（实锤 xp.rs:60-84），AI-graded 双侧剔除出 node XP ratio；
+  行为变化进对照卡。
+- **D7**：判分**开思考**（complete_json_with_thinking + 专项预算票内实测
+  定；不可用降级普通 json 通道+观测标记；flash on/off 双跑进对照卡）。
+- **D8**：**reflection 同票改**（机制面/schema/判底同改，0–1 形态保留）。
+- **D9**：**脱敏归档器**（冒烟档占位替换、归档失败降级不阻断）+ smoke
+  grade 四判据+脱敏回读进 EXIT；生产观测维持任务级旁路。
