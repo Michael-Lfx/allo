@@ -1,4 +1,5 @@
 use super::*;
+use super::open_judge::OpenJudgeInput;
 
 impl LearningService {
 
@@ -156,31 +157,32 @@ impl LearningService {
                 if crate::switches::open_judge_enabled() {
                     // 新评审链（n5）：重试环 + 超时 + thinking json 通道 +
                     // 判底/缺失要点契约（机制面开关臂 on，缺省）。
-                    self.judge_answer(
+                    let input = OpenJudgeInput {
                         kind,
-                        &activity_prompt,
+                        prompt: &activity_prompt,
                         answer,
-                        &lesson_title,
-                        &lesson_summary,
-                        &config.explanation,
-                        provider_id.as_ref(),
-                        model.as_deref(),
-                    )
-                    .await?
+                        lesson_title: &lesson_title,
+                        lesson_summary: &lesson_summary,
+                        explanation: Some(&config.explanation),
+                    };
+                    self.judge_answer(input, provider_id.as_ref(), model.as_deref())
+                        .await?
                 } else {
                     // 旧路径对照臂（`NOMI_LEARNING_OPEN_JUDGE=off`）：单次
                     // 裸调、无重试无超时、`{score,feedback}` 两键解析、
                     // missing_points 语义缺席（恒空）。
+                    let input = OpenJudgeInput {
+                        kind,
+                        prompt: &activity_prompt,
+                        answer,
+                        lesson_title: &lesson_title,
+                        lesson_summary: &lesson_summary,
+                        // 旧臂 (None, None) 保形：判底槽不装配，prompt 逐
+                        // 字节保持旧形。
+                        explanation: None,
+                    };
                     let (score, feedback) = self
-                        .grade_open_answer(
-                            kind,
-                            &activity_prompt,
-                            answer,
-                            &lesson_title,
-                            &lesson_summary,
-                            provider_id.as_ref(),
-                            model.as_deref(),
-                        )
+                        .grade_open_answer(input, provider_id.as_ref(), model.as_deref())
                         .await?;
                     (score, feedback, Vec::new())
                 }
@@ -226,21 +228,19 @@ impl LearningService {
     /// LEGACY single-shot arm, kept verbatim as the mechanism-face
     /// comparison arm (`NOMI_LEARNING_OPEN_JUDGE=off`); the default arm is
     /// [`Self::judge_answer`] (retry ring + timeout + thinking json channel
-    /// + grounding/missing-points contract). The model sees the exercise
-    /// prompt, the learner's answer and the lesson context; it must reply
-    /// with strict JSON `{ "score": f64, "feedback": string }`. open_question
-    /// scores are reported on a 0-10 scale and normalized to 0-1 here
-    /// (≥6 passes). Every failure (no completer, call error, unparseable
-    /// reply) returns `Err` and is surfaced to the learner — AI grading is
-    /// authoritative, so a broken grader must never masquerade as a passing
-    /// answer.
+    /// + grounding/missing-points contract). Grading input arrives as an
+    /// [`OpenJudgeInput`] (Data Clumps 收口，评审裁定); the legacy
+    /// `(None, None)` prompt shape (no grounding slot, no retry-feedback
+    /// slot) is preserved verbatim. The model sees the exercise prompt, the
+    /// learner's answer and the lesson context; it must reply with strict
+    /// JSON `{ "score": f64, "feedback": string }`. open_question scores are
+    /// reported on a 0-10 scale and normalized to 0-1 here (≥6 passes).
+    /// Every failure (no completer, call error, unparseable reply) returns
+    /// `Err` and is surfaced to the learner — AI grading is authoritative,
+    /// so a broken grader must never masquerade as a passing answer.
     async fn grade_open_answer(
         &self,
-        kind: ActivityKind,
-        prompt: &str,
-        answer: &str,
-        lesson_title: &str,
-        lesson_summary: &str,
+        input: OpenJudgeInput<'_>,
         provider_id: Option<&ProviderId>,
         model: Option<&str>,
     ) -> Result<(f64, String), AppError> {
@@ -252,14 +252,20 @@ impl LearningService {
             .ok_or_else(|| {
                 AppError::Conflict("AI answer grading is not configured".into())
             })?;
-        let system = if kind == ActivityKind::OpenQuestion {
+        let system = if input.kind == ActivityKind::OpenQuestion {
             OPEN_QUESTION_GRADING_SYSTEM
         } else {
             REFLECTION_GRADING_SYSTEM
         };
         // (None, None) = 旧臂不装配判底槽与回灌槽，prompt 逐字节保持旧形。
         let user = build_open_grading_prompt(
-            kind, prompt, answer, lesson_title, lesson_summary, None, None,
+            input.kind,
+            input.prompt,
+            input.answer,
+            input.lesson_title,
+            input.lesson_summary,
+            None,
+            None,
         );
         let raw = completer
             .complete(
@@ -272,7 +278,7 @@ impl LearningService {
         let (score, feedback) = parse_open_grading(&raw)?;
         // open_question arrives on a 0-10 scale; normalize to 0-1 so
         // attempt storage stays on the shared scale (0.6 = pass).
-        let normalized = if kind == ActivityKind::OpenQuestion {
+        let normalized = if input.kind == ActivityKind::OpenQuestion {
             score / 10.0
         } else {
             score
@@ -324,7 +330,7 @@ Reply with ONLY one JSON object matching this shape:
 }
 Rules:
 - score must be a number between 0.0 and 10.0.
-- feedback must be Markdown with two parts: (1) 逐点批改 — point-by-point evaluation against the expected key points, (2) 改进建议 — concrete improvement suggestions.
+- feedback must be non-empty Markdown that helps the learner improve: what the answer conveys or misses against the expected key points, and how to close the gap.
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 

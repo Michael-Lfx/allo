@@ -72,7 +72,8 @@ pub(crate) struct OpenJudgeInput<'a> {
     pub lesson_title: &'a str,
     pub lesson_summary: &'a str,
     /// 判底（n4 D1(a)）。`Some("")` = 存量题 explanation 为空（装配容错
-    /// 占位「以课时上下文为准」）；评审链恒传 `Some`。
+    /// 占位「以课时上下文为准」）；评审链恒传 `Some`，旧对照臂（off 臂）
+    /// 传 `None`（不装配判底槽，prompt 保旧形）。
     pub explanation: Option<&'a str>,
 }
 
@@ -135,7 +136,7 @@ Reply with ONLY one JSON object matching this shape:
   "missing_points": []
 }
 Rules:
-- feedback must be Markdown with two parts: (1) 逐点批改 — point-by-point evaluation against the grounding, (2) 改进建议 — concrete improvement suggestions.
+- feedback must be non-empty Markdown that helps the learner improve: what the answer conveys or misses against the grounding, and how to close the gap.
 - Write the feedback and the missing points in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
@@ -198,26 +199,40 @@ async fn judge_open_with_timeout(
             retry_feedback.as_deref(),
         );
         let started = std::time::Instant::now();
-        let outcome = match call_with_thinking(completer, model_override, system, &user, timeout)
-            .await
-        {
-            Ok(raw) => validate_judge_json(&raw, input.kind),
-            // n4 D7：thinking 不可用降级普通 json 通道 + 观测标记（不是
-            // 静默换道——warn 留痕 + outcome.thinking_degraded 置位）。
-            Err(thinking_error) => {
-                tracing::warn!(
-                    attempt,
-                    kind = input.kind.as_str(),
-                    error = %thinking_error,
-                    "open judge: thinking channel unavailable — degrading to the plain json channel"
-                );
-                thinking_degraded = true;
-                match call_plain_json(completer, model_override, system, &user, timeout).await {
-                    Ok(raw) => validate_judge_json(&raw, input.kind),
-                    Err(json_error) => Err(format!(
-                        "thinking channel failed ({thinking_error}) and the degraded json channel failed too ({json_error})"
-                    )),
+        let outcome = if thinking_degraded {
+            // 一次定臂（评审裁定）：通道不可用一经判定，后续尝试直走普通
+            // json 通道，不再重复探测 thinking 通道。
+            call_plain_json(completer, model_override, system, &user, timeout)
+                .await
+                .map_err(|json_error| format!("degraded json channel failed ({json_error})"))
+                .and_then(|raw| validate_judge_json(&raw, input.kind))
+        } else {
+            match call_with_thinking(completer, model_override, system, &user, timeout).await {
+                Ok(raw) => validate_judge_json(&raw, input.kind),
+                // n4 D7 降级收窄（评审裁定）：只对「通道/能力不可用」类错误
+                // 降级普通 json 通道 + 观测标记（不是静默换道——warn 留痕 +
+                // outcome.thinking_degraded 置位）。超时是判分自己的 90s 预
+                // 算守卫；provider 错误统一 BadGateway 字符串（能力拒绝与瞬
+                // 时 5xx 同形，不可靠区分）——都不降级，按可重试失败留在
+                // thinking 通道走重试环（保 90s×N 预算语义）。
+                Err(thinking_error) if thinking_channel_unavailable(&thinking_error) => {
+                    tracing::warn!(
+                        attempt,
+                        kind = input.kind.as_str(),
+                        error = %thinking_error,
+                        "open judge: thinking channel unavailable — degrading to the plain json channel"
+                    );
+                    thinking_degraded = true;
+                    match call_plain_json(completer, model_override, system, &user, timeout).await {
+                        Ok(raw) => validate_judge_json(&raw, input.kind),
+                        Err(json_error) => Err(format!(
+                            "thinking channel failed ({thinking_error}) and the degraded json channel failed too ({json_error})"
+                        )),
+                    }
                 }
+                // 不可降级失败（超时/provider 瞬时错误等）与校验失败同一重
+                // 试面：原因回灌，通道不变。
+                Err(thinking_error) => Err(format!("thinking channel failed: {thinking_error}")),
             }
         };
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -309,6 +324,19 @@ async fn with_timeout(
         })
 }
 
+/// 「通道/能力不可用」可靠判别（n4 D7 降级收窄，评审裁定）：只认
+/// [`LearningCompleter`] 缝约文档化的结构化输出不可用信号（crate 默认实现
+/// 的 loud-failure 形态，"learning structured output unavailable"）。超时是
+/// 判分自己的预算守卫（`AppError::Timeout`）；provider 错误统一
+/// `BadGateway` 字符串（能力拒绝与瞬时 5xx 同形）——都不可靠判别为能力
+/// 缺失，一律不降级。
+fn thinking_channel_unavailable(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::Conflict(message) if message.contains("structured output unavailable")
+    )
+}
+
 /// 原生分数域（n4 D3：open_question 0–10、reflection 0–1）。
 fn score_range(kind: ActivityKind) -> (f64, f64) {
     if kind == ActivityKind::OpenQuestion {
@@ -341,14 +369,10 @@ impl super::LearningService {
     /// 次评审（重试环 + 超时 + 判底进 prompt），原生分归一化到 0–1 存储
     /// 尺（open_question ÷10；0.6 = 及格线与旧尺同构）。评审失败如实上抛
     /// `AppError::Internal`——fail-loud 保留（n4 D2），绝不静默判错。
+    /// 评审输入收 [`OpenJudgeInput`] 结构（Data Clumps 收口，评审裁定）。
     pub(super) async fn judge_answer(
         &self,
-        kind: ActivityKind,
-        prompt: &str,
-        answer: &str,
-        lesson_title: &str,
-        lesson_summary: &str,
-        explanation: &str,
+        input: OpenJudgeInput<'_>,
         provider_id: Option<&ProviderId>,
         model: Option<&str>,
     ) -> Result<(f64, String, Vec<String>), AppError> {
@@ -358,14 +382,6 @@ impl super::LearningService {
             .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
             .clone()
             .ok_or_else(|| AppError::Conflict("AI answer grading is not configured".into()))?;
-        let input = OpenJudgeInput {
-            kind,
-            prompt,
-            answer,
-            lesson_title,
-            lesson_summary,
-            explanation: Some(explanation),
-        };
         let outcome = judge_open(
             &*completer,
             provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
@@ -376,7 +392,7 @@ impl super::LearningService {
         // open_question arrives on a 0-10 scale; normalize to 0-1 so attempt
         // storage stays on the shared scale (0.6 = pass) — identical
         // arithmetic to the legacy arm.
-        let normalized = if kind == ActivityKind::OpenQuestion {
+        let normalized = if input.kind == ActivityKind::OpenQuestion {
             outcome.verdict.score / 10.0
         } else {
             outcome.verdict.score
@@ -691,6 +707,56 @@ mod tests {
         assert!(outcome.thinking_degraded, "降级必须置观测标记");
         assert_eq!(outcome.verdict.score, 2.0);
         assert_eq!(canned.users("json").len(), 1, "降级在普通 json 通道完成");
+    }
+
+    /// 降级收窄（评审裁定钉，红→绿）：超时不触发降级——按可重试失败留在
+    /// thinking 通道走重试环（保 90s×N 预算语义），json 通道零触达。
+    #[tokio::test]
+    async fn timeout_on_thinking_channel_does_not_degrade() {
+        let canned = Canned::thinking(vec![
+            Err(AppError::Timeout("open judge call exceeded 90s".into())),
+            Ok(verdict_json("7.0", &[])),
+        ]);
+        let outcome = judge(&canned, &open_input("判底")).await.unwrap();
+        assert!(!outcome.thinking_degraded, "超时不得触发降级");
+        assert_eq!(outcome.verdict.score, 7.0);
+        assert_eq!(canned.users("thinking").len(), 2, "两试都在 thinking 通道");
+        assert_eq!(canned.users("json").len(), 0, "json 通道不得被触达");
+    }
+
+    /// provider 瞬时错误（BadGateway）与能力拒绝在 LiveLearningCompleter
+    /// 错误形态里同为字符串——不可靠判别为能力缺失，不降级，走重试环。
+    #[tokio::test]
+    async fn transient_provider_error_does_not_degrade_the_thinking_channel() {
+        let canned = Canned::thinking(vec![
+            Err(AppError::BadGateway(
+                "LLM provider error: API error 502: bad gateway".into(),
+            )),
+            Ok(verdict_json("6.5", &[])),
+        ]);
+        let outcome = judge(&canned, &open_input("判底")).await.unwrap();
+        assert!(!outcome.thinking_degraded, "瞬时错误不是能力缺失");
+        assert_eq!(canned.users("thinking").len(), 2);
+        assert_eq!(canned.users("json").len(), 0);
+    }
+
+    /// 一次定臂：通道不可用判定后，后续尝试直走普通 json 通道，不再重复
+    /// 探测 thinking 通道（降级臂粘滞，不中途切回）。
+    #[tokio::test]
+    async fn degraded_channel_is_sticky_for_remaining_attempts() {
+        let canned = Canned::thinking(vec![Err(AppError::Conflict(
+            "learning structured output unavailable: thinking mode rejected by provider".into(),
+        ))]);
+        {
+            let mut json_script = canned.json_script.lock().unwrap_or_else(|e| e.into_inner());
+            json_script.push(Ok("不是 json".into())); // 降级臂首轮也不合法 → 回灌重试
+            json_script.push(Ok(verdict_json("5.0", &["缺失要点"])));
+        }
+        let outcome = judge(&canned, &open_input("判底")).await.unwrap();
+        assert!(outcome.thinking_degraded);
+        assert_eq!(outcome.verdict.score, 5.0);
+        assert_eq!(canned.users("thinking").len(), 1, "thinking 通道只探测一次");
+        assert_eq!(canned.users("json").len(), 2, "降级后两次尝试都在 json 通道");
     }
 
     #[tokio::test]

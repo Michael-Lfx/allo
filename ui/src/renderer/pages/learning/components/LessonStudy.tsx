@@ -47,7 +47,9 @@ import { LessonQuestionDialog } from './LessonQuestionDialog';
 
 const { Text, Paragraph } = Typography;
 
-function ActivityBlock({
+/// 逐题练习块（测试缝：导出供 missingPointsTitle 双语断言单测直接渲染判
+/// 错结果面，InlineRenderBoundary 先例同款）。
+export function ActivityBlock({
   activity,
   disabled,
   loading,
