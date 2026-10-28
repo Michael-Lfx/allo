@@ -19,8 +19,8 @@ pub use error::AuthError;
 
 // JWT service
 pub use jwt::{
-    JwtService, TokenPayload, generate_random_hex_secret, generate_random_secret_string, is_past_half_life,
-    resolve_jwt_secret,
+    JwtService, LinkTokenPayload, TokenPayload, generate_random_hex_secret, generate_random_secret_string,
+    is_past_half_life, resolve_jwt_secret,
 };
 
 // Per-companion API token (Remote front door)

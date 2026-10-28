@@ -41,6 +41,8 @@ flowchart TD
         A28["28-输入区连接器开关"]
         A31["31-SDK入口命名"]
         A35["35-SDK导出助手"]
+        A49["49-目录检索与使用提示"]
+        A50["50-四类实体多语言展示"]
     end
 
     subgraph D4["4. 研发计划与工程门禁"]
@@ -153,6 +155,10 @@ flowchart TD
 | [`46-connector-auth-affordance-fix.zh.md`](file:///c:/workspace/allo/docs/agent-store/46-connector-auth-affordance-fix.zh.md) | 授权入口假保护修复：授权入口改由 `credential.mode` 决定、transport 猜测收敛到 `credential_mode()` 单一猜测点、`auth_status` 缺席语义、wire 零变更不升指纹、TC-FIX-001~007 | ✅ PR-1 已实施（2026-10-15；含 mock 改造与单测，1 项既有失败已登记） |
 | [`47-connector-auth-mode-field-semantics.zh.md`](file:///c:/workspace/allo/docs/agent-store/47-connector-auth-mode-field-semantics.zh.md) | 第二阶段：协议 `auth_mode` 改名 `auth_transport`（形状归形状、声明归 `credential.mode`），`fp-16` → `fp-17`、12 层落点矩阵、不双写靠指纹强制两端同步、TC-S2-001~008 | ✅ 已实施（2026-10-15；指纹门禁与跨仓站点已同步） |
 | [`48-allo-connector-market-token-auth.zh.md`](file:///c:/workspace/allo/docs/agent-store/48-allo-connector-market-token-auth.zh.md) | 方案 C：allo 自有连接器市场源（token 型授权）——自有市场布局与 `market/add` 接入、`mcp.json` + `token-schema.json` 契约草案、凭据链路时序、header 口径先验证后发布闸门、D1~D6 决策、TC-C1~C8 验收、R1~R6 风险登记 | 🔧 部分实现（2026-10-16；两条条目 GitHub/百度网盘已落地，落点分别为 header 与 SSE 查询参数，均从 zip 源实测安装、未填即 fail-closed；托管形态改为 zip + ModelScope，真实端点接受性待真 token） |
+| [`49-store-search-and-suggestions.zh.md`](file:///c:/workspace/allo/docs/agent-store/49-store-search-and-suggestions.zh.md) | 目录检索与使用提示：多词 AND 匹配口径、`matchStoreItem` 字段级命中区间（供高亮）、`searchWithHits` / `searchInstalled` / `listStatus`（透出 `markets_pending`）、预取取代缓存、三档排序、**四类 × 两面的提示词接入**（`plugin.json.quickPrompts` 优先 + 索引行 `examples_*` 回落，P1 零 wire；详情面 P2 待定）、D1~D12 决策、TC-1~TC-19 验收 | 🔧 P1 已实施（2026-10-21；client 三方法 + 宿主 `examples → quick_prompts` 回落 + 商店卡片/抽屉提示；详情面 P2 与发布同步待做） |
+| [`50-localized-display-fields.zh.md`](file:///c:/workspace/allo/docs/agent-store/50-localized-display-fields.zh.md) | 四类实体的多语言展示字段：四类（专家/专家团/技能/连接器）× 两面（list/get）统一 `display_name` / `display_description` / `tags` / `quick_prompts` 四字段；数据在**导入期**按「作者声明 → 市场索引行 → 缺席」逐语种合并并戳进快照组件 payload（沿用 `44` 的 `index_tags` 通道），读面**零额外 I/O**；顺带修专家团 `tags`/`category_id` 空壳与 `description_zh/en` 兄弟键；指纹 `fp-17 → fp-18`；D1~D11 决策、TC-1~TC-13 验收、本机四市场覆盖率实测 | 🔧 已实施（2026-10-22；指纹 `fp-18`，四类 summary 各带四字段，导入期合并 + 读面零额外 I/O；`web` 584 tests / `nomifun-app` 107 / `nomifun-app-server` 192 全绿；真机 LDF-001~LDF-009 全过；站点仓 typescript-sdk + changelog 已同步） |
+
+| [`51-export-icons.zh.md`](file:///c:/workspace/allo/docs/agent-store/51-export-icons.zh.md) | 导出面图标补齐（专家/专家团/技能/连接器）：市场 `icons/` 与 entry 目录是**兄弟关系**、`copy_tree` 带不到 ⇒ 安装期按实体类型固化进不可变快照（插件/团 `avatars/`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/`），路径写进组件 payload `avatar`（作者声明优先、永不覆盖）；导出面只加 `skills[].icon` / `connectors[].icon`（纯路径字符串），字节仍走 `skill/file` 与 `import/asset`；`pack_format 3 → 4`、指纹 `fp-18 → fp-19`；D1~D12 决策、TC-IM/TC-EX/TC-SDK 用例、连接器图标的**可达性边界**（§3.3.5） | 🔧 已实施（2026-10-26；`nomifun-importer` 64+32 / `nomifun-app` 111 / `nomifun-app-server` 192 / `web` 586 全绿；指纹门 10 落点 + 站点 2 文件；真机 EXI-001~EXI-005 PASS） |
 
 ### 2.6 早期历史总纲（Historical Foundations）
 作为项目早期立项时的总设计与路线纲要，历史正文已全部规整归档至文末附录，保留追溯价值。
@@ -301,6 +307,30 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-26 实施 `51`：导出面图标补齐，尚未发版）
+
+`51` 落地完成，指纹 `fp-18 → fp-19`、`pack_format 3 → 4`，尚未发版（下一版随 `52` 或 §8 的发布窗口一起走）：
+
+1. **真缺口定位**：市场 `icons/<base>.<ext>` 位于**市场根**，是 entry 目录的**兄弟**，`run_import` 的 `copy_tree(&source, &materialized)` 只拷 entry ⇒ 图标字节永远进不了不可变快照；而技能 / 连接器又没有 `plugin.json`，`payload["avatar"]` 的唯一写入点（`attach_plugin_display`）只在插件分支被调用。两者叠加 = 导出面只有 `plugin.json.avatar` 一条通路（24/381 个插件、全部技能、全部连接器无图标）。
+2. **安装期固化**：`ImportRequest.market_icon`（绝对路径，marketplace 层解析、importer 只落位，与 `50` 的 `index_display` 同构）→ 按实体类型写入快照（插件/团 `avatars/<basename>`、单技能 `assets/icon.<ext>`、单连接器 `avatars/connectors/<basename>`）→ 路径写进组件 payload 的 `avatar`。三闸门：六种扩展名白名单、512 KiB 上限、**目标已存在即跳过**（作者声明优先、永不覆盖）；多组件 bundle **不落位**（一张图标不能诚实归属到 N 个组件）。
+3. **导出面只加两个字段**：`skills[].icon`（技能目录相对路径，字节走 `skill/file`）与 `connectors[].icon`（快照相对路径且必须在 `assets` 里，字节走 `import/asset`）；缺席即省略键。SDK `materializePack` **零改动**——技能图标随 `skill/files`、连接器图标随 `pack.assets` 自然落盘。
+4. **实施期两处补齐**（原方案缺口）：①包级技能的图标原本**没有任何字段说明它是图标**，新增 `stamp_skill_directory_icons`（探技能自己目录的 `assets/icon.*`，**只在技能自己的目录里探**，绝不把包根 `assets/` 发给每个技能）；②团队 payload 从来没写过 `avatar`（`attach_plugin_display` 只在 agent 分支调用），补一行后**团队包终于带上它声明的头像**（`38` D8 的既有缺口）。
+5. **一条诚实的边界**（`51` §3.3.5）：`connectors[].icon` 只在"单连接器 entry"产生；团包里 `mcpServers` 声明的连接器没有自己的图标来源，`icon` 恒缺席——把包图标广播给连接器就是给同一张图造两个主体（违反 `51` INV-3）。该边界由真机 EXI-004 钉住。
+6. **门禁读数**：`nomifun-importer` 64 lib + 32 integration、`nomifun-app` 111、`nomifun-app-server` 192、`web` 586 / 1 skipped；`check:fingerprint` ✓ `fp-19`（10 落点 / 7 文件 + 站点 2 文件）；`bun run help --check` ✓；真机 `web/scripts/verify-export-icons.ts` **PASS**（EXI-001~005）。
+
+## 本轮（2026-10-22 发布 `0.1.0-beta.12`）
+
+`0.1.0-beta.12` 三出口发布完成（npm 四包 / GitHub Release / 站点），内容 = `49` 的目录检索与使用提示（不换指纹）+ `50` 的四类实体多语言展示字段（`fp-17` 的连接器字段改名 + `fp-18` 的展示字段），两轮**同批发布**，指纹因此一次跨两级（`fp-16 → fp-18`）：
+
+1. **版本锁步**：`0.1.0-beta.12`（PR #359，merge `a547b1087`）；四包 `dist-tags.beta` 与 `versions` 均已转正，`latest` 不动（仍为 `0.1.0-beta.2`）；`check:release-sync` 绿（四 manifest + 8 pin + 站点 `release.json` 同值，站点双语文案 `56 / 83` 同值）。
+2. **同一份 exe 服务两个出口**（不变量 4）：`agent-store:build`（release + `static-webui`）产出 `C98542D6…C63222`（210,356,224 B）；`release:pack --expect-sha256` 通过，**并从 npm 下载 runtime tarball 解包回算**——包内 `vendor/flowy-agent-store.exe` 与本地 release exe 同哈希（SHA256 逐字节一致），构成不变量 4 的双向证据。
+3. **npm 发布**：`protocol → client → runtime-win32-x64 → sdk` 顺序上架，四包均 `tag=beta`；凭据用 `C:\Users\15165\Documents\flowy-npm-token.key` 经临时 `npm_config_userconfig` 注入（`npm whoami` = `starwaveai`），未改全局 `~/.npmrc`。注册表 `time`：client `08:27:17.696Z`、sdk `08:27:59.013Z`、protocol `08:28:26.860Z`、runtime `08:37:18.268Z`（runtime 的 tarball 80.9 MB / 解包 210,414,640 B，**异步处理约 10 分钟**才可见）。
+4. **GitHub Release**：`v0.1.0-beta.12` prerelease（`draft=false`），zip 81,054,305 B、容器 sha256 `cd529920d9aabd82…`，`release:publish` 的**下载回验一次通过**；资产直链 `https://github.com/szStarWave/agent-store-site/releases/download/v0.1.0-beta.12/flowy-agent-store-v0.1.0-beta.12-windows-x86_64.zip`。
+5. **站点上线**：站点仓 commit `e435a013`（PR #13，merge `95455333`）——`changelog` §2 新增 2.1 与版本表行、旧条目顺延重编号、§4 清空待发布批次；`upgrade` §2 表行 + 新增 §6.11 迁移步骤 + §8 口径更新；`release.json` 抬至同值。`check:docs-sync` 10 页 0 drift / `test:docs-sync` 16 / `check:release` 全绿。随后对 `95455333` 经 `CreatePagesDeployment` 触发（`dphseubl3zh9`），约 2 分钟 **Success / `usedInProd=true`**；部署后自检——中英 `typescript-sdk` 均 200 且预渲染正文含 `fp-18` / `56 / 83`、`changelog` 含 `0.1.0-beta.12` 与 §2.1、`/source/skills/_files.txt` 退役路径 **404**、`/source/skills/icons/FBS-BookWriter.png` **200**、构建日志无文件数/体积/存储超限（产物 648 files）、Release 资产（81,054,305 B）可下载且 `SHA256SUMS.txt` 与发布时一致（zip `cd529920…fafc`、包内 exe `c98542d6…3222`）。注：项目是 `Provider: Github` 型，`edgeone makers deploy` 的上传通道不适用（`docs/deploy-trigger.md` §1），且 GitHub 集成仍是断的（§8），每次发布都按该文档用 `CreatePagesDeployment` 手动触发。
+6. **实施期两处修正**（随 PR #358、#359 落地）：`read_index` 不再把索引行 `name` 兜底进 `name_en`（否则技能 slug / 连接器中文名会污染 `display_name.en`，违反 `50` D6）；`AgentDetail` 的 `display_description` / `quick_prompts` 上移到 `AgentSummary`（与 beta.11 的 `tags` / `category_id` 同型）。
+7. **门禁口径**：`release:check` 第 1 环（`ui/` typecheck）与 CI 的 `Repo gates → Auth login typecheck + smoke` 仍是既有红（后者报 `Export named 'tauriUpdatePackageSnapshot' not found`，main run `39738241636` 同样红），按 runbook §7.8 逐环执行——`check:fingerprint`（`fp-18`，本仓 7 文件 10 处 + 站点 2 处）、`check:release-sync`、`check:market`（17/17）、`cd web && bun run typecheck && bun run test`（584 通过 / 1 skipped）、`cargo test -p nomifun-app-server`（192 通过）、站点 `check:release` 全绿。
+8. **既有观察（本次留下，需账号持有人处置）**：`runtime-win32-x64` 的版本历史里有一个**无任何 dist-tag / optionalDependency 引用**的 `0.1.0-beta.13`——它来自「runtime 异步处理期间误判为失败」后的一次重发；本次使用的 granular token 无 unpublish 权限（`403 …may not perform this action`），需在 npm 网页删除或长期忽略。`sdk` 的 optionalDependencies 全部指向 `0.1.0-beta.12`，安装链路不受影响。
 
 ## 本轮（2026-10-14 发布 `0.1.0-beta.11`）
 

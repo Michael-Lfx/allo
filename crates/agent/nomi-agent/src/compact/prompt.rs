@@ -79,7 +79,9 @@ matter — what passed, what failed, and the error text that is still relevant.
 6. **Errors & Fixes**: Problems hit and how they were resolved (or not), so the same dead ends \
 are not repeated.
 7. **Pending & Next Step**: What is still in progress or unstarted, and the single most concrete \
-next action to take.";
+next action to take. If progress is blocked on something only the user can resolve (an \
+elevation or consent prompt, credentials, an approval, a decision), start this section with \
+`BLOCKED:` and state what the user must do; the next step is then to report that, not to retry.";
 
 const FORMAT_INSTRUCTIONS: &str = "\
 Format your response exactly as follows:
@@ -141,7 +143,11 @@ pub fn build_summary_content(
             "\n\nContinue the conversation from where it left off without asking the user \
              any further questions. Resume directly — do not acknowledge the summary, \
              do not recap what was happening, do not preface with \"I'll continue\" or similar. \
-             Pick up the last task as if the break never happened.",
+             Pick up the last task as if the break never happened.\n\n\
+             Exception: if the summary marks the work BLOCKED on something only the user can \
+             provide or approve, do not retry or look for a workaround. Tell the user what is \
+             blocked, what was already tried, and the exact action needed from them, then end \
+             the turn.",
         );
     }
 
@@ -314,6 +320,19 @@ mod tests {
         let content = build_summary_content("Summary:\ntest", true, None);
         assert!(content.contains("Continue the conversation"));
         assert!(content.contains("as if the break never happened"));
+    }
+
+    #[test]
+    fn auto_summary_lets_a_blocked_task_be_reported_instead_of_retried() {
+        let content = build_summary_content("Summary:\ntest", true, None);
+        assert!(content.contains("BLOCKED"));
+        assert!(content.contains("do not retry or look for a workaround"));
+    }
+
+    #[test]
+    fn briefing_prompt_asks_for_a_blocked_marker() {
+        let prompt = build_compact_prompt(None, None);
+        assert!(prompt.contains("`BLOCKED:`"));
     }
 
     #[test]

@@ -276,31 +276,7 @@ impl Idea2VideoPipeline {
                 );
                 return Err(err);
             }
-            emit_pct(
-                &progress,
-                "voice_references_start",
-                "正在同步音色库并绑定角色参考音频",
-                43.0,
-            );
-            match film
-                .ensure_character_voice_references(
-                    &characters,
-                    crate::planning::resolve_output_language(&[idea]),
-                    &progress,
-                )
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(err) => {
-                    emit_pct(
-                        &progress,
-                        "voice_references_start",
-                        "音色参考生成失败",
-                        43.0,
-                    );
-                    Err(err)
-                }
-            }
+            Ok(())
         };
         let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
         let script = async {
@@ -538,7 +514,7 @@ impl Idea2VideoPipeline {
 
         // Sequential scenes so a mid-failure surfaces immediately (no stuck JoinSet wait)
         // and progress keeps moving. Per-shot videos are also sequential + fail-fast.
-        // Cross-scene: scene N+1's first shot match-cuts from scene N's last video_last_frame.
+        // Each scene opens from its own blocking text, not the previous tail frame.
         let mut reel = SceneReel::new();
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
@@ -551,7 +527,7 @@ impl Idea2VideoPipeline {
                     &format!("场景 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
-                reel.push(scene_final, &scene_dir).await;
+                reel.push(scene_final);
                 continue;
             }
 
@@ -592,10 +568,10 @@ impl Idea2VideoPipeline {
                     &scene_req,
                     &style,
                     progress.clone(),
-                    reel.tail_frame(),
+                    None,
                 )
                 .await?;
-            reel.push(video, &scene_dir).await;
+            reel.push(video);
             emit_pct(
                 &progress,
                 "render_scene_done",

@@ -239,8 +239,26 @@ use tokio::sync::mpsc;
 /// field is derived from the transport and says nothing about what the
 /// connector needs — the declaration answers that through `credential.mode`
 /// (`34` §6.1), and a client must never pick an auth affordance from a shape.
-/// No method is added or removed, so the documented split stays `56 / 83`.
-pub const PROTOCOL_VERSION: &str = "fp-17";
+/// **`fp-18` also gives all four entity kinds the same display fields** (doc
+/// `50`): `AppServerAgentSummary`, `AppServerTeamSummary`,
+/// `AppServerSkillSummary` and `AppServerConnectorSummary` each carry
+/// `display_name` / `display_description` / `tags` / `quick_prompts` with
+/// identical names and types. `display_description` and `quick_prompts` move up
+/// from `AppServerAgentDetail` (which keeps them through `flatten`, so the JSON
+/// is unchanged), and the connector summary gains all four for the first time —
+/// `name` stays the runtime identity the tool namespace is built from. The
+/// values are merged at import from the author's `plugin.json` and the market
+/// index row, then read back from the component payload; no method is added or
+/// removed, so the documented split stays `56 / 83`.
+/// **`fp-19` gives the exported expert pack its per-entity icons** (doc `51`):
+/// `AppServerExpertSkillRef` gains `icon` (a skill-directory-relative path, read
+/// back with `skill/file`) and `AppServerExpertConnectorRef` gains `icon` (a
+/// snapshot-relative path that must appear in the pack's own `assets`, like
+/// `pack.avatar`). Both are optional and omitted when absent, so an existing
+/// consumer's JSON is unchanged; no method is added or removed, so the documented
+/// split stays `56 / 83`. The artifact contract moves with it
+/// (`pack_format 3 → 4`).
+pub const PROTOCOL_VERSION: &str = "fp-19";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9474,6 +9492,8 @@ mod tests {
             avatar_url: None,
             tags: vec![],
             category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
@@ -9515,6 +9535,10 @@ mod tests {
             },
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
@@ -9598,6 +9622,8 @@ mod tests {
                 avatar_url: None,
                 tags: vec![],
                 category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -9669,6 +9695,8 @@ mod tests {
                 avatar_url: None,
                 tags: vec![],
                 category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -12324,6 +12352,9 @@ model = "mimo-v2.5-free"
             required_connectors: vec![],
             avatar_url: None,
             tags: vec![],
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12339,6 +12370,10 @@ model = "mimo-v2.5-free"
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         }
     }
 
@@ -12774,6 +12809,8 @@ model = "mimo-v2.5-free"
             avatar_url: None,
             tags: vec![],
             category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12789,6 +12826,9 @@ model = "mimo-v2.5-free"
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
             tags: vec![],
             category_id: None,
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12944,6 +12984,7 @@ model = "mimo-v2.5-free"
             skills: vec![nomifun_api_types::AppServerExpertSkillRef {
                 name: "release-notes".into(),
                 id: "release-notes".into(),
+                icon: None,
             }],
             connectors: vec![],
             assets: vec![nomifun_api_types::AppServerExpertAssetRef {
@@ -13142,8 +13183,6 @@ model = "mimo-v2.5-free"
             background: None,
             isolation: None,
             permission_mode_ignored: false,
-            display_description: None,
-            quick_prompts: vec![],
             default_init_prompt: None,
             expert_type: None,
         };
@@ -13448,14 +13487,15 @@ model = "mimo-v2.5-free"
     #[test]
     fn sample_expert_pack_serializes_the_current_pack_format_with_assets() {
         // Doc `38` flipped `pack_format` to 2 and put the asset list on the wire;
-        // doc `44` moved it to 3 for the display metadata. The shape guard here
-        // keeps a future bump a conscious act.
+        // doc `44` moved it to 3 for the display metadata; doc `51` moved it to 4
+        // for the per-entity icons. The shape guard here keeps a future bump a
+        // conscious act.
         let json = serde_json::to_value(sample_expert_pack()).unwrap();
         assert_eq!(
             json["pack_format"],
             nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT
         );
-        assert_eq!(json["pack_format"], 3);
+        assert_eq!(json["pack_format"], 4);
         assert_eq!(json["assets"][0]["path"], "bin/init_task.py");
         assert_eq!(json["assets"][0]["kind"], "script");
         // `avatar` is absent when unset (`skip_serializing_if`), so `null` can
@@ -13670,6 +13710,9 @@ model = "mimo-v2.5-free"
                         // `nomifun-app`（`app_server_entry_assets`），不在这里。
                         avatar_url: None,
                         tags: vec![],
+                        display_name: None,
+                        display_description: None,
+                        quick_prompts: vec![],
                     }
                 })
                 .collect())

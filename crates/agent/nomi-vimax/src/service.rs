@@ -1515,7 +1515,6 @@ impl VimaxService {
         self.ensure_idle(id).await?;
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
         crate::shot_packet::promote_take(&scene_dir, shot_idx, take).await?;
-        crate::shot_packet::mark_continuity_stale_after(&scene_dir, shot_idx).await?;
         if let Ok(Some(mut packet)) = crate::shot_packet::load_packet(&scene_dir, shot_idx).await {
             packet.current_take = Some(take);
             packet.run_state = crate::shot_packet::ShotRunState::Ready;

@@ -1106,9 +1106,10 @@ impl AgentBootstrap {
                 "computer-use ENABLED: registering the Computer tool (observe / click_element / \
                  launch / type / scroll). Desktop control is available to this session."
             );
-            registry.register(Box::new(nomi_computer::ComputerTool::new(
-                &self.config.tools.computer,
-            )));
+            registry.register(Box::new(
+                nomi_computer::ComputerTool::new(&self.config.tools.computer)
+                    .with_image_input(self.config.compat.supports_image()),
+            ));
         }
         #[cfg(feature = "computer-use")]
         if !self.config.tools.computer.enabled {

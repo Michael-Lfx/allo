@@ -9,7 +9,8 @@ use axum::routing::{get, patch, post, put};
 use axum::Router;
 use nomifun_api_types::{
     AddExecutionStepsRequest, AdoptExecutionStepOutputRequest, AdjustAgentExecutionRequest,
-    AgentExecution, AgentExecutionDetail, AgentExecutionEvent, AgentExecutionEventsQuery,
+    ActiveSubagent, AgentExecution, AgentExecutionDetail, AgentExecutionEvent,
+    AgentExecutionEventsQuery,
     AnswerExecutionDecisionRequest, ApiResponse, ConfigureExecutionStepRequest,
     CreateAgentExecutionRequest, ExecutionStep, ReassignExecutionStepRequest,
     RenameAgentExecutionRequest, ReplanAgentExecutionRequest, RetryExecutionStepRequest,
@@ -34,6 +35,15 @@ struct ListQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SubagentsQuery {
+    execution_id: Option<String>,
+    include_control_steps: Option<bool>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorkspaceQuery {
     #[serde(default)]
     path: String,
@@ -48,6 +58,10 @@ struct DeleteQuery {
 
 pub fn agent_execution_routes(engine: Arc<AgentExecutionEngine>) -> Router {
     Router::new()
+        .route(
+            "/api/agent-executions/subagents",
+            get(list_active_subagents),
+        )
         .route(
             "/api/agent-executions",
             get(list_executions).post(create_execution),
@@ -110,6 +124,24 @@ async fn list_executions(
 ) -> Result<Json<ApiResponse<Vec<AgentExecution>>>, AppError> {
     Ok(Json(ApiResponse::ok(
         engine.list(&user.id, query.limit, query.offset).await?,
+    )))
+}
+
+async fn list_active_subagents(
+    State(engine): State<Arc<AgentExecutionEngine>>,
+    Extension(user): Extension<CurrentUser>,
+    Query(query): Query<SubagentsQuery>,
+) -> Result<Json<ApiResponse<Vec<ActiveSubagent>>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        engine
+            .list_active_subagents(
+                &user.id,
+                query.execution_id.as_deref(),
+                query.include_control_steps.unwrap_or(false),
+                query.limit,
+                query.offset,
+            )
+            .await?,
     )))
 }
 

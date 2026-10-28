@@ -24,6 +24,7 @@ use crate::managed_model::is_managed_provider_platform;
 fn source_from_str(s: &str) -> ProfileSource {
     match s {
         "user" => ProfileSource::User,
+        "catalog" => ProfileSource::Catalog,
         _ => ProfileSource::Inferred,
     }
 }
@@ -98,6 +99,19 @@ impl ProviderModelService {
         Self::ensure_provider_writable(&provider.platform)
     }
 
+    async fn reject_herdsman(&self, provider_id: &str) -> Result<(), AppError> {
+        if nomifun_common::is_herdsman_provider_id(provider_id) {
+            return crate::herdsman::forbid_herdsman_mutation(
+                nomifun_common::HERDSMAN_PLATFORM,
+                provider_id,
+            );
+        }
+        let Some(provider) = self.provider_repo.find_by_id(provider_id).await? else {
+            return Ok(());
+        };
+        crate::herdsman::forbid_herdsman_mutation(&provider.platform, provider_id)
+    }
+
     /// All rows, or one provider's rows when `provider_id` is given.
     pub async fn list(
         &self,
@@ -165,6 +179,7 @@ impl ProviderModelService {
             .find_by_id(&provider_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Provider '{provider_id}' not found")))?;
+        crate::herdsman::forbid_herdsman_mutation(&provider.platform, &provider.provider_id)?;
         if !self.include_managed_free_models {
             Self::ensure_provider_writable(&provider.platform)?;
         }
@@ -246,6 +261,7 @@ impl ProviderModelService {
         let provider_id = ProviderId::parse(req.provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?
             .into_string();
+        self.reject_herdsman(&provider_id).await?;
         if !self.include_managed_free_models {
             self.ensure_provider_writable_by_id(&provider_id).await?;
         }
@@ -308,6 +324,7 @@ impl ProviderModelService {
     pub async fn delete(&self, provider_id: &str, model: &str) -> Result<bool, AppError> {
         let provider_id = ProviderId::parse(provider_id)
             .map_err(|error| AppError::BadRequest(format!("invalid provider_id: {error}")))?;
+        self.reject_herdsman(provider_id.as_str()).await?;
         if !self.include_managed_free_models {
             self.ensure_provider_writable_by_id(provider_id.as_str()).await?;
         }

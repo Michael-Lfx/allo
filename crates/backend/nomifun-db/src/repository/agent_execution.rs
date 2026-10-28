@@ -8,7 +8,7 @@ use nomifun_common::{
 
 use crate::error::DbError;
 use crate::models::{
-    AgentExecutionAttemptDetailRow, AgentExecutionDetailRows,
+    ActiveSubagentRow, AgentExecutionAttemptDetailRow, AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionRow,
     AgentExecutionStepDetailRow, AgentExecutionStepRow,
     ConversationDeliveryReceiptRow, ConversationExecutionLinkRow,
@@ -382,6 +382,18 @@ pub trait IAgentExecutionRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<AgentExecutionRow>, DbError>;
+    /// Read-only projection of active delegated Agent invocations. The result
+    /// is derived from Execution/Step/Attempt/Link rows and is never written
+    /// back. `execution_id` scopes the query to one aggregate; control steps
+    /// (verify/judge/loop) are excluded unless `include_control_steps` is set.
+    async fn list_active_subagents(
+        &self,
+        user_id: &str,
+        execution_id: Option<&str>,
+        include_control_steps: bool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ActiveSubagentRow>, DbError>;
     async fn list_recoverable_executions(
         &self,
         statuses: &[AgentExecutionStatus],

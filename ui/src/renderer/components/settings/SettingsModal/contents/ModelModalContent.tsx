@@ -28,6 +28,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import { HerdsmanProviderNotice } from './HerdsmanProviderNotice';
 import {
   featureRoute,
   groupUsagesByFeature,
@@ -46,6 +47,7 @@ import { useContainerWidth } from '@/renderer/hooks/ui/useContainerWidth';
 import { consumePendingDeepLink } from '@/renderer/hooks/system/useDeepLink';
 import { ContextLimitSelect, formatContextLimit } from '@/renderer/pages/settings/components/ContextLimitSelect';
 import { OutputLimitInput } from '@/renderer/pages/settings/components/OutputLimitInput';
+import { isHerdsmanProvider } from '@/common/types/provider/herdsman';
 import { isManagedModelProvider } from '@/common/types/provider/managedModelService';
 import { reorderById, reorderStrings } from './modelProviderOrdering';
 import {
@@ -566,7 +568,10 @@ const ModelModalContent: React.FC = () => {
   // Managed providers have dedicated pages. Keeping them out of generic CRUD
   // prevents exposing or accidentally overwriting their internal endpoint and
   // per-boot credential.
-  const editableProviders = useMemo(() => (data ?? []).filter((provider) => !isManagedModelProvider(provider)), [data]);
+  const editableProviders = useMemo(
+    () => (data ?? []).filter((provider) => !isManagedModelProvider(provider) && !isHerdsmanProvider(provider)),
+    [data]
+  );
   const { profileFor, mutate: mutateProfiles } = useModelProfiles();
   const [message, messageContext] = useArcoMessage();
   const sensors = useSensors(
@@ -747,10 +752,12 @@ const ModelModalContent: React.FC = () => {
     // duplicate sort_order with a managed row (whose CRUD is protected).
     let editableIndex = 0;
     const nextArray = data.map((item, fullIndex) => {
-      if (isManagedModelProvider(item)) return item;
+      if (isManagedModelProvider(item) || isHerdsmanProvider(item)) return item;
       return { ...reordered[editableIndex++], sort_order: fullIndex };
     });
-    const reorderedWithOrder = nextArray.filter((item) => !isManagedModelProvider(item));
+    const reorderedWithOrder = nextArray.filter(
+      (item) => !isManagedModelProvider(item) && !isHerdsmanProvider(item)
+    );
     void mutate(nextArray, false);
 
     persistProviderOrder(reorderedWithOrder, editableProviders)
@@ -987,6 +994,7 @@ const ModelModalContent: React.FC = () => {
         <div className='mt-8px text-12px leading-18px text-t-tertiary'>
           {t('settings.modelHub.provider.scopeNote')}
         </div>
+        <HerdsmanProviderNotice />
       </div>
 
       {/* Content Area */}

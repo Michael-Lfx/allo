@@ -73,6 +73,21 @@ pub struct AppServerSkillSummary {
     /// no dictionary), hence no `category_id` here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<AppServerLocalizedText>,
+    /// Display name, both languages already merged at import (`50` §3.1).
+    /// `None` = neither the author nor the market declared one (253 of the
+    /// market's 268 skills), so the client falls back to `name` — never to an
+    /// empty string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    /// Localized long description (`50` §3.1). `SKILL.md` declares one
+    /// language only, so for a marketplace skill this comes from the index
+    /// row's `description_zh`/`description_en`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
+    /// Prompt examples from the index row's `examples_zh`/`examples_en`
+    /// (`50` §3.1): the skill market's only prompt source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
 }
 
 /// Public Skill detail: summary fields plus execution metadata. The raw
@@ -334,6 +349,26 @@ pub struct AppServerConnectorSummary {
     /// declaration to read — stays valid on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<AppServerConnectorCredential>,
+    /// Display name from the market index row (`name_zh`/`name_en`, `50` §3.1).
+    ///
+    /// Deliberately separate from `name`: that one is the runtime identity the
+    /// tool namespace is built from (`connector__<name>__<tool>`), so renaming
+    /// it would break `connector/call`. 111 of 283 market rows declare a zh
+    /// name; absent means "show `name`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    /// Localized long description (`50` §3.1). Comes from the index row's
+    /// `description_zh`/`description_en` — never from the row's top-level
+    /// `description`, whose language is unreliable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
+    /// Localized tags from the index row (`tags_zh`/`tags_en`, `50` §3.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<AppServerLocalizedText>,
+    /// Prompt examples from the index row's `examples_zh`/`examples_en`
+    /// (`50` §3.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
 }
 
 /// Public Connector detail: summary fields plus tools and auth state.
@@ -624,6 +659,12 @@ pub struct AppServerAgentSummary {
     /// `None` when the source did not carry the field (02 §5.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<AppServerLocalizedText>,
+    /// Localized market description (`displayDescription`). Never the raw
+    /// prompt body. On the summary since `50` §3.1 (D2) so all four entity
+    /// kinds carry the same four display fields; the detail inherits it
+    /// through this summary, so the serialized JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profession: Option<AppServerLocalizedText>,
     /// Public avatar URL (`/api/app-server/imports/{snapshot}/assets/{path}`).
@@ -640,6 +681,13 @@ pub struct AppServerAgentSummary {
     /// the host-joined form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category_id: Option<String>,
+    /// `quickPrompts`: the "专家帮你做" entries shown on the expert card.
+    ///
+    /// On the summary since `50` §3.1 (D2): the card is the surface that shows
+    /// them, and `#[serde.flatten]` cannot carry the same key twice — detail
+    /// inherits this through its summary, so the serialized JSON is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
 }
 
 /// A localized display value (`{en, zh}` subset; both optional).
@@ -672,13 +720,6 @@ pub struct AppServerAgentDetail {
     /// Plugin-level Agents: source runtime ignores `mcpServers`/`permissionMode`
     /// (02 §5.1); importers record the fact instead of mapping it to grants.
     pub permission_mode_ignored: bool,
-    /// Localized market description (`displayDescription`). Never the raw
-    /// prompt body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_description: Option<AppServerLocalizedText>,
-    /// `quickPrompts`: the "专家帮你做" entries shown on the expert card.
-    #[serde(default)]
-    pub quick_prompts: Vec<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_init_prompt: Option<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -703,6 +744,19 @@ pub struct AppServerTeamSummary {
     /// facts `attach_plugin_display` records into the component payload.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<AppServerLocalizedText>,
+    /// Display name, both languages already merged at import (`50` §3.1). The
+    /// teams market declares one for 1 of 30 packages; the rest fall back to
+    /// `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<AppServerLocalizedText>,
+    /// Localized long description (`50` §3.1). Half the teams market writes it
+    /// as `description_zh` / `description_en` in `plugin.json`, which the
+    /// importer merges per locale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_description: Option<AppServerLocalizedText>,
+    /// Prompt examples (`plugin.json` `quickPrompts`, `50` §3.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quick_prompts: Vec<AppServerLocalizedText>,
     /// Raw category reference from the package's `plugin.json`; resolve
     /// through `store/categories` (the same rule as `AgentSummary`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -756,7 +810,13 @@ pub struct AppServerTeamDetail {
 /// consumer reading a pack of a lower format keeps working (unknown fields are
 /// skipped), it just sees fewer of these optional fields; stating that
 /// distinction is what this version exists for.
-pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 3;
+/// **`4` adds the per-entity icons** (`skills[].icon` + `connectors[].icon`,
+/// doc `51`): the skills and connectors a pack references now say where their
+/// picture lives, in each one's own address space (skill directory vs snapshot
+/// asset), so a consumer can render a full card list without guessing file names
+/// or reading the market. Optional on both sides, hence additive for older
+/// consumers.
+pub const APP_SERVER_EXPERT_PACK_FORMAT: u32 = 4;
 
 /// Which catalog kind a pack describes.
 ///
@@ -900,6 +960,16 @@ pub struct AppServerExpertModelRef {
 pub struct AppServerExpertSkillRef {
     pub name: String,
     pub id: String,
+    /// The skill's icon, as a **skill-directory-relative** path
+    /// (`assets/icon.png`) — the coordinate system `skill/files` publishes and
+    /// `skill/file` reads (doc `51` §3.3). Absent when the skill ships none.
+    ///
+    /// Deliberately a bare path rather than an [`AppServerExpertAssetRef`]: a
+    /// skill's bytes live on the *skill* file face, which publishes no per-file
+    /// digest of its own, so a `{size, digest}` pair here would be a second,
+    /// unverifiable copy of metadata this pack cannot check (doc `51` D3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// One plugin-level asset the pack carries, **by reference** (doc `38`).
@@ -952,6 +1022,13 @@ pub struct AppServerExpertConnectorRef {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    /// The connector's icon as a **snapshot-relative** path
+    /// (`avatars/connectors/github.svg`), and — like [`AppServerExpertPack::avatar`]
+    /// — **only when that exact file appears in the pack's `assets` list**, so the
+    /// reference can never name bytes a consumer cannot fetch (doc `51` INV-2).
+    /// Absent when the host has no icon for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// The expert's declared tool surface.

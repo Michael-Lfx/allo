@@ -498,6 +498,8 @@ const enUS: Resources = {
     fieldSkills: "Skills",
     agentPermissionIgnored: "The source runtime ignores plugin-level Agent permissionMode/mcpServers; the importer does not map them to grants.",
     agentQuickPrompts: "What this expert can do",
+    storeQuickPrompts: "Prompt examples",
+    storePromptHint: "Prompt: {{prompt}}",
     searchSkills: "Search skills by name or source…",
     searchConnectors: "Search connectors…",
     searchAgents: "Search agents…",

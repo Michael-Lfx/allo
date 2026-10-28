@@ -5,6 +5,37 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
+- Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
+- Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.
+- Note for 1.6.5–1.6.8: Default and Auto-Accept Edits sessions could hit this loop when delegating write tasks. Workaround: use YOLO, add the tool to `[tools].allow_list`, or avoid delegated writes until this fix ships.
+
+## v1.6.8 - 2026-10-23
+
+- Local Herdsman connections use `127.0.0.1` when the daemon listens on `0.0.0.0`, so the client can actually dial it.
+
+## v1.6.7 - 2026-10-23
+
+- Link a phone from profile: the desktop hosts a TLS pairing listener, and a QR code opens a LAN page the phone can reach. Wakes carry no message body.
+
+## v1.6.6 - 2026-10-22
+
+- Pinning a local Herdsman model keeps inference on this machine and reports the local error instead of falling through to the cloud.
+- Short-drama shots constrain characters with written blocking so one reference face is not pasted onto two bodies.
+- Opening a collaboration task works again, and running sub-agents expose a read-only projection. Agent Store listings return localized display fields (`fp-18`), and catalog search matches multiple terms with highlight ranges plus usage hints.
+
+## v1.6.5 - 2026-10-21
+
+- The app discovers a local Herdsman instance and lists its running models.
+- Parallel delegated tasks can pick a model from the pool. Subagents refuse tools unless they are approved.
+- Text-only models skip screenshots, and compaction no longer leaves stale state or forced retries.
+
+## v1.6.4 - 2026-10-20
+
+- Storyboard canvas no longer shows a cut badge. Video prompts are truncated only after a vendor hard-rejects them, not by a local character cap.
+- News briefings can be deleted, and the instant-film player maximize control works again.
+- Token connectors in the Agent Store are renamed to avoid colliding with official entries, keep structured MCP transport on import, and carry entry avatars.
+
 ## v1.6.3 - 2026-10-16
 
 - Session-directory skills can load automatically, and OpenAI `tool_calls` pairing is fixed.

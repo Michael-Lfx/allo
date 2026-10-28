@@ -463,6 +463,246 @@ pub fn lint_storyboard_performance(rows: &[ShotBriefDescription]) -> Vec<String>
     issues
 }
 
+fn has_screen_side(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    text.contains("画面左")
+        || text.contains("画面右")
+        || text.contains("画面中")
+        || text.contains("画面正中")
+        || lower.contains("screen left")
+        || lower.contains("screen right")
+        || lower.contains("screen center")
+}
+
+fn has_facing(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    text.contains("面向")
+        || text.contains("背对")
+        || lower.contains("facing ")
+        || lower.contains("back to camera")
+        || lower.contains("back to the camera")
+}
+
+/// Angle-bracket names in picture text. A bracket closed by 道具 is a prop, not a body.
+pub(crate) fn bracket_names(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let Some(rel) = text[start..].find('>') else {
+            break;
+        };
+        let name = text[start..start + rel].trim();
+        let after = start + rel + 1;
+        let tail: String = text[after..].chars().take(6).collect();
+        if name.chars().count() >= 2
+            && !name.chars().any(|c| matches!(c, '\n' | '<' | '>'))
+            && !tail.contains("道具")
+            && !out.iter().any(|n| n == name)
+        {
+            out.push(name.to_string());
+        }
+        i = after;
+    }
+    out
+}
+
+/// This name owns a screen side here: `<名> 在画面左/右/中`, or `画面左侧的<名>`.
+/// A name that only appears as someone else's anchor (`高二林身后`) does not.
+pub(crate) fn name_has_own_screen_side(text: &str, name: &str) -> bool {
+    let name = name.trim();
+    if name.chars().count() < 2 || !text.contains(name) {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(name) {
+        let at = from + rel;
+        let end = at + name.len();
+        if places_name_forward(&text[end..]) || screen_side_names_person(&text[..at]) {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+fn places_name_forward(after: &str) -> bool {
+    let s = after.trim_start_matches(['>', '》', ' ', '\t', '\n', '　']);
+    let s = s.trim_start();
+    let s = s.strip_prefix("位于").unwrap_or(s).trim_start();
+    let s = s.strip_prefix("在").unwrap_or(s).trim_start();
+    let lower = s.to_ascii_lowercase();
+    const EN: &[&str] = &[
+        "on the screen left",
+        "on the screen right",
+        "on the screen center",
+        "on screen left",
+        "on screen right",
+        "on screen center",
+        "at the screen left",
+        "at the screen right",
+        "at the screen center",
+        "at screen left",
+        "at screen right",
+        "at screen center",
+        "screen left",
+        "screen right",
+        "screen center",
+    ];
+    if EN.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    if s.starts_with("画面中景") {
+        return false;
+    }
+    s.starts_with("画面左")
+        || s.starts_with("画面右")
+        || s.starts_with("画面正中")
+        || s.starts_with("画面中")
+}
+
+/// The clause immediately before the name is itself a screen side (`画面左侧的`).
+/// `在画面右侧、高二林身后` does not place 高二林: the顿号 starts a new clause.
+fn screen_side_names_person(before: &str) -> bool {
+    let tail = before
+        .rsplit(['，', ',', '。', '！', '？', '；', ';', '、', '\n', '!', '?'])
+        .next()
+        .unwrap_or(before);
+    is_exact_screen_side(strip_side_connectors(tail))
+}
+
+fn strip_side_connectors(clause: &str) -> &str {
+    let mut t = clause.trim();
+    loop {
+        let trimmed = t.trim_end_matches([' ', '\t', '<', '的', '是', '有', '　']);
+        let next = ["坐着", "站着", "趴着", "跪着", "走着", "坐", "站"]
+            .iter()
+            .find_map(|suf| trimmed.strip_suffix(suf))
+            .unwrap_or(trimmed)
+            .trim_end();
+        if next.len() == t.len() {
+            return next;
+        }
+        t = next;
+    }
+}
+
+fn is_exact_screen_side(phrase: &str) -> bool {
+    let p = phrase.trim();
+    let p = p.strip_prefix("位于").unwrap_or(p).trim_start();
+    let p = p.strip_prefix("在").unwrap_or(p).trim_start();
+    if matches!(
+        p,
+        "画面左侧"
+            | "画面右侧"
+            | "画面左边"
+            | "画面右边"
+            | "画面正中"
+            | "画面中央"
+            | "画面左"
+            | "画面右"
+            | "画面中"
+    ) {
+        return true;
+    }
+    let lower = p.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "screen left"
+            | "screen right"
+            | "screen center"
+            | "the screen left"
+            | "the screen right"
+            | "the screen center"
+    )
+}
+
+fn people_missing_own_side(visual: &str, audio: &str) -> Vec<String> {
+    let mut names = bracket_names(visual);
+    for name in crate::dialogue::spoken_speaker_names(audio) {
+        if !names.iter().any(|n| n == &name) {
+            names.push(name);
+        }
+    }
+    names
+        .into_iter()
+        .filter(|name| !name_has_own_screen_side(visual, name))
+        .collect()
+}
+
+/// Rows whose picture text never places anyone. The video model does not see
+/// the previous clip, so a missing side or facing cannot be recovered later.
+pub fn lint_storyboard_blocking(rows: &[ShotBriefDescription]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for row in rows {
+        let mut texts: Vec<&str> = vec![row.visual_desc.as_str()];
+        if row.beats.len() >= 2 {
+            texts.extend(row.beats.iter().map(|b| b.visual_desc.as_str()));
+        }
+        for text in texts {
+            let text = text.trim();
+            if text.chars().count() < 8 {
+                continue;
+            }
+            let side = has_screen_side(text);
+            let facing = has_facing(text);
+            if !side || !facing {
+                let mut missing = Vec::new();
+                if !side {
+                    missing.push("画面左/右/中");
+                }
+                if !facing {
+                    missing.push("朝向");
+                }
+                issues.push(format!(
+                    "shot {}: 站位不完整，缺{}。在同一行写清景别、每个人的画面左右、朝向、姿势、谁更靠近镜头、与固定陈设的距离，不要新增镜头: {}",
+                    row.idx,
+                    missing.join("和"),
+                    clip_for_report(text)
+                ));
+                continue;
+            }
+            // The joined parent visual places a person who only stands in one
+            // beat. Per-person checks run on each beat, and on a single-beat row.
+            if row.beats.len() >= 2 && text == row.visual_desc.trim() {
+                continue;
+            }
+            let audio = audio_for_blocking_text(row, text);
+            for name in people_missing_own_side(text, audio) {
+                issues.push(format!(
+                    "shot {}: {name} 在这一拍出镜或开口，但没有自己的画面左/右/中。在同一拍给这个人单独写站位、朝向、姿势和与固定陈设的距离；一个身份只能有一个身体，没写名字的座位不能留给参考脸。不要新增镜头: {}",
+                    row.idx,
+                    clip_for_report(text)
+                ));
+            }
+        }
+    }
+    issues
+}
+
+/// Beat text is checked against that beat's lines. A single-beat row uses the
+/// row audio. The joined parent visual is not a beat, so it does not borrow audio.
+fn audio_for_blocking_text<'a>(row: &'a ShotBriefDescription, text: &str) -> &'a str {
+    if row.beats.len() >= 2 {
+        return row
+            .beats
+            .iter()
+            .find(|beat| beat.visual_desc.as_str() == text)
+            .and_then(|beat| beat.audio_desc.as_deref())
+            .unwrap_or("");
+    }
+    if text == row.visual_desc.as_str() {
+        row.audio_desc.as_deref().unwrap_or("")
+    } else {
+        ""
+    }
+}
+
 /// Structure guard for the storyboard performance repair round: the repaired
 /// board may only rewrite TEXT inside flagged rows. Row count, row identity
 /// (`idx` / `cam_idx` / `is_last`) and the beat skeleton (count + per-beat
@@ -1155,6 +1395,54 @@ mod tests {
         ];
         let issues = lint_storyboard_performance(&rows);
         assert_eq!(issues.len(), 2);
+        let blocking = lint_storyboard_blocking(&rows);
+        assert_eq!(blocking.len(), 2);
+        assert!(blocking.iter().all(|i| i.contains("站位不完整")));
+        let placed = ShotBriefDescription {
+            idx: 0,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "中景平视固定。<林晚>在画面左侧、铁门内侧一步，面向右，站着，比门口更靠近镜头。她把票根塞进口袋。"
+                .into(),
+            audio_desc: None,
+            location_id: String::new(),
+            beats: vec![],
+        };
+        assert!(lint_storyboard_blocking(&[placed]).is_empty());
+        let speaker_unplaced = ShotBriefDescription {
+            idx: 4,
+            is_last: true,
+            cam_idx: 0,
+            visual_desc: "中景平视固定。<封彪>在画面右侧、主位椅子上，面向左，坐着。<韩跃平>在画面右侧、封彪身后，面向左，站着。旁边坐着一个同伴。".into(),
+            audio_desc: Some("封彪：「有他吗？」大海：「有。」".into()),
+            location_id: String::new(),
+            beats: vec![],
+        };
+        let missing = lint_storyboard_blocking(&[speaker_unplaced]);
+        assert!(
+            missing.iter().any(|i| i.contains("shot 4: 大海 ")),
+            "{missing:?}"
+        );
+        assert!(
+            !missing
+                .iter()
+                .any(|i| i.contains("shot 4: 封彪 ") || i.contains("shot 4: 韩跃平 ")),
+            "{missing:?}"
+        );
+        assert!(name_has_own_screen_side(
+            "<高二林> 在画面中央、桌面上，面向下，趴着。<刘华强> 在画面右侧、高二林身后，面向左，俯身。",
+            "高二林"
+        ));
+        assert!(name_has_own_screen_side(
+            "<高二林> 在画面中央、桌面上，面向下，趴着。<刘华强> 在画面右侧、高二林身后，面向左，俯身。",
+            "刘华强"
+        ));
+        assert!(!name_has_own_screen_side(
+            "<刘华强> 在画面右侧、高二林身后，面向左，俯身。转头问大海。",
+            "高二林"
+        ));
+        assert!(!name_has_own_screen_side("转头问大海，旁边坐着一个同伴。", "大海"));
+        assert!(name_has_own_screen_side("画面左侧的<大海>面向右，坐着。", "大海"));
         assert!(issues.iter().all(|i| i.contains("shot 1")));
         assert!(issues.iter().any(|i| i.contains("愤怒")));
         assert!(issues.iter().any(|i| i.contains("环顾四周")));

@@ -145,11 +145,17 @@ impl OpenAIProvider {
                                 images,
                             } = block
                             {
-                                let content = if *is_error {
+                                let mut content = if *is_error {
                                     format!("[tool error] {content}")
                                 } else {
                                     content.clone()
                                 };
+                                if !images.is_empty() && !compat.supports_image() {
+                                    content.push_str(&format!(
+                                        "\n[{} tool image(s) omitted: this model does not support image input]",
+                                        images.len()
+                                    ));
+                                }
                                 result.push(json!({
                                     "role": "tool",
                                     "tool_call_id": tool_use_id,
@@ -791,6 +797,12 @@ fn wire_facts(messages: &[Value], compat: &ProviderCompat) -> WireFacts {
             Some("tool") => facts.tool_messages += 1,
             _ => {}
         }
+        if let Some(parts) = message["content"].as_array() {
+            facts.images += parts
+                .iter()
+                .filter(|part| part["type"].as_str() == Some("image_url"))
+                .count();
+        }
     }
     facts
 }
@@ -1249,7 +1261,18 @@ async fn process_sse_stream_with_capture(
     let mut stream = response.bytes_stream();
     let mut emitted_content = false;
 
-    while let Some(chunk) = stream.next().await {
+    // A local engine can withhold the next byte until the whole generation
+    // finishes. Stop drops the consumer; this wait must end then, so the
+    // response (and its socket) is dropped instead of running to a normal Done.
+    loop {
+        let next_chunk = tokio::select! {
+            biased;
+            _ = tx.closed() => return StreamOutcome::Ok,
+            next_chunk = stream.next() => next_chunk,
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
@@ -3027,6 +3050,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_the_receiver_closes_a_stalled_local_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (disconnected_tx, disconnected_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut probe = [0u8; 1];
+            let _ = socket.read(&mut probe).await;
+            let _ = disconnected_tx.send(());
+        });
+
+        let provider = OpenAIProvider::new("key", &format!("http://{addr}"), openai_compat());
+        let rx = provider.stream(&simple_request()).await.unwrap();
+        drop(rx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), disconnected_rx)
+            .await
+            .expect("dropping the stream consumer must close the stalled local response")
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn utf8_scalar_split_across_http_chunks_round_trips_exactly() {
         use super::{StreamOutcome, process_sse_stream};
         use futures::stream;
@@ -3492,6 +3558,31 @@ mod tests {
         let s = serde_json::to_string(&out).unwrap();
         assert!(!s.contains("image_url"), "不应出现 image_url: {s}");
         assert!(s.contains("图片已省略"), "应出现占位: {s}");
+    }
+
+    #[test]
+    fn tool_images_are_noted_when_dropped_for_a_text_only_model() {
+        use nomi_types::message::{ContentBlock, Message, Role};
+        let compat = ProviderCompat {
+            supports_image: Some(false),
+            ..Default::default()
+        };
+        let messages = vec![Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "observed".into(),
+                is_error: false,
+                images: vec![nomi_types::tool::ToolImage {
+                    media_type: "image/png".into(),
+                    data: "AAAA".into(),
+                }],
+            }],
+        )];
+        let out = OpenAIProvider::build_messages(&messages, "", &compat, false);
+        let s = serde_json::to_string(&out).unwrap();
+        assert!(!s.contains("image_url"), "{s}");
+        assert!(s.contains("1 tool image(s) omitted"), "{s}");
     }
 
     #[test]
@@ -4007,6 +4098,41 @@ mod tests {
         provider
             .describe_request(&request)
             .expect("the OpenAI provider exposes its wire format")
+    }
+
+    #[test]
+    fn describe_request_counts_images_that_reach_the_wire() {
+        let history = || {
+            vec![
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::Image {
+                        media_type: "image/png".into(),
+                        data: "AAAA".into(),
+                    }],
+                ),
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "shot".into(),
+                        is_error: false,
+                        images: vec![nomi_types::tool::ToolImage {
+                            media_type: "image/png".into(),
+                            data: "BBBB".into(),
+                        }],
+                    }],
+                ),
+            ]
+        };
+
+        assert_eq!(described(no_compat(), history()).images, 2);
+
+        let text_only = ProviderCompat {
+            supports_image: Some(false),
+            ..ProviderCompat::default()
+        };
+        assert_eq!(described(text_only, history()).images, 0);
     }
 
     #[test]

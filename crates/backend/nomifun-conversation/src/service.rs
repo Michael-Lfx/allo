@@ -11843,25 +11843,32 @@ impl ConversationService {
                 let (send_error_tx, send_error_rx) = oneshot::channel();
                 // 1. Send the message to the agent and concurrently run the relay to stream events.
                 tokio::spawn(async move {
-                    if send_cancellation.is_cancelled() {
-                        let _ = send_error_tx.send(Ok(()));
-                        return;
+                    // User stop cancels this token while send_message is inside
+                    // the provider read. The read must be dropped here: a local
+                    // model often emits nothing until the whole generation
+                    // finishes, so waiting for that read records a normal
+                    // completion after the user already pressed stop.
+                    tokio::select! {
+                        biased;
+                        _ = send_cancellation.cancelled() => {
+                            let _ = send_error_tx.send(Ok(()));
+                        }
+                        send_result = nomifun_ai_agent::with_flowy_chat_session_id(
+                            conv_id_send.clone(),
+                            nomifun_ai_agent::with_flowy_billing_turn_id(
+                                send_billing_turn_id,
+                                send_agent.send_message(current_send),
+                            ),
+                        ) => {
+                            if let Err(e) = send_result.as_ref() {
+                                error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
+                            }
+                            // Explicit success matters: a dropped sender now denotes
+                            // panic/abort and is converted by StreamRelay into a
+                            // terminal Error instead of waiting forever.
+                            let _ = send_error_tx.send(send_result);
+                        }
                     }
-                    let send_result = nomifun_ai_agent::with_flowy_chat_session_id(
-                        conv_id_send.clone(),
-                        nomifun_ai_agent::with_flowy_billing_turn_id(
-                            send_billing_turn_id,
-                            send_agent.send_message(current_send),
-                        ),
-                    )
-                    .await;
-                    if let Err(e) = send_result.as_ref() {
-                        error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
-                    }
-                    // Explicit success matters: a dropped sender now denotes
-                    // panic/abort and is converted by StreamRelay into a
-                    // terminal Error instead of waiting forever.
-                    let _ = send_error_tx.send(send_result);
                 });
                 // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
                 let outcome = relay.consume_with_send_error(rx, send_error_rx).await;

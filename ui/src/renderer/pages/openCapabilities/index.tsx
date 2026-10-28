@@ -9,6 +9,8 @@ import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import CompanionAccessTokenPanel from '@/renderer/components/layout/Sider/CompanionAccessTokenPanel';
 import WebuiControlPanel from '@/renderer/components/layout/Sider/WebuiControlPanel';
+import LinkPairingPanel from '@/renderer/pages/openCapabilities/LinkPairingPanel';
+import BrowserAccessPanel from '@/renderer/pages/link/BrowserAccessPanel';
 import { WorkspaceFolderSelect } from '@/renderer/components/workspace';
 import { useWebuiServer } from '@/renderer/hooks/context/WebuiServerContext';
 import RegisterKnowledgeButton from '@/renderer/pages/terminal/RegisterKnowledgeButton';
@@ -21,7 +23,7 @@ import { WEBUI_DEFAULT_PORT } from '@/common/config/constants';
 
 const formatJson = (value: unknown) => JSON.stringify(value, null, 2);
 
-type OpenCapabilityTab = 'webui' | 'mcp';
+type OpenCapabilityTab = 'webui' | 'link' | 'mcp';
 type McpProfileMode = 'agent' | 'full';
 
 type McpDomainOption = {
@@ -287,6 +289,30 @@ const OpenCapabilitiesPage: React.FC<{ variant?: 'hub' | 'settings' }> = ({ vari
                     '隐藏 127.0.0.1、0.0.0.0、169.254.*、198.18.* / 198.19.*、组播和文档保留地址；保留 192.168.*、10.*、172.16-31.* 等可用 LAN/VPN 候选。',
                 })}
               />
+            </div>
+          </section>
+        </Tabs.TabPane>
+        <Tabs.TabPane key='link' title={t('settings.openCapabilities.linkTab', { defaultValue: '手机版' })}>
+          <section className='max-w-640px rd-12px border border-solid border-arco-2 bg-fill-0 p-16px'>
+            <SectionHeader
+              icon={<ApiApp theme='outline' size='18' fill='currentColor' />}
+              title={t('settings.openCapabilities.linkTitle', { defaultValue: 'Flowy 手机版' })}
+              description={t('settings.openCapabilities.linkDesc', {
+                defaultValue: '不安装 App 时用微信或其他扫码工具打开网页。安装手机版时扫配对码，允许之前手机拿不到登录。',
+              })}
+            />
+            <div className='mt-14px flex flex-col gap-16px'>
+              <BrowserAccessPanel />
+              <div className='border-t border-t-solid border-arco-2' />
+              <div>
+                <div className='text-16px font-600 text-t-primary'>{t('settings.link.appTitle', { defaultValue: '用 Flowy 手机版' })}</div>
+                <div className='mt-4px mb-14px text-13px text-t-secondary leading-relaxed'>
+                  {t('settings.link.appDesc', {
+                    defaultValue: '安装 App 后扫描配对码。允许之前，手机拿不到登录。对话正文不经过云端。',
+                  })}
+                </div>
+                <LinkPairingPanel />
+              </div>
             </div>
           </section>
         </Tabs.TabPane>

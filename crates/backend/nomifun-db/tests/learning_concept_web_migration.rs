@@ -23,7 +23,7 @@ const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/052_learning_review_log.sql"),
     include_str!("../migrations/053_learning_section_degraded.sql"),
 ];
-const M068: &str = include_str!("../migrations/068_learning_domain_rebuild.sql");
+const M069: &str = include_str!("../migrations/069_learning_domain_rebuild.sql");
 
 const GRAPH_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const TRAD_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
@@ -201,7 +201,7 @@ async fn setup_legacy_world() -> SqlitePool {
 
 async fn migrated_pool() -> SqlitePool {
     let pool = setup_legacy_world().await;
-    sqlx::query(M068).execute(&pool).await.unwrap();
+    sqlx::query(M069).execute(&pool).await.unwrap();
     pool
 }
 

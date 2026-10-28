@@ -1657,7 +1657,7 @@ fn append_knowledge_context(
 }
 
 /// Standard persistent-delegation guidance for an ordinary desktop session.
-pub(crate) const DELEGATION_STANDARD_HINT: &str = "若本会话已提供宿主原语（`briefing_create` / `briefing_status`）或用户已加载对应 Skill（news-briefing、art-motion），必须直接调用这些工具完成任务。禁止用 `nomi_delegate` 把同一条流水线再拆成 DAG，也禁止用 `web_search` 重做 Skill 已禁止的采集。art-motion 只在 briefing 已经产出旁白音频之后作为画面增强，而不是新闻口播的主路径。\n\n遇到可并行的独立工作，或需要成体系拆解的复杂多步目标时，统一使用 `nomi_delegate`：独立工作传 `strategy=parallel` 和 tasks，复杂目标传 `strategy=planned` 和 goal，让规划器生成依赖 DAG。每个受委派的 Agent 都在右侧画布实时显示状态与转录。顶层会话委派会创建一个 Agent Execution；执行中的 Attempt 再委派只会向同一个 Execution 追加 Step，不会创建子执行。拿到 execution_id（以及追加时的 added_step_ids）后立即结束本轮，不要轮询等待或重复创建。不要宣称任务已经完成或已经开始制作成片——只说明已把目标交给宿主；全部结束时系统会把持久化最终结果直接作为 assistant 回执写入顶层会话，不会再启动一轮模型汇总；用户主动询问进度时才用 `nomi_execution_get` 读取一次。简单或单步问题直接作答，无需委派。";
+pub(crate) const DELEGATION_STANDARD_HINT: &str = "若本会话已提供宿主原语（`briefing_create` / `briefing_status`）或用户已加载对应 Skill（news-briefing、art-motion），必须直接调用这些工具完成任务。禁止用 `nomi_delegate` 把同一条流水线再拆成 DAG，也禁止用 `web_search` 重做 Skill 已禁止的采集。art-motion 只在 briefing 已经产出旁白音频之后作为画面增强，而不是新闻口播的主路径。\n\n遇到可并行的独立工作，或需要成体系拆解的复杂多步目标时，统一使用 `nomi_delegate`：独立工作传 `strategy=parallel` 和 tasks，复杂目标传 `strategy=planned` 和 goal，让规划器生成依赖 DAG。并行 task 可以带 `model`（`provider_id` 与 `model`，必须属于本次执行的模型池）和一句 `model_reason`；不写 `model` 则继承主模型。协作任务页显示每个步骤的实时状态，点开步骤查看只读转录。顶层会话委派会创建一个 Agent Execution；执行中的 Attempt 再委派只会向同一个 Execution 追加 Step，不会创建子执行。拿到 execution_id（以及追加时的 added_step_ids）后立即结束本轮，不要轮询等待或重复创建。不要宣称任务已经完成或已经开始制作成片——只说明已把目标交给宿主；全部结束时系统会把持久化最终结果直接作为 assistant 回执写入顶层会话，不会再启动一轮模型汇总；用户主动询问进度时才用 `nomi_execution_get` 读取一次。简单或单步问题直接作答，无需委派。";
 
 /// Additional guidance for [`DelegationPolicy::PreferParallel`].
 pub(crate) const DELEGATION_PREFER_PARALLEL_HINT: &str = "本会话偏好并行委派：面对每个请求都先明确评估能否拆成多个互相独立的 Agent 工作，并在确有并行收益时优先使用 `nomi_delegate`。只有任务确实单步可答或无法安全拆分时才直接处理；不要为了形式并行制造重复工作。";
@@ -3516,6 +3516,19 @@ mod tests {
         let (base_url, compat) =
             resolve_nomi_url_and_compat("custom", "https://api.deepseek.com/v1", "openai", false);
         assert_eq!(base_url.as_deref(), Some("https://api.deepseek.com"));
+        assert!(compat.api_path.is_none());
+    }
+
+    #[test]
+    fn herdsman_local_endpoint_uses_the_openai_client() {
+        assert_eq!(map_nomi_provider("herdsman", None), "openai");
+        let (base_url, compat) = resolve_nomi_url_and_compat(
+            "herdsman",
+            "http://127.0.0.1:18080/v1",
+            "openai",
+            false,
+        );
+        assert_eq!(base_url.as_deref(), Some("http://127.0.0.1:18080"));
         assert!(compat.api_path.is_none());
     }
 

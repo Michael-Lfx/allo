@@ -1308,7 +1308,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     #[tokio::test]
     async fn custom_questions_persist_config_and_join_the_review_queue() {
         // 自建题契约：config 落库、进题库、按同一判卷器判分；填空题走 038
-        // 的三题型宽口径 CHECK（迁移 068 重建必须保留）。
+        // 的三题型宽口径 CHECK（迁移 069 重建必须保留）。
         let database = nomifun_db::init_database_memory().await.unwrap();
         let owner_id = nomifun_db::installation_owner_id(database.pool())
             .await
@@ -9568,7 +9568,7 @@ async fn structure_repair_skips_when_no_triggers_and_audits() {
                     learning_goal: String::new(),
                     samples_meta_json: None,
                     source_kb_ids: Vec::new(),
-                    // 迁移 069 CHECK:数组/标量/非法 JSON 一律拒绝——事务
+                    // 迁移 070 CHECK:数组/标量/非法 JSON 一律拒绝——事务
                     // 在 course INSERT 处中断。
                     course_source_plan_json: Some("[1, 2]".to_owned()),
                 },

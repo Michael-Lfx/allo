@@ -990,7 +990,7 @@ function ShotPacketInspector({
                 defaultValue: '顺延重渲后续镜头？',
               })}
               content={t('videoGeneration.studio.storyboard.cascadeBody', {
-                defaultValue: '后续镜的尾帧参考已过期。确认后将按顺序重渲本场后续镜头并消耗积分。',
+                defaultValue: '后续镜头按各自的站位描述生成，不再使用上一镜尾帧。确认后将按顺序重渲本场后续镜头并消耗积分。',
               })}
               onOk={() => void handleGenerate(true)}
             >
@@ -1040,7 +1040,7 @@ function ShotPacketInspector({
         imageLibrary={imageLibrary}
         audioLibrary={audioLibrary}
         canAddImage={editable && imageRefs.length < MAX_SHOT_IMAGE_REFS}
-        canAddAudio={editable && audioRefs.length < MAX_SHOT_AUDIO_REFS}
+        canAddAudio={false}
         onNodeMove={handleNodeMove}
         onNodeResize={handleNodeResize}
         onPromptChange={handlePromptChange}

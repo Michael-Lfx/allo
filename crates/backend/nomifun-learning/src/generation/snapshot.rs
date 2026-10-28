@@ -1,6 +1,6 @@
 //! 建课时点的来源计划快照信封（t4）：t1 清点/分诊 + t2 计划 + t3 展开覆盖
 //! 装进**一个版本化 JSON 对象**落 `learning_courses.course_source_plan_json`
-//! （迁移 069）。字段演进靠信封 `version`——读侧对未知版本降级
+//! （迁移 070）。字段演进靠信封 `version`——读侧对未知版本降级
 //! `available=false`，不崩溃、不伪造空计划；NULL = 旧课程/描述流/未走新
 //! 管线（回退采样路径建的课程不伪造快照）。
 //!
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(parsed.triage.still_missing_count, 0);
     }
 
-    /// 信封契约(票面验收):序列化恒为 JSON 对象(迁移 069 的 CHECK 只放行
+    /// 信封契约(票面验收):序列化恒为 JSON 对象(迁移 070 的 CHECK 只放行
     /// 对象)、`version:1`;1000 文件库的快照体积可控(截断生效,单文件
     /// ≈ 路径 + hash + 200 字 preview + 16 条标题 ≈ 1KB → 总量 < 2MB);
     /// 可完整往返。正文不落快照:全文只以 ≤200 字 preview 的形式出现。
@@ -240,7 +240,7 @@ mod tests {
 
         let json = serde_json::to_string(&snapshot).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(value.is_object(), "迁移 069 CHECK 只放行 JSON 对象");
+        assert!(value.is_object(), "迁移 070 CHECK 只放行 JSON 对象");
         assert_eq!(value["version"], serde_json::json!(1));
         assert!(
             json.len() < 2_000_000,

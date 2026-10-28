@@ -401,6 +401,45 @@ async fn bootstrap_config_accessor_returns_config() {
 }
 
 #[tokio::test]
+async fn embedded_delegation_uses_the_session_approval_mode() {
+    // CLI / standalone embeddings install embedded AgentExecution by default.
+    // The child engine is built from this same Config, so `auto_approve` here
+    // is the gate that decides whether delegated writes may run unattended.
+    let config = minimal_config();
+    assert!(
+        !config.tools.auto_approve,
+        "CLI default must remain interactive: auto_approve = false"
+    );
+    let result = AgentBootstrap::new(config, "/tmp/ws-delegate-default", null_output())
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        result
+            .engine
+            .tool_names()
+            .iter()
+            .any(|name| name == "nomi_delegate"),
+        "embedded delegation must be registered by default"
+    );
+
+    let mut yolo = minimal_config();
+    yolo.tools.auto_approve = true;
+    let result = AgentBootstrap::new(yolo, "/tmp/ws-delegate-yolo", null_output())
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        result
+            .engine
+            .tool_names()
+            .iter()
+            .any(|name| name == "nomi_delegate"),
+        "yolo sessions must still register embedded delegation"
+    );
+}
+
+#[tokio::test]
 async fn bootstrap_with_external_provider() {
     let config = minimal_config();
     let provider = nomi_providers::create_provider(&config);

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent/*", "crates/backend/*", "crates/shared/*", "crates/vendor/*", "apps/agent-store", "apps/desktop", "apps/web"]
 
 [workspace.package]
-version = "1.6.3"
+version = "1.6.8"
 edition = "2024"
 license = "Apache-2.0"
 repository = "local/nomifun-tauri"
@@ -17,6 +17,7 @@ nomifun-api-types = { path = "crates/backend/nomifun-api-types" }
 nomifun-realtime = { path = "crates/backend/nomifun-realtime" }
 nomifun-runtime = { path = "crates/backend/nomifun-runtime" }
 nomifun-auth = { path = "crates/backend/nomifun-auth" }
+nomifun-link = { path = "crates/backend/nomifun-link" }
 # default-features=false: the bedrock feature is opt-in (host-specific) —
 # headless hosts (agent-store) skip the AWS SDK entirely.
 nomifun-system = { path = "crates/backend/nomifun-system", default-features = false }
@@ -72,6 +73,7 @@ nomifun-models-dev = { path = "crates/shared/nomifun-models-dev" }
 nomi-redact = { path = "crates/shared/nomi-redact" }
 nomi-process-runtime = { path = "crates/shared/nomi-process-runtime" }
 flowy-ssh = { path = "crates/shared/flowy-ssh" }
+flowy-link-kernel = { path = "crates/shared/flowy-link-kernel" }
 
 # --- Internal crates: agent (from nomifun-agent-rs, now local) ---
 nomi-types = { path = "crates/agent/nomi-types" }
@@ -269,6 +271,8 @@ aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 # --- TLS ---
 rustls = "0.23"
 rustls-native-certs = "0.8"
+rcgen = "0.13"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # --- OAuth / config ---
 oauth2 = "5.0.0-rc.1"

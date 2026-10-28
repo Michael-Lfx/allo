@@ -171,3 +171,27 @@ pub struct AgentExecutionDetailRows {
     pub dependencies: Vec<AgentExecutionStepDependencyRow>,
     pub attempts: Vec<AgentExecutionAttemptDetailRow>,
 }
+
+/// Read-only projection of one active delegated Agent invocation. Every field
+/// is derived from existing Execution/Step/Attempt/Link rows; this struct is
+/// never persisted or mutated.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct ActiveSubagentRow {
+    pub execution_id: String,
+    pub execution_goal: String,
+    pub execution_status: String,
+    pub step_id: String,
+    pub step_title: String,
+    pub step_kind: String,
+    pub step_status: String,
+    pub attempt_id: String,
+    pub attempt_no: i64,
+    pub attempt_status: String,
+    pub participant_id: Option<String>,
+    pub participant_role: Option<String>,
+    pub conversation_id: Option<String>,
+    pub question: Option<String>,
+    pub tokens: Option<i64>,
+    pub started_at: Option<TimestampMs>,
+    pub attempt_updated_at: TimestampMs,
+}

@@ -99,6 +99,9 @@ pub struct ComputerTool {
     /// The most recent `observe` snapshot, for resolving `[ref]` actions. Element
     /// bounds here are in OS accessibility coordinates (screen logical points).
     last_snapshot: Mutex<Option<SnapshotCache>>,
+    /// Whether the session's model can read images. A text-only model gets the
+    /// full accessibility tree plus OCR text instead of a screenshot.
+    image_input: bool,
 }
 
 struct SnapshotCache {
@@ -131,6 +134,15 @@ enum CachedTarget {
 /// native apps.
 const OCR_FUSION_AX_THRESHOLD: usize = 6;
 
+const TEXT_ONLY_NOTE: &str = "\n- This session's model cannot read images: `observe` returns \
+text only (the full accessibility tree plus OCR text lines, each with a [ref]) and \
+`screenshot` returns the same text. Act with `click_element` and [ref]; pixel coordinates \
+are not usable.\n";
+
+fn should_run_ocr(image_input: bool, ax_entries: usize) -> bool {
+    !image_input || ax_entries < OCR_FUSION_AX_THRESHOLD
+}
+
 impl ComputerTool {
     pub fn new(config: &ComputerConfig) -> Self {
         Self {
@@ -139,7 +151,16 @@ impl ComputerTool {
             last_capture: Mutex::new(None),
             a11y: Mutex::new(None),
             last_snapshot: Mutex::new(None),
+            image_input: true,
         }
+    }
+
+    pub fn with_image_input(mut self, image_input: bool) -> Self {
+        self.image_input = image_input;
+        if !image_input && !self.description.contains(TEXT_ONLY_NOTE) {
+            self.description.push_str(TEXT_ONLY_NOTE);
+        }
+        self
     }
 
     /// Lazily construct (and cache) the accessibility engine. The error string
@@ -263,7 +284,7 @@ impl ComputerTool {
         // OCR targets are numbered AFTER the AX refs and listed in an appendix.
         let mut ocr_appendix: Vec<String> = Vec::new();
         let mut next_ref = max_ax_ref;
-        if snap.entries.len() < OCR_FUSION_AX_THRESHOLD {
+        if should_run_ocr(self.image_input, snap.entries.len()) {
             let img = shot.image.clone();
             let langs = vec!["zh-Hans".to_string(), "en-US".to_string()];
             let ocr = tokio::task::spawn_blocking(move || nomi_a11y::ocr_screenshot(&img, &langs))
@@ -332,6 +353,9 @@ impl ComputerTool {
             entries: cached,
         });
 
+        if !self.image_input {
+            return ToolResult::text(header);
+        }
         nomi_a11y::overlay::draw_set_of_marks(&mut shot.image, &display);
         match encode_png(&shot.image) {
             Ok(encoded) => {
@@ -986,6 +1010,7 @@ impl Tool for ComputerTool {
                 self.do_element_gesture(&input, enigo::Button::Left, 2, "double-click").await
             }
             "launch" => self.do_launch(&input).await,
+            "screenshot" if !self.image_input => self.do_observe(&input).await,
             "screenshot" => self.do_screenshot(&input).await,
             "cursor_position" => self.do_cursor_position().await,
             "list_windows" => self.do_list_windows().await,
@@ -1106,6 +1131,21 @@ mod tests {
 
     fn tool() -> ComputerTool {
         ComputerTool::new(&ComputerConfig::default())
+    }
+
+    #[test]
+    fn text_only_model_is_told_observe_is_text_and_ocr_always_runs() {
+        let vision = tool();
+        assert!(!vision.description().contains("cannot read images"));
+
+        let text_only = tool().with_image_input(false);
+        assert!(text_only.description().contains("cannot read images"));
+        let twice = tool().with_image_input(false).with_image_input(false);
+        assert_eq!(twice.description().matches("cannot read images").count(), 1);
+
+        assert!(should_run_ocr(false, 500));
+        assert!(should_run_ocr(true, OCR_FUSION_AX_THRESHOLD - 1));
+        assert!(!should_run_ocr(true, OCR_FUSION_AX_THRESHOLD));
     }
 
     // --- schema ---

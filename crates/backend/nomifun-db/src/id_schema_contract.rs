@@ -91,6 +91,7 @@ pub(crate) const PRODUCT_TABLES: &[&str] = &[
     "learning_structure_mounts",
     "learning_structure_repairs",
     "learning_maintenance_state",
+    "linked_devices",
     "mcp_servers",
     "meeting_segments",
     "meeting_sessions",
@@ -189,6 +190,7 @@ const UUIDV7_BUSINESS_COLUMNS: &[(&str, &str)] = &[
     ("learning_review_log", "log_id"),
     ("learning_tags", "tag_id"),
     ("learning_xp_events", "event_id"),
+    ("linked_devices", "linked_device_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_sessions", "session_id"),
@@ -317,6 +319,7 @@ pub const NON_REFERENCE_ID_COLUMNS: &[(&str, &str)] = &[
     // identifiers: the XP ledger is append-only truth and never chases the
     // lifetime of the node it settled.
     ("learning_xp_events", "event_id"),
+    ("linked_devices", "linked_device_id"),
     ("mcp_servers", "mcp_server_id"),
     ("meeting_segments", "segment_id"),
     ("meeting_segments", "speaker_id"),
@@ -697,6 +700,7 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
         .with_aggregate_scope("parent.conversation_id = child.conversation_id"),
     text_ref!("terminal_sessions", "user_id" => "users", "user_id", false, "idx_terminal_sessions_user_id", Cascade),
     text_ref!("ssh_hosts", "user_id" => "users", "user_id", false, "idx_ssh_hosts_user_id", Cascade),
+    text_ref!("linked_devices", "user_id" => "users", "user_id", false, "idx_linked_devices_user_id", Cascade),
     text_ref!("meeting_sessions", "user_id" => "users", "user_id", false, "idx_meeting_sessions_owner", Cascade),
     text_ref!("meeting_sessions", "bound_conversation_id" => "conversations", "conversation_id", true, "idx_meeting_sessions_bound_conversation", SetNull),
     text_ref!("meeting_voiceprints", "user_id" => "users", "user_id", false, "idx_meeting_voiceprints_owner", Cascade),
@@ -939,10 +943,10 @@ pub(crate) const LOGICAL_REFERENCES: &[LogicalReference] = &[
     // 修补审计（migration 068 的修补段）：结构编辑的历史档案——课程删除后审计行
     // 保留（KeepHistory，出处不追删）。
     historical_text_ref!("learning_structure_repairs", "course_id" => "learning_courses", "course_id", false, "idx_learning_structure_repairs_course", KeepHistory),
-    // 维护水位（migration 070）：findings 消费记账是派生面——随课删
+    // 维护水位（migration 071）：findings 消费记账是派生面——随课删
     // （Cascade；留痕本身仍 KeepHistory 保留）。
     historical_text_ref!("learning_maintenance_state", "course_id" => "learning_courses", "course_id", false, "idx_learning_maintenance_state_course", Cascade),
-    // 已会声明锚（migration 071）：一行一次声明，声明是本课事实——随课删
+    // 已会声明锚（migration 072）：一行一次声明，声明是本课事实——随课删
     // （Cascade）；锚行里铸出/复用的 concept_id 只作出处留痕（KeepHistory，
     // 概念留池「声明可撤、概念不灭」——撤销只删锚行，登记表不动）。
     text_ref!("learning_basis_declarations", "course_id" => "learning_courses", "course_id", false, "idx_learning_basis_declarations_course", Cascade),
@@ -1079,7 +1083,7 @@ pub(crate) const JSON_LOGICAL_REFERENCES: &[JsonLogicalReference] = &[
         "SELECT item.value AS value FROM learning_growth_batches, json_each(learning_growth_batches.node_ids_json) item" =>
         "learning_lessons", "lesson_id", "idx_learning_growth_batches_nodes", Cascade, RequireParent
     ),
-    // 已会声明锚（migration 071）的铸造出处面：锚行的 concept_ids_json 指向
+    // 已会声明锚（migration 072）的铸造出处面：锚行的 concept_ids_json 指向
     // 概念登记表。概念留池（撤销声明不回滚登记表），声明引用不追删——
     // 概念被废弃/移除后锚行原样保留（KeepHistory + 容忍缺失父行，XP 账本
     // 同律；读侧解析失败 = Broken 如实降级不炸）。

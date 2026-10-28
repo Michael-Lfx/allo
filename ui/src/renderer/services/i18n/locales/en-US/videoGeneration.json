@@ -840,7 +840,7 @@
       "refCustom": "Ref",
       "refEmpty": "Empty slot",
       "refOpeningEmpty": "Opening shot — no previous clip",
-      "refContinuityPending": "Fills when the previous shot is ready",
+      "refContinuityPending": "Not filled automatically; attach one only if you want it",
       "refUpload": "Replace",
       "refLibrary": "From library",
       "refUnbind": "Remove",
@@ -876,7 +876,7 @@
       "maxAudioRefs": "Each shot can have at most 3 voices",
       "cascadeRetake": "Cascade",
       "cascadeTitle": "Retake later shots in this scene?",
-      "cascadeBody": "Their continuity frames are stale. This will re-render the rest of the scene and spend credits.",
+      "cascadeBody": "Later shots use their own blocking text and do not take the previous tail frame. This re-renders the rest of the scene and spends credits.",
       "microflow": {
         "script": "Script",
         "refs": "Refs",

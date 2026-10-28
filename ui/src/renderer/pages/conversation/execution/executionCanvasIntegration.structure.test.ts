@@ -70,6 +70,10 @@ describe('conversation execution canvas integration', () => {
 
     expect(controlsSource.includes("status === 'running' || status === 'waiting_input'")).toBe(true);
     expect(controlsSource.includes('const isTerminal = isTerminalExecutionStatus(status)')).toBe(true);
+    // `border-b-base` resolves to `border-bottom-color: var(--bg-base)`, which
+    // paints the bottom edge with the panel background and erases it.
+    expect(controlsSource.includes('border-b-base')).toBe(false);
+    expect(controlsSource.includes('border-[var(--border-base)]')).toBe(true);
     expect(controlsSource.includes("status !== '' && !isBusyPlaceholder && !isTerminal")).toBe(true);
     expect(projectedSource.includes("step.kind === 'agent' && step.status === 'pending'")).toBe(true);
     expect(projectedSource.includes('participant.retired_in_revision == null')).toBe(true);
@@ -87,6 +91,17 @@ describe('conversation execution canvas integration', () => {
 
     expect(layoutSource.includes('dispatchWorkspaceOpenPreviewTool(AGENT_EXECUTION_WORKSPACE_TAB')).toBe(true);
     expect(layoutSource.includes("'agentExecution.panel.open'")).toBe(true);
+    // The collaboration pane lives inside the workspace preview host, so every
+    // entry point must disappear when there is no workspace to host it.
+    expect(
+      layoutSource.includes(
+        'const collaborationAvailable = Boolean(execution.executionId) && workspaceEnabled',
+      ),
+    ).toBe(true);
+    expect(layoutSource.includes('{collaborationAvailable && (')).toBe(true);
+    expect(layoutSource.includes('if (!collaborationAvailable || !workspaceTarget) return;')).toBe(true);
+    expect(layoutSource.includes('available: collaborationAvailable')).toBe(true);
+    expect(layoutSource.includes('workspaceEnabled={workspaceEnabled}')).toBe(true);
     expect(panelSource.includes('embedded')).toBe(true);
     expect(panelCss.includes('.panelEmbedded')).toBe(true);
     expect(panelCss.includes('@media (max-width: 768px)')).toBe(true);

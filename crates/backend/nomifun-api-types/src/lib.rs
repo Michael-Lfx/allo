@@ -126,7 +126,8 @@ pub use agent_error::{
     AgentErrorResolutionTarget, AgentStreamErrorData,
 };
 pub use agent_execution::{
-    AddExecutionStepsRequest, AdoptExecutionStepOutputRequest, AdjustAgentExecutionRequest, AgentExecution,
+    ActiveSubagent, AddExecutionStepsRequest, AdoptExecutionStepOutputRequest,
+    AdjustAgentExecutionRequest, AgentExecution,
     AgentExecutionChangedEvent, AgentExecutionDetail, AgentExecutionEvent,
     AgentExecutionEventsQuery, AnswerExecutionDecisionRequest, ConfigureExecutionStepRequest,
     CreateAgentExecutionRequest, ExecutionAttempt,

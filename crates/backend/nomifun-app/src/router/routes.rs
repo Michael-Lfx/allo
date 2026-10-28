@@ -251,6 +251,55 @@ pub async fn create_router(services: &AppServices) -> Router {
     let user_event_rx = services.event_bus.subscribe_user();
     let ws_manager = services.ws_manager.clone();
     tokio::spawn(forward_user_events(user_event_rx, ws_manager));
+    let wake_rx = services.event_bus.subscribe_user();
+    let wake_pool = services.database.pool().clone();
+    let wake_cloud = services.cloud_service.clone();
+    let wake_user = services.authoritative_user_id.clone();
+    tokio::spawn(async move {
+        let mut wake_rx = wake_rx;
+        let mut recent: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        loop {
+            let envelope = match wake_rx.recv().await {
+                Ok(envelope) => envelope,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            if envelope.user_id != wake_user.as_ref() {
+                continue;
+            }
+            let Some(kind) = nomifun_link::classify_wake_event(&envelope.event.name, &envelope.event.data) else {
+                continue;
+            };
+            let Some(conversation_id) = envelope.event.data.get("conversation_id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let Some(host) = nomifun_link::current_host() else {
+                continue;
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or(0);
+            let key = format!("{kind}:{conversation_id}");
+            if recent.get(&key).is_some_and(|sent| now.saturating_sub(*sent) < 10_000) {
+                continue;
+            }
+            recent.insert(key, now);
+            let Ok(device_ids) = nomifun_link::list_wake_device_ids(&wake_pool).await else {
+                continue;
+            };
+            let body = serde_json::json!({
+                "v": 1,
+                "kind": kind,
+                "hostFingerprint": host.fingerprint,
+                "conversationId": conversation_id,
+                "sentAtMs": now,
+            });
+            for device_id in device_ids {
+                wake_cloud.try_notify_link_wake(&device_id, body.clone()).await;
+            }
+        }
+    });
 
     let (states, channel_components) = build_module_states(services).await;
     tracing::info!(
@@ -467,6 +516,16 @@ pub async fn create_router(services: &AppServices) -> Router {
         elapsed_ms = boot.elapsed().as_millis(),
         "startup: route tree build started"
     );
+    match nomifun_link::list_revoked_device_ids(services.database.pool()).await {
+        Ok(ids) => {
+            for id in &ids {
+                services.jwt_service.revoke_link_device(id);
+            }
+        }
+        Err(error) => {
+            tracing::debug!(%error, "link revocation list unavailable at startup");
+        }
+    }
     let router = create_router_with_states(services, states);
     // Remote capability front door (/mcp): per-companion-token-authenticated MCP,
     // projecting the SAME Registry/GatewayDeps as the inward stdio bridge. The
@@ -1450,9 +1509,46 @@ pub fn create_router_with_all_state(
         (user_routes, owner_routes)
     };
 
+    let link = nomifun_link::LinkHub::new(
+        services.database.pool().clone(),
+        services.authoritative_user_id.clone(),
+        services.jwt_service.clone(),
+    );
+    let cloud = services.cloud_service.clone();
+    link.set_paired_hook(Arc::new(move |notice| {
+        let Some(host) = nomifun_link::current_host() else {
+            return;
+        };
+        let cloud = cloud.clone();
+        let body = nomifun_cloud::flowy::LinkDeviceUpsert {
+            device_id: notice.device_id,
+            host_fingerprint: host.fingerprint,
+            display_name: notice.display_name,
+            platform: notice.platform,
+            wake_enabled: Some(notice.wake_enabled),
+            app_version: notice.app_version,
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                cloud.try_register_link_device(body).await;
+            });
+        }
+    }));
+    let revoker = link.clone();
+    let link_gate = link.clone();
+    nomifun_cloud::set_link_revocation_hook(Arc::new(move |device_ids| {
+        let revoker = revoker.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                revoker.apply_revocations(&device_ids).await;
+            });
+        }
+    }));
+
     let router = Router::new()
         .route("/health", get(health_check))
         .merge(auth_routes(auth_state))
+        .merge(nomifun_link::routes(link))
         .merge(crate::router::companion_token_routes::companion_token_routes(companion_token_state))
         .merge(system_authenticated)
         .merge(computer_permissions_authenticated)
@@ -1558,6 +1654,10 @@ pub fn create_router_with_all_state(
     let router = router.layer(DefaultBodyLimit::max(nomifun_common::constants::BODY_LIMIT));
 
     let router = with_access_log(router);
+    let router = router.layer(middleware::from_fn_with_state(
+        link_gate,
+        nomifun_link::link_step_up_middleware,
+    ));
 
     // Global, OUTERMOST trust resolution: runs before CSRF and per-route auth so
     // both can read the `LocalTrusted` marker / injected system `CurrentUser`.

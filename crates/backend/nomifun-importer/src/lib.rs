@@ -10,6 +10,7 @@ pub mod compat;
 pub mod dependency;
 pub mod digest;
 pub mod frontmatter;
+pub mod icon;
 pub mod import;
 pub mod install;
 pub mod manifest;
@@ -21,12 +22,13 @@ pub use dependency::{
     CatalogIndex, DeclaredDependency, DependencyProblem, check_dependencies,
 };
 pub use import::{ImportError, ImportRequest, ImporterService, blocked_import_result};
+pub use icon::{IconOutcome, IconPlacement, PlacedIcon, place_market_icon};
 pub use install::{
     InstallError, InstallerConfig, InstallerService, InstalledSkillLocation, MaterializeOutcome,
 };
 pub use manifest::{
-    CliManifest, LocalizedText, ManifestError, MarketManifest, ParsedManifest, PluginManifest,
-    TeamInfo, platform_summary, read_plugin_display, validate_relative_path,
+    CliManifest, DisplayFields, LocalizedText, ManifestError, MarketManifest, ParsedManifest,
+    PluginManifest, TeamInfo, platform_summary, read_plugin_display, validate_relative_path,
 };
 pub use models::{
     CompatTriple, Component, SourceKind, component_id, sanitize_slug,

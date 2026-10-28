@@ -34,4 +34,17 @@ describe('useModelProviderList catalog refresh wiring', () => {
     // Must not skip remounts with a TTL — delisted models need a fresh sync on every page enter.
     expect(text.includes('PROVIDERS_AUTO_REFRESH_MIN_INTERVAL_MS')).toBe(false);
   });
+
+  test('local catalog refresh does not sync the cloud catalog', () => {
+    const text = source();
+    const start = text.indexOf('export async function refreshLocalProviderCatalog');
+    const end = text.indexOf('function retainLocalProviderCatalogSync');
+    const local = text.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(local.includes('syncModels')).toBe(false);
+    expect(local.includes('clearAvailableModelsCache')).toBe(false);
+    expect(text.includes('onCatalogChanged')).toBe(true);
+    expect(text.includes('conversation.reconnected')).toBe(true);
+  });
 });

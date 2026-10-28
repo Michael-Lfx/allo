@@ -2534,7 +2534,11 @@ pub fn build_ws_state(services: &AppServices) -> WsHandlerState {
         {
             return Some(authoritative_user_id.clone());
         }
-        jwt_service.verify(token).ok().map(|claims| claims.user_id.into_string())
+        jwt_service
+            .verify(token)
+            .ok()
+            .map(|claims| claims.user_id.into_string())
+            .or_else(|| jwt_service.verify_link(token).ok().map(|claims| claims.user_id.into_string()))
     });
 
     let token_extractor = Arc::new(|headers: &axum::http::HeaderMap| extract_token_from_ws_headers(headers));

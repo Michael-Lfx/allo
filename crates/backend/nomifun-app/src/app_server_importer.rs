@@ -77,7 +77,11 @@ impl ImportProvider for AppServerImportProvider {
             entry_name: None,
             source_revision: None,
             declared_version: None,
-            index_tags: None,
+            index_display: None,
+            // A caller-supplied path has no marketplace provenance, so there is
+            // no market icon to carry in (doc `51` §3.2): the source tree's own
+            // `plugin.json.avatar` / skill `assets/icon.*` still apply.
+            market_icon: None,
         };
         self.importer
             .run_import(&import_request)
@@ -328,6 +332,10 @@ fn agent_summary(row: &PluginSnapshotComponentRow) -> AppServerAgentSummary {
         source: string_field(&value, "source").unwrap_or_else(|| "imported".into()),
         compatibility_status: semantic_status(&triple),
         display_name: localized_field(&value, "display_name"),
+        // `50` §3.1: the same four display fields every entity kind carries, on
+        // the summary so both `agent/list` and `agent/get` have them.
+        display_description: localized_field(&value, "display_description"),
+        quick_prompts: localized_list(&value, "quick_prompts"),
         profession: localized_field(&value, "profession"),
         // Localized display tags + the raw category reference (`43` §3): moved
         // up from the detail — the list page renders the tag chips, and
@@ -352,8 +360,6 @@ fn agent_detail(row: &PluginSnapshotComponentRow) -> AppServerAgentDetail {
             .get("permission_mode_ignored")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
-        display_description: localized_field(&value, "display_description"),
-        quick_prompts: localized_list(&value, "quick_prompts"),
         default_init_prompt: localized_field(&value, "default_init_prompt"),
         expert_type: string_field(&value, "expert_type"),
     }
@@ -468,6 +474,10 @@ impl AppServerTeamCatalog {
 fn team_summary(row: &PluginSnapshotComponentRow) -> AppServerTeamSummary {
     let value = payload(row);
     let triple = decode_triple(&row.compatibility_json);
+    // Package-level display metadata (`44` / `50` §3.1): the importer stamps
+    // the same four keys it writes for skills and connectors, so `team/list`
+    // and `team/get` return what the store item shows.
+    let display = crate::app_server_display::display_from_payload(&value);
     AppServerTeamSummary {
         id: row.component_id.clone(),
         version: string_field(&value, "version").unwrap_or_default(),
@@ -477,10 +487,24 @@ fn team_summary(row: &PluginSnapshotComponentRow) -> AppServerTeamSummary {
         member_agent_ids: string_array(&value, "member_agent_ids"),
         source: string_field(&value, "source").unwrap_or_else(|| "imported".into()),
         compatibility_status: semantic_status(&triple),
-        // Package-level display metadata (`44`): `attach_plugin_display`
-        // already recorded `tags`/`category_id` into the team component's
-        // payload — the same facts the store item carries.
-        tags: localized_list(&value, "tags"),
+        tags: display
+            .tags
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
+        display_name: display
+            .name
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        display_description: display
+            .description
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        quick_prompts: display
+            .prompts
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
         category_id: string_field(&value, "category_id"),
     }
 }
@@ -560,6 +584,10 @@ mod installed_row_tests {
                     {"zh": "数据智能", "en": "Data & AI"},
                     {"zh": "办公效率", "en": null},
                 ],
+                // `50` §3.1: the four display fields the importer stamps.
+                "display_name": {"zh": "股价分析团", "en": "Stock Analysis Team"},
+                "display_description": {"zh": "用一句话看板面", "en": "Read the market in one line"},
+                "quick_prompts": [{"zh": "帮我看看今天的盘面", "en": null}],
             })
             .to_string(),
             installed: 1,
@@ -576,6 +604,16 @@ mod installed_row_tests {
         assert_eq!(summary.tags[0].en.as_deref(), Some("Data & AI"));
         assert_eq!(summary.tags[1].zh.as_deref(), Some("办公效率"));
         assert_eq!(summary.tags[1].en, None, "a one-sided tag keeps the absent locale absent");
+        assert_eq!(
+            summary.display_name.as_ref().and_then(|text| text.zh.as_deref()),
+            Some("股价分析团")
+        );
+        assert_eq!(
+            summary.display_description.as_ref().and_then(|text| text.en.as_deref()),
+            Some("Read the market in one line")
+        );
+        assert_eq!(summary.quick_prompts.len(), 1);
+        assert_eq!(summary.quick_prompts[0].zh.as_deref(), Some("帮我看看今天的盘面"));
 
         // A team whose package declares no category: both fields are absent,
         // not empty placeholders.
@@ -586,5 +624,8 @@ mod installed_row_tests {
         let summary = team_summary(&bare);
         assert!(summary.category_id.is_none());
         assert!(summary.tags.is_empty());
+        assert!(summary.display_name.is_none());
+        assert!(summary.display_description.is_none());
+        assert!(summary.quick_prompts.is_empty());
     }
 }
