@@ -1838,8 +1838,8 @@ impl ConversationService {
     fn build_skill_load_commits(
         conversation_id: &str,
         snapshots: &[ResolvedSkillSnapshot],
+        created_at: i64,
     ) -> Vec<ConversationSkillLoadCommit> {
-        let created_at = now_ms();
         snapshots
             .iter()
             .map(|snapshot| {
@@ -1879,6 +1879,54 @@ impl ConversationService {
                 }
             })
             .collect()
+    }
+
+    /// Project explicit Skill snapshots onto the live transcript.
+    ///
+    /// The ledger row is durable, but the open conversation only learns about
+    /// it through `message.stream`. Without this event the user bubble has no
+    /// Skill chips and no "loaded" card until a later history reload.
+    fn broadcast_explicit_skill_loads(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        turn_id: &str,
+        commits: &[ConversationSkillLoadCommit],
+        companion: bool,
+        companion_id: Option<CompanionId>,
+        origin: Option<&str>,
+        channel_platform: Option<&str>,
+    ) {
+        for commit in commits {
+            let Ok(data) = serde_json::from_str::<serde_json::Value>(&commit.load_message.content)
+            else {
+                warn!(
+                    conversation_id,
+                    message_id = %commit.load_message.message_id,
+                    "Skipped Skill-load broadcast because its projection was not JSON"
+                );
+                continue;
+            };
+            self.user_events.send_to_user(
+                user_id,
+                WebSocketMessage::new(
+                    "message.stream",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "msg_id": &commit.load_message.message_id,
+                        "turn_id": turn_id,
+                        "type": "skill_load",
+                        "data": data,
+                        "status": "finish",
+                        "created_at": commit.load_message.created_at,
+                        "companion": companion,
+                        "companion_id": companion_id,
+                        "origin": origin,
+                        "channel_platform": channel_platform,
+                    }),
+                ),
+            );
+        }
     }
 
     /// Wait until every runtime-build generation captured by a lifecycle
@@ -11197,8 +11245,15 @@ impl ConversationService {
         let turn_cancellation = turn_handle.turn_cancellation();
         let turn_token = turn_handle.cancellation_token();
 
-        let skill_load_commits =
-            Self::build_skill_load_commits(conversation_id, &persisted_skill_snapshots);
+        // Share one timestamp with the user row and mint Skill ids after it,
+        // so history ordered by (created_at, message_id) stays
+        // user message, then its Skill-load events.
+        let transcript_at = now_ms();
+        let skill_load_commits = Self::build_skill_load_commits(
+            conversation_id,
+            &persisted_skill_snapshots,
+            transcript_at,
+        );
         // A load-only request owns a durable turn ID but deliberately has no
         // blank user-message projection. The snapshot events still become
         // immutable history in the same SQLite transaction.
@@ -11212,7 +11267,7 @@ impl ConversationService {
             position: Some("right".into()),
             status: Some("finish".into()),
             hidden: req.hidden,
-            created_at: now_ms(),
+            created_at: transcript_at,
         });
         if existing_user_message.is_none() {
             if let Err(e) = self
@@ -11345,6 +11400,19 @@ impl ConversationService {
                     "created_at": user_msg.created_at,
                     }),
                 ),
+            );
+        }
+
+        if existing_user_message.is_none() && !skill_load_commits.is_empty() {
+            self.broadcast_explicit_skill_loads(
+                user_id,
+                conversation_id,
+                &first_turn_msg_id,
+                &skill_load_commits,
+                companion,
+                companion_id.clone(),
+                origin.as_deref(),
+                channel_platform.as_deref(),
             );
         }
 

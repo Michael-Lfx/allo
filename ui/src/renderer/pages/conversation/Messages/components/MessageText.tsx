@@ -9,7 +9,7 @@ import { useConversationContextSafe } from '@/renderer/hooks/context/Conversatio
 import { iconColors } from '@/renderer/styles/colors';
 import { Alert, Button, Modal, Tooltip } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { BranchOne, CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, Undo } from '@icon-park/react';
+import { BranchOne, CheckOne, CloseOne, Copy, Edit, Info, Lightning, Loading, MagicHat, Undo } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -31,6 +31,7 @@ import { hasMemCitations, stripMemCitations } from '@renderer/utils/chat/memCita
 import { stripSkillSuggest, hasSkillSuggest } from '@renderer/utils/chat/skillSuggestParser';
 import { MESSAGE_BODY_CLASS_NAME, MESSAGE_BODY_FONT_SIZE, MESSAGE_BODY_LINE_HEIGHT } from '../typography';
 import { parseMessageFileMarker } from './messageFileMarker';
+import { skillLoadsAttachedToUserMessage } from './userMessageSkillLoads';
 import { confirmFirstValue } from '@/renderer/utils/analytics/productFunnel';
 import { markFirstWinCompleted } from '@/renderer/utils/onboarding/firstWinMode';
 import { getConversationOrNull, seedConversationCache } from '@/renderer/pages/conversation/utils/conversationCache';
@@ -498,6 +499,10 @@ const MessageText: React.FC<{
 
   // 仅 Nomi、且为最近一条用户文本消息时可编辑（与后端"仅最近一条"对齐）。
   const messageList = useMessageList();
+  const attachedSkillLoads = useMemo(
+    () => (isUserMessage ? skillLoadsAttachedToUserMessage(messageList, message) : []),
+    [isUserMessage, message, messageList]
+  );
   const editableMessageId = message.message_id ?? message.msg_id;
   // C3: 编辑中徽章——SendBox 在编辑 store 登记的 msgId 与本气泡 durable id 一致。
   // C3: editing badge — SendBox registered this message's durable id in the
@@ -928,6 +933,23 @@ const MessageText: React.FC<{
             )}
             data-testid='message-text-content'
           >
+            {attachedSkillLoads.length > 0 && (
+              <div className='mb-6px flex flex-wrap justify-end gap-4px' data-testid='message-user-skills'>
+                {attachedSkillLoads.map((skill) => (
+                  <span
+                    key={skill.id}
+                    className='inline-flex max-w-full items-center gap-4px rounded-full border border-solid border-[var(--color-border-2)] bg-fill-1 px-6px py-1px text-11px text-t-primary'
+                    title={t('messages.skillLoad.loaded', {
+                      name: skill.content.name,
+                      defaultValue: 'Loaded {{name}}',
+                    })}
+                  >
+                    <MagicHat theme='outline' size={12} className='shrink-0' />
+                    <span className='truncate'>{skill.content.name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
             <StreamingText status={message.status === 'finish' || !isStreaming ? 'done' : 'streaming'}>
               {/* JSON 内容使用折叠组件 Use CollapsibleContent for JSON content */}
               {shouldRenderPlainText ? (
