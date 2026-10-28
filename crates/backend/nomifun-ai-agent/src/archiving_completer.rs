@@ -120,6 +120,7 @@ impl ArchivingCompleter {
                 "ok": false,
                 "elapsed_ms": elapsed_ms,
                 "system_chars": system.chars().count(),
+                "user_chars": user.chars().count(),
                 "system": system,
                 "user": user,
                 "error": error.to_string(),
@@ -267,6 +268,13 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(second["ok"], serde_json::json!(false));
         assert!(second["error"].as_str().is_some_and(|error| !error.is_empty()));
+        // error 臂与 ok 臂计量形状对称：user_chars 同样在计（口径与 ok 臂
+        // 一致 = 落盘文本的 chars 数）。
+        assert_eq!(
+            second["user_chars"].as_u64().unwrap(),
+            "fails".chars().count() as u64
+        );
+        assert!(second["system_chars"].as_u64().is_some());
     }
 
     /// 脱敏占位（n4 D9）：注册的判底/作答原文在归档 system/user 面逐字

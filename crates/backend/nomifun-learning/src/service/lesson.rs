@@ -1157,12 +1157,14 @@ impl LearningService {
     ) -> Result<Option<Vec<String>>, AppError> {
         let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // 已教半边：本课程图全部节点的 teaches（登记表正名；退役概念不占
-        // 名单——名字已退场，不再当工作词）。
+        // 名单——名字已退场，不再当工作词；已删墓碑课的节点不参与——
+        // deleted_at IS NULL 与闭包查询同律，删课节点的供给不出名单）。
         let taught: Vec<(String,)> = sqlx::query_as(
             "SELECT DISTINCT reg.canonical \
              FROM learning_lesson_concepts lc \
              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id \
              JOIN learning_modules m ON m.module_id = l.module_id \
+             JOIN learning_courses c ON c.course_id = m.course_id AND c.deleted_at IS NULL \
              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
              WHERE m.course_id = ? AND lc.role = 'teaches' AND reg.deprecated = 0 \
              ORDER BY reg.canonical",
@@ -2137,8 +2139,9 @@ fn first_appearance_with_teachers(
     }
 }
 
-/// 首现判定（二轮 g2 / j07 的既有消费面）：祖先闭包不动点，只取首现半边；
-/// 带节点归因的扩展见 [`first_appearance_with_teachers`]。
+/// 首现判定（纯函数，j07 不动点的首现半边）。生产消费面已迁
+/// [`first_appearance_with_teachers`]（带节点归因，n3 先例共用同一次不动
+/// 点）；本函数留存供旧测试/对照使用，不再承载生产调用。
 fn first_appearance_set(
     self_teaches: &[String],
     self_assumes: &[String],
@@ -2790,6 +2793,93 @@ mod tests {
         assert_eq!(topology.known_names, None, "零挂接零声明 = 名单缺席");
         assert!(topology.precedents.is_empty());
         assert!(topology.teaches_tiers.is_empty());
+    }
+
+    /// Known Names 围栏（评审修复钉，红→绿）：已删节点 teaches 出不了名单
+    /// ——课程软删成墓碑（deleted_at 置位）后，其节点的供给不再算工作词
+    /// 表（与闭包查询 deleted_at IS NULL 同律）。
+    #[tokio::test]
+    async fn known_names_exclude_deleted_course_teaches() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let pool = service.pool_for_tests();
+        let now = now_ms();
+        let course_id = LearningCourseId::new().into_string();
+        let module_id = LearningModuleId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_courses \
+             (course_id, title, description, domain, version, course_kind, learning_goal, \
+              learning_scope, created_at, updated_at) \
+             VALUES (?, '待删课', '', 'general', 1, 'learning_graph', 'g', '', ?, ?)",
+        )
+        .bind(&course_id)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+             VALUES (?, ?, '学习图', '', 0)",
+        )
+        .bind(&module_id)
+        .bind(&course_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        let lesson = LearningLessonId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_lessons \
+             (lesson_id, module_id, title, summary, purpose, position, estimated_minutes, \
+              content_generated) VALUES (?, ?, '供给节点', '', 'p', 0, 20, 0)",
+        )
+        .bind(&lesson)
+        .bind(&module_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        let concept = LearningConceptId::new().into_string();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, '对数收益率', '[]', 'd', ?, ?)",
+        )
+        .bind(&concept)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts \
+             (lesson_id, concept_id, role, tier) VALUES (?, ?, 'teaches', 'apply')",
+        )
+        .bind(&lesson)
+        .bind(&concept)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // 活课基线：teaches 正名入名单。
+        let course = LearningCourseId::parse(&course_id).unwrap();
+        assert_eq!(
+            service.course_known_names(&course).await.unwrap(),
+            Some(vec!["对数收益率".to_owned()])
+        );
+
+        // 课程软删（墓碑）→ 其节点 teaches 出不了名单（旧实现无
+        // deleted_at 过滤时此处仍返回该概念 = 红）。
+        sqlx::query("UPDATE learning_courses SET deleted_at = ? WHERE course_id = ?")
+            .bind(now)
+            .bind(&course_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            service.course_known_names(&course).await.unwrap(),
+            None,
+            "已删节点的 teaches 不得入名单"
+        );
     }
 
     /// archived 节点不夺首现：调用方过滤（graph_node_topology 的 SQL 带
