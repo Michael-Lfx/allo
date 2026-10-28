@@ -1633,6 +1633,10 @@ export const transformMessage = (message: IResponseMessage): TMessage | undefine
       if (!content) return undefined;
       return {
         id: uuid(),
+        // The stream frame's msg_id is the durable skill_load row. Keeping it
+        // as message_id lets a later history fetch replace this live card
+        // instead of appending a second one.
+        message_id: message.msg_id,
         type: 'skill_load',
         msg_id: message.msg_id,
         ...turnIdentity,

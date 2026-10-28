@@ -227,6 +227,7 @@ describe('transformMessage runtime field normalization', () => {
 
     expect(message?.type).toBe('skill_load');
     if (message?.type !== 'skill_load') throw new Error('expected Skill load message');
+    expect(message.message_id).toBe(MESSAGE_ID);
     expect(message.position).toBe('center');
     expect(message.content.skill_id).toBe('user:pdf');
     expect(message.content.content).toContain('Read documents safely.');
