@@ -1,13 +1,15 @@
 # Map: 六轮吸收——内容边界波（优先）+ 题面渲染 + 开放题判分重写（bd31277）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-10-28）。三线深挖（三代理只读对账 + 关键事实主会话复核）
-      已完成，结论织入各票「allo 现状」。前沿 = n1（可直开工）/ n2+n3（C 线，
-      用户最优先）/ n4+n5（A 线）。两处与 allo 既有条款的真冲突（k03 尾句、
-      R12 旧措辞）分别在 n2/n3 票面裁决，无前提性阻塞。 -->
+<!-- 状态：grill-with-docs 单轮定案（2026-10-28，18 问全按推荐落定）。n2/n4
+      两张 grilling 票已关（Resolution 在各票）；前沿 = n1（无阻塞）/
+      n3（C 线实施，n2 已解锁）/ n5（A 线实施，n4 已解锁）——三张实施票
+      均可开工。术语三词条（Known Names / Precedent / Node Intent Overload）
+      已进 CONTEXT.md。 -->
 <!-- 前情：五轮 m1–m11 全部落地 feat/learn-absorb-5（尖端 8a424d434，含
-      origin/main 同步 merge 6f7edfd9d，未推送）。本波实施基线 = 该分支尖端：
-      **n3 依赖 m2 已会声明锚表（迁移 072）与 declare/revoke 端点**。 -->
+      origin/main 同步 merge 6f7edfd9d，未推送）。本波实施基线 = 该分支尖端
+      之后拉新集成分支：**n3 依赖 m2 已会声明锚表（迁移 072）与 declare/revoke
+      端点**；迁移从 073 起。票面文档按惯例落 feat/learn-absorb-4。 -->
 <!-- 来源：learnhub C:\Users\test\Desktop\my\learnhub，ab908e0..bd31277 共 11 提交
       （10-26 ×1 + 10-27 ×4 + 10-28 ×6）。参考实码逐票引用（Reference 表）。 -->
 
@@ -130,10 +132,10 @@
 | id | 票 | 类型 | 依赖 | 线 |
 | --- | --- | --- | --- | --- |
 | n1 | 题面渲染管线接入（InlineMarkdown + 五面 + `___` 转义） | task | — | B |
-| n2 | 内容边界波 grilling（known_names 口径 / R12 / k03 换血 / 先例 / 档位行 / 传统线 / smoke 判据） | grilling | — | C |
-| n3 | 内容边界波实施（#177/#178/#180 + smoke 判据升级） | task | n2 | C |
-| n4 | 开放题判分重写 grilling（判底来源 / 失败出口 / 分数形态 / 模型档 / 范围） | grilling | — | A |
-| n5 | 开放题判分重写实施（judge 执行器 + 判底 + 降级出口 + smoke grade） | task | n4 | A |
+| n2 | 内容边界波 grilling（known_names 口径 / R12 / k03 换血 / 先例 / 档位行 / 传统线 / smoke 判据） | grilling（已关） | — | C |
+| n3 | 内容边界波实施（#177/#178/#180 + smoke 判据升级） | task | n2（已关） | C |
+| n4 | 开放题判分重写 grilling（判底来源 / 失败出口 / 分数形态 / 模型档 / 范围） | grilling（已关） | — | A |
+| n5 | 开放题判分重写实施（judge 执行器 + 判底 + 降级出口 + smoke grade） | task | n4（已关） | A |
 
-优先序（用户 2026-10-28 指示）：**C 最优先**（n2→n3），B 独立可并行先修
-（n1 无阻塞），A 随后（n4→n5）。
+优先序（用户 2026-10-28 指示）：**C 最优先**（n3），B 独立可并行先修
+（n1 无阻塞），A 随后（n5）。三张实施票全部解锁。

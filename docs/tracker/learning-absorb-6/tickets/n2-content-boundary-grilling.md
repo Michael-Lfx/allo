@@ -2,7 +2,7 @@
 id: n2
 title: "内容边界波 grilling——known_names 口径 / R12 收窄 / k03 语义换血 / 先例 / 档位行 / 传统线 / smoke 判据"
 type: grilling
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -114,3 +114,31 @@ learning_smoke.rs:2326-2346）。
 - 七裁决点全部落 Resolution（推荐项默认裁决须标注「可复议」）。
 - 裁决与既有词条冲突时同步 CONTEXT.md（如「已知集」新词条）。
 - n3 票面按裁决更新后才能开工。
+
+## Resolution（2026-10-28 关票，grill-with-docs 单轮 18 问全按推荐落定）
+
+- **D1 → (a)**：Known Names = **本课程图全部节点 teaches ∪ 本课程 m2 声明**
+  （learnhub 严格口径，课程词汇域、无进度过滤——课程内先后由首现纪律管）。
+  行名沿用「课程已知概念」。taught_ledger 跨课程全局口径记为可复议项。
+  **术语正名**：Known Names（内容边界，本课程）≠ 已知集（Declared Known
+  词条的就绪投影，跨课程）——两词两物，CONTEXT.md 新词条已落。
+- **D2**：R12 收窄不拆票；n3 内部**先收窄后注入**（同票两步、同一冒烟、
+  同批金样重生成）。
+- **D3**：k03 capacity_note 尾句**整体换 #178 语义**（先砍雄心再砍内容/
+  teaches 覆盖不可砍/收敛不住必写指名原因/预算内整键省略）；形状面
+  （normalize_capacity_note）与 allo 机械题量上限不动；审计观察条文案
+  同步。术语「节点意图超载」进 CONTEXT.md。
+- **D4**：**补 teaches 档位行**——图线节点块从结构快照 `teaches[].tier`
+  （TIERS=know/apply/teach，growth_contract.rs:16）渲染档位；顺手修
+  「写作纪律引用模型不可读值」缺口；传统线不适用。
+- **D5**：先例 = **扩展 first_appearance_set 带节点归因**（祖先闭包，限本
+  课程）；先行节标题复用 taught_sections_for_lessons；跨课程不作先例；
+  read_prior_content 工具轮留雾区。术语「先例」进 CONTEXT.md。
+- **D6**：传统线只收 R12 收窄措辞 + 自足条款（规划即雄心/est 双向句/练习
+  形态「不引入未教方法论」半边）；名单类条款豁免留档，不重建概念体系。
+- **D7**：smoke content 硬判据 ①输入面名单行 ②条款在场 ③契约面+est 铸值
+  ⑤先例行 全进 EXIT（stale-binary 必红）；超纲专名抽查留软读数+对照卡。
+
+无争议直采项（构件词边界/表述工具在场收窄/意图画像/取材池/练习形态/规划即
+雄心条款原文域中立移植；est 双向句数字不动；smoke 布景对齐声明档案）随 n3
+执行。
