@@ -237,6 +237,20 @@ describe('voice dock presentation mapping', () => {
     expect(state.hasDetails).toBe(true);
   });
 
+  test('a recoverable ASR failure keeps the active task visible', () => {
+    const state = view(boundSnapshot({
+      error: { stage: 'asr', code: 'asr_timeout' },
+      task: {
+        command_id: 'cmd-1', session_id: 'call', acoustic_turn_id: 'turn-1',
+        conversation_id: 'conv-a', message_id: 'msg-1', runtime_turn_id: null,
+        status: 'accepted', result_ok: null, result_text: null, error_code: null,
+      },
+    }));
+    expect(state.labelKey).toBe('voice.audio.asrTimeout');
+    expect(state.taskRunning).toBe(true);
+    expect(state.details.task?.command_id).toBe('cmd-1');
+  });
+
   test('capture interruption becomes a verified danger state', () => {
     const state = view(
       boundSnapshot({

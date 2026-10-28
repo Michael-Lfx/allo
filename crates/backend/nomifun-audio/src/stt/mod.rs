@@ -68,9 +68,10 @@ pub async fn transcribe_test_pcm_detailed(
             Ok(Some(sherpa)) => {
                 use crate::frame::AudioChannel;
                 use crate::recorder::SttCallback;
-                match sherpa.transcribe(AudioChannel::Mic, pcm_16k, target_sr).await {
-                    Some(text) if !text.trim().is_empty() => Ok(text.trim().to_string()),
-                    _ => Err("SenseVoice 未识别到文字 (可能环境嘈杂或发音不清晰，请清晰说话后重试)".to_string()),
+                match sherpa.transcribe_checked(AudioChannel::Mic, pcm_16k, target_sr).await {
+                    Ok(Some(text)) if !text.trim().is_empty() => Ok(text.trim().to_string()),
+                    Ok(_) => Err("SenseVoice 未识别到文字 (可能环境嘈杂或发音不清晰，请清晰说话后重试)".to_string()),
+                    Err(error) => Err(format!("SenseVoice 语音识别失败: {error}")),
                 }
             }
             Ok(None) => Err(

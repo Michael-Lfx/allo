@@ -9,7 +9,7 @@ pub(super) struct PendingConfirmation {
     pub generation:u64,
     pub deadline_ms:i64,
     pub listening_started:bool,
-    pub response:Option<tokio::sync::oneshot::Sender<Option<String>>>,
+    pub response:Option<tokio::sync::oneshot::Sender<Result<Option<String>, String>>>,
 }
 
 impl PendingConfirmation {
@@ -102,9 +102,13 @@ impl VoiceCompanionRuntime {
             driver.reset();
             if !matches!(outcome, Ok(Ok(_))) {
                 let _ = self.playback.interrupt().await;
+                let code = match &outcome {
+                    Ok(Err(AudioSinkError::Write(code))) if matches!(code.as_str(), "asr_empty_result" | "asr_busy" | "asr_timeout" | "asr_unavailable" | "asr_failed") => code.as_str(),
+                    _ => "confirmation_audio_or_timeout",
+                };
                 let _ = self.event_tx.send(VoiceCompanionEvent::Error {
                     stage: "confirmation".into(),
-                    code: "confirmation_audio_or_timeout".into(),
+                    code: code.into(),
                 });
             }
             let text = if approved {
@@ -156,7 +160,7 @@ impl VoiceCompanionRuntime {
         };
         let total_remaining = deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis());
         if total_remaining <= 0 {
-            return Ok(false);
+            return Err(AudioSinkError::Write("asr_timeout".into()));
         }
         if state == AcousticState::AwaitingConfirmation {
             driver
@@ -171,7 +175,7 @@ impl VoiceCompanionRuntime {
             let now_ms = chrono::Utc::now().timestamp_millis();
             let remaining = deadline_ms.saturating_sub(now_ms);
             if remaining <= 0 {
-                return Ok(false);
+                return Err(AudioSinkError::Write("asr_timeout".into()));
             }
 
             let current_gen = self.playback.generation_id();
@@ -193,13 +197,14 @@ impl VoiceCompanionRuntime {
             }
             let _ = self.event_tx.send(VoiceCompanionEvent::ConfirmationListening { deadline_ms });
 
-            let answer = tokio::time::timeout(Duration::from_millis(remaining as u64), rx)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten();
+            let answer = match tokio::time::timeout(Duration::from_millis(remaining as u64), rx).await {
+                Ok(Ok(Ok(Some(text)))) if !text.trim().is_empty() => text,
+                Ok(Ok(Ok(_))) => return Err(AudioSinkError::Write("asr_empty_result".into())),
+                Ok(Ok(Err(code))) => return Err(AudioSinkError::Write(code)),
+                Ok(Err(_)) | Err(_) => return Err(AudioSinkError::Write("asr_timeout".into())),
+            };
             if chrono::Utc::now().timestamp_millis() >= deadline_ms {
-                return Ok(false);
+                return Err(AudioSinkError::Write("asr_timeout".into()));
             }
             if self.snapshot().ended_reason.is_some()
                 || !self.pending_confirmation.lock().unwrap_or_else(|e| e.into_inner())
@@ -208,7 +213,6 @@ impl VoiceCompanionRuntime {
                 return Ok(false);
             }
 
-            let answer = answer.unwrap_or_default();
             match evaluate_confirmation_text(&answer) {
                 ConfirmationDecision::Approved => return Ok(true),
                 ConfirmationDecision::Denied => return Ok(false),

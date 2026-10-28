@@ -2144,22 +2144,26 @@ impl VoiceCompanionProcessManager {
                 },
             ),
             Some(response) => {
-                let reason = response
-                    .reason
-                    .unwrap_or_else(|| "fixed_audio_missing".into());
+                let reason = match response.reason.as_deref() {
+                    Some(s) if s.starts_with("fixture_synthesis_failed") => {
+                        "fixture_synthesis_failed".to_string()
+                    }
+                    Some(s) => s.to_string(),
+                    None => "fixed_audio_missing".to_string(),
+                };
                 (
                     evidence(
-                        VoiceCapabilityStatus::Unsupported,
+                        VoiceCapabilityStatus::Failed,
                         Some(&reason),
                         "fixed_audio_inference",
                     ),
                     evidence(
-                        VoiceCapabilityStatus::Unsupported,
+                        VoiceCapabilityStatus::Failed,
                         Some(&reason),
                         "fixed_audio_inference",
                     ),
                     evidence(
-                        VoiceCapabilityStatus::Unsupported,
+                        VoiceCapabilityStatus::Failed,
                         Some(&reason),
                         "fixed_audio_inference",
                     ),

@@ -85,7 +85,7 @@ bun run gen:i18n; bun run check:i18n; bun run build:ui; bun run check:theme
 
 > 对应 `PARENT-REVIEW-ROUND4` 的 RV4-01..03。证据根为 `build.voice-review-evidence.noindex/opencode-suite-readiness-20261025/`，前缀 `followup-r4-`；父审查文件与旧 RED 保持原样，未用新日志冒充原基线。
 
-1. **安装版自检资源**：新增 `apps/voice-companion/src/self_check_audio.rs`。解析顺序为显式 override、可执行文件旁 `audio-fixtures`、用户数据目录缓存；不再默认读取仓库文档路径。缓存带 schema/model revision/生成时间/SHA256/source/online 清单，缺失、损坏、过期或模型代次变化均拒绝。无合法固定资产时，使用现有 TTS provider 生成三条公开测试句并原子写入用户缓存；Edge 在线路径标注 `edge_online_generated(_cached)`，离线 provider 标注 `offline_tts_generated`；生成物不随安装包分发。缺失/损坏 override 继续失败关闭。
+1. **安装版自检资源**：新增 `apps/voice-companion/src/self_check_audio.rs`。解析顺序为显式 override、可执行文件旁 `audio-fixtures`、用户数据目录缓存；不再默认读取仓库文档路径。缓存带 schema/model revision/生成时间/SHA256/source/online 清单；缺失、损坏、过期仍拒绝，但 ASR/KWS/VAD 模型代次变化不再使 fixture 缓存失效（fixture 是独立测试输入，仅随 schema/测试句变化重建）。无合法固定资产时，使用现有 TTS provider 生成三条公开测试句并原子写入用户缓存；Edge 在线路径标注 `edge_online_generated(_cached)`，离线 provider 标注 `offline_tts_generated`；生成物不随安装包分发。缺失/损坏 override 继续失败关闭。
 2. **实际 worker 引擎**：删除 HTTP 内临时新建 KWS/VAD/ASR 的诊断路径。daemon 通过 worker 命令通道把固定 PCM 送入采集 worker 自己的 `kws`、`vad`、`transcriber`；worker 在 ASR 尚未加载时于同实例懒加载，不再用临时重载结果授予能力。响应绑定 request_id、instance_id、worker_epoch、model_revision、fixture source/online。自检期间 worker 丢弃实时采集并重置 KWS/VAD，阻止 wake、TTS 自检与模型写入并发；取消/超时在阶段间和 ASR 边界检查，超时后释放 active，迟到结果丢弃。
 3. **有归属听写入口**：`VoiceSettings` 不再 `navigate` 后固定 400ms 全文档查找。新增 route-owned `dictationIntent`，仅首页挂载的现有 `SpeechInputButton` 消费一次；离开路由撤销，disabled/unsupported 给出明确提示，重复激活不停止已有录音。转写仍进入现有输入框/文字回复路径，不触发 TTS。
 4. **验证**：实际 worker 失败但临时 ASR 重载成功的 `#[ignore]` 定向反例通过；worker 取消/截止时间、TTS/engine 互斥、host 迟到 request/instance/revision 拒绝均有确定性测试。两个仓库外 cwd 的新二进制自检均返回 `kws/vad/asr=true`、`fixtures_source=edge_online_generated(_cached)`、`worker_epoch=1`；缺失/损坏 override 返回 false。回归：terminal 46、models 39、app voice 112、dialogue 34、voice-companion 119（14 ignored）。typecheck 61 条既有（语音 0 新增）、build:ui/Flowy/i18n/theme/icons 通过；dead-css 仍为既有非语音文件失败，button-layout 需要运行中的 dev server，本轮未作为通过证据。
@@ -164,3 +164,9 @@ bun run gen:i18n; bun run check:i18n; bun run build:ui; bun run check:theme
 2. 真正两线程 Barrier 100000 次并发回归通过；R19 顺序循环改名，不再冒充并发。
 3. BoundStt 在预约时捕获 job/request/worker/instance，实际 ASR 入口直接按该 job 记录；B 忙拒绝不能重标 A。
 4. 单 A、取消无 B、健康 A/B、A/B、诊断与 cleanup 实跑；受控排队、A 后新 stuck B、完整反向链仍队列。
+
+## 第二十一轮自检雪崩修复与真实错误透传（followup-r21，2026-10-28）
+
+1. **TTS 错误解耦与真实透传**：`TtsProvider` trait 扩展 `is_available`（默认 `true`）；`SherpaOfflineTtsProvider` 依据本地模型配置是否有效判定，`FallbackTtsProvider` 仅在 fallback 可用时才介入。当 Primary（Edge TTS）因网络重置（10054）或超时失败且无本地离线模型时，直接透传真实网络错误，彻底消除 `offline_tts_resources_missing` 的伪错误掩盖。
+2. **测试音频持久性与引擎状态解耦**：移除自检缓存对 ASR/KWS/VAD `model_revision` 变化的连带失效逻辑，避免模型重装后强行拉入公网动态合成死循环；当自检音频缺失或动态合成失败时，KWS/VAD/ASR 能力证据从 `Unsupported` 纠正为 `Failed`（`reason: fixed_audio_missing` 或 `fixture_synthesis_failed`），不再把本地推理引擎误标为平台架构不支持。
+3. **前端呈现与国际化闭环**：`reason_code` 归一化收口并补充双语 i18n 字典词条（`fixed_audio_missing`、`fixture_synthesis_failed`、`kws_inference_failed`、`vad_inference_failed`、`asr_inference_failed`、`engine_check_unreachable` 等），消除胶囊提示回退泄露。

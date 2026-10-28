@@ -25,6 +25,138 @@ impl SttCallback for RecordingStt {
     }
 }
 
+struct PanickingStt;
+#[async_trait::async_trait]
+impl SttCallback for PanickingStt {
+    async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+        panic!("controlled ASR failure")
+    }
+}
+
+struct ReportedFailureStt;
+#[async_trait::async_trait]
+impl SttCallback for ReportedFailureStt {
+    async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> { None }
+    async fn transcribe_checked(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Result<Option<String>, String> {
+        Err("controlled engine failure".into())
+    }
+}
+
+struct RetryStt(std::sync::atomic::AtomicUsize);
+#[async_trait::async_trait]
+impl SttCallback for RetryStt {
+    async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+        (self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0).then(|| "重试成功".into())
+    }
+}
+
+#[tokio::test]
+async fn worker_reports_empty_recognition_and_asr_failure_without_ending_the_call() {
+    for (transcriber, expected) in [
+        (Arc::new(nomifun_audio::stt::NullSttCallback) as Arc<dyn SttCallback>, "asr_empty_result"),
+        (Arc::new(PanickingStt) as Arc<dyn SttCallback>, "asr_failed"),
+        (Arc::new(ReportedFailureStt) as Arc<dyn SttCallback>, "asr_failed"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(dir.path())), Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)), transcriber, Arc::new(StubVoiceRouter::chat("unused")),
+        );
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        let worker = runtime.start_worker();
+        runtime.handle_wake().await.unwrap();
+        let session = runtime.snapshot().session_id;
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let snapshot = runtime.snapshot();
+        worker.abort();
+        producer.close();
+        assert_eq!(snapshot.session_id, session);
+        assert_eq!(snapshot.phase, nomifun_voice_models::VoiceSessionPhase::Listening);
+        assert_eq!(snapshot.error.as_ref().map(|error| error.code.as_str()), Some(expected));
+        assert!(snapshot.conversation.is_empty(), "failed recognition must not create an empty chat row");
+    }
+}
+
+#[tokio::test]
+async fn worker_snapshot_contains_the_recognized_turn_and_chat_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+    let (runtime, _) = VoiceCompanionRuntime::from_capture(
+        Arc::new(ModelManager::new(dir.path())), Arc::new(OobeManager::new_bypassed()),
+        Arc::new(Mutex::new(capture)), Arc::new(nomifun_audio::stt::FakeSttCallback::always("固定测试问题")),
+        Arc::new(StubVoiceRouter::chat("固定测试回复")),
+    );
+    runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+    let mut events = runtime.event_sender().subscribe();
+    let worker = runtime.start_worker();
+    runtime.handle_wake().await.unwrap();
+    for index in 0..75 {
+        assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let snapshot = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let snapshot = runtime.snapshot();
+            if snapshot.assistant_text.as_deref() == Some("固定测试回复") { break snapshot; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    worker.abort();
+    producer.close();
+    assert_eq!(snapshot.user_text.as_deref(), Some("固定测试问题"));
+    assert_eq!(snapshot.conversation.len(), 1);
+    assert_eq!(snapshot.conversation[0].session_id, snapshot.session_id);
+    assert_eq!(Some(&snapshot.conversation[0].turn_id), snapshot.turn_id.as_ref());
+    let recognized = std::iter::from_fn(|| events.try_recv().ok()).filter(|event| matches!(event, voice_companion::voice::VoiceCompanionEvent::SpeechRecognized { text } if text == "固定测试问题")).count();
+    assert_eq!(recognized, 1);
+    if let Some(path) = std::env::var_os("VOICE_WORKER_REPLAY_SNAPSHOT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn next_speech_clears_a_recoverable_asr_error_in_the_same_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+    let (runtime, _) = VoiceCompanionRuntime::from_capture(
+        Arc::new(ModelManager::new(dir.path())), Arc::new(OobeManager::new_bypassed()),
+        Arc::new(Mutex::new(capture)), Arc::new(RetryStt(std::sync::atomic::AtomicUsize::new(0))),
+        Arc::new(StubVoiceRouter::chat("收到")),
+    );
+    runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+    let worker = runtime.start_worker();
+    runtime.handle_wake().await.unwrap();
+    let session = runtime.snapshot().session_id;
+    for turn in 0..2 {
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if turn == 0 {
+            let snapshot = runtime.snapshot();
+            assert_eq!(snapshot.error.as_ref().map(|error| error.code.as_str()), Some("asr_empty_result"));
+            assert_eq!(snapshot.session_id, session);
+        }
+    }
+    let snapshot = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let snapshot = runtime.snapshot();
+            if snapshot.assistant_text.as_deref() == Some("收到") { break snapshot; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    worker.abort();
+    producer.close();
+    assert_eq!(snapshot.session_id, session);
+    assert_eq!(snapshot.user_text.as_deref(), Some("重试成功"));
+    assert!(snapshot.error.is_none());
+    assert_eq!(snapshot.conversation.len(), 1);
+}
+
 #[tokio::test]
 async fn long_initial_silence_does_not_cut_off_the_first_spoken_sentence() {
     let dir = tempfile::tempdir().unwrap();

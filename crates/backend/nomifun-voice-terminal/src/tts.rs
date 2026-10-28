@@ -87,6 +87,8 @@ fn edge_request_url(endpoint: &str, request_id: &str, unix_seconds: u64) -> Stri
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> { None }
+    /// Reports whether the provider has the required resources to attempt synthesis.
+    fn is_available(&self) -> bool { true }
     /// Stream audio chunk synthesis. Returns an async Receiver for byte buffers.
     async fn synthesize_stream(
         &self,
@@ -1044,6 +1046,9 @@ impl SherpaOfflineTtsProvider {
 #[cfg(feature = "local-tts")]
 #[async_trait]
 impl TtsProvider for SherpaOfflineTtsProvider {
+    fn is_available(&self) -> bool {
+        self.config.is_valid()
+    }
     fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
         Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
             provider: "sherpa".into(), voice: Some(if voice.is_empty() { self.config.sid.to_string() } else { voice.into() }),
@@ -1134,6 +1139,9 @@ impl SherpaOfflineTtsProvider {
 #[cfg(not(feature = "local-tts"))]
 #[async_trait]
 impl TtsProvider for SherpaOfflineTtsProvider {
+    fn is_available(&self) -> bool {
+        false
+    }
     async fn synthesize_stream(
         &self,
         _text: &str,
@@ -1174,6 +1182,9 @@ impl TtsProvider for FallbackTtsProvider {
     fn diagnostic(&self, _voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
         self.selected.lock().unwrap_or_else(|e|e.into_inner()).clone()
     }
+    fn is_available(&self) -> bool {
+        self.primary.is_available() || self.fallback.is_available()
+    }
     async fn synthesize_stream(
         &self,
         text: &str,
@@ -1185,6 +1196,14 @@ impl TtsProvider for FallbackTtsProvider {
                 Ok(rx)
             },
             Err(primary_err) => {
+                if !self.fallback.is_available() {
+                    tracing::warn!(
+                        error = %primary_err,
+                        "primary_tts_failed_and_fallback_unavailable"
+                    );
+                    *self.selected.lock().unwrap_or_else(|e|e.into_inner()) = self.primary.diagnostic(voice);
+                    return Err(primary_err);
+                }
                 tracing::warn!(
                     error = %primary_err,
                     "primary_tts_failed_attempting_fallback"
@@ -1244,6 +1263,50 @@ mod fallback_and_sherpa_tests {
             .expect("must succeed via primary");
         let data = rx.recv().await.expect("must receive frame");
         assert_eq!(data, vec![9, 9, 9]);
+    }
+
+    #[tokio::test]
+    async fn fallback_tts_provider_returns_primary_error_when_fallback_unavailable() {
+        struct CustomErrorTts;
+        #[async_trait]
+        impl TtsProvider for CustomErrorTts {
+            async fn synthesize_stream(&self, _: &str, _: &str) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+                Err(TtsError::Network("connection reset 10054".into()))
+            }
+        }
+
+        let primary = std::sync::Arc::new(CustomErrorTts);
+        let fallback = std::sync::Arc::new(SherpaOfflineTtsProvider::new(SherpaOfflineTtsConfig::default()));
+        assert!(!fallback.is_available());
+
+        let provider = FallbackTtsProvider::new(primary, fallback);
+        let res = provider.synthesize_stream("hello world", "").await;
+        assert!(res.is_err());
+        let err = res.err().unwrap();
+        // Crucial: Must return primary's real network error, NOT masked offline_tts_resources_missing
+        assert_eq!(err, TtsError::Network("connection reset 10054".into()));
+    }
+
+    #[test]
+    fn fallback_tts_provider_is_available_reflects_sub_providers() {
+        struct UnavailableMock;
+        #[async_trait]
+        impl TtsProvider for UnavailableMock {
+            fn is_available(&self) -> bool { false }
+            async fn synthesize_stream(&self, _: &str, _: &str) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
+                Err(TtsError::Synthesis("unavailable".into()))
+            }
+        }
+
+        let unavail1 = std::sync::Arc::new(UnavailableMock);
+        let unavail2 = std::sync::Arc::new(UnavailableMock);
+        let provider_both_unavail = FallbackTtsProvider::new(unavail1, unavail2);
+        assert!(!provider_both_unavail.is_available());
+
+        let avail = std::sync::Arc::new(MockSuccessTts(vec![]));
+        let unavail3 = std::sync::Arc::new(UnavailableMock);
+        let provider_one_avail = FallbackTtsProvider::new(unavail3, avail);
+        assert!(provider_one_avail.is_available());
     }
 
     #[tokio::test]

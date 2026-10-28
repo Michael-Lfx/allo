@@ -35,26 +35,35 @@ impl CloudSttCallback {
 impl SttCallback for CloudSttCallback {
     async fn transcribe(
         &self,
-        _channel: AudioChannel,
+        channel: AudioChannel,
         pcm: Vec<f32>,
         sample_rate: u32,
     ) -> Option<String> {
+        self.transcribe_checked(channel, pcm, sample_rate).await.ok().flatten()
+    }
+
+    async fn transcribe_checked(
+        &self,
+        _channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<Option<String>, String> {
         if pcm.is_empty() {
-            return None;
+            return Ok(None);
         }
         let wav = pcm_to_wav(&pcm, sample_rate);
         match self.cloud.transcribe(wav, "audio/wav").await {
             Ok(text) => {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
-                    None
+                    Ok(None)
                 } else {
-                    Some(trimmed.to_string())
+                    Ok(Some(trimmed.to_string()))
                 }
             }
             Err(err) => {
                 tracing::warn!("CloudSttCallback: transcribe failed: {err}");
-                None
+                Err(err)
             }
         }
     }
@@ -77,6 +86,21 @@ mod tests {
             *self.last_mime.lock().unwrap() = Some(mime_type.to_string());
             Ok(self.reply.clone())
         }
+    }
+
+    #[tokio::test]
+    async fn checked_cloud_callback_preserves_engine_failure() {
+        struct FailingCloud;
+        #[async_trait]
+        impl MeetingCloudStt for FailingCloud {
+            async fn transcribe(&self, _: Vec<u8>, _: &str) -> Result<String, String> {
+                Err("controlled_cloud_failure".into())
+            }
+        }
+
+        let cb = CloudSttCallback::new(Arc::new(FailingCloud));
+        let result = cb.transcribe_checked(AudioChannel::Mic, vec![0.1; 1600], 16_000).await;
+        assert_eq!(result.unwrap_err(), "controlled_cloud_failure");
     }
 
     #[tokio::test]

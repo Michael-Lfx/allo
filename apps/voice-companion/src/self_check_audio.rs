@@ -145,7 +145,7 @@ fn load_set(dir: &Path, source_prefix: &str) -> Result<SelfCheckAudio, String> {
     })
 }
 
-fn load_cache(dir: &Path, model_revision: &str) -> Result<Option<SelfCheckAudio>, String> {
+fn load_cache(dir: &Path) -> Result<Option<SelfCheckAudio>, String> {
     let manifest_path = dir.join(MANIFEST_FILE);
     if !manifest_path.is_file() {
         return Ok(None);
@@ -155,9 +155,6 @@ fn load_cache(dir: &Path, model_revision: &str) -> Result<Option<SelfCheckAudio>
         serde_json::from_slice(&bytes).map_err(|_| "fixed_audio_manifest_corrupt".to_string())?;
     if manifest.get("schema").and_then(|value| value.as_u64()) != Some(SCHEMA as u64) {
         return Err("fixed_audio_manifest_schema_mismatch".into());
-    }
-    if manifest.get("model_revision").and_then(|value| value.as_str()) != Some(model_revision) {
-        return Err("fixed_audio_stale_model_revision".into());
     }
     let source = manifest
         .get("source")
@@ -320,7 +317,7 @@ pub async fn load_or_generate_until(
     }
 
     let cache = user_audio_dir();
-    match load_cache(&cache, model_revision) {
+    match load_cache(&cache) {
         Ok(Some(set)) => return Ok(set),
         Ok(None) => {}
         Err(reason) => {
@@ -408,19 +405,20 @@ mod tests {
         let non_wake = tone(440.0, 1.0);
         write_bundle(dir.path(), &wake, &command, &non_wake, now_ms(), "rev-1");
         std::fs::write(dir.path().join(WAKE_FILE), b"not a wav").unwrap();
-        assert!(load_cache(dir.path(), "rev-1").is_err());
+        assert!(load_cache(dir.path()).is_err());
     }
 
     #[test]
-    fn stale_or_foreign_cached_audio_is_rejected() {
+    fn expired_cached_audio_is_rejected_and_model_revision_does_not_invalidate() {
         let dir = tempfile::tempdir().unwrap();
         let wake = tone(220.0, 1.0);
         let command = tone(330.0, 1.0);
         let non_wake = tone(440.0, 1.0);
         write_bundle(dir.path(), &wake, &command, &non_wake, now_ms() - MAX_AGE_MS - 1, "rev-1");
-        assert_eq!(load_cache(dir.path(), "rev-1").unwrap_err(), "fixed_audio_expired");
+        assert_eq!(load_cache(dir.path()).unwrap_err(), "fixed_audio_expired");
         write_bundle(dir.path(), &wake, &command, &non_wake, now_ms(), "rev-1");
-        assert_eq!(load_cache(dir.path(), "rev-2").unwrap_err(), "fixed_audio_stale_model_revision");
+        let loaded = load_cache(dir.path()).unwrap().expect("cache must survive model revision changes");
+        assert_eq!(loaded.wake.len(), wake.len());
     }
 
     #[test]
@@ -490,7 +488,7 @@ mod tests {
         let command = tone(330.0, 1.0);
         let non_wake = tone(440.0, 1.0);
         write_bundle(dir.path(), &wake, &command, &non_wake, now_ms(), "rev-1");
-        let loaded = load_cache(dir.path(), "rev-1").unwrap().expect("valid cache");
+        let loaded = load_cache(dir.path()).unwrap().expect("valid cache");
         assert!(loaded.online);
         assert_eq!(loaded.wake.len(), wake.len());
     }

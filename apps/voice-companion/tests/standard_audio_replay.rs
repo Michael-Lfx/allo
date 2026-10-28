@@ -56,11 +56,6 @@ async fn standard_pcm(name: &str) -> Vec<f32> {
             other => panic!("unexpected capture {other:?}"),
         }
     }
-    std::fs::write(
-        fixtures().join(format!("{name}-16k.wav")),
-        nomifun_audio::pcm_to_wav(&normalized, 16000),
-    )
-    .unwrap();
     normalized
 }
 
@@ -213,11 +208,6 @@ async fn standard_wake_and_command_reach_the_production_worker() {
     pcm.extend(vec![0.0; 1280]);
     pcm.extend(standard_pcm("command").await);
     pcm.extend(vec![0.0; 32000]);
-    std::fs::write(
-        fixtures().join("wake-and-command-16k.wav"),
-        nomifun_audio::pcm_to_wav(&pcm, 16000),
-    )
-    .unwrap();
     assert_command_reaches_worker(pcm).await;
 }
 

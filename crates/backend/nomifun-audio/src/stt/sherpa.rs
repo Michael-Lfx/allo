@@ -51,20 +51,20 @@ impl SherpaSttCallback {
         })
     }
 
-    fn recognize_sync(&self, pcm: &[f32], sample_rate: u32) -> Option<String> {
+    fn recognize_sync(&self, pcm: &[f32], sample_rate: u32) -> Result<Option<String>, String> {
         if pcm.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let recognizer = self.inner.recognizer.lock().ok()?;
+        let recognizer = self.inner.recognizer.lock().map_err(|_| "asr_engine_failed".to_owned())?;
         let stream = recognizer.create_stream();
         stream.accept_waveform(sample_rate as i32, pcm);
         recognizer.decode(&stream);
-        let text = stream.get_result()?.text;
+        let text = stream.get_result().ok_or_else(|| "asr_engine_failed".to_owned())?.text;
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(trimmed.to_string())
+            Ok(Some(trimmed.to_string()))
         }
     }
 }
@@ -73,18 +73,26 @@ impl SherpaSttCallback {
 impl SttCallback for SherpaSttCallback {
     async fn transcribe(
         &self,
-        _channel: AudioChannel,
+        channel: AudioChannel,
         pcm: Vec<f32>,
         sample_rate: u32,
     ) -> Option<String> {
+        self.transcribe_checked(channel, pcm, sample_rate).await.ok().flatten()
+    }
+
+    async fn transcribe_checked(
+        &self,
+        _channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<Option<String>, String> {
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
             let cb = SherpaSttCallback { inner };
             cb.recognize_sync(&pcm, sample_rate)
         })
         .await
-        .ok()
-        .flatten()
+        .map_err(|_| "asr_engine_failed".to_owned())?
     }
 }
 

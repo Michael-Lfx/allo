@@ -1,7 +1,7 @@
 //! Single-writer session projection; snapshots survive late subscription.
 use nomifun_api_types::voice::{
     VoiceCompanionEvent, VoiceConnectionState, VoiceConversationTurn, VoiceSessionError,
-    VoiceSessionPhase, VoiceSessionSnapshot,
+    VoiceSessionControlRequest, VoiceSessionPhase, VoiceSessionSnapshot,
 };
 use std::sync::Mutex;
 use tokio::sync::broadcast;
@@ -133,11 +133,30 @@ impl VoiceEventHub {
         &self,
         event: VoiceCompanionEvent,
     ) -> Result<usize, broadcast::error::SendError<VoiceCompanionEvent>> {
+        self.send_inner(event, None)
+    }
+
+    pub(crate) fn send_scoped(
+        &self,
+        event: VoiceCompanionEvent,
+        scope: &VoiceSessionControlRequest,
+    ) -> Result<usize, broadcast::error::SendError<VoiceCompanionEvent>> {
+        self.send_inner(event, Some(scope))
+    }
+
+    fn send_inner(
+        &self,
+        event: VoiceCompanionEvent,
+        scope: Option<&VoiceSessionControlRequest>,
+    ) -> Result<usize, broadcast::error::SendError<VoiceCompanionEvent>> {
         use VoiceSessionPhase as Phase;
         if matches!(event, VoiceCompanionEvent::Snapshot { .. }) {
             return self.tx.send(event);
         }
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if scope.is_some_and(|scope| !scope.matches(&state) || state.ended_reason.is_some()) {
+            return Ok(0);
+        }
         let epoch = self.worker_epoch.load(std::sync::atomic::Ordering::Acquire);
         if epoch > 0 {
             state.worker_epoch = Some(epoch);
@@ -435,6 +454,30 @@ impl VoiceEventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_asr_failure_cannot_change_a_new_turn_or_an_ended_session() {
+        let hub = VoiceEventHub::new();
+        let _listener = hub.sender().subscribe();
+        let _ = hub.send(VoiceCompanionEvent::WakeHit { keyword: "Hey Flowy".into(), request_id: None, locale: None });
+        let _ = hub.send(VoiceCompanionEvent::Transcribing);
+        let first = hub.snapshot();
+        let old = VoiceSessionControlRequest { instance_id: first.instance_id, session_id: first.session_id, turn_id: first.turn_id };
+        let _ = hub.send(VoiceCompanionEvent::Transcribing);
+        let current = hub.snapshot();
+        assert_ne!(current.turn_id, old.turn_id);
+        assert_eq!(hub.send_scoped(VoiceCompanionEvent::SpeechRecognized { text: "stale".into() }, &old).unwrap(), 0);
+        assert_eq!(hub.send_scoped(VoiceCompanionEvent::Error { stage: "asr".into(), code: "asr_failed".into() }, &old).unwrap(), 0);
+        let after = hub.snapshot();
+        assert_eq!(after.seq, current.seq);
+        assert_eq!(after.turn_id, current.turn_id);
+        assert!(after.error.is_none());
+        let scope = VoiceSessionControlRequest { instance_id: after.instance_id, session_id: after.session_id, turn_id: after.turn_id };
+        let _ = hub.send(VoiceCompanionEvent::SessionEnded { reason: nomifun_api_types::voice::VoiceSessionEndReason::UserStop });
+        let ended = hub.snapshot();
+        assert_eq!(hub.send_scoped(VoiceCompanionEvent::Error { stage: "asr".into(), code: "asr_failed".into() }, &scope).unwrap(), 0);
+        assert_eq!(hub.snapshot().seq, ended.seq);
+    }
 
     #[test]
     fn wake_identity_is_published_atomically_and_not_inherited_by_kws() {

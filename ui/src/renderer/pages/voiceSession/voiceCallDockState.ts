@@ -232,7 +232,7 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
         labelFallback: 'Voice error',
         alert: true,
         canInterrupt: false,
-        taskRunning: false,
+        taskRunning,
         needsApproval,
       });
     }

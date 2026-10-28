@@ -11,6 +11,20 @@ import en from '@renderer/services/i18n/locales/en-US/voice.json';
 import type { VoiceSnapshot } from '@common/adapter/voiceCompanion';
 
 for (const [locale, dictionary] of [['zh-CN', zh], ['en-US', en]] as const) {
+  test(`${locale}: recognition failures have specific, localized recovery messages`, async () => {
+    const i18n = createInstance();
+    await i18n.init({ lng: locale, resources: { [locale]: { translation: { voice: dictionary } } }, initImmediate: false });
+    for (const [code, message] of [
+      ['asr_empty_result', dictionary.audio.asrEmpty], ['asr_busy', dictionary.audio.asrBusy],
+      ['asr_timeout', dictionary.audio.asrTimeout], ['asr_unavailable', dictionary.audio.asrUnavailable],
+      ['asr_failed', dictionary.audio.asrFailed],
+    ] as const) {
+      const html = renderToStaticMarkup(<I18nextProvider i18n={i18n}><VoiceErrorStatus error={{ stage: 'asr', code }} /></I18nextProvider>);
+      expect(html).toContain(message);
+      expect(html).toContain('role="alert"');
+      expect(html).not.toContain('voice.audio.');
+    }
+  });
   test(`${locale}: disconnected audio explains automatic recovery and retained text`, async () => {
     const i18n=createInstance();
     await i18n.init({lng:locale,resources:{[locale]:{translation:{voice:dictionary}}},initImmediate:false});

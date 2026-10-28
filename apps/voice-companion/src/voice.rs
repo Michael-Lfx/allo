@@ -10,7 +10,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
 use tracing::{info, warn};
@@ -178,6 +178,52 @@ impl Drop for NativeBusyGuard {
     }
 }
 
+/// Reserves the native lease for a user utterance before maintenance work is
+/// enqueued. A reservation is a promise that the next free lease goes to ASR,
+/// not a lease itself: capture and native frame work remain free to finish.
+#[derive(Default)]
+struct NativeAdmission {
+    pending: AtomicUsize,
+    notify: Notify,
+    arbitration: std::sync::Mutex<()>,
+    #[cfg(test)]
+    before_background_claim: std::sync::Mutex<Option<Arc<AdmissionClaimTestGate>>>,
+}
+
+#[cfg(test)]
+struct AdmissionClaimTestGate {
+    reached: Notify,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl NativeAdmission {
+    fn reserve(self: &Arc<Self>) -> NativeAdmissionGuard {
+        let _arbitration = self.arbitration.lock().unwrap_or_else(|error| error.into_inner());
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        NativeAdmissionGuard {
+            admission: self.clone(),
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) > 0
+    }
+}
+
+struct NativeAdmissionGuard {
+    admission: Arc<NativeAdmission>,
+}
+
+impl Drop for NativeAdmissionGuard {
+    fn drop(&mut self) {
+        {
+            let _arbitration = self.admission.arbitration.lock().unwrap_or_else(|error| error.into_inner());
+            self.admission.pending.fetch_sub(1, Ordering::AcqRel);
+        }
+        self.admission.notify.notify_waiters();
+    }
+}
+
 #[derive(Default)]
 struct NativeHealth {
     state: std::sync::Mutex<NativeHealthState>,
@@ -217,6 +263,8 @@ struct NativeCallRunner {
     busy: Arc<AtomicBool>,
     epoch: Arc<AtomicU64>,
     health: Option<Arc<NativeHealth>>,
+    admission: Option<Arc<NativeAdmission>>,
+    priority: bool,
 }
 
 impl NativeCallRunner {
@@ -226,6 +274,8 @@ impl NativeCallRunner {
             busy,
             epoch,
             health: None,
+            admission: None,
+            priority: false,
         }
     }
 
@@ -238,6 +288,24 @@ impl NativeCallRunner {
             busy,
             epoch,
             health: Some(health),
+            admission: None,
+            priority: false,
+        }
+    }
+
+    fn with_admission(
+        busy: Arc<AtomicBool>,
+        epoch: Arc<AtomicU64>,
+        health: Arc<NativeHealth>,
+        admission: Arc<NativeAdmission>,
+        priority: bool,
+    ) -> Self {
+        Self {
+            busy,
+            epoch,
+            health: Some(health),
+            admission: Some(admission),
+            priority,
         }
     }
 
@@ -268,18 +336,27 @@ impl NativeCallRunner {
             if now >= deadline {
                 return Err("engine_check_timeout".into());
             }
-            if self
-                .busy
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                let job = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                return Ok(NativeBusyGuard::attach(
-                    self.busy.clone(),
-                    self.epoch.clone(),
-                    job,
-                ));
-            }
+            let acquired = {
+                // Reserve and background admission share one linearization point.
+                let _arbitration = self.admission.as_ref().map(|admission| {
+                    admission.arbitration.lock().unwrap_or_else(|error| error.into_inner())
+                });
+                let reserved = !self.priority && self.admission.as_ref().is_some_and(|admission| admission.has_pending());
+                #[cfg(test)]
+                if !self.priority && !reserved {
+                    if let Some(gate) = self.admission.as_ref().and_then(|admission| admission.before_background_claim.lock().unwrap_or_else(|error| error.into_inner()).take()) {
+                        gate.reached.notify_one();
+                        gate.resume.lock().unwrap_or_else(|error| error.into_inner()).recv_timeout(std::time::Duration::from_secs(2)).expect("test must release the admission gate");
+                    }
+                }
+                if !reserved && self.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    let job = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                    Some(NativeBusyGuard::attach(self.busy.clone(), self.epoch.clone(), job))
+                } else {
+                    None
+                }
+            };
+            if let Some(guard) = acquired { return Ok(guard); }
             if !wait_for_lease {
                 return Err("engine_check_native_busy".into());
             }
@@ -288,9 +365,17 @@ impl NativeCallRunner {
                 std::time::Duration::from_millis(10),
             ));
             tokio::pin!(pause);
-            tokio::select! {
-                _ = notify.notified() => {},
-                _ = &mut pause => {},
+            if let Some(admission) = &self.admission {
+                tokio::select! {
+                    _ = notify.notified() => {},
+                    _ = admission.notify.notified() => {},
+                    _ = &mut pause => {},
+                }
+            } else {
+                tokio::select! {
+                    _ = notify.notified() => {},
+                    _ = &mut pause => {},
+                }
             }
         }
     }
@@ -535,8 +620,17 @@ fn native_job_needs_recovery(supervised: bool, busy: bool, current_job: u64, job
 
 fn native_error_requires_degraded(reason: &str) -> bool {
     reason == "engine_check_timeout"
+        || reason == "worker_asr_failed"
         || reason.starts_with("native_call_join_failed:")
         || reason.starts_with("worker_asr_join_failed:")
+}
+
+fn asr_failure_code(reason: &str) -> &'static str {
+    match reason {
+        "engine_check_native_busy" => "asr_busy",
+        "engine_check_timeout" => "asr_timeout",
+        _ => "asr_failed",
+    }
 }
 
 trait KwsBackend: Send {
@@ -864,6 +958,13 @@ impl SttCallback for BoundStt {
         }
         self.inner.transcribe(channel, pcm, sample_rate).await
     }
+
+    async fn transcribe_checked(&self, channel: AudioChannel, pcm: Vec<f32>, sample_rate: u32) -> Result<Option<String>, String> {
+        if !self.entered.swap(true, Ordering::AcqRel) {
+            record_fault_job_entry(self.job, self.context.as_ref());
+        }
+        self.inner.transcribe_checked(channel, pcm, sample_rate).await
+    }
 }
 
 #[cfg(feature = "native-fault-injection")]
@@ -1068,8 +1169,19 @@ pub fn hardware_attempts() -> (u64, u64) {
     )
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct SpeechEndTestGate {
+    reached: Notify,
+    resume: Notify,
+}
+
 /// Production voice companion pipeline assembly and runtime controller.
 pub struct VoiceCompanionRuntime {
+    #[cfg(test)]
+    confirmation_speech_end_gate: Option<Arc<SpeechEndTestGate>>,
+    #[cfg(test)]
+    ordinary_speech_end_gate: Option<Arc<SpeechEndTestGate>>,
     pending_confirmation:Arc<std::sync::Mutex<Option<PendingConfirmation>>>,
     announced_tasks: Mutex<std::collections::VecDeque<AnnouncementRecord>>,
     task_client: Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
@@ -1087,6 +1199,7 @@ pub struct VoiceCompanionRuntime {
     self_check_id: Arc<std::sync::Mutex<Option<String>>>,
     engine_check_active: Arc<AtomicBool>,
     engine_check_native_busy: Arc<AtomicBool>,
+    native_admission: Arc<NativeAdmission>,
     native_degraded: Arc<NativeHealth>,
     native_recovery_scheduled: Arc<AtomicU64>,
     native_job_epoch: Arc<AtomicU64>,
@@ -1171,12 +1284,11 @@ fn admission_valid_for(until: &Arc<AtomicU64>) -> bool {
     now < until.load(Ordering::Acquire)
 }
 impl VoiceCompanionRuntime {
-    fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider) {
+    fn report_tts_source(events: &VoiceEventHub, tts: &dyn TtsProvider, scope: &VoiceSessionControlRequest) {
         if let Some(diagnostic) = tts.diagnostic("") {
-            let scope = events.snapshot();
-            let _ = events.send(VoiceCompanionEvent::TtsSource {
-                session_id: scope.session_id, turn_id: scope.turn_id, diagnostic,
-            });
+            let _ = events.send_scoped(VoiceCompanionEvent::TtsSource {
+                session_id: scope.session_id.clone(), turn_id: scope.turn_id.clone(), diagnostic,
+            }, scope);
         }
     }
     /// Assembles the complete voice pipeline with capture, playback, session driver, and router.
@@ -1206,6 +1318,10 @@ impl VoiceCompanionRuntime {
         let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
 
         Self {
+            #[cfg(test)]
+            confirmation_speech_end_gate: None,
+            #[cfg(test)]
+            ordinary_speech_end_gate: None,
             pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
             announced_tasks: Mutex::new(std::collections::VecDeque::new()),
             task_client: std::env::var("AI_MATE_TASK_ENDPOINT").ok().and_then(|endpoint| {
@@ -1240,6 +1356,7 @@ impl VoiceCompanionRuntime {
             self_check_id: Arc::new(std::sync::Mutex::new(None)),
             engine_check_active: Arc::new(AtomicBool::new(false)),
             engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+            native_admission: Arc::new(NativeAdmission::default()),
             native_degraded: Arc::new(NativeHealth::default()),
             native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
             native_job_epoch: Arc::new(AtomicU64::new(0)),
@@ -1316,6 +1433,10 @@ impl VoiceCompanionRuntime {
         let (engine_check_tx, engine_check_rx) = mpsc::channel(1);
         (
             Self {
+                #[cfg(test)]
+                confirmation_speech_end_gate: None,
+                #[cfg(test)]
+                ordinary_speech_end_gate: None,
                 pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
                 announced_tasks: Mutex::new(std::collections::VecDeque::new()),
                 task_client: None,
@@ -1338,6 +1459,7 @@ impl VoiceCompanionRuntime {
                 self_check_id: Arc::new(std::sync::Mutex::new(None)),
                 engine_check_active: Arc::new(AtomicBool::new(false)),
                 engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+                native_admission: Arc::new(NativeAdmission::default()),
                 native_degraded: Arc::new(NativeHealth::default()),
                 native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
                 native_job_epoch: Arc::new(AtomicU64::new(0)),
@@ -1496,10 +1618,16 @@ impl VoiceCompanionRuntime {
             goal: request.goal,
             text: request.text.clone(),
         });
+        let playback_snapshot = self.event_tx.snapshot();
+        let playback_scope = VoiceSessionControlRequest {
+            instance_id: playback_snapshot.instance_id,
+            session_id: playback_snapshot.session_id,
+            turn_id: playback_snapshot.turn_id,
+        };
         drop(driver);
         drop(announced);
         voice_feedback::play(&self.playback, &self.event_tx, VoiceCueKind::Recognized, generation).await;
-        let play_result = Self::play_response(&request.text,&self.driver,&self.playback,&self.event_tx,&self.tts,generation).await;
+        let play_result = Self::play_response(&request.text,&self.driver,&self.playback,&self.event_tx,&self.tts,generation,&playback_scope).await;
         let mut announced = self.announced_tasks.lock().await;
         if let Some(record) = announced.iter_mut().find(|r| r.attempt_id == attempt) {
             match play_result {
@@ -1609,7 +1737,9 @@ impl VoiceCompanionRuntime {
         if self.self_check_active.load(Ordering::Acquire) {
             return failure("self_check_in_progress");
         }
-        if self.engine_check_native_busy.load(Ordering::Acquire) {
+        if self.engine_check_native_busy.load(Ordering::Acquire)
+            || self.native_admission.has_pending()
+        {
             return failure("engine_check_native_busy");
         }
         if self
@@ -1960,6 +2090,8 @@ impl VoiceCompanionRuntime {
                     native_job_epoch,
                     deadline,
                     true,
+                    None,
+                    kws.runner.admission.as_ref(),
                     #[cfg(feature = "native-fault-injection")]
                     None,
                 )
@@ -1978,6 +2110,8 @@ impl VoiceCompanionRuntime {
                     native_job_epoch,
                     deadline,
                     true,
+                    None,
+                    kws.runner.admission.as_ref(),
                     #[cfg(feature = "native-fault-injection")]
                     None,
                 )
@@ -2011,6 +2145,7 @@ impl VoiceCompanionRuntime {
         native_busy: &Arc<AtomicBool>,
         native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
+        native_admission: &Arc<NativeAdmission>,
         deadline: std::time::Instant,
     ) -> Result<(), String> {
         if cancel.load(Ordering::Acquire) {
@@ -2020,10 +2155,12 @@ impl VoiceCompanionRuntime {
             return Err("engine_check_timeout".into());
         }
         let dir = models.models_dir().to_path_buf();
-        let runner = NativeCallRunner::with_health(
+        let runner = NativeCallRunner::with_admission(
             native_busy.clone(),
             native_job_epoch.clone(),
             native_degraded.clone(),
+            native_admission.clone(),
+            false,
         );
         let loaded = runner
             .load_until(
@@ -2049,6 +2186,8 @@ impl VoiceCompanionRuntime {
         native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         budget: std::time::Duration,
+        reservation: Option<NativeAdmissionGuard>,
+        admission: Option<&Arc<NativeAdmission>>,
         #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
     ) -> Result<Option<String>, String> {
         let cancel = AtomicBool::new(false);
@@ -2063,6 +2202,8 @@ impl VoiceCompanionRuntime {
             native_job_epoch,
             std::time::Instant::now() + budget,
             true,
+            reservation,
+            admission,
             #[cfg(feature = "native-fault-injection")]
             context,
         )
@@ -2079,6 +2220,8 @@ impl VoiceCompanionRuntime {
         native_job_epoch: &Arc<AtomicU64>,
         deadline: std::time::Instant,
         watchdog: bool,
+        reservation: Option<NativeAdmissionGuard>,
+        admission: Option<&Arc<NativeAdmission>>,
         #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
     ) -> Result<Option<String>, String> {
         if cancel.load(Ordering::Acquire) {
@@ -2087,14 +2230,29 @@ impl VoiceCompanionRuntime {
         if std::time::Instant::now() >= deadline {
             return Err("engine_check_timeout".into());
         }
-        let runner = NativeCallRunner::with_health(
-            native_busy.clone(),
-            native_job_epoch.clone(),
-            native_degraded.clone(),
-        );
+        let priority = reservation.is_some();
+        let target_admission = reservation
+            .as_ref()
+            .map(|r| r.admission.clone())
+            .or_else(|| admission.cloned());
+        let runner = match target_admission {
+            Some(adm) => NativeCallRunner::with_admission(
+                native_busy.clone(),
+                native_job_epoch.clone(),
+                native_degraded.clone(),
+                adm,
+                priority,
+            ),
+            None => NativeCallRunner::with_health(
+                native_busy.clone(),
+                native_job_epoch.clone(),
+                native_degraded.clone(),
+            ),
+        };
         let guard = runner
-            .acquire(deadline, cancel, notify, false)
+            .acquire(deadline, cancel, notify, priority)
             .await?;
+        drop(reservation);
         if cancel.load(Ordering::Acquire) {
             return Err("engine_check_cancelled".into());
         }
@@ -2115,7 +2273,7 @@ impl VoiceCompanionRuntime {
             entered: AtomicBool::new(false),
         });
         let mut task = tokio::spawn(async move {
-            let text = asr.transcribe(AudioChannel::Mic, pcm, 16_000).await;
+            let text = asr.transcribe_checked(AudioChannel::Mic, pcm, 16_000).await;
             (guard, text)
         });
         let result = tokio::select! {
@@ -2124,10 +2282,14 @@ impl VoiceCompanionRuntime {
                 Err("engine_check_timeout".into())
             }
             result = &mut task => match result {
-                Ok((guard, text)) => {
+                Ok((guard, Ok(text))) => {
                     native_degraded.publish(job, false);
                     drop(guard);
                     Ok(text)
+                }
+                Ok((guard, Err(_))) => {
+                    drop(guard);
+                    Err("worker_asr_failed".into())
                 }
                 Err(error) => Err(format!("worker_asr_join_failed:{error}")),
             },
@@ -2552,47 +2714,53 @@ impl VoiceCompanionRuntime {
         event_tx:&Arc<VoiceEventHub>,
         tts:&Arc<dyn TtsProvider>,
         generation:u64,
+        scope:&VoiceSessionControlRequest,
     ) -> Result<ReplyPlayback, &'static str> {
         let guard=driver.lock().await;
-        if playback.generation_id()!=generation {
+        let current = event_tx.snapshot();
+        if playback.generation_id()!=generation || !scope.matches(&current) || current.ended_reason.is_some() {
             // A stale turn must not advance the current turn's FSM, even when
             // both happen to be in the same Speaking/Dispatching state.
             drop(guard);
             return Ok(ReplyPlayback::Interrupted);
         }
         info!("voice_response_playback_started");
-        let _=event_tx.send(VoiceCompanionEvent::ResponseReady {text:reply_text.to_owned()});
+        let _=event_tx.send_scoped(VoiceCompanionEvent::ResponseReady {text:reply_text.to_owned()}, scope);
         drop(guard);
         if !event_tx.feedback().speak_replies {
-            Self::finish_muted_playback(driver, playback, event_tx, generation).await;
+            Self::finish_muted_playback(driver, playback, event_tx, generation, scope).await;
             return Ok(ReplyPlayback::Muted);
         }
-        let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {
+        let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {
             text: reply_text.to_string(),
-        });
+        }, scope);
         let started = std::time::Instant::now();
         let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
         let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
         let result = playback
             .speak_text_for_generation(tts.as_ref(), reply_text, voice_name, generation, || {
-                Self::report_tts_source(event_tx, tts.as_ref());
-                let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {
+                Self::report_tts_source(event_tx, tts.as_ref(), scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {
                     text: reply_text.to_string(),
-                });
+                }, scope);
             })
             .await;
         info!(elapsed_ms=started.elapsed().as_millis() as u64,ok=result.is_ok(),"voice_playback_finished");
         if playback.generation_id() != generation {
             let mut d = driver.lock().await;
+            let current = event_tx.snapshot();
+            if !scope.matches(&current) || current.ended_reason.is_some() {
+                return Ok(ReplyPlayback::Interrupted);
+            }
             if matches!(d.current_state(), AcousticState::SpeakingFast | AcousticState::SpeakingSummary | AcousticState::SpeakingControl) {
                 let _ = d.handle_event(AcousticEvent::PlaybackDone);
                 if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-                    let _ = event_tx.send(VoiceCompanionEvent::Listening);
+                    let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, scope);
                 }
             }
             return Ok(ReplyPlayback::Interrupted);
         }
-        Self::finish_response_playback(result,driver,playback,event_tx,generation).await?;
+        Self::finish_response_playback(result,driver,playback,event_tx,generation,scope).await?;
         Ok(ReplyPlayback::Played)
     }
 
@@ -2601,9 +2769,11 @@ impl VoiceCompanionRuntime {
         playback: &Arc<PlaybackPipeline>,
         event_tx: &Arc<VoiceEventHub>,
         generation: u64,
+        scope: &VoiceSessionControlRequest,
     ) {
         let mut d = driver.lock().await;
-        if playback.generation_id() != generation {
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
         if d.current_state() == AcousticState::Deciding {
@@ -2611,7 +2781,7 @@ impl VoiceCompanionRuntime {
         }
         let _ = d.handle_event(AcousticEvent::PlaybackDone);
         drop(d);
-        let _ = event_tx.send(VoiceCompanionEvent::FollowUpStarted { text_only: true });
+        let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpStarted { text_only: true }, scope);
         voice_feedback::play(
             playback,
             event_tx,
@@ -2619,12 +2789,13 @@ impl VoiceCompanionRuntime {
             generation,
         )
         .await;
-        if playback.generation_id() != generation {
+        let mut d = driver.lock().await;
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
-        let mut d = driver.lock().await;
         if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2636,9 +2807,11 @@ impl VoiceCompanionRuntime {
         playback: &Arc<PlaybackPipeline>,
         event_tx: &Arc<VoiceEventHub>,
         generation: u64,
+        scope: &VoiceSessionControlRequest,
     ) -> Result<(), &'static str> {
         let mut d2 = driver.lock().await;
-        if playback.generation_id() != generation {
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return Ok(());
         }
         if d2.current_state() == AcousticState::Deciding {
@@ -2656,12 +2829,17 @@ impl VoiceCompanionRuntime {
             warn!(code, "voice_playback_failed");
             let _ = playback.interrupt().await;
             let fallback_generation = playback.generation_id();
-            let _ = event_tx.send(VoiceCompanionEvent::Error {
+            let guard = driver.lock().await;
+            let current = event_tx.snapshot();
+            if !scope.matches(&current) || current.ended_reason.is_some() {
+                return Err(code);
+            }
+            drop(guard);
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {
                 stage: "playback".into(),
                 code: code.into(),
-            });
-            let _ =
-                event_tx.send(VoiceCompanionEvent::FollowUpStarted { text_only: true });
+            }, scope);
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpStarted { text_only: true }, scope);
             voice_feedback::play(
                 playback,
                 event_tx,
@@ -2669,6 +2847,10 @@ impl VoiceCompanionRuntime {
                 fallback_generation,
             )
             .await;
+            let current = event_tx.snapshot();
+            if playback.generation_id() != fallback_generation || !scope.matches(&current) || current.ended_reason.is_some() {
+                return Err(code);
+            }
             voice_feedback::play(
                 playback,
                 event_tx,
@@ -2676,22 +2858,21 @@ impl VoiceCompanionRuntime {
                 fallback_generation,
             )
             .await;
-            if playback.generation_id() != fallback_generation {
+            let mut d = driver.lock().await;
+            let current = event_tx.snapshot();
+            if playback.generation_id() != fallback_generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Err(code);
             }
-            let mut d = driver.lock().await;
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx
-                    .send(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 });
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
             Err(code)
         } else {
-            let _ = event_tx
-                .send(VoiceCompanionEvent::FollowUpStarted { text_only: false });
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpStarted { text_only: false }, scope);
             voice_feedback::play(
                 playback,
                 event_tx,
@@ -2699,15 +2880,15 @@ impl VoiceCompanionRuntime {
                 generation,
             )
             .await;
-            if playback.generation_id() != generation {
+            let mut d = driver.lock().await;
+            let current = event_tx.snapshot();
+            if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Ok(());
             }
-            let mut d = driver.lock().await;
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx
-                    .send(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 });
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2720,13 +2901,37 @@ impl VoiceCompanionRuntime {
         playback: &Arc<PlaybackPipeline>,
         events: &Arc<VoiceEventHub>,
         generation: u64,
+        scope: &VoiceSessionControlRequest,
     ) {
         let mut d = driver.lock().await;
-        if playback.generation_id() != generation { return; }
+        let current = events.snapshot();
+        if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() { return; }
         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
-            let _ = events.send(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None });
-            let _ = events.send(VoiceCompanionEvent::Listening);
-            let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+            let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
+        }
+    }
+
+    async fn report_asr_failure(
+        driver: &Arc<Mutex<VoiceSessionDriver>>,
+        playback: &Arc<PlaybackPipeline>,
+        events: &Arc<VoiceEventHub>,
+        generation: u64,
+        scope: &VoiceSessionControlRequest,
+        code: &str,
+    ) {
+        let mut driver = driver.lock().await;
+        let snapshot = events.snapshot();
+        if playback.generation_id() != generation || !scope.matches(&snapshot) || snapshot.ended_reason.is_some() {
+            return;
+        }
+        if driver.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+            // Remove the empty turn first: Ignore clears the previous error.
+            let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::Error { stage: "asr".into(), code: code.into() }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
         }
     }
 
@@ -2741,17 +2946,20 @@ impl VoiceCompanionRuntime {
         tts: &Arc<dyn TtsProvider>,
         task_client: &Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
         generation: u64,
+        scope: VoiceSessionSnapshot,
         pending_utterances: &Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
         native_busy: &Arc<AtomicBool>,
         native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
+        admission: NativeAdmissionGuard,
         _native_request_id: &str,
     ) {
-        if playback.generation_id() != generation {
+        let control_scope = VoiceSessionControlRequest { instance_id: scope.instance_id.clone(), session_id: scope.session_id.clone(), turn_id: scope.turn_id.clone() };
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
         let started = std::time::Instant::now();
-        let scope = event_tx.snapshot();
         let mut task_context:Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>,String>=Ok(None);
         info!(session_id = ?scope.session_id, turn_id = ?scope.turn_id, samples = utterance_pcm.len(), sample_rate = 16000, "voice_asr_started");
         let text_opt = if let Some(stt) = transcriber {
@@ -2768,6 +2976,8 @@ impl VoiceCompanionRuntime {
                 native_degraded,
                 native_job_epoch,
                 std::time::Duration::from_secs(30),
+                Some(admission),
+                None,
                 #[cfg(feature = "native-fault-injection")]
                 Some(&call_context),
             )
@@ -2776,14 +2986,20 @@ impl VoiceCompanionRuntime {
                 Ok(text) => text,
                 Err(reason) => {
                     warn!(reason, "voice_ordinary_asr_failed");
-                    None
+                    if reason != "engine_check_cancelled" {
+                        Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, asr_failure_code(&reason)).await;
+                    }
+                    return;
                 }
             }
         } else {
-            None
+            drop(admission);
+            Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, "asr_unavailable").await;
+            return;
         }
         .filter(|text| !text.trim().is_empty());
-        if playback.generation_id() != generation {
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
         info!(
@@ -2794,7 +3010,7 @@ impl VoiceCompanionRuntime {
         );
         if text_opt.as_ref().is_none_or(|text| text.trim().is_empty()) {
             warn!("voice_asr_empty_result");
-            Self::discard_utterance(driver, playback, event_tx, generation).await;
+            Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, "asr_empty_result").await;
             return;
         }
         let clean_input = text_opt
@@ -2803,11 +3019,14 @@ impl VoiceCompanionRuntime {
             .unwrap_or_default();
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
-            let _ = event_tx.send(VoiceCompanionEvent::SpeechRecognized { text: text.clone() });
+            if matches!(event_tx.send_scoped(VoiceCompanionEvent::SpeechRecognized { text: text.clone() }, &control_scope), Ok(0)) {
+                return;
+            }
             if !clean_input.is_empty() {
                 voice_feedback::play(playback, event_tx, VoiceCueKind::Recognized, generation)
                     .await;
-                if playback.generation_id() != generation {
+                let current = event_tx.snapshot();
+                if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                     return;
                 }
             }
@@ -2815,8 +3034,10 @@ impl VoiceCompanionRuntime {
                 Some(client) => local_task_control_action(&clean_input, client.as_ref()).await,
                 None => None,
             };
+            let current = event_tx.snapshot();
+            if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
-                Self::discard_utterance(driver, playback, event_tx, generation).await;
+                Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 return;
             } else if let Some(action) = is_local_task_control {
                 // Local task control fast-path: query and cancellation remain local,
@@ -2836,10 +3057,10 @@ impl VoiceCompanionRuntime {
                 };
                 Some(dec)
             } else if !router.is_configured() {
-                let _ = event_tx.send(VoiceCompanionEvent::Error {
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {
                     stage: "dialogue".into(),
                     code: "model_unavailable".into(),
-                });
+                }, &control_scope);
                 None
             } else {
                 let started = std::time::Instant::now();
@@ -2848,7 +3069,8 @@ impl VoiceCompanionRuntime {
                     task_context = tokio::time::timeout(std::time::Duration::from_millis(250), client.current()).await
                         .unwrap_or_else(|_| Err("task_status_unavailable".into()));
                 }
-                if playback.generation_id() != generation {
+                let current = event_tx.snapshot();
+                if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                     return;
                 }
                 let task_status = task_status_for_prompt(
@@ -2891,13 +3113,18 @@ impl VoiceCompanionRuntime {
                         let first_speech_text = first_speech_text.clone();
                         let source_tts = tts.clone();
                         let stream_start = started;
+                        let control_scope = control_scope.clone();
                         move || {
                             let text = first_speech_text.lock().unwrap().clone().unwrap_or_default();
                             let ttfa_ms = stream_start.elapsed().as_millis() as u64;
                             info!(session_id=?latency_scope.0,turn_id=?latency_scope.1,from_model_start_ms=ttfa_ms,
                                 text_chars = text.chars().count(), "voice_first_audio_started");
-                            Self::report_tts_source(&event_tx, source_tts.as_ref());
-                            let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text });
+                            if let Some(diagnostic) = source_tts.diagnostic("") {
+                                let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSource {
+                                    session_id: control_scope.session_id.clone(), turn_id: control_scope.turn_id.clone(), diagnostic,
+                                }, &control_scope);
+                            }
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text }, &control_scope);
                         }
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
@@ -2922,7 +3149,8 @@ impl VoiceCompanionRuntime {
                         sentence_opt = sentence_rx.recv(), if !sentence_rx_closed => {
                             match sentence_opt {
                                 Some(sentence) => {
-                                    if playback.generation_id() != generation {
+                                    let current = event_tx.snapshot();
+                                    if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                                         let _ = cancel_tx.send(true);
                                         break;
                                     }
@@ -2938,16 +3166,16 @@ impl VoiceCompanionRuntime {
                                         if guard.is_none() {
                                             *guard = Some(sentence.text.clone());
                                             if speak_replies {
-                                                let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {
+                                                let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {
                                                     text: sentence.text.clone(),
-                                                });
+                                                }, &control_scope);
                                             }
                                         }
                                     }
-                                    let _ = event_tx.send(VoiceCompanionEvent::ReplySentence {
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ReplySentence {
                                         text: sentence.text.clone(),
                                         understood_request: sentence.understood_request.clone(),
-                                    });
+                                    }, &control_scope);
                                     if speak_replies {
                                         if speech_tx.send(sentence.text).await.is_err() {
                                             let _ = cancel_tx.send(true);
@@ -2995,7 +3223,8 @@ impl VoiceCompanionRuntime {
                 }
                 drop(speech_tx);
 
-                if playback.generation_id() != generation { return; }
+                let current = event_tx.snapshot();
+                if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
 
                 if router_result.is_none() {
                     if let Some(mut handle) = router_guard.0.take() {
@@ -3008,7 +3237,8 @@ impl VoiceCompanionRuntime {
                     router_guard.0 = None;
                 }
 
-                if playback.generation_id() != generation {
+                let current = event_tx.snapshot();
+                if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                     let _ = cancel_tx.send(true);
                     return;
                 }
@@ -3018,17 +3248,21 @@ impl VoiceCompanionRuntime {
                     match err {
                         RouteError::Record { code, content } => {
                             raw_text = Some(content.clone());
-                            let _ = event_tx.send(VoiceCompanionEvent::Error {
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {
                                 stage: "history".into(),
                                 code: code.clone(),
-                            });
+                            }, &control_scope);
                             if code == "binding_invalid" || code == "voice_record_conflict" {
                                 let _ = playback.interrupt().await;
                                 let _ = playback_guard.0.take();
-                                driver.lock().await.reset();
-                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+                                let mut d = driver.lock().await;
+                                let current = event_tx.snapshot();
+                                if !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
+                                d.reset();
+                                drop(d);
+                                let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded {
                                     reason: VoiceSessionEndReason::Failed,
-                                });
+                                }, &control_scope);
                                 return;
                             }
                             if let Ok(dec) = nomifun_api_types::voice::parse_voice_decision(&content) {
@@ -3036,10 +3270,14 @@ impl VoiceCompanionRuntime {
                             } else {
                                 let _ = playback.interrupt().await;
                                 let _ = playback_guard.0.take();
-                                driver.lock().await.reset();
-                                let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+                                let mut d = driver.lock().await;
+                                let current = event_tx.snapshot();
+                                if !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
+                                d.reset();
+                                drop(d);
+                                let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded {
                                     reason: VoiceSessionEndReason::Failed,
-                                });
+                                }, &control_scope);
                                 return;
                             }
                         }
@@ -3126,7 +3364,7 @@ impl VoiceCompanionRuntime {
                 };
 
                 if let Some(text) = raw_text {
-                    let _ = event_tx.send(VoiceCompanionEvent::ModelResponse { text });
+                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ModelResponse { text }, &control_scope);
                 }
                 info!(
                     session_id = ?scope.session_id, turn_id = ?scope.turn_id,
@@ -3136,15 +3374,15 @@ impl VoiceCompanionRuntime {
                 );
 
                 if chat_streamed {
-                    let _ = event_tx.send(VoiceCompanionEvent::IntentDecided {
+                    let _ = event_tx.send_scoped(VoiceCompanionEvent::IntentDecided {
                         intent: "Chat".into(),
                         reply: dec.reply_tts.clone(),
                         understood_request: dec.understood_request.clone(),
-                    });
+                    }, &control_scope);
                     info!(intent = ?dec.intent_type, has_understanding = dec.understood_request.is_some(), "voice_intent_decided");
 
                     if !speak_replies {
-                        Self::finish_muted_playback(driver, playback, event_tx, generation).await;
+                        Self::finish_muted_playback(driver, playback, event_tx, generation, &control_scope).await;
                         return;
                     }
 
@@ -3162,7 +3400,7 @@ impl VoiceCompanionRuntime {
                         return;
                     }
 
-                    let _ = Self::finish_response_playback(play_res, driver, playback, event_tx, generation).await;
+                    let _ = Self::finish_response_playback(play_res, driver, playback, event_tx, generation, &control_scope).await;
                     return;
                 }
 
@@ -3178,16 +3416,17 @@ impl VoiceCompanionRuntime {
         }
 
         let mut d = driver.lock().await;
-        if playback.generation_id() != generation {
+        let current = event_tx.snapshot();
+        if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
         if let Some(dec) = decision {
             if dec.intent_type != IntentType::Ignore {
-                let _ = event_tx.send(VoiceCompanionEvent::IntentDecided {
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::IntentDecided {
                     intent: format!("{:?}", dec.intent_type),
                     reply: dec.reply_tts.clone().filter(|_| dec.intent_type == IntentType::Chat),
                     understood_request: dec.understood_request.clone(),
-                });
+                }, &control_scope);
                 info!(intent = ?dec.intent_type, has_understanding = dec.understood_request.is_some(), "voice_intent_decided");
             }
             if playback.generation_id()!=generation {
@@ -3197,7 +3436,7 @@ impl VoiceCompanionRuntime {
             match dec.intent_type {
                 IntentType::Ignore => {
                     drop(d);
-                    Self::discard_utterance(driver, playback, event_tx, generation).await;
+                    Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 }
                 IntentType::Chat => {
                     let _ = d.handle_event(AcousticEvent::IntentChat);
@@ -3216,7 +3455,7 @@ impl VoiceCompanionRuntime {
                         let _ = event_tx.send(VoiceCompanionEvent::Idle);
                         return;
                     };
-                    let _ = Self::play_response(reply_text,driver,playback,event_tx,tts,generation).await;
+                    let _ = Self::play_response(reply_text,driver,playback,event_tx,tts,generation,&control_scope).await;
                 }
                 IntentType::TaskControl if task_client.is_some() => {
                     use nomifun_api_types::voice::{VoiceSessionControlRequest,VoiceTaskControlCommand,VoiceTaskReference,VoiceTaskStatus};
@@ -3227,6 +3466,8 @@ impl VoiceCompanionRuntime {
                                 .unwrap_or_else(|_| Err("task_status_unavailable".into()));
                         }
                     }
+                    let current = event_tx.snapshot();
+                    if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
                     let request=match (task_context,dec.task_control_action) {
                         (Ok(Some(task)),Some(action)) => Ok(VoiceTaskControlCommand {
                             scope:VoiceSessionControlRequest {instance_id:snapshot.instance_id,session_id:snapshot.session_id,turn_id:snapshot.turn_id},
@@ -3244,7 +3485,8 @@ impl VoiceCompanionRuntime {
                         Ok(request) => task_client.as_ref().unwrap().control(request).await,
                         Err(code) => Err(code),
                     };
-                    if playback.generation_id()!=generation {
+                    let current = event_tx.snapshot();
+                    if playback.generation_id()!=generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                         return;
                     }
                     match result {
@@ -3276,7 +3518,7 @@ impl VoiceCompanionRuntime {
                                     VoiceTaskStatus::Failed => format!("任务已结束，执行结果未成功。{}",task.result_text.as_deref().unwrap_or("请查看任务详情了解原因。").chars().take(220).collect::<String>()),
                                 }
                             };
-                            let _ = Self::play_response(&text,driver,playback,event_tx,tts,generation).await;
+                            let _ = Self::play_response(&text,driver,playback,event_tx,tts,generation,&control_scope).await;
                         },
                         Err(code) => {
                             let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
@@ -3348,7 +3590,7 @@ impl VoiceCompanionRuntime {
                                         }
                                     }
                                 };
-                                let _ = Self::play_response(text, driver, playback, event_tx, tts, generation).await;
+                                let _ = Self::play_response(text, driver, playback, event_tx, tts, generation, &control_scope).await;
                             } else {
                                 let mut driver = driver.lock().await;
                                 if playback.generation_id() != generation { return; }
@@ -3367,8 +3609,9 @@ impl VoiceCompanionRuntime {
                     use nomifun_api_types::voice::{VoiceTaskCommand, VoiceTaskStatus, VoiceTaskSubmitRequest};
                     let _ = d.handle_event(AcousticEvent::IntentAgentTask);
                     drop(d);
-                    let _ = event_tx.send(VoiceCompanionEvent::TaskDispatching);
+                    let _ = event_tx.send_scoped(VoiceCompanionEvent::TaskDispatching, &control_scope);
                     let scope = event_tx.snapshot();
+                    if !control_scope.matches(&scope) || scope.ended_reason.is_some() { return; }
                     let command = match (scope.session_id, scope.turn_id, dec.task_goal.filter(|goal| !goal.trim().is_empty())) {
                         (Some(session_id),Some(turn_id),Some(goal)) => VoiceTaskCommand {
                             command_id: format!("voice-{turn_id}"),
@@ -3379,16 +3622,21 @@ impl VoiceCompanionRuntime {
                             goal,
                         },
                         _ => {
-                            driver.lock().await.reset();
-                            let _ = event_tx.send(VoiceCompanionEvent::Error {stage:"task".into(),code:"task_goal_invalid".into()});
-                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed});
+                            let mut d = driver.lock().await;
+                            let current = event_tx.snapshot();
+                            if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
+                            d.reset();
+                            drop(d);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {stage:"task".into(),code:"task_goal_invalid".into()}, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed}, &control_scope);
                             return;
                         }
                     };
                     let result = task_client.as_ref().unwrap().submit(VoiceTaskSubmitRequest {
                         instance_id:scope.instance_id,command:command.clone(),
                     }).await;
-                    if playback.generation_id() != generation {
+                    let current = event_tx.snapshot();
+                    if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                         return;
                     }
                     let is_en = nomifun_api_types::voice::is_english_locale(event_tx.snapshot().locale.as_deref());
@@ -3401,22 +3649,22 @@ impl VoiceCompanionRuntime {
                         Ok(delivery) if delivery.freshly_accepted && delivery.task.status == VoiceTaskStatus::Accepted
                             && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
                             let text = if is_en { "Task accepted, executing now." } else { "任务已接单，正在执行。" };
-                            let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
-                            let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing {text:text.into()});
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing {text:text.into()}, &control_scope);
                             if event_tx.feedback().speak_replies {
                                 playback.speak_text_for_generation(tts.as_ref(),text,voice_name, generation, || {
-                                    let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking {text:text.into()});
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking {text:text.into()}, &control_scope);
                                 }).await.err().map(|error| match error {AudioSinkError::Synthesis(_) => "tts_failed", AudioSinkError::NoAudio => "tts_empty_audio", _ => "speaker_failed"}.to_owned())
                             } else {None}
                         }
                         Ok(delivery) if delivery.task.status == VoiceTaskStatus::Queued
                             && delivery.task.conversation_id.is_some() && delivery.task.message_id.is_some() => {
                             let text = if is_en { "A task is currently running, the new task is queued." } else { "当前有任务正在执行，新任务已排队。" };
-                            let _ = event_tx.send(VoiceCompanionEvent::ResponseReady { text: text.into() });
-                            let _ = event_tx.send(VoiceCompanionEvent::TtsSynthesizing { text: text.into() });
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ResponseReady { text: text.into() }, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSynthesizing { text: text.into() }, &control_scope);
                             if event_tx.feedback().speak_replies {
                                 playback.speak_text_for_generation(tts.as_ref(), text, voice_name, generation, || {
-                                    let _ = event_tx.send(VoiceCompanionEvent::TtsSpeaking { text: text.into() });
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::TtsSpeaking { text: text.into() }, &control_scope);
                                 }).await.err().map(|error| match error {
                                     AudioSinkError::Synthesis(_) => "tts_failed",
                                     AudioSinkError::NoAudio => "tts_empty_audio",
@@ -3431,33 +3679,40 @@ impl VoiceCompanionRuntime {
                         Ok(_) => None,
                         Err(code) => Some(code),
                     };
-                    if playback.generation_id() != generation {
+                    let mut driver_guard = driver.lock().await;
+                    let current = event_tx.snapshot();
+                    if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
                         return;
                     }
-                    let mut driver_guard = driver.lock().await;
                     let _ = driver_guard.handle_event(AcousticEvent::TaskAccepted);
                     drop(driver_guard);
                     let failed = code.is_some();
                     if let Some(code) = code {
-                        let _ = event_tx.send(VoiceCompanionEvent::Error {stage:"task".into(),code});
+                        let _ = event_tx.send_scoped(VoiceCompanionEvent::Error {stage:"task".into(),code}, &control_scope);
                         voice_feedback::play(playback,event_tx,VoiceCueKind::Error,generation).await;
                     }
-                    if playback.generation_id() == generation {
-                        if failed {
-                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed});
-                        } else {
-                            let has_pending = {
-                                let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
-                                p.front().is_some_and(|item| item.generation_id == generation)
-                            };
-                            if !has_pending {
-                                let mut d = driver.lock().await;
-                                if d.current_state() == AcousticState::Idle {
-                                    let _ = d.handle_event(AcousticEvent::WakeHit);
-                                    if d.begin_listening_window() {
-                                        let _ = event_tx.send(VoiceCompanionEvent::Listening);
-                                        let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
-                                    }
+                    let current = event_tx.snapshot();
+                    if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
+                        return;
+                    }
+                    if failed {
+                        let _ = event_tx.send_scoped(VoiceCompanionEvent::SessionEnded {reason:VoiceSessionEndReason::Failed}, &control_scope);
+                    } else {
+                        let has_pending = {
+                            let p = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
+                            p.front().is_some_and(|item| item.generation_id == generation)
+                        };
+                        if !has_pending {
+                            let mut d = driver.lock().await;
+                            let current = event_tx.snapshot();
+                            if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() {
+                                return;
+                            }
+                            if d.current_state() == AcousticState::Idle {
+                                let _ = d.handle_event(AcousticEvent::WakeHit);
+                                if d.begin_listening_window() {
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &control_scope);
                                 }
                             }
                         }
@@ -3519,6 +3774,7 @@ impl VoiceCompanionRuntime {
             self.engine_check_native_busy.clone(),
             self.native_degraded.clone(),
             self.native_job_epoch.clone(),
+            self.native_admission.clone(),
             Some(request_id.to_owned()),
         );
         true
@@ -3557,6 +3813,7 @@ impl VoiceCompanionRuntime {
         native_busy: Arc<AtomicBool>,
         native_degraded: Arc<NativeHealth>,
         native_job_epoch: Arc<AtomicU64>,
+        native_admission: Arc<NativeAdmission>,
         native_request_id: Option<String>,
     ) {
         let mut active = active_turn.lock().unwrap_or_else(|e| e.into_inner());
@@ -3566,6 +3823,8 @@ impl VoiceCompanionRuntime {
         let active_turn_clone = active_turn.clone();
         let pending_clone = pending_utterances.clone();
         let input_id = input_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let admission = native_admission.reserve();
+        let scope = events.snapshot();
         *active = Some(tokio::spawn(async move {
             use futures_util::FutureExt;
             if playback.generation_id() != generation {
@@ -3581,10 +3840,12 @@ impl VoiceCompanionRuntime {
                 &tts,
                 &task_client,
                 generation,
+                scope,
                 &pending_clone,
                 &native_busy,
                 &native_degraded,
                 &native_job_epoch,
+                admission,
                 native_request_id.as_deref().unwrap_or("ordinary-turn"),
             ))
             .catch_unwind()
@@ -3653,6 +3914,7 @@ impl VoiceCompanionRuntime {
                                 native_busy.clone(),
                                 native_degraded.clone(),
                                 native_job_epoch.clone(),
+                                native_admission.clone(),
                                 None,
                             );
                         } else {
@@ -3675,6 +3937,10 @@ impl VoiceCompanionRuntime {
     }
 
     pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
+        #[cfg(test)]
+        let confirmation_speech_end_gate = self.confirmation_speech_end_gate.clone();
+        #[cfg(test)]
+        let mut ordinary_speech_end_gate = self.ordinary_speech_end_gate.clone();
         let driver = Arc::clone(&self.driver);
         let capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
@@ -3687,6 +3953,7 @@ impl VoiceCompanionRuntime {
         let self_check_active = self.self_check_active.clone();
         let engine_check_active = self.engine_check_active.clone();
         let native_busy = self.engine_check_native_busy.clone();
+        let native_admission = self.native_admission.clone();
         // Healthy ASR ownership is not an outage; only actual native errors
         // degrade readiness, and a later native success clears the state.
         let native_degraded = self.native_degraded.clone();
@@ -3737,10 +4004,12 @@ impl VoiceCompanionRuntime {
             if std::env::var("NOMIFUN_VOICE_FAULT_BLOCK_ASR").ok().as_deref() == Some("1") {
                 transcriber = Some(Arc::new(FaultBlockingStt));
             }
-            let native_runner = NativeCallRunner::with_health(
+            let native_runner = NativeCallRunner::with_admission(
                 native_busy.clone(),
                 native_job_epoch.clone(),
                 native_degraded.clone(),
+                native_admission.clone(),
+                false,
             );
             let kws = loop {
                 let dir = models.models_dir().to_path_buf();
@@ -3866,6 +4135,7 @@ impl VoiceCompanionRuntime {
                                 &native_busy,
                                 &native_degraded,
                                 &native_job_epoch,
+                                &native_admission,
                                 deadline,
                             )
                             .await
@@ -4193,6 +4463,19 @@ impl VoiceCompanionRuntime {
                         if audio.capture_state != "closed" {
                             let mut d = driver.lock().await;
                             d.reset();
+                            acoustic_ready.store(false, Ordering::Release);
+                            let _ = event_tx.send(VoiceCompanionEvent::Availability {
+                                acoustic_ready: false,
+                                dialogue_ready: router.is_configured(),
+                                playback_ready: playback.is_available(),
+                            });
+                            let _ = event_tx.send(VoiceCompanionEvent::Error {
+                                stage: "capture".into(),
+                                code: "capture_closed".into(),
+                            });
+                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
+                                reason: VoiceSessionEndReason::Failed,
+                            });
                             let _ = playback.interrupt().await;
                             if let Some(turn) =
                                 active_turn.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -4211,19 +4494,6 @@ impl VoiceCompanionRuntime {
                             audio.rms_milli = 0;
                             audio.peak_milli = 0;
                             audio.speech_detected = false;
-                            acoustic_ready.store(false, Ordering::Release);
-                            let _ = event_tx.send(VoiceCompanionEvent::Availability {
-                                acoustic_ready: false,
-                                dialogue_ready: router.is_configured(),
-                                playback_ready: playback.is_available(),
-                            });
-                            let _ = event_tx.send(VoiceCompanionEvent::Error {
-                                stage: "capture".into(),
-                                code: "capture_closed".into(),
-                            });
-                            let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
-                                reason: VoiceSessionEndReason::Failed,
-                            });
                             voice_feedback::schedule(
                                 playback.clone(),
                                 event_tx.clone(),
@@ -4321,6 +4591,8 @@ impl VoiceCompanionRuntime {
                                             &native_degraded,
                                             &native_job_epoch,
                                             std::time::Duration::from_secs(30),
+                                            None,
+                                            Some(&native_admission),
                                             #[cfg(feature = "native-fault-injection")]
                                             Some(&cascade_context),
                                         )
@@ -4383,11 +4655,20 @@ impl VoiceCompanionRuntime {
                         audio.utterance_peak_milli=audio.utterance_peak_milli.max(audio.peak_milli);
                         let active=native_worker_frame!("vad_process", vad.process_frame(&chunk).await);speech_started|=active;
                         if speech_started && !active {
-                            let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms)))};
-                            if let Some((response,generation,deadline_ms))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();
+                            #[cfg(test)]
+                            if let Some(gate) = &confirmation_speech_end_gate {
+                                gate.reached.notify_one();
+                                gate.resume.notified().await;
+                            }
+                            let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms,pending.approval_id.clone(),pending.session_id.clone())))};
+                            if let Some((response,generation,deadline_ms,approval_id,session_id))=response {
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();
+                                let reservation = lease_admission.reserve();
+                                let pending_for_turn = pending_confirmation.clone();
+                                let snapshot = events.snapshot();
+                                let scope = VoiceSessionControlRequest { instance_id: snapshot.instance_id, session_id: snapshot.session_id, turn_id: snapshot.turn_id };
                                 let turn=tokio::spawn(async move {
-                                    let text=match stt {
+                                    let result=match stt {
                                         Some(stt)=>{
                                             #[cfg(feature = "native-fault-injection")]
                                             let confirmation_context = NativeCallContext {
@@ -4401,17 +4682,21 @@ impl VoiceCompanionRuntime {
                                                 &lease_busy,
                                                 &lease_degraded,
                                                 &lease_epoch,
-                                                std::time::Duration::from_secs(30),
+                                                std::time::Duration::from_millis(deadline_ms.saturating_sub(chrono::Utc::now().timestamp_millis()).max(0) as u64).min(std::time::Duration::from_secs(30)),
+                                                Some(reservation),
+                                                None,
                                                 #[cfg(feature = "native-fault-injection")]
                                                 Some(&confirmation_context),
-                                            ).await.unwrap_or(None)
+                                            ).await.map_err(|reason| asr_failure_code(&reason).to_owned())
                                         },
-                                        None=>None,
+                                        None=>Err("asr_unavailable".into()),
                                     };
                                     let guard=states.lock().await;
-                                    if output.generation_id()==generation && chrono::Utc::now().timestamp_millis()<deadline_ms && guard.current_state()==AcousticState::ListeningConfirm {
-                                        if let Some(text)=&text {let _=events.send(VoiceCompanionEvent::ConfirmationHeard {text:text.clone()});}
-                                        let _=response.send(text);
+                                    let current=events.snapshot();
+                                    let owned=pending_for_turn.lock().unwrap_or_else(|error|error.into_inner()).as_ref().is_some_and(|pending|pending.approval_id==approval_id && pending.session_id==session_id && pending.generation==generation);
+                                    if owned && scope.matches(&current) && current.ended_reason.is_none() && output.generation_id()==generation && chrono::Utc::now().timestamp_millis()<deadline_ms && guard.current_state()==AcousticState::ListeningConfirm {
+                                        if let Ok(Some(text))=&result {if !text.trim().is_empty() {let _=events.send_scoped(VoiceCompanionEvent::ConfirmationHeard {text:text.clone()}, &scope);}}
+                                        let _=response.send(result);
                                     }
                                 });
                                 let mut active=active_turn.lock().unwrap_or_else(|error|error.into_inner());if let Some(previous)=active.replace(turn){previous.abort();}
@@ -4442,6 +4727,11 @@ impl VoiceCompanionRuntime {
                             speech_started = true;
                         }
                         if speech_started && (!is_active || utterance_pcm.len() >= 16_000 * 30) {
+                            #[cfg(test)]
+                            if let Some(gate) = ordinary_speech_end_gate.take() {
+                                gate.reached.notify_one();
+                                gate.resume.notified().await;
+                            }
                             // User paused / end of utterance detected
                             info!(
                                 samples = utterance_pcm.len(),
@@ -4478,6 +4768,7 @@ impl VoiceCompanionRuntime {
                                     native_busy.clone(),
                                     native_degraded.clone(),
                                     native_job_epoch.clone(),
+                                    native_admission.clone(),
                                     None,
                                 );
                                 utterance_pcm.clear();
@@ -4551,6 +4842,7 @@ impl VoiceCompanionRuntime {
                                     native_busy.clone(),
                                     native_degraded.clone(),
                                     native_job_epoch.clone(),
+                                    native_admission.clone(),
                                     None,
                                 );
                                 utterance_pcm.clear();
@@ -5506,6 +5798,549 @@ mod tests {
         }
     }
 
+    struct CountingStt(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
+    impl SttCallback for CountingStt {
+        async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Some("你好".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_transcribes_two_turns_after_transient_native_contention() {
+        use nomifun_voice_terminal::driver::StubVoiceRouter;
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (mut runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())), Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)), Arc::new(CountingStt(calls.clone())),
+            Arc::new(StubVoiceRouter::chat("你好呀")),
+        );
+        let gate = Arc::new(SpeechEndTestGate::default());
+        runtime.ordinary_speech_end_gate = Some(gate.clone());
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        let worker = runtime.start_worker();
+        runtime.handle_wake().await.unwrap();
+        let session = runtime.snapshot().session_id;
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), gate.reached.notified()).await.unwrap();
+        let runner = NativeCallRunner::with_admission(runtime.engine_check_native_busy.clone(), runtime.native_job_epoch.clone(), runtime.native_degraded.clone(), runtime.native_admission.clone(), false);
+        let owner = runner.acquire(std::time::Instant::now() + std::time::Duration::from_secs(1), &AtomicBool::new(false), &Notify::new(), false).await.unwrap();
+        gate.resume.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(owner);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while runtime.snapshot().assistant_text.as_deref() != Some("你好呀") { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        let first = runtime.snapshot();
+        assert_eq!(first.user_text.as_deref(), Some("你好"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while runtime.snapshot().conversation.iter().filter(|turn| turn.user_text.as_deref() == Some("你好")).count() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        let second = runtime.snapshot();
+        worker.abort();
+        producer.close();
+        assert_eq!(second.session_id, session);
+        assert_ne!(second.turn_id, first.turn_id);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(second.conversation.iter().filter(|turn| turn.user_text.as_deref() == Some("你好")).count() >= 2);
+    }
+
+    #[tokio::test]
+    async fn confirmation_speech_waits_for_a_transient_native_owner() {
+        use nomifun_api_types::voice::{VoiceSessionControlRequest, VoiceSessionPhase, VoiceTaskReference, VoiceToolConfirmationPrompt};
+        use nomifun_voice_terminal::{driver::StubVoiceRouter, playback::TestAudioSink};
+
+        for (answer, approved) in [("确认", true), ("取消", false)] {
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (mut runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always(answer)),
+            Arc::new(StubVoiceRouter::chat("unused")),
+        );
+        let gate = Arc::new(SpeechEndTestGate::default());
+        runtime.confirmation_speech_end_gate = Some(gate.clone());
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(AtomicUsize::new(0)))),
+        ));
+        let worker = runtime.start_worker();
+        let snapshot = runtime.snapshot();
+        let prompt = VoiceToolConfirmationPrompt {
+            scope: VoiceSessionControlRequest { instance_id: snapshot.instance_id, session_id: snapshot.session_id, turn_id: snapshot.turn_id },
+            task: VoiceTaskReference { command_id: "command".into(), conversation_id: Some("conversation".into()), message_id: Some("message".into()) },
+            approval_id: "approval".into(), msg_id: "tool-message".into(), call_id: "call".into(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 8000,
+            text: "请确认。".into(),
+        };
+        let request = { let runtime = runtime.clone(); tokio::spawn(async move { runtime.request_tool_confirmation(prompt).await }) };
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::ListeningConfirm {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.expect("confirmation must start listening");
+        for frame in 0..75 {
+            let pcm: Vec<f32> = (0..320).map(|sample| if frame < 25 {
+                0.03 * (sample as f32 * std::f32::consts::TAU * 200.0 / 16000.0).sin()
+            } else { 0.0 }).collect();
+            assert_eq!(producer.push(&pcm), pcm.len());
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(3), gate.reached.notified()).await.expect("worker must reach confirmation speech end");
+        let runner = NativeCallRunner::with_admission(
+            runtime.engine_check_native_busy.clone(), runtime.native_job_epoch.clone(),
+            runtime.native_degraded.clone(), runtime.native_admission.clone(), false,
+        );
+        let owner = runner.acquire(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            &AtomicBool::new(false), &Notify::new(), true,
+        ).await.unwrap();
+        gate.resume.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        drop(owner);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), request).await.unwrap().unwrap().unwrap();
+        let snapshot = runtime.snapshot();
+        worker.abort();
+        assert_eq!(reply.approved, approved, "the spoken confirmation decision must survive transient contention");
+        assert_eq!(snapshot.user_text.as_deref(), Some(answer));
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_confirmation_is_denied_with_a_visible_recognition_error() {
+        use nomifun_api_types::voice::{VoiceSessionControlRequest, VoiceSessionPhase, VoiceTaskReference, VoiceToolConfirmationPrompt};
+        use nomifun_voice_terminal::{driver::StubVoiceRouter, playback::TestAudioSink};
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())), Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)), Arc::new(nomifun_audio::stt::FakeSttCallback::always("")),
+            Arc::new(StubVoiceRouter::chat("unused")),
+        );
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(AtomicUsize::new(0)))),
+        ));
+        let worker = runtime.start_worker();
+        let snapshot = runtime.snapshot();
+        let prompt = VoiceToolConfirmationPrompt {
+            scope: VoiceSessionControlRequest { instance_id: snapshot.instance_id, session_id: snapshot.session_id, turn_id: snapshot.turn_id },
+            task: VoiceTaskReference { command_id: "command".into(), conversation_id: Some("conversation".into()), message_id: Some("message".into()) },
+            approval_id: "approval".into(), msg_id: "tool-message".into(), call_id: "call".into(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 4000, text: "请确认。".into(),
+        };
+        let request = { let runtime = runtime.clone(); tokio::spawn(async move { runtime.request_tool_confirmation(prompt).await }) };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::ListeningConfirm {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), request).await.unwrap().unwrap().unwrap();
+        let snapshot = runtime.snapshot();
+        worker.abort();
+        assert!(!reply.approved);
+        assert_eq!(snapshot.error.as_ref().map(|error| error.code.as_str()), Some("asr_empty_result"));
+    }
+
+    #[tokio::test]
+    async fn stopping_at_confirmation_speech_end_cannot_authorize_a_new_session() {
+        use nomifun_api_types::voice::{VoiceSessionControlRequest, VoiceSessionPhase, VoiceTaskReference, VoiceToolConfirmationPrompt};
+        use nomifun_voice_terminal::{driver::StubVoiceRouter, playback::TestAudioSink};
+        let root = tempdir().unwrap();
+        let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (mut runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())), Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)), Arc::new(nomifun_audio::stt::FakeSttCallback::always("确认")),
+            Arc::new(StubVoiceRouter::chat("unused")),
+        );
+        let gate = Arc::new(SpeechEndTestGate::default());
+        runtime.confirmation_speech_end_gate = Some(gate.clone());
+        let runtime = Arc::new(runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(AtomicUsize::new(0)))),
+        ));
+        let worker = runtime.start_worker();
+        runtime.handle_wake().await.unwrap();
+        let snapshot = runtime.snapshot();
+        let prompt = VoiceToolConfirmationPrompt {
+            scope: VoiceSessionControlRequest { instance_id: snapshot.instance_id, session_id: snapshot.session_id, turn_id: snapshot.turn_id },
+            task: VoiceTaskReference { command_id: "command".into(), conversation_id: Some("conversation".into()), message_id: Some("message".into()) },
+            approval_id: "approval".into(), msg_id: "tool-message".into(), call_id: "call".into(),
+            expires_at_ms: chrono::Utc::now().timestamp_millis() + 8000, text: "请确认。".into(),
+        };
+        let request = { let runtime = runtime.clone(); tokio::spawn(async move { runtime.request_tool_confirmation(prompt).await }) };
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.snapshot().phase != VoiceSessionPhase::ListeningConfirm { tokio::time::sleep(std::time::Duration::from_millis(5)).await; }
+        }).await.unwrap();
+        for index in 0..75 {
+            assert_eq!(producer.push(&vec![if index < 25 { 0.1 } else { 0.0 }; 320]), 320);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified()).await.unwrap();
+        let old = runtime.snapshot();
+        runtime.stop_session(&VoiceSessionControlRequest { instance_id: old.instance_id, session_id: old.session_id.clone(), turn_id: old.turn_id }).await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), request).await.unwrap().unwrap().unwrap();
+        assert!(!reply.approved);
+        runtime.handle_wake().await.unwrap();
+        let new = runtime.snapshot();
+        assert_ne!(new.session_id, old.session_id);
+        gate.resume.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let after = runtime.snapshot();
+        worker.abort();
+        producer.close();
+        assert_eq!(after.session_id, new.session_id);
+        assert!(after.error.is_none());
+        assert!(after.user_text.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_muted_playback_completion_cannot_advance_a_new_turn() {
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("问题")),
+            Arc::new(nomifun_voice_terminal::driver::StubVoiceRouter::chat("回答")),
+        );
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        runtime.handle_wake().await.unwrap();
+        assert_eq!(runtime.driver.lock().await.handle_event(AcousticEvent::SpeechEnd), Ok(AcousticState::Deciding));
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let old = runtime.snapshot();
+        let old_scope = VoiceSessionControlRequest {
+            instance_id: old.instance_id,
+            session_id: old.session_id,
+            turn_id: old.turn_id,
+        };
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let new = runtime.snapshot();
+        assert_ne!(new.turn_id, old_scope.turn_id);
+        let generation = runtime.playback.generation_id();
+
+        VoiceCompanionRuntime::finish_muted_playback(
+            &runtime.driver,
+            &runtime.playback,
+            &runtime.event_tx,
+            generation,
+            &old_scope,
+        ).await;
+
+        let after = runtime.snapshot();
+        assert_eq!(after.turn_id, new.turn_id);
+        assert_eq!(after.phase, nomifun_api_types::voice::VoiceSessionPhase::Transcribing);
+        assert_eq!(runtime.driver.lock().await.current_state(), AcousticState::Deciding);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_task_acceptance_playback_cannot_advance_a_new_turn() {
+        use nomifun_api_types::voice::{VoiceTaskDelivery, VoiceTaskSnapshot, VoiceTaskStatus, VoiceTaskSubmitRequest};
+        use nomifun_voice_terminal::{driver::StubVoiceRouter, playback::TestAudioSink, task_client::VoiceTaskClient};
+
+        struct Gate {
+            reached: Notify,
+            resume: Notify,
+        }
+        struct GatedSpeech(Arc<Gate>);
+        #[async_trait::async_trait]
+        impl nomifun_voice_terminal::tts::TtsProvider for GatedSpeech {
+            async fn synthesize_stream(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+                self.0.reached.notify_one();
+                self.0.resume.notified().await;
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                tx.try_send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).unwrap();
+                Ok(rx)
+            }
+        }
+        struct TaskClient;
+        #[async_trait::async_trait]
+        impl VoiceTaskClient for TaskClient {
+            async fn current(&self) -> Result<Option<VoiceTaskSnapshot>, String> { Ok(None) }
+            async fn control(&self, _: nomifun_api_types::voice::VoiceTaskControlCommand) -> Result<VoiceTaskSnapshot, String> {
+                Err("unused".into())
+            }
+            async fn submit(&self, request: VoiceTaskSubmitRequest) -> Result<VoiceTaskDelivery, String> {
+                Ok(VoiceTaskDelivery {
+                    freshly_accepted: true,
+                    task: VoiceTaskSnapshot {
+                        command_id: request.command.command_id,
+                        session_id: request.command.session_id,
+                        acoustic_turn_id: request.command.turn_id,
+                        conversation_id: Some("conversation".into()),
+                        message_id: Some("message".into()),
+                        runtime_turn_id: Some("runtime-turn".into()),
+                        status: VoiceTaskStatus::Accepted,
+                        result_ok: None,
+                        result_text: None,
+                        error_code: None,
+                    },
+                })
+            }
+        }
+
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("读取工作区文件")),
+            Arc::new(StubVoiceRouter::new(serde_json::from_value(serde_json::json!({
+                "intent_type":"agent_task", "task_goal":"读取工作区文件", "requires_confirmation":false
+            })).unwrap())),
+        );
+        let gate = Arc::new(Gate { reached: Notify::new(), resume: Notify::new() });
+        let runtime = runtime
+            .with_tasks(Arc::new(TaskClient))
+            .with_test_playback(
+                Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+                Arc::new(GatedSpeech(gate.clone())),
+            );
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":true})).unwrap()).unwrap();
+        runtime.handle_wake().await.unwrap();
+        assert_eq!(runtime.driver.lock().await.handle_event(AcousticEvent::SpeechEnd), Ok(AcousticState::Deciding));
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let old = runtime.snapshot();
+        let generation = runtime.playback.generation_id();
+        VoiceCompanionRuntime::start_utterance(
+            vec![0.1; 1600],
+            runtime.driver.clone(),
+            runtime.router.clone(),
+            runtime.transcriber.clone(),
+            runtime.playback.clone(),
+            runtime.event_tx.clone(),
+            runtime.tts.clone(),
+            runtime.task_client.clone(),
+            &runtime.active_turn,
+            runtime.input_generation.clone(),
+            generation,
+            runtime.pending_utterances.clone(),
+            old.session_id.clone(),
+            runtime.engine_check_native_busy.clone(),
+            runtime.native_degraded.clone(),
+            runtime.native_job_epoch.clone(),
+            runtime.native_admission.clone(),
+            None,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified()).await.unwrap();
+
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let new = runtime.snapshot();
+        assert_ne!(new.turn_id, old.turn_id);
+        gate.resume.notify_one();
+        let turn = runtime.active_turn.lock().unwrap().take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), turn).await.unwrap().unwrap();
+
+        let after = runtime.snapshot();
+        assert_eq!(after.turn_id, new.turn_id);
+        assert_eq!(after.phase, nomifun_api_types::voice::VoiceSessionPhase::Transcribing);
+        assert!(after.assistant_text.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_dialogue_error_cannot_change_a_new_session() {
+        use nomifun_voice_terminal::{contract::VoiceDecision, driver::{RouteError, VoiceRouter}};
+
+        struct Gate {
+            reached: Notify,
+            resume: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        }
+        struct UnavailableRouter(Arc<Gate>);
+        #[async_trait::async_trait]
+        impl VoiceRouter for UnavailableRouter {
+            fn is_configured(&self) -> bool {
+                if let Some(resume) = self.0.resume.lock().unwrap().take() {
+                    self.0.reached.notify_one();
+                    resume.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                }
+                false
+            }
+
+            async fn route_with_status(
+                &self,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<VoiceDecision, RouteError> {
+                panic!("an unavailable router must not be called")
+            }
+        }
+
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new(Gate {
+            reached: Notify::new(),
+            resume: std::sync::Mutex::new(Some(resume_rx)),
+        });
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("旧会话问题")),
+            Arc::new(UnavailableRouter(gate.clone())),
+        );
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        runtime.handle_wake().await.unwrap();
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let generation = runtime.playback.generation_id();
+        VoiceCompanionRuntime::start_utterance(
+            vec![0.1; 160],
+            runtime.driver.clone(),
+            runtime.router.clone(),
+            runtime.transcriber.clone(),
+            runtime.playback.clone(),
+            runtime.event_tx.clone(),
+            runtime.tts.clone(),
+            runtime.task_client.clone(),
+            &runtime.active_turn,
+            runtime.input_generation.clone(),
+            generation,
+            runtime.pending_utterances.clone(),
+            runtime.snapshot().session_id,
+            runtime.engine_check_native_busy.clone(),
+            runtime.native_degraded.clone(),
+            runtime.native_job_epoch.clone(),
+            runtime.native_admission.clone(),
+            None,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(3), gate.reached.notified()).await.unwrap();
+        let old = runtime.snapshot();
+        runtime.stop_session(&VoiceSessionControlRequest {
+            instance_id: old.instance_id,
+            session_id: old.session_id,
+            turn_id: old.turn_id,
+        }).await.unwrap();
+        runtime.handle_wake().await.unwrap();
+        let new = runtime.snapshot();
+        resume_tx.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let after = runtime.snapshot();
+        assert_eq!(after.session_id, new.session_id);
+        assert_eq!(after.phase, nomifun_api_types::voice::VoiceSessionPhase::Listening);
+        assert!(after.error.is_none(), "late old-turn error leaked into the new session: {:?}", after.error);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_history_failure_cannot_end_a_new_session_after_interrupt() {
+        use nomifun_voice_terminal::{contract::VoiceDecision, driver::{RouteError, VoiceRouter}, playback::TestAudioSink};
+
+        struct Gate {
+            reached: Notify,
+            resume: Notify,
+        }
+        struct RecordFailureRouter(Arc<Gate>);
+        #[async_trait::async_trait]
+        impl VoiceRouter for RecordFailureRouter {
+            fn is_configured(&self) -> bool { true }
+            async fn route_with_status(
+                &self,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<VoiceDecision, RouteError> {
+                self.0.reached.notify_one();
+                self.0.resume.notified().await;
+                Err(RouteError::Record {
+                    code: "binding_invalid".into(),
+                    content: "old turn record failure".into(),
+                })
+            }
+        }
+
+        let root = tempdir().unwrap();
+        let (capture, _producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+        let gate = Arc::new(Gate { reached: Notify::new(), resume: Notify::new() });
+        let (runtime, _) = VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),
+            Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("旧会话问题")),
+            Arc::new(RecordFailureRouter(gate.clone())),
+        );
+        let runtime = runtime.with_test_playback(
+            Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+            Arc::new(MockSpeech(Arc::new(AtomicUsize::new(0)))),
+        );
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        runtime.handle_wake().await.unwrap();
+        assert_eq!(runtime.driver.lock().await.handle_event(AcousticEvent::SpeechEnd), Ok(AcousticState::Deciding));
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::Transcribing);
+        let old = runtime.snapshot();
+        let generation = runtime.playback.generation_id();
+        VoiceCompanionRuntime::start_utterance(
+            vec![0.1; 160],
+            runtime.driver.clone(),
+            runtime.router.clone(),
+            runtime.transcriber.clone(),
+            runtime.playback.clone(),
+            runtime.event_tx.clone(),
+            runtime.tts.clone(),
+            runtime.task_client.clone(),
+            &runtime.active_turn,
+            runtime.input_generation.clone(),
+            generation,
+            runtime.pending_utterances.clone(),
+            old.session_id.clone(),
+            runtime.engine_check_native_busy.clone(),
+            runtime.native_degraded.clone(),
+            runtime.native_job_epoch.clone(),
+            runtime.native_admission.clone(),
+            None,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified()).await.unwrap();
+
+        let mut new_driver = runtime.driver.lock().await;
+        gate.resume.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while runtime.playback.generation_id() == generation {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        new_driver.reset();
+        assert_eq!(new_driver.handle_event(AcousticEvent::WakeHit), Ok(AcousticState::Listening));
+        let _ = runtime.event_tx.send(VoiceCompanionEvent::WakeHit {
+            keyword: "Hey Flowy".into(),
+            request_id: None,
+            locale: None,
+        });
+        let new = runtime.snapshot();
+        assert_ne!(new.session_id, old.session_id);
+        drop(new_driver);
+        let turn = runtime.active_turn.lock().unwrap().take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), turn).await.unwrap().unwrap();
+
+        let after = runtime.snapshot();
+        assert_eq!(after.session_id, new.session_id);
+        assert_eq!(after.phase, nomifun_api_types::voice::VoiceSessionPhase::Listening);
+        assert!(after.ended_reason.is_none(), "late old-turn history failure ended the new session");
+        assert_eq!(runtime.driver.lock().await.current_state(), AcousticState::Listening);
+    }
+
     struct RecordingSpeech(Arc<std::sync::Mutex<Vec<(String, String)>>>);
     #[async_trait::async_trait]
     impl nomifun_voice_terminal::tts::TtsProvider for RecordingSpeech {
@@ -5673,6 +6508,50 @@ mod tests {
         release: Arc<Notify>,
     }
 
+    struct BlockingNativeStt(BlockingGate);
+
+    #[async_trait::async_trait]
+    impl SttCallback for BlockingNativeStt {
+        async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+            let gate = self.0.clone();
+            tokio::task::spawn_blocking(move || gate.block()).await.unwrap();
+            Some("recognized".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn aborting_asr_keeps_the_native_lease_until_blocking_work_returns() {
+        let gate = BlockingGate::default();
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let health = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let reservation = admission.reserve();
+        let task = {
+            let (busy, epoch, health, gate) = (busy.clone(), epoch.clone(), health.clone(), gate.clone());
+            tokio::spawn(async move {
+                VoiceCompanionRuntime::transcribe_cancelable(
+                    Arc::new(BlockingNativeStt(gate)), vec![0.1; 160], &AtomicBool::new(false), &Notify::new(),
+                    &busy, &health, &epoch, std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    true, Some(reservation), None,
+                    #[cfg(feature = "native-fault-injection")]
+                    None,
+                ).await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!admission.has_pending());
+        assert!(busy.load(Ordering::Acquire), "blocking work still owns the native lease");
+        let runner = NativeCallRunner::with_admission(busy.clone(), epoch, health, admission, false);
+        let result = runner.acquire(std::time::Instant::now() + std::time::Duration::from_millis(100), &AtomicBool::new(false), &Notify::new(), false).await;
+        assert_eq!(result.err().as_deref(), Some("engine_check_native_busy"));
+        gate.release();
+        wait_for_native_release(&busy).await;
+    }
+
     #[async_trait::async_trait]
     impl SttCallback for GatedStt {
         async fn transcribe(
@@ -5717,6 +6596,285 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[tokio::test]
+    async fn non_priority_runner_cannot_acquire_lease_while_reservation_is_active() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let degraded = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let reservation = admission.reserve();
+        assert!(admission.has_pending());
+
+        let runner = NativeCallRunner::with_admission(
+            busy.clone(),
+            epoch.clone(),
+            degraded,
+            admission.clone(),
+            false,
+        );
+
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        // Fast-fail call immediately fails because reservation is pending
+        let result = runner
+            .acquire(
+                std::time::Instant::now() + std::time::Duration::from_millis(100),
+                &cancel,
+                &notify,
+                false,
+            )
+            .await;
+        assert_eq!(result.err().as_deref(), Some("engine_check_native_busy"));
+        assert!(!busy.load(Ordering::Acquire));
+
+        // Waiting call yields and does not acquire lease before reservation is dropped
+        let acquired = Arc::new(AtomicBool::new(false));
+        let acquired_clone = acquired.clone();
+        let runner_clone = runner.clone();
+        let handle = tokio::spawn(async move {
+            let cancel = AtomicBool::new(false);
+            let notify = Notify::new();
+            if runner_clone
+                .acquire(
+                    std::time::Instant::now() + std::time::Duration::from_millis(300),
+                    &cancel,
+                    &notify,
+                    true,
+                )
+                .await
+                .is_ok()
+            {
+                acquired_clone.store(true, Ordering::Release);
+            }
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!acquired.load(Ordering::Acquire));
+        assert!(!busy.load(Ordering::Acquire));
+
+        drop(reservation);
+        handle.await.unwrap();
+        assert!(acquired.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn reservation_and_background_claim_have_one_linearization_point() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let health = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let (resume, receiver) = std::sync::mpsc::channel();
+        let gate = Arc::new(AdmissionClaimTestGate { reached: Notify::new(), resume: std::sync::Mutex::new(receiver) });
+        *admission.before_background_claim.lock().unwrap() = Some(gate.clone());
+        let runner = NativeCallRunner::with_admission(busy.clone(), epoch.clone(), health.clone(), admission.clone(), false);
+        let handle = tokio::runtime::Handle::current();
+        let background = { let runner = runner.clone(); tokio::task::spawn_blocking(move || handle.block_on(async move {
+            runner.acquire(std::time::Instant::now() + std::time::Duration::from_secs(2), &AtomicBool::new(false), &Notify::new(), false).await.unwrap()
+        })) };
+        tokio::time::timeout(std::time::Duration::from_secs(1), gate.reached.notified()).await.unwrap();
+        let attempted = Arc::new(Notify::new());
+        let reserving = { let admission = admission.clone(); let attempted = attempted.clone(); tokio::task::spawn_blocking(move || {
+            attempted.notify_one(); admission.reserve()
+        }) };
+        attempted.notified().await;
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!reserving.is_finished(), "reservation cannot complete between the protected check and claim");
+        resume.send(()).unwrap();
+        let owner = background.await.unwrap();
+        let reservation = reserving.await.unwrap();
+        drop(owner);
+        assert!(admission.has_pending());
+        let denied = runner.acquire(std::time::Instant::now() + std::time::Duration::from_millis(100), &AtomicBool::new(false), &Notify::new(), false).await;
+        assert_eq!(denied.err().as_deref(), Some("engine_check_native_busy"));
+        let priority = NativeCallRunner::with_admission(busy.clone(), epoch, health, admission.clone(), true);
+        let owner = priority.acquire(std::time::Instant::now() + std::time::Duration::from_millis(100), &AtomicBool::new(false), &Notify::new(), true).await.unwrap();
+        drop(reservation);
+        drop(owner);
+        assert!(!busy.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn non_priority_runner_proceeds_after_reservation_is_dropped() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let degraded = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let mut reservation = Some(admission.reserve());
+
+        let runner = NativeCallRunner::with_admission(
+            busy.clone(),
+            epoch.clone(),
+            degraded,
+            admission.clone(),
+            false,
+        );
+
+        let handle = tokio::spawn(async move {
+            let cancel = AtomicBool::new(false);
+            let notify = Notify::new();
+            runner
+                .acquire(
+                    std::time::Instant::now() + std::time::Duration::from_secs(1),
+                    &cancel,
+                    &notify,
+                    true,
+                )
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        assert!(admission.has_pending());
+
+        drop(reservation.take());
+        assert!(!admission.has_pending());
+
+        let guard = handle
+            .await
+            .unwrap()
+            .expect("runner should acquire after reservation drop");
+        assert!(busy.load(Ordering::Acquire));
+        drop(guard);
+        assert!(!busy.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn ordinary_asr_waits_for_a_transient_native_lease() {
+        let busy = Arc::new(AtomicBool::new(true));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let degraded = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let reservation = admission.reserve();
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        let released = {
+            let busy = busy.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                busy.store(false, Ordering::Release);
+            })
+        };
+        let started = std::time::Instant::now();
+        let asr: Arc<dyn SttCallback> =
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("hello"));
+        let result = VoiceCompanionRuntime::transcribe_cancelable(
+            asr,
+            vec![0.1; 160],
+            &cancel,
+            &notify,
+            &busy,
+            &degraded,
+            &epoch,
+            started + std::time::Duration::from_secs(1),
+            true,
+            Some(reservation),
+            None,
+            #[cfg(feature = "native-fault-injection")]
+            None,
+        )
+        .await;
+        released.await.unwrap();
+        assert_eq!(result.unwrap().as_deref(), Some("hello"));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+        assert!(!admission.has_pending());
+    }
+
+    #[tokio::test]
+    async fn asr_task_cancellation_resets_reservation_and_unblocks_native_calls() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let degraded = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let runner = NativeCallRunner::with_admission(
+            busy.clone(),
+            epoch.clone(),
+            degraded.clone(),
+            admission.clone(),
+            false,
+        );
+        let owner = runner.acquire(std::time::Instant::now() + std::time::Duration::from_secs(1), &AtomicBool::new(false), &Notify::new(), false).await.unwrap();
+        let reservation = admission.reserve();
+        let entered = Arc::new(Notify::new());
+        let task = {
+            let entered = entered.clone();
+            let busy = busy.clone();
+            let epoch = epoch.clone();
+            let degraded = degraded.clone();
+            tokio::spawn(async move {
+                entered.notify_one();
+                VoiceCompanionRuntime::transcribe_cancelable(
+                    Arc::new(nomifun_audio::stt::FakeSttCallback::always("hello")), vec![0.1; 160],
+                    &AtomicBool::new(false), &Notify::new(), &busy, &degraded, &epoch,
+                    std::time::Instant::now() + std::time::Duration::from_secs(2), true,
+                    Some(reservation), None,
+                    #[cfg(feature = "native-fault-injection")]
+                    None,
+                ).await
+            })
+        };
+        entered.notified().await;
+        assert!(admission.has_pending());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(!admission.has_pending());
+        assert!(busy.load(Ordering::Acquire), "canceling a waiter must not release another native owner");
+        drop(owner);
+        let guard = runner.acquire(std::time::Instant::now() + std::time::Duration::from_millis(100), &AtomicBool::new(false), &Notify::new(), false).await;
+        assert!(guard.is_ok());
+    }
+
+    #[tokio::test]
+    async fn non_priority_asr_yields_when_reservation_is_active() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(1));
+        let degraded = Arc::new(NativeHealth::default());
+        let admission = Arc::new(NativeAdmission::default());
+        let reservation = admission.reserve();
+        assert!(admission.has_pending());
+
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        let asr: Arc<dyn SttCallback> =
+            Arc::new(nomifun_audio::stt::FakeSttCallback::always("background"));
+
+        let result = VoiceCompanionRuntime::transcribe_cancelable(
+            asr.clone(),
+            vec![0.1; 160],
+            &cancel,
+            &notify,
+            &busy,
+            &degraded,
+            &epoch,
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+            true,
+            None,
+            Some(&admission),
+            #[cfg(feature = "native-fault-injection")]
+            None,
+        )
+        .await;
+        assert_eq!(result.err().as_deref(), Some("engine_check_native_busy"));
+        assert!(!busy.load(Ordering::Acquire));
+
+        drop(reservation);
+        let result2 = VoiceCompanionRuntime::transcribe_cancelable(
+            asr,
+            vec![0.1; 160],
+            &cancel,
+            &notify,
+            &busy,
+            &degraded,
+            &epoch,
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+            true,
+            None,
+            Some(&admission),
+            #[cfg(feature = "native-fault-injection")]
+            None,
+        )
+        .await;
+        assert_eq!(result2.unwrap().as_deref(), Some("background"));
     }
 
     #[tokio::test]
