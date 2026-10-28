@@ -55,6 +55,33 @@ pub fn lexicon_enforce_enabled() -> bool {
     lexicon_enforce_enabled_value(std::env::var(LEXICON_ENFORCE_SWITCH_ENV).ok().as_deref())
 }
 
+/// m10 自动补批的环境闸环境变量（`NOMI_LEARNING_AUTO_REFILL`）：off/0/false
+/// = 自动补批关（verdict 恒 Disabled、端点如实读数）；未设或其它取值 = 开
+/// （设置开关 `learning.autoRefillEnabled` 正常起作用）。
+pub const AUTO_REFILL_SWITCH_ENV: &str = "NOMI_LEARNING_AUTO_REFILL";
+
+/// 自动补批环境闸关闭判定（off/0/false，大小写与首尾空白宽容）。
+pub fn is_auto_refill_disabled_value(value: &str) -> bool {
+    is_off_switch_value(value)
+}
+
+/// 开放题评审执行器开关（n5 机制面开关臂，`NOMI_LEARNING_OPEN_JUDGE`）：
+/// 未设或其它取值 = 新评审链（重试环 N=2 带原因回灌 + 90s 显式超时 +
+/// complete_json_with_thinking 通道 + schema 互斥校验）；off/0/false =
+/// 旧 `grade_open_answer` 单次裸调路径（同二进制对照臂——双臂验证用，
+/// off 臂缺 missing_points 语义，对照卡按此读数）。
+pub const OPEN_JUDGE_SWITCH_ENV: &str = "NOMI_LEARNING_OPEN_JUDGE";
+
+/// 开放题评审执行器开关判定（取值注入面，纯函数——测试不触进程 env）。
+pub fn open_judge_enabled_value(value: Option<&str>) -> bool {
+    value.map(|value| !is_off_switch_value(value)).unwrap_or(true)
+}
+
+/// 开放题评审执行器开关的进程读数（[`open_judge_enabled_value`] 同款语义）。
+pub fn open_judge_enabled() -> bool {
+    open_judge_enabled_value(std::env::var(OPEN_JUDGE_SWITCH_ENV).ok().as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +126,37 @@ mod tests {
         // 显式非 off 取值 = 开（L1 阻断臂）。
         for value in ["on", "1", "true", "yes"] {
             assert!(lexicon_enforce_enabled_value(Some(value)), "{value:?} = 开（L1 阻断）");
+        }
+    }
+
+    /// m10 自动补批环境闸：off 系 = 关（verdict 恒 Disabled）；on 系/未设
+    /// 面的宽容值 = 开。
+    #[test]
+    fn auto_refill_switch_delegates_to_off_values() {
+        for value in ["off", "0", "false", " OFF ", "False"] {
+            assert!(
+                is_auto_refill_disabled_value(value),
+                "{value:?} = 自动补批关"
+            );
+        }
+        for value in ["on", "1", "true", ""] {
+            assert!(
+                !is_auto_refill_disabled_value(value),
+                "{value:?} = 自动补批开"
+            );
+        }
+    }
+
+    /// 开放题评审执行器开关（n5）：未设 = 开（新评审链缺省在位）；off 系 =
+    /// 关（旧单次裸调对照臂）。
+    #[test]
+    fn open_judge_switch_defaults_on_and_off_arm_is_explicit() {
+        assert!(open_judge_enabled_value(None), "未设 = 新评审链");
+        for value in ["off", "OFF", "0", "false", " False ", " off "] {
+            assert!(!open_judge_enabled_value(Some(value)), "{value:?} = 旧路径对照臂");
+        }
+        for value in ["on", "1", "true", "yes", ""] {
+            assert!(open_judge_enabled_value(Some(value)), "{value:?} = 新评审链");
         }
     }
 }

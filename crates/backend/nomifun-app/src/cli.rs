@@ -519,6 +519,23 @@ pub enum LearningSmokeCommand {
         #[arg(long, default_value_t = 3)]
         calls: usize,
     },
+    /// 开放题评审判分冒烟（n5，ADR-0037 评审制移植）：布景（含判底
+    /// explanation 的开放题 + reflection 各一，零 LLM 落库）×真 LLM 判分
+    /// 四判据（语义覆盖判对 / 真误区判错+缺失非空 / 离题判错 / 断 LLM
+    /// 如实上抛）+ 脱敏回读进 EXIT（判底/作答原文在观测面零命中）。判据
+    /// 失败退出码 2；无凭据临时库如实失败。机制面开关臂：缺省走新评审
+    /// 链，`NOMI_LEARNING_OPEN_JUDGE=off` 同二进制跑旧路径对照臂。
+    Grade {
+        /// SQLite 库路径（缺省从零临时库；指开发库时可解出已配置的 provider）。
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Provider id（与 --model 成对）。
+        #[arg(long)]
+        provider: Option<String>,
+        /// 模型名（与 --provider 成对）。
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// 生长冒烟：立课 → 生长批 ×N（批间用确定性学习者替身完成节点驱动再
     /// 生长），机械判据 = 首批 assumes 全空（空登记表机械地板）+ 每批就绪即
     /// 发布（既往供给覆盖）+ 铸名不撞；失败非零退出。

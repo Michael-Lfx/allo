@@ -544,6 +544,7 @@ mod generate;
 mod lesson;
 mod lesson_draft;
 mod memory;
+mod open_judge;
 mod progress;
 mod quiz;
 mod review;
@@ -551,6 +552,10 @@ mod tags;
 mod xp;
 
 pub use xp::CompanionXpSink;
+
+/// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
+/// `ArchivingCompleter` 时引用同一常量——占位文本单源。
+pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
 
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
