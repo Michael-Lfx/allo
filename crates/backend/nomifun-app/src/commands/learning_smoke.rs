@@ -2217,11 +2217,16 @@ async fn run_quiz(
     Ok(ExitCode::SUCCESS)
 }
 
-/// `learning-smoke content`（j07）：内容成色冒烟。立一门两节点学习图课程
-/// （概念挂接 + 别名池 + 引用名），为汇合节点（assumes 前置 + teaches 两
-/// 概念）生成正文——概念面投影（首现/引用名/别名池）随真实管线注入——
-/// 然后打印读数：字数/小节数/题目数/首现与用名标注。读数面非门禁：唯一
-/// 硬判据是管线真实走通并发布。
+/// `learning-smoke content`（j07 + n3 判据升级）：内容成色冒烟。立一门两
+/// 节点学习图课程（概念挂接 + 别名池 + 引用名 + 已会声明锚 + 先行节点两节
+/// 正文），为汇合节点（assumes 前置 + teaches 两概念）生成正文——概念面
+/// 投影、课程已知概念行（Known Names）、teaches 档位行、先例摘要随真实管
+/// 线注入。硬判据（全进 EXIT，learnhub smoke-content 六判据对齐，n2 D7）：
+/// ①输入面名单行（两面归档 user 含「课程已知概念」且命中布景概念——
+/// stale-binary 必红）②条款在场（规划面四条款 + 写作面两条款）③契约面
+/// （管线走通并发布 + est 铸值 == 节点 est）⑤先例行 + 先行节标题。读数
+/// （软）：字数/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
+/// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
 #[allow(clippy::too_many_arguments)]
 async fn run_content(
     cli: &Cli,
@@ -2328,8 +2333,60 @@ async fn run_content(
         .execute(&wiring.pool)
         .await?;
     }
+    // 已会声明锚（m2，n3 布景对齐 learnhub 声明档案节）：学习者声明已会 α
+    // ——Known Names 的声明半边（∪ 去重：α 同时被 L1 教出）。
+    sqlx::query(
+        "INSERT INTO learning_basis_declarations \
+         (course_id, doors_json, blocks_json, concept_ids_json, declared_at, note) \
+         VALUES (?, '[]', '[]', ?, ?, 'content smoke 布景声明')",
+    )
+    .bind(&course_id)
+    .bind(serde_json::json!([concept_alpha]).to_string())
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    // 先行节点正文两节（n3 布景对齐 learnhub 先行节点节）：L1 落两节
+    // ready 正文——先例摘要的先行节标题判据面（#180）。
+    for (section_key, kind, title, points, position) in [
+        (
+            "s1",
+            "concept",
+            "概念：对数收益的定义",
+            "价格比取对数的一阶近似",
+            0,
+        ),
+        (
+            "s2",
+            "example",
+            "例题：两日收益的对数换算",
+            "相邻两日收益相加等于区间收益",
+            1,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO learning_lesson_sections \
+             (section_key, lesson_id, kind, title, points, visual, body_md, degraded, \
+              status, version, position, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, '表格', ?, 0, 'ready', 1, ?, ?, ?)",
+        )
+        .bind(section_key)
+        .bind(&lesson_a)
+        .bind(kind)
+        .bind(title)
+        .bind(points)
+        .bind(format!("{title}\n\n布景正文（先行节点，供先例摘要引用节标题）。"))
+        .bind(position)
+        .bind(now)
+        .bind(now)
+        .execute(&wiring.pool)
+        .await?;
+    }
+    sqlx::query("UPDATE learning_lessons SET content_generated = 1 WHERE lesson_id = ?")
+        .bind(&lesson_a)
+        .execute(&wiring.pool)
+        .await?;
 
-    println!("[1/1] generating node B content (concept faces ride the real pipeline)…");
+    println!("[1/2] generating node B content (known names / tier / precedents ride the real pipeline)…");
     let request = nomifun_learning::GenerateLessonRequest {
         provider_id: provider
             .as_deref()
@@ -2339,8 +2396,9 @@ async fn run_content(
         feedback: None,
     };
     let lesson_b_id = nomifun_common::LearningLessonId::parse(&lesson_b)?;
-    // 硬判据 = 管线真实走通并发布：生成失败如实非零退出（无凭据临时库
-    // 走到这里即报 no enabled provider——structure 冒烟同纪律）。
+    // 硬判据③（契约面，管线半边）= 管线真实走通并发布：生成失败如实非零
+    // 退出（无凭据临时库走到这里即报 no enabled provider——structure 冒烟
+    // 同纪律）。
     let view = match service
         .generate_lesson_content(&owner, &lesson_b_id, &request)
         .await
@@ -2351,6 +2409,78 @@ async fn run_content(
             return Ok(ExitCode::from(2));
         }
     };
+
+    println!("[2/2] hard criteria (D7: input face / clauses / contract / precedents)…");
+    let mut failed: Vec<String> = Vec::new();
+    // 观测存档行：user 字段 = 输入面（两面装配事实），system 字段 = 条款面。
+    let archive = archiving.as_ref().expect("content smoke wires archiving");
+    let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
+        .unwrap_or_default();
+    let rows: Vec<serde_json::Value> = calls
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    let user_texts: Vec<&str> = rows
+        .iter()
+        .filter_map(|value| value.get("user").and_then(|v| v.as_str()))
+        .collect();
+    let system_texts: Vec<&str> = rows
+        .iter()
+        .filter_map(|value| value.get("system").and_then(|v| v.as_str()))
+        .collect();
+
+    // 判据①：输入面名单行——user 归档含「课程已知概念」行且命中布景概念
+    // （声明 ∪ 已教并集；stale-binary 必红：装配面旧档无此行）。
+    let known_calls = user_texts
+        .iter()
+        .filter(|user| {
+            user.contains("课程已知概念")
+                && user.contains("对数收益率")
+                && user.contains("历史波动率")
+        })
+        .count();
+    if known_calls == 0 {
+        failed.push(
+            "判据1红：归档 user 缺「课程已知概念」名单行或未命中布景概念（对数收益率/历史波动率）——#177 输入面"
+                .into(),
+        );
+    }
+    // 判据②：条款在场——规划面四条款 + 写作面两条款（stale-binary 门）。
+    let system_joined = system_texts.join("\n");
+    for term in [
+        "构件词边界",
+        "练习形态按档位",
+        "取材池",
+        "意图画像与容量预算",
+        "表述工具在场",
+        "规划即雄心",
+    ] {
+        if !system_joined.contains(term) {
+            failed.push(format!("判据2红：system 归档缺条款「{term}」——二进制可能是旧档"));
+        }
+    }
+    // 判据③（铸值半边）：est 铸值 == 节点 est（20；草稿以节点尺寸锚开盘）。
+    if view.est != 20 {
+        failed.push(format!(
+            "判据3红：est={}，应为节点 est 20（铸值面）",
+            view.est
+        ));
+    }
+    // 判据⑤：先例摘要 + 先行节标题在 user 归档（#180 输入面）。
+    let precedent_calls = user_texts
+        .iter()
+        .filter(|user| {
+            user.contains("已建立先例")
+                && user.contains("概念：对数收益的定义")
+                && user.contains("收益率与对数收益率")
+        })
+        .count();
+    if precedent_calls == 0 {
+        failed.push(
+            "判据5红：归档 user 缺先例摘要或先行节标题（概念：对数收益的定义 / 收益率与对数收益率）——#180 输入面"
+                .into(),
+        );
+    }
 
     // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。
     let body_chars: usize = view
@@ -2365,9 +2495,10 @@ async fn run_content(
         .collect::<Vec<_>>()
         .join("\n");
     println!(
-        "content read-out: sections={} activities={} body_chars={body_chars}",
+        "content read-out: sections={} activities={} body_chars={body_chars} est={}",
         view.sections.len(),
         view.activities.len(),
+        view.est,
     );
     println!(
         "faces: mentions_log_returns={} mentions_beta_canonical={} mentions_alias={}",
@@ -2377,26 +2508,19 @@ async fn run_content(
     );
     // k03 读数面（非门禁）：预算行与超容自报在观测存档里的在场性——双臂
     // 对照的机械读数（off 臂预算行 0）。
-    if let Some(archive) = archiving.as_ref() {
-        let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
-            .unwrap_or_default();
+    {
         // 预算行按注入原文（"- 时长预算："）在 **user 字段** 计数——系统
         // 提示词里的说明句同样以该词开头，不能整行 grep。
-        let budget_line_calls = calls
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|value| {
-                value
-                    .get("user")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|user| user.contains("- 时长预算："))
-            })
+        let budget_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("- 时长预算："))
             .count();
         // 超容自报按发布观测行计数（实际产物，非 schema 提及；缺席合法）。
-        let capacity_notes = calls
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
+        let capacity_notes = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
             .filter_map(|value| value.get("capacity_note").cloned())
             .filter(|note| !note.is_null())
             .count();
@@ -2426,11 +2550,44 @@ async fn run_content(
                 .collect::<Vec<_>>()
                 .join(" ")
         );
+        // n3 读数面（非门禁）：档位行与先例行在场计数（双臂对照）。
+        let tier_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("节点档位"))
+            .count();
+        let known_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("课程已知概念"))
+            .count();
+        let precedent_line_calls = user_texts
+            .iter()
+            .filter(|user| user.contains("已建立先例"))
+            .count();
+        println!(
+            "boundary read-out: known_line_calls={known_line_calls} tier_line_calls={tier_line_calls} precedent_line_calls={precedent_line_calls}"
+        );
+        // 超纲专名抽查（软，人工判读）：正文工作词应取自名单（对数收益率/
+        // 历史波动率/贝塔系数），超纲专名（如 布朗运动/伊藤引理/GARCH/维纳
+        // 过程）出现 = 读数红，回 #177/#178 续裁（对照卡人读清单）。
+        let overshoot = ["布朗运动", "伊藤引理", "GARCH", "维纳过程"]
+            .iter()
+            .filter(|term| joined.contains(**term))
+            .count();
+        println!(
+            "overshoot read-out: known-domain words only; out-of-bounds proper nouns hit={overshoot} (human card)"
+        );
     }
     println!(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
         cli.data_dir.display()
     );
+    if !failed.is_empty() {
+        for failure in &failed {
+            eprintln!("{failure}");
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+    println!("\n== 判据全过（EXIT=0） ==");
     Ok(ExitCode::SUCCESS)
 }
 

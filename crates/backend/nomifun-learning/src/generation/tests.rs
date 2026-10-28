@@ -1362,6 +1362,36 @@ fn content_discipline_v2_switch_adds_and_removes_the_four_clauses() {
         super::lesson::section_outline_system().contains("plan example scenarios from that audience"),
         "规划面情境取向句在场"
     );
+    // R12 收窄（n3，#177）：逃生门只许记号与读法，旧「正文先行引入」全量门
+    // 不得残留（EN 线）。
+    let narrowed = super::lesson::content_discipline_block();
+    assert!(
+        narrowed.contains("applies ONLY to notation and its reading"),
+        "R12 收窄版在场"
+    );
+    assert!(
+        narrowed.contains("domain concepts are never covered by that escape"),
+        "领域概念不适用条款在场"
+    );
+    assert!(
+        !narrowed.contains("or already formally introduced earlier"),
+        "旧全量逃生门措辞不得残留"
+    );
+    // 自足条款（n3 D6，传统线形态）：练习形态「不引入未教方法论」半边 +
+    // 规划即雄心，装配进写作纪律块与规划面 Rules。
+    assert!(
+        block.contains("Practice replicates what the lesson taught"),
+        "练习方法论边界条款在场"
+    );
+    assert!(
+        block.contains("Plan is the ambition"),
+        "规划即雄心条款在场"
+    );
+    assert!(
+        super::lesson::section_outline_system()
+            .contains("Practice boundary (planning half)"),
+        "规划面练习边界条款在场"
+    );
 
     unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "off") };
     let legacy = super::lesson::content_discipline_block();
