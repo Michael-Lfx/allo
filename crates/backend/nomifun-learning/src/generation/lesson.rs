@@ -767,6 +767,8 @@ When a figure is mandatory — if the content touches any of these, a diagram is
 /// 教训剔除；写作取向不是格式模板，零新机械门）。节大纲与节正文两 stage
 /// 共用；学习图 agent 管线的同款文本见 nomifun-ai-agent
 /// GENERATE_LESSON_AGENT_SYSTEM（两处手写保持同义，文本面各随其提示词风格）。
+/// n3（D6 裁决）追两条自足条款（不需要概念名单的传统线形态）：练习形态的
+/// 「不引入未教方法论」半边 + 规划即雄心。
 const CONTENT_DISCIPLINE_BLOCK: &str = r#"
 Content discipline (domain-neutral guidance — a writing orientation, not a format template):
 - Derive before drilling: method- and formula-style conclusions are first derived from what the prerequisites already taught, then exercised in worked examples — never state a bare assertion and backfill its proof.
@@ -774,6 +776,8 @@ Content discipline (domain-neutral guidance — a writing orientation, not a for
 - Convergence fade: a node with many prerequisites (>= 4 prerequisite statements or prior sections) is a convergence point — add new ingredients to its examples gradually, never all at once.
 - Real contrasts only: comparisons must land on checkable dimensions (scope of applicability, cost, failure modes) — never an empty "X is better".
 - Worked-example density: a 15-30 minute lesson body carries 3-6 progressive worked examples (easy to hard, the last touching a boundary case); when example sections already split the load, each carries its share without stacking.
+- Practice replicates what the lesson taught: an exercise may copy a demonstrated behaviour (rewrite to the worked pattern, apply the given format, judge examples true/false); an exercise that requires a methodology or reasoning chain the lesson never taught (induction principles, multi-step proof chains) belongs to a later lesson — never introduce it here.
+- Plan is the ambition: the section's example count, question load and practice form follow the section task — capacity the plan converged is never re-inflated; exercises stay inside the planned concept scope.
 "#;
 
 /// 内容纪律 V2 运维开关（k05，learnhub #126/#148 R10–R13）：置 off/0/false
@@ -798,7 +802,7 @@ pub fn content_discipline_v2_enabled() -> bool {
 pub const CONTENT_DISCIPLINE_V2_BLOCK: &str = r#"
 - Concrete stand-in first (R10): when a section first teaches an abstract object (a structure, a notation, an operation), give one concrete stand-in first — a geometric picture, an action metaphor, or a quantity you can touch in a specific situation — so the rules and properties that follow can be explained through it. Pair each key rule with one sentence of "why this holds", told through the stand-in; never expect the learner to memorise bare symbols.
 - Audience register (R11): when the course declares an adult, professional or other non-child audience, write the people and settings of examples from that audience's daily life — not juvenile, no primary-school classroom scenes; keep hands-on objects and teaching aids, and never lock a scenario to an age.
-- Vocabulary stays inside the known set (R12): symbols and terms used in a rule's formal statement must be declared (the node's teaches ∪ assumes) or already formally introduced earlier in this point's own body. Never improvise an undeclared symbol or term: either rephrase in natural language, or introduce it formally in the body first and then use it.
+- Vocabulary stays inside the known set (R12): symbols and terms used in a rule's formal statement must be declared (the lesson's teaches ∪ assumptions) — never improvise an undeclared symbol or term: rephrase in natural language instead. "Introduce it formally in the body first" applies ONLY to notation and its reading (expression tools this lesson must teach, such as how a new symbol is written and read); domain concepts are never covered by that escape — an undeclared concept belongs to a later lesson, so never name and introduce it in the body; say it in everyday words (the range, find an example that fails, at least one).
 - Assertion-example consistency (R13): the numbers in an example cited to support a consequence claim must actually entail that claim (a missing-number example reports fewer than the total, a duplicate example more than the total). For operation-style demonstrations, verify every intermediate result step by step — checking only the final state is not verification.
 "#;
 
@@ -874,6 +878,7 @@ Rules:
 - section_key values are s1, s2, s3, … in order.
 - The lesson MUST close with exactly ONE practice section as its last section: the learner finishes reading and then answers in one consolidated practice round. A summary section before the practice is optional, not mandatory.
 - Plan the sequence for derivation-before-drilling and progressive example density: a method/formula section precedes the worked-example sections that exercise it, and example load ramps across the lesson (convergence points with many prior sections spread their new ingredients across several examples).
+- Practice boundary (planning half): plan exercises that replicate behaviours the lesson demonstrates (rewrite to a worked pattern, apply the given format, judge examples); an exercise requiring a methodology or reasoning chain this lesson never teaches (induction principles, multi-step proof chains) belongs to a later lesson — do not plan it here.
 - Any recap stays within THIS lesson — plan no "接下来/下一课" teaser sections; bridging to the next lesson is one closing sentence, not a section.{audience_clause}
 - Output JSON only, without Markdown fences or commentary."#,
         SECTION_TYPE_MENU.as_str(),
