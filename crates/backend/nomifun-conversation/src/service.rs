@@ -12409,8 +12409,8 @@ impl ConversationService {
                 Some(&receipt_error),
                 relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
             );
-            // The finalizer acquires the same preparation gate.
-            drop(preparation_guard);
+            // Transfer the held preparation gate to the finalizer instead of
+            // releasing it and trying to pass an already-moved guard.
             drop(runtime_build_lease.take());
             self.release_and_complete_turn(
                 &mut turn_handle,
@@ -12482,8 +12482,8 @@ impl ConversationService {
                     Some(&receipt_error),
                     relay_error_code::fixed_failure(relay_error_code::PREPARATION_FAILED),
                 );
-                // Avoid waiting for the preparation guard owned by this send.
-                drop(preparation_guard);
+                // The finalizer consumes this send's preparation guard, so it
+                // must neither be dropped here nor acquired a second time.
                 self.release_and_complete_turn(
                     &mut turn_handle,
                     runtime_registry,

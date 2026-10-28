@@ -274,7 +274,6 @@ fn validate_skill_load_commit(
         "source": &snapshot.source,
         "version_hash": &snapshot.version_hash,
         "content": &snapshot.content,
-        "invocation": "force",
     });
     if content != expected {
         return Err(skill_load_commit_conflict(
