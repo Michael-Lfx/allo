@@ -3,11 +3,13 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::{collections::HashSet, ffi::OsString};
 
 use bzip2::read::BzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 
 const RELEASE_BASE_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
@@ -63,6 +65,7 @@ fn try_main() -> Result<(), DynError> {
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_PACK");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
+    println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_SHA256");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_BASE_URL");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
 
@@ -133,6 +136,110 @@ fn resolve_lib_dir(
     download_prebuilt_libs(link_mode, target_os, target_arch)
 }
 
+struct DownloadCandidate {
+    name: &'static str,
+    url: String,
+}
+
+fn is_china_network_environment() -> bool {
+    if let Ok(val) = env::var("FLOWY_MIRROR").or_else(|_| env::var("SHERPA_ONNX_MIRROR")) {
+        let v = val.trim().to_lowercase();
+        if v == "cn" || v == "china" || v == "domestic" {
+            return true;
+        }
+        if v == "global" || v == "en" || v == "overseas" {
+            return false;
+        }
+    }
+
+    if let Ok(manifest_dir) = env::var("CARGO_MANIFEST_DIR") {
+        if let Some(root_path) = Path::new(&manifest_dir).ancestors().nth(3) {
+            let cargo_config = root_path.join(".cargo").join("config.toml");
+            if let Ok(content) = fs::read_to_string(cargo_config) {
+                if content.contains("rsproxy") {
+                    return true;
+                }
+            }
+        }
+    }
+
+    for var in ["LC_ALL", "LANG", "LC_MESSAGES", "USERLOCALE"] {
+        if let Ok(val) = env::var(var) {
+            let lower = val.to_lowercase();
+            if lower.contains("zh_cn") || lower.contains("zh-cn") || lower.contains("chinese") {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(tz) = env::var("TZ") {
+        let lower = tz.to_lowercase();
+        if lower.contains("shanghai")
+            || lower.contains("beijing")
+            || lower.contains("prc")
+            || lower.contains("cst-8")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn build_candidate_urls(version: &str, archive_name: &str) -> Vec<DownloadCandidate> {
+    let official_url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
+    let mut candidates = Vec::new();
+
+    if let Ok(custom_base) = env::var("SHERPA_ONNX_BASE_URL") {
+        let custom_base = custom_base.trim_end_matches('/');
+        candidates.push(DownloadCandidate {
+            name: "custom-base",
+            url: format!("{custom_base}/v{version}/{archive_name}"),
+        });
+    }
+
+    let is_cn = is_china_network_environment();
+
+    let ghproxy_com = DownloadCandidate {
+        name: "mirror.ghproxy.com",
+        url: format!("https://mirror.ghproxy.com/{official_url}"),
+    };
+    let gitmirror = DownloadCandidate {
+        name: "hub.gitmirror.com",
+        url: format!("https://hub.gitmirror.com/{official_url}"),
+    };
+    let ghproxy_net = DownloadCandidate {
+        name: "ghproxy.net",
+        url: format!("https://ghproxy.net/{official_url}"),
+    };
+    let official = DownloadCandidate {
+        name: "github-official",
+        url: official_url.clone(),
+    };
+
+    if is_cn {
+        println!("cargo:warning=[sherpa-onnx] Domestic network detected; prioritizing China mirrors");
+        candidates.push(ghproxy_com);
+        candidates.push(gitmirror);
+        candidates.push(ghproxy_net);
+        candidates.push(official);
+    } else {
+        candidates.push(official);
+        candidates.push(ghproxy_com);
+        candidates.push(gitmirror);
+        candidates.push(ghproxy_net);
+    }
+
+    candidates
+}
+
+fn global_cache_dir() -> Option<PathBuf> {
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .map(|h| h.join(".flowy").join("cache").join("sherpa-onnx-prebuilt"))
+}
+
 fn download_prebuilt_libs(
     link_mode: LinkMode,
     target_os: &str,
@@ -154,6 +261,10 @@ fn download_prebuilt_libs(
     fs::create_dir_all(&cache_root)?;
 
     let archive_path = cache_root.join(&archive_name);
+    let legacy_part = PathBuf::from(format!("{}.part", archive_path.display()));
+    if legacy_part.is_file() {
+        let _ = fs::remove_file(&legacy_part);
+    }
     if !archive_path.is_file() {
         if let Some(local_archive_dir) = env::var_os("SHERPA_ONNX_ARCHIVE_DIR") {
             let local_archive_path = PathBuf::from(local_archive_dir).join(&archive_name);
@@ -166,47 +277,100 @@ fn download_prebuilt_libs(
             }
 
             copy_file_atomically(&local_archive_path, &archive_path)?;
+        } else if let Some(global_archive) = global_cache_dir()
+            .map(|d| d.join(&archive_name))
+            .filter(|p| p.is_file())
+        {
+            println!(
+                "cargo:warning=[sherpa-onnx] Reusing prebuilt archive from global cache: {}",
+                global_archive.display()
+            );
+            copy_file_atomically(&global_archive, &archive_path)?;
         } else {
             let version = env!("CARGO_PKG_VERSION");
-            let official_url = format!("{RELEASE_BASE_URL}/v{version}/{archive_name}");
-            let mut urls = Vec::new();
-            if let Ok(custom_base) = env::var("SHERPA_ONNX_BASE_URL") {
-                let custom_base = custom_base.trim_end_matches('/');
-                urls.push(format!("{custom_base}/v{version}/{archive_name}"));
-            }
-            urls.push(official_url.clone());
-            urls.push(format!("https://ghproxy.net/{official_url}"));
-            urls.push(format!("https://mirror.ghproxy.com/{official_url}"));
+            let candidates = build_candidate_urls(version, &archive_name);
 
             let client = ureq::builder()
                 .try_proxy_from_env(true)
                 .timeout_connect(std::time::Duration::from_secs(10))
+                .timeout_read(std::time::Duration::from_secs(15))
                 .build();
 
             let mut last_err = None;
             let mut downloaded = false;
 
-            for url in &urls {
-                eprintln!("Downloading sherpa-onnx libs from {url}");
-                match client.get(url).call() {
+            let total_candidates = candidates.len();
+            for (idx, candidate) in candidates.iter().enumerate() {
+                let is_last = idx + 1 == total_candidates;
+                let speed_gate_enabled = !is_last;
+
+                println!(
+                    "cargo:warning=[sherpa-onnx] Trying download ({}/{}) from {}: {}",
+                    idx + 1,
+                    total_candidates,
+                    candidate.name,
+                    candidate.url
+                );
+
+                match client.get(&candidate.url).call() {
                     Ok(response) => {
+                        let total_len = response
+                            .header("Content-Length")
+                            .and_then(|v| v.parse::<u64>().ok());
                         let mut reader = response.into_reader();
-                        match write_reader_atomically(&mut reader, &archive_path) {
+                        match write_reader_with_progress_and_speed_gate(
+                            &mut reader,
+                            &archive_path,
+                            total_len,
+                            candidate.name,
+                            speed_gate_enabled,
+                        ) {
                             Ok(()) => {
                                 downloaded = true;
+                                println!(
+                                    "cargo:warning=[sherpa-onnx] Download completed successfully via {}",
+                                    candidate.name
+                                );
+                                if let Some(global_dir) = global_cache_dir() {
+                                    let _ = fs::create_dir_all(&global_dir);
+                                    let _ = copy_file_atomically(
+                                        &archive_path,
+                                        &global_dir.join(&archive_name),
+                                    );
+                                }
                                 break;
                             }
                             Err(e) => {
-                                eprintln!("Warning: failed writing stream from {url}: {e}");
+                                eprintln!(
+                                    "Warning: failed writing stream from {}: {e}",
+                                    candidate.url
+                                );
+                                println!(
+                                    "cargo:warning=[sherpa-onnx] Mirror {} failed ({e}); falling back to next candidate",
+                                    candidate.name
+                                );
                                 let _ = fs::remove_file(temp_path_for(&archive_path));
                                 let _ = fs::remove_file(&archive_path);
-                                last_err = Some(format!("Failed to write stream from {url}: {e}"));
+                                last_err = Some(format!(
+                                    "Failed to write stream from {}: {e}",
+                                    candidate.url
+                                ));
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Warning: failed to download from {url}: {e}");
-                        last_err = Some(format!("Failed to download sherpa-onnx archive from {url}: {e}"));
+                        eprintln!(
+                            "Warning: failed to download from {}: {e}",
+                            candidate.url
+                        );
+                        println!(
+                            "cargo:warning=[sherpa-onnx] Connect to {} failed ({e}); trying next candidate",
+                            candidate.name
+                        );
+                        last_err = Some(format!(
+                            "Failed to download sherpa-onnx archive from {}: {e}",
+                            candidate.url
+                        ));
                     }
                 }
             }
@@ -216,6 +380,17 @@ fn download_prebuilt_libs(
                     .unwrap_or_else(|| "No download URLs available for sherpa-onnx".to_string())
                     .into());
             }
+        }
+    }
+
+    if let Some(expected) = env::var("SHERPA_ONNX_ARCHIVE_SHA256")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        if let Err(error) = verify_archive_sha256(&archive_path, &expected) {
+            let _ = fs::remove_file(&archive_path);
+            return Err(error);
         }
     }
 
@@ -462,8 +637,30 @@ fn temp_path_for(path: &Path) -> PathBuf {
         .file_name()
         .map(OsStr::to_os_string)
         .unwrap_or_else(|| OsString::from("tmp"));
-    temp_name.push(".part");
+    temp_name.push(format!(".{}.part", std::process::id()));
     path.with_file_name(temp_name)
+}
+
+fn verify_archive_sha256(path: &Path, expected: &str) -> Result<(), DynError> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        return Err(format!(
+            "Downloaded archive SHA256 mismatch for {}: expected {expected}, got {actual}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn copy_file_atomically(src: &Path, dst: &Path) -> Result<(), DynError> {
@@ -476,16 +673,96 @@ fn copy_file_atomically(src: &Path, dst: &Path) -> Result<(), DynError> {
     Ok(())
 }
 
-fn write_reader_atomically(reader: &mut dyn io::Read, dst: &Path) -> Result<(), DynError> {
+fn write_reader_with_progress_and_speed_gate(
+    reader: &mut dyn io::Read,
+    dst: &Path,
+    total_len: Option<u64>,
+    source_name: &str,
+    speed_gate_enabled: bool,
+) -> Result<(), DynError> {
     let temp_path = temp_path_for(dst);
     if temp_path.exists() {
         let _ = fs::remove_file(&temp_path);
     }
 
-    {
+    let result = (|| -> Result<(), DynError> {
         let mut file = File::create(&temp_path)?;
-        io::copy(reader, &mut file)?;
+        let mut buffer = [0u8; 64 * 1024];
+        let mut downloaded: u64 = 0;
+        let start_time = Instant::now();
+        let mut last_progress_time = Instant::now();
+        let mut last_pct = 0;
+
+        loop {
+            let bytes_read = reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..bytes_read])?;
+            downloaded += bytes_read as u64;
+
+            let elapsed = start_time.elapsed().as_secs_f64();
+
+            // Speed gate: after 5 seconds, if downloading a large archive (>5MB) and
+            // average transfer rate is below 300 KB/s, abort early to switch to a faster candidate.
+            if speed_gate_enabled && elapsed >= 5.0 && elapsed <= 20.0 {
+                let is_large_file = total_len.map(|t| t > 5 * 1024 * 1024).unwrap_or(true);
+                if is_large_file {
+                    let speed_kb_s = (downloaded as f64 / 1024.0) / elapsed;
+                    if speed_kb_s < 300.0 {
+                        return Err(format!(
+                            "Speed gate triggered for {source_name}: rate is only {:.1} KB/s (< 300 KB/s threshold)",
+                            speed_kb_s
+                        )
+                        .into());
+                    }
+                }
+            }
+
+            // Periodic progress reporting via cargo:warning every 20% or every 5 seconds
+            let now = Instant::now();
+            let should_report = if let Some(total) = total_len {
+                if total > 0 {
+                    let pct = ((downloaded as f64 / total as f64) * 100.0) as u32;
+                    if pct >= last_pct + 20 || pct == 100 || now.duration_since(last_progress_time).as_secs() >= 5 {
+                        last_pct = pct;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else if now.duration_since(last_progress_time).as_secs() >= 5 {
+                true
+            } else {
+                false
+            };
+
+            if should_report {
+                last_progress_time = now;
+                let downloaded_mb = downloaded as f64 / (1024.0 * 1024.0);
+                if let Some(total) = total_len {
+                    let total_mb = total as f64 / (1024.0 * 1024.0);
+                    let pct = ((downloaded as f64 / total as f64) * 100.0) as u32;
+                    println!(
+                        "cargo:warning=[sherpa-onnx] Downloading prebuilts: {pct}% ({downloaded_mb:.1}/{total_mb:.1} MB) via {source_name}"
+                    );
+                } else {
+                    println!(
+                        "cargo:warning=[sherpa-onnx] Downloading prebuilts: {downloaded_mb:.1} MB via {source_name}"
+                    );
+                }
+            }
+        }
+
         file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(err) = result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
     }
 
     fs::rename(&temp_path, dst)?;

@@ -8,6 +8,7 @@ voice-skeleton = []
 
 [dependencies]
 axum.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 nomifun-common.workspace = true

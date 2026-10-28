@@ -8345,6 +8345,7 @@ name = "nomifun-voice-models"
 version = "1.6.8"
 dependencies = [
  "axum",
+ "chrono",
  "futures-util",
  "hex",
  "http-body-util",
@@ -11765,6 +11766,7 @@ name = "sherpa-onnx-sys"
 version = "1.13.3"
 dependencies = [
  "bzip2 0.4.4",
+ "sha2 0.10.9",
  "tar",
  "ureq 2.12.1",
 ]

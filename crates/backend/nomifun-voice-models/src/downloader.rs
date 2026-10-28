@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use reqwest::StatusCode;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Mirror source endpoint configuration.
 #[derive(Debug, Clone)]
@@ -23,13 +23,92 @@ pub struct MirrorConfig {
     pub is_fallback_cdn: bool,
 }
 
+/// Heuristic detection of China network environment.
+///
+/// Priority:
+/// 1. `FLOWY_PREFER_CHINA_MIRROR=1` or `FLOWY_MIRROR=cn|china` -> true
+/// 2. `FLOWY_PREFER_GLOBAL_MIRROR=1` or `FLOWY_MIRROR=global|en` -> false
+/// 3. Cargo configuration using domestic mirror (rsproxy / tuna / ustc / aliyun)
+/// 4. Locale environment variables (`zh_CN`, `zh-cn`)
+/// 5. Timezone environment variables (`Asia/Shanghai`, `PRC`, `CST-8`)
+/// 6. System local timezone offset == UTC+8 (via `chrono::Local`)
+pub fn is_china_network_environment() -> bool {
+    if let Ok(val) = std::env::var("FLOWY_PREFER_CHINA_MIRROR")
+        .or_else(|_| std::env::var("FLOWY_MIRROR"))
+        .or_else(|_| std::env::var("VOICE_MODEL_MIRROR_PREFER"))
+    {
+        let v = val.trim().to_lowercase();
+        if v == "1" || v == "true" || v == "cn" || v == "china" || v == "domestic" {
+            return true;
+        }
+        if v == "0" || v == "false" || v == "global" || v == "en" || v == "overseas" {
+            return false;
+        }
+    }
+
+    if let Ok(val) = std::env::var("FLOWY_PREFER_GLOBAL_MIRROR") {
+        let v = val.trim().to_lowercase();
+        if v == "1" || v == "true" {
+            return false;
+        }
+    }
+
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        if let Some(root_path) = Path::new(&manifest_dir).ancestors().nth(3) {
+            let cargo_config = root_path.join(".cargo").join("config.toml");
+            if let Ok(content) = std::fs::read_to_string(cargo_config) {
+                if content.contains("rsproxy")
+                    || content.contains("tuna.tsinghua")
+                    || content.contains("ustc")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    for var in ["LC_ALL", "LANG", "LC_MESSAGES", "USERLOCALE"] {
+        if let Ok(val) = std::env::var(var) {
+            let lower = val.to_lowercase();
+            if lower.contains("zh_cn") || lower.contains("zh-cn") || lower.contains("chinese") {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(tz) = std::env::var("TZ") {
+        let lower = tz.to_lowercase();
+        if lower.contains("shanghai")
+            || lower.contains("beijing")
+            || lower.contains("prc")
+            || lower.contains("cst-8")
+        {
+            return true;
+        }
+    }
+
+    let offset_seconds = chrono::Local::now().offset().local_minus_utc();
+    if offset_seconds == 8 * 3600 {
+        return true;
+    }
+
+    false
+}
+
 impl MirrorConfig {
-    /// Returns default production mirrors in priority order.
+    /// Returns default production mirrors in priority order based on network environment.
     pub fn default_mirrors() -> Vec<Self> {
+        Self::mirrors_for_environment(is_china_network_environment())
+    }
+
+    /// Resolves default production mirrors for explicitly specified network environment.
+    pub fn mirrors_for_environment(is_cn: bool) -> Vec<Self> {
         let mut mirrors = Vec::new();
 
         // Support custom mirror override via environment variable
-        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL").or_else(|_| std::env::var("AI_MATE_MODEL_MIRROR_URL")) {
+        if let Ok(custom_url) = std::env::var("VOICE_COMPANION_MODEL_MIRROR_URL")
+            .or_else(|_| std::env::var("AI_MATE_MODEL_MIRROR_URL"))
+        {
             let custom_url = custom_url.trim().to_string();
             if !custom_url.is_empty() {
                 mirrors.push(Self {
@@ -42,7 +121,7 @@ impl MirrorConfig {
             }
         }
 
-        mirrors.push(Self {
+        let modelscope = Self {
             id: "modelscope".to_string(),
             base_url: "https://modelscope.cn".to_string(),
             probe_url: Some(
@@ -50,8 +129,42 @@ impl MirrorConfig {
                     .to_string(),
             ),
             is_modelscope: true,
+            is_fallback_cdn: !is_cn,
+        };
+
+        let hf_mirror = Self {
+            id: "hf_mirror".to_string(),
+            base_url: "https://hf-mirror.com".to_string(),
+            probe_url: Some(
+                "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"
+                    .to_string(),
+            ),
+            is_modelscope: false,
             is_fallback_cdn: false,
-        });
+        };
+
+        let hf_official = Self {
+            id: "hf_official".to_string(),
+            base_url: "https://huggingface.co".to_string(),
+            probe_url: Some(
+                "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"
+                    .to_string(),
+            ),
+            is_modelscope: false,
+            is_fallback_cdn: is_cn,
+        };
+
+        if is_cn {
+            // China environment: ModelScope (fastest domestic) -> hf-mirror -> huggingface official
+            mirrors.push(modelscope);
+            mirrors.push(hf_mirror);
+            mirrors.push(hf_official);
+        } else {
+            // Global environment: huggingface official -> hf-mirror -> ModelScope
+            mirrors.push(hf_official);
+            mirrors.push(hf_mirror);
+            mirrors.push(modelscope);
+        }
 
         mirrors
     }
@@ -90,34 +203,20 @@ impl MirrorConfig {
                 }
             }
         } else if self.id == "hf_mirror"
+            || self.id == "hf_official"
             || self.base_url.contains("hf-mirror.com")
             || self.base_url.contains("huggingface.co")
         {
             let base = self.base_url.trim_end_matches('/');
             match clean_path.as_str() {
-                "kws/encoder.int8.onnx" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
-                }
-                "kws/decoder.int8.onnx" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
-                }
-                "kws/joiner.int8.onnx" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx")
-                }
-                "kws/tokens.txt" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/tokens.txt")
-                }
-                "kws/keywords.txt" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/resolve/main/keywords.txt")
-                }
                 "vad/silero_vad.onnx" => {
-                    format!("{base}/csukuangfj/silero-vad-onnx/resolve/main/silero_vad.onnx")
+                    format!("{base}/csukuangfj/vad/resolve/main/silero_vad.onnx")
                 }
                 "asr/model.int8.onnx" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/resolve/main/model.int8.onnx")
+                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx")
                 }
                 "asr/tokens.txt" => {
-                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/resolve/main/tokens.txt")
+                    format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt")
                 }
                 other => {
                     format!("{base}/{other}")
@@ -126,6 +225,18 @@ impl MirrorConfig {
         } else {
             format!("{}/{}", self.base_url.trim_end_matches('/'), clean_path)
         }
+    }
+
+    pub fn supports(&self, rel_path: &str) -> bool {
+        let clean_path = rel_path.replace('\\', "/");
+        if self.id == "hf_mirror"
+            || self.id == "hf_official"
+            || self.base_url.contains("hf-mirror.com")
+            || self.base_url.contains("huggingface.co")
+        {
+            return clean_path.starts_with("asr/") || clean_path.starts_with("vad/");
+        }
+        true
     }
 }
 
@@ -146,6 +257,13 @@ pub enum DownloaderError {
 
     #[error("Server returned unexpected status: {0}")]
     UnexpectedStatus(StatusCode),
+
+    #[error("Download speed {actual_bps} B/s dropped below threshold {threshold_bps} B/s on mirror {mirror_id}")]
+    SpeedTooLow {
+        actual_bps: u64,
+        threshold_bps: u64,
+        mirror_id: String,
+    },
 }
 
 /// Parses `Content-Range: bytes <start>-<end>/<total|*>`.
@@ -176,6 +294,9 @@ pub struct ModelDownloader {
     mirrors: Vec<MirrorConfig>,
     client: reqwest::Client,
     probe_timeout: Duration,
+    min_speed_bps: u64,
+    speed_gate_initial_delay: Duration,
+    speed_gate_max_delay: Duration,
 }
 
 impl Default for ModelDownloader {
@@ -194,11 +315,32 @@ impl ModelDownloader {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
+        let min_speed_bps = std::env::var("VOICE_MODEL_MIN_SPEED_BPS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300 * 1024); // default 300 KB/s
+
         Self {
             mirrors,
             client,
             probe_timeout: Duration::from_millis(3000),
+            min_speed_bps,
+            speed_gate_initial_delay: Duration::from_secs(5),
+            speed_gate_max_delay: Duration::from_secs(20),
         }
+    }
+
+    /// Configures speed gate parameters for testing or specialized environments.
+    pub fn with_speed_gate(
+        mut self,
+        min_speed_bps: u64,
+        initial_delay: Duration,
+        max_delay: Duration,
+    ) -> Self {
+        self.min_speed_bps = min_speed_bps;
+        self.speed_gate_initial_delay = initial_delay;
+        self.speed_gate_max_delay = max_delay;
+        self
     }
 
     /// Accesses the configured mirrors.
@@ -208,10 +350,8 @@ impl ModelDownloader {
 
     /// Concurrent lightweight HEAD probing across candidate mirrors.
     ///
-    /// Rules:
-    /// 1. Prioritize ModelScope: if connected and RTT < 800ms, lock domestic fast source.
-    /// 2. If timeout or abroad (>800ms / unreachable), fallback to fastest global mirror.
-    /// 3. If primary mirrors fail, fallback to CDN mirror.
+    /// Selects the first successful mirror in the configured priority order;
+    /// slow transfers are handled by the speed gate rather than by reordering.
     pub async fn probe_best_source(&self) -> Result<MirrorConfig, DownloaderError> {
         if self.mirrors.is_empty() {
             return Err(DownloaderError::AllMirrorsFailed);
@@ -233,17 +373,15 @@ impl ModelDownloader {
                 .unwrap_or_else(|| format!("{}/probe", mirror.base_url.trim_end_matches('/')));
 
             let handle = tokio::spawn(async move {
-                let start = Instant::now();
                 let resp = client
                     .head(&probe_url)
                     .timeout(timeout)
                     .send()
                     .await;
 
-                let rtt = start.elapsed();
                 match resp {
                     Ok(r) if r.status().is_success() || r.status().is_redirection() => {
-                        Some((mirror_clone, rtt))
+                        Some(mirror_clone)
                     }
                     _ => None,
                 }
@@ -258,33 +396,13 @@ impl ModelDownloader {
             }
         }
 
-        if successful.is_empty() {
-            // If probe failed (e.g. strict firewall on HEAD), fall back to first mirror candidate
-            if let Some(cdn) = self.mirrors.iter().find(|m| m.is_fallback_cdn) {
-                return Ok(cdn.clone());
-            }
-            if let Some(first) = self.mirrors.first() {
-                return Ok(first.clone());
-            }
-            return Err(DownloaderError::AllMirrorsFailed);
+        if let Some(mirror) = successful.into_iter().next() {
+            return Ok(mirror);
         }
-
-        // Rule 1: Check ModelScope (< 800ms)
-        if let Some((ms_mirror, rtt)) = successful.iter().find(|(m, _)| m.is_modelscope) {
-            if *rtt < Duration::from_millis(800) {
-                debug!("Selected ModelScope source (RTT: {:?})", rtt);
-                return Ok(ms_mirror.clone());
-            }
+        if let Some(first) = self.mirrors.first() {
+            return Ok(first.clone());
         }
-
-        // Rule 2: Pick fastest non-fallback mirror
-        successful.sort_by_key(|(_, rtt)| *rtt);
-        if let Some((best_primary, _)) = successful.iter().find(|(m, _)| !m.is_fallback_cdn) {
-            return Ok(best_primary.clone());
-        }
-
-        // Rule 3: Pick fastest fallback mirror
-        Ok(successful[0].0.clone())
+        Err(DownloaderError::AllMirrorsFailed)
     }
 
     /// Downloads a single file with HTTP Range resumption support.
@@ -295,6 +413,18 @@ impl ModelDownloader {
         mirror: &MirrorConfig,
         rel_path: &str,
         target_path: &Path,
+    ) -> Result<u64, DownloaderError> {
+        self.download_file_with_resume_internal(mirror, rel_path, target_path, true)
+            .await
+    }
+
+    /// Internal download implementation supporting speed-gate aborting for failover candidates.
+    pub async fn download_file_with_resume_internal(
+        &self,
+        mirror: &MirrorConfig,
+        rel_path: &str,
+        target_path: &Path,
+        is_last_fallback: bool,
     ) -> Result<u64, DownloaderError> {
         let url = mirror.resolve_url(rel_path);
         let part_path = PathBuf::from(format!("{}.part", target_path.display()));
@@ -428,17 +558,42 @@ impl ModelDownloader {
         let mut stream = resp.bytes_stream();
         let mut downloaded_bytes = start_offset;
         let mut body_bytes: u64 = 0;
+        let stream_start = Instant::now();
+        let mut stream_bytes_received: u64 = 0;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result?;
             file.write_all(&chunk).await?;
             let chunk_len = chunk.len() as u64;
+            stream_bytes_received = stream_bytes_received.saturating_add(chunk_len);
             body_bytes = body_bytes.checked_add(chunk_len).ok_or_else(|| {
                 DownloaderError::Interrupted("Response body length overflows u64".into())
             })?;
             downloaded_bytes = downloaded_bytes.checked_add(chunk_len).ok_or_else(|| {
                 DownloaderError::Interrupted("Downloaded length overflows u64".into())
             })?;
+
+            // Speed gate inspection: during observation window (e.g. 5s~20s), if throughput is below threshold
+            // and this is not the last fallback mirror, abort to allow faster failover.
+            let elapsed = stream_start.elapsed();
+            if !is_last_fallback
+                && elapsed >= self.speed_gate_initial_delay
+                && elapsed <= self.speed_gate_max_delay
+            {
+                let secs = elapsed.as_secs_f64();
+                if secs > 0.0 {
+                    let actual_bps = (stream_bytes_received as f64 / secs) as u64;
+                    if actual_bps < self.min_speed_bps {
+                        file.flush().await?;
+                        drop(file);
+                        return Err(DownloaderError::SpeedTooLow {
+                            actual_bps,
+                            threshold_bps: self.min_speed_bps,
+                            mirror_id: mirror.id.clone(),
+                        });
+                    }
+                }
+            }
         }
         file.flush().await?;
         drop(file);
@@ -479,8 +634,8 @@ impl ModelDownloader {
         Ok(downloaded_bytes)
     }
 
-    /// Downloads a file, automatically failing over to the official CDN mirror
-    /// using Range resumption if the primary mirror fails or drops connection.
+    /// Downloads a file, automatically failing over across mirrors
+    /// using Range resumption if throughput is too low or connection drops.
     pub async fn download_with_failover(
         &self,
         rel_path: &str,
@@ -490,28 +645,52 @@ impl ModelDownloader {
         let mut last_error = None;
         let mut tried_ids = std::collections::HashSet::new();
 
-        // Attempt 1: Probe and download from best primary mirror
+        let mut candidate_mirrors = Vec::new();
         if let Ok(mirror) = self.probe_best_source().await {
-            tried_ids.insert(mirror.id.clone());
-            match self.download_file_with_resume(&mirror, rel_path, target_path).await {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    warn!("Primary mirror {} failed ({}), attempting failover", mirror.id, e);
-                    last_error = Some(e);
-                }
+            if mirror.supports(rel_path) {
+                tried_ids.insert(mirror.id.clone());
+                candidate_mirrors.push(mirror);
+            }
+        }
+        for mirror in &self.mirrors {
+            if !tried_ids.contains(&mirror.id) && mirror.supports(rel_path) {
+                candidate_mirrors.push(mirror.clone());
             }
         }
 
-        // Attempt 2: Fallback to remaining mirrors (including fallback CDN)
-        for mirror in &self.mirrors {
-            if tried_ids.contains(&mirror.id) {
-                continue;
-            }
-            info!("Failing over to candidate mirror {} for {}", mirror.id, rel_path);
-            match self.download_file_with_resume(mirror, rel_path, target_path).await {
+        let total_candidates = candidate_mirrors.len();
+        for (idx, mirror) in candidate_mirrors.iter().enumerate() {
+            let is_last_fallback = idx + 1 == total_candidates;
+            info!(
+                mirror_id = %mirror.id,
+                rel_path,
+                is_last_fallback,
+                "Attempting model download"
+            );
+            match self
+                .download_file_with_resume_internal(mirror, rel_path, target_path, is_last_fallback)
+                .await
+            {
                 Ok(_) => return Ok(()),
+                Err(DownloaderError::SpeedTooLow {
+                    actual_bps,
+                    threshold_bps,
+                    mirror_id,
+                }) => {
+                    warn!(
+                        mirror_id = %mirror_id,
+                        actual_bps,
+                        threshold_bps,
+                        "Throughput below speed gate threshold, failing over to next mirror"
+                    );
+                    last_error = Some(DownloaderError::SpeedTooLow {
+                        actual_bps,
+                        threshold_bps,
+                        mirror_id,
+                    });
+                }
                 Err(e) => {
-                    warn!("Failover mirror {} failed: {e}", mirror.id);
+                    warn!(mirror_id = %mirror.id, error = %e, "Mirror download failed, failing over");
                     last_error = Some(e);
                 }
             }

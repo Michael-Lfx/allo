@@ -12,6 +12,8 @@
 flowchart TD
     subgraph S1["构建与网络层"]
         P1["陷阱 1: Sys Crate 预编译包海外下载超时<br/>(sherpa-onnx-sys 10060 挂起)"]
+        P1_2["陷阱 1.2: 预编译包握手成功但吞吐枯竭与源倒挂<br/>(sherpa-onnx-sys 1210/1231 假死无输出)"]
+        P1_3["陷阱 1.3: 离线语音套件海外源缺失与慢速假死<br/>(nomifun-voice-models 232MB 模型)"]
     end
     subgraph S2["运行时与网络流控"]
         P2["陷阱 2: Edge TTS HTTP 429 握手拒绝<br/>(无退避/错误抹平/并发加剧限流)"]
@@ -27,6 +29,8 @@ flowchart TD
     end
 
     P1 --> Solution1["国内镜像自动回退 + 10s超时 + .part 原子写入"]
+    P1_2 --> Solution1_2["环境特征双轨自适应 + 低速熔断 + 编译期进度透传"]
+    P1_3 --> Solution1_3["全球双向优先级 + 300KB/s 门禁 + HTTP 206 断点接力"]
     P2 --> Solution2["Retry-After 解析 + 共享单飞 + 30s 冷却 + 保留文字与任务"]
     P3 --> Solution3["GUI/CLI 职责彻底解耦 + 进程锁巡检"]
     P4 --> Solution4["标准同步脚本 + SHA256 跨目录强校验"]
@@ -63,6 +67,61 @@ error: script "dev" exited with code 101
   ```
 - **超时保护**：配置 `Agent` 连接超时为 10 秒（`connect_timeout(Duration::from_secs(10))`），快速故障快速转移。
 - **原子临时文件**：下载时统一落盘到 `.part` 临时后缀，下载成功后通过原子重命名转正；发生错误或超时立刻删除 `.part` 文件，绝不留坑。
+
+---
+
+### 2.1.2 陷阱 1.2 衍生：预编译包“握手成功但吞吐枯竭”假死与海内外源倒挂 (sherpa-onnx-sys 首次编译停滞)
+
+#### 现场现象
+在新环境首次编译运行包含本地语音（SenseVoice/Silero VAD）的项目时，Cargo 构建进度停滞在：
+```text
+Building [======================> ] 1210/1231: sherpa-...
+```
+界面长达十几分钟没有文字滚动，数字不加 1，开发者常误判为死锁或工具链崩溃，反复 `Ctrl+C` 导致留下未完成的 `.part` 文件并无限重复等待。
+
+#### 根因剖析
+1. **源拓扑顺序倒挂**：构建脚本硬编码将官方 GitHub Releases 排在 `urls` 首位。
+2. **“握手成功但吞吐枯竭”假死陷阱**：国内环境直连 GitHub 或经由本地代理时，TCP 握手能在 10 秒内成功完成（`timeout_connect` 不超时，返回 HTTP 200 OK）。然而后续真实数据下载被限制在 30~80 KB/s 的极低速率。
+3. **缺乏传输吞吐量低速熔断**：`ureq` 只做了建立连接超时，未做数据流读取速率监控。一旦连接建立，它便死守该极慢连接，**后排配置的国内镜像源永远没有机会被尝试**。
+4. **Cargo 编译期进度压制**：Cargo 在执行单个 crate 的 `build.rs` 期间默认静默标准输出，导致 88.7 MB 大包在下载过程中毫无终端反馈。
+5. **未对齐 Flowy 国际化规范**：Flowy 运行时（`nomifun-voice-models`）已实现 ModelScope/GitHub 双源智能测速，但编译期构建脚本仍停留在老旧逻辑。
+
+#### 解决方案与长效规避
+1. **环境特征智能双轨路由**：
+   - 自动探测构建机环境（检测系统 Locale 是否为 `zh-CN`、时区是否为中国、或 `.cargo/config.toml` 中是否启用了 `rsproxy.cn` 镜像）；
+   - **国内环境**：优先 GitHub 加速镜像，官方 GitHub Releases 兜底；
+   - **海外环境**：官方 GitHub Releases 优先，加速镜像后备。
+2. **传输低速主动熔断（Speed Gate）**：
+   - 在流式数据读取循环中监控传输吞吐量；若连接建立后 5~20 秒平均速率低于 **300 KB/s**，主动记录警告并断开当前连接，平滑降级切换至下一镜像源。
+3. **编译期进度透传回显**：
+   - 依据 `Content-Length`，每推进 20% 通过 `println!("cargo:warning=[sherpa-onnx] Downloading: {}% via {}", percent, mirror)` 输出控制台警告，消除假死误判。
+4. **跨工程全局缓存支持**：
+   - 引入用户主目录下 `~/.flowy/cache/sherpa-onnx-prebuilt/` 共享机制，跨分支跨项目复用已下载依赖，实现网络零等待。
+   - 可选设置 `SHERPA_ONNX_ARCHIVE_SHA256`，对下载的预编译归档做 SHA256 校验；未设置时接受镜像信任边界。
+
+---
+
+### 2.1.3 陷阱 1.3：运行时离线语音套件（232MB）海外候选源缺失与低速吞吐熔断 (`nomifun-voice-models`)
+
+#### 现场现象
+用户在客户端点击启用或升级离线语音套件（包含 SenseVoice ASR 200MB + KWS 30MB + VAD 2MB）时：
+1. **海外用户大面积报错**：海外用户下载时界面频繁报 `无法连接到模型镜像源 (ModelScope)`，由于默认候选列表仅硬编码了 ModelScope 一个国内源，导致跨国访问超时后直接报 `AllMirrorsFailed`。
+2. **弱网长尾假死**：当国内用户接入限速网络（如 10~20 KB/s）时，由于 TCP 流式 chunk 持续到达，总超时无法触发，客户端下载进度条长达数小时停滞不动。
+
+#### 根因剖析
+1. **默认候选源单一**：`MirrorConfig::default_mirrors()` 生产默认仅注册了 ModelScope；代码虽有 HuggingFace 的映射实现，但未注入生产候选队列。
+2. **流式传输缺乏实时速度门禁**：`download_file_with_resume` 仅依赖 reqwest 的 `timeout(120s)`，无法防范慢速流吞吐饥渴。
+
+#### 解决方案与长效防线
+1. **环境特征动态双轨队列**：
+   - 国内环境：`ModelScope` (主) -> `hf-mirror.com` (备) -> `huggingface.co` (兜底)；
+   - 海外环境（ASR/VAD）：`huggingface.co` (主) -> `hf-mirror.com` (备) -> `ModelScope` (兜底)；KWS 固定 `ModelScope`，HF 没有已验证的官方 KWS 文件。
+2. **Speed Gate（速度熔断门禁）**：
+   - 流式接收 chunk 时监控吞吐；在非最后一个备用源的情况下，若 5~20 秒平均速率低于 **300 KB/s**，主动 abort 断开连接并返回 `SpeedTooLow`。
+3. **断点续传（HTTP 206 Range）接力无缝切换**：
+   - 熔断时完整保留已写入磁盘的 `.part` 数据；下一个镜像源直接发送 `Range: bytes=<existing>-`，在断点处高速接力，终端用户无感知。
+4. **覆盖自动化回归测试**：
+   - 在 [`tests/vt_1_05_06.rs`](../../../../crates/backend/nomifun-voice-models/tests/vt_1_05_06.rs) 中新增环境顺序断言与低速触发 Failover 接力集成测试。
 
 ---
 
@@ -160,6 +219,7 @@ Blocking waiting for file lock on build directory
 在未来迭代或多 Agent 协作开发中，任何人及 Agent 均须按以下 Checklist 进行自检：
 
 - [ ] **网络构建安全性**：所有拉取外部资产的 build 脚本均需提供国内镜像回退，且连接超时不得超过 10 秒；
+- [ ] **大体积预编译包吞吐与进度保障**：编译期拉取外部大体积二进制（>10MB）时，必须支持海内外双轨自适应路由、传输低速主动熔断机制，并通过 `cargo:warning` 实时回显下载百分比；
 - [ ] **三方服务限流防线**：任何调用外部 LLM / TTS 服务的接口，必须设计并发门禁、冷却时钟（至少 30s）与最多一次重试，严禁无限制发起网络重试；
 - [ ] **错误表达诚实性**：严禁把明确的 HTTP 状态码（如 429、401、403）和网络故障压制成通用的“服务失败”，必须在 UI 明确提示原因；
 - [ ] **文字与任务资产优先**：音频失败只是“耳朵”听不到，必须无损呈现“眼睛”能看到的文字，绝对不能因语音失败去重新派发任务或使工具确认过期失效；
