@@ -274,6 +274,22 @@
   flex-shrink: 0 !important;
 }
 
+/* Wordmark row. Height leaves room for a 22px face so the canvas does not shrink it. */
+.sider-wordmark {
+  position: relative;
+  width: 100%;
+  max-width: 140px;
+  height: 40px;
+  line-height: 0;
+}
+
+.sider-wordmark > div,
+.sider-wordmark canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .sidebar-app-version {
   color: var(--flowy-text-3, var(--color-text-3));
   font-size: var(--flowy-text-micro, 11px);
