@@ -27,6 +27,14 @@
   transition: opacity 160ms var(--flowy-ease-move, cubic-bezier(0.22, 1, 0.36, 1));
 }
 
+.conversation-item--voice[data-voice-call-active='true'] .conversation-voice-marker {
+  color: var(--success);
+}
+
+.conversation-item--voice[data-voice-call-active='true'] .voice-call-wave {
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--success) 45%, transparent));
+}
+
 .conversation-item--voice:not([data-voice-collapsed='true']) > .session-row-actions {
   right: 16px;
 }

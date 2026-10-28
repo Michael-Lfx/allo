@@ -5,7 +5,7 @@ import { conversationTarget, type ConversationId, type MessageId } from '@/commo
 import { sessionStorageKey } from '@/common/utils/browserStorageKey';
 import { ipcBridge } from '@/common';
 import type { TChatConversation } from '@/common/config/storage';
-import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession } from '@common/adapter/voiceCompanion';
+import { discardPendingVoiceCallIntent, prepareVoiceSession, retryAbandonedVoiceCallIntent, sendVoiceKeyboardMessage, startVoiceCallIntent, stopVoiceSession, voiceStartNeedsPrepare } from '@common/adapter/voiceCompanion';
 import { useVoiceSnapshot, usePendingVoiceCallConversationId } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { resetVoiceHistory } from '@/renderer/pages/voiceSession/liveVoiceTurn';
 import VoiceCallDock from '@renderer/pages/voiceSession/VoiceCallDock';
@@ -390,15 +390,7 @@ const NomiSendBox: React.FC<{
       await navigate(`/conversation/${encodeURIComponent(activeVoiceConversationId)}`);
       return;
     }
-    const activeLocale = typeof localeKey !== 'undefined'
-      ? localeKey
-      : ((globalThis as any).localeKey || (typeof i18n !== 'undefined' ? resolveLocaleKey(i18n.language) : 'zh-CN'));
-    const prepareVoice = typeof prepareVoiceSession !== 'undefined'
-      ? prepareVoiceSession
-      : (globalThis as any).prepareVoiceSession;
-    const retryAbandoned = typeof retryAbandonedVoiceCallIntent !== 'undefined'
-      ? retryAbandonedVoiceCallIntent
-      : (globalThis as any).retryAbandonedVoiceCallIntent;
+    const activeLocale = localeKey;
 
     setIsVoiceConnecting(true);
     const generation=lifecycleGenerationRef.current;
@@ -406,16 +398,15 @@ const NomiSendBox: React.FC<{
       await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
     } catch (err: unknown) {
       if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
-      const errorObj = err as { code?: string; active_conversation_id?: string; reason_code?: string; degraded_text_only?: boolean } | undefined;
+      const errorObj = err as { status?: number; code?: string; active_conversation_id?: string; reason_code?: string; requires_check?: boolean; degraded_text_only?: boolean; call_request_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_superseded') return;
       if (errorObj?.code === 'voice_call_cancel_unknown') {
-        const recovered = await retryAbandoned();
+        const recovered = await retryAbandonedVoiceCallIntent();
         if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
         Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
         return;
       }
-      const needsPrepare =
-        errorObj?.code === 'voice_companion_not_running' ||
-        errorObj?.code === 'voice_suite_not_ready';
+      const needsPrepare = voiceStartNeedsPrepare(errorObj);
       if (errorObj?.code === 'voice_call_conflict') {
         Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
         if (errorObj.active_conversation_id && errorObj.active_conversation_id !== conversation_id) {
@@ -423,9 +414,10 @@ const NomiSendBox: React.FC<{
         }
       } else if (needsPrepare) {
         try {
-          const report = await prepareVoice(true, activeLocale, 'preparing');
+          const report = await prepareVoiceSession(true, activeLocale, 'preparing');
           if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
           if (!report.can_start_full_call) {
+            discardPendingVoiceCallIntent(errorObj?.call_request_id);
             const reason = report.reason_code
               ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
               : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
@@ -437,14 +429,18 @@ const NomiSendBox: React.FC<{
           await startVoiceCallIntent({ kind: 'voice_conversation', conversation_id }, undefined, activeLocale);
         } catch (prepareError) {
           if (!mountedRef.current || lifecycleGenerationRef.current!==generation) return;
-          discardPendingVoiceCallIntent();
           const failure = prepareError as { code?: string; message?: string };
+          if (failure.code === 'voice_call_superseded') return;
+          discardPendingVoiceCallIntent(errorObj?.call_request_id);
           Message.error(
             failure.code === 'models_not_installed'
               ? t('voice.errors.modelMissing')
               : failure.message || t('voice.capabilities.checkFailed'),
           );
         }
+      } else if (errorObj?.code === 'voice_suite_not_ready') {
+        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
+        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
       } else {
         Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
       }

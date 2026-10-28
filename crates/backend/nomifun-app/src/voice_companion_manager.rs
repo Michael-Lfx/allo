@@ -1550,6 +1550,17 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
     }
 }
 
+fn wake_rejection_precedes_session(status: axum::http::StatusCode, body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else { return false; };
+    if value.get("success").and_then(|value| value.as_bool()) != Some(false) { return false; }
+    let reason = value.get("error").and_then(|value| value.as_str());
+    matches!(
+        (status, reason),
+        (axum::http::StatusCode::FORBIDDEN, Some("pairing_required"))
+            | (axum::http::StatusCode::SERVICE_UNAVAILABLE, Some("models_unavailable" | "microphone_unavailable"))
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HandledStartOutcome {
     Starting {
@@ -2008,7 +2019,7 @@ impl VoiceCompanionProcessManager {
             VoiceCapabilityEvidence, VoiceCapabilityReport, VoiceCapabilityStatus,
             VoiceEngineSelfCheckResponse, VoiceTtsSelfCheckResponse,
         };
-        let _guard = self.self_check_lock.lock().await;
+        let _guard = self.self_check_lock.try_lock().map_err(|_| "self_check_in_progress")?;
         {
             let _admission = self.call_start_lock.lock().await;
             if self.self_check_active.load(Ordering::Acquire) {
@@ -4075,12 +4086,21 @@ impl VoiceCompanionProcessManager {
 
         let resp_status = resp.status();
         if !resp_status.is_success() {
-            // Definite rejection: clear reservation
-            recorder.take_call_reservation(&request.request_id);
             let body_text = resp.text().await.unwrap_or_default();
+            if !wake_rejection_precedes_session(resp_status, &body_text) {
+                return Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({
+                    "code": "daemon_wake_unknown",
+                    "conversation_id": conversation_id,
+                    "message": "Wake outcome is unknown; reservation preserved for retry"
+                }).to_string()));
+            }
+            // Only the daemon's explicit pre-wake failures prove there is no session.
+            recorder.take_call_reservation(&request.request_id);
             let error_json = serde_json::json!({
                 "code": "daemon_wake_rejected",
                 "status": resp_status.as_u16(),
+                "request_id": request.request_id,
+                "terminal": true,
                 "message": format!("Daemon rejected wake request: {body_text}"),
             }).to_string();
             self.record_handled_start_request(
@@ -6603,6 +6623,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_self_check_does_not_queue_another_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        let guard = manager.self_check_lock.lock().await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            manager.run_self_check(false),
+        ).await;
+        drop(guard);
+        assert_eq!(result.expect("overlapping check must be rejected promptly").unwrap_err(), "self_check_in_progress");
+    }
+
+    #[test]
+    fn wake_rejection_is_terminal_only_for_known_pre_session_failures() {
+        use axum::http::StatusCode;
+        assert!(wake_rejection_precedes_session(StatusCode::SERVICE_UNAVAILABLE, r#"{"success":false,"error":"models_unavailable"}"#));
+        assert!(wake_rejection_precedes_session(StatusCode::SERVICE_UNAVAILABLE, r#"{"success":false,"error":"microphone_unavailable"}"#));
+        assert!(wake_rejection_precedes_session(StatusCode::FORBIDDEN, r#"{"success":false,"error":"pairing_required"}"#));
+        assert!(!wake_rejection_precedes_session(StatusCode::CONFLICT, r#"{"success":false,"error":"session_busy"}"#));
+        assert!(!wake_rejection_precedes_session(StatusCode::INTERNAL_SERVER_ERROR, r#"{"success":false,"error":"models_unavailable"}"#));
+        assert!(!wake_rejection_precedes_session(StatusCode::SERVICE_UNAVAILABLE, r#"{"error":"models_unavailable"}"#));
+        assert!(!wake_rejection_precedes_session(StatusCode::SERVICE_UNAVAILABLE, "unavailable"));
+    }
+
+    #[tokio::test]
     async fn capabilities_expire_with_generation_and_ttl_without_side_effects() {
         let dir = tempfile::tempdir().unwrap();
         let manager = Arc::new(VoiceCompanionProcessManager::new(
@@ -7988,6 +8036,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let reject_wake = Arc::new(AtomicBool::new(true));
         let wake_rejection = reject_wake.clone();
+        let unknown_wake = Arc::new(AtomicBool::new(false));
+        let wake_unknown = unknown_wake.clone();
         let reject_stop = Arc::new(AtomicBool::new(true));
         let stop_rejection = reject_stop.clone();
         let daemon_snapshot = Arc::new(RwLock::new(VoiceSessionSnapshot::default()));
@@ -7995,8 +8045,10 @@ mod tests {
         let read_snapshot = daemon_snapshot.clone();
         let mock_daemon = axum::Router::new().route(
             "/api/voice/wake",
-            axum::routing::post(move || {let rejected=wake_rejection.load(Ordering::SeqCst);async move {
-                if rejected {
+            axum::routing::post(move || {let rejected=wake_rejection.load(Ordering::SeqCst);let unknown=wake_unknown.load(Ordering::SeqCst);async move {
+                if unknown {
+                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({"success":false,"error":"unexpected_failure"})))
+                } else if rejected {
                     (axum::http::StatusCode::SERVICE_UNAVAILABLE, axum::Json(serde_json::json!({"success":false,"error":"models_unavailable"})))
                 } else {
                     (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "success": true })))
@@ -8014,7 +8066,7 @@ mod tests {
         })).route("/api/voice/snapshot",axum::routing::get(move || {
             let snapshot=read_snapshot.clone();async move {axum::Json(snapshot.read().unwrap().clone())}
         }));
-        tokio::spawn(async move {
+        let daemon_server = tokio::spawn(async move {
             let _ = axum::serve(listener, mock_daemon).await;
         });
 
@@ -8067,11 +8119,32 @@ mod tests {
         let rejected_request=VoiceCallStartRequest { locale: None,request_id:"req-rejected".into(),target:VoiceCallTarget::CurrentSelection,session_mode:None};
         let first_rejection=manager_with_rec.start_call(rejected_request.clone()).await.unwrap_err();
         assert_eq!(first_rejection.0,axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&first_rejection.1).unwrap()["code"],"daemon_wake_rejected");
+        let rejection: serde_json::Value = serde_json::from_str(&first_rejection.1).unwrap();
+        assert_eq!(rejection["code"],"daemon_wake_rejected");
+        assert_eq!(rejection["request_id"],"req-rejected");
+        assert_eq!(rejection["terminal"],true);
         assert!(recorder.current_call_reservation().is_none());
         reject_wake.store(false,Ordering::SeqCst);
         let replay_rejection=manager_with_rec.start_call(rejected_request).await.unwrap_err();
         assert_eq!(replay_rejection,first_rejection);
+
+        // An unclassified daemon failure must retain the reservation and replay
+        // the same request rather than resolving a second conversation.
+        unknown_wake.store(true, Ordering::SeqCst);
+        let unknown_request=VoiceCallStartRequest { locale: None,request_id:"req-unknown".into(),target:VoiceCallTarget::CurrentSelection,session_mode:None};
+        let unknown=manager_with_rec.start_call(unknown_request.clone()).await.unwrap_err();
+        assert_eq!(unknown.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&unknown.1).unwrap()["code"], "daemon_wake_unknown");
+        assert_eq!(recorder.current_call_reservation().unwrap().request_id, "req-unknown");
+        let resolutions = recorder.resolutions.load(Ordering::SeqCst);
+        let replay_unknown = manager_with_rec.start_call(unknown_request).await.unwrap();
+        assert_eq!(replay_unknown.request_id, "req-unknown");
+        assert_eq!(replay_unknown.status, VoiceCallStartStatus::Starting);
+        assert_eq!(recorder.resolutions.load(Ordering::SeqCst), resolutions);
+        recorder.take_call_reservation("req-unknown");
+        manager_with_rec.handled_start_requests.write().unwrap().remove("req-unknown");
+        manager_with_rec.set_candidate_conversation(None);
+        unknown_wake.store(false, Ordering::SeqCst);
 
         // 4. Valid start returns starting status and sets active candidate
         let req_valid = axum::http::Request::builder()
@@ -8297,6 +8370,14 @@ mod tests {
         assert!(matches!(manager_with_rec.handled_start_requests.read().unwrap().get("req-unbound"),Some(HandledStartOutcome::Stopped {..})));
         manager_with_rec.mark_request_bound("req-unbound","late-session","conv-voice-test",None);
         assert!(matches!(manager_with_rec.handled_start_requests.read().unwrap().get("req-unbound"),Some(HandledStartOutcome::Stopped {..})),"late binding must not resurrect a stopped request");
+        if let Some(mut child) = manager_with_rec.child.lock().await.take() {
+            tokio::time::timeout(std::time::Duration::from_secs(5), child.shutdown()).await.unwrap().unwrap();
+            assert!(child.try_wait().unwrap().is_some());
+        }
+        daemon_server.abort();
+        let _ = daemon_server.await;
+        let rebound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+        drop(rebound);
     }
 
     #[test]

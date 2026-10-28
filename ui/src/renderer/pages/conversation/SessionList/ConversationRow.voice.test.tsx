@@ -37,6 +37,10 @@ for(const [locale,voice] of [['zh-CN',zh],['en-US',en]] as const){
    expect(html).toContain(`data-voice-batch="${batch}"`);
    expect(html).toContain(`data-voice-menu-open="${menu}"`);
    expect(html).not.toContain('animate-pulse');
+   expect(html).toContain('text-t-secondary');
+   const activeHtml=render({...props,isCallActive:true});
+   expect(activeHtml).toContain('text-success');
+   expect(activeHtml).toContain('voice-call-wave');
    const normal=render({...props,conversation:{...props.conversation,name:'语音任务',extra:{}} as ConversationRowProps['conversation']});
    expect(normal).not.toContain('conversation-voice-marker');
    expect(normal).not.toContain('conversation-voice-trailing');

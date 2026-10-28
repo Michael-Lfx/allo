@@ -50,6 +50,47 @@ pub const VOICE_DECISION_SCHEMA: &str = r#"{
   "required": ["intent_type"]
 }"#;
 
+/// JSON Schema for single-pass quad-route voice decision contract (English localized descriptions).
+/// Exactly identical properties, types, constraints, and validation semantics to VOICE_DECISION_SCHEMA.
+pub const VOICE_DECISION_SCHEMA_EN: &str = r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "VoiceDecisionContract",
+  "type": "object",
+  "properties": {
+    "intent_type": {
+      "type": "string",
+      "enum": ["ignore", "chat", "agent_task", "task_control"]
+    },
+    "task_control_action": {
+      "type": "string",
+      "enum": ["query_status", "cancel_task"],
+      "description": "Specific control action when intent_type is task_control"
+    },
+    "reply_tts": {
+      "type": "string",
+      "description": "Direct spoken reply when intent_type is chat (<= 60 words)"
+    },
+    "understood_request": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Faithful summary of user request preserving key entities without fabricating unstated facts"
+    },
+    "spoken_ack": {
+      "type": "string",
+      "description": "Spoken acknowledgement receipt when intent_type is agent_task (<= 25 words)"
+    },
+    "task_goal": {
+      "type": "string",
+      "description": "Clean structured execution goal when intent_type is agent_task"
+    },
+    "requires_confirmation": {
+      "type": "boolean",
+      "description": "Whether high-risk or destructive actions require explicit user verbal confirmation"
+    }
+  },
+  "required": ["intent_type"]
+}"#;
+
 pub use nomifun_api_types::voice::{VoiceIntentType as IntentType,VoiceTaskControlAction as TaskControlAction,VoiceDecision};
 
 static COMPILED_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {

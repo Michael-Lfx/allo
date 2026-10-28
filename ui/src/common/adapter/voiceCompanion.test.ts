@@ -3,7 +3,7 @@ import { createSnapshotConsumer, subscribeVoiceSession, stopVoiceSession, wakeVo
 import { getVoiceFeedbackSettings, saveVoiceFeedback, previewVoiceFeedback } from './voiceCompanion';
 import * as voice from './voiceCompanion';
 
-test('a definite wake rejection allows a fresh request while an unknown 503 retains its identity', async () => {
+test('a 503 retains its original request even when it names a wake rejection', async () => {
   const original=globalThis.fetch;
   const requests:Array<{request_id:string}>=[];
   let responseCode='daemon_wake_rejected';
@@ -14,11 +14,12 @@ test('a definite wake rejection allows a fresh request while an unknown 503 reta
   try {
     expect(await voice.startVoiceCallIntent({kind:'current_selection'}).then(()=>null,error=>(error as Error).message)).toBe('daemon_wake_rejected');
     responseCode='daemon_wake_timeout';
-    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('daemon_wake_timeout');
-    expect(requests[1].request_id).not.toBe(requests[0].request_id);
+    expect(await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
+    expect(await voice.startVoiceCallIntent({kind:'current_selection'}).then(()=>null,error=>(error as Error).message)).toBe('daemon_wake_timeout');
+    expect(requests[1].request_id).toBe(requests[0].request_id);
     expect(await voice.startVoiceCallIntent({kind:'workspace',workspace:'D:/q'}).then(()=>null,error=>(error as Error).message)).toBe('voice_call_starting');
     responseCode='';
-    expect((await voice.startVoiceCallIntent({kind:'voice_conversation',conversation_id:'voice-p'})).status).toBe('ready');
+    expect((await voice.startVoiceCallIntent({kind:'current_selection'})).status).toBe('ready');
     expect(requests[2].request_id).toBe(requests[1].request_id);
   } finally {globalThis.fetch=original;}
 });
@@ -107,22 +108,24 @@ test('explicit voice entry coalesces clicks through the host start contract and 
   const bodies: unknown[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input); requests.push(url);
-    bodies.push(JSON.parse(String(init?.body)));
-    return Response.json({ request_id:'request', status:bodies.length===1?'starting':'ready', conversation_id:'frozen-target', session_id:null });
+    const request = JSON.parse(String(init?.body));
+    bodies.push(request);
+    return Response.json({ request_id:request.request_id, status:bodies.length===1?'starting':'ready', conversation_id:'frozen-target', session_id:null });
   }) as typeof fetch;
   try {
-    const first = voice.startVoiceConversation();
-    expect(voice.startVoiceConversation()).toBe(first);
+    const first = voice.startVoiceConversation('en-US');
+    expect(voice.startVoiceConversation('en-US')).toBe(first);
     await first;
     expect(requests.filter(url => url.endsWith('/session/start'))).toHaveLength(1);
-    expect(bodies[0]).toMatchObject({target:{kind:'current_selection'}});
+    expect(bodies[0]).toMatchObject({target:{kind:'current_selection'}, locale:'en-US'});
     expect(location.hash).toBe('/conversation/frozen-target');
     expect(requests.some(url => url.includes('/tasks') || url.includes('/messages'))).toBe(false);
     requests.length = 0;
-    await voice.startVoiceConversation();
+    await voice.startVoiceConversation('en-US');
     expect(requests).toHaveLength(1);
     expect(requests[0].endsWith('/session/start')).toBe(true);
     expect((bodies[0] as {request_id:string}).request_id).toBe((bodies[1] as {request_id:string}).request_id);
+    expect(bodies[1]).toMatchObject({locale:'en-US'});
   } finally {
     globalThis.fetch = originalFetch;
     if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);

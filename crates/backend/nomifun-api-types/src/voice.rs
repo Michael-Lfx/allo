@@ -1274,11 +1274,10 @@ pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction
     let lower = normalize_voice_text(trimmed);
     let tokens = english_tokens(&lower);
     let has_task_word = trimmed.contains("任务") || tokens.iter().any(|token| is_task_object_token(token));
-    let exact_short = is_exact_short_cancel(trimmed, &tokens);
 
     // Chat/weather must not become a task query merely because it contains
     // "情况怎么样". Only an explicit task object may continue.
-    if !has_task_word && !exact_short {
+    if !has_task_word {
         const WEATHER_OR_CHAT_ZH: &[&str] = &[
             "天气", "气温", "下雨", "下雪", "阴天", "晴天", "家里", "身体", "家人",
             "最近怎么样", "最近好吗", "过得怎么样",
@@ -1300,7 +1299,11 @@ pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction
 
     for verb in ["取消", "停止", "终止", "结束"] {
         for (offset, _) in trimmed.match_indices(verb) {
-            if !has_task_word && !exact_short {
+            if !has_task_word {
+                continue;
+            }
+            // A preceding clause can make the apparent command conditional.
+            if trimmed[..offset].chars().any(is_clause_punctuation) {
                 continue;
             }
             let before: String = trimmed[..offset]
@@ -1315,7 +1318,7 @@ pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction
             let after: String = trimmed[offset + verb.len()..].chars().take(32).collect();
             // "任务取消了" / "任务已经结束" are descriptions, not commands.
             // Require verb-object order or an imperative marker.
-            if !exact_short && !is_chinese_imperative_cancel(&before, &after) {
+            if !is_chinese_imperative_cancel(&before, &after) {
                 continue;
             }
             let negated_mention = ZH_NEGATORS.iter().any(|word| before.contains(word))
@@ -1332,7 +1335,7 @@ pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction
         if token != "cancel" && token != "stop" {
             continue;
         }
-        if !has_task_word && !exact_short {
+        if !has_task_word {
             continue;
         }
         if token == "stop" && tokens[index + 1..].iter().take(4).any(|next| next == "from") {
@@ -1345,7 +1348,7 @@ pub fn classify_voice_task_control(input: &str) -> Option<VoiceTaskControlAction
         let after_negated = EN_AFTER_NEGATORS.iter().any(|phrase| after.contains(phrase));
         if before_negated || after_negated {
             negated = negated.saturating_add(1);
-        } else {
+        } else if is_english_imperative_cancel(&tokens, index) {
             affirmative = affirmative.saturating_add(1);
         }
     }
@@ -1390,10 +1393,21 @@ fn is_task_object_token(token: &str) -> bool {
     matches!(token, "task" | "tasks" | "job" | "jobs" | "operation" | "operations")
 }
 
-fn is_exact_short_cancel(trimmed: &str, tokens: &[String]) -> bool {
-    let trimmed = trimmed.trim_matches(is_clause_punctuation).trim();
-    matches!(trimmed, "取消" | "停止" | "终止")
-        || (tokens.len() == 1 && matches!(tokens[0].as_str(), "cancel" | "stop"))
+fn is_english_imperative_cancel(tokens: &[String], verb_index: usize) -> bool {
+    let prefix: Vec<&str> = tokens[..verb_index].iter().map(String::as_str).collect();
+    if !matches!(
+        prefix.as_slice(),
+        [] | ["please"] | ["can", "you"] | ["could", "you"] | ["would", "you"]
+            | ["could", "you", "please"] | ["would", "you", "please"]
+    ) {
+        return false;
+    }
+    let tail = &tokens[verb_index + 1..];
+    let Some(object) = tail.iter().position(|token| is_task_object_token(token)) else {
+        return false;
+    };
+    tail[..object].iter().all(|token| matches!(token.as_str(), "the" | "a" | "my" | "our" | "this" | "that" | "current" | "active" | "running"))
+        && tail[object + 1..].iter().all(|token| matches!(token.as_str(), "please" | "now" | "immediately" | "right" | "away" | "thanks" | "thank" | "you"))
 }
 
 fn is_chinese_imperative_cancel(before: &str, after: &str) -> bool {
@@ -1403,6 +1417,28 @@ fn is_chinese_imperative_cancel(before: &str, after: &str) -> bool {
         .unwrap_or("")
         .trim_start();
     let full_after = after.trim();
+    if ["如果", "假如", "要是", "除非", "以后", "稍后", "明天", "将来", "之后"].iter().any(|word| full_after.contains(word)) {
+        return false;
+    }
+    let before = before.trim();
+    let mut prefix = if let Some((prefix, object)) = before.split_once('把') {
+        if !matches!(object, "任务" | "当前任务" | "这个任务" | "该任务" | "正在进行的任务") {
+            return false;
+        }
+        prefix
+    } else {
+        before
+    };
+    const DIRECT_PREFIXES: &[&str] = &[
+        "为我们", "给我们", "帮我们", "帮我", "帮忙", "替我", "为我", "给我",
+        "麻烦", "烦请", "劳驾", "立即", "马上", "立刻", "赶紧", "快点", "抓紧", "尽快", "现在", "请", "你", "您", "妳",
+    ];
+    while !prefix.is_empty() {
+        let Some(marker) = DIRECT_PREFIXES.iter().find(|marker| prefix.starts_with(**marker)) else {
+            return false;
+        };
+        prefix = &prefix[marker.len()..];
+    }
     const QUESTION_TAILS: &[&str] = &[
         "吗", "呢", "么", "好不好", "行不行", "可不可以", "可以", "好吗", "行吗",
         "对不对", "是不是", "对吧", "是吧", "能不能", "会不会", "要不要", "是否",
@@ -1457,6 +1493,9 @@ fn is_chinese_imperative_cancel(before: &str, after: &str) -> bool {
     }
 
     if let Some(task_index) = after_clause.find("任务") {
+        if !matches!(&after_clause[..task_index], "" | "当前" | "这个" | "该" | "正在进行的" | "正在执行的") {
+            return false;
+        }
         let suffix = &after_clause[task_index + "任务".len()..];
         return is_imperative_cancel_tail(suffix)
             && (before.trim().is_empty() || has_strong || has_second_person);
@@ -1505,7 +1544,7 @@ fn is_voice_status_query(trimmed: &str, lower: &str, tokens: &[String], has_task
     }
     if has_task_word {
         const TASK_QUERY_ZH: &[&str] = &[
-            "进度", "状态", "情况", "进展", "如何", "结束了吗", "取消了吗", "停止了吗",
+            "进度", "状态", "情况", "进展", "任务如何", "结束了吗", "取消了吗", "停止了吗",
             "完成了吗", "完了吗", "怎么样了",
         ];
         if TASK_QUERY_ZH.iter().any(|keyword| trimmed.contains(keyword)) {
@@ -1607,10 +1646,24 @@ mod task_control_classifier_tests {
             ("取消任务，谢谢", Some(CancelTask)),
             ("你取消任务", Some(CancelTask)),
             ("取消任务。", Some(CancelTask)),
-            ("取消", Some(CancelTask)),
-            ("stop", Some(CancelTask)),
+            ("取消", None),
+            ("stop", None),
             ("stop the task", Some(CancelTask)),
+            ("please cancel the current task", Some(CancelTask)),
+            ("cancel the task tomorrow", None),
+            ("We should cancel the task tomorrow", None),
+            ("I will cancel the task tomorrow", None),
+            ("Explain how to cancel the task", None),
+            ("If it fails, cancel the task", None),
+            ("cancel the task if it fails", None),
+            ("stop the playback of the task", None),
+            ("请明天取消任务", None),
+            ("请稍后取消任务", None),
+            ("如果出错，请取消任务", None),
+            ("取消任务，如果它失败", None),
+            ("请告诉我如何取消任务", None),
             ("取消任务并查询进度", Some(QueryStatus)),
+            ("这个任务如何", Some(QueryStatus)),
             ("我把任务取消了", None),
             ("把任务取消了", None),
             ("把任务停止了", None),

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'bun:test';
+import * as voice from '../../../common/adapter/voiceCompanion';
 
 declare const Bun: any;
 
@@ -17,6 +18,8 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     'isVoiceConnecting',
     'voicePrerequisite',
     'setVoicePrerequisite',
+    'voiceFailureReason',
+    'setVoiceFailureReason',
     'isVoiceActive',
     'voiceSnapshot',
     'navigate',
@@ -34,6 +37,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     't',
     'prepareVoiceSession',
     'discardPendingVoiceCallIntent',
+    'voiceStartNeedsPrepare',
     'localeKey',
   ];
   const compiled = new Bun.Transpiler({ loader: 'ts' }).transformSync(
@@ -61,6 +65,8 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
     isVoiceConnecting: connectingState,
     voicePrerequisite: 'ready',
     setVoicePrerequisite: (value: string) => { env.voicePrerequisite = value; },
+    voiceFailureReason: null,
+    setVoiceFailureReason: (value: string | null) => { env.voiceFailureReason = value; },
     isVoiceActive: false,
     voiceSnapshot: null,
     navigate: async (url: string) => {
@@ -100,6 +106,7 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
       return { can_start_full_call: true };
     },
     discardPendingVoiceCallIntent: () => { calls.discard.push(1); },
+    voiceStartNeedsPrepare: voice.voiceStartNeedsPrepare,
     localeKey: 'zh-CN',
     ...overrides,
   };
@@ -115,6 +122,97 @@ function createProductionHandler(overrides: Partial<Record<string, unknown>> = {
 }
 
 describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
+  test('an obsolete start does not display an error or recheck capabilities', async () => {
+    const handler = createProductionHandler({
+      customStart: async () => { throw Object.assign(new Error('superseded'), { code: 'voice_call_superseded' }); },
+    });
+    await handler.handler();
+    expect(handler.calls.error).toEqual([]);
+    expect(handler.calls.warning).toEqual([]);
+    expect(handler.calls.prepare).toEqual([]);
+    expect(handler.calls.navigate).toEqual([]);
+  });
+  test('an obsolete retry after preparation stays silent', async () => {
+    let attempts = 0;
+    const handler = createProductionHandler({
+      customStart: async () => {
+        attempts += 1;
+        if (attempts === 1) throw Object.assign(new Error('check'), { status: 409, code: 'voice_suite_not_ready', requires_check: true });
+        throw Object.assign(new Error('superseded'), { code: 'voice_call_superseded' });
+      },
+    });
+    await handler.handler();
+    expect(handler.calls.prepare).toHaveLength(1);
+    expect(handler.calls.error).toEqual([]);
+    expect(handler.calls.warning).toEqual([]);
+    expect(handler.calls.navigate).toEqual([]);
+  });
+  test('actual adapter preserves the start identity after prepare and a retry 503', async () => {
+    const originalFetch = globalThis.fetch;
+    const ids: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/session/start')) {
+        const request = JSON.parse(String(init?.body));
+        ids.push(request.request_id);
+        attempts += 1;
+        if (attempts === 1) return Response.json({ code: 'voice_suite_not_ready', reason_code: 'self_check_required', requires_check: true }, { status: 409 });
+        if (attempts === 2) return Response.json({ code: 'daemon_wake_timeout' }, { status: 503 });
+        return Response.json({ request_id: request.request_id, status: 'ready', conversation_id: 'voice-test', session_id: 's' });
+      }
+      if (url.endsWith('/status')) return Response.json({ autostart: true, models_ready: true, running: true });
+      if (url.endsWith('/capabilities')) return Response.json(null);
+      if (url.endsWith('/prepare')) return Response.json({ can_start_full_call: true });
+      throw new Error(`unexpected endpoint ${url}`);
+    }) as typeof fetch;
+    const handler = createProductionHandler({
+      startVoiceCallIntent: voice.startVoiceCallIntent,
+      prepareVoiceSession: voice.prepareVoiceSession,
+      discardPendingVoiceCallIntent: voice.discardPendingVoiceCallIntent,
+    });
+    try {
+      await handler.handler();
+      expect(voice.getPendingVoiceCallIntent()?.request_id).toBe(ids[0]);
+      await handler.handler();
+      expect(ids).toHaveLength(3);
+      expect(new Set(ids).size).toBe(1);
+      expect(handler.calls.navigate).toEqual(['/conversation/voice-test']);
+    } finally {
+      if (voice.getPendingVoiceCallIntent()) {
+        await voice.startVoiceCallIntent(voice.getPendingVoiceCallIntent()!.target).catch(() => {});
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('actual adapter does not recheck a known failed capability', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith('/session/start')) return Response.json({ code: 'voice_suite_not_ready', reason_code: 'asr_inference_failed', requires_check: false }, { status: 409 });
+      if (url.endsWith('/status')) return Response.json({ autostart: true, models_ready: true, running: true });
+      if (url.endsWith('/capabilities')) return Response.json(null);
+      if (url.endsWith('/prepare')) return Response.json({ can_start_full_call: false, reason_code: 'asr_inference_failed' });
+      throw new Error(`unexpected endpoint ${url}`);
+    }) as typeof fetch;
+    const handler = createProductionHandler({
+      startVoiceCallIntent: voice.startVoiceCallIntent,
+      prepareVoiceSession: voice.prepareVoiceSession,
+      discardPendingVoiceCallIntent: voice.discardPendingVoiceCallIntent,
+    });
+    try {
+      await handler.handler();
+      expect(calls).toHaveLength(1);
+      expect(calls[0].endsWith('/session/start')).toBe(true);
+    } finally {
+      voice.discardPendingVoiceCallIntent(voice.getPendingVoiceCallIntent()?.request_id);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('setup double-click shares one prepare and one start', async () => {
     let release!: (value: { can_start_full_call: boolean }) => void;
     const gate = new Promise<{ can_start_full_call: boolean }>((resolve) => { release = resolve; });
@@ -156,6 +254,13 @@ describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
     expect(unavailable.calls.start.length).toBe(0);
     expect(unavailable.calls.prepare.length).toBe(0);
     expect(unavailable.calls.navigate).toEqual(['/settings/voice']);
+
+    const failed = createProductionHandler({ voicePrerequisite: 'failed', voiceFailureReason: 'asr_inference_failed' });
+    await failed.handler();
+    expect(failed.calls.prepare.length).toBe(0);
+    expect(failed.calls.start.length).toBe(0);
+    expect(failed.calls.warning[0]).toContain('asr_inference_failed');
+    expect(failed.calls.navigate).toEqual(['/settings/voice']);
   });
 
   test('a TTL-expired installed suite auto-prepares then starts exactly once', async () => {
@@ -204,7 +309,7 @@ describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
     expect(adapterSource.includes('locale?: string')).toBe(true);
 
     // Verify prepareVoiceSession forwards locale and stage
-    expect(adapterSource.includes('export async function prepareVoiceSession(')).toBe(true);
+    expect(adapterSource.includes('export function prepareVoiceSession(')).toBe(true);
     expect(adapterSource.includes('include_llm: includeLlm, locale, stage')).toBe(true);
 
     // Verify runVoiceSelfCheck forwards locale and stage
@@ -253,7 +358,7 @@ describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
     let callCount = 0;
     h.env.customStart = async () => {
       callCount++;
-      if (callCount === 1) throw { code: 'voice_companion_not_running' };
+      if (callCount === 1) throw { status: 400, code: 'voice_companion_not_running' };
       return { conversation_id: 'conv-retry' };
     };
     h.env.customPrepare = () => preparePromise;
@@ -284,7 +389,7 @@ describe('GuidPage Voice Auto Prepare (UX-01 & UX-02)', () => {
     let count = 0;
     h2.env.customStart = async () => {
       count++;
-      if (count === 1) throw { code: 'voice_suite_not_ready' };
+      if (count === 1) throw { status: 409, code: 'voice_suite_not_ready', requires_check: true };
       return { conversation_id: 'conv-remount' };
     };
 

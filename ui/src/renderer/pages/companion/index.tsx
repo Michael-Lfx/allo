@@ -146,7 +146,8 @@ const parseCompanionIdFromHash = (): CompanionId | null => {
  * falls back to the first enabled companion in the registry.
  */
 const CompanionPage: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const activeLocale = i18n.language || i18n.resolvedLanguage || 'zh-CN';
   const { isImeActive, compositionHandlers } = useCompositionInput();
   const [companionId, setCompanionId] = useState<CompanionId | null>(parseCompanionIdFromHash);
   const [profile, setProfile] = useState<ICompanionProfile | null>(null);
@@ -159,6 +160,7 @@ const CompanionPage: React.FC = () => {
   const [input, setInput] = useState('');
   const {snapshot:voiceSnapshot}=useVoiceSnapshot();
   const [voiceEntryFailed,setVoiceEntryFailed]=useState(false);
+  const [voiceStopFailed, setVoiceStopFailed] = useState(false);
   const voiceTargetId = resolveVoiceOwnerCompanionId(voiceSnapshot?.binding?.memory_owner_companion_id);
   const voiceOwned = Boolean(companionId && voiceTargetId && companionId === voiceTargetId);
   const [, setDismissedVersion] = useState(0);
@@ -175,18 +177,30 @@ const CompanionPage: React.FC = () => {
   const voiceActive = voiceOwned && Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle' && !currentSessionDismissed;
   const voiceActiveRef = useRef(voiceActive);
   voiceActiveRef.current = voiceActive;
+  const activeVoiceScopeRef = useRef<string | null>(null);
+  const voiceSessionRevisionRef = useRef(0);
+  const currentVoiceScope = voiceActive && voiceSnapshot?.session_id ? `${voiceSnapshot.instance_id}:${voiceSnapshot.session_id}` : null;
+  if (activeVoiceScopeRef.current !== currentVoiceScope) {
+    activeVoiceScopeRef.current = currentVoiceScope;
+    voiceSessionRevisionRef.current += 1;
+  }
+  useEffect(() => {
+    setVoiceStopFailed(false);
+    if (currentVoiceScope) setVoiceEntryFailed(false);
+  }, [currentVoiceScope]);
   const enterVoice = useCallback(async () => {
     setVoiceEntryFailed(false);
+    const revision = voiceSessionRevisionRef.current;
     try {
       if (voiceActive && voiceSnapshot) {
         await openVoiceTask(voiceSnapshot.binding!.conversation_id);
       } else {
-        await startVoiceConversation();
+        await startVoiceConversation(activeLocale);
       }
     } catch {
-      setVoiceEntryFailed(true);
+      if (voiceSessionRevisionRef.current === revision && !voiceActiveRef.current) setVoiceEntryFailed(true);
     }
-  }, [voiceActive, voiceSnapshot]);
+  }, [voiceActive, voiceSnapshot, activeLocale]);
   const deliveryPendingRef = useRef(false);
   /** 光标是否停在伙伴交互区（由 useCompanionClickThrough 上报）：驱动「悬停才出现」的
    *  迷你输入条显隐 + 进出点击穿透命中集。替代纯 CSS :hover（穿透态下 webview 收不到
@@ -2071,11 +2085,30 @@ const CompanionPage: React.FC = () => {
             </button>
           )}
           <div className='nomi-companion-status-slot'>
-            {voiceEntryFailed ? <p role='alert' className='nomi-companion-voice-error'>{t('voice.session.unavailable')}</p> :
-              <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />}
-            {voiceActive && <button type='button' className='nomi-companion-voice-stop' data-companion-hit
-              aria-label={t('voice.session.stop')} title={t('voice.session.stop')}
-              onClick={(event)=>{event.stopPropagation();void stopVoiceSession(voiceSnapshot!).catch(()=>setVoiceEntryFailed(true));}}>■</button>}
+            {(voiceStopFailed || (voiceEntryFailed && !voiceActive)) ? (
+              <p role='alert' className='nomi-companion-voice-error'>{t('voice.session.unavailable')}</p>
+            ) : (
+              <PetStatusToast messages={petFeed.messages} onDismiss={petFeed.dismiss} onOpen={(href) => void openMainAt(href)} />
+            )}
+            {voiceActive && (
+              <button
+                type='button'
+                className='nomi-companion-voice-stop'
+                data-companion-hit
+                aria-label={t('voice.session.stop')}
+                title={t('voice.session.stop')}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const targetScope = voiceSnapshot?.session_id ? `${voiceSnapshot.instance_id}:${voiceSnapshot.session_id}` : null;
+                  setVoiceStopFailed(false);
+                  void stopVoiceSession(voiceSnapshot!).catch(() => {
+                    if (targetScope && activeVoiceScopeRef.current === targetScope) setVoiceStopFailed(true);
+                  });
+                }}
+              >
+                ■
+              </button>
+            )}
           </div>
           <div
             ref={figureHitRef}

@@ -2,7 +2,7 @@
 //!
 //! Authoritative baseline: docs/architecture/voice-agent/interaction.zh.md §3.5.
 
-use crate::contract::{VOICE_DECISION_SCHEMA, VoiceDecision};
+use crate::contract::{VOICE_DECISION_SCHEMA, VOICE_DECISION_SCHEMA_EN, VoiceDecision};
 use crate::driver::{RouteError, VoiceRouter};
 use async_trait::async_trait;
 
@@ -137,25 +137,46 @@ pub type QwenVoiceRouter = OpenAiCompatibleVoiceRouter;
 
 impl OpenAiCompatibleVoiceRouter {
     async fn route_request(&self,scope:&nomifun_api_types::voice::VoiceDialogueRequest,input:&str,task_status:Option<&str>,context:&[ChatMessage],sentences:Option<tokio::sync::mpsc::Sender<nomifun_api_types::voice::VoiceDialogueSentence>>)->(Result<VoiceDecision,RouteError>,Option<String>) {
-        let Some(client) = &self.completion else {
-            return self.route_with_context(input, task_status, context).await;
-        };
-        let mut router = self.clone();
-        router.history.clear();
-        for pair in context.chunks_exact(2).rev().take(3).rev() {
-            router.append_turn(&pair[0].content, &pair[1].content);
-        }
-        let mut request = scope.clone();
-        let is_en = scope.locale.as_deref().is_some_and(|l| l.starts_with("en"));
-        let context_header = if is_en { "Dialogue context:\n" } else { "对话上下文：\n" };
-        request.prompt = format!("{}{}\n{}", context_header, router.history.iter()
-            .map(|m|format!("{}: {}",m.role,m.content)).collect::<Vec<_>>().join("\n"),
-            router.build_prompt_with_locale(input, task_status, scope.locale.as_deref()));
-        let result=match sentences {Some(sender)=>client.complete_stream(&request,sender).await,None=>client.complete(&request).await};
-        match result {
-            Ok(content) => (self.parse_and_validate(&content),Some(content)),
-            Err(RouteError::Record{code,content}) => (Err(RouteError::Record{code,content:content.clone()}),Some(content)),
-            Err(error) => (Err(error),None),
+        if let Some(client) = &self.completion {
+            let mut router = self.clone();
+            router.history.clear();
+            for pair in context.chunks_exact(2).rev().take(3).rev() {
+                router.append_turn(&pair[0].content, &pair[1].content);
+            }
+            let mut request = scope.clone();
+            let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+            let context_header = if is_en { "Dialogue context:\n" } else { "对话上下文：\n" };
+            request.prompt = format!("{}{}\n{}", context_header, router.history.iter()
+                .map(|m|format!("{}: {}",m.role,m.content)).collect::<Vec<_>>().join("\n"),
+                router.build_prompt_with_locale(input, task_status, scope.locale.as_deref()));
+            let result=match sentences {Some(sender)=>client.complete_stream(&request,sender).await,None=>client.complete(&request).await};
+            match result {
+                Ok(content) => (self.parse_and_validate(&content),Some(content)),
+                Err(RouteError::Record{code,content}) => (Err(RouteError::Record{code,content:content.clone()}),Some(content)),
+                Err(error) => (Err(error),None),
+            }
+        } else if let Some(endpoint) = &self.endpoint {
+            let mut router = self.clone();
+            router.history.clear();
+            for pair in context.chunks_exact(2).rev().take(3).rev() {
+                router.append_turn(&pair[0].content, &pair[1].content);
+            }
+            match router.request_model_text(endpoint, input, task_status, scope.locale.as_deref()).await {
+                Ok(content) => (self.parse_and_validate(&content), Some(content)),
+                Err(error) => (Err(error), None),
+            }
+        } else {
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            if let Some(fallback) = &self.fallback {
+                return (fallback.route_with_status(input, task_status).await, None);
+            }
+
+            (
+                Err(RouteError::Generation(
+                    "No LLM endpoint configured".to_string(),
+                )),
+                None,
+            )
         }
     }
 
@@ -420,7 +441,7 @@ impl OpenAiCompatibleVoiceRouter {
     }
 
     pub fn build_prompt_with_locale(&self, user_input: &str, task_fsm_status: Option<&str>, locale: Option<&str>) -> String {
-        let is_en = locale.is_some_and(|l| l.starts_with("en"));
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
         let task_status_str = match task_fsm_status {
             Some(s) if !s.trim().is_empty() => {
                 if is_en {
@@ -455,7 +476,7 @@ impl OpenAiCompatibleVoiceRouter {
                 - When user input is irrelevant noise or meaningless, intent_type is \"ignore\".\n\
                 {}\n\
                 Latest voice input: \"{}\"",
-                VOICE_DECISION_SCHEMA, task_status_str, user_input
+                VOICE_DECISION_SCHEMA_EN, task_status_str, user_input
             )
         } else {
             format!(
@@ -489,6 +510,7 @@ impl OpenAiCompatibleVoiceRouter {
         endpoint: &str,
         input: &str,
         task_status: Option<&str>,
+        locale: Option<&str>,
     ) -> Result<String, RouteError> {
         let mut messages: Vec<_> = self
             .history
@@ -496,7 +518,7 @@ impl OpenAiCompatibleVoiceRouter {
             .map(|msg| serde_json::json!({ "role": msg.role, "content": msg.content }))
             .collect();
         messages.push(
-            serde_json::json!({ "role": "user", "content": self.build_prompt(input, task_status) }),
+            serde_json::json!({ "role": "user", "content": self.build_prompt_with_locale(input, task_status, locale) }),
         );
         let body =
             serde_json::json!({ "model": self.model, "messages": messages, "temperature": 0.0 });
@@ -617,7 +639,7 @@ impl VoiceRouter for QwenVoiceRouter {
             };
         }
         if let Some(endpoint) = &self.endpoint {
-            match self.request_model_text(endpoint, input, task_status).await {
+            match self.request_model_text(endpoint, input, task_status, None).await {
                 Ok(content) => (self.parse_and_validate(&content), Some(content)),
                 Err(error) => (Err(error), None),
             }
@@ -790,8 +812,54 @@ mod tests {
         assert!(prompt_en.contains("[Current background task status]: idle, no active task"));
         assert!(prompt_en.contains("Natural language reply and understood_request must default to English"));
         assert!(prompt_en.contains("Latest voice input: \"hello world\""));
+        // English prompt must NOT contain Chinese characters from schema description leakage
+        assert!(!prompt_en.chars().any(|c| ('\u{4e00}'..='\u{9fa5}').contains(&c)), "prompt_en must not contain Chinese characters from schema leakage");
+
+        // Uppercase EN-US must also route to English prompt
+        let prompt_en_upper = router.build_prompt_with_locale("hello world", None, Some("EN-US"));
+        assert!(prompt_en_upper.contains("You are a high-precision voice intent recognition and routing hub"));
+        assert!(!prompt_en_upper.chars().any(|c| ('\u{4e00}'..='\u{9fa5}').contains(&c)));
+
+        // Non-ASCII or unsupported values fallback safely to Chinese without crashing
+        let prompt_invalid = router.build_prompt_with_locale("测试", None, Some("中"));
+        assert!(prompt_invalid.contains("你是一个高精度语音意图识别与路由中枢"));
 
         let prompt_default = router.build_prompt("测试", None);
         assert!(prompt_default.contains("你是一个高精度语音意图识别与路由中枢"));
+    }
+
+    #[tokio::test]
+    async fn scoped_router_passes_session_locale_to_the_actual_completion() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct RecordingCompletion(Mutex<Vec<nomifun_api_types::voice::VoiceDialogueRequest>>);
+
+        #[async_trait::async_trait]
+        impl crate::completion::VoiceCompletionClient for RecordingCompletion {
+            async fn complete(
+                &self,
+                request: &nomifun_api_types::voice::VoiceDialogueRequest,
+            ) -> Result<String, RouteError> {
+                self.0.lock().unwrap().push(request.clone());
+                Ok(r#"{"intent_type":"chat","reply_tts":"Hello"}"#.to_owned())
+            }
+        }
+
+        let completion = Arc::new(RecordingCompletion::default());
+        let router = QwenVoiceRouter::with_completion(completion.clone());
+        let mut scope = nomifun_api_types::voice::VoiceDialogueRequest::scoped("session", "turn", "Hello");
+        scope.locale = Some("en-US".into());
+        let (result, _) = router.route_scoped(&scope, "Hello", None, &[]).await;
+        assert!(result.is_ok());
+        scope.locale = Some("zh-CN".into());
+        let (result, _) = router.route_scoped(&scope, "你好", None, &[]).await;
+        assert!(result.is_ok());
+        let requests = completion.0.lock().unwrap();
+        assert_eq!(requests[0].locale.as_deref(), Some("en-US"));
+        assert!(requests[0].prompt.contains("Natural language reply and understood_request must default to English"));
+        assert!(!requests[0].prompt.chars().any(|c| ('\u{4e00}'..='\u{9fa5}').contains(&c)));
+        assert_eq!(requests[1].locale.as_deref(), Some("zh-CN"));
+        assert!(requests[1].prompt.contains("你是一个高精度语音意图识别与路由中枢"));
     }
 }

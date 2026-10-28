@@ -211,7 +211,7 @@ const ConversationRow: React.FC<ConversationRowProps> = (props) => {
             <Tooltip disabled={menuVisible || (!isCallActive && actionsFocused)} content={t(isCallActive ? 'voice.entry.callActiveMarker' : 'voice.entry.listMarker')}>
               <span
                 className={classNames('conversation-voice-marker relative inline-flex shrink-0 items-center justify-center', {
-                  'text-primary-6': isCallActive,
+                  'text-success': isCallActive,
                   'text-t-secondary': !isCallActive,
                 })}
                 role='img'

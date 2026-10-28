@@ -12,7 +12,7 @@ import {
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
 import { resolveLocaleKey } from '@/common/utils';
-import { abandonPendingVoiceCallIntent, discardPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { abandonPendingVoiceCallIntent, discardPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, voiceStartNeedsPrepare, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
 import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
 import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
 import type { DictationActivationResult, DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
@@ -350,7 +350,8 @@ const GuidPage: React.FC = () => {
   const isVoiceActive =
     Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
-  const [voicePrerequisite, setVoicePrerequisite] = useState<'loading' | 'ready' | 'setup' | 'unavailable'>('loading');
+  const [voicePrerequisite, setVoicePrerequisite] = useState<'loading' | 'ready' | 'setup' | 'failed' | 'unavailable'>('loading');
+  const [voiceFailureReason, setVoiceFailureReason] = useState<string | null>(null);
   const inFlightVoiceCallRef = useRef(false);
   const isMountedRef = useRef(true);
   useEffect(() => {
@@ -363,7 +364,8 @@ const GuidPage: React.FC = () => {
   const refreshVoicePrerequisite = useCallback(async () => {
     try {
       const [status, report] = await Promise.all([getVoiceCompanionStatus(), getVoiceCapabilities()]);
-      setVoicePrerequisite(!status.models_ready || !status.autostart ? 'unavailable' : report?.can_start_full_call ? 'ready' : 'setup');
+      setVoiceFailureReason(report?.reason_code ?? null);
+      setVoicePrerequisite(!status.models_ready || !status.autostart ? 'unavailable' : report?.can_start_full_call ? 'ready' : report ? 'failed' : 'setup');
     } catch {
       setVoicePrerequisite('unavailable');
     }
@@ -402,6 +404,13 @@ const GuidPage: React.FC = () => {
       await navigate('/settings/voice');
       return;
     }
+    if (voicePrerequisite === 'failed') {
+      const reason = voiceFailureReason ? t(`voice.capabilities.reason.${voiceFailureReason}`, { defaultValue: voiceFailureReason }) : '';
+      Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      releaseGate();
+      await navigate('/settings/voice');
+      return;
+    }
     let prerequisiteReady = voicePrerequisite === 'ready';
     if (!prerequisiteReady) {
       try {
@@ -411,14 +420,14 @@ const GuidPage: React.FC = () => {
           return;
         }
         prerequisiteReady = report.can_start_full_call;
-        setVoicePrerequisite(prerequisiteReady ? 'ready' : 'setup');
+        setVoiceFailureReason(report.reason_code ?? null);
+        setVoicePrerequisite(prerequisiteReady ? 'ready' : 'failed');
       } catch (error) {
         if (!isMountedRef.current) {
           releaseGate();
           return;
         }
         const failure = error as { code?: string };
-        discardPendingVoiceCallIntent();
         Message.warning(
           failure.code === 'models_not_installed'
             ? t('voice.errors.modelMissing')
@@ -463,16 +472,15 @@ const GuidPage: React.FC = () => {
       await navigate(`/conversation/${encodeURIComponent(res.conversation_id)}`);
     } catch (err: unknown) {
       if (!isMountedRef.current) return;
-      const errorObj = err as { code?: string; active_conversation_id?: string; reason_code?: string; degraded_text_only?: boolean } | undefined;
+      const errorObj = err as { status?: number; code?: string; active_conversation_id?: string; reason_code?: string; requires_check?: boolean; degraded_text_only?: boolean; call_request_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_superseded') return;
       if (errorObj?.code === 'voice_call_cancel_unknown') {
         const recovered = await retryAbandonedVoiceCallIntent();
         if (!isMountedRef.current) return;
         Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
         return;
       }
-      const needsPrepare =
-        errorObj?.code === 'voice_companion_not_running' ||
-        errorObj?.code === 'voice_suite_not_ready';
+      const needsPrepare = voiceStartNeedsPrepare(errorObj);
       if (errorObj?.code === 'voice_call_conflict' && errorObj?.active_conversation_id) {
         Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
         if (!isMountedRef.current) return;
@@ -482,6 +490,7 @@ const GuidPage: React.FC = () => {
           const report = await prepareVoiceSession(true, localeKey, 'preparing');
           if (!isMountedRef.current) return;
           if (!report.can_start_full_call) {
+            discardPendingVoiceCallIntent(errorObj?.call_request_id);
             const reason = report.reason_code
               ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
               : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
@@ -495,14 +504,18 @@ const GuidPage: React.FC = () => {
           await navigate(`/conversation/${encodeURIComponent(retry.conversation_id)}`);
         } catch (prepareError) {
           if (!isMountedRef.current) return;
-          discardPendingVoiceCallIntent();
           const failure = prepareError as { code?: string; message?: string };
+          if (failure.code === 'voice_call_superseded') return;
+          discardPendingVoiceCallIntent(errorObj?.call_request_id);
           Message.error(
             failure.code === 'models_not_installed'
               ? t('voice.errors.modelMissing')
               : failure.message || t('voice.capabilities.checkFailed'),
           );
         }
+      } else if (errorObj?.code === 'voice_suite_not_ready') {
+        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
+        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
       } else {
         Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
       }
@@ -512,7 +525,7 @@ const GuidPage: React.FC = () => {
         setIsVoiceConnecting(false);
       }
     }
-  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, voicePrerequisite, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, mainModelRef, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id, agentSelection.selectedMode, navigate, t, localeKey]);
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, voicePrerequisite, voiceFailureReason, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, mainModelRef, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id, agentSelection.selectedMode, navigate, t, localeKey]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });

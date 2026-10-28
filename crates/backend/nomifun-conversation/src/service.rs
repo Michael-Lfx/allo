@@ -158,9 +158,23 @@ fn task_profile_changed(
             != merged_extra.and_then(|extra| extra.get("task_profile"))
 }
 
-fn is_auto_title_eligible(current_name: &str, first_user_content: &str) -> bool {
+fn is_auto_title_eligible(
+    current_name: &str,
+    first_user_content: &str,
+    extra: Option<&serde_json::Value>,
+) -> bool {
     let current_name = current_name.trim();
-    current_name.is_empty() || current_name == first_user_content.trim()
+    if current_name.is_empty() || current_name == first_user_content.trim() {
+        return true;
+    }
+    let is_voice_default = extra.is_some_and(|e| {
+        let is_voice = e.get("voice").and_then(|v| v.as_bool()).unwrap_or(false)
+            || e.get("is_default_voice").and_then(|v| v.as_bool()).unwrap_or(false)
+            || e.get("voice_creation_request").is_some();
+        let title_source = e.get("titleSource").and_then(|v| v.as_str());
+        is_voice && title_source != Some("user")
+    });
+    is_voice_default && (current_name == "语音通话" || current_name == "Voice Call")
 }
 
 fn strip_ordered_list_marker(line: &str) -> &str {
@@ -6038,6 +6052,23 @@ impl ConversationService {
         model: Option<&nomifun_api_types::voice::VoiceModelRef>,
         preset_id: Option<&str>,
     ) -> Result<ConversationResponse, AppError> {
+        self.create_provisional_voice_conversation_with_locale(
+            user_id, owner, mode, workspace, request_id, model, preset_id, None,
+        )
+        .await
+    }
+
+    pub async fn create_provisional_voice_conversation_with_locale(
+        &self,
+        user_id: &str,
+        owner: Option<&str>,
+        mode: Option<&str>,
+        workspace: Option<&str>,
+        request_id: &str,
+        model: Option<&nomifun_api_types::voice::VoiceModelRef>,
+        preset_id: Option<&str>,
+        locale: Option<&str>,
+    ) -> Result<ConversationResponse, AppError> {
         let owner_companion = owner
             .map(CompanionId::try_from)
             .transpose()
@@ -6074,14 +6105,21 @@ impl ConversationService {
             return self.get(user_id, &existing.conversation_id).await;
         }
         let mode = self.resolve_voice_session_mode(mode).await?;
-        let extra = serde_json::json!({
-            "is_default_voice": true,
-            "voice": true,
-            "memory_owner_companion_id": owner_companion,
-            "session_mode": mode,
-        });
+        let is_en = nomifun_api_types::voice::is_english_locale(locale);
+        let default_name = if is_en { "Voice Call" } else { "语音通话" };
+        let mut extra_map = serde_json::Map::new();
+        extra_map.insert("is_default_voice".into(), serde_json::Value::Bool(true));
+        extra_map.insert("voice".into(), serde_json::Value::Bool(true));
+        if let Some(owner) = owner_companion {
+            extra_map.insert("memory_owner_companion_id".into(), serde_json::Value::String(owner.to_string()));
+        }
+        extra_map.insert("session_mode".into(), serde_json::Value::String(mode));
+        if let Some(loc) = locale.filter(|l| !l.trim().is_empty()) {
+            extra_map.insert("locale".into(), serde_json::Value::String(loc.to_string()));
+        }
+        let extra = serde_json::Value::Object(extra_map);
         let req = CreateConversationRequest {
-            name: Some("语音通话".to_owned()),
+            name: Some(default_name.to_owned()),
             r#type: AgentType::Nomi,
             extra,
             source: Some(ConversationSource::Nomifun),
@@ -17159,7 +17197,7 @@ impl ConversationService {
     /// The database claim is the concurrency seam: it owns the provisional
     /// name, marks the attempt pending, and rejects user-owned or explicitly
     /// named conversations before any model call is made.
-    pub(crate) async fn maybe_autotitle(
+    pub async fn maybe_autotitle(
         &self,
         conversation_id: &str,
         user_message_id: &str,
@@ -17243,8 +17281,9 @@ impl ConversationService {
             }
         };
 
-        let state_before = serde_json::from_str::<serde_json::Value>(&row.extra)
-            .ok()
+        let extra_val = serde_json::from_str::<serde_json::Value>(&row.extra).ok();
+        let state_before = extra_val
+            .as_ref()
             .and_then(|extra| {
                 extra
                     .get("autoTitleState")
@@ -17273,7 +17312,7 @@ impl ConversationService {
             );
             return;
         }
-        if !is_auto_title_eligible(&row.name, &first_user_content) {
+        if !is_auto_title_eligible(&row.name, &first_user_content, extra_val.as_ref()) {
             debug!(
                 conversation_id,
                 user_message_id,
@@ -17293,7 +17332,19 @@ impl ConversationService {
         }
 
         let current_name = row.name.clone();
-        let temporary_name = provisional_title(&first_user_content).unwrap_or_default();
+        let is_voice_default = extra_val.as_ref().is_some_and(|e| {
+            let is_v = e.get("voice").and_then(|v| v.as_bool()).unwrap_or(false)
+                || e.get("is_default_voice").and_then(|v| v.as_bool()).unwrap_or(false)
+                || e.get("voice_creation_request").is_some();
+            let title_source = e.get("titleSource").and_then(|v| v.as_str());
+            is_v && title_source != Some("user")
+        }) && (row.name == "语音通话" || row.name == "Voice Call");
+
+        let temporary_name = if is_voice_default {
+            current_name.clone()
+        } else {
+            provisional_title(&first_user_content).unwrap_or_default()
+        };
         let claimed = match self
             .conversation_repo
             .claim_auto_title(
@@ -17497,7 +17548,11 @@ impl ConversationService {
             return;
         }
 
-        if title_comparison_key(&title) == title_comparison_key(&temporary_name) {
+        let user_fallback = provisional_title(&first_user_content).unwrap_or_default();
+        if title_comparison_key(&title) == title_comparison_key(&temporary_name)
+            || title_comparison_key(&title) == title_comparison_key(&user_fallback)
+            || title_comparison_key(&title) == title_comparison_key(&current_name)
+        {
             let cas_applied = self.finish_auto_title(conversation_id, None, "failed").await;
             warn!(
                 conversation_id,
