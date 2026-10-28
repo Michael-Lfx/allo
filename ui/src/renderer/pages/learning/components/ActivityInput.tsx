@@ -2,6 +2,7 @@ import { Button, Checkbox, Input, InputNumber, Radio, Select } from '@arco-desig
 import { IconArrowDown, IconArrowUp } from '@arco-design/web-react/icon';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { InlineMarkdown } from '@renderer/components/Markdown';
 import type { ActivityKind } from '../types';
 
 /** 排序题：条目上下移动产出学习者的顺序（value = 条目数组） */
@@ -38,7 +39,10 @@ function OrderingInput({
           className='flex items-center gap-6px rounded-6px border border-solid border-[var(--color-border-2)] px-8px py-4px'
         >
           <span className='text-12px text-t-tertiary'>{index + 1}.</span>
-          <span className='flex-1'>{item}</span>
+          {/* 排序条目走内联渲染管线（题面契约允许 $…$ 与内联 markdown） */}
+          <span className='flex-1'>
+            <InlineMarkdown text={item} />
+          </span>
           <Button
             size='mini'
             icon={<IconArrowUp />}
@@ -149,7 +153,8 @@ export function ActivityInput({
       >
         {options.map((option) => (
           <Radio key={option} value={option}>
-            {option}
+            {/* 选项文本走内联渲染管线；value 仍为原始选项串，判分不受影响 */}
+            <InlineMarkdown text={option} />
           </Radio>
         ))}
       </Radio.Group>
@@ -168,7 +173,8 @@ export function ActivityInput({
       >
         {options.map((option) => (
           <Checkbox key={option} value={option}>
-            {option}
+            {/* 选项文本走内联渲染管线；value 仍为原始选项串，判分不受影响 */}
+            <InlineMarkdown text={option} />
           </Checkbox>
         ))}
       </Checkbox.Group>
