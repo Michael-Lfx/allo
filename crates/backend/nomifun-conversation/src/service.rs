@@ -5065,11 +5065,17 @@ impl ConversationService {
         companion_id: Option<CompanionId>,
         origin: Option<String>,
         channel_platform: Option<String>,
+        held_preparation: Option<ConversationPreparationGuard>,
     ) {
         // Keep both lifecycle fences across durable finalize -> exact release
         // -> turn.completed.  A replacement send/warmup must not observe the
         // old turn as idle between those steps, and Finished must never be
         // projected before its optional delivery receipt is settled.
+        //
+        // Callers that already hold the preparation gate must pass that guard
+        // in. The gate mutex is not reentrant; acquiring it again on the same
+        // task deadlocks the turn owner and leaves stop waiting on a cleanup
+        // that never reaches a terminal state.
         let completion_fence = match self
             .runtime_state
             .begin_turn_completion(conversation_id, turn_handle.turn_id())
@@ -5096,21 +5102,26 @@ impl ConversationService {
             }
         };
 
-        let preparation_token = CancellationToken::new();
-        let preparation_fence = loop {
-            match self
-                .runtime_state
-                .acquire_preparation_gate(conversation_id, &preparation_token)
-                .await
-            {
-                Ok(guard) => break guard,
-                Err(error) => {
-                    error!(
-                        conversation_id,
-                        error = %ErrorChain(&error),
-                        "Failed to acquire terminal preparation fence; retaining exact turn ownership"
-                    );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+        let preparation_fence = match held_preparation {
+            Some(guard) => guard,
+            None => {
+                let preparation_token = CancellationToken::new();
+                loop {
+                    match self
+                        .runtime_state
+                        .acquire_preparation_gate(conversation_id, &preparation_token)
+                        .await
+                    {
+                        Ok(guard) => break guard,
+                        Err(error) => {
+                            error!(
+                                conversation_id,
+                                error = %ErrorChain(&error),
+                                "Failed to acquire terminal preparation fence; retaining exact turn ownership"
+                            );
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
                 }
             }
         };
@@ -11172,6 +11183,7 @@ impl ConversationService {
                 companion_id,
                 origin,
                 channel_platform,
+                Some(preparation_guard),
             )
             .await;
             drop(runtime_build_lease.take());
@@ -11235,6 +11247,7 @@ impl ConversationService {
                     companion_id,
                     origin,
                     channel_platform,
+                    Some(preparation_guard),
                 )
                 .await;
                 return Err(e.into());
@@ -11498,6 +11511,7 @@ impl ConversationService {
                             companion_id.clone(),
                             origin.clone(),
                             channel_platform.clone(),
+                            None,
                         )
                         .await;
                     return;
@@ -11571,6 +11585,7 @@ impl ConversationService {
                         companion_id.clone(),
                         origin.clone(),
                         channel_platform.clone(),
+                        None,
                     )
                     .await;
                 return;
@@ -11637,6 +11652,7 @@ impl ConversationService {
                         companion_id.clone(),
                         origin.clone(),
                         channel_platform.clone(),
+                        None,
                     )
                     .await;
                 return;
@@ -12317,6 +12333,7 @@ impl ConversationService {
                     companion_id,
                     origin,
                     channel_platform,
+                    None,
                 )
                 .await;
             })
@@ -12408,6 +12425,7 @@ impl ConversationService {
                         panic_wire_context.companion_id,
                         panic_wire_context.origin,
                         panic_wire_context.channel_platform,
+                        None,
                     )
                     .await;
             }

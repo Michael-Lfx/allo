@@ -68,8 +68,8 @@ pub struct LoadedSkillSnapshot {
     pub source: String,
     pub version_hash: String,
     pub content: String,
-    /// Absolute SKILL.md path when known. Injection points the model at this
-    /// file instead of dumping the full body into the user turn.
+    /// Absolute SKILL.md path when known. The procedure itself is inlined into
+    /// the user turn; this path is only for supporting files next to it.
     #[serde(default)]
     pub location: Option<String>,
 }
@@ -93,7 +93,12 @@ pub struct CatalogDiscoveryEntry {
     pub description: String,
 }
 
-const SKILL_POINTER_BODY_LIMIT: usize = 400;
+/// Character budget for one explicitly selected Skill procedure.
+///
+/// The user already chose this Skill, so the turn includes its instructions
+/// instead of only a filesystem pointer. Larger files keep a prefix and point
+/// at `SKILL.md` for the rest.
+const SKILL_INSTRUCTION_CHAR_LIMIT: usize = 32_000;
 
 pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapshot]) -> String {
     if skills.is_empty() {
@@ -101,17 +106,17 @@ pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapsho
     }
     let sections = skills
         .iter()
-        .map(render_skill_pointer)
+        .map(render_loaded_skill)
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
         "[Loaded Skills]\n\
-         The user explicitly selected these Skills (force). Follow the pointer below; do not assume the excerpt is the full procedure.\n\
-         Do not call the Skill tool to reload a skill listed here — it is already selected.\n\
+         The user explicitly selected these Skills (force). The instructions below are already loaded and in effect for this turn.\n\
+         Follow those instructions before taking task actions. Do not call the Skill tool to reload a skill listed here — it is already selected.\n\
          Other catalog skills that were not selected may still be loaded with the Skill tool when they match the task.\n\
-         If a selected Skill refers to a slash command or another Skill, perform the described workflow directly\n\
-         instead of using the Skill tool to load that reference.\n\
-         Host tools named by a Skill (for example briefing_create) remain available even if they are not in this excerpt.\n\
+         If a selected Skill names another catalog Skill, call the Skill tool with that other catalog id before continuing.\n\
+         If a selected Skill refers to a slash command, perform the described workflow directly instead of passing that slash command to the Skill tool.\n\
+         Host tools named by a Skill (for example briefing_create) remain available even if they are not quoted below.\n\
          Prefer those tools over reconstructing the workflow with web_search or nomi_delegate.\n\
          If a selected Skill does not match the user request, say so and use the matching host tool instead.\n\n\
          {sections}\n\
@@ -158,7 +163,7 @@ pub fn inject_catalog_discovery_context(
     format!("{}\n\n{content}", lines.join("\n"))
 }
 
-fn render_skill_pointer(skill: &LoadedSkillSnapshot) -> String {
+fn render_loaded_skill(skill: &LoadedSkillSnapshot) -> String {
     let (frontmatter, body) = split_skill_frontmatter(&skill.content);
     let description = frontmatter_field(&frontmatter, "description")
         .or_else(|| frontmatter_field(&frontmatter, "when_to_use"))
@@ -178,20 +183,33 @@ fn render_skill_pointer(skill: &LoadedSkillSnapshot) -> String {
     }
     if !location.is_empty() {
         lines.push(format!("Path: {location}"));
+    }
+    let procedure = {
+        let trimmed_body = body.trim();
+        if trimmed_body.is_empty() {
+            skill.content.trim()
+        } else {
+            trimmed_body
+        }
+    };
+    let (instructions, truncated) = bound_skill_instructions(procedure);
+    if !instructions.is_empty() {
+        lines.push(String::new());
+        lines.push(instructions);
+    }
+    if truncated && !location.is_empty() {
         lines.push(format!(
-            "Read `{location}` (SKILL.md) when you need the full procedure. Do not invent a substitute workflow."
+            "The instructions above are truncated. Read `{location}` before acting on anything that is not fully included."
         ));
-    } else if !frontmatter.is_empty() {
+    } else if truncated {
         lines.push(
-            "Full instructions live in this Skill's SKILL.md. Read that file if you need the procedure."
+            "The instructions above are truncated. Continue only from the included steps and do not invent the missing ones."
                 .to_owned(),
         );
-    } else {
-        let excerpt = compact_skill_excerpt(body);
-        if !excerpt.is_empty() {
-            lines.push(String::new());
-            lines.push(excerpt);
-        }
+    } else if !location.is_empty() {
+        lines.push(format!(
+            "Open `{location}` only when these instructions name a supporting file."
+        ));
     }
     lines.push("[/Loaded Skill]".to_owned());
     lines.join("\n")
@@ -235,20 +253,19 @@ fn frontmatter_field<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn compact_skill_excerpt(body: &str) -> String {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return String::new();
+fn bound_skill_instructions(body: &str) -> (String, bool) {
+    if body.is_empty() {
+        return (String::new(), false);
     }
-    if trimmed.chars().count() <= SKILL_POINTER_BODY_LIMIT {
-        return trimmed.to_owned();
+    if body.chars().count() <= SKILL_INSTRUCTION_CHAR_LIMIT {
+        return (body.to_owned(), false);
     }
-    let mut excerpt = trimmed
+    let mut excerpt = body
         .chars()
-        .take(SKILL_POINTER_BODY_LIMIT)
+        .take(SKILL_INSTRUCTION_CHAR_LIMIT)
         .collect::<String>();
     excerpt.push('…');
-    excerpt
+    (excerpt, true)
 }
 
 /// Attach the immutable conversation preset to the first prompt understood by
@@ -607,6 +624,7 @@ mod tests {
         );
 
         assert!(content.contains("[Loaded Skills]"));
+        assert!(content.contains("The instructions below are already loaded and in effect"));
         assert!(content.contains("Do not call the Skill tool to reload a skill listed here"));
         assert!(content.contains("Other catalog skills that were not selected may still be loaded"));
         assert!(content.contains("perform the described workflow directly"));
@@ -616,8 +634,8 @@ mod tests {
     }
 
     #[test]
-    fn loaded_skill_injection_uses_frontmatter_pointer_not_the_full_body() {
-        let body = "x".repeat(2000);
+    fn loaded_skill_injection_includes_the_selected_procedure() {
+        let body = "Render the narration as motion graphics before answering.";
         let content = inject_loaded_skill_context(
             "做个当日新闻口播".to_owned(),
             &[LoadedSkillSnapshot {
@@ -633,12 +651,50 @@ mod tests {
         );
         assert!(content.contains("Description: Motion graphics from narration"));
         assert!(content.contains("Path: C:/data/builtin-skills/art-motion/SKILL.md"));
-        assert!(content.contains("Read `C:/data/builtin-skills/art-motion/SKILL.md`"));
-        assert!(
-            !content.contains(&body),
-            "full SKILL.md body must not occupy the user turn"
-        );
+        assert!(content.contains(&body));
+        assert!(content.contains("Open `C:/data/builtin-skills/art-motion/SKILL.md` only when"));
         assert!(content.contains("briefing_create"));
+        assert!(content.ends_with("做个当日新闻口播"));
+    }
+
+    #[test]
+    fn loaded_skill_without_a_path_still_includes_the_procedure() {
+        let body = "Lock shared geography before choosing a camera.";
+        let content = inject_loaded_skill_context(
+            "排这场戏".to_owned(),
+            &[LoadedSkillSnapshot {
+                skill_id: "builtin:scene-directing".to_owned(),
+                name: "scene-directing".to_owned(),
+                source: "builtin".to_owned(),
+                version_hash: "abc123".to_owned(),
+                content: format!(
+                    "---\nname: scene-directing\ndescription: Direct the scene\n---\n{body}"
+                ),
+                location: None,
+            }],
+        );
+        assert!(content.contains(&body));
+        assert!(!content.contains("Read that file"));
+        assert!(content.ends_with("排这场戏"));
+    }
+
+    #[test]
+    fn oversized_selected_skill_is_truncated_and_points_at_the_file() {
+        let body = "y".repeat(SKILL_INSTRUCTION_CHAR_LIMIT + 40);
+        let content = inject_loaded_skill_context(
+            "继续".to_owned(),
+            &[LoadedSkillSnapshot {
+                skill_id: "builtin:officecli-docx".to_owned(),
+                name: "officecli-docx".to_owned(),
+                source: "builtin".to_owned(),
+                version_hash: "fff".to_owned(),
+                content: format!("---\nname: officecli-docx\ndescription: Word documents\n---\n{body}"),
+                location: Some("C:/data/builtin-skills/officecli-docx/SKILL.md".to_owned()),
+            }],
+        );
+        assert!(!content.contains(&body));
+        assert!(content.contains("The instructions above are truncated."));
+        assert!(content.contains("Read `C:/data/builtin-skills/officecli-docx/SKILL.md`"));
     }
 
     #[test]
