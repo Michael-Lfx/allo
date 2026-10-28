@@ -203,6 +203,7 @@
   "questionDistractorsHint": "近义干扰项（可选）：帮助识别易混淆的相近概念，不参与判分",
   "questionFillBlankHint": "在题干中用 ___ 标记设空位置",
   "questionFillBlankHintRequired": "题干需用 ___ 标记设空位置",
+  "inlineRenderFailed": "题面渲染失败，已显示原文：",
   "reviews": "今日复习",
   "xpPanelTitle": "XP 读数",
   "xpExpand": "展开 XP 读数",
