@@ -148,6 +148,7 @@ struct NativeBusyGuard {
 }
 
 impl NativeBusyGuard {
+    #[cfg(feature = "native-fault-injection")]
     fn new(busy: Arc<AtomicBool>, epoch: Arc<AtomicU64>) -> Self {
         let job = epoch.fetch_add(1, Ordering::AcqRel) + 1;
         Self::attach(busy, epoch, job)
@@ -174,6 +175,637 @@ impl Drop for NativeBusyGuard {
             FAULT_NATIVE_BUSY.store(false, Ordering::Release);
         }
         self.busy.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Default)]
+struct NativeHealth {
+    state: std::sync::Mutex<NativeHealthState>,
+}
+
+#[derive(Default)]
+struct NativeHealthState {
+    job: u64,
+    degraded: bool,
+}
+
+impl NativeHealth {
+    fn publish(&self, job: u64, degraded: bool) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        // A job may refine its own result (for example an inner loader error),
+        // but an older job must never overwrite a newer job's health.
+        if job >= state.job {
+            state.job = job;
+            state.degraded = degraded;
+        }
+    }
+
+    fn publish_result<T, E>(&self, job: u64, result: &Result<T, E>) {
+        self.publish(job, result.is_err());
+    }
+
+    fn is_degraded(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .degraded
+    }
+}
+
+#[derive(Clone)]
+struct NativeCallRunner {
+    busy: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    health: Option<Arc<NativeHealth>>,
+}
+
+impl NativeCallRunner {
+    #[cfg(test)]
+    fn new(busy: Arc<AtomicBool>, epoch: Arc<AtomicU64>) -> Self {
+        Self {
+            busy,
+            epoch,
+            health: None,
+        }
+    }
+
+    fn with_health(
+        busy: Arc<AtomicBool>,
+        epoch: Arc<AtomicU64>,
+        health: Arc<NativeHealth>,
+    ) -> Self {
+        Self {
+            busy,
+            epoch,
+            health: Some(health),
+        }
+    }
+
+    fn publish_health(&self, job: u64, degraded: bool) {
+        if let Some(health) = &self.health {
+            health.publish(job, degraded);
+        }
+    }
+
+    fn publish_error(&self, job: u64, reason: &str) {
+        if native_error_requires_degraded(reason) {
+            self.publish_health(job, true);
+        }
+    }
+
+    async fn acquire(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+    ) -> Result<NativeBusyGuard, String> {
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("engine_check_cancelled".into());
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Err("engine_check_timeout".into());
+            }
+            if self
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let job = self.epoch.fetch_add(1, Ordering::AcqRel) + 1;
+                return Ok(NativeBusyGuard::attach(
+                    self.busy.clone(),
+                    self.epoch.clone(),
+                    job,
+                ));
+            }
+            if !wait_for_lease {
+                return Err("engine_check_native_busy".into());
+            }
+            let pause = tokio::time::sleep(std::cmp::min(
+                deadline.saturating_duration_since(now),
+                std::time::Duration::from_millis(10),
+            ));
+            tokio::pin!(pause);
+            tokio::select! {
+                _ = notify.notified() => {},
+                _ = &mut pause => {},
+            }
+        }
+    }
+
+    fn schedule_watchdog(&self, job: u64, started_at: std::time::Instant) {
+        if std::env::var("VOICE_COMPANION_SUPERVISED").ok().as_deref() != Some("1") {
+            return;
+        }
+        let busy = self.busy.clone();
+        let epoch = self.epoch.clone();
+        let grace_ms = std::env::var("NOMIFUN_VOICE_NATIVE_LEASE_GRACE_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(30_000)
+            .clamp(250, 60_000);
+        let grace = std::time::Duration::from_millis(grace_ms);
+        let delay = grace.saturating_sub(started_at.elapsed());
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            if native_job_needs_recovery(
+                true,
+                busy.load(Ordering::Acquire),
+                epoch.load(Ordering::Acquire),
+                job,
+            ) {
+                tracing::error!(grace_ms, job, "voice_native_lease_stuck_exiting_for_supervised_restart");
+                std::process::exit(75);
+            }
+        });
+    }
+
+    async fn run<T, F>(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+        watchdog: bool,
+        #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
+        call: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        self.run_and_publish(
+            deadline,
+            cancel,
+            notify,
+            wait_for_lease,
+            watchdog,
+            #[cfg(feature = "native-fault-injection")]
+            context,
+            call,
+            |_, _| {},
+        )
+        .await
+    }
+
+    async fn run_and_publish<T, F, P>(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+        watchdog: bool,
+        #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
+        call: F,
+        publish: P,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        P: FnOnce(&T, u64) + Send + 'static,
+    {
+        let guard = self
+            .acquire(deadline, cancel, notify, wait_for_lease)
+            .await?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("engine_check_cancelled".into());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("engine_check_timeout".into());
+        }
+        let job = guard.job;
+        #[cfg(feature = "native-fault-injection")]
+        if let Some(context) = context {
+            bind_fault_job(job, context);
+        }
+        let _watchdog = NativeJobWatchdog::new(self, job, watchdog);
+        #[cfg(feature = "native-fault-injection")]
+        let context = context.cloned();
+        let mut task = tokio::task::spawn_blocking(move || {
+            #[cfg(feature = "native-fault-injection")]
+            if let Some(context) = context.as_ref() {
+                record_fault_job_entry(job, Some(context));
+            }
+            let value = call();
+            (guard, value)
+        });
+        tokio::select! {
+            _ = notify.notified() => Err("engine_check_cancelled".into()),
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+                self.publish_health(job, true);
+                Err("engine_check_timeout".into())
+            }
+            result = &mut task => match result {
+                Ok((guard, value)) => {
+                    // Keep the lease through publication. Otherwise a successor
+                    // could start before this result is visible and then be
+                    // overwritten by the older caller.
+                    self.publish_health(job, false);
+                    publish(&value, job);
+                    drop(guard);
+                    Ok(value)
+                }
+                Err(error) => {
+                    let reason = format!("native_call_join_failed:{error}");
+                    self.publish_error(job, &reason);
+                    Err(reason)
+                }
+            },
+        }
+    }
+
+    async fn load<T, E, F>(
+        &self,
+        budget: std::time::Duration,
+        call: F,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.load_until(
+            std::time::Instant::now() + budget,
+            &cancel,
+            &notify,
+            true,
+            call,
+        )
+        .await
+    }
+
+    async fn load_until<T, E, F>(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+        call: F,
+    ) -> Result<Result<T, E>, String>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + 'static,
+    {
+        let health = self.health.clone();
+        self.run_and_publish(
+            deadline,
+            cancel,
+            notify,
+            wait_for_lease,
+            true,
+            #[cfg(feature = "native-fault-injection")]
+            None,
+            call,
+            move |result, job| {
+                if let Some(health) = health {
+                    health.publish_result(job, result);
+                }
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn run_uncancelable<T, F>(
+        &self,
+        budget: std::time::Duration,
+        wait_for_lease: bool,
+        call: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.run(
+            std::time::Instant::now() + budget,
+            &cancel,
+            &notify,
+            wait_for_lease,
+            true,
+            #[cfg(feature = "native-fault-injection")]
+            None,
+            call,
+        )
+        .await
+    }
+}
+
+struct NativeJobWatchdog {
+    runner: NativeCallRunner,
+    job: u64,
+    started_at: std::time::Instant,
+    armed: bool,
+}
+
+impl NativeJobWatchdog {
+    fn new(runner: &NativeCallRunner, job: u64, armed: bool) -> Self {
+        Self {
+            runner: runner.clone(),
+            job,
+            started_at: std::time::Instant::now(),
+            armed,
+        }
+    }
+}
+
+impl Drop for NativeJobWatchdog {
+    fn drop(&mut self) {
+        if !self.armed
+            || !self.runner.busy.load(Ordering::Acquire)
+            || self.runner.epoch.load(Ordering::Acquire) != self.job
+        {
+            return;
+        }
+        if std::env::var("VOICE_COMPANION_SUPERVISED").ok().as_deref() == Some("1") {
+            self.runner.schedule_watchdog(self.job, self.started_at);
+        }
+    }
+}
+
+fn native_job_needs_recovery(supervised: bool, busy: bool, current_job: u64, job: u64) -> bool {
+    supervised && busy && current_job == job
+}
+
+fn native_error_requires_degraded(reason: &str) -> bool {
+    reason == "engine_check_timeout"
+        || reason.starts_with("native_call_join_failed:")
+        || reason.starts_with("worker_asr_join_failed:")
+}
+
+trait KwsBackend: Send {
+    fn process_pcm_chunk(&mut self, chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult>;
+    fn reset(&mut self);
+    fn is_initialized(&self) -> bool;
+}
+
+impl KwsBackend for KwsEngine {
+    fn process_pcm_chunk(&mut self, chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult> {
+        KwsEngine::process_pcm_chunk(self, chunk)
+    }
+
+    fn reset(&mut self) {
+        KwsEngine::reset(self);
+    }
+
+    fn is_initialized(&self) -> bool {
+        KwsEngine::is_initialized(self)
+    }
+}
+
+struct NativeKws {
+    inner: Arc<std::sync::Mutex<Box<dyn KwsBackend>>>,
+    initialized: Arc<AtomicBool>,
+    runner: NativeCallRunner,
+}
+
+impl NativeKws {
+    fn new(kws: Box<dyn KwsBackend>, runner: NativeCallRunner) -> Self {
+        let initialized = kws.is_initialized();
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(kws)),
+            initialized: Arc::new(AtomicBool::new(initialized)),
+            runner,
+        }
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.initialized.load(Ordering::Acquire)
+    }
+
+    async fn process_pcm_chunk(
+        &self,
+        chunk: &[f32],
+    ) -> Result<Option<nomifun_audio::kws::KwsResult>, String> {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.process_pcm_chunk_until(
+            chunk,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            &cancel,
+            &notify,
+            true,
+        )
+        .await
+    }
+
+    async fn process_pcm_chunk_until(
+        &self,
+        chunk: &[f32],
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+    ) -> Result<Option<nomifun_audio::kws::KwsResult>, String> {
+        let inner = self.inner.clone();
+        let chunk = chunk.to_vec();
+        self.runner
+            .run(
+                deadline,
+                cancel,
+                notify,
+                wait_for_lease,
+                true,
+                #[cfg(feature = "native-fault-injection")]
+                None,
+                move || {
+                    inner
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .process_pcm_chunk(&chunk)
+                },
+            )
+            .await
+    }
+
+    async fn reset(&self) -> Result<(), String> {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.reset_until(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            &cancel,
+            &notify,
+            true,
+        )
+        .await
+    }
+
+    async fn reset_until(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+    ) -> Result<(), String> {
+        let inner = self.inner.clone();
+        self.runner
+            .run(
+                deadline,
+                cancel,
+                notify,
+                wait_for_lease,
+                true,
+                #[cfg(feature = "native-fault-injection")]
+                None,
+                move || {
+                    inner
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .reset();
+                },
+            )
+            .await
+    }
+
+    async fn replace(&self, next: Box<dyn KwsBackend>) -> Result<(), String> {
+        self.replace_until(
+            next,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+        .await
+    }
+
+    async fn replace_until(
+        &self,
+        next: Box<dyn KwsBackend>,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let initialized = next.is_initialized();
+        let inner = self.inner.clone();
+        let initialized_state = self.initialized.clone();
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.runner
+            .run(
+                deadline,
+                &cancel,
+                &notify,
+                true,
+                true,
+                #[cfg(feature = "native-fault-injection")]
+                None,
+                move || {
+                    let mut current = inner.lock().unwrap_or_else(|error| error.into_inner());
+                    let previous = std::mem::replace(&mut *current, next);
+                    // Publish with the actual replacement, while this job still
+                    // excludes successors. A timed-out waiter cannot leave the
+                    // cached readiness describing the replaced engine.
+                    initialized_state.store(initialized, Ordering::Release);
+                    drop(previous);
+                },
+            )
+            .await
+    }
+}
+
+struct NativeVad {
+    inner: Arc<std::sync::Mutex<Box<dyn VadBackend>>>,
+    active: Arc<AtomicBool>,
+    runner: NativeCallRunner,
+}
+
+impl NativeVad {
+    fn new(vad: Box<dyn VadBackend>, runner: NativeCallRunner) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(vad)),
+            active: Arc::new(AtomicBool::new(false)),
+            runner,
+        }
+    }
+
+    fn is_speech_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    async fn process_frame(&self, frame: &[f32]) -> Result<bool, String> {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.process_frame_until(
+            frame,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            &cancel,
+            &notify,
+            true,
+        )
+        .await
+    }
+
+    async fn process_frame_until(
+        &self,
+        frame: &[f32],
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+    ) -> Result<bool, String> {
+        let inner = self.inner.clone();
+        let frame = frame.to_vec();
+        let active = self.active.clone();
+        self.runner
+            .run_and_publish(
+                deadline,
+                cancel,
+                notify,
+                wait_for_lease,
+                true,
+                #[cfg(feature = "native-fault-injection")]
+                None,
+                move || {
+                    inner
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .process_frame(&frame)
+                },
+                move |result, _job| active.store(*result, Ordering::Release),
+            )
+            .await
+    }
+
+    async fn reset(&self) -> Result<(), String> {
+        let cancel = AtomicBool::new(false);
+        let notify = Notify::new();
+        self.reset_until(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+            &cancel,
+            &notify,
+            true,
+        )
+        .await
+    }
+
+    async fn reset_until(
+        &self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+        notify: &Notify,
+        wait_for_lease: bool,
+    ) -> Result<(), String> {
+        let inner = self.inner.clone();
+        let active = self.active.clone();
+        self.runner
+            .run_and_publish(
+                deadline,
+                cancel,
+                notify,
+                wait_for_lease,
+                true,
+                #[cfg(feature = "native-fault-injection")]
+                None,
+                move || {
+                    inner
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .reset();
+                },
+                move |_, _job| active.store(false, Ordering::Release),
+            )
+            .await
     }
 }
 
@@ -455,6 +1087,7 @@ pub struct VoiceCompanionRuntime {
     self_check_id: Arc<std::sync::Mutex<Option<String>>>,
     engine_check_active: Arc<AtomicBool>,
     engine_check_native_busy: Arc<AtomicBool>,
+    native_degraded: Arc<NativeHealth>,
     native_recovery_scheduled: Arc<AtomicU64>,
     native_job_epoch: Arc<AtomicU64>,
     engine_check_control: Arc<std::sync::Mutex<Option<EngineCheckControl>>>,
@@ -607,6 +1240,7 @@ impl VoiceCompanionRuntime {
             self_check_id: Arc::new(std::sync::Mutex::new(None)),
             engine_check_active: Arc::new(AtomicBool::new(false)),
             engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+            native_degraded: Arc::new(NativeHealth::default()),
             native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
             native_job_epoch: Arc::new(AtomicU64::new(0)),
             engine_check_control: Arc::new(std::sync::Mutex::new(None)),
@@ -704,6 +1338,7 @@ impl VoiceCompanionRuntime {
                 self_check_id: Arc::new(std::sync::Mutex::new(None)),
                 engine_check_active: Arc::new(AtomicBool::new(false)),
                 engine_check_native_busy: Arc::new(AtomicBool::new(false)),
+                native_degraded: Arc::new(NativeHealth::default()),
                 native_recovery_scheduled: Arc::new(AtomicU64::new(0)),
                 native_job_epoch: Arc::new(AtomicU64::new(0)),
                 engine_check_control: Arc::new(std::sync::Mutex::new(None)),
@@ -1216,13 +1851,14 @@ impl VoiceCompanionRuntime {
         true
     }
     async fn worker_engine_check(
-        kws: &mut KwsEngine,
-        vad: &mut dyn VadBackend,
+        kws: &NativeKws,
+        vad: &NativeVad,
         transcriber: &Option<Arc<dyn SttCallback>>,
         fixtures: &SelfCheckAudio,
         cancel: &AtomicBool,
         cancel_notify: &Notify,
         native_busy: &Arc<AtomicBool>,
+        native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         deadline: std::time::Instant,
     ) -> Result<WorkerEngineCheckResult, String> {
@@ -1233,33 +1869,53 @@ impl VoiceCompanionRuntime {
         if stopped() {
             return Err("engine_check_cancelled".into());
         }
-        kws.reset();
+        kws.reset_until(deadline, cancel, cancel_notify, false).await?;
         let mut wake_hits = 0u32;
         for chunk in fixtures.wake.chunks(320) {
             if stopped() {
                 return Err("engine_check_cancelled".into());
             }
-            if kws.process_pcm_chunk(chunk).is_some() {
+            if kws
+                .process_pcm_chunk_until(chunk, deadline, cancel, cancel_notify, false)
+                .await?
+                .is_some()
+            {
                 wake_hits = wake_hits.saturating_add(1);
             }
         }
         let mut negative_hits = 0u32;
         for pcm in [&fixtures.command, &fixtures.non_wake] {
-            kws.reset();
+            kws.reset_until(deadline, cancel, cancel_notify, false).await?;
             for chunk in pcm.chunks(320) {
                 if stopped() {
                     return Err("engine_check_cancelled".into());
                 }
-                if kws.process_pcm_chunk(chunk).is_some() {
+                if kws
+                    .process_pcm_chunk_until(chunk, deadline, cancel, cancel_notify, false)
+                    .await?
+                    .is_some()
+                {
                     negative_hits = negative_hits.saturating_add(1);
                 }
             }
         }
         let kws_ok = kws.is_initialized() && wake_hits > 0 && negative_hits == 0;
 
-        vad.reset();
+        vad.reset_until(deadline, cancel, cancel_notify, false).await?;
         let silence = vec![0.0f32; 512];
-        let silent_start = (0..30).all(|_| !vad.process_frame(&silence));
+        let mut silent_start = true;
+        for _ in 0..30 {
+            if stopped() {
+                return Err("engine_check_cancelled".into());
+            }
+            if vad
+                .process_frame_until(&silence, deadline, cancel, cancel_notify, false)
+                .await?
+            {
+                silent_start = false;
+                break;
+            }
+        }
         let mut speech = false;
         for frame in fixtures.command.chunks(512) {
             if stopped() {
@@ -1268,7 +1924,10 @@ impl VoiceCompanionRuntime {
             if frame.len() < 512 {
                 break;
             }
-            if vad.process_frame(frame) {
+            if vad
+                .process_frame_until(frame, deadline, cancel, cancel_notify, false)
+                .await?
+            {
                 speech = true;
                 break;
             }
@@ -1278,13 +1937,16 @@ impl VoiceCompanionRuntime {
             if stopped() {
                 return Err("engine_check_cancelled".into());
             }
-            if !vad.process_frame(&silence) {
+            if !vad
+                .process_frame_until(&silence, deadline, cancel, cancel_notify, false)
+                .await?
+            {
                 ended = true;
                 break;
             }
         }
         let vad_ok = silent_start && speech && ended;
-        vad.reset();
+        vad.reset_until(deadline, cancel, cancel_notify, false).await?;
 
         let (asr_ok, asr_text) = match transcriber {
             Some(asr) => {
@@ -1294,9 +1956,10 @@ impl VoiceCompanionRuntime {
                     cancel,
                     cancel_notify,
                     native_busy,
+                    native_degraded,
                     native_job_epoch,
                     deadline,
-                    false,
+                    true,
                     #[cfg(feature = "native-fault-injection")]
                     None,
                 )
@@ -1311,9 +1974,10 @@ impl VoiceCompanionRuntime {
                     cancel,
                     cancel_notify,
                     native_busy,
+                    native_degraded,
                     native_job_epoch,
                     deadline,
-                    false,
+                    true,
                     #[cfg(feature = "native-fault-injection")]
                     None,
                 )
@@ -1345,6 +2009,7 @@ impl VoiceCompanionRuntime {
         cancel: &AtomicBool,
         notify: &Notify,
         native_busy: &Arc<AtomicBool>,
+        native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         deadline: std::time::Instant,
     ) -> Result<(), String> {
@@ -1354,26 +2019,21 @@ impl VoiceCompanionRuntime {
         if std::time::Instant::now() >= deadline {
             return Err("engine_check_timeout".into());
         }
-        if native_busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err("engine_check_native_busy".into());
-        }
-        let busy = native_busy.clone();
-        let job_epoch = native_job_epoch.clone();
         let dir = models.models_dir().to_path_buf();
-        let mut task = tokio::task::spawn_blocking(move || {
-            let _guard = NativeBusyGuard::new(busy, job_epoch);
-            nomifun_audio::stt::try_load_sherpa(Some(&dir))
-        });
-        let loaded = tokio::select! {
-            _ = notify.notified() => return Err("engine_check_cancelled".into()),
-            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
-                return Err("engine_check_timeout".into())
-            }
-            result = &mut task => result.map_err(|error| format!("worker_asr_load_join_failed:{error}"))?,
-        };
+        let runner = NativeCallRunner::with_health(
+            native_busy.clone(),
+            native_job_epoch.clone(),
+            native_degraded.clone(),
+        );
+        let loaded = runner
+            .load_until(
+                deadline,
+                cancel,
+                notify,
+                false,
+                move || nomifun_audio::stt::try_load_sherpa(Some(&dir)),
+            )
+            .await?;
         match loaded {
             Ok(Some(stt)) => *transcriber = Some(Arc::new(stt)),
             Ok(None) => {}
@@ -1382,30 +2042,11 @@ impl VoiceCompanionRuntime {
         Ok(())
     }
 
-    fn schedule_job_watchdog(native_busy: &Arc<AtomicBool>, native_job_epoch: &Arc<AtomicU64>, job: u64) {
-        if std::env::var("VOICE_COMPANION_SUPERVISED").ok().as_deref() != Some("1") {
-            return;
-        }
-        let busy = native_busy.clone();
-        let epoch = native_job_epoch.clone();
-        std::thread::spawn(move || {
-            let grace_ms = std::env::var("NOMIFUN_VOICE_NATIVE_LEASE_GRACE_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(30_000)
-                .clamp(250, 60_000);
-            std::thread::sleep(std::time::Duration::from_millis(grace_ms));
-            if busy.load(Ordering::Acquire) && epoch.load(Ordering::Acquire) == job {
-                tracing::error!(grace_ms, job, "voice_native_lease_stuck_exiting_for_supervised_restart");
-                std::process::exit(75);
-            }
-        });
-    }
-
     async fn transcribe_with_lease(
         asr: Arc<dyn SttCallback>,
         pcm: Vec<f32>,
         native_busy: &Arc<AtomicBool>,
+        native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         budget: std::time::Duration,
         #[cfg(feature = "native-fault-injection")] context: Option<&NativeCallContext>,
@@ -1418,6 +2059,7 @@ impl VoiceCompanionRuntime {
             &cancel,
             &notify,
             native_busy,
+            native_degraded,
             native_job_epoch,
             std::time::Instant::now() + budget,
             true,
@@ -1433,6 +2075,7 @@ impl VoiceCompanionRuntime {
         cancel: &AtomicBool,
         notify: &Notify,
         native_busy: &Arc<AtomicBool>,
+        native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         deadline: std::time::Instant,
         watchdog: bool,
@@ -1444,20 +2087,26 @@ impl VoiceCompanionRuntime {
         if std::time::Instant::now() >= deadline {
             return Err("engine_check_timeout".into());
         }
-        if native_busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return Err("engine_check_native_busy".into());
+        let runner = NativeCallRunner::with_health(
+            native_busy.clone(),
+            native_job_epoch.clone(),
+            native_degraded.clone(),
+        );
+        let guard = runner
+            .acquire(deadline, cancel, notify, false)
+            .await?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("engine_check_cancelled".into());
         }
-        let job = native_job_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        if std::time::Instant::now() >= deadline {
+            return Err("engine_check_timeout".into());
+        }
+        let job = guard.job;
         #[cfg(feature = "native-fault-injection")]
         if let Some(context) = context {
             bind_fault_job(job, context);
         }
-        if watchdog {
-            Self::schedule_job_watchdog(native_busy, native_job_epoch, job);
-        }
+        let _watchdog = NativeJobWatchdog::new(&runner, job, watchdog);
         #[cfg(feature = "native-fault-injection")]
         let asr: Arc<dyn SttCallback> = Arc::new(BoundStt {
             inner: asr,
@@ -1465,19 +2114,30 @@ impl VoiceCompanionRuntime {
             context: context.cloned(),
             entered: AtomicBool::new(false),
         });
-        let busy = native_busy.clone();
-        let job_epoch = native_job_epoch.clone();
         let mut task = tokio::spawn(async move {
-            let _guard = NativeBusyGuard::attach(busy, job_epoch, job);
-            asr.transcribe(AudioChannel::Mic, pcm, 16_000).await
+            let text = asr.transcribe(AudioChannel::Mic, pcm, 16_000).await;
+            (guard, text)
         });
-        tokio::select! {
+        let result = tokio::select! {
             _ = notify.notified() => Err("engine_check_cancelled".into()),
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
                 Err("engine_check_timeout".into())
             }
-            result = &mut task => result.map_err(|error| format!("worker_asr_join_failed:{error}")),
+            result = &mut task => match result {
+                Ok((guard, text)) => {
+                    native_degraded.publish(job, false);
+                    drop(guard);
+                    Ok(text)
+                }
+                Err(error) => Err(format!("worker_asr_join_failed:{error}")),
+            },
+        };
+        if let Err(reason) = &result
+            && native_error_requires_degraded(reason)
+        {
+            native_degraded.publish(job, true);
         }
+        result
     }
 
     pub fn snapshot(&self) -> VoiceSessionSnapshot {
@@ -1826,7 +2486,10 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
-        if self.self_check_active.load(Ordering::Acquire) {
+        if self.self_check_active.load(Ordering::Acquire)
+            || self.engine_check_active.load(Ordering::Acquire)
+            || self.engine_check_native_busy.load(Ordering::Acquire)
+        {
             return Err(VoiceWakeError::Busy);
         }
         if !self.admission_valid("call") {
@@ -2080,6 +2743,7 @@ impl VoiceCompanionRuntime {
         generation: u64,
         pending_utterances: &Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
         native_busy: &Arc<AtomicBool>,
+        native_degraded: &Arc<NativeHealth>,
         native_job_epoch: &Arc<AtomicU64>,
         _native_request_id: &str,
     ) {
@@ -2101,6 +2765,7 @@ impl VoiceCompanionRuntime {
                 stt.clone(),
                 utterance_pcm.to_vec(),
                 native_busy,
+                native_degraded,
                 native_job_epoch,
                 std::time::Duration::from_secs(30),
                 #[cfg(feature = "native-fault-injection")]
@@ -2852,6 +3517,7 @@ impl VoiceCompanionRuntime {
             self.pending_utterances.clone(),
             self.event_tx.snapshot().session_id.clone(),
             self.engine_check_native_busy.clone(),
+            self.native_degraded.clone(),
             self.native_job_epoch.clone(),
             Some(request_id.to_owned()),
         );
@@ -2889,6 +3555,7 @@ impl VoiceCompanionRuntime {
         pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
         session_id: Option<String>,
         native_busy: Arc<AtomicBool>,
+        native_degraded: Arc<NativeHealth>,
         native_job_epoch: Arc<AtomicU64>,
         native_request_id: Option<String>,
     ) {
@@ -2916,6 +3583,7 @@ impl VoiceCompanionRuntime {
                 generation,
                 &pending_clone,
                 &native_busy,
+                &native_degraded,
                 &native_job_epoch,
                 native_request_id.as_deref().unwrap_or("ordinary-turn"),
             ))
@@ -2983,6 +3651,7 @@ impl VoiceCompanionRuntime {
                                 pending_clone.clone(),
                                 next_item.session_id,
                                 native_busy.clone(),
+                                native_degraded.clone(),
                                 native_job_epoch.clone(),
                                 None,
                             );
@@ -3000,6 +3669,11 @@ impl VoiceCompanionRuntime {
         }));
     }
 
+    fn note_native_worker_error(operation: &str, reason: &str, acoustic_ready: &AtomicBool) {
+        acoustic_ready.store(false, Ordering::Release);
+        warn!(operation, reason, "voice_native_call_failed");
+    }
+
     pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
         let driver = Arc::clone(&self.driver);
         let capture = Arc::clone(&self.capture_pipeline);
@@ -3013,6 +3687,9 @@ impl VoiceCompanionRuntime {
         let self_check_active = self.self_check_active.clone();
         let engine_check_active = self.engine_check_active.clone();
         let native_busy = self.engine_check_native_busy.clone();
+        // Healthy ASR ownership is not an outage; only actual native errors
+        // degrade readiness, and a later native success clears the state.
+        let native_degraded = self.native_degraded.clone();
         let native_job_epoch = self.native_job_epoch.clone();
         let mut engine_check_rx = self
             .engine_check_rx
@@ -3060,36 +3737,90 @@ impl VoiceCompanionRuntime {
             if std::env::var("NOMIFUN_VOICE_FAULT_BLOCK_ASR").ok().as_deref() == Some("1") {
                 transcriber = Some(Arc::new(FaultBlockingStt));
             }
-            let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
-                model_dir: Some(models.models_dir().to_path_buf()),
-                ..Default::default()
-            })
-            .expect("the fixed 16 kHz KWS configuration is valid");
-            let mut vad: Box<dyn VadBackend> = match SherpaVad::load(models.models_dir()) {
-                Ok(vad) => Box::new(vad),
-                // Synthetic worker tests without installed assets retain their test detector.
-                #[cfg(any(test, feature = "voice-skeleton"))]
-                Err(_) if replay && !models.models_dir().join("vad/silero_vad.onnx").is_file() => {
-                    Box::new(EnergyVad::new(VadConfig {
-                        threshold: 0.01,
-                        ..Default::default()
-                    }))
+            let native_runner = NativeCallRunner::with_health(
+                native_busy.clone(),
+                native_job_epoch.clone(),
+                native_degraded.clone(),
+            );
+            let kws = loop {
+                let dir = models.models_dir().to_path_buf();
+                match native_runner
+                    .load(std::time::Duration::from_secs(30), move || {
+                        KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+                            model_dir: Some(dir),
+                            ..Default::default()
+                        })
+                    })
+                    .await
+                {
+                    Ok(Ok(kws)) => break kws,
+                    Ok(Err(error)) => panic!("the fixed 16 kHz KWS configuration is valid: {error}"),
+                    Err(reason) => {
+                        Self::note_native_worker_error("kws_init", &reason, &acoustic_ready);
+                    }
                 }
-                Err(code) => {
-                    acoustic_ready.store(false, Ordering::Release);
-                    warn!(code, "voice_vad_load_failed");
-                    let _ = event_tx.send(VoiceCompanionEvent::Error {
-                        stage: "capture".into(),
-                        code,
-                    });
-                    let _ = event_tx.send(VoiceCompanionEvent::Availability {
-                        acoustic_ready: false,
-                        dialogue_ready: router.is_configured(),
-                        playback_ready: playback.is_available(),
-                    });
-                    return;
+            };
+            let vad: Box<dyn VadBackend> = loop {
+                let dir = models.models_dir().to_path_buf();
+                match native_runner
+                    .load(std::time::Duration::from_secs(30), move || {
+                        SherpaVad::load(&dir)
+                    })
+                    .await
+                {
+                    Ok(Ok(vad)) => break Box::new(vad),
+                    // Synthetic worker tests without installed assets retain their test detector.
+                    #[cfg(any(test, feature = "voice-skeleton"))]
+                    Ok(Err(_)) if replay && !models.models_dir().join("vad/silero_vad.onnx").is_file() => {
+                        break Box::new(EnergyVad::new(VadConfig {
+                            threshold: 0.01,
+                            ..Default::default()
+                        }));
+                    }
+                    Ok(Err(code)) => {
+                        acoustic_ready.store(false, Ordering::Release);
+                        warn!(code, "voice_vad_load_failed");
+                        let _ = event_tx.send(VoiceCompanionEvent::Error {
+                            stage: "capture".into(),
+                            code,
+                        });
+                        let _ = event_tx.send(VoiceCompanionEvent::Availability {
+                            acoustic_ready: false,
+                            dialogue_ready: router.is_configured(),
+                            playback_ready: playback.is_available(),
+                        });
+                        return;
+                    }
+                    Err(reason) => {
+                        Self::note_native_worker_error("vad_init", &reason, &acoustic_ready);
+                    }
                 }
-            };            info!(silence_ms = 800, "voice_vad_loaded");
+            };
+            let kws = NativeKws::new(Box::new(kws), native_runner.clone());
+            let vad = NativeVad::new(vad, native_runner.clone());
+            info!(silence_ms = 800, "voice_vad_loaded");
+            macro_rules! native_worker_call {
+                ($operation:expr, $call:expr, $default:expr) => {{
+                    match $call {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            Self::note_native_worker_error($operation, &reason, &acoustic_ready);
+                            $default
+                        }
+                    }
+                }};
+            }
+            macro_rules! native_worker_frame {
+                ($operation:expr, $call:expr) => {{
+                    match $call {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            Self::note_native_worker_error($operation, &reason, &acoustic_ready);
+                            continue;
+                        }
+                    }
+                }};
+            }
             let mut utterance_pcm = Vec::<f32>::new();
             let mut speech_started = false;
             let mut listen_start: Option<std::time::Instant> = None;
@@ -3133,6 +3864,7 @@ impl VoiceCompanionRuntime {
                                 cancel.as_ref(),
                                 cancel_notify.as_ref(),
                                 &native_busy,
+                                &native_degraded,
                                 &native_job_epoch,
                                 deadline,
                             )
@@ -3147,21 +3879,41 @@ impl VoiceCompanionRuntime {
                         );
                         let result = match load_result {
                             Ok(()) => Self::worker_engine_check(
-                                &mut kws,
-                                vad.as_mut(),
+                                &kws,
+                                &vad,
                                 &transcriber,
                                 &fixtures,
                                 cancel.as_ref(),
                                 cancel_notify.as_ref(),
                                 &native_busy,
+                                &native_degraded,
                                 &native_job_epoch,
                                 deadline,
                             )
                             .await,
                             Err(reason) => Err(reason),
                         };
-                        kws.reset();
-                        vad.reset();
+                        let kws_reset = kws
+                            .reset_until(deadline, cancel.as_ref(), cancel_notify.as_ref(), false)
+                            .await;
+                        let vad_reset = vad
+                            .reset_until(deadline, cancel.as_ref(), cancel_notify.as_ref(), false)
+                            .await;
+                        if let Err(reason) = &kws_reset
+                            && native_error_requires_degraded(reason)
+                        {
+                            Self::note_native_worker_error("kws_reset", reason, &acoustic_ready);
+                        }
+                        if let Err(reason) = &vad_reset
+                            && native_error_requires_degraded(reason)
+                        {
+                            Self::note_native_worker_error("vad_reset", reason, &acoustic_ready);
+                        }
+                        let result = match (result, kws_reset.and(vad_reset)) {
+                            (Err(reason), _) => Err(reason),
+                            (Ok(_), Err(reason)) => Err(reason),
+                            (Ok(result), Ok(())) => Ok(result),
+                        };
                         utterance_pcm.clear();
                         speech_started = false;
                         listen_start = None;
@@ -3194,8 +3946,8 @@ impl VoiceCompanionRuntime {
                     listen_start = None;
                     audio.utterance_samples = 0;
                     audio.utterance_peak_milli = 0;
-                    vad.reset();
-                    kws.reset();
+                    native_worker_call!("vad_reset", vad.reset().await, ());
+                    native_worker_call!("kws_reset", kws.reset().await, ());
                 }
                 if !replay
                     && last_model_check
@@ -3204,23 +3956,46 @@ impl VoiceCompanionRuntime {
                     last_model_check = Some(std::time::Instant::now());
                     if models.get_status().await.state.is_ready() {
                         if !kws.is_initialized() {
-                            kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
-                                model_dir: Some(models.models_dir().to_path_buf()),
-                                ..Default::default()
-                            })
-                            .expect("fixed KWS configuration");
+                            let dir = models.models_dir().to_path_buf();
+                            let loaded = native_runner
+                                .load(std::time::Duration::from_secs(30), move || {
+                                    KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+                                        model_dir: Some(dir),
+                                        ..Default::default()
+                                    })
+                                })
+                                .await;
+                            match loaded {
+                                Ok(Ok(next)) => {
+                                    native_worker_call!("kws_reload", kws.replace(Box::new(next)).await, ());
+                                }
+                                Ok(Err(error)) => panic!("fixed KWS configuration: {error}"),
+                                Err(reason) => {
+                                    Self::note_native_worker_error(
+                                        "kws_reload_load",
+                                        &reason,
+                                        &acoustic_ready,
+                                    );
+                                }
+                            }
                         }
                         if transcriber.is_none() {
                             let dir = models.models_dir().to_path_buf();
-                            let loaded = tokio::task::spawn_blocking(move || {
-                                nomifun_audio::stt::try_load_sherpa(Some(&dir))
-                            })
-                            .await;
+                            let loaded = native_runner
+                                .load(std::time::Duration::from_secs(30), move || {
+                                    nomifun_audio::stt::try_load_sherpa(Some(&dir))
+                                })
+                                .await;
+                            if let Err(reason) = &loaded {
+                                Self::note_native_worker_error("asr_reload", reason, &acoustic_ready);
+                            }
                             let report = last_asr_load_warning.is_none_or(|last| {
                                 last.elapsed() >= std::time::Duration::from_secs(5)
                             });
                             match loaded {
-                                Ok(Ok(Some(stt))) => transcriber = Some(Arc::new(stt)),
+                                Ok(Ok(Some(stt))) => {
+                                    transcriber = Some(Arc::new(stt));
+                                }
                                 Ok(Err(err)) if report => {
                                     warn!(error = %err, "voice_asr_load_failed");
                                     last_asr_load_warning = Some(std::time::Instant::now());
@@ -3239,6 +4014,7 @@ impl VoiceCompanionRuntime {
                         acoustic_ready.store(
                             kws.is_initialized()
                                 && transcriber.is_some()
+                                && !native_degraded.is_degraded()
                                 && audio.capture_state != "closed",
                             Ordering::Release,
                         );
@@ -3302,6 +4078,12 @@ impl VoiceCompanionRuntime {
                 {
                     let mut d = driver.lock().await;
                     let timed_state = d.current_state();
+                    let native_owned = native_busy.load(Ordering::Acquire);
+                    if native_owned
+                        && matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening)
+                    {
+                        d.begin_listening_window();
+                    }
                     if matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening) {
                         let task_active = snapshot.task.as_ref().is_some_and(|t| {
                             !matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Completed | nomifun_api_types::voice::VoiceTaskStatus::Failed)
@@ -3311,6 +4093,7 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     if timed_state == AcousticState::Listening
+                        && !native_owned
                         && quiet_input.load(Ordering::Acquire)
                         && snapshot.session_id.is_some()
                         && reminded_session != snapshot.session_id
@@ -3328,7 +4111,9 @@ impl VoiceCompanionRuntime {
                             Some(driver.clone()),
                         );
                     }
-                    if let Ok(Some(next)) = d.check_watchdog() {
+                    if !native_owned
+                        && let Ok(Some(next)) = d.check_watchdog()
+                    {
                         info!(state = ?next, pcm_frames = audio.frames_received, rms_milli = audio.rms_milli, speech_detected = speech_started, "voice_listen_timeout");
                         if next == AcousticState::Idle {
                             let code = if timed_state==AcousticState::ListeningConfirm {
@@ -3355,8 +4140,8 @@ impl VoiceCompanionRuntime {
                             utterance_pcm.clear();
                             speech_started = false;
                             listen_start = None;
-                            vad.reset();
-                            kws.reset();
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            native_worker_call!("kws_reset", kws.reset().await, ());
                             let _ = event_tx.send(VoiceCompanionEvent::SessionEnded {
                                 reason: match code {
                                     "follow_up_silence" => VoiceSessionEndReason::FollowUpSilence,
@@ -3420,8 +4205,8 @@ impl VoiceCompanionRuntime {
                             utterance_pcm.clear();
                             speech_started = false;
                             listen_start = None;
-                            vad.reset();
-                            kws.reset();
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            native_worker_call!("kws_reset", kws.reset().await, ());
                             audio.capture_state = "closed".into();
                             audio.rms_milli = 0;
                             audio.peak_milli = 0;
@@ -3509,11 +4294,11 @@ impl VoiceCompanionRuntime {
                 match current_state {
                     AcousticState::Idle => {
                         // Standby: feed audio chunk to Keyword Spotter
-                        let mut hit = kws.process_pcm_chunk(&chunk).map(|r| r.keyword);
+                        let mut hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
 
                         // Stage-2: Cascade VAD + SenseVoice check if streaming KWS was borderline
                         if hit.is_none() {
-                            let is_active = vad.process_frame(&chunk);
+                            let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                             if is_active {
                                 utterance_pcm.extend_from_slice(&chunk);
                                 if utterance_pcm.len() > 16_000 * 4 {
@@ -3533,6 +4318,7 @@ impl VoiceCompanionRuntime {
                                             stt.clone(),
                                             snippet,
                                             &native_busy,
+                                            &native_degraded,
                                             &native_job_epoch,
                                             std::time::Duration::from_secs(30),
                                             #[cfg(feature = "native-fault-injection")]
@@ -3548,7 +4334,7 @@ impl VoiceCompanionRuntime {
                                 } else {
                                     utterance_pcm.clear();
                                 }
-                                vad.reset();
+                                native_worker_call!("vad_reset", vad.reset().await, ());
                             }
                         }
 
@@ -3562,8 +4348,9 @@ impl VoiceCompanionRuntime {
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
                             } else if self_check_active.load(Ordering::Acquire)
                                 || engine_check_active.load(Ordering::Acquire)
+                                || native_busy.load(Ordering::Acquire)
                             {
-                                info!("Wake ignored while an explicit self-check owns the runtime");
+                                info!("Wake ignored while the runtime is exclusively owned");
                             } else if !admission_valid_for(&wake_admission_until_ms) {
                                 info!("Wake hit ignored because host readiness admission is absent or expired");
                             } else {
@@ -3572,7 +4359,7 @@ impl VoiceCompanionRuntime {
                                     .is_ok()
                                 {
                                     observed_session = event_tx.snapshot().session_id;
-                                    vad.reset();
+                                    native_worker_call!("vad_reset", vad.reset().await, ());
                                     utterance_pcm.clear();
                                     speech_started = false;
                                     listen_start = Some(std::time::Instant::now());
@@ -3587,18 +4374,18 @@ impl VoiceCompanionRuntime {
                         if !barge_in_ready && playback.has_pending_audio() {
                             utterance_pcm.clear();
                             speech_started = false;
-                            vad.reset();
+                            native_worker_call!("vad_reset", vad.reset().await, ());
                             continue;
                         }
                         utterance_pcm.extend_from_slice(&chunk);
                         if !speech_started && utterance_pcm.len()>8000 {let excess=utterance_pcm.len()-8000;utterance_pcm.drain(..excess);}
                         audio.utterance_samples=utterance_pcm.len() as u32;
                         audio.utterance_peak_milli=audio.utterance_peak_milli.max(audio.peak_milli);
-                        let active=vad.process_frame(&chunk);speech_started|=active;
+                        let active=native_worker_frame!("vad_process", vad.process_frame(&chunk).await);speech_started|=active;
                         if speech_started && !active {
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms)))};
                             if let Some((response,generation,deadline_ms))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_epoch=native_job_epoch.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();
                                 let turn=tokio::spawn(async move {
                                     let text=match stt {
                                         Some(stt)=>{
@@ -3612,6 +4399,7 @@ impl VoiceCompanionRuntime {
                                                 stt,
                                                 pcm,
                                                 &lease_busy,
+                                                &lease_degraded,
                                                 &lease_epoch,
                                                 std::time::Duration::from_secs(30),
                                                 #[cfg(feature = "native-fault-injection")]
@@ -3628,7 +4416,7 @@ impl VoiceCompanionRuntime {
                                 });
                                 let mut active=active_turn.lock().unwrap_or_else(|error|error.into_inner());if let Some(previous)=active.replace(turn){previous.abort();}
                             }
-                            speech_started=false;utterance_pcm.clear();vad.reset();
+                            speech_started=false;utterance_pcm.clear();native_worker_call!("vad_reset", vad.reset().await, ());
                         }
                     }
                     AcousticState::Listening => {
@@ -3644,7 +4432,7 @@ impl VoiceCompanionRuntime {
                             audio.utterance_peak_milli.max(audio.peak_milli);
 
                         // Feed frame to VAD detector
-                        let is_active = vad.process_frame(&chunk);
+                        let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             if !speech_started {
                                 info!(session_id = ?event_tx.snapshot().session_id, rms_milli = audio.rms_milli, "voice_speech_started");
@@ -3688,12 +4476,13 @@ impl VoiceCompanionRuntime {
                                     pending_utterances.clone(),
                                     session.clone(),
                                     native_busy.clone(),
+                                    native_degraded.clone(),
                                     native_job_epoch.clone(),
                                     None,
                                 );
                                 utterance_pcm.clear();
-                                kws.reset();
-                                vad.reset();
+                                native_worker_call!("kws_reset", kws.reset().await, ());
+                                native_worker_call!("vad_reset", vad.reset().await, ());
                             }
                         }
                     }
@@ -3702,7 +4491,7 @@ impl VoiceCompanionRuntime {
                         // 180-second follow-up window (seamless continuous dialogue without wake phrase)
                         if listen_start.is_none() {
                             listen_start = Some(std::time::Instant::now());
-                            vad.reset();
+                            native_worker_call!("vad_reset", vad.reset().await, ());
                             utterance_pcm.clear();
                             speech_started = false;
                         }
@@ -3717,7 +4506,7 @@ impl VoiceCompanionRuntime {
                         audio.utterance_samples = utterance_pcm.len() as u32;
                         audio.utterance_peak_milli =
                             audio.utterance_peak_milli.max(audio.peak_milli);
-                        let is_active = vad.process_frame(&chunk);
+                        let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             if !speech_started {
                                 driver.lock().await.mark_speech_started();
@@ -3760,12 +4549,13 @@ impl VoiceCompanionRuntime {
                                     pending_utterances.clone(),
                                     session.clone(),
                                     native_busy.clone(),
+                                    native_degraded.clone(),
                                     native_job_epoch.clone(),
                                     None,
                                 );
                                 utterance_pcm.clear();
-                                kws.reset();
-                                vad.reset();
+                                native_worker_call!("kws_reset", kws.reset().await, ());
+                                native_worker_call!("vad_reset", vad.reset().await, ());
                             }
                         }
                     }
@@ -3783,7 +4573,7 @@ impl VoiceCompanionRuntime {
                         audio.utterance_peak_milli =
                             audio.utterance_peak_milli.max(audio.peak_milli);
 
-                        let is_active = vad.process_frame(&chunk);
+                        let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             info!(
                                 state = ?current_state,
@@ -3823,7 +4613,7 @@ impl VoiceCompanionRuntime {
                         audio.utterance_peak_milli =
                             audio.utterance_peak_milli.max(audio.peak_milli);
 
-                        let is_active = vad.process_frame(&chunk);
+                        let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             info!(
                                 rms_milli = audio.rms_milli,
@@ -3853,7 +4643,7 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::Deciding | AcousticState::DispatchingTask => {
-                        let is_active = vad.process_frame(&chunk);
+                        let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             utterance_pcm.extend_from_slice(&chunk);
                             speech_started = true;
@@ -3877,7 +4667,7 @@ impl VoiceCompanionRuntime {
                             if should_alert {
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
                             }
-                            vad.reset();
+                            native_worker_call!("vad_reset", vad.reset().await, ());
                         }
                     }
                 }
@@ -3893,6 +4683,167 @@ mod tests {
     use nomifun_voice_terminal::contract::AcousticState;
     use nomifun_voice_terminal::task_client::VoiceTaskClient;
     use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct BlockingGateState {
+        entered: bool,
+        released: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct BlockingGate {
+        state: Arc<(std::sync::Mutex<BlockingGateState>, std::sync::Condvar)>,
+        entries: Arc<AtomicU64>,
+    }
+
+    impl BlockingGate {
+        fn block(&self) {
+            let (lock, wake) = &*self.state;
+            let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+            state.entered = true;
+            self.entries.fetch_add(1, Ordering::AcqRel);
+            wake.notify_all();
+            while !state.released {
+                state = wake.wait(state).unwrap_or_else(|error| error.into_inner());
+            }
+        }
+
+        fn is_entered(&self) -> bool {
+            self.state
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entered
+        }
+
+        fn rearm(&self) {
+            let mut state = self
+                .state
+                .0
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.entered = false;
+            state.released = false;
+        }
+
+        fn release(&self) {
+            let (lock, wake) = &*self.state;
+            let mut state = lock.lock().unwrap_or_else(|error| error.into_inner());
+            state.released = true;
+            wake.notify_all();
+        }
+    }
+
+    struct ReleaseBlockingGateOnDrop(BlockingGate);
+    impl Drop for ReleaseBlockingGateOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    async fn wait_for_gate_entry(gate: &BlockingGate) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !gate.is_entered() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("blocking native test double must be entered");
+    }
+
+    async fn wait_for_native_release(busy: &AtomicBool) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while busy.load(Ordering::Acquire) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("released native job must relinquish its lease");
+    }
+
+    struct BlockingKws {
+        gate: BlockingGate,
+        calls: u64,
+    }
+
+    impl KwsBackend for BlockingKws {
+        fn process_pcm_chunk(&mut self, _chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult> {
+            self.gate.block();
+            self.calls += 1;
+            Some(nomifun_audio::kws::KwsResult {
+                keyword: format!("hit-{}", self.calls),
+                score: 1.0,
+                timestamp_ms: self.calls,
+            })
+        }
+
+        fn reset(&mut self) {
+            self.gate.block();
+        }
+
+        fn is_initialized(&self) -> bool {
+            true
+        }
+    }
+
+    struct DropBlockingKws {
+        gate: BlockingGate,
+    }
+
+    impl KwsBackend for DropBlockingKws {
+        fn process_pcm_chunk(&mut self, _chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult> {
+            None
+        }
+
+        fn reset(&mut self) {}
+
+        fn is_initialized(&self) -> bool {
+            false
+        }
+    }
+
+    impl Drop for DropBlockingKws {
+        fn drop(&mut self) {
+            self.gate.block();
+        }
+    }
+
+    struct HealthyKws;
+    impl KwsBackend for HealthyKws {
+        fn process_pcm_chunk(&mut self, _chunk: &[f32]) -> Option<nomifun_audio::kws::KwsResult> {
+            None
+        }
+
+        fn reset(&mut self) {}
+
+        fn is_initialized(&self) -> bool {
+            true
+        }
+    }
+
+    struct BlockingVad {
+        gate: BlockingGate,
+        calls: u64,
+        active: bool,
+    }
+
+    impl VadBackend for BlockingVad {
+        fn process_frame(&mut self, _samples: &[f32]) -> bool {
+            self.gate.block();
+            self.calls += 1;
+            self.active = self.calls % 2 == 1;
+            self.active
+        }
+
+        fn reset(&mut self) {
+            self.gate.block();
+            self.active = false;
+        }
+
+        fn is_speech_active(&self) -> bool {
+            self.active
+        }
+    }
 
     #[test]
     fn startup_guard_fails_closed_before_any_device_assembly() {
@@ -3939,6 +4890,394 @@ mod tests {
             assert_eq!(epoch.load(Ordering::Acquire), b_job);
             drop(b);
         }
+    }
+
+    #[test]
+    fn native_recovery_requires_the_same_supervised_active_job() {
+        assert!(native_job_needs_recovery(true, true, 7, 7));
+        assert!(!native_job_needs_recovery(false, true, 7, 7));
+        assert!(!native_job_needs_recovery(true, false, 7, 7));
+        assert!(!native_job_needs_recovery(true, true, 9, 7));
+        assert!(native_error_requires_degraded("engine_check_timeout"));
+        assert!(native_error_requires_degraded("native_call_join_failed:panic"));
+        assert!(native_error_requires_degraded("worker_asr_join_failed:panic"));
+        assert!(!native_error_requires_degraded("engine_check_cancelled"));
+        assert!(!native_error_requires_degraded("engine_check_native_busy"));
+    }
+
+    #[test]
+    fn native_health_rejects_stale_jobs_and_refines_the_current_job() {
+        let health = NativeHealth::default();
+        health.publish(8, false);
+        health.publish(7, true);
+        assert!(!health.is_degraded(), "old failure must not degrade healthy B");
+
+        health.publish(9, true);
+        health.publish(8, false);
+        assert!(health.is_degraded(), "old recovery must not clear degraded B");
+
+        health.publish(10, false);
+        health.publish_result(10, &Err::<(), _>("loader_failed"));
+        assert!(health.is_degraded(), "inner loader errors refine the same job");
+        health.publish(9, false);
+        assert!(health.is_degraded());
+    }
+
+    #[tokio::test]
+    async fn native_load_timeout_retains_ownership_and_fences_late_result() {
+        let gate = BlockingGate::default();
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let health = Arc::new(NativeHealth::default());
+        let runner = NativeCallRunner::with_health(busy.clone(), epoch.clone(), health.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let first = {
+            let runner = runner.clone();
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                runner
+                    .load(std::time::Duration::from_millis(500), move || {
+                        gate.block();
+                        Ok::<_, String>("late-a")
+                    })
+                    .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        let first_job = epoch.load(Ordering::Acquire);
+        let first_result = tokio::time::timeout(std::time::Duration::from_secs(2), first)
+            .await
+            .expect("first native load must have a bounded caller")
+            .unwrap();
+        assert_eq!(first_result.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        assert!(health.is_degraded());
+        assert!(native_job_needs_recovery(true, true, epoch.load(Ordering::Acquire), first_job));
+        assert!(!native_job_needs_recovery(false, true, epoch.load(Ordering::Acquire), first_job));
+
+        let rejected = runner
+            .load_until(
+                std::time::Instant::now() + std::time::Duration::from_millis(20),
+                cancel.as_ref(),
+                notify.as_ref(),
+                false,
+                || Ok::<_, String>("must-not-run"),
+            )
+            .await;
+        assert_eq!(rejected.unwrap_err(), "engine_check_native_busy");
+        assert_eq!(gate.entries.load(Ordering::Acquire), 1);
+
+        gate.release();
+        wait_for_native_release(&busy).await;
+        assert!(health.is_degraded(), "late A must not publish recovery");
+        gate.rearm();
+        let second = {
+            let runner = runner.clone();
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                runner
+                    .load(std::time::Duration::from_secs(1), move || {
+                        gate.block();
+                        Ok::<_, String>("healthy-b")
+                    })
+                    .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        let second_job = epoch.load(Ordering::Acquire);
+        assert_ne!(second_job, first_job);
+        assert!(busy.load(Ordering::Acquire));
+        assert!(!native_job_needs_recovery(true, true, second_job, first_job));
+        gate.release();
+        let second_result = tokio::time::timeout(std::time::Duration::from_secs(2), second)
+            .await
+            .expect("healthy successor must finish")
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_result, "healthy-b");
+        assert!(!health.is_degraded());
+        assert_eq!(gate.entries.load(Ordering::Acquire), 2);
+        wait_for_native_release(&busy).await;
+    }
+
+    #[tokio::test]
+    async fn native_detached_caller_cannot_release_running_job() {
+        let gate = BlockingGate::default();
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let runner = NativeCallRunner::new(busy.clone(), epoch.clone());
+        let first = {
+            let runner = runner.clone();
+            let gate = gate.clone();
+            tokio::spawn(async move {
+                let cancel = AtomicBool::new(false);
+                let notify = Notify::new();
+                runner
+                    .run(
+                        std::time::Instant::now() + std::time::Duration::from_secs(30),
+                        &cancel,
+                        &notify,
+                        true,
+                        true,
+                        #[cfg(feature = "native-fault-injection")]
+                        None,
+                        move || gate.block(),
+                    )
+                    .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        first.abort();
+        let _ = first.await;
+        assert!(busy.load(Ordering::Acquire));
+        gate.release();
+        wait_for_native_release(&busy).await;
+        runner
+            .run_uncancelable(std::time::Duration::from_secs(1), false, || "healthy-b")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_kws_frame_timeout_does_not_deliver_late_wake_to_successor() {
+        let gate = BlockingGate::default();
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let kws = Arc::new(NativeKws::new(
+            Box::new(BlockingKws { gate: gate.clone(), calls: 0 }),
+            NativeCallRunner::new(busy.clone(), epoch.clone()),
+        ));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let notify = Arc::new(Notify::new());
+        let first = {
+            let kws = kws.clone();
+            let cancel = cancel.clone();
+            let notify = notify.clone();
+            tokio::spawn(async move {
+                kws.process_pcm_chunk_until(
+                    &[0.1; 160],
+                    std::time::Instant::now() + std::time::Duration::from_millis(500),
+                    cancel.as_ref(),
+                    notify.as_ref(),
+                    true,
+                )
+                .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        let first_job = epoch.load(Ordering::Acquire);
+        let first_result = tokio::time::timeout(std::time::Duration::from_secs(1), first)
+            .await
+            .expect("KWS caller must be bounded")
+            .unwrap();
+        assert_eq!(first_result.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+
+        gate.release();
+        wait_for_native_release(&busy).await;
+        gate.rearm();
+        let second = {
+            let kws = kws.clone();
+            tokio::spawn(async move { kws.process_pcm_chunk(&[0.1; 160]).await })
+        };
+        wait_for_gate_entry(&gate).await;
+        assert_ne!(epoch.load(Ordering::Acquire), first_job);
+        assert!(!native_job_needs_recovery(
+            true,
+            true,
+            epoch.load(Ordering::Acquire),
+            first_job,
+        ));
+        gate.release();
+        let second_hit = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+            .await
+            .expect("healthy KWS successor must finish")
+            .unwrap()
+            .unwrap()
+            .expect("healthy KWS successor returns its own hit");
+        assert_eq!(second_hit.keyword, "hit-2");
+        assert_eq!(gate.entries.load(Ordering::Acquire), 2);
+        wait_for_native_release(&busy).await;
+    }
+
+    #[tokio::test]
+    async fn native_vad_frame_timeout_does_not_publish_late_active_state() {
+        let gate = BlockingGate::default();
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let vad = Arc::new(NativeVad::new(
+            Box::new(BlockingVad { gate: gate.clone(), calls: 0, active: false }),
+            NativeCallRunner::new(busy.clone(), epoch.clone()),
+        ));
+        let first = {
+            let vad = vad.clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let notify = Arc::new(Notify::new());
+            tokio::spawn(async move {
+                vad.process_frame_until(
+                    &[0.1; 160],
+                    std::time::Instant::now() + std::time::Duration::from_millis(500),
+                    cancel.as_ref(),
+                    notify.as_ref(),
+                    true,
+                )
+                .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        let first_result = tokio::time::timeout(std::time::Duration::from_secs(1), first)
+            .await
+            .expect("VAD caller must be bounded")
+            .unwrap();
+        assert_eq!(first_result.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        assert!(!vad.is_speech_active());
+
+        gate.release();
+        wait_for_native_release(&busy).await;
+        gate.rearm();
+        let second = {
+            let vad = vad.clone();
+            tokio::spawn(async move { vad.process_frame(&[0.1; 160]).await })
+        };
+        wait_for_gate_entry(&gate).await;
+        gate.release();
+        let second_active = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+            .await
+            .expect("healthy VAD successor must finish")
+            .unwrap()
+            .unwrap();
+        assert!(!second_active, "successor returns its own second-call result, not late A");
+        assert!(!vad.is_speech_active());
+        assert_eq!(gate.entries.load(Ordering::Acquire), 2);
+        wait_for_native_release(&busy).await;
+    }
+
+    #[tokio::test]
+    async fn native_kws_and_vad_reset_keep_ownership_until_actual_return() {
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let runner = NativeCallRunner::new(busy.clone(), epoch.clone());
+
+        let kws_gate = BlockingGate::default();
+        let _kws_cleanup = ReleaseBlockingGateOnDrop(kws_gate.clone());
+        let kws = Arc::new(NativeKws::new(
+            Box::new(BlockingKws { gate: kws_gate.clone(), calls: 0 }),
+            runner.clone(),
+        ));
+        let kws_reset = {
+            let kws = kws.clone();
+            tokio::spawn(async move {
+                let cancel = AtomicBool::new(false);
+                let notify = Notify::new();
+                kws.reset_until(
+                    std::time::Instant::now() + std::time::Duration::from_millis(500),
+                    &cancel,
+                    &notify,
+                    true,
+                )
+                .await
+            })
+        };
+        wait_for_gate_entry(&kws_gate).await;
+        let timed = tokio::time::timeout(std::time::Duration::from_secs(1), kws_reset)
+            .await
+            .expect("reset deadline must bound the caller")
+            .unwrap();
+        assert_eq!(timed.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        kws_gate.release();
+        wait_for_native_release(&busy).await;
+        kws.reset().await.unwrap();
+
+        let vad_gate = BlockingGate::default();
+        let _vad_cleanup = ReleaseBlockingGateOnDrop(vad_gate.clone());
+        let vad = Arc::new(NativeVad::new(
+            Box::new(BlockingVad { gate: vad_gate.clone(), calls: 0, active: true }),
+            runner,
+        ));
+        vad.active.store(true, Ordering::Release);
+        let vad_reset = {
+            let vad = vad.clone();
+            tokio::spawn(async move {
+                let cancel = AtomicBool::new(false);
+                let notify = Notify::new();
+                vad.reset_until(
+                    std::time::Instant::now() + std::time::Duration::from_millis(500),
+                    &cancel,
+                    &notify,
+                    true,
+                )
+                .await
+            })
+        };
+        wait_for_gate_entry(&vad_gate).await;
+        let timed = tokio::time::timeout(std::time::Duration::from_secs(1), vad_reset)
+            .await
+            .expect("reset deadline must bound the caller")
+            .unwrap();
+        assert_eq!(timed.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        assert!(vad.is_speech_active(), "a late reset must not be published as completed");
+        vad_gate.release();
+        wait_for_native_release(&busy).await;
+        vad.reset().await.unwrap();
+        assert!(!vad.is_speech_active());
+    }
+
+    #[tokio::test]
+    async fn native_kws_reload_installs_a_healthy_successor() {
+        let gate = BlockingGate::default();
+        gate.release();
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let kws = NativeKws::new(
+            Box::new(BlockingKws { gate, calls: 0 }),
+            NativeCallRunner::new(busy, epoch),
+        );
+        kws.replace(Box::new(HealthyKws)).await.unwrap();
+        assert!(kws.is_initialized());
+        assert!(kws.process_pcm_chunk(&[0.1; 160]).await.unwrap().is_none());
+    }
+    #[tokio::test]
+    async fn native_kws_reload_timeout_keeps_ownership_through_old_engine_drop() {
+        let gate = BlockingGate::default();
+        let busy = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let kws = Arc::new(NativeKws::new(
+            Box::new(DropBlockingKws { gate: gate.clone() }),
+            NativeCallRunner::new(busy.clone(), epoch),
+        ));
+        let _cleanup = ReleaseBlockingGateOnDrop(gate.clone());
+        assert!(!kws.is_initialized());
+        let reload = {
+            let kws = kws.clone();
+            tokio::spawn(async move {
+                kws.replace_until(
+                    Box::new(HealthyKws),
+                    std::time::Instant::now() + std::time::Duration::from_millis(500),
+                )
+                .await
+            })
+        };
+        wait_for_gate_entry(&gate).await;
+        let timed = tokio::time::timeout(std::time::Duration::from_secs(1), reload)
+            .await
+            .expect("reload caller must be bounded by the old engine destructor")
+            .unwrap();
+        assert_eq!(timed.unwrap_err(), "engine_check_timeout");
+        assert!(busy.load(Ordering::Acquire));
+        assert!(kws.is_initialized(), "the installed engine and cache must agree");
+
+        gate.release();
+        wait_for_native_release(&busy).await;
+        assert!(kws.process_pcm_chunk(&[0.1; 160]).await.unwrap().is_none());
     }
 
     #[cfg(feature = "native-fault-injection")]
@@ -4110,8 +5449,8 @@ mod tests {
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(20),
                 cancel: Arc::new(AtomicBool::new(false)),
                 cancel_notify: Arc::new(Notify::new()),
-                native_busy: Arc::new(AtomicBool::new(false)),
-                native_job_epoch: Arc::new(AtomicU64::new(0)),
+                native_busy: runtime.engine_check_native_busy.clone(),
+                native_job_epoch: runtime.native_job_epoch.clone(),
                 fixtures,
                 reply: reply_tx,
             })
@@ -4213,12 +5552,18 @@ mod tests {
     #[tokio::test]
     async fn worker_engine_check_cancel_and_deadline_fail_before_inference() {
         let root = tempdir().unwrap();
-        let mut kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+        let kws = KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
             model_dir: Some(root.path().to_path_buf()),
             ..Default::default()
         })
         .unwrap();
-        let mut vad = EnergyVad::new(VadConfig::default());
+        let vad = EnergyVad::new(VadConfig::default());
+        let busy = Arc::new(AtomicBool::new(false));
+        let job_epoch = Arc::new(AtomicU64::new(0));
+        let degraded = Arc::new(NativeHealth::default());
+        let runner = NativeCallRunner::new(busy.clone(), job_epoch.clone());
+        let kws = NativeKws::new(Box::new(kws), runner.clone());
+        let vad = NativeVad::new(Box::new(vad), runner);
         let fixtures = SelfCheckAudio {
             wake: vec![0.1; 3_200],
             command: vec![0.1; 3_200],
@@ -4229,29 +5574,29 @@ mod tests {
         };
         let cancelled = AtomicBool::new(true);
         let notify = Notify::new();
-        let busy = Arc::new(AtomicBool::new(false));
-        let job_epoch = Arc::new(AtomicU64::new(0));
         let result = VoiceCompanionRuntime::worker_engine_check(
-            &mut kws,
-            &mut vad,
+            &kws,
+            &vad,
             &None,
             &fixtures,
             &cancelled,
             &notify,
             &busy,
+            &degraded,
             &job_epoch,
             std::time::Instant::now() + std::time::Duration::from_secs(1),
         )
         .await;
         assert_eq!(result.unwrap_err(), "engine_check_cancelled");
         let result = VoiceCompanionRuntime::worker_engine_check(
-            &mut kws,
-            &mut vad,
+            &kws,
+            &vad,
             &None,
             &fixtures,
             &AtomicBool::new(false),
             &notify,
             &busy,
+            &degraded,
             &job_epoch,
             std::time::Instant::now() - std::time::Duration::from_millis(1),
         )
@@ -4349,6 +5694,7 @@ mod tests {
         deadline: std::time::Instant,
         cancel: Arc<AtomicBool>,
         native_busy: Arc<AtomicBool>,
+        native_job_epoch: Arc<AtomicU64>,
     ) -> (WorkerEngineCheck, oneshot::Receiver<Result<WorkerEngineCheckResult, String>>) {
         let (reply, rx) = oneshot::channel();
         (
@@ -4358,7 +5704,7 @@ mod tests {
                 cancel,
                 cancel_notify: Arc::new(Notify::new()),
                 native_busy,
-                native_job_epoch: Arc::new(AtomicU64::new(0)),
+                native_job_epoch,
                 fixtures: SelfCheckAudio {
                     wake: vec![0.1; 3_200],
                     command: vec![0.1; 3_200],
@@ -4422,6 +5768,7 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(5),
             cancel.clone(),
             busy.clone(),
+            runtime.native_job_epoch.clone(),
         );
         let notify = command.cancel_notify.clone();
         runtime
@@ -4443,6 +5790,7 @@ mod tests {
             .expect("cancel must return promptly")
             .unwrap();
         assert_eq!(result.unwrap_err(), "engine_check_cancelled");
+        assert!(!runtime.native_degraded.is_degraded());
         assert!(busy.load(Ordering::Acquire), "native decode must still be owned");
         blocking.store(false, Ordering::Release);
         release.notify_waiters();
@@ -4459,6 +5807,7 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_secs(5),
             Arc::new(AtomicBool::new(false)),
             busy.clone(),
+            runtime.native_job_epoch.clone(),
         );
         runtime
             .engine_check_tx
@@ -4507,6 +5856,7 @@ mod tests {
             std::time::Instant::now() + std::time::Duration::from_millis(750),
             Arc::new(AtomicBool::new(false)),
             busy.clone(),
+            runtime.native_job_epoch.clone(),
         );
         runtime
             .engine_check_tx
@@ -4525,6 +5875,7 @@ mod tests {
             .expect("deadline must return promptly")
             .unwrap();
         assert_eq!(result.unwrap_err(), "engine_check_timeout");
+        assert!(runtime.native_degraded.is_degraded());
         assert!(busy.load(Ordering::Acquire));
         blocking.store(false, Ordering::Release);
         release.notify_waiters();
@@ -5230,6 +6581,12 @@ mod tests {
             "never cancel task",
             "do not ever cancel task",
             "don't you cancel task",
+            "We should cancel the task tomorrow",
+            "Explain how to cancel the task",
+            "If it fails, cancel the task",
+            "stop",
+            "请明天取消任务",
+            "如果出错，请取消任务",
             "不要取消任务",
             "千万别取消任务",
             "取消任务，但是不要停止",
@@ -5333,8 +6690,8 @@ mod tests {
             ("请帮我取消当前任务", Some(CancelTask)),
             ("停止任务", Some(CancelTask)),
             ("结束任务", Some(CancelTask)),
-            ("取消", Some(CancelTask)),
-            ("stop", Some(CancelTask)),
+            ("取消", None),
+            ("stop", None),
             ("never cancel task", None),
             ("do not ever cancel task", None),
             ("don't you cancel task", None),
