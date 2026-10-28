@@ -15,8 +15,9 @@ mod tutorial;
 
 pub use switches::{
     is_auto_refill_disabled_value, is_off_switch_value, is_task_gate_disabled_value,
-    lexicon_enforce_enabled, lexicon_enforce_enabled_value, AUTO_REFILL_SWITCH_ENV,
-    LEXICON_ENFORCE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
+    lexicon_enforce_enabled, lexicon_enforce_enabled_value, open_judge_enabled,
+    open_judge_enabled_value, AUTO_REFILL_SWITCH_ENV, LEXICON_ENFORCE_SWITCH_ENV,
+    OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
 };
 
 pub use completer::LearningCompleter;
@@ -111,6 +112,9 @@ pub use models::{
 };
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+/// 判分观测面脱敏占位（n4 D9）：smoke grade 档注册进 `ArchivingCompleter`
+/// 时引用同一常量——占位文本单源（判底/作答原文不进观测面）。
+pub use service::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
 pub use learning_graph::mint_evidence::MintResearchStats;
 /// 铸名门外部证据开关（m11）：`NOMI_LEARNING_MINT_RESEARCH` 判定与取值。
 pub use switches::{MINT_RESEARCH_SWITCH_ENV, mint_research_enabled};

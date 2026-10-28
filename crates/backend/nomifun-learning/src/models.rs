@@ -2118,6 +2118,12 @@ pub struct AttemptResult {
     pub score: f64,
     pub passed: bool,
     pub feedback: String,
+    /// 评审判错时点名的缺失要点（n4 D3：`score ≥ 及格 ⇔ missing 必空` 的
+    /// 连续分互斥适配；判对恒空，旧对照臂恒空）。API 层承载不落库（零迁
+    /// 移；EvidenceTier 同批豁免 n4 D5）；`serde(default)` = 反序列化面
+    /// 容缺（旧档位回放），对旧客户端是纯增量字段。
+    #[serde(default)]
+    pub missing_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -825,7 +825,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     #[tokio::test]
     async fn reflection_ai_grading_uses_model_reply() {
         let completer = ScriptedCompleter::new(
-            "{\"score\":0.75,\"feedback\":\"## 评价\\n方向正确，但推导不完整。\"}",
+            "{\"score\":0.75,\"feedback\":\"## 评价\\n方向正确，但推导不完整。\",\"missing_points\":[]}",
             false,
         );
         let (service, pool, user_id, activity_id) =
@@ -843,14 +843,19 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(result.score, 0.75);
         assert!(result.passed);
         assert!(result.feedback.contains("方向正确"));
+        // 判对-缺失互斥（n4 D3）：判对 ⇒ 缺失要点为空。
+        assert!(result.missing_points.is_empty());
         assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
         // The grading prompt carries the answer AND the lesson topic
-        // (title/summary) — never a concept list (ADR-0009).
+        // (title/summary) — never a concept list (ADR-0009). The judge
+        // chain additionally grounds on the question's own explanation
+        // (n4 D1(a)).
         let user = completer.last_user.lock().unwrap().clone().unwrap();
         assert!(user.contains("Explain what a vector is."));
         assert!(user.contains("A vector is a quantity"));
         assert!(user.contains("Vectors"));
         assert!(user.contains("Lesson topic"));
+        assert!(user.contains("A vector has magnitude and direction."));
         let (score, feedback): (f64, String) =
             sqlx::query_as("SELECT score, feedback FROM learning_attempts WHERE activity_id = ?")
                 .bind(activity_id.as_str())
@@ -876,7 +881,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
         // so every answer silently degraded to "non-empty passes" — the
         // fenced reply must now parse and drive the score.
         let completer = ScriptedCompleter::new(
-            "```json\n{\"score\":0.4,\"feedback\":\"## 评价\\n方向正确，但缺少关键步骤。\"}\n```",
+            "```json\n{\"score\":0.4,\"feedback\":\"## 评价\\n方向正确，但缺少关键步骤。\",\"missing_points\":[\"关键步骤\"]}\n```",
             false,
         );
         let (service, pool, user_id, activity_id) =
@@ -894,6 +899,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
         assert_eq!(result.score, 0.4);
         assert!(!result.passed);
         assert!(result.feedback.contains("方向正确"));
+        // 判错侧互斥：判错必须点名缺失（n4 D3 双向契约）。
+        assert_eq!(result.missing_points, vec!["关键步骤".to_string()]);
         assert_eq!(completer.calls.load(AtomicOrdering::SeqCst), 1);
         // The AI score, not the non-empty fallback, is persisted.
         let (score,): (f64,) =
@@ -909,7 +916,9 @@ teaching_style: crate::models::TeachingStyle::Standard,
     async fn reflection_ai_grading_failures_surface_errors() {
         // AI grading is authoritative: a model call error, an unparseable
         // reply, or a missing completer must surface as an error instead of
-        // silently degrading to "every non-empty answer passes".
+        // silently degrading to "every non-empty answer passes". The judge
+        // chain burns its full retry ring (N=2) with the reason fed back
+        // before surfacing — the call count pins that budget.
         let failing = ScriptedCompleter::new(String::new(), true);
         let (service, _, user_id, activity_id) =
             reflection_service_with_completer(failing.clone()).await;
@@ -924,7 +933,11 @@ teaching_style: crate::models::TeachingStyle::Standard,
             .await
             .unwrap_err();
         assert!(error.to_string().contains("model unavailable"));
-        assert_eq!(failing.calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(
+            failing.calls.load(AtomicOrdering::SeqCst),
+            3,
+            "重试环 N=2：首次 + 2 次重试后才如实上抛"
+        );
 
         // Unparseable reply: same surfaced error.
         let bad_reply = ScriptedCompleter::new("not json at all", false);
@@ -939,8 +952,8 @@ teaching_style: crate::models::TeachingStyle::Standard,
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("unparseable answer grading reply"));
-        assert_eq!(bad_reply.calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(error.to_string().contains("not one JSON object"));
+        assert_eq!(bad_reply.calls.load(AtomicOrdering::SeqCst), 3);
 
         // No completer configured at all: surfaced error, not a pass.
         *service.course_completer.write().unwrap() = None;
@@ -960,7 +973,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
     #[tokio::test]
     async fn reflection_ai_grading_forwards_explicit_model() {
         let completer = ScriptedCompleter::new(
-            r#"{"score":0.6,"feedback":"ok"}"#,
+            r#"{"score":0.6,"feedback":"ok","missing_points":[]}"#,
             false,
         );
         let (service, _, user_id, activity_id) =
@@ -6789,6 +6802,93 @@ async fn xp_node_settlement_is_priced_by_est_and_idempotent() {
     .await
     .unwrap();
     assert_eq!(count, 1, "duplicate completion must not settle twice");
+}
+
+/// n4 D6 对称修复：AI-graded 题型双侧剔除出 node XP ratio——分母
+/// `total_questions` 只数客观题，修复前分子 answered/passed 子查询不过滤
+/// 题型，开放题的 passed 作答抬分子不进分母（Trimmed 可被虚抬成 Full）。
+/// 钉死场景：客观题答错 + 开放题（AI 判）passed 作答 → 修复后必须 Trimmed
+/// （0 XP）；修复前是 Full（27 XP）。
+#[tokio::test]
+async fn xp_node_settlement_excludes_ai_graded_questions_from_ratio() {
+    let database = nomifun_db::init_database_memory().await.unwrap();
+    let owner_id = nomifun_db::installation_owner_id(database.pool())
+        .await
+        .unwrap();
+    let user_id = UserId::parse(owner_id).unwrap();
+    let service = LearningService::new(database.pool().clone());
+    // 一课两题：1 客观题（true_false）+ 1 AI-graded 开放题。
+    let mut pack = valid_pack();
+    pack.modules[0].lessons[0].activities.push(ActivityPack {
+        difficulty: None,
+        kind: ActivityKind::OpenQuestion,
+        prompt: "Explain why compounding rewards time.".into(),
+        options: Vec::new(),
+        answer: Value::Null,
+        explanation: "Interest joins the principal and earns interest in turn.".into(),
+        distractors: Vec::new(),
+        tol: None,
+        section_key: None,
+        evidence: None,
+    });
+    let course = service.import_course(pack).await.unwrap();
+    service.enroll(&course.course.id, &user_id).await.unwrap();
+    let detail = service
+        .course_detail(&course.course.id, Some(&user_id))
+        .await
+        .unwrap();
+    let lesson_id = detail.modules[0].lessons[0].id.clone();
+    let objective_id = detail.modules[0].lessons[0].activities[0].id.clone();
+    let open_id = detail.modules[0].lessons[0].activities[1].id.clone();
+
+    // 客观题答错（passed = 0；作答本身不触 completer）。
+    let result = service
+        .submit_attempt(&objective_id, &user_id, Value::Bool(false), None, None)
+        .await
+        .unwrap();
+    assert!(!result.passed);
+
+    // 开放题一条 AI 判 passed 作答（判分链不在本测范围——被钉的是结算
+    // 查询的对称性，attempt 行按落库形状直插）。
+    let enrollment_id: String = sqlx::query_scalar(
+        "SELECT enrollment_id FROM learning_enrollments \
+         WHERE user_id = ? AND course_id = ?",
+    )
+    .bind(user_id.as_str())
+    .bind(course.course.id.as_str())
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO learning_attempts \
+         (attempt_id, enrollment_id, activity_id, response_json, score, passed, feedback, created_at) \
+         VALUES (?, ?, ?, '{}', 0.8, 1, 'smoke', 0)",
+    )
+    .bind(LearningAttemptId::new().as_str())
+    .bind(&enrollment_id)
+    .bind(open_id.as_str())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+
+    service
+        .update_lesson_progress(&lesson_id, &user_id, LessonStatus::Completed)
+        .await
+        .unwrap();
+    let (earned, bonus, basis): (i64, i64, String) = sqlx::query_as(
+        "SELECT earned_xp, xp_bonus, basis FROM learning_xp_events \
+         WHERE kind = 'node-completed'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    // 修复前：answered=2 / passed=1 / total=1 → ratio 虚抬 1.0 → full 27。
+    // 修复后：answered=1 / passed=0 / total=1 → ratio 0 → trimmed 恰 0。
+    assert_eq!(
+        (earned, bonus, basis.as_str()),
+        (0, 0, "trimmed"),
+        "AI-graded pass must not lift the node XP ratio"
+    );
 }
 
 /// 复习线：一次真实推进结算一笔（同卡同学习日一笔）；同日折叠 = 只记作答

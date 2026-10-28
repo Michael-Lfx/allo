@@ -113,6 +113,11 @@ pub async fn run_learning_smoke(cli: &Cli, command: LearningSmokeCommand) -> Res
             model,
             calls,
         } => run_json(cli, db, provider, model, calls).await,
+        LearningSmokeCommand::Grade {
+            db,
+            provider,
+            model,
+        } => run_grade(cli, db, provider, model).await,
         LearningSmokeCommand::Grow {
             goal,
             batches,
@@ -3473,4 +3478,313 @@ async fn node_and_batch_counts(
             .fetch_one(pool)
             .await?;
     Ok((lessons, batches))
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// grade 档（n5，开放题评审判分冒烟——ADR-0037 评审制移植的判分口径读数）。
+// 布景零 LLM（开放题 + reflection 各一，判底 explanation 落库），四判据经
+// 真实 submit_attempt 链路走新评审执行器（重试环 + 超时 + thinking json 通
+// 道 + 判底/缺失要点契约），另含断 LLM 臂与脱敏回读。机制面开关臂 =
+// `NOMI_LEARNING_OPEN_JUDGE=off`（同二进制旧路径对照臂——对照卡两臂并排）。
+// ---------------------------------------------------------------------------
+
+/// 布景判底（开放题）：domain-neutral 复利题，判底 = 题目自己的 explanation
+/// （n4 D1(a) 判底进评审器）。
+const GRADE_OPEN_PROMPT: &str = "用你自己的话解释：为什么说复利的关键不在收益率高低，而在时间足够长？请结合「利滚利」说明。";
+const GRADE_OPEN_GROUNDING: &str = "复利的本质是利息并入本金、本金再生利息。收益率只决定曲线的斜率，时间才决定曲线的弯曲程度：短期内收益率的差异会被时间平滑，长期里时间会把微小差异放大成巨大差距。所以复利的关键在于让利滚利跑足够长的时间，而不是追逐一时的高收益率。";
+
+/// 布景判底（reflection）：三句复盘（核心概念/旧认识/怎么用）。
+const GRADE_REFLECTION_PROMPT: &str = "用三句话复盘：本课时你学到的一个核心概念、它纠正了你哪个旧认识、你接下来打算怎么用。";
+const GRADE_REFLECTION_GROUNDING: &str = "核心概念：复利=利息并入本金再生息。旧认识：把注意力全放在收益率高低上。应用：尽早开始、坚持足够长的时间，让利滚利发挥作用，而不是频繁追逐高收益产品。";
+
+/// 断 LLM 替身：判分链必须如实上抛（绝不静默判错，n4 D2）——评审失败
+/// 走 Err 面，绝不出 fake-pass。
+struct GradeDeadCompleter;
+
+#[async_trait::async_trait]
+impl LearningCompleter for GradeDeadCompleter {
+    async fn complete(
+        &self,
+        _model_override: Option<(&str, &str)>,
+        _system: &str,
+        _user: &str,
+        _max_tokens: u32,
+    ) -> Result<String, nomifun_common::AppError> {
+        Err(nomifun_common::AppError::Internal(
+            "grade smoke: LLM disconnected drill".into(),
+        ))
+    }
+}
+
+/// `learning-smoke grade`（n5）：布景 → 四判据 → 脱敏回读。判据失败 =
+/// 退出码 2（learnhub smoke-grade 同款）；布景/接线失败 = anyhow 非零。
+async fn run_grade(
+    cli: &Cli,
+    db: Option<PathBuf>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<ExitCode> {
+    use nomifun_learning::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
+
+    if provider.is_some() != model.is_some() {
+        anyhow::bail!("--provider and --model must be provided together");
+    }
+    // 布景要求真凭据（判据①②③全是真 LLM 判分）；零凭据临时库在首次
+    // submit_attempt 如实失败（Conflict: no enabled provider）。
+    let (wiring, archiving, _live) =
+        wire(cli, db.as_deref(), provider.as_deref(), model.as_deref(), true).await?;
+    let owner = wiring.owner.clone();
+    let service = wiring.service.clone();
+    let now = nomifun_common::now_ms();
+
+    // —— 布景（零 LLM）：单课时 + 开放题（含判底）+ reflection（含判底）。
+    let course_id = nomifun_common::LearningCourseId::new().into_string();
+    let module_id = nomifun_common::LearningModuleId::new().into_string();
+    let lesson_id = nomifun_common::LearningLessonId::new().into_string();
+    let open_id = nomifun_common::LearningActivityId::new().into_string();
+    let reflection_id = nomifun_common::LearningActivityId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_courses \
+         (course_id, title, description, domain, version, created_at, updated_at) \
+         VALUES (?, 'grade smoke course', '', 'general', 1, ?, ?)",
+    )
+    .bind(&course_id)
+    .bind(now)
+    .bind(now)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, 'Module', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(&course_id)
+    .execute(&wiring.pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO learning_lessons (lesson_id, module_id, title, summary, position, estimated_minutes) \
+         VALUES (?, ?, '复利思维', '复利如何奖励耐心', 0, 25)",
+    )
+    .bind(&lesson_id)
+    .bind(&module_id)
+    .execute(&wiring.pool)
+    .await?;
+    for (activity_id, kind, prompt, grounding) in [
+        (
+            &open_id,
+            "open_question",
+            GRADE_OPEN_PROMPT,
+            GRADE_OPEN_GROUNDING,
+        ),
+        (
+            &reflection_id,
+            "reflection",
+            GRADE_REFLECTION_PROMPT,
+            GRADE_REFLECTION_GROUNDING,
+        ),
+    ] {
+        let config = serde_json::json!({
+            "answer": null,
+            "options": [],
+            "explanation": grounding,
+            "distractors": [],
+            "matches": []
+        });
+        sqlx::query(
+            "INSERT INTO learning_activities \
+             (activity_id, lesson_id, kind, prompt, config_json, position) \
+             VALUES (?, ?, ?, ?, ?, 0)",
+        )
+        .bind(activity_id)
+        .bind(&lesson_id)
+        .bind(kind)
+        .bind(prompt)
+        .bind(serde_json::to_string(&config)?.as_str())
+        .execute(&wiring.pool)
+        .await?;
+    }
+
+    // —— 判分作答集（脱敏注册同批：判底与作答原文进观测面前必须占位）。
+    let open_patient = "我理解是：利息会变成新的本金继续生息，也就是利滚利。短期看收益率高低差别不大，因为时间会把这些差距抹平；但拉长时间后，哪怕每年只差一点，差距也会越滚越大。所以重要的是坚持足够久，而不是盯着某一年的高收益。";
+    let open_flawed = "复利的关键当然是收益率，收益率越高越好，时间长了意义不大，应该追求短期高收益产品。";
+    let open_offtopic = "今天天气不错，适合出去走走。";
+    let reflection_patient = "这个课时让我把复利真正想明白了：利息会并入本金继续生息。它纠正了我以前只盯着收益率高低的旧认识——原来时间才是放大差异的那个变量。接下来我打算尽早开始并长期坚持，不再频繁换产品追高收益。";
+    let reflection_flawed = "挺好的，学到了很多，感觉很有用。";
+    if let Some(archiving) = &archiving {
+        for grounding in [GRADE_OPEN_GROUNDING, GRADE_REFLECTION_GROUNDING] {
+            archiving.register_redaction(grounding, REDACTED_GROUNDING_PLACEHOLDER);
+        }
+        for answer in [
+            open_patient,
+            open_flawed,
+            open_offtopic,
+            reflection_patient,
+            reflection_flawed,
+        ] {
+            archiving.register_redaction(answer, REDACTED_RESPONSE_PLACEHOLDER);
+        }
+    }
+
+    let open = nomifun_common::LearningActivityId::parse(&open_id)?;
+    let reflection = nomifun_common::LearningActivityId::parse(&reflection_id)?;
+    let submit = |activity: &nomifun_common::LearningActivityId, answer: &'static str| {
+        let service = service.clone();
+        let activity = activity.clone();
+        let owner = owner.clone();
+        async move {
+            service
+                .submit_attempt(&activity, &owner, serde_json::json!(answer), None, None)
+                .await
+        }
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+
+    // —— 判据①（语义覆盖判对）：同义改写覆盖判底全部要点 → 判对 + 点评
+    //      非空 + 缺失要点必空（开放题与 reflection 两题型都过一遍）。
+    for (label, activity, answer) in [
+        ("①开放题病历", &open, open_patient),
+        ("①reflection病历", &reflection, reflection_patient),
+    ] {
+        match submit(activity, answer).await {
+            Ok(result) => {
+                let ok = result.passed
+                    && !result.feedback.trim().is_empty()
+                    && result.missing_points.is_empty();
+                println!(
+                    "[{label}] {} passed={} score={:.2} 缺失要点={}条",
+                    if ok { "PASS" } else { "FAIL" },
+                    result.passed,
+                    result.score,
+                    result.missing_points.len(),
+                );
+                if !ok {
+                    failures.push(format!(
+                        "{label}: 语义覆盖全部要点的作答应判对且点评非空、缺失要点为空——判分口径回归"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!(
+                "{label}: 评审失败如实上抛了（但本判据要求判出结论）: {error}"
+            )),
+        }
+    }
+
+    // —— 判据②（真误区判错 + 缺失要点非空）：与判底相悖的作答 → 判错 +
+    //      missing_points 点名缺失（n4 D3 互斥的另一侧）。
+    for (label, activity, answer) in [
+        ("②开放题真误区", &open, open_flawed),
+        ("②reflection空泛", &reflection, reflection_flawed),
+    ] {
+        match submit(activity, answer).await {
+            Ok(result) => {
+                let ok = !result.passed && !result.missing_points.is_empty();
+                println!(
+                    "[{label}] {} passed={} score={:.2} 缺失要点={}条 点评前40字={}",
+                    if ok { "PASS" } else { "FAIL" },
+                    result.passed,
+                    result.score,
+                    result.missing_points.len(),
+                    result.feedback.chars().take(40).collect::<String>(),
+                );
+                if !ok {
+                    failures.push(format!(
+                        "{label}: 真误区作答应判错且缺失要点非空（互斥契约的另一侧）"
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("{label}: 评审失败: {error}")),
+        }
+    }
+
+    // —— 判据③（离题/抄题判错）：与所测内容无关 → 判错不崩。
+    match submit(&open, open_offtopic).await {
+        Ok(result) => {
+            let ok = !result.passed && !result.feedback.trim().is_empty();
+            println!(
+                "[③离题] {} passed={} score={:.2} 点评前40字={}",
+                if ok { "PASS" } else { "FAIL" },
+                result.passed,
+                result.score,
+                result.feedback.chars().take(40).collect::<String>(),
+            );
+            if !ok {
+                failures.push("③离题: 离题作答应判错且点评具体".into());
+            }
+        }
+        Err(error) => failures.push(format!("③离题: 评审失败: {error}")),
+    }
+
+    // —— 判据④（断 LLM 如实上抛）：换上断 LLM 替身 → submit_attempt 必须
+    //      Err（绝不静默出结论、绝不伪装成功）。
+    service.set_generation_dependencies(
+        wiring.knowledge.clone(),
+        std::sync::Arc::new(GradeDeadCompleter),
+    );
+    match submit(&open, open_patient).await {
+        Err(error) => {
+            println!("[④断LLM] PASS 判分不可用如实上抛（{error}）——fail-loud 出口正确");
+        }
+        Ok(result) => {
+            failures.push(format!(
+                "④断LLM: 断 LLM 臂不得产出结论（静默判错零容忍），实得 passed={}",
+                result.passed
+            ));
+        }
+    }
+
+    // —— 脱敏回读（进 EXIT）：判底与作答原文在观测面 system/user 零命中。
+    if let Some(archiving) = &archiving {
+        let log_path = archiving.run_dir().join("calls.jsonl");
+        let mut leaked = 0usize;
+        if let Ok(log) = std::fs::read_to_string(&log_path) {
+            for line in log.lines() {
+                let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                let observed = format!(
+                    "{}{}",
+                    record["system"].as_str().unwrap_or_default(),
+                    record["user"].as_str().unwrap_or_default()
+                );
+                let originals = [
+                    GRADE_OPEN_GROUNDING,
+                    GRADE_REFLECTION_GROUNDING,
+                    open_patient,
+                    open_flawed,
+                    open_offtopic,
+                    reflection_patient,
+                    reflection_flawed,
+                ];
+                if originals
+                    .iter()
+                    .any(|original| !original.is_empty() && observed.contains(original))
+                {
+                    leaked += 1;
+                }
+            }
+        }
+        if leaked > 0 {
+            failures.push(format!(
+                "脱敏回读: 判底/作答原文出现在 {leaked} 条观测档 system/user 面（{}）",
+                log_path.display()
+            ));
+        } else {
+            println!("[脱敏] PASS 观测面 system/user 零判底零作答原文（占位替换生效）");
+        }
+    }
+
+    if failures.is_empty() {
+        println!("\n[判据] 四判据 + 脱敏回读全过（评审口径/缺失要点互斥/离题判错/断 LLM 如实上抛）");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("\n[判据] {} 条失败:", failures.len());
+        for failure in &failures {
+            println!("  FAIL {failure}");
+        }
+        // 判据失败 = 退出码 2（learnhub smoke-grade 同款；布景/接线错误走
+        // anyhow 非零）。
+        Ok(ExitCode::from(2))
+    }
 }
