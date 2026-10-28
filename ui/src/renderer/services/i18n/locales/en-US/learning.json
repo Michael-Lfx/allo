@@ -203,6 +203,7 @@
   "questionDistractorsHint": "Near-synonym traps (optional): surface confusable terms; not used for grading",
   "questionFillBlankHint": "Mark the blank with ___ in the prompt",
   "questionFillBlankHintRequired": "Mark the blank with ___ in the prompt",
+  "inlineRenderFailed": "Question text failed to render; raw text:",
   "reviews": "Due reviews",
   "xpPanelTitle": "XP readings",
   "xpExpand": "Expand XP readings",

@@ -3468,6 +3468,7 @@ export type I18nKey =
   | 'learning.importTitle'
   | 'learning.inProgress'
   | 'learning.incorrect'
+  | 'learning.inlineRenderFailed'
   | 'learning.invalidJson'
   | 'learning.kbSelectionTooMany'
   | 'learning.kindFillInBlank'
