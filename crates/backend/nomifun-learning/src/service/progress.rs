@@ -135,34 +135,59 @@ impl LearningService {
         let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
         let enrollment_id = self.ensure_enrollment(&course_id, user_id).await?;
         // AI-graded answers (reflection 0-1, open_question 0-10) are graded
-        // by the LLM: the question itself plus its lesson's title/summary
-        // ground the grading prompt. AI grading is authoritative — the
-        // empty-answer rejection is enforced here by the rule-based
-        // evaluator, and any grading failure (unconfigured completer, call
-        // error, unparseable reply) surfaces as an error to the learner. The
-        // old silent fallback passed every non-empty answer with a score of
-        // 1.0, hiding grading failures behind a fake success.
-        let (score, feedback) = if kind.is_ai_graded() {
+        // by the LLM: the question itself plus its explanation (the
+        // grounding, n4 D1(a)) and its lesson's title/summary ground the
+        // grading prompt. AI grading is authoritative — the empty-answer
+        // rejection is enforced here by the rule-based evaluator, and any
+        // grading failure (unconfigured completer, call error, exhausted
+        // retry budget, unparseable reply) surfaces as an error to the
+        // learner. The old silent fallback passed every non-empty answer
+        // with a score of 1.0, hiding grading failures behind a fake
+        // success.
+        let (score, feedback, missing_points) = if kind.is_ai_graded() {
             let answer = response.as_str().map(str::trim).unwrap_or_default();
             if answer.is_empty() {
                 // Always rejected: the evaluator errors on empty responses.
-                evaluate(kind, &config, &response)?
+                evaluate(kind, &config, &response)
+                    .map(|(score, feedback)| (score, feedback, Vec::new()))?
             } else {
                 let lesson_title: String = row.try_get("lesson_title").map_err(internal)?;
                 let lesson_summary: String = row.try_get("lesson_summary").map_err(internal)?;
-                self.grade_open_answer(
-                    kind,
-                    &activity_prompt,
-                    answer,
-                    &lesson_title,
-                    &lesson_summary,
-                    provider_id.as_ref(),
-                    model.as_deref(),
-                )
-                .await?
+                if crate::switches::open_judge_enabled() {
+                    // 新评审链（n5）：重试环 + 超时 + thinking json 通道 +
+                    // 判底/缺失要点契约（机制面开关臂 on，缺省）。
+                    self.judge_answer(
+                        kind,
+                        &activity_prompt,
+                        answer,
+                        &lesson_title,
+                        &lesson_summary,
+                        &config.explanation,
+                        provider_id.as_ref(),
+                        model.as_deref(),
+                    )
+                    .await?
+                } else {
+                    // 旧路径对照臂（`NOMI_LEARNING_OPEN_JUDGE=off`）：单次
+                    // 裸调、无重试无超时、`{score,feedback}` 两键解析、
+                    // missing_points 语义缺席（恒空）。
+                    let (score, feedback) = self
+                        .grade_open_answer(
+                            kind,
+                            &activity_prompt,
+                            answer,
+                            &lesson_title,
+                            &lesson_summary,
+                            provider_id.as_ref(),
+                            model.as_deref(),
+                        )
+                        .await?;
+                    (score, feedback, Vec::new())
+                }
             }
         } else {
-            evaluate(kind, &config, &response)?
+            evaluate(kind, &config, &response)
+                .map(|(score, feedback)| (score, feedback, Vec::new()))?
         };
         let passed = score >= 0.6;
         let attempt_id = LearningAttemptId::new();
@@ -191,18 +216,24 @@ impl LearningService {
             score,
             passed,
             feedback,
+            // missing_points 走 API 层不落库（n4 D5/票面：零迁移）。
+            missing_points,
         })
     }
 
     /// LLM-grades an open answer (reflection 0-1, open_question 0-10) against
-    /// the question itself and its lesson's topic (title + summary). The
-    /// model sees the exercise prompt, the learner's answer and the lesson
-    /// context; it must reply with strict JSON
-    /// `{ "score": f64, "feedback": string }`. open_question scores are
-    /// reported on a 0-10 scale and normalized to 0-1 here (≥6 passes).
-    /// Every failure (no completer, call error, unparseable reply) returns
-    /// `Err` and is surfaced to the learner — AI grading is authoritative,
-    /// so a broken grader must never masquerade as a passing answer.
+    /// the question itself and its lesson's topic (title + summary) — the
+    /// LEGACY single-shot arm, kept verbatim as the mechanism-face
+    /// comparison arm (`NOMI_LEARNING_OPEN_JUDGE=off`); the default arm is
+    /// [`Self::judge_answer`] (retry ring + timeout + thinking json channel
+    /// + grounding/missing-points contract). The model sees the exercise
+    /// prompt, the learner's answer and the lesson context; it must reply
+    /// with strict JSON `{ "score": f64, "feedback": string }`. open_question
+    /// scores are reported on a 0-10 scale and normalized to 0-1 here
+    /// (≥6 passes). Every failure (no completer, call error, unparseable
+    /// reply) returns `Err` and is surfaced to the learner — AI grading is
+    /// authoritative, so a broken grader must never masquerade as a passing
+    /// answer.
     async fn grade_open_answer(
         &self,
         kind: ActivityKind,
@@ -226,7 +257,10 @@ impl LearningService {
         } else {
             REFLECTION_GRADING_SYSTEM
         };
-        let user = build_open_grading_prompt(kind, prompt, answer, lesson_title, lesson_summary);
+        // (None, None) = 旧臂不装配判底槽与回灌槽，prompt 逐字节保持旧形。
+        let user = build_open_grading_prompt(
+            kind, prompt, answer, lesson_title, lesson_summary, None, None,
+        );
         let raw = completer
             .complete(
                 provider_id.zip(model).map(|(id, model)| (id.as_str(), model)),
@@ -248,9 +282,12 @@ impl LearningService {
 
 }
 
-/// System prompt for AI reflection grading: the model judges correctness and
-/// completeness against the question itself and its lesson's topic, and
-/// replies with strict JSON.
+/// System prompt for AI reflection grading (LEGACY off-arm, kept verbatim
+/// for `NOMI_LEARNING_OPEN_JUDGE=off`; the on-arm system lives in
+/// service/open_judge.rs with the grounding semantics and the
+/// missing_points contract): the model judges correctness and completeness
+/// against the question itself and its lesson's topic, and replies with
+/// strict JSON.
 const REFLECTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's reflection answer for a course exercise.
 
 Score the answer from 0.0 to 1.0 (0.6 is passing):
@@ -268,9 +305,11 @@ Rules:
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
-/// System prompt for AI open-question grading: a comprehensive-application
-/// question scored on a 0-10 scale (≥6 passes), graded on lesson-topic
-/// coverage rather than a single sub-point.
+/// System prompt for AI open-question grading (LEGACY off-arm, kept
+/// verbatim for `NOMI_LEARNING_OPEN_JUDGE=off`; the on-arm system lives in
+/// service/open_judge.rs): a comprehensive-application question scored on a
+/// 0-10 scale (≥6 passes), graded on lesson-topic coverage rather than a
+/// single sub-point.
 const OPEN_QUESTION_GRADING_SYSTEM: &str = r#"You are a strict but encouraging learning coach grading a learner's open-ended answer to a comprehensive course question.
 
 Score the answer from 0.0 to 10.0 (6.0 is passing):
@@ -289,16 +328,29 @@ Rules:
 - Write the feedback in the same language as the learner's answer.
 - Output JSON only, without Markdown fences or commentary."#;
 
+/// 存量题 explanation 为空的判底装配容错占位（n4 D1(a)：explanation 非空
+/// 必填是生成期契约，历史行可能为空——空判底显式声明「以课时上下文为准」，
+/// 评审不因判底缺席而哑火）。
+pub(super) const EMPTY_GROUNDING_TEXT: &str = "(无：以课时上下文为准)";
+
 /// Builds the user message for AI answer grading: the exercise prompt, the
 /// learner's answer and the owning lesson's topic (title + summary) —
 /// grading is grounded in the question and the lesson, never in a concept
 /// list (ADR-0009: the per-course concept system is retired).
-fn build_open_grading_prompt(
+///
+/// `explanation`（判底槽，n4 D1(a)）：`Some(text)` 装配题目自己的
+/// explanation（空串装配 [`EMPTY_GROUNDING_TEXT`] 容错占位）；`None` =
+/// 旧对照臂，不装配判底槽（prompt 逐字节保持旧形）。`retry_feedback`
+/// （回灌槽，n4 D2 重试环）：`Some(reason)` 携带上一轮被拒原因；
+/// `None` = 首轮/旧臂。
+pub(super) fn build_open_grading_prompt(
     kind: ActivityKind,
     prompt: &str,
     answer: &str,
     lesson_title: &str,
     lesson_summary: &str,
+    explanation: Option<&str>,
+    retry_feedback: Option<&str>,
 ) -> String {
     let framing = if kind == ActivityKind::OpenQuestion {
         "Comprehensive question covering the whole lesson (score on the 0-10 scale):"
@@ -310,8 +362,27 @@ fn build_open_grading_prompt(
     } else {
         format!("Lesson topic: {lesson_title}\nLesson summary: {lesson_summary}")
     };
+    let grounding_section = match explanation {
+        None => String::new(),
+        Some(text) => {
+            let grounding = if text.trim().is_empty() {
+                EMPTY_GROUNDING_TEXT
+            } else {
+                text
+            };
+            format!(
+                "\n\nGrounding (the question's own explanation — what a correct answer must convey):\n{grounding}"
+            )
+        }
+    };
+    let retry_section = match retry_feedback {
+        None => String::new(),
+        Some(reason) => format!(
+            "\n\nYour previous reply was rejected: {reason}\nFix the reported problem and reply again with ONLY the JSON object."
+        ),
+    };
     format!(
-        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\n{lesson_context}"
+        "{framing}\n{prompt}\n\nLearner's answer:\n{answer}\n\n{lesson_context}{grounding_section}{retry_section}"
     )
 }
 

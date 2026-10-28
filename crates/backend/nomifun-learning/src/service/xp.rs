@@ -59,6 +59,10 @@ impl LearningService {
         .await
         .map_err(internal)?;
         // 客观题总数只看课时；作答数按报名口径（无报名 = 零作答）。
+        // n4 D6 对称修复：分子分母同筛客观题——AI-graded 题型（开放题/
+        // reflection）双侧剔除出 node XP ratio。修复前 answered/passed
+        // 子查询不过滤题型：开放题 passed 抬分子不进分母，ratio 被虚抬
+        // （Trimmed 可被抬成 Full）。行为变化记 n5 对照卡。
         let total_questions: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM learning_activities \
              WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST})"
@@ -69,21 +73,23 @@ impl LearningService {
         .map_err(internal)?;
         let (answered, passed) = match &enrollment_id {
             Some(enrollment_id) => {
-                let answered: i64 = sqlx::query_scalar(
+                let answered: i64 = sqlx::query_scalar(&format!(
                     "SELECT COUNT(DISTINCT activity_id) FROM learning_attempts \
                      WHERE enrollment_id = ? AND activity_id IN \
-                       (SELECT activity_id FROM learning_activities WHERE lesson_id = ?)",
-                )
+                       (SELECT activity_id FROM learning_activities \
+                         WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST}))"
+                ))
                 .bind(enrollment_id)
                 .bind(lesson_id.as_str())
                 .fetch_one(&self.pool)
                 .await
                 .map_err(internal)?;
-                let passed: i64 = sqlx::query_scalar(
+                let passed: i64 = sqlx::query_scalar(&format!(
                     "SELECT COUNT(DISTINCT activity_id) FROM learning_attempts \
                      WHERE enrollment_id = ? AND passed = 1 AND activity_id IN \
-                       (SELECT activity_id FROM learning_activities WHERE lesson_id = ?)",
-                )
+                       (SELECT activity_id FROM learning_activities \
+                         WHERE lesson_id = ? AND kind IN ({OBJECTIVE_KIND_SQL_LIST}))"
+                ))
                 .bind(enrollment_id)
                 .bind(lesson_id.as_str())
                 .fetch_one(&self.pool)

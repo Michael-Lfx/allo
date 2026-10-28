@@ -319,6 +319,9 @@ export interface AttemptResult {
   score: number;
   passed: boolean;
   feedback: string;
+  /** AI 评审判错时点名的缺失要点（判对恒空；判对-缺失互斥，n4 D3）。
+   * 旧后端/对照臂不带此字段，可选承载。 */
+  missing_points?: string[];
 }
 
 /** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */

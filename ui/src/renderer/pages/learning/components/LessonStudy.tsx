@@ -107,6 +107,21 @@ function ActivityBlock({
                 <QuestionExplanation text={result.feedback} />
               </div>
             )}
+            {/* AI 评审判错点名的缺失要点（判对恒空不渲染；n4 D3 互斥契约） */}
+            {result.missing_points && result.missing_points.length > 0 && (
+              <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
+                <Text type='warning' className='mb-4px block'>
+                  {t('learning.missingPointsTitle')}
+                </Text>
+                <ul className='m-0 pl-18px'>
+                  {result.missing_points.map((point, index) => (
+                    <li key={index} className='text-t-secondary'>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </div>

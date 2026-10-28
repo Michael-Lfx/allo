@@ -3642,6 +3642,7 @@ export type I18nKey =
   | 'learning.memoryState_young'
   | 'learning.memoryStatesTitle'
   | 'learning.minutes'
+  | 'learning.missingPointsTitle'
   | 'learning.model'
   | 'learning.nextLesson'
   | 'learning.nextQuestion'
