@@ -82,4 +82,4 @@ part_of: ../map.md
 
 - **交付**（learn-v5/m11-mint-evidence，0088dee6c）：flowy-web 直依赖（briefing 先例；勘误：crate 实在 `crates/agent/` 非 shared，依赖面同律）+ 歧义多候选案恰一次搜索（query 机械派生、批级去重、冷启动/直定/单候选零搜索）+ 证据标题命中扩 defnear 邻居（basis=「外部证据命中：<标题>」，cap 3、deprecated 排除、摘要不匹配）+ 证据块（top-2/≤400 字/防线句）随既有候选集注入进评审 user 消息——判据条款字节未动 + fail-open 双路 + NOMI_LEARNING_MINT_RESEARCH。
 - **双臂对照（开关臂）**：assets/m11-mint-evidence-comparison-card.md——on 臂自然歧义案 `searches=4 evidence_hits=20` + 防线句入档（DDG/百度结果）；off 臂显式零。
-- **「变好才许收」裁决面（ADR-0030，留用户）**：裁决翻转数 = 0（无自然跨臂同案对；expansions 未触发）——机制 fail-open 零歧义零成本故缺省保留，翻转证据待后续自然案累计；最终收/不收由用户裁量（票面既定）。
+- **「变好才许收」裁决（2026-10-27，主会话判断：收）**：①危害证据零——判据面字节未动、防线句入档、fail-open 零歧义零成本；②机制面真机已验证（4 搜索/20 命中在案）；③ADR-0030 验收本意 = 拦「有证据变坏」的机制，本机制无任何变坏证据；④翻转数降级为收益遥测（雾区持续观察项），非准入门槛。
