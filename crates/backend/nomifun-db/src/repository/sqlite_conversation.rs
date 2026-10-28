@@ -250,9 +250,24 @@ fn validate_skill_load_commit(
         ));
     }
 
-    let content: serde_json::Value = serde_json::from_str(&message.content).map_err(|error| {
+    let mut content: serde_json::Value = serde_json::from_str(&message.content).map_err(|error| {
         skill_load_commit_conflict(format!("event projection has invalid JSON: {error}"))
     })?;
+    // Invocation records how this snapshot entered the transcript. It is not
+    // part of the immutable SKILL.md bytes, but it must stay a closed set so
+    // the projection cannot smuggle an extra field past the snapshot check.
+    let invocation = content
+        .as_object_mut()
+        .and_then(|object| object.remove("invocation"));
+    match invocation {
+        None => {}
+        Some(serde_json::Value::String(value)) if value == "force" || value == "model-auto" => {}
+        Some(_) => {
+            return Err(skill_load_commit_conflict(
+                "event projection has an invalid skill invocation",
+            ));
+        }
+    }
     let expected = serde_json::json!({
         "skill_id": &snapshot.catalog_key,
         "name": &snapshot.skill_name,

@@ -4904,6 +4904,67 @@ async fn skill_load_ledger_and_message_projection_commit_atomically() {
 }
 
 #[tokio::test]
+async fn skill_load_projection_keeps_invocation_without_relaxing_snapshot_equality() {
+    let (repo, _db) = setup().await;
+    let mut conversation = make_conversation("skill-load-invocation");
+    conversation.conversation_id = repo.create(&conversation).await.unwrap();
+
+    for invocation in ["force", "model-auto"] {
+        let mut load = make_skill_load_commit(&conversation.conversation_id, "builtin:officecli");
+        let mut content: serde_json::Value =
+            serde_json::from_str(&load.load_message.content).unwrap();
+        content["invocation"] = serde_json::Value::String(invocation.to_owned());
+        load.load_message.content = content.to_string();
+        repo.persist_skill_loads_and_user_message(
+            &conversation.conversation_id,
+            None,
+            std::slice::from_ref(&load),
+        )
+        .await
+        .unwrap();
+    }
+
+    let mut mismatched = make_skill_load_commit(&conversation.conversation_id, "builtin:officecli");
+    let mut mismatched_content: serde_json::Value =
+        serde_json::from_str(&mismatched.load_message.content).unwrap();
+    mismatched_content["invocation"] = serde_json::json!("force");
+    mismatched_content["location"] = serde_json::json!("C:/skills/officecli/SKILL.md");
+    mismatched.load_message.content = mismatched_content.to_string();
+    let mismatch = repo
+        .persist_skill_loads_and_user_message(
+            &conversation.conversation_id,
+            None,
+            std::slice::from_ref(&mismatched),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        mismatch
+            .to_string()
+            .contains("event projection does not exactly match the immutable snapshot")
+    );
+
+    let mut invalid = make_skill_load_commit(&conversation.conversation_id, "builtin:officecli");
+    let mut invalid_content: serde_json::Value =
+        serde_json::from_str(&invalid.load_message.content).unwrap();
+    invalid_content["invocation"] = serde_json::json!("slash");
+    invalid.load_message.content = invalid_content.to_string();
+    let invalid_invocation = repo
+        .persist_skill_loads_and_user_message(
+            &conversation.conversation_id,
+            None,
+            std::slice::from_ref(&invalid),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        invalid_invocation
+            .to_string()
+            .contains("event projection has an invalid skill invocation")
+    );
+}
+
+#[tokio::test]
 async fn skill_load_ledger_survives_transcript_clear_and_supports_load_only_commits() {
     let (repo, db) = setup().await;
     let mut conversation = make_conversation("skill-load-history");
