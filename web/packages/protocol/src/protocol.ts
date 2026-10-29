@@ -94,7 +94,7 @@
  * must never pick an auth affordance from a shape. No method changes, so the
  * documented route split stays `56 / 83`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-19";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-20";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -1362,8 +1362,8 @@ export interface InstallOutcome {
 // Marketplace (docs/agent-store/05 §4.6, roadmap Phase 2)
 // ---------------------------------------------------------------------------
 
-/** Wire-marketplace source kinds (Phase A: directory only; `zip` since `fp-7`). */
-export type MarketplaceSourceKind = "directory" | "github" | "git" | "url" | "zip";
+/** Wire-marketplace source kinds (Phase A: directory only; `zip` since `fp-7`; `index` since `fp-20`). */
+export type MarketplaceSourceKind = "directory" | "github" | "git" | "url" | "zip" | "index";
 
 export interface MarketplaceAddRequest {
   name?: string;
@@ -1479,6 +1479,8 @@ export interface StoreItem {
    * Treat as optional: `item.tags ?? []`. */
   tags?: LocalizedText[] | null;
   quick_prompts?: LocalizedText[] | null;
+  /** Opening prompt declared by the market (`fp-20` index rows). */
+  default_init_prompt?: LocalizedText | null;
   /** Raw category reference from the source manifest (`plugin.json`). */
   category_id?: string | null;
   /** The host-joined category; absent when the id misses the dictionary (doc `43`). */
@@ -1494,6 +1496,23 @@ export interface StoreItem {
   published_at?: string | null;
   /** Public avatar URL (store asset endpoint); relative to the API host. */
   avatar_url?: string | null;
+  /**
+   * Absolute icon URL declared by an `index` market (`fp-20`). When present it
+   * is also what `avatar_url` carries; this raw field lets a client distinguish
+   * a market-hosted URL from the host asset route.
+   */
+  icon_url?: string | null;
+  /** Compressed entry archive size in bytes, when the market declares one (`fp-20`). */
+  download_size?: number | null;
+  /** Lowercase hex sha256 of the entry archive, when declared (`fp-20`). */
+  sha256?: string | null;
+  /**
+   * `false` when an `index` market explicitly marks the entry unavailable
+   * (`fp-20`). Absent on older hosts, and must be treated as `true`.
+   */
+  available?: boolean;
+  /** Why the market marked the entry unavailable (`fp-20`). */
+  unavailable_reason?: string | null;
   version: string;
   source_kind: string;
   installed: boolean;

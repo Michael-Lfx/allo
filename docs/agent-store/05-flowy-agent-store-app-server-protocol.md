@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-19`，56 WS 核心方法 / 83 双端路由端点）  \
+> 状态：现行规范（统一协议 v1，指纹 `fp-20`，56 WS 核心方法 / 83 双端路由端点）  \
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -16,7 +16,7 @@ App Server Protocol 确立为系统的**唯一公共对外接口面**：
 1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
 2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
 3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
-4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-19`）守卫协议两端，消解冗余复杂的迁移开销。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-20`）守卫协议两端，消解冗余复杂的迁移开销。
 
 ---
 
@@ -183,6 +183,8 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
+> 指纹：**`fp-20`**（2026-10-29）新增 **`index` 市场源类型**（doc `30` §6.1）：`AppServerMarketplaceSourceKind` 增 `Index`；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`；官方三个市场均改为 `wb-market/<market>/index.json`——`experts` 逐条 `tar.gz`，`skills` / `connectors` 共享 payload zip（`member` 定位），安装期按 `sha256` / `size` 校验后下载解包；迁移 `069` 重建 `plugin_marketplaces` 的 `source_kind` CHECK 以接受 `index`。方法计数不变（56 / 83）。
+
 > 指纹：**`fp-19`**（2026-10-26）给**导出面补上逐实体的图标引用**（doc `51`）：
 > `AppServerExpertSkillRef` 增 `icon`（**技能目录相对路径**，如 `assets/icon.png`，字节走
 > `skill/file`），`AppServerExpertConnectorRef` 增 `icon`（**快照相对路径**，如

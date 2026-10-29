@@ -141,9 +141,67 @@ pub(crate) struct MarketIndexInfo {
     /// neither ships a `plugin.json` (doc `49` §3.7). Display data only: never
     /// search input (doc `49` D9).
     pub(crate) examples: Vec<LocalizedText>,
+    /// The index row's `default_init_prompt` (`{zh,en}`), the opening prompt an
+    /// `index` market declares for the entry. Only index markets carry it.
+    pub(crate) default_init_prompt: Option<LocalizedText>,
+    /// The index row's `quick_prompts` (`[{zh,en}]`), the card's suggested
+    /// prompts. Kept apart from `examples` because both fields exist upstream:
+    /// experts use `quick_prompts`, skill/connector rows use `examples_*`.
+    pub(crate) quick_prompts: Vec<LocalizedText>,
+    /// The absolute icon URL an `index` market declares (`icon_url`). The store
+    /// listing prefers it over the host asset route, so a client never needs to
+    /// download the market root to render a card.
+    icon_url: Option<String>,
+    /// Entry archive digest/size from an `index` market; the import path uses
+    /// them to verify the downloaded `tar.gz` before extraction.
+    sha256: Option<String>,
+    size: Option<i64>,
+    /// `false` when the market marks the entry unavailable. Always `true` for
+    /// the legacy connector/skill indexes, which have no such concept.
+    available: bool,
+    unavailable_reason: Option<String>,
+    /// The index row's own `kind` (`agent` | `team` | `plugin` | `skill` |
+    /// `connector`). Only `index` markets declare it; the legacy indexes do not.
+    kind: Option<String>,
+    /// The index row's `category_id`, used when the entry has no plugin.json.
+    category_id: Option<String>,
+    /// Payload markets (`skills` / `connectors`) name the entry's directory
+    /// inside the shared payload zip; `None` for per-entry archive markets.
+    member: Option<String>,
 }
 
 impl MarketIndexInfo {
+    /// The `index` row's archive digest, when declared.
+    pub(crate) fn entry_sha256(&self) -> Option<String> {
+        self.sha256.clone()
+    }
+
+    /// The `index` row's archive size, when declared.
+    pub(crate) fn entry_size(&self) -> Option<i64> {
+        self.size
+    }
+
+    pub(crate) fn entry_available(&self) -> bool {
+        self.available
+    }
+
+    pub(crate) fn entry_unavailable_reason(&self) -> Option<&str> {
+        self.unavailable_reason.as_deref()
+    }
+
+    pub(crate) fn entry_icon_url(&self) -> Option<&str> {
+        self.icon_url.as_deref()
+    }
+
+    pub(crate) fn entry_version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
+    /// The payload member directory for a payload-market entry.
+    pub(crate) fn entry_member(&self) -> Option<&str> {
+        self.member.as_deref()
+    }
+
     /// The display metadata this row declares (`50` §3.3), in the shape the
     /// importer stamps into a payload and the catalogs read back out.
     pub(crate) fn display(&self) -> DisplayFields {
@@ -166,6 +224,42 @@ fn localized_pair(zh: Option<&str>, en: Option<&str>) -> Option<LocalizedText> {
     (!text.is_empty()).then_some(text)
 }
 
+/// Parse one `{zh,en}` object (`index` rows' `default_init_prompt`).
+fn localized_object(value: Option<&serde_json::Value>) -> Option<LocalizedText> {
+    let value = value?;
+    let text = |key: &str| -> Option<String> {
+        value
+            .get(key)
+            .and_then(|side| side.as_str())
+            .map(str::trim)
+            .filter(|side| !side.is_empty())
+            .map(str::to_owned)
+    };
+    let text = LocalizedText { zh: text("zh"), en: text("en") };
+    (!text.is_empty()).then_some(text)
+}
+
+/// Parse an array of `{zh,en}` objects (`index` rows' `quick_prompts`).
+fn localized_objects(value: Option<&serde_json::Value>) -> Vec<LocalizedText> {
+    value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| localized_object(Some(item)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The shared payload archive an `index` market may declare (skills / connectors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarketPayload {
+    pub url: String,
+    pub sha256: String,
+    pub size: i64,
+}
+
 /// One market's own entry indexes, read once per market.
 ///
 /// Both maps are keyed by the **entry name the prober carries**, which is the id
@@ -175,16 +269,30 @@ fn localized_pair(zh: Option<&str>, en: Option<&str>) -> Option<LocalizedText> {
 pub(crate) struct MarketIndex {
     connectors: HashMap<String, MarketIndexInfo>,
     skills: HashMap<String, MarketIndexInfo>,
+    /// `root/index.json` rows keyed by name — the `index` source kind
+    /// (schema_version 2). Kept apart from the two legacy maps because it is a
+    /// single mixed-kind index, not a per-market manifest.
+    index: HashMap<String, MarketIndexInfo>,
+    /// The shared payload zip for index markets whose entries live inside it
+    /// (`skills` / `connectors`); `None` for per-entry archive markets.
+    payload: Option<MarketPayload>,
 }
 
 impl MarketIndex {
     /// Read the indexes a market root may carry (best-effort: a missing or
     /// malformed index yields an empty map rather than failing the catalog).
     pub(crate) fn read(root: &Path) -> Self {
+        let (index, payload) = read_store_index(root);
         Self {
             connectors: read_index(root, ".codebuddy-connector/connectors.json", "connectors", "id"),
             skills: read_index(root, ".codebuddy-skill/marketplace.json", "skills", "name"),
+            index,
+            payload,
         }
+    }
+
+    pub(crate) fn payload(&self) -> Option<&MarketPayload> {
+        self.payload.as_ref()
     }
 
     fn info(&self, kind: &str, entry_name: &str) -> Option<&MarketIndexInfo> {
@@ -193,6 +301,24 @@ impl MarketIndex {
             "skill" => self.skills.get(entry_name),
             _ => None,
         }
+        // Doc 30 §6.1: an `index` market declares a single mixed-kind list, so
+        // its row is looked up by name after the kind-specific maps miss. The
+        // derived kind may differ from the row's own `kind` (e.g. `plugin` →
+        // `agent`), which is why this fallback is name-only.
+        .or_else(|| self.index.get(entry_name))
+    }
+
+    /// The absolute icon URL an `index` market declares for this entry.
+    pub(crate) fn index_icon_url(&self, entry_name: &str) -> Option<&str> {
+        self.index
+            .get(entry_name)
+            .and_then(|info| info.icon_url.as_deref())
+    }
+
+    /// The `index` row for an entry, when the market is index-based. Used by
+    /// the import path for the archive `sha256`/`size` it must verify.
+    pub(crate) fn entry_meta(&self, entry_name: &str) -> Option<&MarketIndexInfo> {
+        self.index.get(entry_name)
     }
 }
 
@@ -243,10 +369,81 @@ fn read_index(
                 },
                 tags: localized_tags_from_index(item),
                 examples: localized_examples_from_index(item),
+                default_init_prompt: None,
+                quick_prompts: Vec::new(),
+                icon_url: None,
+                sha256: None,
+                size: None,
+                available: true,
+                unavailable_reason: None,
+                kind: None,
+                category_id: item
+                    .get("category_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                member: None,
             },
         );
     }
     map
+}
+
+/// Read an `index` market's `root/index.json` (schema_version 2) into the same
+/// normalized shape as the legacy indexes.
+///
+/// Best-effort like [`read_index`]: a missing/malformed/older file yields an
+/// empty map, so a market source that briefly has not materialized yet does not
+/// fail the whole catalog.
+fn read_store_index(root: &Path) -> (HashMap<String, MarketIndexInfo>, Option<MarketPayload>) {
+    let Ok(text) = std::fs::read_to_string(root.join("index.json")) else {
+        return (HashMap::new(), None);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return (HashMap::new(), None);
+    };
+    let Some(items) = value.get("entries").and_then(|value| value.as_array()) else {
+        return (HashMap::new(), None);
+    };
+    let payload = value.get("payload").and_then(|payload| {
+        Some(MarketPayload {
+            url: payload.get("url")?.as_str()?.to_owned(),
+            sha256: payload.get("sha256")?.as_str()?.to_owned(),
+            size: payload.get("size")?.as_i64()?,
+        })
+    });
+    let mut map = HashMap::new();
+    for item in items {
+        let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let display = item.get("display");
+        let description = item.get("description");
+        map.insert(
+            name.to_owned(),
+            MarketIndexInfo {
+                name_zh: display.and_then(|display| display.get("zh")).and_then(|v| v.as_str()).map(str::to_owned),
+                name_en: display.and_then(|display| display.get("en")).and_then(|v| v.as_str()).map(str::to_owned),
+                version: item.get("version").and_then(|value| value.as_str()).map(str::to_owned),
+                description: LocalizedText {
+                    zh: description.and_then(|d| d.get("zh")).and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()).map(str::to_owned),
+                    en: description.and_then(|d| d.get("en")).and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty()).map(str::to_owned),
+                },
+                tags: localized_tags_from_index(item),
+                examples: localized_examples_from_index(item),
+                default_init_prompt: localized_object(item.get("default_init_prompt")),
+                quick_prompts: localized_objects(item.get("quick_prompts")),
+                icon_url: item.get("icon_url").and_then(|value| value.as_str()).map(str::to_owned),
+                sha256: item.get("sha256").and_then(|value| value.as_str()).map(str::to_owned),
+                size: item.get("size").and_then(|value| value.as_i64()),
+                available: item.get("available").and_then(|value| value.as_bool()).unwrap_or(true),
+                unavailable_reason: item.get("unavailable_reason").and_then(|value| value.as_str()).map(str::to_owned),
+                kind: item.get("kind").and_then(|value| value.as_str()).map(str::to_owned),
+                category_id: item.get("category_id").and_then(|value| value.as_str()).map(str::to_owned),
+                member: item.get("member").and_then(|value| value.as_str()).map(str::to_owned),
+            },
+        );
+    }
+    (map, payload)
 }
 
 /// Pair an index row's `tags_zh`/`tags_en` into `LocalizedText`s, by position
@@ -370,9 +567,33 @@ fn store_quick_prompts(
     if !from_manifest.is_empty() {
         return from_manifest;
     }
+    // `index` rows declare `quick_prompts` (experts) or `examples_*`
+    // (skills/connectors); both are card prompts, so either fills the slot.
+    let from_index_quick: Vec<AppServerLocalizedText> = index_info
+        .map(|info| info.quick_prompts.iter().filter_map(localized_or_none).collect())
+        .unwrap_or_default();
+    if !from_index_quick.is_empty() {
+        return from_index_quick;
+    }
     index_info
-        .map(|info| info.examples.iter().filter_map(|example| localized_or_none(example)).collect())
+        .map(|info| info.examples.iter().filter_map(localized_or_none).collect())
         .unwrap_or_default()
+}
+
+/// The entry's opening prompt: `plugin.json` first, then the index row's
+/// `default_init_prompt` (index markets carry it instead of a manifest).
+fn store_default_init_prompt(
+    manifest: Option<&PluginManifest>,
+    index_info: Option<&MarketIndexInfo>,
+) -> Option<AppServerLocalizedText> {
+    manifest
+        .and_then(|manifest| manifest.default_init_prompt.as_ref())
+        .and_then(localized_or_none)
+        .or_else(|| {
+            index_info
+                .and_then(|info| info.default_init_prompt.as_ref())
+                .and_then(localized_or_none)
+        })
 }
 
 /// The version this entry currently advertises in its marketplace.
@@ -430,16 +651,55 @@ pub(crate) fn entry_facts(
         &market.marketplace_id,
         &entry.source_uri,
     );
+    entry_facts_at(entry, source, index)
+}
+
+/// [`entry_facts`] against an explicit payload directory.
+///
+/// `import_entry` uses this after downloading + extracting a `remote` entry:
+/// the extracted directory is the real source, and the index row (not the
+/// directory shape) owns the kind for an index market.
+pub(crate) fn entry_facts_at(
+    entry: &nomifun_db::MarketplaceEntry,
+    source: PathBuf,
+    index: &MarketIndex,
+) -> EntryFacts {
     let manifest = nomifun_importer::read_plugin_display(&source);
-    let kind = derive_kind(&source, &entry.source_kind, &manifest);
-    // Connector markets declare display metadata in their `connectors.json`
-    // index (id → name_zh/name_en/version); fall back to it when no plugin.json
-    // display block exists. Skill markets keep the same facts in their own
-    // `marketplace.json` rows, and it is the only place a skill's version exists
-    // at all — a bare `SKILL.md` entry parses to the `1.0.0` placeholder.
-    let index_info = index.info(kind, &entry.name).cloned();
+    let derived = derive_kind(&source, &entry.source_kind, &manifest);
+    // Doc 30 §6.1: an index market declares the entry's kind itself (`plugin`
+    // included). Trust it over the directory guess — an index entry's payload
+    // is not extracted yet when the catalog is built, so the directory shape
+    // says nothing. `plugin` has no `StoreItemKind` counterpart; a plugin is an
+    // agent as far as the store's install model is concerned.
+    let index_info = if entry.source_kind == "remote" {
+        index.entry_meta(&entry.name).cloned()
+    } else {
+        index.info(derived, &entry.name).cloned()
+    };
+    let kind = if entry.source_kind == "remote" {
+        index_info
+            .as_ref()
+            .and_then(|info| info.kind.as_deref())
+            .map(store_kind_from_index)
+            .unwrap_or(derived)
+    } else {
+        derived
+    };
     let version = entry_live_version(manifest.as_ref(), index_info.as_ref(), entry);
     EntryFacts { source, manifest, kind, index_info, version }
+}
+
+/// Map an `index` row's `kind` to the store's closed item-kind set.
+///
+/// The store has four kinds (`agent` | `team` | `skill` | `connector`); an
+/// index may also declare `plugin`, which is the package format of an agent.
+fn store_kind_from_index(kind: &str) -> &'static str {
+    match kind {
+        "team" => "team",
+        "skill" => "skill",
+        "connector" => "connector",
+        _ => "agent",
+    }
 }
 
 /// The market root directory for index lookups (best-effort; for remote
@@ -535,6 +795,9 @@ impl StoreProvider for AppServerStoreProvider {
                 // reading the same names.
                 let EntryFacts { source, manifest, kind, index_info, version } =
                     entry_facts(&market, &entry, &self.market_root, &index);
+                // Index row (absolute icon URL / archive digest / availability).
+                // Read once, before the card fields that consume it.
+                let index_meta = index.entry_meta(&entry.name);
 
                 // `02` §8: a `strict=true` entry must ship its own
                 // `.codebuddy-plugin/plugin.json`. Checked against the live tree
@@ -544,16 +807,28 @@ impl StoreProvider for AppServerStoreProvider {
                 let blocked_reason = crate::app_server_marketplace::strict_entry_block(
                     entry.strict,
                     source.join(".codebuddy-plugin/plugin.json").is_file(),
-                );
+                )
+                .or_else(|| {
+                    // An index market can declare an entry unavailable; keep it
+                    // listed so the reason is readable, but never offer install.
+                    index_meta.and_then(|meta| {
+                        (!meta.available).then(|| {
+                            meta.unavailable_reason
+                                .clone()
+                                .unwrap_or_else(|| "市场标记该条目不可用".to_owned())
+                        })
+                    })
+                });
 
                 let display_name = manifest
                     .as_ref()
                     .and_then(|m| m.display_name.as_ref())
                     .and_then(localized_or_none)
                     .or_else(|| {
-                        // Fall back to the entry's own display metadata when
-                        // no plugin.json display fields exist.
-                        None
+                        // Index markets declare display names in their own row;
+                        // the payload has no plugin.json at list time.
+                        let display = index_info.as_ref()?.display();
+                        display.name.as_ref().and_then(localized_or_none)
                     });
                 let name = display_name
                     .as_ref()
@@ -573,6 +848,11 @@ impl StoreProvider for AppServerStoreProvider {
                             .as_ref()
                             .and_then(|root| market_icon_for(root, &entry.source_uri))
                     });
+                // Doc 30 §6.1: an index market declares an **absolute** icon URL.
+                // It wins over the host asset route (no market root download
+                // needed); an absent one falls back to the legacy route and then
+                // to `null`.
+                let index_icon = index.index_icon_url(&entry.name).map(str::to_owned);
 
                 // Installed state via provenance.
                 let snapshot = self
@@ -616,11 +896,22 @@ impl StoreProvider for AppServerStoreProvider {
                     description: manifest
                         .as_ref()
                         .and_then(desc_from_display)
+                        // Index rows carry the description themselves; there
+                        // is no plugin.json to read it from at list time.
+                        .or_else(|| {
+                            index_meta
+                                .and_then(|meta| meta.description.primary().map(str::to_owned))
+                        })
                         .or_else(|| entry.description.clone()),
                     display_description: manifest
                         .as_ref()
                         .and_then(|m| m.display_description.as_ref())
-                        .and_then(localized_or_none),
+                        .and_then(localized_or_none)
+                        .or_else(|| {
+                            index_meta
+                                .filter(|meta| !meta.description.is_empty())
+                                .map(|meta| to_localized(&meta.description))
+                        }),
                     tags: manifest
                         .as_ref()
                         .map(|m| m.tags.iter().filter_map(|t| localized_or_none(t)).collect())
@@ -635,13 +926,22 @@ impl StoreProvider for AppServerStoreProvider {
                                 })
                                 .unwrap_or_default()
                         }),
-                    category_id: manifest.as_ref().and_then(|m| m.category_id.clone()),
+                    category_id: manifest
+                        .as_ref()
+                        .and_then(|m| m.category_id.clone())
+                        // Index rows carry the category id themselves; the
+                        // payload has no plugin.json at list time.
+                        .or_else(|| index_meta.and_then(|meta| meta.category_id.clone())),
                     category: {
                         // The host joins the dictionary (`43` D1): the raw
                         // `category_id` travels regardless, and the resolved
                         // category only appears on an exact dictionary hit —
                         // never guessed from the id's text.
-                        match manifest.as_ref().and_then(|m| m.category_id.as_deref()) {
+                        match manifest
+                            .as_ref()
+                            .and_then(|m| m.category_id.as_deref())
+                            .or_else(|| index_meta.and_then(|meta| meta.category_id.as_deref()))
+                        {
                             Some(category_id) => categories
                                 .as_ref()
                                 .and_then(|items| {
@@ -652,18 +952,29 @@ impl StoreProvider for AppServerStoreProvider {
                         }
                     },
                     quick_prompts: store_quick_prompts(manifest.as_ref(), index_info.as_ref()),
+                    default_init_prompt: store_default_init_prompt(
+                        manifest.as_ref(),
+                        index_info.as_ref(),
+                    ),
                     // Carried verbatim from the market's own manifest row; the
                     // discovery layer already dropped anything that was not a
                     // calendar date (`18` §3), so this needs no second check.
                     published_at: entry.published_at.clone(),
-                    avatar_url: avatar.map(|path| {
-                        format!(
-                            "/api/app-server/store/{}/entries/{}/assets/{}",
-                            market.marketplace_id,
-                            entry.name,
-                            path.trim_start_matches('/')
-                        )
+                    avatar_url: index_icon.clone().or_else(|| {
+                        avatar.map(|path| {
+                            format!(
+                                "/api/app-server/store/{}/entries/{}/assets/{}",
+                                market.marketplace_id,
+                                entry.name,
+                                path.trim_start_matches('/')
+                            )
+                        })
                     }),
+                    icon_url: index_icon,
+                    download_size: index_meta.and_then(|meta| meta.size),
+                    sha256: index_meta.and_then(|meta| meta.sha256.clone()),
+                    available: index_meta.map(|meta| meta.available).unwrap_or(true),
+                    unavailable_reason: index_meta.and_then(|meta| meta.unavailable_reason.clone()),
                     version,
                     source_kind: entry.source_kind.clone(),
                     installed,
@@ -1115,8 +1426,14 @@ mod tests {
             display_description: None,
             tags: vec![],
             quick_prompts: vec![],
+            default_init_prompt: None,
             published_at: None,
             avatar_url: None,
+            icon_url: None,
+            download_size: None,
+            sha256: None,
+            available: true,
+            unavailable_reason: None,
             version: "2.0.0".into(),
             source_kind: "directory".into(),
             installed: true,
@@ -1317,5 +1634,100 @@ mod tests {
         // Neither declares anything → no hint line on the card.
         assert!(store_quick_prompts(None, None).is_empty());
         assert!(store_quick_prompts(None, Some(&MarketIndexInfo::default())).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod index_market_tests {
+    use super::*;
+
+    fn remote_entry(name: &str) -> nomifun_db::MarketplaceEntry {
+        nomifun_db::MarketplaceEntry {
+            name: name.into(),
+            source_kind: "remote".into(),
+            source_uri: format!("https://cdn.example/{name}.tar.gz"),
+            version: None,
+            description: None,
+            keywords: vec![],
+            category: None,
+            published_at: None,
+            localized: std::collections::BTreeMap::new(),
+            strict: false,
+            blocked_reason: None,
+        }
+    }
+
+    #[test]
+    fn index_json_feeds_icon_digest_and_store_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = serde_json::json!({
+            "schema_version": 2,
+            "market": "experts",
+            "market_kind": "plugin",
+            "entries": [{
+                "name": "a-share-analysis",
+                "kind": "team",
+                "display": {"zh": "A股研究团队", "en": "A-Share Team"},
+                "description": {"zh": "研究", "en": "research"},
+                "version": "1.2.3",
+                "download": "https://cdn.example/a.tar.gz",
+                "sha256": "a".repeat(64),
+                "size": 42,
+                "files": 3,
+                "icon_url": "https://cdn.example/icons/a.webp",
+                "category_id": "08-FinanceInvestment",
+                "default_init_prompt": {"zh": "帮我看看A股", "en": "Review A-shares"},
+                "quick_prompts": [{"zh": "今天行情如何", "en": "How is the market today"}],
+                "available": true
+            }]
+        });
+        std::fs::write(dir.path().join("index.json"), index.to_string()).unwrap();
+        let parsed = MarketIndex::read(dir.path());
+        assert_eq!(parsed.index_icon_url("a-share-analysis"), Some("https://cdn.example/icons/a.webp"));
+        let meta = parsed.entry_meta("a-share-analysis").expect("row");
+        assert_eq!(meta.entry_sha256(), Some("a".repeat(64)));
+        assert_eq!(meta.entry_size(), Some(42));
+        assert!(meta.available);
+        assert_eq!(
+            meta.default_init_prompt.as_ref().and_then(|p| p.zh.as_deref()),
+            Some("帮我看看A股")
+        );
+        let prompts = store_quick_prompts(None, Some(meta));
+        assert_eq!(prompts[0].zh.as_deref(), Some("今天行情如何"));
+        let default_prompt = store_default_init_prompt(None, Some(meta));
+        assert_eq!(
+            default_prompt.as_ref().and_then(|prompt| prompt.zh.as_deref()),
+            Some("帮我看看A股")
+        );
+
+        let entry = remote_entry("a-share-analysis");
+        let facts = entry_facts_at(&entry, dir.path().join("missing"), &parsed);
+        assert_eq!(facts.kind, "team", "index row kind overrides the directory guess");
+        assert_eq!(facts.version, "1.2.3");
+        assert_eq!(facts.index_info.as_ref().unwrap().name_zh.as_deref(), Some("A股研究团队"));
+    }
+
+    #[test]
+    fn unavailable_index_row_is_kept_with_its_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = serde_json::json!({
+            "schema_version": 2,
+            "market": "experts",
+            "entries": [{
+                "name": "blocked",
+                "kind": "plugin",
+                "download": "https://cdn.example/b.tar.gz",
+                "sha256": "b".repeat(64),
+                "size": 1,
+                "available": false,
+                "unavailable_reason": "上游已下架"
+            }]
+        });
+        std::fs::write(dir.path().join("index.json"), index.to_string()).unwrap();
+        let meta = MarketIndex::read(dir.path()).entry_meta("blocked").cloned().expect("row");
+        assert!(!meta.available);
+        assert_eq!(meta.unavailable_reason.as_deref(), Some("上游已下架"));
+        let facts = entry_facts_at(&remote_entry("blocked"), dir.path().join("missing"), &MarketIndex::read(dir.path()));
+        assert_eq!(facts.kind, "agent", "`plugin` maps onto the store's agent kind");
     }
 }

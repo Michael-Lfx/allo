@@ -1198,10 +1198,18 @@ impl AgentStoreConfig {
         // so an unchanged archive is never re-downloaded.
         const MARKET_HOST: &str =
             "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master";
-        ["experts", "skills", "connectors"]
-            .into_iter()
-            .map(|id| (id.to_owned(), "zip".to_owned(), format!("{MARKET_HOST}/{id}.zip")))
-            .collect()
+        // Doc 30 §6.1: all three official markets are index-first now — one
+        // small pointer each, entries fetched on demand. `skills` / `connectors`
+        // share a payload zip (`member` selects the entry); `experts` has one
+        // tar.gz per entry.
+        [
+            ("experts", "index", format!("{MARKET_HOST}/wb-market/experts/index.json")),
+            ("skills", "index", format!("{MARKET_HOST}/wb-market/skills/index.json")),
+            ("connectors", "index", format!("{MARKET_HOST}/wb-market/connectors/index.json")),
+        ]
+        .into_iter()
+        .map(|(id, kind, source)| (id.to_owned(), kind.to_owned(), source))
+        .collect()
     }
 
     /// Default location: `~/.agent-store/config.toml` (Windows then POSIX).
@@ -2116,8 +2124,12 @@ model = "mimo-v2.5-free"
         let ids: Vec<&str> = builtin.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["experts", "skills", "connectors"]);
         for (id, kind, source) in &builtin {
-            assert_eq!(kind, "zip");
-            assert!(source.ends_with(&format!("/{id}.zip")), "{id} source: {source}");
+            // Doc 30 §6.1: all three official markets are index-first.
+            assert_eq!(kind, "index");
+            assert!(
+                source.ends_with(&format!("/wb-market/{id}/index.json")),
+                "{id} source: {source}"
+            );
             assert!(source.starts_with("https://"), "{id} source must be absolute: {source}");
         }
         // The release default is the product's own market host. Pinned because
@@ -2126,14 +2138,15 @@ model = "mimo-v2.5-free"
         // via `is_official_source` (auto-update off). Since doc 30 each market
         // ships as **one archive** (not a file-per-entry tree on the site), and
         // `master` is the mutable market tip — publishing a market must not
-        // require shipping a new binary.
+        // require shipping a new binary. Doc 30 §6.1 moves `experts` to the
+        // index: one ~1 MiB pointer, entry archives on demand.
         let sources: Vec<&str> = builtin.iter().map(|(_, _, source)| source.as_str()).collect();
         assert_eq!(
             sources,
             [
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/experts.zip",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/skills.zip",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/connectors.zip",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/skills/index.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/connectors/index.json",
             ]
         );
     }

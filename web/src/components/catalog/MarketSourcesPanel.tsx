@@ -498,6 +498,7 @@ export function MarketSourcesPanel() {
               <option value="git">{t("catalog.marketKindGit")}</option>
               <option value="url">{t("catalog.marketKindUrl")}</option>
               <option value="zip">{t("catalog.marketKindZip")}</option>
+              <option value="index">{t("catalog.marketKindIndex")}</option>
               <option value="directory">{t("catalog.marketKindDirectory")}</option>
             </select>
             <input
@@ -512,7 +513,9 @@ export function MarketSourcesPanel() {
                     ? t("catalog.marketGitPlaceholder")
                     : marketKind === "zip"
                       ? t("catalog.marketZipPlaceholder")
-                      : t("catalog.marketUrlPlaceholder")}
+                      : marketKind === "index"
+                        ? t("catalog.marketIndexPlaceholder")
+                        : t("catalog.marketUrlPlaceholder")}
               value={marketPath}
               onChange={(event) => setMarketPath(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") void addMarket(); }}

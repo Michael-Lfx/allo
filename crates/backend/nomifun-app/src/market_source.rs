@@ -117,6 +117,15 @@ pub fn normalize_source_url(source_kind: &str, source: &str) -> Result<String, S
             }
             Err(format!("expected an HTTP(S) URL to a market archive, got `{source}`"))
         }
+        // Doc 30 §6.1: an `index` source is an HTTP(S) `index.json`. The kind,
+        // not the suffix, decides how it is fetched — the file must be named
+        // `index.json` but the URL may carry query strings/signed parameters.
+        "index" => {
+            if source.starts_with("https://") || source.starts_with("http://") {
+                return Ok(source.to_owned());
+            }
+            Err(format!("expected an HTTP(S) URL to an index.json, got `{source}`"))
+        }
         other => Err(format!("unsupported remote source kind `{other}`")),
     }
 }
@@ -137,6 +146,8 @@ pub fn looks_like_market(root: &Path) -> bool {
         || root.join(MARKET_MANIFEST_PLUGIN_MARKET).is_file()
         || root.join("marketplace.json").is_file()
         || root.join("cli.json").is_file()
+        // Doc 30 §6.1: an `index` market's root carries only `index.json`.
+        || root.join("index.json").is_file()
 }
 
 /// Derive the market root base URL from a manifest URL:
@@ -162,6 +173,82 @@ fn http_client() -> Result<reqwest::Client, String> {
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|error| format!("build http client: {error}"))
+}
+
+/// Document client for `index.json` / `categories.json` (≤ ~1 MiB each).
+///
+/// The 15s manifest budget is too tight for a 1 MiB index on a slow link, and a
+/// false timeout would look like "market broken". 60s stays a hard bound.
+fn document_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("flowy-agent-store/1.0")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|error| format!("build http client: {error}"))
+}
+
+/// Lowercase hex sha256 of an in-memory body (index/categories are small).
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Lowercase hex sha256 of a file, streamed (entry archives can be 495 MiB).
+pub fn sha256_file(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1 << 16];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// GET a small document as text (`index.json` / `categories.json`).
+///
+/// `index` sources are one ~1 MiB request, so they get [`document_client`]'s
+/// 60s bound rather than the 15s manifest budget.
+pub async fn fetch_text(url: &str) -> Result<String, String> {
+    let client = document_client()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("fetch {url}: {error}"))?;
+    let status = response.status();
+    if status != StatusCode::OK {
+        return Err(format!("fetch {url}: HTTP {status}"));
+    }
+    response.text().await.map_err(|error| format!("read body {url}: {error}"))
+}
+
+/// GET a small document as raw bytes (`categories.json` must be sha-checked on
+/// its exact bytes, not on a re-serialized form).
+pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let client = document_client()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("fetch {url}: {error}"))?;
+    let status = response.status();
+    if status != StatusCode::OK {
+        return Err(format!("fetch {url}: HTTP {status}"));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| format!("read body {url}: {error}"))
 }
 
 /// A listing is exposed at `{base}/_files.txt` with one relative path per
@@ -437,6 +524,119 @@ fn extract_zip_market_with_budget(
         written += 1;
     }
     Ok(written)
+}
+
+/// Extract one entry `tar.gz` into `dest`, rejecting anything but safe regular
+/// files/directories.
+///
+/// Unlike zip (which has a central directory and the `zip_safe` helpers), a tar
+/// stream interleaves headers with data, so the guards live here: absolute
+/// paths, `..` traversal, Windows drive prefixes, symlinks/hardlinks and device
+/// nodes are all refused. Byte count is enforced on bytes **actually written**,
+/// not on the declared size, so a lying header cannot fill the disk.
+pub fn extract_tar_gz_market(
+    archive_path: &Path,
+    dest: &Path,
+) -> Result<usize, String> {
+    use std::path::Component;
+
+    let file = fs::File::open(archive_path)
+        .map_err(|error| format!("open {}: {error}", archive_path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
+    let mut archive = tar::Archive::new(decoder);
+    let mut written = 0u64;
+    let mut count = 0usize;
+    for entry in archive
+        .entries()
+        .map_err(|error| format!("read archive {}: {error}", archive_path.display()))?
+    {
+        let mut entry = entry.map_err(|error| format!("read archive entry: {error}"))?;
+        let path = entry
+            .path()
+            .map_err(|error| format!("read archive entry path: {error}"))?
+            .into_owned();
+        let safe = path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+        if !safe || path.as_os_str().is_empty() {
+            return Err(format!(
+                "archive entry `{}` is not a safe relative path; refusing to extract",
+                path.display()
+            ));
+        }
+        let kind = entry.header().entry_type();
+        if kind.is_dir() {
+            let target = dest.join(&path);
+            fs::create_dir_all(&target)
+                .map_err(|error| format!("create {}: {error}", target.display()))?;
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(format!(
+                "archive entry `{}` is not a regular file ({kind:?}); refusing to extract",
+                path.display()
+            ));
+        }
+        let target = dest.join(&path);
+        let Some(parent) = target.parent() else {
+            continue;
+        };
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+        let mut out = fs::File::create(&target)
+            .map_err(|error| format!("create {}: {error}", target.display()))?;
+        let bytes = std::io::copy(&mut entry, &mut out)
+            .map_err(|error| format!("extract {}: {error}", target.display()))?;
+        written = written.saturating_add(bytes);
+        if written > MAX_MARKET_ZIP_UNCOMPRESSED_BYTES {
+            drop(out);
+            let _ = fs::remove_file(&target);
+            return Err(format!(
+                "archive {} passed the {MAX_MARKET_ZIP_UNCOMPRESSED_BYTES}-byte cap while extracting",
+                archive_path.display()
+            ));
+        }
+        count += 1;
+        if count > MAX_MARKET_ZIP_ENTRIES {
+            return Err(format!(
+                "archive {} has more than {MAX_MARKET_ZIP_ENTRIES} entries; refusing to extract",
+                archive_path.display()
+            ));
+        }
+    }
+    Ok(count)
+}
+
+/// Download a small display asset (an `index` market's `icon_url`) into `dest`.
+///
+/// Icons are capped at 64 KiB by the publisher; a larger body is a contract
+/// violation, not a big icon, so the cap is enforced on the bytes received.
+pub async fn download_small_file(url: &str, dest: &Path, max_bytes: usize) -> Result<(), String> {
+    let client = http_client()?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("fetch {url}: {error}"))?;
+    let status = response.status();
+    if status != StatusCode::OK {
+        return Err(format!("fetch {url}: HTTP {status}"));
+    }
+    if response.content_length().is_some_and(|length| length > max_bytes as u64) {
+        return Err(format!("asset {url} declares more than {max_bytes} bytes"));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("read body {url}: {error}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("asset {url} is {} bytes, over {max_bytes}", bytes.len()));
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    fs::write(dest, &bytes).map_err(|error| format!("write {}: {error}", dest.display()))
 }
 
 /// Shallow-clone `url` into `staging` (a fresh directory) and return the raw
@@ -1119,5 +1319,111 @@ mod tests {
             looks_like_market(&staging),
             "an official archive must be recognised as a market"
         );
+    }
+}
+
+#[cfg(test)]
+mod tar_tests {
+    use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    fn write_tar_gz(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(0);
+            builder.append_data(&mut header, *name, *data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    /// Build a tar with a raw (unsafe) header name. The safe `append_data`
+    /// API refuses `..` / absolute names itself, so a traversal fixture has to
+    /// write the header bytes directly — exactly what a hostile archive does.
+    fn write_raw_tar_gz(path: &Path, name: &str, data: &[u8]) {
+        let file = fs::File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        {
+            let bytes = header.as_mut_bytes();
+            bytes[..name.len()].copy_from_slice(name.as_bytes());
+        }
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder.append(&header, data).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn tar_extraction_accepts_regular_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("ok.tar.gz");
+        write_tar_gz(&archive, &[("a.txt", b"alpha"), ("dir/b.txt", b"beta")]);
+        let dest = temp.path().join("out");
+        let count = extract_tar_gz_market(&archive, &dest).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(fs::read_to_string(dest.join("dir/b.txt")).unwrap(), "beta");
+    }
+
+    #[test]
+    fn tar_extraction_rejects_parent_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("evil.tar.gz");
+        write_raw_tar_gz(&archive, "../evil.txt", b"x");
+        let dest = temp.path().join("out");
+        let error = extract_tar_gz_market(&archive, &dest).unwrap_err();
+        assert!(error.contains("safe relative path"), "{error}");
+        assert!(!temp.path().join("evil.txt").exists());
+    }
+
+    #[test]
+    fn tar_extraction_rejects_absolute_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("abs.tar.gz");
+        write_raw_tar_gz(&archive, "/abs.txt", b"x");
+        let dest = temp.path().join("out");
+        let error = extract_tar_gz_market(&archive, &dest).unwrap_err();
+        assert!(error.contains("safe relative path"), "{error}");
+    }
+
+    #[test]
+    fn tar_extraction_rejects_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("link.tar.gz");
+        {
+            let file = fs::File::create(&archive).unwrap();
+            let encoder = GzEncoder::new(file, Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_mtime(0);
+            builder
+                .append_link(&mut header, "link", "/etc/passwd")
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        let dest = temp.path().join("out");
+        let error = extract_tar_gz_market(&archive, &dest).unwrap_err();
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    #[test]
+    fn index_source_urls_normalize_like_the_other_http_kinds() {
+        assert_eq!(
+            normalize_source_url("index", "https://h/wb-market/experts/index.json").unwrap(),
+            "https://h/wb-market/experts/index.json"
+        );
+        assert!(normalize_source_url("index", "C:/tmp/index.json").is_err());
     }
 }

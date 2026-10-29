@@ -259,6 +259,108 @@ fn scan_root_as_entry(root: &Path) -> ScannedEntry {
     }
 }
 
+/// Download, verify and extract one `index` entry archive under `cache`.
+///
+/// Split from the provider so the integrity/extraction sequence is testable
+/// without a database or importer: the cached archive name is content-addressed
+/// by the index sha, and a corrupt/mismatched archive is deleted rather than
+/// reused on the next attempt.
+async fn materialize_remote_archive(
+    cache: &Path,
+    entry_name: &str,
+    download: &str,
+    sha256: &str,
+    size: i64,
+) -> Result<PathBuf, AppError> {
+    std::fs::create_dir_all(cache)
+        .map_err(|error| AppError::Internal(format!("create entry cache: {error}")))?;
+    let stem = sanitize_slug(entry_name);
+    let archive = cache.join(format!("{stem}-{sha256}.tar.gz"));
+    if !archive.is_file() {
+        let (downloaded, server_digest) = crate::market_source::download_archive(download, &archive)
+            .await
+            .map_err(AppError::Internal)?;
+        if let Some(server) = server_digest {
+            if server != sha256 {
+                let _ = std::fs::remove_file(&archive);
+                return Err(AppError::Internal(format!(
+                    "entry {entry_name} digest mismatch: index declares {sha256}, host reports {server}"
+                )));
+            }
+        }
+        if downloaded != sha256 {
+            let _ = std::fs::remove_file(&archive);
+            return Err(AppError::Internal(format!(
+                "entry {entry_name} downloaded bytes hash to {downloaded}, index declares {sha256}"
+            )));
+        }
+    }
+    let actual = crate::market_source::sha256_file(&archive).map_err(AppError::Internal)?;
+    if actual != sha256 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "entry {entry_name} archive hash {actual} does not match index sha256 {sha256}"
+        )));
+    }
+    let length = std::fs::metadata(&archive)
+        .map_err(|error| AppError::Internal(format!("stat entry archive: {error}")))?
+        .len();
+    if length != size as u64 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "entry {entry_name} archive is {length} bytes, index declares {size}"
+        )));
+    }
+    let extracted = cache.join(format!("{stem}-{sha256}"));
+    if !extracted.is_dir() {
+        crate::market_source::extract_tar_gz_market(&archive, &extracted)
+            .map_err(AppError::Internal)?;
+    }
+    Ok(resolve_extracted_root(extracted))
+}
+
+/// The icon extension for a URL path, restricted to the importer's whitelist.
+fn icon_extension(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "png" => "png",
+        "svg" => "svg",
+        "jpg" => "jpg",
+        "jpeg" => "jpeg",
+        "webp" => "webp",
+        "gif" => "gif",
+        _ => "png",
+    }
+}
+
+fn resolve_extracted_root(extracted: std::path::PathBuf) -> std::path::PathBuf {
+    let is_payload = |path: &Path| {
+        path.join(".codebuddy-plugin/plugin.json").is_file()
+            || path.join("SKILL.md").is_file()
+            || path.join("cli.json").is_file()
+    };
+    if is_payload(&extracted) {
+        return extracted;
+    }
+    // The published experts archives wrap the plugin in `<plugin-name>/`.
+    // Descend only when exactly one child is a payload — two candidates mean
+    // the archive's layout is ambiguous and guessing would pick wrong.
+    let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(&extracted)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && is_payload(path))
+                .collect()
+        })
+        .unwrap_or_default();
+    if candidates.len() == 1 {
+        candidates.remove(0)
+    } else {
+        extracted
+    }
+}
+
 fn probe_connector_market(root: &Path) -> Result<Vec<ScannedEntry>, AppError> {
     let text = std::fs::read_to_string(root.join(".codebuddy-connector/connectors.json"))
         .map_err(|error| AppError::Internal(format!("read connectors.json: {error}")))?;
@@ -505,6 +607,84 @@ impl AppServerMarketplaceProvider {
         }
     }
 
+    /// Materialize one `remote` (index-market) entry: download its `tar.gz`,
+    /// verify the index-declared sha256/size, and extract it under
+    /// `{market_root}/{marketplace_id}/cache/`.
+    ///
+    /// The published `experts` archives wrap the plugin in a top-level
+    /// `<plugin-name>/` directory (e.g. `accessibility-auditor/.codebuddy-plugin/plugin.json`),
+    /// so the extracted directory is descended one level when the payload root
+    /// is not itself a plugin. Returning the wrapper instead would make the
+    /// kind derivation and the importer look for manifests in the wrong place.
+    async fn materialize_remote_entry(
+        &self,
+        row: &PluginMarketplaceRow,
+        entry: &MarketplaceEntry,
+        index: &crate::app_server_store::MarketIndex,
+    ) -> Result<std::path::PathBuf, AppError> {
+        let meta = index.entry_meta(&entry.name).ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "index market {} has no row for entry {}",
+                row.marketplace_id, entry.name
+            ))
+        })?;
+        if !entry.source_uri.starts_with("https://") {
+            return Err(AppError::BadRequest(format!(
+                "entry {} download must be an absolute https URL",
+                entry.name
+            )));
+        }
+        let cache = self.market_root.join(&row.marketplace_id).join("cache");
+        // Payload markets (`skills` / `connectors`) put every entry inside one
+        // shared zip; the entry names its directory with `member`.
+        if let Some(payload) = index.payload() {
+            let member = meta.entry_member().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "payload market entry {} has no member path",
+                    entry.name
+                ))
+            })?;
+            return materialize_payload_entry(&cache, member, payload).await;
+        }
+        let sha256 = meta
+            .entry_sha256()
+            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no sha256", entry.name)))?;
+        let size = meta
+            .entry_size()
+            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no size", entry.name)))?;
+        materialize_remote_archive(&cache, &entry.name, &entry.source_uri, &sha256, size).await
+    }
+
+    /// Download an `index` market's absolute `icon_url` into the entry cache so
+    /// the importer can stamp it into the snapshot (`51` §3.2).
+    ///
+    /// Best-effort: a missing/broken icon must not fail an otherwise valid
+    /// install — the card simply falls back to the market icon or initials.
+    async fn materialize_remote_icon(
+        &self,
+        row: &PluginMarketplaceRow,
+        entry: &MarketplaceEntry,
+        index: &crate::app_server_store::MarketIndex,
+    ) -> Option<std::path::PathBuf> {
+        let url = index.entry_meta(&entry.name)?.entry_icon_url()?;
+        if !url.starts_with("https://") {
+            return None;
+        }
+        let dir = self.market_root.join(&row.marketplace_id).join("cache/icons");
+        let dest = dir.join(format!(
+            "{}.{}",
+            sanitize_slug(&entry.name),
+            icon_extension(url)
+        ));
+        if dest.is_file() {
+            return Some(dest);
+        }
+        match crate::market_source::download_small_file(url, &dest, 64 * 1024).await {
+            Ok(()) => Some(dest),
+            Err(_) => None,
+        }
+    }
+
     async fn verify_market_row(&self, marketplace_id: &str) -> Result<PluginMarketplaceRow, AppError> {
         let row = self
             .markets
@@ -519,6 +699,109 @@ impl AppServerMarketplaceProvider {
         }
         Ok(row)
     }
+}
+
+/// Materialize one entry from a shared payload zip (`skills` / `connectors`).
+///
+/// The payload is content-addressed by its own sha256, downloaded once and
+/// extracted once; every entry of that market then reuses `payload-<sha>/`.
+async fn materialize_payload_entry(
+    cache: &std::path::Path,
+    member: &str,
+    payload: &crate::app_server_store::MarketPayload,
+) -> Result<std::path::PathBuf, AppError> {
+    use std::path::Component;
+    if !payload.url.starts_with("https://") {
+        return Err(AppError::BadRequest(format!(
+            "payload url must be absolute https, got `{}`",
+            payload.url
+        )));
+    }
+    if payload.sha256.len() != 64 {
+        return Err(AppError::Internal("payload sha256 must be 64 hex chars".into()));
+    }
+    let member_path = std::path::Path::new(member);
+    let safe = !member.is_empty()
+        && member_path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+    if !safe {
+        return Err(AppError::BadRequest(format!(
+            "payload member `{member}` is not a safe relative path"
+        )));
+    }
+    std::fs::create_dir_all(cache)
+        .map_err(|error| AppError::Internal(format!("create entry cache: {error}")))?;
+    let archive = cache.join(format!("payload-{}.zip", payload.sha256));
+    if !archive.is_file() {
+        let (digest, server) = crate::market_source::download_archive(&payload.url, &archive)
+            .await
+            .map_err(AppError::Internal)?;
+        if let Some(server) = server {
+            if server != payload.sha256 {
+                let _ = std::fs::remove_file(&archive);
+                return Err(AppError::Internal(format!(
+                    "payload digest mismatch: index declares {}, host reports {server}",
+                    payload.sha256
+                )));
+            }
+        }
+        if digest != payload.sha256 {
+            let _ = std::fs::remove_file(&archive);
+            return Err(AppError::Internal(format!(
+                "payload downloaded bytes hash to {digest}, index declares {}",
+                payload.sha256
+            )));
+        }
+    }
+    let actual = crate::market_source::sha256_file(&archive).map_err(AppError::Internal)?;
+    if actual != payload.sha256 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "payload archive hash {actual} does not match index sha256 {}",
+            payload.sha256
+        )));
+    }
+    let length = std::fs::metadata(&archive)
+        .map_err(|error| AppError::Internal(format!("stat payload archive: {error}")))?
+        .len();
+    if length != payload.size as u64 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "payload archive is {length} bytes, index declares {}",
+            payload.size
+        )));
+    }
+    let extracted = cache.join(format!("payload-{}", payload.sha256));
+    if !extracted.is_dir() {
+        let tmp = cache.join(format!(
+            ".payload-{}-{}",
+            payload.sha256,
+            nomifun_common::generate_id()
+        ));
+        crate::market_source::extract_zip_market(&archive, &tmp)
+            .map_err(AppError::Internal)?;
+        match std::fs::rename(&tmp, &extracted) {
+            Ok(()) => {}
+            Err(_) if extracted.is_dir() => {
+                let _ = std::fs::remove_dir_all(&tmp);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(AppError::Internal(format!(
+                    "promote extracted payload: {error}"
+                )));
+            }
+        }
+    }
+    let source = extracted.join(member_path);
+    if !source.is_dir() {
+        return Err(AppError::Internal(format!(
+            "payload member `{member}` is missing from {}",
+            extracted.display()
+        )));
+    }
+    Ok(source)
 }
 
 /// [`MarketplaceProvider::register_unfetched`] against the registry seam
@@ -1109,8 +1392,43 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         let index = crate::app_server_store::market_root_dir(&row, &self.market_root)
             .map(|root| crate::app_server_store::MarketIndex::read(&root))
             .unwrap_or_default();
-        let facts = crate::app_server_store::entry_facts(&row, &entry, &self.market_root, &index);
-        let source = facts.source.clone();
+        // Doc 30 §6.1: an index row can explicitly mark an entry unavailable.
+        // The catalog keeps it visible with the reason, but install must not
+        // download a payload the market says should not be installed.
+        if entry.source_kind == "remote" {
+            if let Some(meta) = index.entry_meta(&entry.name) {
+                if !meta.entry_available() {
+                    let reason = meta
+                        .entry_unavailable_reason()
+                        .unwrap_or("市场标记该条目不可用")
+                        .to_owned();
+                    let version = meta
+                        .entry_version()
+                        .or(entry.version.as_deref())
+                        .unwrap_or("0")
+                        .to_owned();
+                    return Ok(nomifun_importer::blocked_import_result(
+                        SourceKind::CodeBuddyPlugin,
+                        Some((entry.name.clone(), version)),
+                        &[reason],
+                    ));
+                }
+            }
+        }
+        // Doc 30 §6.1: an `index` market ships only `index.json`; the entry's
+        // `tar.gz` is downloaded (and integrity-checked) at install time.
+        let source = if entry.source_kind == "remote" {
+            self.materialize_remote_entry(&row, &entry, &index).await?
+        } else {
+            crate::market_fetch::entry_source_path(
+                &row.source_kind,
+                &row.source_uri,
+                &self.market_root,
+                marketplace_id,
+                &entry.source_uri,
+            )
+        };
+        let facts = crate::app_server_store::entry_facts_at(&entry, source.clone(), &index);
 
         // `strict=true` refuses an entry whose source carries no plugin.json of
         // its own (`02` §8 / §11.1). Re-evaluated against the real tree instead
@@ -1175,11 +1493,16 @@ impl MarketplaceProvider for AppServerMarketplaceProvider {
         // marketplace layer knows the market root; resolved through the *same*
         // function `store/list` uses for the card, so the picture on the card and
         // the picture in the snapshot can never disagree.
-        let market_icon = crate::app_server_store::market_root_dir(&row, &self.market_root)
-            .and_then(|root| {
+        let market_icon = if entry.source_kind == "remote" {
+            // Index markets keep the icon at an absolute URL; bring it local so
+            // the importer can place it in the immutable snapshot.
+            self.materialize_remote_icon(&row, &entry, &index).await
+        } else {
+            crate::app_server_store::market_root_dir(&row, &self.market_root).and_then(|root| {
                 crate::app_server_store::market_icon_for(&root, &entry.source_uri)
                     .map(|icon| root.join(icon))
-            });
+            })
+        };
         // Remote imports carry the resolved revision for provenance.
         let revision = row.resolved_revision.clone().unwrap_or_else(|| "".into());
         let request = if revision.is_empty() {
@@ -1891,5 +2214,154 @@ mod tests {
             "a kept-but-refused row must say why"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod extracted_root_tests {
+    use super::resolve_extracted_root;
+
+    fn write_plugin(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join(".codebuddy-plugin")).unwrap();
+        std::fs::write(dir.join(".codebuddy-plugin/plugin.json"), "{}").unwrap();
+    }
+
+    #[test]
+    fn descends_a_single_top_level_plugin_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let wrapper = temp.path().join("payload");
+        write_plugin(&wrapper.join("accessibility-auditor"));
+        assert_eq!(
+            resolve_extracted_root(wrapper.clone()),
+            wrapper.join("accessibility-auditor")
+        );
+    }
+
+    #[test]
+    fn keeps_the_root_for_a_direct_plugin_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let payload = temp.path().join("payload");
+        write_plugin(&payload);
+        assert_eq!(resolve_extracted_root(payload.clone()), payload);
+    }
+
+    #[test]
+    fn ambiguous_wrappers_are_not_guessed() {
+        let temp = tempfile::tempdir().unwrap();
+        let wrapper = temp.path().join("payload");
+        write_plugin(&wrapper.join("one"));
+        write_plugin(&wrapper.join("two"));
+        assert_eq!(resolve_extracted_root(wrapper.clone()), wrapper);
+    }
+}
+
+#[cfg(test)]
+mod icon_name_tests {
+    use super::icon_extension;
+
+    #[test]
+    fn icon_extension_uses_the_url_path_and_falls_back_to_png() {
+        assert_eq!(icon_extension("https://cdn/x/a.webp"), "webp");
+        assert_eq!(icon_extension("https://cdn/x/a.SVG?x=1"), "svg");
+        assert_eq!(icon_extension("https://cdn/x/icon"), "png");
+        assert_eq!(icon_extension("https://cdn/x/a.exe"), "png");
+    }
+}
+
+#[cfg(test)]
+mod archive_materialization_tests {
+    use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn archive_with_wrapped_plugin() -> Vec<u8> {
+        let mut tar_bytes = Vec::new();
+        {
+            let encoder = GzEncoder::new(&mut tar_bytes, Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+            let payload = br#"{"name":"demo"}"#;
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(0);
+            builder
+                .append_data(&mut header, "demo/.codebuddy-plugin/plugin.json", &payload[..])
+                .unwrap();
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        tar_bytes
+    }
+
+    #[tokio::test]
+    async fn download_verify_extract_and_descend_the_wrapper() {
+        let bytes = archive_with_wrapped_plugin();
+        let sha = crate::market_source::sha256_hex_bytes(&bytes);
+        let size = bytes.len() as i64;
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+            .mount(&mock)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let root = materialize_remote_archive(
+            cache.path(),
+            "demo",
+            &format!("{}/a.tar.gz", mock.uri()),
+            &sha,
+            size,
+        )
+        .await
+        .expect("materialize");
+        assert!(root.join(".codebuddy-plugin/plugin.json").is_file());
+        assert_eq!(root.file_name().unwrap(), "demo");
+    }
+
+    #[tokio::test]
+    async fn a_size_mismatch_deletes_the_archive_and_fails() {
+        let bytes = archive_with_wrapped_plugin();
+        let sha = crate::market_source::sha256_hex_bytes(&bytes);
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+            .mount(&mock)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let result = materialize_remote_archive(
+            cache.path(),
+            "demo",
+            &format!("{}/a.tar.gz", mock.uri()),
+            &sha,
+            1,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!cache.path().join(format!("demo-{sha}.tar.gz")).exists());
+    }
+
+    #[tokio::test]
+    async fn a_hash_mismatch_never_extracts() {
+        let bytes = archive_with_wrapped_plugin();
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+            .mount(&mock)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        let result = materialize_remote_archive(
+            cache.path(),
+            "demo",
+            &format!("{}/a.tar.gz", mock.uri()),
+            &"0".repeat(64),
+            1,
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!cache.path().join(format!("demo-{}.tar.gz", "0".repeat(64))).exists());
     }
 }

@@ -129,6 +129,7 @@ export const MARKET_KIND_KEYS: Record<string, string> = {
   git: "catalog.marketKindGit",
   url: "catalog.marketKindUrl",
   zip: "catalog.marketKindZip",
+  index: "catalog.marketKindIndex",
 };
 
 /** `StoreItem.kind` is a wire enum (`agent` / `team` / `skill` / `connector`),

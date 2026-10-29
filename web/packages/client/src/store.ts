@@ -176,6 +176,12 @@ export interface StoreOperationOutcome {
  * exact surface the store layer is allowed to lean on.
  */
 export interface StoreHost {
+  /**
+   * Root URL of the App Server (e.g. `http://127.0.0.1:54211`). Used only to
+   * absolutize a relative `avatar_url`; an absolute market `icon_url` needs no
+   * base. Optional so a structural fake host remains valid.
+   */
+  readonly baseUrl?: string;
   listStore(): Promise<StoreList>;
   listStoreCategories(): Promise<StoreCategories>;
   installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
@@ -242,6 +248,22 @@ export class StoreClient {
   async list(): Promise<StoreItem[]> {
     const store = await this.host.listStore();
     return store.items;
+  }
+
+  /**
+   * Resolve an item's display avatar to an absolute URL.
+   *
+   * Since `fp-20` an `index` market declares an absolute `icon_url`; older
+   * markets expose the relative host asset route. The helper returns whichever
+   * applies, and `null` when the item has no avatar or a relative URL is given
+   * without a known {@link StoreHost.baseUrl}.
+   */
+  avatarUrl(item: Pick<StoreItem, "icon_url" | "avatar_url">): string | null {
+    const declared = item.icon_url ?? item.avatar_url;
+    if (!declared) return null;
+    if (/^https?:\/\//i.test(declared)) return declared;
+    if (!this.host.baseUrl) return null;
+    return `${this.host.baseUrl.replace(/\/+$/, "")}/${declared.replace(/^\/+/, "")}`;
   }
 
   /**
