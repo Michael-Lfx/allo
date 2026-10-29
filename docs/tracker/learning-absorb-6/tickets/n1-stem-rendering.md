@@ -2,7 +2,7 @@
 id: n1
 title: "题面渲染管线接入——InlineMarkdown 内联通道（KaTeX 一等公民）+ fill_in_blank 转义"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -102,3 +102,18 @@ part_of: ../map.md
   explanation 还可能带 ```svg，块级通道已有（feedback 主通道），分流规则照此。
 - ShadowView 变量表无需动（内联组件不进 shadow）；若未来有人把内联组件嵌进
   shadow 容器，KaTeX 样式穿不进去——票面留档此约束。
+
+## Resolution（2026-10-29 关票）
+
+- 实施 = `cf1ddee86`（InlineMarkdown light-DOM + 五修面 + `___` 私有区占位符
+  + QuestionExplanation 分流，13 文件 +641/−10，19 新测全绿、typecheck 61
+  基线持平、i18n 11530 键双语）。波次经 e08e65d60 并入 feat/learn0928。
+- 实现中裁决（如实记录）：①测试运行器按仓库实际 = `bun test`（票面写 vitest，
+  仓内无 vitest）；②分流谓词比「仅围栏」宽（多段/行首标题/列表/展示公式也走
+  块级——span 宿主禁块级元素）；③错误边界加换文复位；④链接走
+  `openExternalUrl` 平台纪律；⑤保留 remarkSafeBreaks（票面只要求排除
+  remarkBreaks）；⑥复习正确态横幅与匹配题左列未动（票面修面清单外）。
+- **单测面证据**：learning+Markdown 分片 109 pass（修复批后）。**两主题手工
+  走查未做**（真机阶段跑 smoke 二进制未起 dev 栈）——如实留观：组件断言已
+  覆盖 KaTeX/`___`/转义渲染正确性，视觉走查留待下次 dev 会话目验，
+  [对照卡](../assets/verification-cards.md) §n1 有记档。

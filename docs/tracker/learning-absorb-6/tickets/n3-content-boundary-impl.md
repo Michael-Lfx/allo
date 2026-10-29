@@ -2,7 +2,7 @@
 id: n3
 title: "内容边界波实施——#177 known_names 超纲围栏 + #178 前置规划 + #180 先例连续性 + smoke 判据升级"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [n2]
 part_of: ../map.md
@@ -117,3 +117,23 @@ Node Intent Overload 三词条已进 CONTEXT.md。
 - capacity_note 出现率自动消费（雾区，m10 接线后置）。
 - 迁移（本波零迁移——纯提示词与计算投影；若实施发现必须动库，回 map 重新
   对账）。
+
+## Resolution（2026-10-29 关票）
+
+- 实施 = `d24df0e6b`（n3 主体，learning 639/ai-agent 1116，fmt 净）+ 评审修复批
+  内 known_names 删课围栏补 `deleted_at IS NULL`（红绿测试
+  `known_names_exclude_deleted_course_teaches`，learning 655）。波次经
+  e08e65d60 并入 feat/learn0928。
+- 实现中裁决（如实记录）：①est 铸值 `LessonDraft::new` 以节点 est 开盘
+  （1-240 clamp、off 臂回默认 10、模型可复议）；②k03 双臂 = on 新语义 /
+  off 臂 EST_LEGACY_CLAUSE_CN 逐字保留（over_capacity telemetry 键沿用）；
+  ③声明引用悬空与退役均 warn-跳过（不 Broken——allo「声明可撤概念不灭」下
+  悬空是合法态，与 learnhub Broken 语义有意分叉）；④档位行用中文档位、解析
+  失败落「?」；⑤先例行不带 ULID（read_prior_content 雾区）；⑥单节重写面未扩
+  三行输入（票面范围为生成面）；⑦金样重生成清单为空（所触提示词全是 inline
+  const，三闸以条款覆盖短语断言落实：图线 9 短语 + 传统线 EN 5 断言 + R12
+  旧措辞残留反断言）。
+- **双臂真机全绿**（详见 [assets/verification-cards.md](../assets/verification-cards.md)）：
+  content on/off EXIT=0，边界三行 known/tier/precedent_line_calls=1/1/1 两臂
+  同注入，est 铸值 on=20 精确锚定 / off=15 模型复议，超纲专名零命中，R10-R13
+  全在场。真机暴露两处臂盲判据已修（1ae4d4fb7/cf57de510）。

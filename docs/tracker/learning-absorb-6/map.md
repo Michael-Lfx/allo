@@ -1,11 +1,15 @@
 # Map: 六轮吸收——内容边界波（优先）+ 题面渲染 + 开放题判分重写（bd31277）
 
 <!-- wayfinder:map -->
-<!-- 状态：grill-with-docs 单轮定案（2026-10-28，18 问全按推荐落定）。n2/n4
-      两张 grilling 票已关（Resolution 在各票）；前沿 = n1（无阻塞）/
-      n3（C 线实施，n2 已解锁）/ n5（A 线实施，n4 已解锁）——三张实施票
-      均可开工。术语三词条（Known Names / Precedent / Node Intent Overload）
-      已进 CONTEXT.md。 -->
+<!-- 状态：**波到达目的地（2026-10-29 关闭）**。五票全关：n2/n4 grilling 关于
+      grill 单轮（Resolution 在票）；n1/n3/n5 实施票关于双臂真机对照卡
+      （assets/verification-cards.md）。实施经 e08e65d60 并入 feat/learn0928
+      （本图随 cherry-pick 5e0a1bc3c/82da13924 落该分支），真机四臂跑在
+      c67c991dd..8335d719c（含真机暴露的四处冒烟修复）。前沿 = 空。 -->
+<!-- 雾区交接（后置项触发条件见各票非目标节）：read_prior_content 工具轮、
+      参考答案+要点契约反转（触发=n5 对照卡判分质量不足——真机未见）、
+      unavailable 三态、重复提交折叠、capacity_note→m10 复议接线、quiz UI
+      渲染管线复用、n1 两主题目验走查。 -->
 <!-- 前情：五轮 m1–m11 全部落地 feat/learn-absorb-5（尖端 8a424d434，含
       origin/main 同步 merge 6f7edfd9d，未推送）。本波实施基线 = 该分支尖端
       之后拉新集成分支：**n3 依赖 m2 已会声明锚表（迁移 072）与 declare/revoke
