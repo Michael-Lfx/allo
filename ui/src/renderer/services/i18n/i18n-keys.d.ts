@@ -11150,6 +11150,7 @@ export type I18nKey =
   | 'voice.entry.suiteNotReady'
   | 'voice.entry.voiceCall'
   | 'voice.entry.voiceConnecting'
+  | 'voice.errors.componentMissing'
   | 'voice.errors.deleteIncomplete'
   | 'voice.errors.diskSpaceError'
   | 'voice.errors.downloadFailed'

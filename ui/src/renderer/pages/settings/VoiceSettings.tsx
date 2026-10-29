@@ -14,7 +14,7 @@ import { requestDictationIntent } from '@/renderer/pages/guid/dictationIntent';
 import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
-import { voiceErrorKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
+import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
 import VoiceDialogueStatusSection from './VoiceDialogueStatus';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
@@ -658,7 +658,8 @@ const VoiceSettings: React.FC = () => {
         if (data.success) {
           setVoiceEnabled(checked);
         } else if (data.error) {
-          Message.error(data.error);
+          const translationKey = voiceErrorTranslationKey(data.error);
+          Message.error(translationKey ? t(translationKey) : data.error);
         }
       } else {
         const errJson = (await response.json().catch(() => ({}))) as { error?: string };

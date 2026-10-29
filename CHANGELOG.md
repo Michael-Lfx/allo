@@ -5,6 +5,9 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Fixed Windows release builds omitting the voice companion. Installers now include the daemon and app-local VC++ runtime, with package checks for required files and architecture.
+- Expanded Hey Flowy wake aliases with separate full-sentence safeguards for ambiguous words. Commands spoken with a wake phrase now follow the normal conversation route without a second transcription; unseparated English words no longer match.
+
 ## v1.6.9 - 2026-10-29
 
 - Added local voice calling with model installation checks, conversation transcripts, queued tasks and one-time tool confirmations. Cancelling a task, interrupting speech and ending a call remain separate controls.

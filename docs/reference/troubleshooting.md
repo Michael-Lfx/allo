@@ -2,6 +2,23 @@
 
 Symptoms you might hit running NomiFun, and the actual mechanism behind each one. If you find a problem that is not on this list, the source is the fastest reference — every behaviour described below is grounded in a specific file in `crates/backend/`.
 
+## Windows voice enabled but the process does not connect
+
+`voice_companion_missing` means the host could not resolve the companion
+executable; downloading or verifying acoustic models cannot restore a missing
+installer component. End users should install a corrected application package,
+not install Cargo or compile the companion themselves. For maintainers, verify
+the actual installer using the [voice packaging checks](../contributing/building-and-packaging.md#windows-voice-companion-packaging).
+
+If the executable exists but exits before connecting, inspect the startup log
+and the app-local VC++ runtime files as well as architecture. Do not infer a
+model failure from downstream unreachable-service checks. Compare the installed
+package's SHA-256 with the artifact that was tested; a successful development
+launch does not validate an installed release. If the process connects but wake
+detection fails, distinguish KWS, sentence-end detection, final ASR matching and
+host readiness rejection. Package validation alone does not prove any of these
+runtime stages, and expanding text aliases does not prove acoustic recall.
+
 ## Backend port / connection problems
 
 ### `nomifun-web: invalid --host '<value>'`

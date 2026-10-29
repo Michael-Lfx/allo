@@ -77,6 +77,38 @@ Product identity comes from `apps/desktop/tauri.conf.json`:
 Tauri desktop bundles are best built on their target OS. Cross-OS desktop
 packaging is not part of the supported workflow.
 
+### Windows Voice Companion Packaging
+
+Voice model downloads contain acoustic assets, not the companion executable.
+The installer must independently include `bin/voice-companion.exe`, `bin/rg.exe`,
+and both licenses under `bin/voice-licenses/`. The default Tauri build hook and
+`tauri.ci-skip-ui.conf.json` both run `scripts/prepare-voice-companion.mjs`;
+the skip-UI overlay skips only the SPA rebuild, not native resource preparation.
+The preparation script uses Cargo's reported executable for the selected target
+and refuses skeleton artifacts or reuse of a stale executable after failure.
+
+Windows preparation also stages `msvcp140.dll`, `msvcp140_1.dll`,
+`vcruntime140.dll`, and `vcruntime140_1.dll` from the matching official Microsoft
+VC++ redistributable. It discovers the installed Visual Studio redistributable
+or accepts `VC_REDIST_CRT_DIR` as a build-time directory override. NSIS installs
+these files from `bin/` into the application's root for app-local loading.
+
+Before sharing or uploading an installer, run:
+
+```bash
+bun run check:release-voice-preparation
+bun run verify:voice-package -- --platform windows --arch x64 --dist dist/desktop
+```
+
+Use `--arch arm64` for an ARM64 installer. The package gate extracts the actual
+artifact, validates required files, target architectures and package-root
+containment, and prints the installer and daemon SHA-256. Missing components
+fail validation; missing extraction tools are reported as unavailable validation.
+This proves package contents, not successful launch, device readiness or wake
+accuracy. Record the exact artifact hash with each installation test. Source
+tests do not validate an older installer, and documentation-only changes do not
+require rebuilding it.
+
 ## macOS Signing and Notarization
 
 Unsigned/ad-hoc macOS artifacts are useful for local testing but are not suitable

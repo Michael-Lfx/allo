@@ -334,6 +334,7 @@
     "pairingCodeLocked": "连续输错已锁定，请在 {{remaining}} 后重试",
     "unknownError": "发生未知错误",
     "modelMissing": "语音模型套件尚未安装，请先在语音设置下载并校验。",
+    "componentMissing": "当前安装包缺少语音服务组件。请使用最新安装包修复或升级安装 Flowy，然后重新启用语音。",
     "operationFailed": "语音套件操作失败，下方安装状态仍以磁盘实际结果为准。",
     "suiteInUse": "语音通话、任务或审批正在占用模型，请结束后再下载或删除。",
     "resourceBusy": "该目录已有另一个模型写入操作，请等待完成。",

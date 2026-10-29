@@ -830,6 +830,14 @@ Section Install
  File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
  {{/each}}
 
+ ; App-local VC++ runtime deployment for main executable (Flowy.exe)
+ ; The voice daemon (bin\voice-companion.exe) loads them directly from $INSTDIR\bin.
+ IfFileExists "$INSTDIR\bin\msvcp140.dll" 0 +5
+ CopyFiles /SILENT "$INSTDIR\bin\msvcp140.dll" "$INSTDIR\msvcp140.dll"
+ CopyFiles /SILENT "$INSTDIR\bin\msvcp140_1.dll" "$INSTDIR\msvcp140_1.dll"
+ CopyFiles /SILENT "$INSTDIR\bin\vcruntime140.dll" "$INSTDIR\vcruntime140.dll"
+ CopyFiles /SILENT "$INSTDIR\bin\vcruntime140_1.dll" "$INSTDIR\vcruntime140_1.dll"
+
  ; Copy external binaries
  {{#each binaries}}
  File /a "/oname={{this}}" "{{no-escape @key}}"
@@ -960,6 +968,10 @@ Section Uninstall
  ; Copy main executable
  Delete "$INSTDIR\${MAINBINARYNAME}.exe"
  Delete "$INSTDIR\DirectML.dll"
+ Delete "$INSTDIR\msvcp140.dll"
+ Delete "$INSTDIR\msvcp140_1.dll"
+ Delete "$INSTDIR\vcruntime140.dll"
+ Delete "$INSTDIR\vcruntime140_1.dll"
 
  ; Delete resources
  {{#each resources}}

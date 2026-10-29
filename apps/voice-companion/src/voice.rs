@@ -13,7 +13,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use tokio::sync::{Mutex, Notify, mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use crate::self_check_audio::SelfCheckAudio;
 
 use nomifun_audio::EarconKind;
@@ -2664,7 +2664,7 @@ impl VoiceCompanionRuntime {
             return Err(VoiceWakeError::ModelsUnavailable);
         }
 
-        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id, locale).await
+        Self::accept_wake(&self.driver, &self.playback, &self.event_tx, keyword, request_id, locale, true).await
     }
 
     async fn accept_wake(
@@ -2674,12 +2674,13 @@ impl VoiceCompanionRuntime {
         keyword: &str,
         request_id: Option<&str>,
         locale: Option<&str>,
+        play_feedback: bool,
     ) -> Result<(), VoiceWakeError> {
         let mut d = driver.lock().await;
         let next = d
             .handle_event(AcousticEvent::WakeHit)
             .map_err(|_| VoiceWakeError::Busy)?;
-        d.pause_listening_for_feedback();
+        if play_feedback { d.pause_listening_for_feedback(); }
         playback
             .interrupt()
             .await
@@ -2691,6 +2692,7 @@ impl VoiceCompanionRuntime {
             locale: locale.map(str::to_owned),
         });
         let _ = events.send(VoiceCompanionEvent::Listening);
+        if !play_feedback { return Ok(()); }
         drop(d);
         let driver = driver.clone();
         let playback = playback.clone();
@@ -2953,6 +2955,7 @@ impl VoiceCompanionRuntime {
         native_job_epoch: &Arc<AtomicU64>,
         admission: NativeAdmissionGuard,
         _native_request_id: &str,
+        recognized_text: Option<String>,
     ) {
         let control_scope = VoiceSessionControlRequest { instance_id: scope.instance_id.clone(), session_id: scope.session_id.clone(), turn_id: scope.turn_id.clone() };
         let current = event_tx.snapshot();
@@ -2962,7 +2965,11 @@ impl VoiceCompanionRuntime {
         let started = std::time::Instant::now();
         let mut task_context:Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>,String>=Ok(None);
         info!(session_id = ?scope.session_id, turn_id = ?scope.turn_id, samples = utterance_pcm.len(), sample_rate = 16000, "voice_asr_started");
-        let text_opt = if let Some(stt) = transcriber {
+        let already_recognized = recognized_text.is_some();
+        let text_opt = if let Some(text) = recognized_text {
+            drop(admission);
+            Some(text)
+        } else if let Some(stt) = transcriber {
             #[cfg(feature = "native-fault-injection")]
             let call_context = NativeCallContext {
                 request_id: _native_request_id.to_owned(),
@@ -3013,10 +3020,11 @@ impl VoiceCompanionRuntime {
             Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, "asr_empty_result").await;
             return;
         }
-        let clean_input = text_opt
-            .as_deref()
-            .map(nomifun_audio::strip_wake_phrase)
-            .unwrap_or_default();
+        let clean_input = if already_recognized {
+            text_opt.clone().unwrap_or_default()
+        } else {
+            text_opt.as_deref().map(nomifun_audio::strip_wake_phrase).unwrap_or_default()
+        };
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
             if matches!(event_tx.send_scoped(VoiceCompanionEvent::SpeechRecognized { text: text.clone() }, &control_scope), Ok(0)) {
@@ -3776,6 +3784,7 @@ impl VoiceCompanionRuntime {
             self.native_job_epoch.clone(),
             self.native_admission.clone(),
             Some(request_id.to_owned()),
+            None,
         );
         true
     }
@@ -3815,6 +3824,7 @@ impl VoiceCompanionRuntime {
         native_job_epoch: Arc<AtomicU64>,
         native_admission: Arc<NativeAdmission>,
         native_request_id: Option<String>,
+        recognized_text: Option<String>,
     ) {
         let mut active = active_turn.lock().unwrap_or_else(|e| e.into_inner());
         if playback.generation_id() != generation {
@@ -3847,6 +3857,7 @@ impl VoiceCompanionRuntime {
                 &native_job_epoch,
                 admission,
                 native_request_id.as_deref().unwrap_or("ordinary-turn"),
+                recognized_text,
             ))
             .catch_unwind()
             .await;
@@ -3915,6 +3926,7 @@ impl VoiceCompanionRuntime {
                                 native_degraded.clone(),
                                 native_job_epoch.clone(),
                                 native_admission.clone(),
+                                None,
                                 None,
                             );
                         } else {
@@ -4565,6 +4577,7 @@ impl VoiceCompanionRuntime {
                     AcousticState::Idle => {
                         // Standby: feed audio chunk to Keyword Spotter
                         let mut hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
+                        let mut wake_command = None;
 
                         // Stage-2: Cascade VAD + SenseVoice check if streaming KWS was borderline
                         if hit.is_none() {
@@ -4583,8 +4596,8 @@ impl VoiceCompanionRuntime {
                                         worker_epoch: event_tx.worker_epoch(),
                                         instance_id: event_tx.snapshot().instance_id,
                                     };
-                                    if let Some(stt) = &transcriber
-                                        && let Ok(Some(text)) = Self::transcribe_with_lease(
+                                    if let Some(stt) = &transcriber {
+                                        let transcribe_res = Self::transcribe_with_lease(
                                             stt.clone(),
                                             snippet,
                                             &native_busy,
@@ -4596,11 +4609,23 @@ impl VoiceCompanionRuntime {
                                             #[cfg(feature = "native-fault-injection")]
                                             Some(&cascade_context),
                                         )
-                                        .await
-                                    {
-                                        if nomifun_audio::is_wake_phrase_match(&text) {
-                                            info!("Cascade wake hit accepted via SenseVoice");
-                                            hit = Some(text);
+                                        .await;
+                                        match transcribe_res {
+                                            Ok(Some(text)) => {
+                                                if let Some(matched) = nomifun_audio::match_wake_phrase(&text) {
+                                                    info!(matched = %matched.matched_phrase, "Cascade wake hit accepted via SenseVoice");
+                                                    wake_command = matched.remainder;
+                                                    hit = Some(matched.matched_phrase);
+                                                } else {
+                                                    debug!(stage = "text_no_match", chars = text.chars().count(), "Cascade ASR transcription did not match wake phrase");
+                                                }
+                                            }
+                                            Ok(None) => {
+                                                debug!(stage = "asr_empty", "Cascade ASR returned no speech");
+                                            }
+                                            Err(err) => {
+                                                warn!(stage = "asr_error", error = %err, "Cascade ASR transcription failed");
+                                            }
                                         }
                                     }
                                 } else {
@@ -4613,30 +4638,53 @@ impl VoiceCompanionRuntime {
                         if let Some(keyword) = hit {
                             info!(keyword = %keyword, "Wake hit detected");
                             if !oobe.is_paired().await {
-                                warn!("Wake received but device is not yet paired via OOBE");
+                                warn!(stage = "host_rejected", reason = "not_paired", "Wake received but device is not yet paired via OOBE");
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
                             } else if !acoustic_ready.load(Ordering::Acquire) {
-                                warn!("Wake received but voice models are not yet installed");
+                                warn!(stage = "host_rejected", reason = "acoustic_not_ready", "Wake received but voice models are not yet installed");
                                 let _ = playback.play_earcon(EarconKind::Alert).await;
                             } else if self_check_active.load(Ordering::Acquire)
                                 || engine_check_active.load(Ordering::Acquire)
                                 || native_busy.load(Ordering::Acquire)
                             {
-                                info!("Wake ignored while the runtime is exclusively owned");
+                                info!(stage = "host_rejected", reason = "exclusively_owned", "Wake ignored while the runtime is exclusively owned");
                             } else if !admission_valid_for(&wake_admission_until_ms) {
-                                info!("Wake hit ignored because host readiness admission is absent or expired");
+                                info!(stage = "host_rejected", reason = "admission_expired", "Wake hit ignored because host readiness admission is absent or expired");
                             } else {
-                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref())
+                                if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref(), wake_command.is_none())
                                     .await
                                     .is_ok()
                                 {
+                                    info!(stage = "wake_success", keyword = %keyword, "Wake successfully accepted");
                                     observed_session = event_tx.snapshot().session_id;
+                                    let wake_generation = playback.generation_id();
                                     native_worker_call!("vad_reset", vad.reset().await, ());
                                     utterance_pcm.clear();
                                     speech_started = false;
                                     listen_start = Some(std::time::Instant::now());
                                     audio.utterance_samples = 0;
                                     audio.utterance_peak_milli = 0;
+                                    if let Some(command) = wake_command {
+                                        let mut d = driver.lock().await;
+                                        if event_tx.snapshot().session_id == observed_session
+                                            && event_tx.snapshot().ended_reason.is_none()
+                                            && playback.generation_id() == wake_generation
+                                            && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding) {
+                                            let scope = event_tx.snapshot();
+                                            let generation = playback.generation_id();
+                                            drop(d);
+                                            let _ = event_tx.send(VoiceCompanionEvent::Transcribing);
+                                            Self::start_utterance(
+                                                Vec::new(), driver.clone(), router.clone(), transcriber.clone(),
+                                                playback.clone(), event_tx.clone(), tts.clone(), task_client.clone(),
+                                                &active_turn, input_generation.clone(), generation,
+                                                pending_utterances.clone(), scope.session_id,
+                                                native_busy.clone(), native_degraded.clone(), native_job_epoch.clone(),
+                                                native_admission.clone(), None, Some(command),
+                                            );
+                                            listen_start = None;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -4770,6 +4818,7 @@ impl VoiceCompanionRuntime {
                                     native_job_epoch.clone(),
                                     native_admission.clone(),
                                     None,
+                                    None,
                                 );
                                 utterance_pcm.clear();
                                 native_worker_call!("kws_reset", kws.reset().await, ());
@@ -4843,6 +4892,7 @@ impl VoiceCompanionRuntime {
                                     native_degraded.clone(),
                                     native_job_epoch.clone(),
                                     native_admission.clone(),
+                                    None,
                                     None,
                                 );
                                 utterance_pcm.clear();
@@ -6147,6 +6197,7 @@ mod tests {
             runtime.native_job_epoch.clone(),
             runtime.native_admission.clone(),
             None,
+            None,
         );
         tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified()).await.unwrap();
 
@@ -6227,6 +6278,7 @@ mod tests {
             runtime.native_degraded.clone(),
             runtime.native_job_epoch.clone(),
             runtime.native_admission.clone(),
+            None,
             None,
         );
         tokio::time::timeout(std::time::Duration::from_secs(3), gate.reached.notified()).await.unwrap();
@@ -6310,6 +6362,7 @@ mod tests {
             runtime.native_degraded.clone(),
             runtime.native_job_epoch.clone(),
             runtime.native_admission.clone(),
+            None,
             None,
         );
         tokio::time::timeout(std::time::Duration::from_secs(2), gate.reached.notified()).await.unwrap();

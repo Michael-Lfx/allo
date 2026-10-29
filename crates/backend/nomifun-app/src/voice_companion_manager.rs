@@ -43,6 +43,9 @@ use tokio::sync::Mutex;
 use tokio::sync::{Notify, broadcast};
 use tracing::{info, warn};
 
+/// Stable error code returned when the packaged voice daemon is absent.
+pub const VOICE_COMPANION_MISSING: &str = "voice_companion_missing";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceCompanionStatus {
     pub running: bool,
@@ -3539,6 +3542,31 @@ impl VoiceCompanionProcessManager {
         let _ = self.events.send(snapshot.clone());
     }
 
+    /// Surface a missing packaged component as its own state instead of a
+    /// generic daemon connection failure. Repeats are coalesced.
+    fn note_missing_voice_binary(&self) {
+        let mut snapshot = self.snapshot.write().unwrap_or_else(|err| err.into_inner());
+        if snapshot
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == VOICE_COMPANION_MISSING)
+        {
+            return;
+        }
+        snapshot.enabled = self.read_autostart_config();
+        snapshot.connection = VoiceConnectionState::Offline;
+        snapshot.phase = VoiceSessionPhase::Error;
+        snapshot.error = Some(VoiceSessionError {
+            stage: "connection".into(),
+            code: VOICE_COMPANION_MISSING.into(),
+        });
+        snapshot.acoustic_ready = false;
+        snapshot.dialogue_ready = false;
+        snapshot.playback_ready = false;
+        snapshot.seq += 1;
+        let _ = self.events.send(snapshot.clone());
+    }
+
     /// One upstream stream per host, independent of any renderer/page lifecycle.
     fn start_projection(self: &Arc<Self>) {
         self.install_call_delete_guard();
@@ -3570,6 +3598,14 @@ impl VoiceCompanionProcessManager {
                     // Missing assets are not a crash loop: do not consume the
                     // restart budget while the suite still needs installation.
                     if !status.models_ready {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    // A missing installer component is also not a crash loop.
+                    // Report it once with an actionable code instead of letting
+                    // reconnects masquerade as a daemon restart failure.
+                    if Self::resolve_voice_companion_binary().is_none() {
+                        manager.note_missing_voice_binary();
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         continue;
                     }
@@ -4322,9 +4358,17 @@ impl VoiceCompanionProcessManager {
             return Err("Voice acoustic models are not installed yet".to_string());
         }
 
-        let bin_path = Self::resolve_voice_companion_binary().ok_or_else(|| {
-            "voice-companion binary not found. Please compile voice-companion with `cargo build -p voice-companion` first.".to_string()
-        })?;
+        let bin_path = match Self::resolve_voice_companion_binary() {
+            Some(path) => path,
+            None => {
+                warn!(
+                    bundled_bin = ?std::env::var_os("NOMIFUN_BUNDLED_BIN_DIR"),
+                    current_exe = ?std::env::current_exe().ok(),
+                    "voice_companion_binary_missing; the installation is missing the voice companion component"
+                );
+                return Err(VOICE_COMPANION_MISSING.into());
+            }
+        };
 
         let feedback_config = serde_json::to_string(&self.requested_feedback()?)
             .map_err(|_| "configuration_invalid")?;
@@ -7417,13 +7461,36 @@ mod tests {
         let root=tempfile::tempdir().unwrap();
         let bin=root.path().join("Resources/bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let name=if cfg!(windows){"ai-mate.exe"}else{"ai-mate"};
-        let daemon=bin.join(name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
+        let old_name=if cfg!(windows){"ai-mate.exe"}else{"ai-mate"};
+        let daemon=bin.join(old_name);std::fs::write(&daemon,b"test-only executable fixture").unwrap();
         let host=root.path().join("MacOS/Flowy");
-        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(Some(&bin),Some(&host)),Some(daemon));
+        assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(Some(&bin),Some(&host)),Some(daemon.clone()));
         assert!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&host)).is_none());
-        let neighboring=root.path().join(name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
+        let neighboring=root.path().join(old_name);std::fs::write(&neighboring,b"test-only colocated fixture").unwrap();
         assert_eq!(VoiceCompanionProcessManager::installed_ai_mate_binary(None,Some(&root.path().join("Flowy.exe"))),Some(neighboring));
+        // The packaged name wins over the legacy ai-mate name.
+        let current=bin.join(if cfg!(windows){"voice-companion.exe"}else{"voice-companion"});
+        std::fs::write(&current,b"test-only current fixture").unwrap();
+        assert_eq!(VoiceCompanionProcessManager::installed_voice_companion_binary(Some(&bin),Some(&host)),Some(current));
+    }
+
+    #[tokio::test]
+    async fn missing_voice_binary_reports_an_actionable_error_without_restart_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(VoiceCompanionProcessManager::new(
+            Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+            dir.path(),
+        ));
+        manager.write_autostart_config(true).unwrap();
+        let mut events = manager.subscribe();
+        manager.note_missing_voice_binary();
+        let snapshot = events.try_recv().unwrap();
+        assert_eq!(snapshot.phase, VoiceSessionPhase::Error);
+        assert_eq!(snapshot.connection, VoiceConnectionState::Offline);
+        assert_eq!(snapshot.error.unwrap().code, VOICE_COMPANION_MISSING);
+        assert!(manager.snapshot().enabled);
+        manager.note_missing_voice_binary();
+        assert!(events.try_recv().is_err());
     }
 
     #[test]

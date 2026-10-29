@@ -126,39 +126,10 @@ impl KwsEngine {
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
 
-        // The downloaded model's keywords.txt contains upstream examples, not
-        // the companion's wake words. Configure our fixed vocabulary in memory
+        // Configure our fixed vocabulary in memory from the authoritative candidate table
         // without modifying downloaded files or invalidating their checksums.
         // Calibrated for wide trigger coverage: score 2.2 (strong beam bias), threshold 0.08 (high recall).
-        const DEFAULT_KEYWORDS_BPE: &str = "\
-▁HE Y ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F L O W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F L O W :2.2 #0.08 @HEY_FLOWY\n\
-▁HE Y ▁F L OW I :2.2 #0.08 @HEY_FLOWY\n\
-▁HI ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HI ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HI ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁HI ▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HA I ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HA I ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HA I ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁HE I ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE I ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE I ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁HE LL O ▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE LL O ▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁HE LL O ▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁F L OW Y :2.2 #0.08 @HEY_FLOWY\n\
-▁F LO W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁F L OW :2.2 #0.08 @HEY_FLOWY\n\
-▁F LO Y :2.2 #0.08 @HEY_FLOWY\n\
-▁F L O W Y :2.2 #0.08 @HEY_FLOWY\n\
-▁F L O W :2.2 #0.08 @HEY_FLOWY\n\
-▁F L OW I :2.2 #0.08 @HEY_FLOWY\n";
-        spotter_config.keywords_buf = Some(DEFAULT_KEYWORDS_BPE.into());
+        spotter_config.keywords_buf = Some(default_keywords_bpe());
         spotter_config.keywords_score = 2.2;
         spotter_config.keywords_threshold = 0.08;
 
@@ -373,304 +344,272 @@ impl KwsEngine {
     }
 }
 
-/// Matches whether a voice transcript contains wake words or common phonetic near-homophones.
-///
-/// Due to SenseVoice's generic multi-lingual vocabulary, the out-of-vocabulary brand word "Flowy"
-/// (/floʊi/) is frequently transcribed as:
-/// - "Hey, follow." / "Hey follow"
-/// - "Hey, flow" / "Hey flow"
-/// - "Hey, F." / "Hey F"
-/// - "Flowy" / "Floy"
-/// - Chinese variants: "黑 flowy", "嘿 flowy", "你好 flowy"
-fn normalize_speech_text(s: &str) -> String {
-    let lower = s.to_lowercase();
-    lower
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric()
-                && !matches!(
-                    c,
-                    '，' | '。'
-                        | '！'
-                        | '？'
-                        | '；'
-                        | '：'
-                        | '“'
-                        | '”'
-                        | '‘'
-                        | '’'
-                        | '（'
-                        | '）'
-                        | '【'
-                        | '】'
-                        | '、'
-                        | '—'
-                        | '…'
-                )
-            {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+/// Rules governing whether a wake candidate can accept following commands or only standalone full sentences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeRule {
+    /// Accepted at sentence beginning, followed by an optional command.
+    PrefixWithCommand,
+    /// Accepted ONLY if the entire normalized sentence equals this phrase.
+    /// Trailing commands are strictly forbidden.
+    FullSentenceOnly,
 }
 
-/// Matches whether a voice transcript contains wake words or common phonetic near-homophones.
-///
-/// Due to SenseVoice's generic multi-lingual vocabulary, the out-of-vocabulary brand word "Flowy"
-/// (/floʊi/) is frequently transcribed as:
-/// - "Hey, follow." / "Hey follow"
-/// - "Hey, flow" / "Hey flow"
-/// - "Hey, F." / "Hey F"
-/// - "Flowy" / "Floy"
-/// - Chinese variants: "黑 flowy", "嘿 flowy", "你好 flowy"
-pub fn is_wake_phrase_match(transcript: &str) -> bool {
-    let clean = normalize_speech_text(transcript);
+/// Unified definition of one wake candidate phrase and its matching policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WakeCandidateDef {
+    /// Target wake phrase in lowercase, words separated by a single space.
+    pub phrase: &'static str,
+    /// Matching rule (PrefixWithCommand vs FullSentenceOnly).
+    pub rule: WakeRule,
+    /// Optional BPE keyword spotting string for neural KWS.
+    pub kws_bpe: Option<&'static str>,
+}
 
-    const WAKE_PATTERNS: &[&str] = &[
-        "hey flowy",
-        "hey follow",
-        "hey flow",
-        "hey f",
-        "hi flowy",
-        "hi follow",
-        "hello flowy",
-        "flowy",
-        "floy",
-        "黑 flowy",
-        "嘿 flowy",
-        "嘿flowy",
-        "你好 flowy",
-        "你好flowy",
-        "小 flowy",
-        "小flowy",
-        "hey 芙",
-        "hey芙",
-        "嘿 芙",
-        "嘿芙",
-        "hey 弗",
-        "hey弗",
-        "hey 福",
-        "hey福",
-        "hey 浮",
-        "hey浮",
-        "嘿 浮",
-        "嘿浮",
-        "hey 伏",
-        "hey伏",
-        "hey 符",
-        "hey符",
-        "hey 服",
-        "hey服",
-        "hey 佛",
-        "hey佛",
-        "hey 飞",
-        "hey飞",
-        "嗨 flowy",
-        "嗨flowy",
-        "嗨 flow",
-        "嗨flow",
-        "嗨 芙",
-        "嗨芙",
-        "黑 芙",
-        "黑芙",
-        "hey 楼",
-        "hey楼",
-        "hey 洛",
-        "hey洛",
-        "hey flower",
-        "hey floor",
-        "hey flora",
-        "hey floating",
-        "hey flight",
-        "hi flow",
-        "hello flow",
-        "flow",
-        "flo",
-        "哈喽 flowy",
-        "哈喽flowy",
-        "哈罗 flowy",
-        "哈罗flowy",
-        "嘿 弗雷",
-        "嘿弗雷",
-        "嘿 佛雷",
-        "嘿佛雷",
-        "嘿 佛力",
-        "嘿佛力",
-        "嘿 弗利",
-        "嘿弗利",
-        "嘿 佛罗",
-        "嘿佛罗",
-        "嘿 佛洛",
-        "嘿佛洛",
-        "嘿 芙莉",
-        "嘿芙莉",
-        "嘿 芙洛",
-        "嘿芙洛",
-        "嘿 芙罗",
-        "嘿芙罗",
-        "嘿 凤梨",
-        "嘿凤梨",
-        "黑 凤梨",
-        "黑凤梨",
-        "芙 莉",
-        "芙莉",
-        "芙 力",
-        "芙力",
-        "弗 利",
-        "弗利",
-        "佛 罗",
-        "佛罗",
-        "佛 洛",
-        "佛洛",
-    ];
+/// The single authoritative internal table of all wake candidates.
+pub static WAKE_CANDIDATES: &[WakeCandidateDef] = &[
+    // Group A: 11 tail words with "hey" prefix, can be followed by command
+    WakeCandidateDef { phrase: "hey flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO W Y :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flowey", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey floey", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO E Y :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flowie", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey floy", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO Y :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flo", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flow", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO W :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey floe", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey fly", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LY :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flory", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F LO RY :2.2 #0.08 @HEY_FLOWY") },
+    WakeCandidateDef { phrase: "hey flurry", rule: WakeRule::PrefixWithCommand, kws_bpe: Some(" ▁HE Y  ▁F L UR RY :2.2 #0.08 @HEY_FLOWY") },
 
-    for pattern in WAKE_PATTERNS {
-        let norm_pattern = normalize_speech_text(pattern);
-        if clean.contains(&norm_pattern) {
-            return true;
+    // Additional core prefixes with command support
+    WakeCandidateDef { phrase: "hi flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hello flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+
+    // Group B: 20 tail words with "hey" prefix, STRICTLY full-sentence only
+    WakeCandidateDef { phrase: "hey floor", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey flora", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey flower", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey follow", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey furry", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey foley", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey folly", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey floyd", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey flu", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey flew", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey flue", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey low", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey lo", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey louie", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey louis", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey f", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey eff", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey l", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey ell", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey hell", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+
+    // Bare "flowy" (Full-sentence only)
+    WakeCandidateDef { phrase: "flowy", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+
+    // Chinese wake phrases (PrefixWithCommand)
+    WakeCandidateDef { phrase: "黑 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "你好 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "你好flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "小 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "小flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 弗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey弗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 福", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey福", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 浮", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey浮", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 浮", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿浮", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 伏", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey伏", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 符", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey符", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 服", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey服", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 佛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey佛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 飞", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey飞", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨 flow", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨flow", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨 芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嗨芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "黑 芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "黑芙", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 楼", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey楼", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey 洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "hey洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "哈喽 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "哈喽flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "哈罗 flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "哈罗flowy", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 弗雷", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿弗雷", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 佛雷", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿佛雷", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 佛力", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿佛力", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 弗利", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿弗利", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 佛罗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿佛罗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 佛洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿佛洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 芙莉", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿芙莉", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 芙洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿芙洛", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 芙罗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿芙罗", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿 凤梨", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "嘿凤梨", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "黑 凤梨", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+    WakeCandidateDef { phrase: "黑凤梨", rule: WakeRule::PrefixWithCommand, kws_bpe: None },
+
+    // Standalone Chinese wake words (FullSentenceOnly)
+    WakeCandidateDef { phrase: "芙 莉", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "芙莉", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "芙 力", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "芙力", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "弗 利", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "弗利", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "佛 罗", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "佛罗", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "佛 洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+    WakeCandidateDef { phrase: "佛洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
+];
+
+// Verified against the matching GigaSpeech bpe.model, SHA256
+// c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24.
+#[cfg(any(feature = "local-stt", test))]
+fn default_keywords_bpe() -> String {
+    let mut seen = std::collections::HashSet::new();
+    WAKE_CANDIDATES.iter().filter_map(|c| c.kws_bpe)
+        .filter(|line| seen.insert(line.trim()))
+        .map(|line| format!("{}\n", line.trim()))
+        .collect()
+}
+
+/// Result of matching an input transcript against wake phrase candidates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeMatchResult {
+    /// Matched phrase candidate in normalized form.
+    pub matched_phrase: String,
+    /// Remainder command text, if any, with punctuation and Unicode boundaries preserved.
+    pub remainder: Option<String>,
+    /// The rule under which the candidate was matched.
+    pub rule: WakeRule,
+}
+
+fn is_punctuation_or_space(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            ',' | '.'
+                | '!'
+                | '?'
+                | ';'
+                | ':'
+                | '-'
+                | '_'
+                | '\''
+                | '"'
+                | '`'
+                | '，'
+                | '。'
+                | '！'
+                | '？'
+                | '；'
+                | '：'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+                | '（'
+                | '）'
+                | '【'
+                | '】'
+                | '、'
+                | '—'
+                | '…'
+        )
+}
+
+/// Match explicit word separators while retaining byte offsets into the original.
+pub fn match_wake_phrase(transcript: &str) -> Option<WakeMatchResult> {
+    let trimmed = transcript.trim();
+    let mut best = None;
+    let mut longest = 0;
+    for candidate in WAKE_CANDIDATES {
+        let pattern: Vec<char> = candidate.phrase.chars().collect();
+        let mut input = trimmed.char_indices().peekable();
+        while input.peek().is_some_and(|(_, c)| is_punctuation_or_space(*c)) { input.next(); }
+        let mut end = 0;
+        let mut valid = true;
+        for (i, p) in pattern.iter().copied().enumerate() {
+            if p.is_whitespace() {
+                let mut separated = false;
+                while input.peek().is_some_and(|(_, c)| is_punctuation_or_space(*c)) {
+                    input.next(); separated = true;
+                }
+                // English words require a boundary; existing Chinese aliases allow joining.
+                if !separated && i > 0 && pattern[i-1].is_ascii_alphanumeric()
+                    && pattern.get(i+1).is_some_and(char::is_ascii_alphanumeric) {
+                    valid = false; break;
+                }
+                continue;
+            }
+            if !p.is_ascii() || (i > 0 && !pattern[i-1].is_ascii()) {
+                while input.peek().is_some_and(|(_, c)| is_punctuation_or_space(*c)) { input.next(); }
+            }
+            match input.next() {
+                Some((idx, c)) if c.to_lowercase().next() == Some(p) => end = idx + c.len_utf8(),
+                _ => { valid = false; break; }
+            }
         }
+        if !valid || end == 0 { continue; }
+        if pattern.last().is_some_and(char::is_ascii_alphanumeric)
+            && input.peek().is_some_and(|(_, c)| c.is_ascii_alphanumeric()) { continue; }
+        let rest = &trimmed[end..];
+        let standalone = rest.chars().all(is_punctuation_or_space);
+        if candidate.rule == WakeRule::FullSentenceOnly && !standalone { continue; }
+        if pattern.len() <= longest { continue; }
+        // Consume spoken sentence delimiters, preserving command syntax such as -la or quotes.
+        let remainder = rest.trim_start_matches(|c: char| c.is_whitespace()
+            || matches!(c, ',' | '，' | '.' | '。' | '!' | '！' | '?' | '？' | ':' | '：' | ';' | '；'));
+        longest = pattern.len();
+        best = Some(WakeMatchResult {
+            matched_phrase: candidate.phrase.into(), rule: candidate.rule,
+            remainder: if standalone { None } else { Some(remainder.to_string()) },
+        });
     }
-    false
+    best
+}
+
+/// Matches whether a voice transcript contains a valid wake phrase candidate.
+pub fn is_wake_phrase_match(transcript: &str) -> bool {
+    match_wake_phrase(transcript).is_some()
 }
 
 /// Strips the detected wake phrase from the start of an utterance, returning the remaining user command.
+/// If no command follows or the candidate was FullSentenceOnly, returns an empty string.
 pub fn strip_wake_phrase(transcript: &str) -> String {
-    let text = transcript.trim();
-    const PREFIXES: &[&str] = &[
-        "hey flowy",
-        "hey follow",
-        "hey flow",
-        "hey f",
-        "hi flowy",
-        "hi follow",
-        "hello flowy",
-        "黑 flowy",
-        "嘿 flowy",
-        "嘿flowy",
-        "你好 flowy",
-        "你好flowy",
-        "小 flowy",
-        "小flowy",
-        "flowy",
-        "hey 芙",
-        "hey芙",
-        "嘿 芙",
-        "嘿芙",
-        "hey 弗",
-        "hey弗",
-        "hey 福",
-        "hey福",
-        "hey 浮",
-        "hey浮",
-        "嘿 浮",
-        "嘿浮",
-        "hey 伏",
-        "hey伏",
-        "hey 符",
-        "hey符",
-        "hey 服",
-        "hey服",
-        "hey 佛",
-        "hey佛",
-        "hey 飞",
-        "hey飞",
-        "嗨 flowy",
-        "嗨flowy",
-        "嗨 flow",
-        "嗨flow",
-        "嗨 芙",
-        "嗨芙",
-        "黑 芙",
-        "黑芙",
-        "hey 楼",
-        "hey楼",
-        "hey 洛",
-        "hey洛",
-        "hey flower",
-        "hey floor",
-        "hey flora",
-        "hey floating",
-        "hey flight",
-        "hi flow",
-        "hello flow",
-        "flow",
-        "flo",
-        "哈喽 flowy",
-        "哈喽flowy",
-        "哈罗 flowy",
-        "哈罗flowy",
-        "嘿 弗雷",
-        "嘿弗雷",
-        "嘿 佛雷",
-        "嘿佛雷",
-        "嘿 佛力",
-        "嘿佛力",
-        "嘿 弗利",
-        "嘿弗利",
-        "嘿 佛罗",
-        "嘿佛罗",
-        "嘿 佛洛",
-        "嘿佛洛",
-        "嘿 芙莉",
-        "嘿芙莉",
-        "嘿 芙洛",
-        "嘿芙洛",
-        "嘿 芙罗",
-        "嘿芙罗",
-        "嘿 凤梨",
-        "嘿凤梨",
-        "黑 凤梨",
-        "黑凤梨",
-        "芙 莉",
-        "芙莉",
-        "芙 力",
-        "芙力",
-        "弗 利",
-        "弗利",
-        "佛 罗",
-        "佛罗",
-        "佛 洛",
-        "佛洛",
-    ];
-
-    for prefix in PREFIXES {
-        let clean_prefix: Vec<char> = prefix
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c > '\u{7f}')
-            .collect();
-        let mut text_matched_len = 0usize;
-        let mut prefix_matched = 0usize;
-
-        for (idx, c) in text.char_indices() {
-            let cl = c.to_lowercase().next().unwrap_or(c);
-            if cl.is_alphanumeric() || cl > '\u{7f}' {
-                if prefix_matched < clean_prefix.len() && cl == clean_prefix[prefix_matched] {
-                    prefix_matched += 1;
-                    text_matched_len = idx + c.len_utf8();
-                } else {
-                    break;
-                }
-            } else if prefix_matched > 0 {
-                text_matched_len = idx + c.len_utf8();
-            }
-        }
-
-        if prefix_matched == clean_prefix.len() {
-            let remainder = &text[text_matched_len..];
-            return remainder
-                .trim_start_matches(|c: char| {
-                    c.is_ascii_punctuation() || c == '，' || c == '。' || c == ' ' || c == '、'
-                })
-                .trim()
-                .to_string();
-        }
+    match match_wake_phrase(transcript) {
+        Some(res) => res.remainder.unwrap_or_default(),
+        None => transcript.trim().to_string(),
     }
-    text.to_string()
 }
 
 #[cfg(test)]
@@ -678,38 +617,167 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_wake_phrase_matching() {
-        assert!(is_wake_phrase_match("Hey Flowy"));
-        assert!(is_wake_phrase_match("Hey, follow."));
-        assert!(is_wake_phrase_match("Hey, F."));
-        assert!(is_wake_phrase_match("Hey flow! How are you?"));
-        assert!(is_wake_phrase_match("嘿 Flowy，帮我查下天气"));
-        assert!(is_wake_phrase_match("你好Flowy"));
-        assert!(is_wake_phrase_match("Hey,芙."));
-        assert!(is_wake_phrase_match("嘿，芙。帮我查下天气"));
-        assert!(is_wake_phrase_match("Flowy"));
-        assert!(is_wake_phrase_match("哈喽 flowy"));
-        assert!(is_wake_phrase_match("嘿弗利"));
-        assert!(is_wake_phrase_match("芙莉"));
-
-        assert!(!is_wake_phrase_match("今天天气怎么样"));
-        assert!(!is_wake_phrase_match("Hello world"));
+    fn wake_matching_preserves_word_boundaries_and_command_syntax() {
+        for input in ["heyflowy", "heyfloor", "he y floor", "hey f lowy", "hey fl owy"] {
+            assert!(!is_wake_phrase_match(input), "must reject {input}");
+        }
+        assert!(is_wake_phrase_match("hey.flo"));
+        assert!(is_wake_phrase_match("Hey, L."));
+        assert_eq!(strip_wake_phrase("Hey Flowy, -la"), "-la");
+        assert_eq!(strip_wake_phrase("Hey Flowy, \"Hello\""), "\"Hello\"");
     }
 
     #[test]
-    fn test_strip_wake_phrase() {
-        assert_eq!(
-            strip_wake_phrase("Hey, follow. 帮我整理桌面"),
-            "帮我整理桌面"
-        );
-        assert_eq!(
-            strip_wake_phrase("Hey Flowy, what time is it?"),
-            "what time is it?"
-        );
-        assert_eq!(strip_wake_phrase("嘿flowy，写一段代码"), "写一段代码");
+    fn test_kws_bpe_lines_count_and_uniqueness() {
+        let kws_candidates: Vec<_> = WAKE_CANDIDATES
+            .iter()
+            .filter_map(|c| c.kws_bpe)
+            .collect();
+        assert_eq!(kws_candidates.len(), 8, "Expected exactly 8 KWS acoustic candidates");
+        let names: Vec<_> = WAKE_CANDIDATES.iter().filter(|c| c.kws_bpe.is_some()).map(|c| c.phrase).collect();
+        assert_eq!(names, ["hey flowy", "hey floey", "hey floy", "hey flo", "hey flow", "hey fly", "hey flory", "hey flurry"]);
+        let actual = default_keywords_bpe();
+        assert_eq!(actual.lines().collect::<Vec<_>>(), kws_candidates.iter().map(|line| line.trim()).collect::<Vec<_>>());
+        assert!(actual.lines().all(|line| line.ends_with(":2.2 #0.08 @HEY_FLOWY")));
+        let mut set = std::collections::HashSet::new();
+        for &bpe in &kws_candidates {
+            assert!(set.insert(bpe), "BPE lines must be unique token sequences: {bpe}");
+        }
+    }
+
+    #[test]
+    fn test_all_group_a_candidates_with_and_without_command() {
+        let group_a_tails = [
+            "flowy", "flowey", "floey", "flowie", "floy", "flo", "flow", "floe", "fly", "flory", "flurry",
+        ];
+        assert_eq!(group_a_tails.len(), 11, "Group A must contain 11 tail words");
+
+        for tail in group_a_tails {
+            // Standalone wake
+            let standalone = format!("Hey {tail}");
+            assert!(is_wake_phrase_match(&standalone), "Group A standalone failed: {standalone}");
+            assert_eq!(strip_wake_phrase(&standalone), "", "Standalone Group A should have empty remainder");
+
+            // With command
+            let with_cmd = format!("Hey {tail}, 打开浏览器");
+            assert!(is_wake_phrase_match(&with_cmd), "Group A with cmd failed: {with_cmd}");
+            assert_eq!(
+                strip_wake_phrase(&with_cmd),
+                "打开浏览器",
+                "Group A with cmd should strip prefix and retain command text"
+            );
+
+            // With English command preserving first character
+            let with_eng = format!("Hey {tail}! please check the weather.");
+            assert!(is_wake_phrase_match(&with_eng), "Group A with English cmd failed: {with_eng}");
+            assert_eq!(
+                strip_wake_phrase(&with_eng),
+                "please check the weather.",
+                "Group A must preserve first word and boundary of command"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_group_b_candidates_strictly_full_sentence_only() {
+        let group_b_tails = [
+            "floor", "flora", "flower", "follow", "furry", "foley", "folly", "floyd",
+            "flu", "flew", "flue", "low", "lo", "louie", "louis", "f", "eff", "l", "ell", "hell",
+        ];
+        assert_eq!(group_b_tails.len(), 20, "Group B must contain 20 tail words");
+
+        for tail in group_b_tails {
+            // Standalone with punctuation
+            let standalone = format!("Hey {tail}.");
+            assert!(
+                is_wake_phrase_match(&standalone),
+                "Group B standalone with period must match: {standalone}"
+            );
+            assert_eq!(
+                strip_wake_phrase(&standalone),
+                "",
+                "Group B must return empty remainder without creating empty task"
+            );
+
+            // Case and punctuation variations
+            let upper = format!("HEY, {tail}!");
+            assert!(
+                is_wake_phrase_match(&upper),
+                "Group B uppercase with punctuation must match: {upper}"
+            );
+
+            // Trailing command MUST FAIL
+            let with_cmd = format!("Hey {tail} is wet.");
+            assert!(
+                !is_wake_phrase_match(&with_cmd),
+                "Group B with command must NOT match: {with_cmd}"
+            );
+            let with_cmd2 = format!("Hey {tail}, 打开浏览器");
+            assert!(
+                !is_wake_phrase_match(&with_cmd2),
+                "Group B with command must NOT match: {with_cmd2}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_core_extra_phrases() {
+        // Hi Flowy (PrefixWithCommand)
+        assert!(is_wake_phrase_match("Hi Flowy"));
+        assert_eq!(strip_wake_phrase("Hi Flowy, help me"), "help me");
+
+        // Hello Flowy (PrefixWithCommand)
+        assert!(is_wake_phrase_match("Hello Flowy"));
+        assert_eq!(strip_wake_phrase("Hello Flowy! write some code"), "write some code");
+
+        // Bare Flowy (FullSentenceOnly)
+        assert!(is_wake_phrase_match("Flowy"));
+        assert!(is_wake_phrase_match("Flowy."));
+        assert_eq!(strip_wake_phrase("Flowy."), "");
+        assert!(!is_wake_phrase_match("Flowy, open the door"));
+    }
+
+    #[test]
+    fn test_chinese_wake_phrases_regression() {
+        assert!(is_wake_phrase_match("嘿 Flowy，帮我查下天气"));
+        assert_eq!(strip_wake_phrase("嘿 Flowy，帮我查下天气"), "帮我查下天气");
+        assert!(is_wake_phrase_match("你好Flowy"));
+        assert_eq!(strip_wake_phrase("你好Flowy"), "");
+        assert!(is_wake_phrase_match("Hey,芙. 帮我关掉音乐"));
         assert_eq!(strip_wake_phrase("Hey,芙. 帮我关掉音乐"), "帮我关掉音乐");
-        assert_eq!(strip_wake_phrase("Flowy 打开浏览器"), "打开浏览器");
-        assert_eq!(strip_wake_phrase("哈喽 flowy，今天几号"), "今天几号");
+        assert!(is_wake_phrase_match("芙莉"));
+        assert_eq!(strip_wake_phrase("芙莉"), "");
+        assert!(!is_wake_phrase_match("芙莉帮我关灯")); // Bare 芙莉 only full sentence
+    }
+
+    #[test]
+    fn test_hard_negatives_must_not_match() {
+        let hard_negatives = [
+            "Hey friend",
+            "Hey, friend.",
+            "Hey listen",
+            "Hey look at that",
+            "Hey flight is delayed",
+            "The workflow is ready",
+            "workflow",
+            "Hello world",
+            "f",
+            "l",
+            "flo",
+            "flow",
+            "I will follow up tomorrow",
+            "the floor is clean",
+            "go to hell",
+            "this is flu season",
+            "today is a nice day",
+        ];
+
+        for neg in hard_negatives {
+            assert!(
+                !is_wake_phrase_match(neg),
+                "Hard negative must NOT trigger wake phrase match: {neg}"
+            );
+        }
     }
 
     #[test]
