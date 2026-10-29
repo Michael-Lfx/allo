@@ -3751,7 +3751,7 @@ async fn run_grade(
     .bind(&module_id)
     .execute(&wiring.pool)
     .await?;
-    for (activity_id, kind, prompt, grounding) in [
+    for (position, (activity_id, kind, prompt, grounding)) in [
         (
             &open_id,
             "open_question",
@@ -3764,7 +3764,10 @@ async fn run_grade(
             GRADE_REFLECTION_PROMPT,
             GRADE_REFLECTION_GROUNDING,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let config = serde_json::json!({
             "answer": null,
             "options": [],
@@ -3775,13 +3778,14 @@ async fn run_grade(
         sqlx::query(
             "INSERT INTO learning_activities \
              (activity_id, lesson_id, kind, prompt, config_json, position) \
-             VALUES (?, ?, ?, ?, ?, 0)",
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(activity_id)
         .bind(&lesson_id)
         .bind(kind)
         .bind(prompt)
         .bind(serde_json::to_string(&config)?.as_str())
+        .bind(position as i64)
         .execute(&wiring.pool)
         .await?;
     }
