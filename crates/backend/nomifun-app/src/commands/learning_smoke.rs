@@ -2455,12 +2455,19 @@ async fn run_content(
         );
     }
     // 判据②：条款在场——规划面四条款 + 写作面两条款（stale-binary 门）。
+    // 「意图画像与容量预算」挂在 NOMI_LEARNING_EST_BUDGET 语义臂上：off 臂按
+    // 设计换回旧 #154 条款（EST_LEGACY_CLAUSE_CN），判据按臂接受对应条款。
+    let budget_term = if nomifun_learning::est_budget_enabled() {
+        "意图画像与容量预算"
+    } else {
+        "明显超容才"
+    };
     let system_joined = system_texts.join("\n");
     for term in [
         "构件词边界",
         "练习形态按档位",
         "取材池",
-        "意图画像与容量预算",
+        budget_term,
         "表述工具在场",
         "规划即雄心",
     ] {
