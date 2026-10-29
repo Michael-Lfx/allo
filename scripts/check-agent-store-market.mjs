@@ -245,6 +245,11 @@ export function validateMarketTree({ name, dir }) {
 
   // 3. 条目（文档 18 §4 / 30 §6.1）
   const entryKeys = hit.entryKeys ?? ENTRY_KEYS;
+  // Payload markets (skills / connectors) ship one shared zip; its digest is
+  // the integrity anchor, so per-entry `sha256` is optional there.
+  const hasPayload = Boolean(
+    manifest.payload && typeof manifest.payload.sha256 === "string",
+  );
   const seen = new Map();
   for (const key of entryKeys) {
     const entries = manifest[key];
@@ -268,7 +273,13 @@ export function validateMarketTree({ name, dir }) {
         if (typeof entry.download !== "string" || !/^https:\/\/\S+$/.test(entry.download)) {
           add("error", "entry.download.not-absolute", hit.rel, `${pointer}/download`, `"${entry.download}" must be an absolute https URL`);
         }
-        if (typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.sha256)) {
+        if (!hasPayload && (typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.sha256))) {
+          add("error", "entry.sha256.invalid", hit.rel, `${pointer}/sha256`, "sha256 must be 64 lowercase hex characters");
+        }
+        if (hasPayload && (typeof entry.member !== "string" || entry.member.trim() === "")) {
+          add("error", "entry.member.missing", hit.rel, `${pointer}/member`, "a payload-market entry must name its `member` directory");
+        }
+        if (typeof entry.sha256 === "string" && !/^[0-9a-f]{64}$/.test(entry.sha256)) {
           add("error", "entry.sha256.invalid", hit.rel, `${pointer}/sha256`, "sha256 must be 64 lowercase hex characters");
         }
         if (!Number.isInteger(entry.size) || entry.size <= 0) {

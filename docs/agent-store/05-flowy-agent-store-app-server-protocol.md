@@ -183,7 +183,7 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-20`**（2026-10-29）新增 **`index` 市场源类型**（doc `30` §6.1）：`AppServerMarketplaceSourceKind` 增 `Index`；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`；官方 `experts` 源改为 `index.json`，条目 `tar.gz` 安装期按 `sha256` / `size` 校验后下载解包。方法计数不变（56 / 83）。
+> 指纹：**`fp-20`**（2026-10-29）新增 **`index` 市场源类型**（doc `30` §6.1）：`AppServerMarketplaceSourceKind` 增 `Index`；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`；官方三个市场均改为 `wb-market/<market>/index.json`——`experts` 逐条 `tar.gz`，`skills` / `connectors` 共享 payload zip（`member` 定位），安装期按 `sha256` / `size` 校验后下载解包；迁移 `069` 重建 `plugin_marketplaces` 的 `source_kind` CHECK 以接受 `index`。方法计数不变（56 / 83）。
 
 > 指纹：**`fp-19`**（2026-10-26）给**导出面补上逐实体的图标引用**（doc `51`）：
 > `AppServerExpertSkillRef` 增 `icon`（**技能目录相对路径**，如 `assets/icon.png`，字节走

@@ -482,6 +482,30 @@ pub(crate) fn validate_index_json(text: &str) -> Result<(), AppError> {
     {
         return Err(bad("index.json market must be a non-empty string"));
     }
+    // Payload markets (`skills` / `connectors`) declare one shared zip; its
+    // digest is what an entry is verified against, so per-entry `sha256` is
+    // optional there (the entry only names its `member` directory).
+    let has_payload = match value.get("payload") {
+        Some(payload) => {
+            let url = payload.get("url").and_then(Value::as_str).unwrap_or("");
+            if !url.starts_with("https://") {
+                return Err(bad(format!(
+                    "index.json payload.url must be an absolute https URL, got `{url}`"
+                )));
+            }
+            let sha = payload.get("sha256").and_then(Value::as_str).unwrap_or("");
+            if !is_lower_hex64(sha) {
+                return Err(bad(
+                    "index.json payload.sha256 must be 64 lowercase hex characters",
+                ));
+            }
+            if payload.get("size").and_then(Value::as_u64).unwrap_or(0) == 0 {
+                return Err(bad("index.json payload.size must be a positive integer"));
+            }
+            true
+        }
+        None => false,
+    };
     let entries = value
         .get("entries")
         .and_then(Value::as_array)
@@ -507,7 +531,7 @@ pub(crate) fn validate_index_json(text: &str) -> Result<(), AppError> {
             )));
         }
         let sha256 = item.get("sha256").and_then(Value::as_str).unwrap_or("");
-        if !is_lower_hex64(sha256) {
+        if !is_lower_hex64(sha256) && !(has_payload && sha256.is_empty()) {
             return Err(bad(format!(
                 "index.json entry `{name}` sha256 must be 64 lowercase hex characters"
             )));
@@ -824,6 +848,45 @@ mod tests {
             entry("a", "https://h/e/a.tar.gz", &"a".repeat(64), 10)
         ]}).to_string();
         assert!(validate_index_json(&no_market).is_err());
+    }
+
+    #[test]
+    fn payload_index_allows_entries_without_their_own_sha() {
+        let payload = serde_json::json!({
+            "schema_version": 2,
+            "market": "skills",
+            "payload": {
+                "url": "https://h/payload.zip",
+                "sha256": "a".repeat(64),
+                "size": 100,
+            },
+            "entries": [{
+                "name": "s",
+                "kind": "skill",
+                "download": "https://h/payload.zip",
+                "member": "s",
+                "size": 5,
+                "available": true,
+            }],
+        })
+        .to_string();
+        assert!(validate_index_json(&payload).is_ok());
+
+        // Without a payload digest there is nothing to verify the archive
+        // against, so the per-entry sha stays mandatory.
+        let no_payload = serde_json::json!({
+            "schema_version": 2,
+            "market": "skills",
+            "entries": [{
+                "name": "s",
+                "kind": "skill",
+                "download": "https://h/payload.zip",
+                "member": "s",
+                "size": 5,
+            }],
+        })
+        .to_string();
+        assert!(validate_index_json(&no_payload).is_err());
     }
 }
 

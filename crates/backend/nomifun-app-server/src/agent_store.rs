@@ -1198,13 +1198,14 @@ impl AgentStoreConfig {
         // so an unchanged archive is never re-downloaded.
         const MARKET_HOST: &str =
             "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master";
-        // Doc 30 §6.1: `experts` moves to index-first (one ~1 MiB index, entry
-        // archives on demand); `skills` / `connectors` keep the legacy archive
-        // until their own indexes are published.
+        // Doc 30 §6.1: all three official markets are index-first now — one
+        // small pointer each, entries fetched on demand. `skills` / `connectors`
+        // share a payload zip (`member` selects the entry); `experts` has one
+        // tar.gz per entry.
         [
             ("experts", "index", format!("{MARKET_HOST}/wb-market/experts/index.json")),
-            ("skills", "zip", format!("{MARKET_HOST}/skills.zip")),
-            ("connectors", "zip", format!("{MARKET_HOST}/connectors.zip")),
+            ("skills", "index", format!("{MARKET_HOST}/wb-market/skills/index.json")),
+            ("connectors", "index", format!("{MARKET_HOST}/wb-market/connectors/index.json")),
         ]
         .into_iter()
         .map(|(id, kind, source)| (id.to_owned(), kind.to_owned(), source))
@@ -2123,14 +2124,12 @@ model = "mimo-v2.5-free"
         let ids: Vec<&str> = builtin.iter().map(|(id, _, _)| id.as_str()).collect();
         assert_eq!(ids, ["experts", "skills", "connectors"]);
         for (id, kind, source) in &builtin {
-            // Doc 30 §6.1: `experts` is index-first; the other two stay archives.
-            if id == "experts" {
-                assert_eq!(kind, "index");
-                assert!(source.ends_with("/wb-market/experts/index.json"), "{source}");
-            } else {
-                assert_eq!(kind, "zip");
-                assert!(source.ends_with(&format!("/{id}.zip")), "{id} source: {source}");
-            }
+            // Doc 30 §6.1: all three official markets are index-first.
+            assert_eq!(kind, "index");
+            assert!(
+                source.ends_with(&format!("/wb-market/{id}/index.json")),
+                "{id} source: {source}"
+            );
             assert!(source.starts_with("https://"), "{id} source must be absolute: {source}");
         }
         // The release default is the product's own market host. Pinned because
@@ -2146,8 +2145,8 @@ model = "mimo-v2.5-free"
             sources,
             [
                 "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/skills.zip",
-                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/connectors.zip",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/skills/index.json",
+                "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/connectors/index.json",
             ]
         );
     }

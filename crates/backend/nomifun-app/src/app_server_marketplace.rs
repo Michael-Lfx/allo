@@ -628,12 +628,6 @@ impl AppServerMarketplaceProvider {
                 row.marketplace_id, entry.name
             ))
         })?;
-        let sha256 = meta
-            .entry_sha256()
-            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no sha256", entry.name)))?;
-        let size = meta
-            .entry_size()
-            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no size", entry.name)))?;
         if !entry.source_uri.starts_with("https://") {
             return Err(AppError::BadRequest(format!(
                 "entry {} download must be an absolute https URL",
@@ -641,6 +635,23 @@ impl AppServerMarketplaceProvider {
             )));
         }
         let cache = self.market_root.join(&row.marketplace_id).join("cache");
+        // Payload markets (`skills` / `connectors`) put every entry inside one
+        // shared zip; the entry names its directory with `member`.
+        if let Some(payload) = index.payload() {
+            let member = meta.entry_member().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "payload market entry {} has no member path",
+                    entry.name
+                ))
+            })?;
+            return materialize_payload_entry(&cache, member, payload).await;
+        }
+        let sha256 = meta
+            .entry_sha256()
+            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no sha256", entry.name)))?;
+        let size = meta
+            .entry_size()
+            .ok_or_else(|| AppError::BadRequest(format!("entry {} has no size", entry.name)))?;
         materialize_remote_archive(&cache, &entry.name, &entry.source_uri, &sha256, size).await
     }
 
@@ -688,6 +699,109 @@ impl AppServerMarketplaceProvider {
         }
         Ok(row)
     }
+}
+
+/// Materialize one entry from a shared payload zip (`skills` / `connectors`).
+///
+/// The payload is content-addressed by its own sha256, downloaded once and
+/// extracted once; every entry of that market then reuses `payload-<sha>/`.
+async fn materialize_payload_entry(
+    cache: &std::path::Path,
+    member: &str,
+    payload: &crate::app_server_store::MarketPayload,
+) -> Result<std::path::PathBuf, AppError> {
+    use std::path::Component;
+    if !payload.url.starts_with("https://") {
+        return Err(AppError::BadRequest(format!(
+            "payload url must be absolute https, got `{}`",
+            payload.url
+        )));
+    }
+    if payload.sha256.len() != 64 {
+        return Err(AppError::Internal("payload sha256 must be 64 hex chars".into()));
+    }
+    let member_path = std::path::Path::new(member);
+    let safe = !member.is_empty()
+        && member_path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir));
+    if !safe {
+        return Err(AppError::BadRequest(format!(
+            "payload member `{member}` is not a safe relative path"
+        )));
+    }
+    std::fs::create_dir_all(cache)
+        .map_err(|error| AppError::Internal(format!("create entry cache: {error}")))?;
+    let archive = cache.join(format!("payload-{}.zip", payload.sha256));
+    if !archive.is_file() {
+        let (digest, server) = crate::market_source::download_archive(&payload.url, &archive)
+            .await
+            .map_err(AppError::Internal)?;
+        if let Some(server) = server {
+            if server != payload.sha256 {
+                let _ = std::fs::remove_file(&archive);
+                return Err(AppError::Internal(format!(
+                    "payload digest mismatch: index declares {}, host reports {server}",
+                    payload.sha256
+                )));
+            }
+        }
+        if digest != payload.sha256 {
+            let _ = std::fs::remove_file(&archive);
+            return Err(AppError::Internal(format!(
+                "payload downloaded bytes hash to {digest}, index declares {}",
+                payload.sha256
+            )));
+        }
+    }
+    let actual = crate::market_source::sha256_file(&archive).map_err(AppError::Internal)?;
+    if actual != payload.sha256 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "payload archive hash {actual} does not match index sha256 {}",
+            payload.sha256
+        )));
+    }
+    let length = std::fs::metadata(&archive)
+        .map_err(|error| AppError::Internal(format!("stat payload archive: {error}")))?
+        .len();
+    if length != payload.size as u64 {
+        let _ = std::fs::remove_file(&archive);
+        return Err(AppError::Internal(format!(
+            "payload archive is {length} bytes, index declares {}",
+            payload.size
+        )));
+    }
+    let extracted = cache.join(format!("payload-{}", payload.sha256));
+    if !extracted.is_dir() {
+        let tmp = cache.join(format!(
+            ".payload-{}-{}",
+            payload.sha256,
+            nomifun_common::generate_id()
+        ));
+        crate::market_source::extract_zip_market(&archive, &tmp)
+            .map_err(AppError::Internal)?;
+        match std::fs::rename(&tmp, &extracted) {
+            Ok(()) => {}
+            Err(_) if extracted.is_dir() => {
+                let _ = std::fs::remove_dir_all(&tmp);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(AppError::Internal(format!(
+                    "promote extracted payload: {error}"
+                )));
+            }
+        }
+    }
+    let source = extracted.join(member_path);
+    if !source.is_dir() {
+        return Err(AppError::Internal(format!(
+            "payload member `{member}` is missing from {}",
+            extracted.display()
+        )));
+    }
+    Ok(source)
 }
 
 /// [`MarketplaceProvider::register_unfetched`] against the registry seam

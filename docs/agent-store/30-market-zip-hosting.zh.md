@@ -174,10 +174,10 @@ source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/mast
 - 市场根只放 `index.json`（+ 可选 `categories.json`）；条目 `download` 是绝对 https 地址，附 `sha256` 与 `size`；
 - `market/refresh` 只拉约 1 MiB 索引；`revision` = `index.json` 内容 sha256，未变即 `Unchanged`，last-good 保留；
 - `store/list` 直接读 `index.json` 的 `display` / `description` / `tags` / `examples` / `quick_prompts` / `default_init_prompt` / `icon_url` / `category_id` / `available`，卡片不再依赖已下载的条目目录；
-- `store/install` / `market/entry-import` 才下载该条目 `tar.gz`，按索引 `sha256` / `size` 校验后安全解包（拒绝绝对路径、`..`、链接/设备文件）；归档若带顶层 `<plugin-name>/` 自动下钻一层；
+- `store/install` / `market/entry-import` 才下载条目内容：`experts` 是逐条 `tar.gz`；`skills` / `connectors` 共享一个 payload zip（顶层 `payload.url/sha256/size`，条目用 `member` 定位目录）。两者都先按声明摘要/大小校验，再安全解包；归档若带顶层 `<plugin-name>/` 自动下钻一层；
 - `StoreItem` 增加 `icon_url`（绝对）、`download_size`、`sha256`、`available`、`unavailable_reason`；`avatar_url` 优先绝对 `icon_url`，否则回退相对 asset 路由；`store_asset_route` 对远程图标 302；
 - `categories.json` 采用 `taxonomy[]`（`id/zh/en/description_zh/description_en`），`app_server_categories` 优先读它，缺失再回退 `manifest.json` / 内置词表；
-- 官方 `experts` 已切到 `wb-market/experts/index.json`；`skills` / `connectors` 暂时保留 zip，待各自索引发布；旧 `experts.zip` 冻结保留两个发布版本。
+- 官方三个市场（`experts` / `skills` / `connectors`）均已切到 `wb-market/<market>/index.json`；旧 `experts.zip` / `skills.zip` / `connectors.zip` 冻结保留两个发布版本。
 
 发布侧由 `workbuddy-market-collect` 的 `pipeline plan/ingest/transform/package/publish/verify` 生成并上传；索引 URL 统一用 ModelScope 公开文件口 `…/api/v1/models/{repo}/repo?Revision=master&FilePath=…`（`resolve/master` 对个别文件会返回 421）。
 

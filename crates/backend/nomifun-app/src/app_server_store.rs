@@ -165,6 +165,9 @@ pub(crate) struct MarketIndexInfo {
     kind: Option<String>,
     /// The index row's `category_id`, used when the entry has no plugin.json.
     category_id: Option<String>,
+    /// Payload markets (`skills` / `connectors`) name the entry's directory
+    /// inside the shared payload zip; `None` for per-entry archive markets.
+    member: Option<String>,
 }
 
 impl MarketIndexInfo {
@@ -192,6 +195,11 @@ impl MarketIndexInfo {
 
     pub(crate) fn entry_version(&self) -> Option<&str> {
         self.version.as_deref()
+    }
+
+    /// The payload member directory for a payload-market entry.
+    pub(crate) fn entry_member(&self) -> Option<&str> {
+        self.member.as_deref()
     }
 
     /// The display metadata this row declares (`50` §3.3), in the shape the
@@ -244,6 +252,14 @@ fn localized_objects(value: Option<&serde_json::Value>) -> Vec<LocalizedText> {
         .unwrap_or_default()
 }
 
+/// The shared payload archive an `index` market may declare (skills / connectors).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MarketPayload {
+    pub url: String,
+    pub sha256: String,
+    pub size: i64,
+}
+
 /// One market's own entry indexes, read once per market.
 ///
 /// Both maps are keyed by the **entry name the prober carries**, which is the id
@@ -257,17 +273,26 @@ pub(crate) struct MarketIndex {
     /// (schema_version 2). Kept apart from the two legacy maps because it is a
     /// single mixed-kind index, not a per-market manifest.
     index: HashMap<String, MarketIndexInfo>,
+    /// The shared payload zip for index markets whose entries live inside it
+    /// (`skills` / `connectors`); `None` for per-entry archive markets.
+    payload: Option<MarketPayload>,
 }
 
 impl MarketIndex {
     /// Read the indexes a market root may carry (best-effort: a missing or
     /// malformed index yields an empty map rather than failing the catalog).
     pub(crate) fn read(root: &Path) -> Self {
+        let (index, payload) = read_store_index(root);
         Self {
             connectors: read_index(root, ".codebuddy-connector/connectors.json", "connectors", "id"),
             skills: read_index(root, ".codebuddy-skill/marketplace.json", "skills", "name"),
-            index: read_store_index(root),
+            index,
+            payload,
         }
+    }
+
+    pub(crate) fn payload(&self) -> Option<&MarketPayload> {
+        self.payload.as_ref()
     }
 
     fn info(&self, kind: &str, entry_name: &str) -> Option<&MarketIndexInfo> {
@@ -356,6 +381,7 @@ fn read_index(
                     .get("category_id")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned),
+                member: None,
             },
         );
     }
@@ -368,16 +394,23 @@ fn read_index(
 /// Best-effort like [`read_index`]: a missing/malformed/older file yields an
 /// empty map, so a market source that briefly has not materialized yet does not
 /// fail the whole catalog.
-fn read_store_index(root: &Path) -> HashMap<String, MarketIndexInfo> {
+fn read_store_index(root: &Path) -> (HashMap<String, MarketIndexInfo>, Option<MarketPayload>) {
     let Ok(text) = std::fs::read_to_string(root.join("index.json")) else {
-        return HashMap::new();
+        return (HashMap::new(), None);
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return HashMap::new();
+        return (HashMap::new(), None);
     };
     let Some(items) = value.get("entries").and_then(|value| value.as_array()) else {
-        return HashMap::new();
+        return (HashMap::new(), None);
     };
+    let payload = value.get("payload").and_then(|payload| {
+        Some(MarketPayload {
+            url: payload.get("url")?.as_str()?.to_owned(),
+            sha256: payload.get("sha256")?.as_str()?.to_owned(),
+            size: payload.get("size")?.as_i64()?,
+        })
+    });
     let mut map = HashMap::new();
     for item in items {
         let Some(name) = item.get("name").and_then(|value| value.as_str()) else {
@@ -406,10 +439,11 @@ fn read_store_index(root: &Path) -> HashMap<String, MarketIndexInfo> {
                 unavailable_reason: item.get("unavailable_reason").and_then(|value| value.as_str()).map(str::to_owned),
                 kind: item.get("kind").and_then(|value| value.as_str()).map(str::to_owned),
                 category_id: item.get("category_id").and_then(|value| value.as_str()).map(str::to_owned),
+                member: item.get("member").and_then(|value| value.as_str()).map(str::to_owned),
             },
         );
     }
-    map
+    (map, payload)
 }
 
 /// Pair an index row's `tags_zh`/`tags_en` into `LocalizedText`s, by position

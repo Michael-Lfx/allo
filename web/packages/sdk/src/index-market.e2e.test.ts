@@ -23,6 +23,9 @@ const INDEX_URL =
   process.env["AGENT_STORE_E2E_INDEX_URL"] ??
   "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json";
 const ENTRY = process.env["AGENT_STORE_E2E_ENTRY"] ?? "accessibility-auditor";
+const SKILLS_URL =
+  process.env["AGENT_STORE_E2E_SKILLS_URL"] ??
+  "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/skills/index.json";
 
 (BIN ? describe : describe.skip)("index market end-to-end", () => {
   it("adds the published index, lists it and installs one entry on demand", async () => {
@@ -71,6 +74,46 @@ const ENTRY = process.env["AGENT_STORE_E2E_ENTRY"] ?? "accessibility-auditor";
       expect(installed.snapshotId).not.toBeNull();
       expect(installed.ok, installed.errors.join("; ")).toBe(true);
       expect(existsSync(harness.server.dataDir)).toBe(true);
+
+      const after = await harness.store.list();
+      const refreshed = after.find(
+        (item) =>
+          item.marketplace_id === market.marketplace_id && item.entry_name === target.entry_name,
+      );
+      expect(refreshed?.installed).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  }, 300_000);
+
+  it("installs a skill from the shared payload index", async () => {
+    const harness = await launchHarness({
+      bin: BIN as string,
+      client: { name: "sdk-index-payload-e2e", version: "0.1.0" },
+      marketDownload: "none",
+      requestTimeoutMs: 300_000,
+    });
+    try {
+      const market = await harness.addMarketplace({
+        name: "skills-e2e",
+        source_kind: "index",
+        source: SKILLS_URL,
+      });
+      expect(market.source_kind).toBe("index");
+      expect(market.entry_count).toBeGreaterThan(1500);
+
+      const items = await harness.store.list();
+      const skills = items.filter((item) => item.marketplace_id === market.marketplace_id);
+      const target = skills[0];
+      expect(target.available).toBe(true);
+      expect(target.download_size ?? 0).toBeGreaterThan(0);
+      // Payload markets carry no per-entry digest: the shared payload zip is
+      // the integrity anchor, and `member` names the entry inside it.
+      expect(target.sha256 ?? null).toBeNull();
+
+      const installed = await harness.store.install(target, { waitForReady: false });
+      expect(installed.snapshotId).not.toBeNull();
+      expect(installed.ok, installed.errors.join("; ")).toBe(true);
 
       const after = await harness.store.list();
       const refreshed = after.find(

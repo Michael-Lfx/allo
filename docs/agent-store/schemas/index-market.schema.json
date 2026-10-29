@@ -35,7 +35,7 @@
     "entry": {
       "title": "Index market entry",
       "type": "object",
-      "required": ["name", "download", "sha256", "size"],
+      "required": ["name", "download", "size"],
       "properties": {
         "name": { "type": "string", "minLength": 1, "pattern": "\\S" },
         "display": { "type": "object" },
