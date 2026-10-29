@@ -1230,11 +1230,24 @@ fn review_spoken_summary_must_not_drop_the_actual_backup_failure() {
     let summary = nomifun_app::voice_companion_manager::extract_spoken_summary(
         raw,
         nomifun_api_types::voice::VoiceTaskStatus::Completed,
+        false,
     );
     assert!(
         summary.contains("备份失败") || summary.contains("没有复制"),
         "spoken summary lost the actual failure: {summary}"
     );
+}
+
+#[test]
+fn review_spoken_summary_empty_result_uses_the_call_locale() {
+    use nomifun_api_types::voice::VoiceTaskStatus;
+    use nomifun_app::voice_companion_manager::extract_spoken_summary;
+    assert_eq!(extract_spoken_summary("", VoiceTaskStatus::Completed, true),
+        "Execution finished. See conversation for details.");
+    assert_eq!(extract_spoken_summary("", VoiceTaskStatus::Completed, false),
+        "执行已结束，详情请在会话中查看。");
+    assert_eq!(extract_spoken_summary("", VoiceTaskStatus::Failed, true),
+        "Execution was unsuccessful. See conversation for details.");
 }
 
 #[tokio::test]

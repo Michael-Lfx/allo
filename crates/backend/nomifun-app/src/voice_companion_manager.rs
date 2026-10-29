@@ -4643,7 +4643,7 @@ fn format_task_result_announcement(task: &VoiceTaskSnapshot, goal: &str, is_en: 
 /// - Vital parameters (temperatures, numbers, dates, locations, units);
 /// - Negations ("不", "未", "无", "失败", "没有", "无法") - never drops or inverts polarity;
 /// - Strips markdown noise, code blocks, and stage directions.
-fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus, is_en: bool) -> String {
+pub fn extract_spoken_summary(raw: &str, status: VoiceTaskStatus, is_en: bool) -> String {
     let text = strip_markdown_and_noise(raw);
     let text = text.trim();
     if text.is_empty() {
