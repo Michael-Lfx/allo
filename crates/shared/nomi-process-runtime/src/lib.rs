@@ -13,12 +13,16 @@ mod recovery;
 mod registry;
 mod request;
 mod supervisor;
+#[cfg(windows)]
+mod windows_shell;
 
 pub use capability::{CapabilityPolicy, SandboxPolicy};
 pub use command_builder::{
-    ChildProcessBuilder, ChildProcessCleanup, ManagedChildProcess, apply_hidden_console,
-    apply_hidden_console_std, hidden_command, hidden_std_command, kill_process_tree,
+    ChildProcessBuilder, ChildProcessCleanup, HiddenCommand, HiddenStdCommand,
+    ManagedChildProcess, apply_hidden_console, apply_hidden_console_std, hidden_command,
+    hidden_std_command, install_host_process_lifetime, kill_process_tree,
     merge_process_path, resolve_command_in, resolve_command_path,
+    terminate_host_lifetime_descendants,
 };
 pub use io::{OutputBuffer, OutputObserver};
 pub use outcome::{
@@ -41,6 +45,11 @@ pub use supervisor::{
 pub use platform::windows::{
     WindowsExactProcess, WindowsProcessIdentity, WindowsProcessJob, WindowsRecoveryJob,
     windows_child_process_identity, windows_process_identity,
+};
+#[cfg(windows)]
+pub use windows_shell::{
+    WindowsShellEdition, WindowsShellResolution, is_usable_pwsh, resolve_windows_powershell_exe,
+    set_windows_powershell_override, windows_shell_edition,
 };
 #[cfg(target_os = "linux")]
 pub use platform::linux_recovery::LinuxProcessGroupAnchor;

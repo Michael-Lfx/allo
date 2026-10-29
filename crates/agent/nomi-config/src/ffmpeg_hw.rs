@@ -604,7 +604,7 @@ async fn run_captured<A: AsRef<std::ffi::OsStr> + Send + Sync>(
 }
 
 /// Spawn ffmpeg without flashing a console on Windows GUI hosts.
-fn hw_command(bin: &Path) -> tokio::process::Command {
+fn hw_command(bin: &Path) -> nomi_process_runtime::HiddenCommand {
     nomi_process_runtime::hidden_command(bin)
 }
 

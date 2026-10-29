@@ -12,6 +12,16 @@
 
 use super::*;
 
+/// 结构发现阶段的常数次 LLM 调用(查询生成/证据摘要/结构草稿/结构评审,
+/// 不随库规模变化;估算口径)。
+const STRUCTURE_STAGE_CALLS: usize = 4;
+/// 估算耗时经验常数(秒/次调用;确认弹窗的粗估读数,不是承诺)。
+const ESTIMATE_SECONDS_PER_CALL: u64 = 10;
+/// 估算跳过摘要限长(噪声/重复示例,确认弹窗够用)。
+const ESTIMATE_SKIPPED_EXAMPLES_MAX: usize = 10;
+/// triage_completed 帧的有界示例数(跳过/重复/uncertain;进度视图展开用)。
+const TRIAGE_FRAME_EXAMPLES_MAX: usize = 10;
+
 /// 生成注册表/悬浮指示条的主题（t1）：知识库流优先用户目标——目标即课程
 /// 的意图，比库名更贴近用户正在建的东西；缺省回退库名，描述流取描述前
 /// 120 字。确定性纯函数。
@@ -25,6 +35,52 @@ fn outline_brief_topic(brief: &OutlineBrief) -> String {
         // 简报永远带一个来源（validate 保证）；防御性留空而非 panic。
         _ => String::new(),
     }
+}
+
+/// 内部 kill switch 的进程内 env 名（Q13,评审 S3）：置 off/0/false 禁用
+/// 「清点分诊 → 结构发现 → 展开」新管线,回退现状采样+大纲引擎。运维级
+/// 开关——不进 UI/用户配置面,默认(未设/其它值)新管线开启。
+pub(super) const SOURCE_PLAN_KILL_SWITCH_ENV: &str = "NOMI_LEARNING_SOURCE_PLAN";
+
+/// kill switch 命中判定（off/0/false;大小写与首尾空白宽容）。
+pub(super) fn is_source_plan_kill_switch_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "0" | "false"
+    )
+}
+
+/// 新管线是否被内部 kill switch 禁用（进程内 env 读取;默认开启）。
+fn source_plan_pipeline_disabled() -> bool {
+    std::env::var(SOURCE_PLAN_KILL_SWITCH_ENV)
+        .map(|value| is_source_plan_kill_switch_value(&value))
+        .unwrap_or(false)
+}
+
+/// 展开批数估算（评审 S2:成本门按章估算,不再按文件数近似）——有 plan
+/// 时每章一批,单章锚点文件数超 [`EXPANSION_BATCH_MAX_FILES`] 才按文件数
+/// 拆批;无 plan（估算端不跑 LLM 结构发现）退保守上界 = 候选文件数（最坏
+/// 每个候选文件自成一章）,宁可高估不漏估（成本门的职责是拦住大库）。
+pub(super) fn estimate_expansion_batches(
+    plan: Option<&crate::generation::SourcePlan>,
+    candidate_files: usize,
+) -> usize {
+    let Some(plan) = plan.filter(|plan| !plan.chapters.is_empty()) else {
+        return candidate_files;
+    };
+    plan.chapters
+        .iter()
+        .map(|chapter| {
+            let files: HashSet<&str> = chapter
+                .source_anchors
+                .iter()
+                .map(|anchor| anchor.rel_path.as_str())
+                .collect();
+            files
+                .len()
+                .div_ceil(crate::generation::EXPANSION_BATCH_MAX_FILES)
+        })
+        .sum()
 }
 
 impl LearningService {
@@ -64,28 +120,125 @@ impl LearningService {
         let topic = outline_brief_topic(&brief);
         let session = generate_id();
         let _task =
-            self.begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)?;
-        let model_override = request
-            .provider_id
-            .as_ref()
-            .zip(request.model.as_deref());
+            self
+                .begin_generation_task(crate::service::KIND_OUTLINE, &session, None, &topic)
+                .await?;
+        // t5(评审 S5):started 前导任何 triage/结构发现阶段帧——后续任何
+        // failed(分诊/展开/导入失败)都有 started 前缀,进度视图不会收到
+        // 无源 failed。
         self.emit_course_event(serde_json::json!({
             "phase": "started",
             "kind": brief.kind(),
         }));
-        let blueprint = match self
-            .generate_course_blueprint(&brief, model_override, &session)
-            .await
+        // t2 结构发现 + t3 分批展开(仅 KB 流 + 引擎路径):t1 清点/分诊 →
+        // 证据驱动章节骨架 → **有可用 plan 时按章展开直接产 Blueprint(不再
+        // 调大纲引擎)**;展开失败(非取消)→ 回退现行大纲引擎路径(degraded
+        // 不阻断);无 completer/连续失败/零证据 → 无 plan,采样路径照旧。
+        // 内部 kill switch(Q13,评审 S3):`NOMI_LEARNING_SOURCE_PLAN` 置
+        // off/0/false 时不跑新管线,直接走现状采样+大纲引擎(行为等同现状;
+        // 运维开关,非用户可见 flag,默认新管线开启)。
+        // 遗留 one-shot 兜底路径(无引擎)不跑结构发现——它无法兑现 plan 的
+        // 权威性,且保持测试/直调路径的 LLM 调用面零变化。
+        let mut brief = brief;
+        let mut expansion: Option<crate::generation::ExpansionOutcome> = None;
+        // t4 快照信封的四件套库存位:inventory/triage 只在展开成功时保留
+        // (coverage 在 expansion 里,plan 在 brief.source_plan 里)——四件
+        // 套齐全 = 课程确实按 plan 建成,落库点才组装信封。
+        let mut discovered: Option<(
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+        )> = None;
+        if brief.knowledge_base.is_some()
+            && self.course_outline_engine().is_some()
+            && !source_plan_pipeline_disabled()
         {
-            Ok(blueprint) => blueprint,
-            Err(error) => {
-                self.emit_course_event(serde_json::json!({
-                    "phase": "failed",
-                    "kind": brief.kind(),
-                    "error": error.to_string(),
-                }));
-                return Err(error);
+            match self
+                .discover_kb_source_plan(&request, &brief, _task.token(), &_task)
+                .await
+            {
+                Ok((inventory, triage, plan)) => {
+                    if let Some(plan) = plan.filter(|plan| plan.is_usable()) {
+                        brief.source_plan = Some(plan.clone());
+                        match self
+                            .expand_kb_course_blueprint(
+                                &inventory,
+                                &triage,
+                                &plan,
+                                &brief,
+                                _task.token(),
+                                &_task,
+                            )
+                            .await
+                        {
+                            Ok(Some(outcome)) => {
+                                discovered = Some((inventory, triage));
+                                expansion = Some(outcome);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                if matches!(
+                                    &error,
+                                    AppError::Conflict(message)
+                                        if message.contains(crate::service::CANCELLED_MESSAGE)
+                                ) {
+                                    self.emit_course_event(serde_json::json!({
+                                        "phase": "failed",
+                                        "kind": brief.kind(),
+                                        "error": error.to_string(),
+                                    }));
+                                    return Err(error);
+                                }
+                                tracing::warn!(
+                                    session = %session,
+                                    error = %error,
+                                    "kb expansion failed; falling back to the outline engine"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "failed",
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
             }
+        }
+        let model_override = request
+            .provider_id
+            .as_ref()
+            .zip(request.model.as_deref());
+        // (started 帧已在任务登记后、结构发现前发出,评审 S5。)
+        let (blueprint, expansion_coverage) = match expansion {
+            // t3 分批展开产物:plan 权威骨架的确定性落地,直接进装配/导入
+            //(跳过大纲引擎;失败时上面已回退 engine 路径)。coverage 保留
+            // 给 t4 快照信封。
+            Some(outcome) => {
+                tracing::info!(
+                    session,
+                    modules = outcome.blueprint.modules.len(),
+                    coverage_warnings = outcome.coverage.warnings.len(),
+                    "kb expansion blueprint"
+                );
+                (outcome.blueprint, Some(outcome.coverage))
+            }
+            None => match self
+                .generate_course_blueprint(&brief, model_override, &session)
+                .await
+            {
+                Ok(blueprint) => (blueprint, None),
+                Err(error) => {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "failed",
+                        "kind": brief.kind(),
+                        "error": error.to_string(),
+                    }));
+                    return Err(error);
+                }
+            },
         };
         // 蓝图的来源标注（t4）：逐课时把 source 路径解析回来源库，写入
         // `SourceSpan.kb_id`——快照/蓝图/课时三处的库归属同源，多库下课时
@@ -130,6 +283,25 @@ impl LearningService {
                 })
             })
             .transpose()?;
+        // 来源计划快照(t4):四件套齐全(清点/分诊/计划/展开覆盖)才组装
+        // v1 信封——体积控制在 capture 里统一截断;描述流/回退采样路径/
+        // legacy 走 None(列上 NULL,不伪造)。导入与 modules/lessons 同事务。
+        let course_source_plan_json =
+            match (&discovered, brief.source_plan.as_ref(), expansion_coverage.as_ref()) {
+                (Some((inventory, triage)), Some(plan), Some(coverage)) => Some(
+                    serde_json::to_string(
+                        &crate::generation::CourseSourcePlanSnapshot::capture(
+                            inventory, triage, plan, coverage,
+                        ),
+                    )
+                    .map_err(|error| {
+                        AppError::Internal(format!(
+                            "failed to serialize course source plan snapshot: {error}"
+                        ))
+                    })?,
+                ),
+                _ => None,
+            };
         let detail = self
             .import_course_outline(
                 pack,
@@ -140,6 +312,9 @@ impl LearningService {
                     samples_meta_json,
                     // 来源库列表（t4）：归一顺序原样落库（首个 = 主来源）。
                     source_kb_ids,
+                    // 来源计划快照（t4）：只有建课确实走了「计划 → 展开」
+                    // 管线才写;描述流/回退路径 NULL,不伪造。
+                    course_source_plan_json,
                 },
             )
             .await;
@@ -163,6 +338,268 @@ impl LearningService {
             }
         }
         detail
+    }
+
+    /// t2 结构发现编排:t1 分诊 → 证据驱动章节骨架。返回清点/分诊/计划
+    /// 三件套——inventory+triage 供 t3 分批展开复用(不重复跑 t1 的 LLM 面)。
+    /// 计划 `None` = 回退现行采样路径(无 completer/草稿连续失败/零证据降级
+    /// 空章节);`Err` = 硬失败(零候选/零 core/用户取消)。
+    ///
+    /// t5:各阶段边界发 WS 进度帧(triage/source_plan)并更新长任务注册表的
+    /// step 文案——「跳过与不确定可见」从分诊一刻就开始,不是建完课才补叙。
+    async fn discover_kb_source_plan(
+        &self,
+        request: &GenerateCourseRequest,
+        brief: &OutlineBrief,
+        token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<
+        (
+            crate::generation::KbInventory,
+            crate::generation::KbTriageReport,
+            Option<crate::generation::SourcePlan>,
+        ),
+        AppError,
+    > {
+        let knowledge = self.injected_knowledge_service()?;
+        let kb_ids = request.knowledge_base_ids_normalized();
+        let goal = brief.goal.clone().unwrap_or_default();
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let kind = brief.kind();
+        task.set_step("triage", "正在清点与分诊来源文件…");
+        self.emit_course_event(serde_json::json!({
+            "phase": "triage_started",
+            "kind": kind,
+        }));
+        let (inventory, triage) =
+            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, completer.as_deref())
+                .await?;
+        let counts = &triage.counts;
+        self.emit_course_event(serde_json::json!({
+            "phase": "triage_completed",
+            "kind": kind,
+            "counts": {
+                "total": counts.core + counts.prerequisite + counts.practice
+                    + counts.mixed + counts.noise + counts.duplicate + counts.uncertain,
+                "core": counts.core,
+                "prerequisite": counts.prerequisite,
+                "practice": counts.practice,
+                "mixed": counts.mixed,
+                "noise": counts.noise,
+                "duplicate": counts.duplicate,
+                "uncertain": counts.uncertain,
+            },
+            "degraded": triage.degraded,
+            // 有界示例(≤10):进度视图的「可展开跳过理由/duplicate_of/
+            // uncertain 列表」;全量在课程详情的诊断明细里。
+            "excluded": triage.excluded.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|entry| serde_json::json!({
+                    "path": entry.path, "role": entry.role, "reason": entry.reason,
+                }))
+                .collect::<Vec<_>>(),
+            "duplicates": triage.duplicates.iter().take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|duplicate| serde_json::json!({
+                    "path": duplicate.path,
+                    "duplicate_of": duplicate.duplicate_of,
+                    "canonical_reason": duplicate.canonical_reason,
+                }))
+                .collect::<Vec<_>>(),
+            "uncertain": triage.files.iter()
+                .filter(|file| file.role == crate::generation::KbTriageRole::Uncertain)
+                .take(TRIAGE_FRAME_EXAMPLES_MAX)
+                .map(|file| serde_json::json!({
+                    "path": file.rel_path, "reason": file.reason,
+                }))
+                .collect::<Vec<_>>(),
+        }));
+        task.set_step("source_plan", "正在从证据规划章节骨架…");
+        self.emit_course_event(serde_json::json!({
+            "phase": "source_plan_started",
+            "kind": kind,
+        }));
+        let plan = crate::generation::run_kb_structure(
+            &knowledge,
+            &inventory,
+            &triage,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await?;
+        let plan = match plan {
+            Some(plan) => {
+                tracing::info!(
+                    chapters = plan.chapters.len(),
+                    degraded = plan.degraded,
+                    warnings = plan.warnings.len(),
+                    "kb structure plan discovered"
+                );
+                if plan.is_usable() {
+                    self.emit_course_event(serde_json::json!({
+                        "phase": "source_plan_ready",
+                        "kind": kind,
+                        "chapters": plan.chapters.len(),
+                        "concepts": plan.concept_graph.nodes.len(),
+                        "gaps": plan.evidence.gaps,
+                    }));
+                    Some(plan)
+                } else {
+                    // 降级空章节计划:不进简报,回退采样路径。
+                    None
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "kb structure discovery produced no usable plan; falling back to sampling"
+                );
+                None
+            }
+        };
+        Ok((inventory, triage, plan))
+    }
+
+    /// t3 分批展开编排:可用 plan 按章展开产 Blueprint(不再走大纲引擎)。
+    /// `Ok(None)` = 无 completer(调用方回退引擎路径);`Err` 取消向上传播、
+    /// 其余由调用方按「展开失败 → 引擎路径」降级。展开成功时发 t5 覆盖
+    /// 读数帧(topics covered/skipped/fallback——跳过与兜底在读数里先可见)。
+    async fn expand_kb_course_blueprint(
+        &self,
+        inventory: &crate::generation::KbInventory,
+        triage: &crate::generation::KbTriageReport,
+        plan: &crate::generation::SourcePlan,
+        brief: &OutlineBrief,
+        token: tokio_util::sync::CancellationToken,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<Option<crate::generation::ExpansionOutcome>, AppError> {
+        let knowledge = self.injected_knowledge_service()?;
+        let completer = self
+            .course_completer
+            .read()
+            .map_err(|_| AppError::Internal("learning course completer lock poisoned".into()))?
+            .clone();
+        let goal = brief.goal.clone().unwrap_or_default();
+        task.set_step("expansion", "正在按章节分批展开课时…");
+        let outcome = crate::generation::run_kb_expansion(
+            &knowledge,
+            inventory,
+            triage,
+            plan,
+            &goal,
+            completer.as_deref(),
+            Some(&token),
+        )
+        .await?;
+        if let Some(outcome) = &outcome {
+            self.emit_course_event(serde_json::json!({
+                "phase": "coverage_ready",
+                "kind": brief.kind(),
+                "topics_covered": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Covered)
+                    .count(),
+                "topics_skipped": outcome
+                    .coverage
+                    .topics
+                    .iter()
+                    .filter(|topic| topic.status == crate::generation::TopicStatus::Skipped)
+                    .count(),
+                "fallback": outcome
+                    .coverage
+                    .lessons
+                    .iter()
+                    .filter(|lesson| lesson.fallback)
+                    .count(),
+            }));
+        }
+        Ok(outcome)
+    }
+
+    /// t5 成本门估算:提交建课前对知识库流做一次**规则分诊**(零 LLM、
+    /// `degraded=true`——只读元数据/内容一次),给出文件数/批数/预估调用
+    /// 数/预计耗时与跳过摘要;`needs_confirm` = >40 文件或预估 >20 次 LLM
+    /// 调用(阈值在后端单源)。描述流无知识库 → 全零、不确认。
+    pub async fn estimate_course_generation(
+        &self,
+        _user_id: &UserId,
+        request: GenerateCourseRequest,
+    ) -> Result<crate::models::CourseGenerationEstimateView, AppError> {
+        request.validate()?;
+        let kb_ids = request.knowledge_base_ids_normalized();
+        if kb_ids.is_empty() {
+            return Ok(crate::models::CourseGenerationEstimateView::default());
+        }
+        let knowledge = self.injected_knowledge_service()?;
+        let goal = request.goal_text().unwrap_or_default();
+        // completer=None → t1 规则路径:零 LLM 调用,非噪声全部 core(降级)。
+        let (_inventory, triage) =
+            crate::generation::run_kb_triage(&knowledge, &kb_ids, &goal, None).await?;
+        let counts = triage.counts;
+        let total_files = counts.core
+            + counts.prerequisite
+            + counts.practice
+            + counts.mixed
+            + counts.noise
+            + counts.duplicate
+            + counts.uncertain;
+        // LLM 分诊只批「规则未判定的文件」(噪声/重复已被规则排除);
+        // 展开按章分批——估算端没有 plan(LLM 结构发现不进成本门),退
+        // 保守上界 = 候选文件数(评审 S2);结构阶段是常数次(查询/证据/
+        // 草稿/评审)。
+        let llm_files = counts.core + counts.prerequisite + counts.practice + counts.mixed + counts.uncertain;
+        let triage_batches = llm_files.div_ceil(crate::generation::TRIAGE_BATCH_MAX_FILES);
+        let expansion_batches = estimate_expansion_batches(None, llm_files);
+        let estimated_batches = triage_batches + expansion_batches;
+        let estimated_llm_calls = estimated_batches + STRUCTURE_STAGE_CALLS;
+        let estimated_seconds = u64::try_from(estimated_llm_calls)
+            .unwrap_or_default()
+            .saturating_mul(ESTIMATE_SECONDS_PER_CALL);
+        Ok(crate::models::CourseGenerationEstimateView {
+            total_files,
+            estimated_batches,
+            estimated_llm_calls,
+            estimated_seconds,
+            needs_confirm: total_files
+                > crate::models::COURSE_ESTIMATE_CONFIRM_FILES
+                || estimated_llm_calls > crate::models::COURSE_ESTIMATE_CONFIRM_CALLS,
+            triage: crate::models::CourseSourcePlanTriageView {
+                total_files,
+                core: counts.core,
+                prerequisite: counts.prerequisite,
+                practice: counts.practice,
+                mixed: counts.mixed,
+                noise: counts.noise,
+                duplicate: counts.duplicate,
+                uncertain: counts.uncertain,
+                degraded: triage.degraded,
+                batch_repair_count: crate::models::disclosed(triage.batch_repair_count),
+                still_missing_count: crate::models::disclosed(triage.still_missing_count),
+                warnings: triage
+                    .warnings
+                    .iter()
+                    .take(super::course::SOURCE_PLAN_WARNINGS_MAX)
+                    .cloned()
+                    .collect(),
+            },
+            skipped_examples: triage
+                .excluded
+                .iter()
+                .take(ESTIMATE_SKIPPED_EXAMPLES_MAX)
+                .map(|entry| crate::models::CourseSourcePlanExcludedView {
+                    path: entry.path.clone(),
+                    role: serde_json::to_value(entry.role)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_default(),
+                    reason: entry.reason.clone(),
+                })
+                .collect(),
+        })
     }
 
     /// Resolve the generation brief up front: the kb flow fetches the base
@@ -222,6 +659,8 @@ impl LearningService {
                 // 目标感知采样的披露（t2）：无目标路径为 None（单库）；多库
                 // 恒有披露（命名空间需要它承载库归属）。
                 sampling: outcome.disclosure,
+                // 结构发现计划由 discover_kb_source_plan 在任务登记后补挂。
+                source_plan: None,
             });
         }
         if let Some(description) = &request.description {
@@ -234,6 +673,8 @@ impl LearningService {
                 // 描述流的目标由 description 自身承担（学习图同语义）。
                 goal: None,
                 sampling: None,
+                // 描述流零结构发现。
+                source_plan: None,
             });
         }
         Err(AppError::BadRequest(

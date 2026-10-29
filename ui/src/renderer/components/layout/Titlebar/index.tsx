@@ -26,6 +26,9 @@ import {
 } from '@/renderer/utils/historyNavigationShortcut';
 import { isDesktopShell, isMacOS } from '@/renderer/utils/platform';
 import { parseSessionRoute } from '@/renderer/utils/routes/sessionRoute';
+import ConversationSearchPopover from '@renderer/pages/conversation/SessionList/ConversationSearchPopover';
+import { dispatchSiderHistorySearchSelect } from '../Sider/historySearchSelect';
+import ChromeSearchIcon from '../ChromeSearchIcon';
 import SidebarToggleIcon from '../Sider/SidebarToggleIcon';
 import './titlebar.css';
 
@@ -119,11 +122,12 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
   const showSiderToggle = Boolean(layout?.setSiderCollapsed) && !(layout?.isMobile && isSettingsRoute);
   const showBackToChatButton = Boolean(layout?.isMobile && isSettingsRoute);
   const siderTooltipBase = layout?.siderCollapsed
-    ? t('common.navExpand', { defaultValue: '展开应用导航' })
-    : t('common.navCollapse', { defaultValue: '收起应用导航' });
+    ? t('common.navExpand', { defaultValue: '打开侧栏' })
+    : t('common.navCollapse', { defaultValue: '关闭侧栏' });
   const siderTooltip = layout?.isMobile
     ? siderTooltipBase
     : appChromeShortcutTooltip(siderTooltipBase, 'sidebar');
+  const searchTooltip = appChromeShortcutTooltip(t('conversation.historySearch.tooltip'), 'search');
   // 前进/后退仅在桌面端显示（移动端空间有限，保留原有的返回到聊天按钮）
   // Show back/forward on desktop only; mobile keeps the existing back-to-chat button.
   const showHistoryNav = Boolean(navigationHistory) && !layout?.isMobile;
@@ -299,6 +303,17 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
     >
       <div ref={menuRef} className='app-titlebar__menu' style={menuStyle}>
         <div className='app-titlebar__button-group' data-titlebar-group='navigation' data-tauri-no-drag>
+          <ConversationSearchPopover
+            onConversationSelect={dispatchSiderHistorySearchSelect}
+            renderTrigger={({ onClick }) =>
+              renderIconButton({
+                tooltip: searchTooltip,
+                className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
+                onClick,
+                children: <ChromeSearchIcon size={iconSize} />,
+              })
+            }
+          />
           {showBackToChatButton &&
             renderIconButton({
               tooltip: backToChatTooltip,
@@ -314,11 +329,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
               ariaExpanded: !layout?.siderCollapsed,
               ariaControls: 'flowy-primary-sider',
               children: (
-                <SidebarToggleIcon
-                  collapsed={Boolean(layout?.siderCollapsed)}
-                  size={iconSize}
-                  strokeWidth={desktopIconStroke}
-                />
+                <SidebarToggleIcon collapsed={Boolean(layout?.siderCollapsed)} size={15} />
               ),
             })}
           {showHistoryNav && (

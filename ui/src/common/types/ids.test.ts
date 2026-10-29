@@ -34,6 +34,7 @@ import {
   parseWorkshopNodeId,
   FLOWY_BUILTIN_PROVIDER_ID,
   GOOGLE_AUTH_PROVIDER_ID,
+  HERDSMAN_PROVIDER_ID,
   terminalTarget,
   tryParseEntityId,
 } from './ids';
@@ -85,9 +86,11 @@ describe('entity ids', () => {
   test('provider parser accepts reserved system singletons', () => {
     expect(parseProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(FLOWY_BUILTIN_PROVIDER_ID);
     expect(parseProviderId(GOOGLE_AUTH_PROVIDER_ID)).toBe(GOOGLE_AUTH_PROVIDER_ID);
+    expect(parseProviderId(HERDSMAN_PROVIDER_ID)).toBe(HERDSMAN_PROVIDER_ID);
     expect(parseProviderId('flowy-cloud')).toBe(FLOWY_BUILTIN_PROVIDER_ID);
     expect(parseProviderId('google-auth-gemini')).toBe(GOOGLE_AUTH_PROVIDER_ID);
     expect(isReservedProviderId(FLOWY_BUILTIN_PROVIDER_ID)).toBe(true);
+    expect(isReservedProviderId(HERDSMAN_PROVIDER_ID)).toBe(true);
     expect(isReservedProviderId('flowy-cloud')).toBe(true);
     expect(isReservedProviderId('custom-cloud')).toBe(false);
 

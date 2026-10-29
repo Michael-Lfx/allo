@@ -303,6 +303,7 @@ const AcpSendBox: React.FC<{
         conversation_type: 'acp',
         cold_start: !hasHydratedRunningState,
         session_id: conversation_id,
+        session_kind: 'session_dialogue',
       });
 
       try {

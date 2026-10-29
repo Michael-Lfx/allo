@@ -71,6 +71,8 @@ function status(components: InstallStatus["components"], extra: Partial<InstallS
 
 interface FakeOptions {
   store?: StoreItem[];
+  /** Reported as `StoreList.markets_pending` (doc `49` TC-6). */
+  marketsPending?: boolean;
   install?: StoreInstallResult;
   update?: StoreInstallResult;
   /** Successive `install/status` answers; the last one repeats. */
@@ -95,7 +97,11 @@ function fakeHost(options: FakeOptions = {}) {
   const host: StoreHost = {
     async listStore(): Promise<StoreList> {
       calls.push("listStore");
-      return { items: options.store ?? [] };
+      return { items: options.store ?? [], markets_pending: options.marketsPending };
+    },
+    async listStoreCategories() {
+      calls.push("listStoreCategories");
+      return { fetched_at: 0, marketplace_tags: [], items: [] };
     },
     async installStoreEntry(marketplaceId: string, entryName: string) {
       calls.push(`installStoreEntry:${marketplaceId}/${entryName}`);
@@ -205,6 +211,26 @@ describe("StoreClient · catalog reads", () => {
     const client = new StoreClient(host);
 
     expect((await client.search("", { kind: "skill" })).map((entry) => entry.entry_name)).toEqual(["notes"]);
+  });
+
+  /**
+   * Doc 43: the host joins the dictionary, so a resolved category's name is
+   * searchable text; the raw `category_id` rides along untouched either way.
+   */
+  it("search reaches the joined category name, and categories() passes through", async () => {
+    const withCategory = item({
+      entry_name: "analyst",
+      id: "experts/analyst",
+      category_id: "04-DataAI",
+      category: { id: "04-DataAI", name: { zh: "数据智能", en: "Data & AI" } },
+    });
+    const { host } = fakeHost({ store: [withCategory] });
+    const client = new StoreClient(host);
+
+    expect((await client.search("数据智能")).map((entry) => entry.entry_name)).toEqual(["analyst"]);
+
+    const dictionary = await client.categories();
+    expect(dictionary.items).toEqual([]);
   });
 
   it("installed() returns only installed items", async () => {
@@ -651,5 +677,101 @@ describe("StoreClient · uninstall and setEnabled", () => {
     await client.setEnabled(item({ installed: true, snapshot_id: "snap-1" }), true);
 
     expect(calls).toContain("enableInstall:snap-1:conn-1");
+  });
+});
+
+/**
+ * Doc `49` §3.2 / §3.4 / §3.6: what the catalogue search promises on top of the
+ * substring scan it replaced.
+ */
+describe("StoreClient · search semantics", () => {
+  const items = [
+    item({ entry_name: "baidu-netdisk", id: "connectors/baidu-netdisk", kind: "connector", name: "百度网盘" }),
+    item({ entry_name: "notes", id: "market-1/notes", kind: "skill", name: "Release Notes", installed: true }),
+    item({
+      entry_name: "archiver",
+      id: "market-1/archiver",
+      kind: "connector",
+      name: "Archiver",
+      description: "将网盘里的文件打包下载",
+    }),
+  ];
+
+  it("matches every term, even when they sit in different parts of the name (TC-1)", async () => {
+    const { host } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    // Both terms live inside one name, but not contiguously: the old whole-string
+    // scan returned zero rows for this query.
+    expect((await client.search("百度 网盘")).map((entry) => entry.entry_name)).toEqual(["baidu-netdisk"]);
+  });
+
+  it("still requires all terms (no silent OR)", async () => {
+    const { host } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    expect(await client.search("百度 不存在")).toEqual([]);
+  });
+
+  it("treats an empty query as no text filter, with and without a kind (TC-4)", async () => {
+    const { host } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    expect(await client.search("   ")).toHaveLength(3);
+    expect((await client.search("", { kind: "skill" })).map((entry) => entry.entry_name)).toEqual(["notes"]);
+    // `""` is falsy, so it must behave as "no kind filter" rather than "no rows".
+    expect(await client.search("", { kind: "" as never })).toHaveLength(3);
+  });
+
+  it("narrows to installed entries in a single catalogue read (TC-5)", async () => {
+    const { host, calls } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    const hits = await client.searchInstalled("");
+
+    expect(hits.map((entry) => entry.entry_name)).toEqual(["notes"]);
+    expect(calls.filter((call) => call === "listStore")).toHaveLength(1);
+  });
+
+  it("reports an incomplete catalogue instead of letting a search lie (TC-6)", async () => {
+    const { host } = fakeHost({ store: items, marketsPending: true });
+    const client = new StoreClient(host);
+
+    const status = await client.listStatus();
+
+    expect(status.marketsPending).toBe(true);
+    expect(status.items).toHaveLength(3);
+  });
+
+  it("issues no request when the caller pre-fetched the catalogue (TC-7)", async () => {
+    const { host, calls } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    const { items: prefetched } = await client.listStatus();
+    calls.length = 0;
+
+    const matches = await client.searchWithHits("网盘", { items: prefetched });
+
+    expect(matches.map((match) => match.item.entry_name)).toEqual(["baidu-netdisk", "archiver"]);
+    expect(calls).toEqual([]);
+  });
+
+  it("orders name hits before description-only hits (TC-12)", async () => {
+    const { host } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    // `baidu-netdisk` matches on its name, `archiver` only on its description,
+    // and the catalogue order happens to be the other way round.
+    expect((await client.search("网盘")).map((entry) => entry.entry_name)).toEqual(["baidu-netdisk", "archiver"]);
+  });
+
+  it("hands highlight ranges to the caller, on the rendered field (TC-8)", async () => {
+    const { host } = fakeHost({ store: items });
+    const client = new StoreClient(host);
+
+    const [match] = await client.searchWithHits("网盘");
+
+    expect(match.hits).toContainEqual({ field: "name", ranges: [[2, 4]] });
+    expect(match.offLanguage).toBe(false);
   });
 });

@@ -149,6 +149,7 @@ fn make_compact_engine_with_output(
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        tool_image_annotator: None,
         horizon: Default::default(),
         plan_exit_latch: None,
     }
@@ -352,7 +353,7 @@ fn prune_old_tool_images_drops_individually_oversized_legacy_image() {
 }
 
 #[test]
-fn prune_old_tool_images_does_not_rewrite_sent_prefix() {
+fn prune_old_tool_images_rewrites_sent_prefix_to_keep_newest() {
     let mut engine = make_compact_engine(
         CompactConfig::default(),
         CompactState::new(),
@@ -364,15 +365,19 @@ fn prune_old_tool_images_does_not_rewrite_sent_prefix() {
     engine.max_recent_images = 3;
     engine.sent_prefix_len = engine.messages.len();
     engine.prune_old_tool_images();
-    assert_eq!(count_images(&engine.messages), 5);
-    assert_eq!(
-        engine.messages[0].provider_round_id.as_deref(),
-        Some("resp_frozen")
-    );
+    assert_eq!(count_images(&engine.messages), 3);
+    for (i, msg) in engine.messages.iter().enumerate() {
+        let ContentBlock::ToolResult { images, .. } = &msg.content[0] else {
+            unreachable!();
+        };
+        assert_eq!(images.is_empty(), i < 2, "msg {i} should keep the newest three");
+    }
+    assert!(engine.messages[0].provider_round_id.is_none());
+    assert_eq!(engine.sent_prefix_len, 0);
 }
 
 #[test]
-fn prune_old_tool_images_strips_only_unsent_over_budget() {
+fn prune_old_tool_images_newest_wins_over_frozen_prefix() {
     let mut messages: Vec<_> = (0..3)
         .map(|i| tool_result_msg_with_image(&format!("old_{i}")))
         .collect();
@@ -382,16 +387,16 @@ fn prune_old_tool_images_strips_only_unsent_over_budget() {
     engine.max_recent_images = 3;
     engine.sent_prefix_len = 3;
     engine.prune_old_tool_images();
-    assert_eq!(count_images(&engine.messages[..3]), 3);
-    assert_eq!(count_images(&engine.messages[3..]), 0);
-    assert_eq!(
-        engine.messages[0].provider_round_id.as_deref(),
-        Some("resp_frozen")
-    );
-    let ContentBlock::ToolResult { content, .. } = &engine.messages[3].content[0] else {
+    assert_eq!(count_images(&engine.messages), 3);
+    assert_eq!(count_images(&engine.messages[..1]), 0);
+    assert_eq!(count_images(&engine.messages[1..]), 3);
+    assert!(engine.messages[0].provider_round_id.is_none());
+    assert_eq!(engine.sent_prefix_len, 0);
+    let ContentBlock::ToolResult { content, .. } = &engine.messages[0].content[0] else {
         unreachable!();
     };
     assert!(content.contains("attachment(s)"));
+    assert!(content.contains("newer screenshots"));
 }
 
 #[tokio::test]

@@ -46,6 +46,7 @@ import { maybeAutoDownloadUpdate } from '@/renderer/utils/update/updateAutoDownl
 import { computeCssSyncDecision, resolveCssByActiveTheme } from '@renderer/utils/theme/themeCssSync';
 import { DEFAULT_THEME_ID } from '@renderer/pages/settings/DisplaySettings/presets';
 import WallpaperScene from '@renderer/components/layout/WallpaperScene';
+import LinkStepUpBanner from '@renderer/components/layout/LinkStepUpBanner';
 import { WallpaperProvider } from '@renderer/hooks/ui/useWallpaper';
 import { WALLPAPER_TOKENS_STYLE_ID } from '@renderer/utils/theme/wallpaperTokens';
 import SidebarToggleIcon from '@renderer/components/layout/Sider/SidebarToggleIcon';
@@ -693,6 +694,7 @@ const Layout: React.FC<{
               <WallpaperScene />
               <div className='app-shell flex flex-col size-full min-h-0'>
               <Titlebar workspaceAvailable={workspaceAvailable} />
+              <LinkStepUpBanner />
               {/* 移动端左侧边栏蒙板 / Mobile left sider backdrop */}
               {isMobile && !collapsed && (
                 <div
@@ -745,7 +747,7 @@ const Layout: React.FC<{
                         aria-expanded={!collapsed}
                         aria-controls='flowy-primary-sider'
                       >
-                        <SidebarToggleIcon collapsed={collapsed} size={18} strokeWidth={2.5} />
+                        <SidebarToggleIcon collapsed={collapsed} size={15} />
                       </button>
                     )}
                     {/* 侧栏折叠改由标题栏统一控制 / Sidebar folding handled by Titlebar toggle */}

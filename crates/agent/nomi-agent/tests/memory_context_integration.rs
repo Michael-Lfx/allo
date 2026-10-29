@@ -132,6 +132,9 @@ fn tc_7_3_section_ordering() {
         content: String::new(),
         content_length: 0,
         skill_root: None,
+        catalog_id: None,
+        invocation_policy: Default::default(),
+        requires_confirmation: false,
     };
 
     // Runtime bootstrap resolves project instructions once and installs the

@@ -42,10 +42,11 @@ elements (with a Set-of-Marks overlay screenshot when available), then act on on
 Fall back to pixel actions only when an element is not in the accessibility tree (e.g. canvas \
 or some web content).\n\n\
 Actions:\n\
-- observe: read the desktop's accessibility tree (foreground window + other open windows) → a \
-hierarchical `desktop → window → controls` tree with numbered `[ref]` elements (+ a Set-of-Marks \
-overlay). Do this first; re-run it after any UI change (a `[ref]` is only valid for the latest \
-snapshot).\n\
+- observe: read the accessibility tree. Omit `window_id` to capture the foreground window plus \
+other open windows. Pass `window_id` from `list_windows` to capture that window only **without \
+raising it** (prefer this over `focus_window` when you only need to look). Returns a numbered \
+`[ref]` tree plus a Set-of-Marks overlay when screen capture is available. Re-run after any UI \
+change (a `[ref]` is only valid for the latest snapshot).\n\
 - click_element: activate the element with the given `ref` from the latest `observe` \
 (uses the accessibility action, with an automatic pixel-click fallback).\n\
 - right_click_element / double_click_element: right-click or double-click the element with the \
@@ -69,11 +70,14 @@ Browser tool instead.\n\
 accelerator modifier (Command on macOS, Control on Windows/Linux) for shortcuts.\n\
 - scroll: scroll in `direction` (up/down/left/right) by `amount` wheel clicks, optionally \
 at (`x`, `y`).\n\
-- focus_window: bring the window with `window_id` to the front (click-to-raise fallback).\n\
+- focus_window: bring the window with `window_id` to the front. This steals foreground from \
+the user — use only when you must type or click into that window, not to inspect it.\n\
 - wait: pause for `seconds` (max 5) to let the UI settle.\n\n\
 Usage notes:\n\
 - Prefer `observe` + `click_element [ref]` over pixel coordinates whenever the element is \
 listed.\n\
+- Prefer `observe` with `window_id` to inspect a background window; do not `focus_window` just \
+to look.\n\
 - Take a screenshot before interacting so you can see the screen, and take another after \
 acting to verify the effect.\n\
 - All coordinates are pixel positions in the most recent screenshot; they are mapped to \
@@ -95,6 +99,9 @@ pub struct ComputerTool {
     /// The most recent `observe` snapshot, for resolving `[ref]` actions. Element
     /// bounds here are in OS accessibility coordinates (screen logical points).
     last_snapshot: Mutex<Option<SnapshotCache>>,
+    /// Whether the session's model can read images. A text-only model gets the
+    /// full accessibility tree plus OCR text instead of a screenshot.
+    image_input: bool,
 }
 
 struct SnapshotCache {
@@ -127,6 +134,15 @@ enum CachedTarget {
 /// native apps.
 const OCR_FUSION_AX_THRESHOLD: usize = 6;
 
+const TEXT_ONLY_NOTE: &str = "\n- This session's model cannot read images: `observe` returns \
+text only (the full accessibility tree plus OCR text lines, each with a [ref]) and \
+`screenshot` returns the same text. Act with `click_element` and [ref]; pixel coordinates \
+are not usable.\n";
+
+fn should_run_ocr(image_input: bool, ax_entries: usize) -> bool {
+    !image_input || ax_entries < OCR_FUSION_AX_THRESHOLD
+}
+
 impl ComputerTool {
     pub fn new(config: &ComputerConfig) -> Self {
         Self {
@@ -135,7 +151,16 @@ impl ComputerTool {
             last_capture: Mutex::new(None),
             a11y: Mutex::new(None),
             last_snapshot: Mutex::new(None),
+            image_input: true,
         }
+    }
+
+    pub fn with_image_input(mut self, image_input: bool) -> Self {
+        self.image_input = image_input;
+        if !image_input && !self.description.contains(TEXT_ONLY_NOTE) {
+            self.description.push_str(TEXT_ONLY_NOTE);
+        }
+        self
     }
 
     /// Lazily construct (and cache) the accessibility engine. The error string
@@ -152,7 +177,13 @@ impl ComputerTool {
     /// numbered element list, and (when screen capture is available) a
     /// Set-of-Marks overlay screenshot. Needs only the Accessibility grant for
     /// the element list; the overlay additionally needs Screen Recording.
-    async fn do_observe(&self) -> ToolResult {
+    /// Pass `window_id` to scope the tree to that window without raising it.
+    async fn do_observe(&self, input: &Value) -> ToolResult {
+        let opts = match observe_opts_from_input(input).await {
+            Ok(opts) => opts,
+            Err(e) => return ToolResult::error(e),
+        };
+        let scoped = opts.window_id;
         let engine = match self.engine() {
             Ok(e) => e,
             Err(msg) => {
@@ -163,7 +194,7 @@ impl ComputerTool {
             }
         };
         let eng = engine.clone();
-        let snap = tokio::task::spawn_blocking(move || eng.observe(&ObserveOpts::default()))
+        let snap = tokio::task::spawn_blocking(move || eng.observe(&opts))
             .await
             .unwrap_or_else(|e| Err(A11yError::Backend(format!("observe task failed: {e}"))));
         let snap = match snap {
@@ -177,6 +208,11 @@ impl ComputerTool {
             .unwrap_or_default();
         let ax_note = if snap.truncated {
             " (a11y tree truncated to the node budget)"
+        } else {
+            ""
+        };
+        let scope_note = if scoped.is_some() {
+            " Window-scoped (did not raise/focus the window)."
         } else {
             ""
         };
@@ -217,9 +253,9 @@ impl ComputerTool {
                     entries: cached,
                 });
                 return ToolResult::text(format!(
-                    "Accessibility snapshot (gen {}): {count} element(s){app_note}{ax_note}. No \
-                     Set-of-Marks overlay (screen capture unavailable) — still actionable by \
-                     [ref] with `click_element`.\n\n{}",
+                    "Accessibility snapshot (gen {}): {count} element(s){app_note}{ax_note}\
+                     {scope_note} No Set-of-Marks overlay (screen capture unavailable) — still \
+                     actionable by [ref] with `click_element`.\n\n{}",
                     snap.generation.0, snap.text
                 ));
             }
@@ -248,7 +284,7 @@ impl ComputerTool {
         // OCR targets are numbered AFTER the AX refs and listed in an appendix.
         let mut ocr_appendix: Vec<String> = Vec::new();
         let mut next_ref = max_ax_ref;
-        if snap.entries.len() < OCR_FUSION_AX_THRESHOLD {
+        if should_run_ocr(self.image_input, snap.entries.len()) {
             let img = shot.image.clone();
             let langs = vec!["zh-Hans".to_string(), "en-US".to_string()];
             let ocr = tokio::task::spawn_blocking(move || nomi_a11y::ocr_screenshot(&img, &langs))
@@ -304,10 +340,10 @@ impl ComputerTool {
             String::new()
         };
         let header = format!(
-            "Accessibility snapshot (gen {}): {} element(s){app_note}{ax_note}{ocr_note}. The tree \
-             below is desktop → window → controls; act on a control with the `click_element` \
-             action and its [ref]. Re-run `observe` after any UI change (a [ref] is only valid for \
-             the latest snapshot).\n\n{text}",
+            "Accessibility snapshot (gen {}): {} element(s){app_note}{ax_note}{ocr_note}\
+             {scope_note} The tree below is desktop → window → controls; act on a control with \
+             the `click_element` action and its [ref]. Re-run `observe` after any UI change (a \
+             [ref] is only valid for the latest snapshot).\n\n{text}",
             snap.generation.0,
             display.len()
         );
@@ -317,6 +353,9 @@ impl ComputerTool {
             entries: cached,
         });
 
+        if !self.image_input {
+            return ToolResult::text(header);
+        }
         nomi_a11y::overlay::draw_set_of_marks(&mut shot.image, &display);
         match encode_png(&shot.image) {
             Ok(encoded) => {
@@ -844,6 +883,40 @@ fn ax_rect_to_pixel(r: nomi_a11y::Rect, g: &CaptureGeometry) -> nomi_a11y::Rect 
     }
 }
 
+/// Resolve `observe` targeting. A `window_id` is looked up through xcap and
+/// mapped to `ObserveOpts` without raising the window. Invalid ids fail here
+/// so the a11y engine is not started for a stale handle.
+async fn observe_opts_from_input(input: &Value) -> Result<ObserveOpts, String> {
+    let window_id = match input.get("window_id") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let Some(id) = value.as_u64() else {
+                return Err(
+                    "Parameter `window_id` must be an integer from list_windows.".to_string(),
+                );
+            };
+            if id > u64::from(u32::MAX) {
+                return Err(
+                    "Parameter `window_id` is out of range. Use list_windows to get current ids."
+                        .to_string(),
+                );
+            }
+            Some(id as u32)
+        }
+    };
+    let Some(window_id) = window_id else {
+        return Ok(ObserveOpts::default());
+    };
+    let info = tokio::task::spawn_blocking(move || fallback_backend::find_window(window_id))
+        .await
+        .map_err(|e| format!("Window lookup task failed: {e}"))??;
+    Ok(ObserveOpts {
+        pid: info.pid,
+        window_id: Some(window_id),
+        ..ObserveOpts::default()
+    })
+}
+
 /// Extract a required (x, y)-style coordinate pair, naming the missing
 /// parameters in the error.
 fn require_xy(input: &Value, x_name: &str, y_name: &str) -> Result<(i32, i32), String> {
@@ -905,7 +978,7 @@ impl Tool for ComputerTool {
                 },
                 "amount": { "type": "integer", "description": "Scroll wheel clicks, default 3 (scroll action)" },
                 "display": { "type": "integer", "description": "Display index to capture, default primary (screenshot action)" },
-                "window_id": { "type": "integer", "description": "Window id from list_windows (focus_window action)" },
+                "window_id": { "type": "integer", "description": "Window id from list_windows. For observe: snapshot that window without raising it. For focus_window: bring it to the front." },
                 "seconds": { "type": "number", "description": "Seconds to wait, max 5 (wait action)" }
             },
             "required": ["action"]
@@ -927,7 +1000,7 @@ impl Tool for ComputerTool {
         tracing::debug!(action = %action, "ComputerTool executing");
 
         match action {
-            "observe" => self.do_observe().await,
+            "observe" => self.do_observe(&input).await,
             "click_element" => self.do_click_element(&input).await,
             "set_element_value" => self.do_set_element_value(&input).await,
             "right_click_element" => {
@@ -937,6 +1010,7 @@ impl Tool for ComputerTool {
                 self.do_element_gesture(&input, enigo::Button::Left, 2, "double-click").await
             }
             "launch" => self.do_launch(&input).await,
+            "screenshot" if !self.image_input => self.do_observe(&input).await,
             "screenshot" => self.do_screenshot(&input).await,
             "cursor_position" => self.do_cursor_position().await,
             "list_windows" => self.do_list_windows().await,
@@ -979,7 +1053,10 @@ impl Tool for ComputerTool {
     fn describe(&self, input: &Value) -> String {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("?");
         let detail = match action {
-            "observe" => "observe (accessibility snapshot)".to_string(),
+            "observe" => match input.get("window_id").and_then(|v| v.as_u64()) {
+                Some(id) => format!("observe window {id}"),
+                None => "observe (accessibility snapshot)".to_string(),
+            },
             "click_element" => {
                 let r = input.get("ref").and_then(|v| v.as_u64()).unwrap_or(0);
                 format!("click element [{r}]")
@@ -1056,6 +1133,21 @@ mod tests {
         ComputerTool::new(&ComputerConfig::default())
     }
 
+    #[test]
+    fn text_only_model_is_told_observe_is_text_and_ocr_always_runs() {
+        let vision = tool();
+        assert!(!vision.description().contains("cannot read images"));
+
+        let text_only = tool().with_image_input(false);
+        assert!(text_only.description().contains("cannot read images"));
+        let twice = tool().with_image_input(false).with_image_input(false);
+        assert_eq!(twice.description().matches("cannot read images").count(), 1);
+
+        assert!(should_run_ocr(false, 500));
+        assert!(should_run_ocr(true, OCR_FUSION_AX_THRESHOLD - 1));
+        assert!(!should_run_ocr(true, OCR_FUSION_AX_THRESHOLD));
+    }
+
     // --- schema ---
 
     #[test]
@@ -1067,6 +1159,7 @@ mod tests {
             .as_array()
             .expect("action enum");
         for expected in [
+            "observe",
             "screenshot",
             "cursor_position",
             "list_windows",
@@ -1088,6 +1181,11 @@ mod tests {
                 "schema enum missing {expected}"
             );
         }
+        let window_id = schema["properties"]["window_id"]["description"]
+            .as_str()
+            .expect("window_id description");
+        assert!(window_id.contains("observe"), "{window_id}");
+        assert!(window_id.contains("focus_window"), "{window_id}");
         // Round-trips through serde_json without loss.
         let text = serde_json::to_string(&schema).unwrap();
         let parsed: Value = serde_json::from_str(&text).unwrap();
@@ -1288,6 +1386,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn observe_rejects_non_integer_window_id() {
+        let result = tool()
+            .execute(json!({"action": "observe", "window_id": "front"}))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("window_id"), "{}", result.content);
+    }
+
+    #[tokio::test]
+    async fn observe_unknown_window_id_is_error() {
+        let result = tool()
+            .execute(json!({"action": "observe", "window_id": u32::MAX}))
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("not found") || result.content.contains("Window"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
     async fn screenshot_with_bad_display_type_is_error() {
         let result = tool()
             .execute(json!({"action": "screenshot", "display": "main"}))
@@ -1373,6 +1493,14 @@ mod tests {
         assert_eq!(
             t.describe(&json!({"action": "scroll", "direction": "down", "amount": 5})),
             "Computer: scroll down by 5"
+        );
+        assert_eq!(
+            t.describe(&json!({"action": "observe", "window_id": 7})),
+            "Computer: observe window 7"
+        );
+        assert_eq!(
+            t.describe(&json!({"action": "observe"})),
+            "Computer: observe (accessibility snapshot)"
         );
         assert_eq!(
             t.describe(&json!({"action": "focus_window", "window_id": 7})),

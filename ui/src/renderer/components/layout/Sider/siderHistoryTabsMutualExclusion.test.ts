@@ -10,27 +10,38 @@ describe('sider history tabs mutual exclusion and empty states', () => {
     expect(siderSource.includes("pathname.startsWith('/knowledge')")).toBe(true);
     expect(siderSource.includes("pathname.startsWith('/learn')")).toBe(true);
     expect(siderSource.includes("pathname === '/scheduled'")).toBe(true);
-    expect(siderSource.includes("pathname.startsWith('/meeting')")).toBe(true);
     expect(siderSource.includes("pathname.startsWith('/eval')")).toBe(true);
 
     expect(siderSource.includes('isTabDomainActive')).toBe(false);
     expect(siderSource.includes('bg-fill-2 text-t-secondary font-medium hover:text-t-primary')).toBe(false);
-    expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(true);
+    expect(siderSource.includes('bg-fill-3 text-t-primary shadow-sm')).toBe(false);
     expect(siderSource.includes('font-semibold')).toBe(false);
 
-    // Active and optimistic Bar 2 module drives tab selection rather than unconditionally glowing
+    // Active and optimistic Bar 2 module drives the full-width video / companion rows
     expect(siderSource.includes('activeBar2Module')).toBe(true);
     expect(siderSource.includes('effectiveBar2Module')).toBe(true);
     expect(siderSource.includes('optimisticBar2Module')).toBe(true);
-    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'workspaces'}")).toBe(true);
-    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'video'}")).toBe(true);
-    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'companions'}")).toBe(true);
+    expect(siderSource.includes("aria-selected={effectiveBar2Module === 'workspaces'}")).toBe(false);
+    expect(siderSource.includes("active={effectiveBar2Module === 'video'}")).toBe(true);
+    expect(siderSource.includes("active={effectiveBar2Module === 'companions'}")).toBe(true);
+    expect(siderSource.includes("testId='sider-video-module-row'")).toBe(true);
+    expect(siderSource.includes("testId='sider-companion-module-row'")).toBe(true);
 
-    // Module icons on workspaces, video, and companion (<Ghost />), without emoji
-    expect(siderSource.includes('<MessageOne')).toBe(true);
+    // Video then companion, as full-width rows. Projects stay in the list below.
+    expect(siderSource.includes('<MessageOne')).toBe(false);
     expect(siderSource.includes('<VideoOne')).toBe(true);
     expect(siderSource.includes('<Ghost')).toBe(true);
     expect(siderSource.includes('🐱')).toBe(false);
+    const videoRow = siderSource.indexOf("testId='sider-video-module-row'");
+    const companionRow = siderSource.indexOf("testId='sider-companion-module-row'");
+    const knowledgeRow = siderSource.indexOf('<SiderKnowledgeEntry');
+    const learningRow = siderSource.indexOf('<SiderLearningEntry');
+    const scheduledRow = siderSource.indexOf('<SiderScheduledEntry');
+    expect(videoRow).toBeGreaterThan(-1);
+    expect(videoRow).toBeLessThan(companionRow);
+    expect(companionRow).toBeLessThan(knowledgeRow);
+    expect(knowledgeRow).toBeLessThan(learningRow);
+    expect(learningRow).toBeLessThan(scheduledRow);
   });
 
   test('warms companion and video home on hover and app idle', () => {
@@ -69,13 +80,16 @@ describe('sider history tabs mutual exclusion and empty states', () => {
   test('adds narrow rail text truncation, titles, and color-only motion to history tabs', () => {
     const siderSource = readSource(new URL('./index.tsx', import.meta.url));
 
-    expect(siderSource.includes('truncate')).toBe(true);
-    expect(siderSource.includes('overflow-hidden text-ellipsis')).toBe(true);
-    expect(siderSource.includes('transition-colors duration-180')).toBe(true);
+    expect(siderSource.includes('truncate')).toBe(false);
+    expect(siderSource.includes('overflow-hidden text-ellipsis')).toBe(false);
+    expect(siderSource.includes('transition-colors duration-180')).toBe(false);
     expect(siderSource.includes('transition-all duration-180')).toBe(false);
-    expect(siderSource.includes("title={t('sessionList.projectsTab'")).toBe(true);
-    expect(siderSource.includes("title={t('videoGeneration.nav.shortTitle'")).toBe(true);
-    expect(siderSource.includes("title={t('nomi.shortTitle'")).toBe(true);
+    expect(siderSource.includes("title={t('sessionList.projectsTab'")).toBe(false);
+    expect(siderSource.includes("label={t('videoGeneration.nav.shortTitle'")).toBe(true);
+    expect(siderSource.includes("label={t('nomi.shortTitle'")).toBe(true);
+    const moduleRowSource = readSource(new URL('./SiderNav/SiderModuleRow.tsx', import.meta.url));
+    expect(moduleRowSource.includes('h-34px w-full flex items-center justify-start')).toBe(true);
+    expect(moduleRowSource.includes('truncate')).toBe(true);
   });
 
   test('renders video list empty state with dedicated string key', () => {

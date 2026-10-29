@@ -313,18 +313,16 @@ fn append_unfrozen_tools(
     frozen.extend(extra);
 }
 
-fn tool_result_image_payload(messages: &[Message]) -> (usize, usize) {
-    let mut count = 0usize;
-    let mut bytes = 0usize;
-    for msg in messages {
-        for block in &msg.content {
-            if let ContentBlock::ToolResult { images, .. } = block {
-                count += images.len();
-                bytes += images.iter().map(|image| image.data.len()).sum::<usize>();
-            }
-        }
+fn tool_image_omit_note(retained: usize, removed: usize) -> String {
+    if retained == 0 {
+        format!(
+            "\n({removed} image attachment(s) in this tool result were omitted by the recent-image/provider payload budget in favor of newer screenshots.)"
+        )
+    } else {
+        format!(
+            "\n(Only the first {retained} image attachment(s) in this tool result remain; {removed} later attachment(s) were omitted by the recent-image/provider payload budget.)"
+        )
     }
-    (count, bytes)
 }
 
 /// Durable transcript marker used when an unsent user image is dropped
@@ -450,6 +448,9 @@ fn coding_tool_file_path(name: &str, input: &serde_json::Value) -> Option<String
 /// bounds the otherwise-unbounded `None` case. Mirrors Claude Code's ~200-turn
 /// guard. See docs/superpowers/specs/2026-06-21-nomi-agent-overhaul-design.md §5 F0.3.
 const DEFAULT_SAFETY_MAX_TURNS: usize = 200;
+
+/// Byte budget for the failure text embedded in an interrupted-turn marker.
+const INTERRUPTED_TURN_REASON_BYTES: usize = 400;
 
 /// Strictest image-count limit among the supported message providers. Amazon
 /// Bedrock Converse rejects a request containing more than 20 images.
@@ -626,8 +627,10 @@ pub struct AgentEngine {
     frozen_provider_tools: Option<Vec<nomi_types::tool::ToolDef>>,
     /// Count of messages included in the last actually streamed provider
     /// request. Messages `0..sent_prefix_len` are byte-frozen for prefix
-    /// cache: persist, prune, and image redaction must not rewrite them.
-    /// Reset to 0 after compact / clear; clamped on rewind.
+    /// cache: persist and user-image redaction must not rewrite them.
+    /// Tool-result image prune is newest-first and *may* rewrite this prefix
+    /// (then retracts `sent_prefix_len`) so the latest screenshot wins the
+    /// payload budget. Reset to 0 after compact / clear; clamped on rewind.
     sent_prefix_len: usize,
     /// Tool-result bodies microcompact cleared since the last committed
     /// checkpoint. A failed turn writes these back before truncate. A
@@ -645,6 +648,10 @@ pub struct AgentEngine {
     editable_turn: Option<EditableTurnCheckpoint>,
     /// Optional session observation (explicit, no thread-local).
     observation: Option<Arc<crate::observation::ObservationSession>>,
+    /// Host vision sidecar for tool-result images when the conversation
+    /// model cannot take image input. `None` in CLI/tests that have no
+    /// analyzer; the provider adapter still drops the bytes.
+    tool_image_annotator: Option<Arc<dyn crate::tool_image_annotator::ToolResultImageAnnotator>>,
 }
 
 /// Moves the transcript into the provider request and puts the same `Vec`
@@ -737,6 +744,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn: None,
             observation: None,
+            tool_image_annotator: None,
         }
     }
 
@@ -833,6 +841,7 @@ impl AgentEngine {
             process_supervisor: None,
             editable_turn,
             observation: None,
+            tool_image_annotator: None,
         }
     }
 
@@ -1120,6 +1129,16 @@ impl AgentEngine {
         self.steering_inbox = inbox;
     }
 
+    /// Install the host vision sidecar used when the conversation model cannot
+    /// take tool-result images. No-op for vision-capable models; the engine
+    /// checks `compat.supports_image()` before calling it.
+    pub fn set_tool_image_annotator(
+        &mut self,
+        annotator: Option<Arc<dyn crate::tool_image_annotator::ToolResultImageAnnotator>>,
+    ) {
+        self.tool_image_annotator = annotator;
+    }
+
     /// Install (or clear) the trusted host resource-notification inbox.
     ///
     /// Resource notices intentionally have a separate channel from user
@@ -1183,6 +1202,25 @@ impl AgentEngine {
 
     pub fn set_approval_manager(&mut self, mgr: Arc<nomi_protocol::ToolApprovalManager>) {
         self.approval_manager = Some(mgr);
+    }
+
+    /// Delegated engines have no channel back to the host's approval UI.
+    /// Deny anything that is not auto-approved instead of falling back to
+    /// stdin, where EOF used to count as an empty "yes".
+    pub fn deny_unconfirmed_tools(&mut self) {
+        self.confirmer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .deny_unconfirmed();
+    }
+
+    /// Tool calls this engine refused, including delegated fail-closed
+    /// denials. Read after a turn so the host can mark the task incomplete.
+    pub fn denied_tool_calls(&self) -> usize {
+        self.confirmer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .denied_count()
     }
 
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn nomi_protocol::writer::ProtocolEmitter>) {
@@ -1358,6 +1396,15 @@ impl AgentEngine {
             {
                 guard.remove(&cwd.join(path));
             }
+        }
+    }
+
+    fn clear_file_cache(&self) {
+        let Some(cache) = &self.file_cache else {
+            return;
+        };
+        if let Ok(mut guard) = cache.write() {
+            guard.clear();
         }
     }
 
@@ -1708,6 +1755,7 @@ impl AgentEngine {
         // completed pass, and once per restart. Appends restore by truncate.
         // In-place microcompact clears are written back from the undo log first.
         let mut safe_len = self.messages.len();
+        let turn_start_len = safe_len;
         let mut turn_started = false;
         let result = async {
             let result = self
@@ -1745,6 +1793,9 @@ impl AgentEngine {
                     | AgentError::ContextTooLong { .. })
             ) {
                 self.strip_tool_images_after_provider_error();
+            }
+            if let Err(error) = &result {
+                self.close_interrupted_turn(turn_start_len, error);
             }
             self.save_session();
         } else if turn_started {
@@ -3487,6 +3538,21 @@ impl AgentEngine {
                 }
             }
 
+            // Text-only conversation models never receive tool images on the
+            // wire. Describe them through the host vision sidecar *after* the
+            // UI has the binary payload, so the next provider turn still has
+            // the latest screenshot as text even when the bytes are dropped.
+            if !self.compat.supports_image()
+                && let Some(annotator) = self.tool_image_annotator.clone()
+            {
+                crate::tool_image_annotator::annotate_tool_result_images(
+                    annotator.as_ref(),
+                    &tool_calls,
+                    &mut outcome.results,
+                )
+                .await;
+            }
+
             efficiency.observe_results(&outcome.results);
             // Round ledger (machine truth only). Runs AFTER the result loop
             // above, not inside it: that loop holds an immutable borrow of
@@ -3818,22 +3884,19 @@ impl AgentEngine {
     }
 
     /// Keep at most `max_recent_images` individual images, additionally bounded
-    /// by the strictest supported provider request limit. The text part of each
-    /// result is preserved.
+    /// by the strictest supported provider request limit. Newest results win:
+    /// walking history from the end, images are kept until the count/byte
+    /// budget is exhausted, then older ones are stripped. The text part of
+    /// each result is preserved.
     ///
-    /// Already-sent messages (`0..sent_prefix_len`) are never rewritten: their
-    /// images occupy budget first, and only unsent results are stripped.
+    /// Already-sent messages may be rewritten when they hold stale screenshots
+    /// that would starve a newer observation. That breaks prefix cache from
+    /// the first rewritten message; `sent_prefix_len` is retracted to match.
     fn prune_old_tool_images(&mut self) {
-        let frozen = self.sent_prefix_len.min(self.messages.len());
-        let (frozen_count, frozen_bytes) = tool_result_image_payload(&self.messages[..frozen]);
-        let mut remaining_count = self
-            .max_recent_images
-            .min(MAX_PROVIDER_REQUEST_IMAGES)
-            .saturating_sub(frozen_count);
-        let mut remaining_data_bytes =
-            MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES.saturating_sub(frozen_bytes);
-        let mut changed = false;
-        for msg in self.messages[frozen..].iter_mut().rev() {
+        let mut remaining_count = self.max_recent_images.min(MAX_PROVIDER_REQUEST_IMAGES);
+        let mut remaining_data_bytes = MAX_PROVIDER_REQUEST_IMAGE_DATA_BYTES;
+        let mut first_rewritten: Option<usize> = None;
+        for (idx, msg) in self.messages.iter_mut().enumerate().rev() {
             for block in msg.content.iter_mut().rev() {
                 if let ContentBlock::ToolResult {
                     content, images, ..
@@ -3852,16 +3915,17 @@ impl AgentEngine {
                     let retained = images.len();
                     let removed = original_len - retained;
                     if removed > 0 {
-                        changed = true;
-                        content.push_str(&format!(
-                            "\n(Only the first {retained} image attachment(s) in this tool result remain; {removed} later attachment(s) were omitted by the recent-image/provider payload budget.)"
-                        ));
+                        first_rewritten = Some(idx);
+                        content.push_str(&tool_image_omit_note(retained, removed));
                     }
                 }
             }
         }
-        if changed {
-            clear_provider_round_ids(&mut self.messages[frozen..]);
+        if let Some(from) = first_rewritten {
+            clear_provider_round_ids(&mut self.messages[from..]);
+            if from < self.sent_prefix_len {
+                self.sent_prefix_len = from;
+            }
         }
     }
 
@@ -4195,6 +4259,9 @@ impl AgentEngine {
         }
         if !result.cleared_read_paths.is_empty() {
             self.invalidate_file_cache_paths(&result.cleared_read_paths);
+            for path in &result.cleared_read_paths {
+                self.harness_runtime.office_working_set.forget_reads(path);
+            }
         }
         result.estimated_tokens_freed as u64
     }
@@ -4319,6 +4386,13 @@ impl AgentEngine {
                             ));
                         }
                         self.editable_turn = None;
+                        // The folded transcript no longer contains any file
+                        // text read before the fold; claiming otherwise makes
+                        // the model skip a Read it actually needs. The Read
+                        // dedup stub and the Edit must-read guard key off the
+                        // same claim, so the file cache is dropped with it.
+                        self.harness_runtime.office_working_set.reset();
+                        self.clear_file_cache();
                         // Freeze the rewritten prefix BEFORE post_compact_reinject
                         // so persist_turn_tail cannot mutate it (prefix-cache).
                         self.sent_prefix_len = self.messages.len();
@@ -4440,6 +4514,47 @@ impl AgentEngine {
 
     fn accept_prefix_rewrites(&mut self) {
         self.prefix_rewrite_undo.clear();
+    }
+
+    /// A failed turn that already executed tools leaves the transcript ending
+    /// on a user `tool_result` message with no assistant reply: the user never
+    /// received a report, the persisted session carries no trace of why, and
+    /// the next request sees an unexplained dangling tail. Record the failure as
+    /// an assistant-side marker so the history stays well-formed and the next
+    /// turn knows it must report from the tool results instead of assuming a
+    /// reply was delivered. Turns that made no committed progress are left
+    /// alone — their rollback already restored the pre-turn transcript.
+    fn close_interrupted_turn(&mut self, turn_start_len: usize, error: &AgentError) {
+        if self.messages.len() <= turn_start_len {
+            return;
+        }
+        let ends_on_tool_results = self.messages.last().is_some_and(|message| {
+            message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        });
+        if !ends_on_tool_results {
+            return;
+        }
+        let reason = nomi_tools::truncate_middle(
+            &error.to_string(),
+            nomi_tools::TruncationBudget::Bytes(INTERRUPTED_TURN_REASON_BYTES),
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+        self.messages.push(Message::now(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: format!(
+                    "[Turn interrupted before a final reply: {reason}] The tool calls above \
+                     did run and their results are authoritative. The user has not received \
+                     a report for this turn."
+                ),
+            }],
+        ));
     }
 
     fn commit_transcript_checkpoint(&mut self, safe_len: &mut usize) {

@@ -56,7 +56,7 @@ describe('oc css scope containment', () => {
         expect(projectPage.includes('documentElement.classList')).toBe(false);
         expect(projectPage.includes("import '@oc/styles/globals.css';")).toBe(true);
         expect(globals.includes('.oc-portal-host')).toBe(true);
-        expect(globals.includes('z-index: var(--z-popover)')).toBe(true);
+        expect(globals.includes('z-index: var(--z-max)')).toBe(true);
     });
 
     test('canvas persist theme store stays React-free; portal host follows the canvas shell', () => {

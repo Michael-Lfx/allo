@@ -29,7 +29,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
   onClick,
 }) => {
   const { t } = useTranslation();
-  const label = t('common.tray.newChat');
+  const label = t('common.sider.newTask');
   const shortcutAvailable = isAppChromeShortcutAvailable('newConversation', {
     desktop: isDesktopShell(),
     mobile: isMobile,
@@ -61,7 +61,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
     );
   }
 
-  // Expanded: 单独的新建对话全宽按钮，与搜索按钮完全统一对齐（左对齐、size-22px 图标盒、统一内边距与字体）
+  // Expanded: 单独的新建任务全宽按钮（左对齐、size-22px 图标盒、统一内边距与字体）
   return (
     <Tooltip {...siderTooltipProps} content={tooltip} position='right'>
       <button
@@ -69,7 +69,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
         data-testid='sider-new-conversation-entry'
         className={classNames(
           styles.newChatTrigger,
-          'h-34px w-full flex items-center justify-start gap-8px pl-10px pr-8px shrink-0 rd-0.5rem border border-solid border-[var(--color-border-2)] bg-transparent text-t-primary cursor-pointer hover:bg-fill-2 active:bg-fill-3 transition-colors focus:outline-none focus-visible:outline-none select-none',
+          'h-34px w-full flex items-center justify-start gap-8px pl-10px pr-8px shrink-0 rd-0.5rem border-none bg-transparent text-t-primary cursor-pointer hover:bg-fill-2 active:bg-fill-3 transition-colors focus:outline-none focus-visible:outline-none select-none',
           isMobile && 'sider-action-btn-mobile'
         )}
         onClick={onClick}
@@ -88,7 +88,9 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
           {label}
         </span>
         {shortcutAvailable ? (
-          <span className={APP_CHROME_SHORTCUT_BADGE_CLASS}>{formatAppChromeShortcut('newConversation')}</span>
+          <span className={classNames(APP_CHROME_SHORTCUT_BADGE_CLASS, styles.shortcutBadge)}>
+            {formatAppChromeShortcut('newConversation')}
+          </span>
         ) : null}
       </button>
     </Tooltip>

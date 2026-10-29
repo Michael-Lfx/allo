@@ -2,12 +2,11 @@ import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type Canvas
 import type { ShotPacketView, ShotRefRole, ShotRefSlot } from '../types';
 import type { StoryboardVideoSlotStatus } from '../storyboardVideoStatus';
 import {
-  AUDIO_NODE,
   IMAGE_NODE,
   VIDEO_NODE,
   VIDEO_NODE_ID,
-  audioNodeId,
   imageNodeId,
+  nodeSize,
   type MiniPoint,
 } from '../shotMiniCanvas/layout';
 import { seedancePromptToNodeMentions, shotNodeModelValue } from './shotMentions';
@@ -25,6 +24,22 @@ export function parseShotNodeId(id: string): ShotCanvasNodeRef | null {
   const audio = /^audio-(\d+)$/.exec(id);
   if (audio) return { kind: 'audio', slot: Number(audio[1]) };
   return null;
+}
+
+/** List payloads skip live disk merge; empty refs are not a reliable canvas seed. */
+export function packetHasCanvasRefs(
+  packet: { image_refs?: ShotRefSlot[]; audio_refs?: ShotRefSlot[] } | null | undefined
+): boolean {
+  return (packet?.image_refs?.length ?? 0) > 0 || (packet?.audio_refs?.length ?? 0) > 0;
+}
+
+export function packetSlotSignature(
+  packet: { image_refs?: ShotRefSlot[]; audio_refs?: ShotRefSlot[] } | null | undefined
+): string {
+  if (!packet) return '';
+  const images = (packet.image_refs ?? []).map((slot) => `i${slot.slot}`).join(',');
+  const audios = (packet.audio_refs ?? []).slice(0, 3).map((slot) => `a${slot.slot}`).join(',');
+  return `${images}|${audios}`;
 }
 
 export function shotStorageKey(kind: ShotCanvasRefKind | 'video', path: string): string {
@@ -78,14 +93,11 @@ export function packetToCanvasGraph(input: {
   const { packet, positions, mediaUrls, imagePrompts, prompt, generating, titles } = input;
   const imageModel = shotNodeModelValue(input.models?.image);
   const videoModel = shotNodeModelValue(input.models?.video);
-  const audioModel = shotNodeModelValue(input.models?.audio);
   const composerPrompt = seedancePromptToNodeMentions(prompt, packet);
   const now = new Date().toISOString();
   const nodes: CanvasNodeData[] = [];
   const connections: CanvasConnection[] = [];
   const imageRefs = packet.image_refs ?? [];
-  const audioRefs = (packet.audio_refs ?? []).slice(0, 3);
-
   imageRefs.forEach((slot, index) => {
     const id = imageNodeId(slot.slot);
     const box = nodeBox(id, positions, IMAGE_NODE, { x: 48, y: 48 + index * (IMAGE_NODE.h + 36) });
@@ -112,50 +124,6 @@ export function packetToCanvasGraph(input: {
         status: bound ? 'success' : 'idle',
         alloVimax: {
           kind: 'image',
-          slot: slot.slot,
-          role: slot.role,
-          path: slot.path ?? null,
-          unbound: slot.unbound,
-          label: slot.label,
-        },
-        ...patch,
-      },
-    });
-    if (bound) {
-      connections.push({
-        id: `ref-${id}`,
-        fromNodeId: id,
-        toNodeId: VIDEO_NODE_ID,
-      });
-    }
-  });
-
-  audioRefs.forEach((slot, index) => {
-    const id = audioNodeId(slot.slot);
-    const box = nodeBox(id, positions, AUDIO_NODE, {
-      x: 48,
-      y: 48 + imageRefs.length * (IMAGE_NODE.h + 36) + 24 + index * (AUDIO_NODE.h + 28),
-    });
-    const path = slot.path ?? '';
-    const url = path ? mediaUrls[path] : '';
-    const bound = slotBound(slot);
-    const patch = input.metaPatch?.[id];
-    nodes.push({
-      id,
-      type: CanvasNodeType.Audio,
-      title: titles.audio(slot),
-      position: { x: box.x, y: box.y },
-      width: box.w,
-      height: box.h,
-      createdAt: now,
-      updatedAt: now,
-      metadata: {
-        content: bound && url ? url : undefined,
-        storageKey: bound && path ? shotStorageKey('audio', path) : undefined,
-        ...(audioModel ? { model: audioModel } : {}),
-        status: bound ? 'success' : 'idle',
-        alloVimax: {
-          kind: 'audio',
           slot: slot.slot,
           role: slot.role,
           path: slot.path ?? null,

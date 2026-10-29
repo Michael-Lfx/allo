@@ -39,7 +39,7 @@ use nomifun_app_server::{
 use nomifun_common::AppError;
 use nomifun_db::{IPluginSnapshotRepository, PluginSnapshotComponentRow};
 
-use crate::app_server_importer::{localized_field, payload, string_array, string_field};
+use crate::app_server_importer::{localized_field, localized_list, payload, string_array, string_field};
 
 /// The runtime engine every installed expert is pinned to on this host.
 ///
@@ -175,14 +175,29 @@ impl AppServerExpertExport {
     /// entries this very pack lists, so `pack.avatar` can never name a file a
     /// consumer cannot fetch through `import/asset` (doc `38` D8).
     fn declared_avatar(value: &serde_json::Value, assets: &[AppServerExpertAssetRef]) -> Option<String> {
-        let avatar = string_field(value, "avatar")?.trim().to_owned();
-        if avatar.is_empty() {
+        Self::declared_asset_path(string_field(value, "avatar"), assets)
+    }
+
+    /// "The declared path must be in the inventory" — the one implementation of
+    /// that invariant, shared by the package avatar and a connector's icon
+    /// (doc `51` §3.3.3 / INV-2).
+    ///
+    /// A path outside the list is dropped rather than reported: a reference a
+    /// consumer cannot resolve is worse than an honest absence, and the encoder
+    /// omits the key entirely (`skip_serializing_if`), so "no icon" and "this
+    /// format has no icon field" stay distinguishable (doc `38` D8).
+    fn declared_asset_path(
+        declared: Option<String>,
+        assets: &[AppServerExpertAssetRef],
+    ) -> Option<String> {
+        let path = declared?.trim().to_owned();
+        if path.is_empty() {
             return None;
         }
         assets
             .iter()
-            .any(|asset| asset.path == avatar)
-            .then_some(avatar)
+            .any(|asset| asset.path == path)
+            .then_some(path)
     }
 
     /// The host's gate, evaluated **before** any read.
@@ -281,6 +296,10 @@ impl AppServerExpertExport {
             name: row.name.clone(),
             display_name: localized_field(&value, "display_name"),
             description: string_field(&value, "description"),
+            // Display metadata (`44` §2.3): on every pack including members —
+            // a member's category is its own declaration, not snapshot-scoped.
+            tags: localized_list(&value, "tags"),
+            category_id: string_field(&value, "category_id"),
             persona: AppServerExpertPersona {
                 instructions: string_field(&value, "instructions").unwrap_or_default(),
                 memory: string_field(&value, "memory"),
@@ -340,6 +359,7 @@ impl AppServerExpertExport {
     async fn team_connectors(
         &self,
         snapshot_id: &str,
+        assets: &[AppServerExpertAssetRef],
     ) -> Result<Vec<AppServerExpertConnectorRef>, ExpertPackError> {
         let rows = self
             .repo
@@ -379,6 +399,14 @@ impl AppServerExpertExport {
                 // renamed by hand since; the definition is the honest answer here.
                 name: row.name.clone(),
                 enabled: true,
+                // The icon the importer stamped into this component's payload
+                // (doc `51` §3.3.2), accepted only when the pack's own asset list
+                // can serve it (INV-2). Absent = no icon, or a host whose asset
+                // provider is not wired (`capabilities.snapshot_assets`).
+                icon: Self::declared_asset_path(
+                    string_field(&payload(&row), "avatar"),
+                    assets,
+                ),
             });
         }
         Ok(connectors)
@@ -421,9 +449,18 @@ impl AppServerExpertExport {
             if skills.iter().any(|existing| existing.name == row.name) {
                 continue;
             }
+            // Read before the move below: the payload is where the importer
+            // stamped the icon (doc `51` §3.2.2), and the row is already in hand.
+            let icon = string_field(&payload(&row), "avatar");
             skills.push(AppServerExpertSkillRef {
                 id: row.name.clone(),
                 name: row.name,
+                // The skill's icon comes straight off the payload the importer
+                // stamped (doc `51` §3.3.2): a **skill-directory-relative** path
+                // (`assets/icon.png`), read back with `skill/file` — no snapshot
+                // asset lookup, so it is unaffected by `[expert_export] scripts`
+                // and by a host that wired no asset provider (doc `51` TC-EX-306).
+                icon,
             });
         }
         Ok(skills)
@@ -515,6 +552,8 @@ impl ExpertPackProvider for AppServerExpertExport {
             name: row.name.clone(),
             display_name: localized_field(&value, "display_name"),
             description: string_field(&value, "description"),
+            tags: localized_list(&value, "tags"),
+            category_id: string_field(&value, "category_id"),
             // A team has no persona of its own — the members do. The team's own
             // Preset exists so `team/run` and `conversation/create` have
             // something resolvable; it is not part of the Definition, so nothing
@@ -531,7 +570,7 @@ impl ExpertPackProvider for AppServerExpertExport {
                 max_turns: None,
             },
             skills: self.team_skills(&row.snapshot_id).await?,
-            connectors: self.team_connectors(&row.snapshot_id).await?,
+            connectors: self.team_connectors(&row.snapshot_id, &assets).await?,
             assets,
             // The *team row's* declared avatar, not the leader's: the plugin
             // manifest declares one package avatar (`avatars/team.png`), and it
@@ -598,6 +637,12 @@ fn skill_refs(value: &serde_json::Value) -> Vec<AppServerExpertSkillRef> {
         .map(|name| AppServerExpertSkillRef {
             id: name.clone(),
             name,
+            // An **agent** pack's skills are the agent's own frontmatter
+            // declaration — names only. There is no component row behind them, so
+            // no payload carries an icon; the skill's own directory still ships
+            // one (`assets/icon.*`) and the consumer finds it there (doc `51`
+            // §3.1).
+            icon: None,
         })
         .collect()
 }
@@ -641,6 +686,12 @@ mod tests {
     /// claim honest: it is planted in the connector's own payload and must never
     /// turn up in an export.
     const SECRET_SENTINEL: &str = "SECRET-e7f1-must-not-leak";
+    /// What the importer stamps into a single-skill snapshot (doc `51` §3.2):
+    /// a **skill-directory-relative** path, read back with `skill/file`.
+    const SKILL_ICON_PATH: &str = "assets/icon.png";
+    /// What it stamps into a single-connector snapshot: a **snapshot-relative**
+    /// path under the connector namespace, read back with `import/asset`.
+    const CONNECTOR_ICON_PATH: &str = "avatars/connectors/github.svg";
 
     /// Preset reader stub. Anything absent from `enabled` reads as switched off,
     /// which is what a hand-deleted Preset looks like from the adapter's side.
@@ -703,6 +754,20 @@ mod tests {
     /// de-duplicates and puts the leader first, and a pack whose order disagreed
     /// would make "who leads" a consumer-side guess.
     async fn seeded_repo(persona: &str) -> Arc<dyn IPluginSnapshotRepository> {
+        seeded_repo_with(persona, false).await
+    }
+
+    /// The same fixture, with the icons the importer stamps (doc `51` §3.2.2):
+    /// the **skill**'s icon is a skill-directory-relative path, the
+    /// **connector**'s is a snapshot-relative one under `avatars/connectors/`.
+    async fn seeded_repo_with_icons(persona: &str) -> Arc<dyn IPluginSnapshotRepository> {
+        seeded_repo_with(persona, true).await
+    }
+
+    async fn seeded_repo_with(
+        persona: &str,
+        icons: bool,
+    ) -> Arc<dyn IPluginSnapshotRepository> {
         let repo = new_repo().await;
         let lead = serde_json::json!({
             "id": AGENT_ID,
@@ -720,6 +785,9 @@ mod tests {
             "display_name": { "zh": "组长", "en": "Lead" },
             "memory": "keep notes",
             "avatar": "avatars/lead.png",
+            // Doc `44`: the member's category is its own declaration.
+            "category_id": "02-Engineering",
+            "tags": [{ "zh": "技术工程", "en": "Engineering" }],
         })
         .to_string();
         let member = serde_json::json!({
@@ -742,6 +810,12 @@ mod tests {
             "routing_constraints": ["prefer_frontend"],
             "workflow_limits": { "max_parallel": 4 },
             "team_runtime_capabilities": ["planned_dag", "local_parallel"],
+            // Doc `44`: package-level display metadata, on the top-level pack.
+            "category_id": "04-DataAI",
+            "tags": [
+                { "zh": "数据智能", "en": "Data & AI" },
+                { "zh": "办公效率", "en": null },
+            ],
         })
         .to_string();
         let connector = serde_json::json!({
@@ -766,6 +840,21 @@ mod tests {
             "has_arguments_note": false,
         })
         .to_string();
+
+        // Doc `51`: the importer writes the placed icon into the same `avatar`
+        // key the package avatar uses, so the exporter's read path is exercised
+        // against the payload shape production actually produces.
+        let (skill, connector) = if icons {
+            let mut skill: serde_json::Value =
+                serde_json::from_str(&skill).expect("skill payload parses");
+            skill["avatar"] = serde_json::json!(SKILL_ICON_PATH);
+            let mut connector: serde_json::Value =
+                serde_json::from_str(&connector).expect("connector payload parses");
+            connector["avatar"] = serde_json::json!(CONNECTOR_ICON_PATH);
+            (skill.to_string(), connector.to_string())
+        } else {
+            (skill, connector)
+        };
 
         let components = vec![
             NewPluginSnapshotComponent {
@@ -1239,6 +1328,16 @@ mod tests {
                 ],
             }
         }
+
+        /// `demo()` plus the connector icon the importer placed, so a reference
+        /// to it resolves. Nothing else about the inventory changes, so a test
+        /// comparing the two isolates exactly that one path (doc `51` §3.3.3).
+        fn with_icons() -> Self {
+            let mut inventory = Self::demo().inventory;
+            inventory.push(asset(CONNECTOR_ICON_PATH, AppServerExpertAssetKind::Avatar));
+            inventory.sort_by(|left, right| left.path.cmp(&right.path));
+            Self { inventory }
+        }
     }
 
     fn asset(path: &str, kind: AppServerExpertAssetKind) -> AppServerExpertAssetRef {
@@ -1301,6 +1400,121 @@ mod tests {
         exporter_with_assets(repo, recorded_presets(), policy, FakeAssets::demo())
     }
 
+    /// The standard fixture with icon-bearing payloads **and** an inventory that
+    /// can serve the connector's icon — what a host that wired the asset seam
+    /// looks like after doc `51` (TC-EX-301 / TC-EX-303).
+    async fn ready_with_icons(policy: ExpertExportPolicy) -> AppServerExpertExport {
+        let repo = seeded_repo_with_icons("persona").await;
+        install(
+            &repo,
+            &[
+                (AGENT_ID, "preset", LEAD_PRESET),
+                (MEMBER_ID, "preset", MEMBER_PRESET),
+                (TEAM_ID, "preset", "preset-team"),
+                (SKILL_ID, "skill", SKILL_PATH),
+                (CONNECTOR_ID, "connector", MCP_SERVER_ID),
+            ],
+        )
+        .await;
+        exporter_with_assets(repo, recorded_presets(), policy, FakeAssets::with_icons())
+    }
+
+    /// The domain-wide doc `51` contract, asserted on one pack: a team pack is
+    /// the only place both reference lists appear together (an agent pack's
+    /// connectors are always empty, `02` §5.1).
+    #[tokio::test]
+    async fn a_team_pack_carries_the_skill_and_connector_icons() {
+        let provider = ready_with_icons(ExpertExportPolicy::allow_all()).await;
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+
+        // The skill's icon is a **skill-directory-relative** path: the coordinate
+        // system `skill/files` publishes and `skill/file` reads.
+        assert_eq!(pack.skills.len(), 1);
+        assert_eq!(pack.skills[0].icon.as_deref(), Some(SKILL_ICON_PATH));
+
+        // The connector's icon is a **snapshot-relative** path that the pack's
+        // own asset list must also serve (INV-2).
+        assert_eq!(pack.connectors.len(), 1);
+        assert_eq!(
+            pack.connectors[0].icon.as_deref(),
+            Some(CONNECTOR_ICON_PATH)
+        );
+        assert!(
+            pack.assets.iter().any(|a| a.path == CONNECTOR_ICON_PATH),
+            "the referenced icon must also be listed as an asset"
+        );
+    }
+
+    /// TC-EX-304: a connector `icon` the pack cannot serve is dropped whole —
+    /// never carried as a reference the consumer would fail to resolve.
+    #[tokio::test]
+    async fn a_connector_icon_the_pack_cannot_serve_is_dropped() {
+        // Same payloads, an inventory without `avatars/connectors/github.svg`.
+        let repo = seeded_repo_with_icons("persona").await;
+        install(
+            &repo,
+            &[
+                (AGENT_ID, "preset", LEAD_PRESET),
+                (MEMBER_ID, "preset", MEMBER_PRESET),
+                (TEAM_ID, "preset", "preset-team"),
+                (SKILL_ID, "skill", SKILL_PATH),
+                (CONNECTOR_ID, "connector", MCP_SERVER_ID),
+            ],
+        )
+        .await;
+        let provider =
+            exporter_with_assets(repo, recorded_presets(), ExpertExportPolicy::allow_all(), FakeAssets::demo());
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        assert_eq!(pack.connectors.len(), 1);
+        assert_eq!(
+            pack.connectors[0].icon, None,
+            "an unservable path must not travel"
+        );
+        // The skill's icon does not depend on the asset seam at all.
+        assert_eq!(pack.skills[0].icon.as_deref(), Some(SKILL_ICON_PATH));
+    }
+
+    /// TC-EX-302 / INV-6: no icon means **no key**, not `null` — "absent" and
+    /// "this format has no such field" must stay distinguishable (doc `38` D8).
+    #[tokio::test]
+    async fn an_absent_icon_omits_the_key_entirely() {
+        let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        assert_eq!(pack.skills[0].icon, None);
+        assert_eq!(pack.connectors[0].icon, None);
+
+        let json = serde_json::to_string(&pack).expect("serialize pack");
+        assert!(
+            !json.contains("\"icon\""),
+            "the key itself must be absent, got: {json}"
+        );
+    }
+
+    /// TC-EX-305: `[expert_export] scripts = false` subtracts script content
+    /// only; an icon is `kind: "avatar"` and survives untouched.
+    #[tokio::test]
+    async fn a_scripts_off_policy_keeps_the_connector_icon() {
+        let policy = ExpertExportPolicy::from_declared(&AgentStoreExpertExport {
+            enabled: None,
+            deny: None,
+            scripts: Some(false),
+        });
+        let provider = ready_with_icons(policy).await;
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export team");
+        assert_eq!(
+            pack.connectors[0].icon.as_deref(),
+            Some(CONNECTOR_ICON_PATH),
+            "an avatar-kind asset is not subject to the scripts switch"
+        );
+        assert!(
+            pack.assets
+                .iter()
+                .all(|a| a.kind == AppServerExpertAssetKind::Avatar)
+        );
+    }
+
     #[tokio::test]
     async fn the_top_level_pack_carries_assets_and_members_carry_none() {
         let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
@@ -1327,6 +1541,41 @@ mod tests {
         // snapshot-scoped list.
         let agent = provider.export_agent(AGENT_ID).await.expect("export");
         assert_eq!(agent.assets.len(), 4);
+    }
+
+    /// Doc `44` TC-CAT-011: the pack carries the market's display metadata —
+    /// the top-level pack from its own package row, every member pack from its
+    /// own declaration (unlike the snapshot-scoped `assets`, doc `44` D3), and
+    /// a member with no declaration carries none.
+    #[tokio::test]
+    async fn a_pack_carries_its_own_category_and_tags() {
+        let provider = ready_with_assets(ExpertExportPolicy::allow_all()).await;
+
+        let pack = provider.export_team(TEAM_ID).await.expect("export");
+        assert_eq!(
+            pack.pack_format, APP_SERVER_EXPERT_PACK_FORMAT,
+            "the pack always carries the current artifact format"
+        );
+        assert_eq!(pack.category_id.as_deref(), Some("04-DataAI"));
+        assert_eq!(pack.tags.len(), 2);
+        assert_eq!(pack.tags[0].zh.as_deref(), Some("数据智能"));
+        assert_eq!(pack.tags[0].en.as_deref(), Some("Data & AI"));
+        // A one-sided tag keeps the missing locale absent on the wire type.
+        assert_eq!(pack.tags[1].zh.as_deref(), Some("办公效率"));
+        assert_eq!(pack.tags[1].en, None);
+
+        let members = &pack.team.as_ref().expect("team pack").members;
+        let lead = members.iter().find(|m| m.id == AGENT_ID).expect("leader pack");
+        assert_eq!(lead.category_id.as_deref(), Some("02-Engineering"));
+        assert_eq!(lead.tags[0].zh.as_deref(), Some("技术工程"));
+
+        let qa = members.iter().find(|m| m.id == MEMBER_ID).expect("member pack");
+        assert!(qa.category_id.is_none());
+        assert!(qa.tags.is_empty(), "an undeclared member carries no tags");
+
+        // The single-agent export is the same row read as its own package.
+        let agent = provider.export_agent(AGENT_ID).await.expect("export");
+        assert_eq!(agent.category_id.as_deref(), Some("02-Engineering"));
     }
 
     #[tokio::test]

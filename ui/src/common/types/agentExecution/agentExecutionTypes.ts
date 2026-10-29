@@ -31,7 +31,7 @@ export type TAgentExecutionStatus =
   | 'cancelled';
 
 export type TExecutionStepKind = 'agent' | 'verify' | 'judge' | 'loop';
-export type TAgentToolPolicy = 'full' | 'read_only' | 'read_shell';
+export type TAgentToolPolicy = 'full' | 'files_shell' | 'read_only' | 'read_shell';
 export type TAgentStepMode = 'normal' | 'synthesis';
 export type TExecutionStepStatus = 'pending' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'skipped' | 'cancelled';
 export type TExecutionAttemptStatus = 'queued' | 'running' | 'waiting_input' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
@@ -191,6 +191,34 @@ export type TAgentExecutionDetail = {
   attempts: TExecutionAttempt[];
 };
 
+/** Flattened read-only projection of one active delegated Agent invocation. */
+export type TActiveSubagent = {
+  execution_id: ExecutionId;
+  execution_goal: string;
+  execution_status: TAgentExecutionStatus;
+  step_id: ExecutionStepId;
+  step_title: string;
+  step_kind: TExecutionStepKind;
+  step_status: TExecutionStepStatus;
+  attempt_id: ExecutionAttemptId;
+  attempt_no: number;
+  attempt_status: TExecutionAttemptStatus;
+  participant_id: ExecutionParticipantId | null;
+  participant_role: string | null;
+  conversation_id: ConversationId | null;
+  question: string | null;
+  tokens: number | null;
+  started_at: number | null;
+  attempt_updated_at: number;
+};
+
+export type TActiveSubagentsQuery = {
+  execution_id?: ExecutionId;
+  include_control_steps?: boolean;
+  limit?: number;
+  offset?: number;
+};
+
 export type TAgentExecutionEvent = {
   execution_id: ExecutionId;
   sequence: number;
@@ -214,6 +242,7 @@ export type TPlannedExecutionStep = {
   agent_mode?: TAgentStepMode;
   depends_on?: number[];
   participant_index?: number;
+  requested_model?: TExecutionModelRef;
   assignment_rationale?: string;
   role?: string;
   tool_policy?: TAgentToolPolicy;

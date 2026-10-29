@@ -75,7 +75,11 @@
     "detailLoadFailed": "无法读取该技能文件。",
     "detailLoadFailedHint": "文件可能已移动或暂时无法读取。请刷新技能列表后重试。",
     "tagsSaved": "标签已保存",
-    "tagsSaveFailed": "保存标签失败"
+    "tagsSaveFailed": "保存标签失败",
+    "allowModelAuto": "允许模型自动调用",
+    "allowModelAutoHint": "开启后，模型可对照描述自行加载该技能，不必先用 / 点选。",
+    "invocationSaved": "调用策略已保存",
+    "invocationSaveFailed": "保存调用策略失败"
   },
   "capabilityHub": {
     "navLabel": "能力中心",
@@ -1487,6 +1491,15 @@
       "note": "供应商模型在云端运行，请不要发送敏感信息。当前，自定义供应商模型仅可供 Flowy 使用。",
       "scopeNote": "「按用途找模型」已经搬到左侧的对话 / 语音 / 视觉 / 创作 / 嵌入与检索分区，这里只管接入与凭证。"
     },
+    "herdsman": {
+      "title": "牧马人",
+      "searchingTitle": "正在查找本机牧马人",
+      "searchingBody": "安装并启动牧马人后，正在运行的本地模型会出现在对话的模型列表里，请求走本机推理。",
+      "connectedTitle": "牧马人已连接",
+      "connectedBody": "正在运行的本地模型可以在任意对话里选择。模型停止后会从列表消失，再次运行后重新出现。",
+      "disconnectedTitle": "牧马人未连接",
+      "disconnectedBody": "引擎恢复后会自动接上。已选中的对话会暂时显示模型不可用。"
+    },
     "modality": {
       "chatTitle": "对话模型",
       "chatSubtitle": "能用来对话的模型；新会话的默认模型也在这里设。",
@@ -1640,6 +1653,19 @@
     "title": "MCP",
     "subtitle": "管理已安装 MCP 与 MCP 市场。",
     "railTitle": "MCP"
+  },
+  "link": {
+    "title": "连接手机",
+    "subtitle": "不安装 App 时，用微信或其他扫码工具打开网页。安装手机版时再生成配对码，并在这里允许。",
+    "browserTitle": "用浏览器打开",
+    "browserDesc": "不安装 App。用微信、系统相机或其他扫码工具扫描，手机会打开这台电脑的局域网网页并登录。生成二维码时会打开网页访问。",
+    "browserAction": "生成网页二维码",
+    "browserWechat": "如果微信停在自己的页面里打不开，点右上角，用系统浏览器打开。",
+    "browserVirtualAddress": "这个地址来自虚拟网卡，手机浏览器打不开。请让电脑连上 Wi-Fi，再重新生成二维码。",
+    "browserNoAddress": "当前没有手机能打开的局域网地址。确认电脑和手机在同一网络，并且系统放行了网页端口。",
+    "browserFailed": "网页访问没有打开。",
+    "appTitle": "用 Flowy 手机版",
+    "appDesc": "安装 App 后扫描配对码。允许之前，手机拿不到登录。对话正文不经过云端。"
   },
   "openCapabilities": {
     "title": "远程&开放能力",

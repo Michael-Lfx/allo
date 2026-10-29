@@ -18,10 +18,15 @@ mod activities;
 mod assemble;
 mod blueprint;
 mod completer;
+mod expand;
 mod lesson;
 mod parser;
 mod sample;
+mod snapshot;
+mod structured_batch;
+mod structure;
 mod terms;
+mod triage;
 #[cfg(test)]
 mod tests;
 
@@ -217,6 +222,11 @@ pub struct BlueprintLesson {
     /// [`BlueprintLesson::cited_sources`] 取用，不直接读两个字段。
     #[serde(default)]
     pub sources: Vec<SourceSpan>,
+    /// 定位锚（t3 分批展开）：正文截取的唯一定位——H2/H3 完整标题或
+    /// 「第 N 段」（headingless 文件）。空 = 整文件/path 级成课（旧路径与
+    /// 大纲引擎产物不带它，serde 缺省兼容旧快照）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 impl BlueprintLesson {
@@ -263,6 +273,10 @@ pub struct LessonOutput {
     /// 的节)——课时终态仍算成功,但降级事实经事件与日志可见。
     #[serde(default)]
     pub degraded_keys: Vec<String>,
+    /// 超容自报（k03）：规划阶段对照时长预算的如实留痕，透传到报告面与
+    /// 观察条；`None` = 未自报（缺席合法）。零内容拦截。
+    #[serde(default)]
+    pub capacity_note: Option<String>,
 }
 
 impl LessonOutput {
@@ -308,10 +322,19 @@ pub(crate) struct ActivitiesOutput {
     est: i64,
     #[serde(default)]
     activities: Vec<ActivityPack>,
+    /// 题级丢弃留痕（k04）：批内雷同题被剔除后逐条留痕；空 = 无丢弃。
+    /// 只进报告面与观察日志，不影响发布。
+    #[serde(skip)]
+    dropped: Vec<self::activities::DroppedActivity>,
 }
 
 
-pub(crate) use self::activities::{ExistingLessonQuestion, generate_lesson_activity};
+pub(crate) use self::activities::{
+    ExistingLessonQuestion, filter_novel_activities, generate_lesson_activity,
+    legacy_duplicate_hit, qb_similarity_enabled, similarity_hit,
+};
+pub use self::activities::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+pub(crate) use self::parser::normalize_prompt;
 pub(crate) use self::assemble::assemble_outline_pack;
 pub(crate) use self::blueprint::{
     build_blueprint_prompt, build_description_blueprint_prompt, generate_blueprint,
@@ -327,6 +350,10 @@ pub(crate) use self::lesson::{
     build_adjacent_context, build_outline_tree, enforce_grounding_budget, generate_lesson,
     render_grounding_fragments, rewrite_section_body, validate_lesson_document,
 };
+pub use self::lesson::{
+    CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
+    is_content_discipline_v2_disabled_value,
+};
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
 // 多知识库采样（t4）：单库逐字旧路径，多库按库分摊 + 路径命名空间。
 pub(crate) use self::sample::sample_bases;
@@ -340,6 +367,38 @@ pub(crate) use self::terms::{TERM_MAX_COUNT, term_slices};
 // 目标的采样披露（t2）跨 crate 消费（ai-agent 简报/课程 DTO），像
 // `Blueprint` 一样经 lib.rs 再导出：模块私有，类型公开。
 pub use self::sample::{SampleBaseDisclosure, SampleDisclosure};
+// 全量清点 + 分诊（t1）：类型与编排入口经 lib.rs 再导出（t2 建课管线在
+// crate 内接线，t4 落库/t5 报告消费类型）。
+pub use self::triage::run_kb_triage;
+pub use self::triage::{
+    KbFileKind, KbInventory, KbInventoryBase, KbInventoryFile, KbScanScope, KbTriageCounts,
+    KbTriageDuplicate, KbTriageExclusion, KbTriageFile, KbTriageReport, KbTriageRole,
+};
+// t1 分诊批大小（t5 成本门估算按同一把尺估批数）。
+pub(crate) use self::triage::TRIAGE_BATCH_MAX_FILES;
+// t3 分批展开的单批文件上限（评审 S2:成本门按章拆批的同一把尺）。
+pub(crate) use self::expand::EXPANSION_BATCH_MAX_FILES;
+// 证据驱动的结构发现（t2）：SourcePlan 类型与编排入口经 lib.rs 再导出
+// （ai-agent 简报披露消费 brief_line；t3 分批展开/t4 落库消费类型）。
+pub use self::structure::run_kb_structure;
+pub use self::structure::{
+    ChapterContentType, ConceptEdgeRelation, ConceptGraph, ConceptGraphEdge, ConceptGraphNode,
+    CoverageExclusion, CoverageFile, CoverageLedger, CoverageTopic, FileCoverageStatus,
+    PlannedChapter, SourceAnchor, SourceCount, SourceEvidence, SourcePlan, TopicStatus,
+};
+// 分批展开（t3）：编排入口与覆盖报告类型经 lib.rs 再导出（t4 落库/t5 报告
+// 消费；generate_course 在 crate 内接线）。
+pub use self::expand::run_kb_expansion;
+pub use self::expand::{
+    ExpansionChapterReport, ExpansionFileReport, ExpansionLessonReport, ExpansionOutcome,
+    ExpansionTopicReport, SourceCoverage,
+};
+// 建课时点的来源计划快照信封（t4）：`generate_course` 在落库点组装进
+// `learning_courses.course_source_plan_json`，读侧摘要视图/t5 报告消费类型。
+pub use self::snapshot::{
+    COURSE_SOURCE_PLAN_SNAPSHOT_VERSION, CourseSourcePlanSnapshot, SNAPSHOT_HEADINGS_MAX,
+    SNAPSHOT_PREVIEW_MAX_CHARS,
+};
 
 /// 证据回引硬门（t2，判分底展示面）：lesson_draft 审计兜历史行用。
 pub(crate) use self::activities::evidence_missing;

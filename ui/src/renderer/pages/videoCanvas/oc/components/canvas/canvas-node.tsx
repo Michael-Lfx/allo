@@ -26,6 +26,7 @@ import type { CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-ref
 import { loadCanvasDrawingPreview } from "@oc/lib/canvas/canvas-drawing-storage";
 import { getNodeMinSize, shouldKeepAspectRatio } from "@oc/lib/canvas/node-registry";
 import { readCanvasScaleFromElement } from "@oc/lib/canvas/canvas-live-viewport";
+import { IMAGE_DECK_FAN_COLLAPSE_MS, IMAGE_DECK_FAN_STAGGER_MS, type ImageDeckFanMotion } from "@oc/lib/canvas/canvas-image-stack";
 import { fitNodeSize } from "@oc/lib/canvas/canvas-node-size";
 import { useCanvasNodeActions } from "@oc/components/canvas/canvas-node-action-context";
 import { ChartNodeContent } from "@oc/components/canvas/nodes/chart-node";
@@ -73,6 +74,11 @@ type CanvasNodeProps = {
     batchRecovering?: boolean;
     batchPrimary?: boolean;
     batchMotion?: { x: number; y: number; index: number };
+    deckFanned?: boolean;
+    deckIndex?: number;
+    deckCount?: number;
+    deckFanMotion?: ImageDeckFanMotion;
+    hideConnectionRails?: boolean;
     onMouseDown: (event: React.MouseEvent, nodeId: string) => void;
     onHoverStart: (nodeId: string) => void;
     onHoverEnd: (nodeId: string) => void;
@@ -144,6 +150,11 @@ export const CanvasNode = React.memo(function CanvasNode({
     batchRecovering = false,
     batchPrimary = false,
     batchMotion,
+    deckFanned = false,
+    deckIndex = 0,
+    deckCount = 0,
+    deckFanMotion,
+    hideConnectionRails = false,
     onMouseDown,
     onHoverStart,
     onHoverEnd,
@@ -175,7 +186,10 @@ export const CanvasNode = React.memo(function CanvasNode({
     const hasAudioContent = data.type === CanvasNodeType.Audio && Boolean(data.metadata?.content || data.metadata?.storageKey);
     const hasMediaContent = hasImageContent || hasVideoContent || hasAudioContent;
     const isGeneratingNode = data.type !== CanvasNodeType.Frame && data.metadata?.status === "loading";
-    const isBatchRoot = data.type === CanvasNodeType.Image && Boolean(data.metadata?.isBatchRoot) && batchCount > 1;
+    const isDeckMember = data.type === CanvasNodeType.Image && data.metadata?.imageStackLayout === "deck" && deckCount > 1;
+    const isDeckRoot = isDeckMember && Boolean(data.metadata?.isBatchRoot);
+    const isGridBatchRoot = data.type === CanvasNodeType.Image && Boolean(data.metadata?.isBatchRoot) && batchCount > 1 && data.metadata?.imageStackLayout !== "deck";
+    const isBatchRoot = isGridBatchRoot || isDeckRoot;
     const isBatchChild = data.type === CanvasNodeType.Image && Boolean(data.metadata?.batchRootId);
     const showStatusTrack = Boolean(resourceLabel || data.metadata?.locked || data.metadata?.tvCover || isBatchRoot || (isBatchChild && !readOnly) || (hasMediaContent && !readOnly));
     const isActive = isConnectionTarget || isSelected || isFocusRelated;
@@ -185,7 +199,13 @@ export const CanvasNode = React.memo(function CanvasNode({
     const scriptMinHeight = data.type === CanvasNodeType.Script ? storyboardMinNodeHeight(data.metadata?.storyboardComposerHeight) : null;
     const cometDepth = hasMediaContent ? 6.8 : data.type === CanvasNodeType.Script ? 2.8 : 4.6;
     const cometTranslate = hasMediaContent ? 6 : data.type === CanvasNodeType.Script ? 2.5 : 4;
-    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || batchClosing || batchOpening;
+    const cometDisabled = reduceMediaEffects || Boolean(dragOffset) || isEditingContent || isEditingTitle || isGeneratingNode || batchClosing || batchOpening || isDeckMember;
+    const deckFanX = isDeckMember && deckFanned ? deckFanMotion?.x || 0 : 0;
+    const deckFanY = isDeckMember && deckFanned ? deckFanMotion?.y || 0 : 0;
+    const deckZ = isDeckMember
+        ? (isSelected ? undefined : deckFanned ? 12 + deckIndex : batchPrimary ? 18 : 10 - Math.min(deckIndex, 6))
+        : undefined;
+    const deckCollapsedChild = isDeckMember && !deckFanned && !isDeckRoot;
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const resizeRef = useRef({
         isResizing: false,
@@ -324,12 +344,17 @@ export const CanvasNode = React.memo(function CanvasNode({
     return (
         <div
             data-node-id={data.id}
-            className={`node-element absolute flex select-none flex-col ${dragOffset ? "cursor-grabbing" : data.type === CanvasNodeType.Drawing ? "cursor-pointer" : "cursor-default"} ${isSelected ? "z-[var(--z-node-active)]" : "z-[var(--z-node)]"}`}
+            className={`node-element absolute flex select-none flex-col ${dragOffset ? "cursor-grabbing" : data.type === CanvasNodeType.Drawing ? "cursor-pointer" : "cursor-default"} ${isSelected ? "z-[var(--z-node-active)]" : "z-[var(--z-node)]"} ${isDeckMember ? `canvas-deck-node ${deckFanned ? "canvas-deck-fan-in" : "canvas-deck-fan-out"}` : ""}`}
             style={{
-                transform: `translate(${data.position.x + (dragOffset?.x || 0)}px, ${data.position.y + (dragOffset?.y || 0)}px)`,
+                transform: `translate(${data.position.x + (dragOffset?.x || 0) + deckFanX}px, ${data.position.y + (dragOffset?.y || 0) + deckFanY}px)`,
                 width: data.width,
                 height: data.height,
                 contain: "layout style",
+                zIndex: deckZ,
+                pointerEvents: deckCollapsedChild ? "none" : undefined,
+                transition: dragOffset || !isDeckMember ? undefined : `transform ${IMAGE_DECK_FAN_COLLAPSE_MS}ms var(--motion-ease-out, cubic-bezier(.22,1,.36,1))`,
+                transitionDelay: !isDeckMember || dragOffset ? undefined : `${deckFanned ? deckIndex * IMAGE_DECK_FAN_STAGGER_MS : Math.max(0, (deckCount - 1 - deckIndex) * 24)}ms`,
+                transformOrigin: "center center",
             }}
             onMouseEnter={() => {
                 setHovered(true);
@@ -377,7 +402,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                 }}
                 onMouseDown={(event) => onMouseDown(event, data.id)}
                 onDoubleClick={(event) => {
-                    if (isBatchRoot) {
+                    if (isGridBatchRoot) {
                         event.stopPropagation();
                         onToggleBatch?.(data.id);
                         return;
@@ -419,8 +444,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                             "--batch-from-x": `${batchMotion?.x || 0}px`,
                             "--batch-from-y": `${batchMotion?.y || 0}px`,
                             "--batch-from-rotate": `${6 + (batchMotion?.index || 0) * 4}deg`,
-                            animation: data.metadata?.batchRootId ? (batchClosing ? `canvas-batch-child-out var(--motion-dur-base-calc) var(--motion-ease-in-out) both` : `canvas-batch-child-in var(--motion-dur-slow-calc) var(--motion-ease-out) both`) : undefined,
-                            animationDelay: data.metadata?.batchRootId ? `${batchClosing ? 0 : 45 + (batchMotion?.index || 0) * 24}ms` : undefined,
+                            animation: data.metadata?.batchRootId && data.metadata?.imageStackLayout !== "deck" ? (batchClosing ? `canvas-batch-child-out var(--motion-dur-base-calc) var(--motion-ease-in-out) both` : `canvas-batch-child-in var(--motion-dur-slow-calc) var(--motion-ease-out) both`) : undefined,
+                            animationDelay: data.metadata?.batchRootId && data.metadata?.imageStackLayout !== "deck" ? `${batchClosing ? 0 : 45 + (batchMotion?.index || 0) * 24}ms` : undefined,
                         } as React.CSSProperties
                     }
                 >
@@ -506,8 +531,9 @@ export const CanvasNode = React.memo(function CanvasNode({
                         {resourceLabel && data.type !== CanvasNodeType.Image ? <ResourceLabelBadge reference={resourceLabel} theme={theme} /> : null}
                         {data.metadata?.tvCover && data.type === CanvasNodeType.Image ? <TvCoverBadge theme={theme} /> : null}
                         {hasMediaContent && !readOnly ? <ResourceStorageBadge storageKey={data.metadata?.storageKey} active={isActive} theme={theme} /> : null}
-                        {isBatchRoot ? <BatchToggleBadge count={batchCount} expanded={batchExpanded} theme={theme} onToggle={() => onToggleBatch?.(data.id)} /> : null}
-                        {isBatchChild && !readOnly ? <BatchPrimaryBadge visible={batchPrimary || hovered || isSelected} selected={batchPrimary} theme={theme} onSelect={() => onSetBatchPrimary?.(data)} /> : null}
+                        {isGridBatchRoot ? <BatchToggleBadge count={batchCount} expanded={batchExpanded} theme={theme} onToggle={() => onToggleBatch?.(data.id)} /> : null}
+                        {isDeckRoot ? <DeckCountBadge count={deckCount || batchCount} theme={theme} /> : null}
+                        {isBatchChild && !readOnly ? <BatchPrimaryBadge visible={batchPrimary || hovered || isSelected || deckFanned} selected={batchPrimary} theme={theme} onSelect={() => onSetBatchPrimary?.(data)} /> : null}
                         {data.metadata?.locked ? <NodeLockBadge theme={theme} /> : null}
                     </div>
                 ) : null}
@@ -520,7 +546,7 @@ export const CanvasNode = React.memo(function CanvasNode({
 
                 {!hasImageContent && !hasVideoContent && !hasAudioContent && data.type !== CanvasNodeType.Drawing ? <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12" style={{ background: `linear-gradient(to top, ${theme.canvas.background}66, transparent)` }} /> : null}
 
-                {!readOnly && !data.metadata?.locked ? <>
+                {!readOnly && !data.metadata?.locked && !hideConnectionRails ? <>
                     <ResizeHandle corner="top-left" onMouseDown={handleResizeMouseDown} />
                     <ResizeHandle corner="top-right" onMouseDown={handleResizeMouseDown} />
                     <ResizeHandle corner="bottom-left" onMouseDown={handleResizeMouseDown} />
@@ -528,8 +554,8 @@ export const CanvasNode = React.memo(function CanvasNode({
                 </> : null}
             </CometCard>
 
-            {!readOnly && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
-            {!readOnly && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && data.type !== CanvasNodeType.ArtCritique ? <ConnectionSideRail side="right" onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
+            {!readOnly && !hideConnectionRails && data.type !== CanvasNodeType.Script ? <ConnectionSideRail side="left" onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "target", undefined, anchorRatio)} /> : null}
+            {!readOnly && !hideConnectionRails && data.type !== CanvasNodeType.Script && data.type !== CanvasNodeType.Config && data.type !== CanvasNodeType.ArtCritique ? <ConnectionSideRail side="right" onPointerDown={(event, anchorRatio) => onConnectStart(event, data.id, "source", undefined, anchorRatio)} /> : null}
 
         </div>
     );
@@ -848,6 +874,18 @@ function NodeLockBadge({ theme }: { theme: CanvasTheme }) {
     return <span className="pointer-events-none grid size-7 shrink-0 place-items-center rounded-md border backdrop-blur" style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.node.muted }} title={canvasT("videoCanvas.nodeUi.locked", "节点已锁定")}><Lock className="size-3.5" /></span>;
 }
 
+function DeckCountBadge({ count, theme }: { count: number; theme: CanvasTheme }) {
+    return (
+        <span
+            className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md"
+            style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }}
+            aria-label={canvasT("videoCanvas.nodeUi.imageDeckCount", "{{count}} 张叠放图片", { count })}
+        >
+            <span className="leading-none" style={{ color: theme.accent.primary }}>{count}</span>
+        </span>
+    );
+}
+
 function BatchToggleBadge({ count, expanded, theme, onToggle }: { count: number; expanded: boolean; theme: CanvasTheme; onToggle: () => void }) {
     return (
         <button type="button" className="canvas-node-tool-button inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[var(--fs-tiny)] font-semibold backdrop-blur-md" style={{ background: `${theme.toolbar.panel}d9`, borderColor: `${theme.toolbar.border}cc`, color: theme.node.text }} aria-label={expanded ? canvasT("videoCanvas.nodeUi.imageGroupExpanded", "图片组已展开") : canvasT("videoCanvas.nodeUi.imageGroupCollapsed", "图片组已收起")} onClick={(event) => { event.stopPropagation(); onToggle(); }} onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -893,7 +931,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
                 <EmptyImageContent {...props} isBatchRoot={false} />
             );
         return (
-            <BatchFrame batchCount={props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} theme={props.theme} onToggleBatch={props.onToggleBatch}>
+            <BatchFrame batchCount={props.node.metadata?.imageStackLayout === "deck" ? 0 : props.batchCount} batchExpanded={props.batchExpanded} batchOpening={props.batchOpening} batchRecovering={props.batchRecovering} theme={props.theme} onToggleBatch={props.onToggleBatch}>
                 {content}
             </BatchFrame>
         );
@@ -944,7 +982,7 @@ function EmptyImageContent({ node, theme, isBatchRoot, batchCount, batchExpanded
             ) : null}
         </div>
     );
-    if (isBatchRoot)
+    if (isBatchRoot && node.metadata?.imageStackLayout !== "deck")
         return (
             <BatchFrame batchCount={batchCount} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
                 {content}
@@ -1189,7 +1227,7 @@ function ImageContent({
     };
 
     return (
-        <BatchFrame batchCount={isBatchRoot ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
+        <BatchFrame batchCount={isBatchRoot && node.metadata?.imageStackLayout !== "deck" ? batchCount : 0} batchExpanded={batchExpanded} batchOpening={batchOpening} batchRecovering={batchRecovering} theme={theme} onToggleBatch={onToggleBatch}>
             <div ref={imageContainerRef} className="h-full w-full overflow-hidden rounded-[var(--node-radius)]">
                 {url ? (
                     <img
@@ -1360,7 +1398,7 @@ function ResizeHandle({ corner, onMouseDown }: { corner: ResizeCorner; onMouseDo
         "bottom-right": "-bottom-[14px] -right-[14px] cursor-nwse-resize",
     }[corner];
 
-    return <div className={`absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
+    return <div className={`canvas-node-resize absolute z-[var(--node-z-handle)] size-7 ${positionClass}`} onMouseDown={(event) => onMouseDown(event, corner)} />;
 }
 
 function NodeExternalHeader({ node, active, editable, editing, draft, theme, onDraftChange, onEdit, onCommit, onCancel }: {

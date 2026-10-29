@@ -129,6 +129,8 @@ import type {
   TAdoptExecutionStepOutput,
   TAdjustAgentExecution,
   TAddExecutionSteps,
+  TActiveSubagent,
+  TActiveSubagentsQuery,
   TAgentExecution,
   TAgentExecutionDetail,
   TAgentExecutionEvent,
@@ -736,6 +738,31 @@ export const conversation = {
       `/api/conversations/${p.conversation_id}/messages/${p.message_id}/knowledge-writeback/retry`,
     (p) => ({ attempt_id: p.attempt_id })
   ),
+  listSkillPins: httpGet<string[], { conversation_id: ConversationId }>(
+    (p) => `/api/conversations/${p.conversation_id}/skill-pins`
+  ),
+  setSkillPin: httpPut<
+    void,
+    { conversation_id: ConversationId; skill_id: string; pinned: boolean }
+  >(
+    (p) => `/api/conversations/${p.conversation_id}/skill-pins`,
+    (p) => ({ skill_id: p.skill_id, pinned: p.pinned })
+  ),
+  listSkillSelectionEvents: httpGet<
+    Array<{
+      conversation_id: string;
+      turn: number;
+      query_hash: string;
+      candidate_ids: string;
+      model_loaded_ids: string;
+      method: string;
+      listing_truncated: number;
+      applied_to_l1: number;
+      latency_ms: number;
+      created_at: number;
+    }>,
+    { conversation_id: ConversationId }
+  >((p) => `/api/conversations/${p.conversation_id}/skill-selection-events`),
   activeCount: httpGet<{ count: number }>('/api/conversations/active-count'),
   sendMessage: {
     provider: () => {},
@@ -1664,6 +1691,13 @@ export const fs = {
     (p) => `/api/skills/${encodeURIComponent(p.skill_name)}/tags`,
     (p) => ({ audience_tags: p.audience_tags, scenario_tags: p.scenario_tags })
   ),
+  listSkillInvocation: httpGet<Array<{ skill_id: string; allow_model_auto: number; updated_at: number }>, void>(
+    '/api/skills/invocation'
+  ),
+  setSkillInvocation: httpPut<
+    { skill_id: string; allow_model_auto: number; updated_at: number },
+    { skill_id: string; allow_model_auto: boolean }
+  >('/api/skills/invocation', (p) => ({ skill_id: p.skill_id, allow_model_auto: p.allow_model_auto })),
   getSkillPaths: httpGet<{ user_skills_dir: string; builtin_skills_dir: string }, void>('/api/skills/paths'),
   getCustomExternalPaths: httpGet<Array<{ name: string; path: string }>, void>('/api/skills/external-paths'),
   addCustomExternalPath: httpPost<void, { name: string; path: string }>('/api/skills/external-paths'),
@@ -1735,9 +1769,26 @@ export interface ILearningGenerationToolCall {
 }
 
 /** 课程生成过程事件（`learning.course-generation`）。`phase` 区分阶段；
- * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。 */
+ * WS 不重放、不补发，终态一律以同步 HTTP 响应为准，因此所有过程字段可选。
+ *
+ * t5 新管线阶段（知识库流）：triage_started/triage_completed（七角色计数 +
+ * degraded + 有界跳过/重复/uncertain 示例）、source_plan_started/
+ * source_plan_ready（章/概念/gaps）、coverage_ready（topic 覆盖读数）。
+ * 旧客户端忽略未知 phase；started/publishing/completed/failed 不变。 */
 export interface ILearningCourseGenerationEvent {
-  phase: 'started' | 'scope' | 'round' | 'audit' | 'publishing' | 'completed' | 'failed';
+  phase:
+    | 'started'
+    | 'scope'
+    | 'round'
+    | 'audit'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'triage_started'
+    | 'triage_completed'
+    | 'source_plan_started'
+    | 'source_plan_ready'
+    | 'coverage_ready';
   /** 生成来源：课程简报 / 知识库 / 学习图生长（learning_graph） */
   kind?: 'description' | 'knowledge_base' | 'learning_graph';
   /** 学习图生长的细分事件名（growth_started/growth_redraft/growth_completed/...） */
@@ -1753,6 +1804,33 @@ export interface ILearningCourseGenerationEvent {
   warning?: number;
   info?: number;
   top?: string[];
+  /** t5 triage_completed 帧：七角色计数（各角色之和 = total）。 */
+  counts?: {
+    total: number;
+    core: number;
+    prerequisite: number;
+    practice: number;
+    mixed: number;
+    noise: number;
+    duplicate: number;
+    uncertain: number;
+  };
+  /** t5 triage_completed 帧：规则分诊降级（未做 LLM 判定）。 */
+  degraded?: boolean;
+  /** t5 triage_completed 帧：跳过示例（≤10，path + 角色 + 理由）。 */
+  excluded?: { path: string; role: string; reason: string }[];
+  /** t5 triage_completed 帧：重复示例（≤10）。 */
+  duplicates?: { path: string; duplicate_of: string; canonical_reason: string }[];
+  /** t5 triage_completed 帧：uncertain 示例（≤10，path + 理由）。 */
+  uncertain?: { path: string; reason: string }[];
+  /** t5 source_plan_ready 帧：章/概念计数与证据 gaps。 */
+  chapters?: number;
+  concepts?: number;
+  gaps?: string[];
+  /** t5 coverage_ready 帧：topic 覆盖与兜底课时计数。 */
+  topics_covered?: number;
+  topics_skipped?: number;
+  fallback?: number;
   /** 终态：入库课程信息 / 失败原因 */
   course_id?: string;
   title?: string;
@@ -1893,6 +1971,8 @@ export const mode = {
    */
   fetchModelList: httpPost<FetchModelsResponse, FetchModelsAnonymousRequest>('/api/providers/fetch-models'),
   detectProtocol: httpPost<ProtocolDetectionResponse, ProtocolDetectionRequest>('/api/providers/detect-protocol'),
+  /** Fired when a process-owned provider row changes without a user edit. */
+  onCatalogChanged: wsEmitter<{ source?: string }>('provider.catalog-changed'),
 };
 
 // ---------------------------------------------------------------------------
@@ -3170,6 +3250,35 @@ export const webui = {
       (p) => `/api/webui/companions/${encodeURIComponent(p.companionId)}/access-token`
     ),
   },
+};
+
+export const link = {
+  openPairing: httpPost<{
+    nonce: string;
+    expiresAtMs: number;
+    port: number;
+    url?: string | null;
+    fingerprint?: string;
+  }, void>('/api/link/pairing-sessions'),
+  pending: httpGet<{
+    items: Array<{
+      nonce: string;
+      displayName: string;
+      platform: string;
+      appVersion: string;
+    }>;
+  }, void>('/api/link/pair/pending'),
+  decide: httpPost<{ status: string }, { nonce: string; allow: boolean }>('/api/link/pair/decide', (params) => ({
+    nonce: params.nonce,
+    allow: params.allow,
+  })),
+  stepUpPending: httpGet<{
+    items: Array<{ id: string; method: string; path: string }>;
+  }, void>('/api/link/step-up/pending'),
+  stepUpDecide: httpPost<{ status: string }, { id: string; allow: boolean }>('/api/link/step-up/decide', (params) => ({
+    id: params.id,
+    allow: params.allow,
+  })),
 };
 
 // ---------------------------------------------------------------------------
@@ -5191,6 +5300,20 @@ const fromApiExecutionAttempt = (raw: unknown): TExecutionAttempt => {
   };
 };
 
+const fromApiActiveSubagent = (raw: unknown): TActiveSubagent => {
+  const value = executionWireObject(raw);
+  return {
+    ...(value as unknown as TActiveSubagent),
+    execution_id: parseExecutionId(value.execution_id),
+    step_id: parseExecutionStepId(value.step_id),
+    attempt_id: parseExecutionAttemptId(value.attempt_id),
+    participant_id:
+      value.participant_id == null ? null : parseExecutionParticipantId(value.participant_id),
+    conversation_id:
+      value.conversation_id == null ? null : parseConversationId(value.conversation_id),
+  };
+};
+
 const fromApiAgentExecutionDetail = (raw: unknown): TAgentExecutionDetail => {
   const value = executionWireObject(raw);
   return {
@@ -5247,6 +5370,21 @@ export const agentExecution = {
   list: withResponseMap(
     httpGet<unknown[], void>('/api/agent-executions'),
     (raw): TAgentExecution[] => raw.map(fromApiAgentExecution)
+  ),
+  listActiveSubagents: withResponseMap(
+    httpGet<unknown[], { query?: TActiveSubagentsQuery }>((p) => {
+      const params = new URLSearchParams();
+      const query = p.query;
+      if (query?.execution_id) params.set('execution_id', query.execution_id);
+      if (query?.include_control_steps !== undefined) {
+        params.set('include_control_steps', String(query.include_control_steps));
+      }
+      if (query?.limit !== undefined) params.set('limit', String(query.limit));
+      if (query?.offset !== undefined) params.set('offset', String(query.offset));
+      const suffix = params.toString();
+      return `/api/agent-executions/subagents${suffix ? `?${suffix}` : ''}`;
+    }),
+    (raw): TActiveSubagent[] => raw.map(fromApiActiveSubagent)
   ),
   create: withResponseMap(
     httpPost<unknown, TCreateAgentExecution>('/api/agent-executions'),

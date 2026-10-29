@@ -67,6 +67,7 @@ const MoaSettings = React.lazy(() => import('@renderer/pages/settings/MoaSetting
 const MediaSettings = React.lazy(() => import('@renderer/pages/settings/MediaSettings'));
 const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/CloudLoginSettings'));
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
+const LinkPhonePage = React.lazy(() => import('@renderer/pages/link'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
 const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
@@ -331,6 +332,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/mcp' element={withRouteFallback(McpPage)} />
           <Route path='/plugins/*' element={<DisabledPluginsRedirect />} />
           <Route path='/open-capabilities' element={withRouteFallback(OpenCapabilitiesPage)} />
+          <Route path='/link' element={withRouteFallback(LinkPhonePage)} />
           <Route path='/browser' element={withRouteFallback(BrowserPage)} />
           <Route path='/presets' element={withRouteFallback(PresetSettings)} />
           <Route path='/skills' element={withRouteFallback(SkillsSettingsPage)} />

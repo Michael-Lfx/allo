@@ -909,6 +909,10 @@ button.composer-attach-item:disabled { opacity: .5; cursor: default; }
 .market-card-author { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .market-card-desc { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 13px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .market-card-sub { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 13px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+/* The market's own prompt example (doc `49` §3.7): one line, muted, so it reads
+   as a hint rather than as a second description. Absent for entries whose market
+   declared none — the element is not rendered at all. */
+.market-card-hint { display: -webkit-box; overflow: hidden; margin-top: 2px; padding: 5px 8px; border-radius: 6px; background: var(--surface-raised); color: var(--ink-strong); font-size: 12px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
 .market-card > .market-tags { margin-top: auto; padding-top: 2px; }
 .market-card-foot { display: flex; gap: 8px; padding: 0 14px 14px; margin-top: 12px; }
 .market-card-foot .market-tags { display: flex; flex-wrap: wrap; gap: 6px; }

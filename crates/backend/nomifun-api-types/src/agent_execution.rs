@@ -446,6 +446,43 @@ pub struct AgentExecutionDetail {
     pub attempts: Vec<ExecutionAttempt>,
 }
 
+/// One active delegated Agent invocation, flattened across its Execution,
+/// Step and Attempt. This is a read-only projection for the subagent list: it
+/// is not an aggregate, carries no mutation version, and must not be used to
+/// reconstruct execution state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSubagent {
+    #[serde(deserialize_with = "crate::serde_util::deserialize_execution_id")]
+    pub execution_id: String,
+    pub execution_goal: String,
+    pub execution_status: AgentExecutionStatus,
+
+    #[serde(deserialize_with = "deserialize_uuidv7_id")]
+    pub step_id: String,
+    pub step_title: String,
+    pub step_kind: ExecutionStepKind,
+    pub step_status: ExecutionStepStatus,
+
+    #[serde(deserialize_with = "deserialize_uuidv7_id")]
+    pub attempt_id: String,
+    pub attempt_no: i64,
+    pub attempt_status: ExecutionAttemptStatus,
+
+    #[serde(default, deserialize_with = "deserialize_optional_uuidv7_id")]
+    pub participant_id: Option<String>,
+    pub participant_role: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_util::deserialize_optional_conversation_id"
+    )]
+    pub conversation_id: Option<String>,
+
+    pub question: Option<String>,
+    pub tokens: Option<i64>,
+    pub started_at: Option<i64>,
+    pub attempt_updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentExecutionEvent {
     #[serde(deserialize_with = "crate::serde_util::deserialize_execution_id")]
@@ -499,6 +536,10 @@ pub struct PlannedExecutionStep {
     pub depends_on: Vec<usize>,
     #[serde(default)]
     pub participant_index: Option<usize>,
+    /// Model the caller named for this step. Resolved to a participant in the
+    /// execution pool at materialize time. Absent inherits the lead participant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_model: Option<ExecutionModelRef>,
     #[serde(default)]
     pub assignment_rationale: Option<String>,
     #[serde(default)]
@@ -520,7 +561,7 @@ fn default_agent_step_kind() -> ExecutionStepKind {
 }
 
 fn default_failure_policy() -> StepFailurePolicy {
-    StepFailurePolicy::FailExecution
+    StepFailurePolicy::SkipDependents
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

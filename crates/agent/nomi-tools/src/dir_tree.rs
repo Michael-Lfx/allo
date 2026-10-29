@@ -27,11 +27,20 @@ const SKIP_DIR_NAMES: &[&str] = &[
 
 pub struct DirTreeTool {
     cwd: PathBuf,
+    extra_roots: Vec<PathBuf>,
 }
 
 impl DirTreeTool {
     pub fn new(cwd: PathBuf) -> Self {
-        Self { cwd }
+        Self {
+            cwd,
+            extra_roots: Vec::new(),
+        }
+    }
+
+    pub fn with_extra_roots(mut self, extra_roots: Vec<PathBuf>) -> Self {
+        self.extra_roots = extra_roots;
+        self
     }
 }
 
@@ -90,7 +99,8 @@ impl Tool for DirTreeTool {
     fn description(&self) -> &str {
         "Show a compact directory tree for orientation. Prefer this over shell `find`/`tree` \
          and over broad Glob when you need a high-level layout. Skips common heavy dirs \
-         (node_modules, .git, target, …). Use a subdirectory `path` and small `max_depth`."
+         (node_modules, .git, target, …). Use a subdirectory `path` and small `max_depth`. \
+         Absolute paths must stay in the session workspace or a skill tree."
     }
 
     fn input_schema(&self) -> JsonSchema {
@@ -123,7 +133,14 @@ impl Tool for DirTreeTool {
 
     async fn execute(&self, input: Value) -> ToolResult {
         let rel = input["path"].as_str().unwrap_or(".");
-        let root = crate::path_guard::resolve_against_cwd(rel, Some(self.cwd.as_path()));
+        let root = match crate::path_guard::resolve_explore_path(
+            rel,
+            self.cwd.as_path(),
+            &self.extra_roots,
+        ) {
+            Ok(root) => root,
+            Err(message) => return ToolResult::error(message),
+        };
         let path = PathBuf::from(&root);
         if !path.is_dir() {
             return ToolResult::error(format!("Not a directory: {root}"));
@@ -166,5 +183,32 @@ mod tests {
         assert!(!res.is_error);
         assert!(res.content.contains("src/"));
         assert!(res.content.contains("a.rs"));
+    }
+
+    #[tokio::test]
+    async fn rejects_absolute_path_outside_workspace() {
+        let dir = tempdir().unwrap();
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("secret"), "x").unwrap();
+        let tool = DirTreeTool::new(dir.path().to_path_buf());
+        let res = tool
+            .execute(json!({"path": other.path().to_string_lossy()}))
+            .await;
+        assert!(res.is_error);
+        assert!(res.content.contains("outside the session workspace"));
+    }
+
+    #[tokio::test]
+    async fn allows_configured_skill_tree() {
+        let workspace = tempdir().unwrap();
+        let skills = tempdir().unwrap();
+        std::fs::write(skills.path().join("SKILL.md"), "# skill").unwrap();
+        let tool = DirTreeTool::new(workspace.path().to_path_buf())
+            .with_extra_roots(vec![skills.path().to_path_buf()]);
+        let res = tool
+            .execute(json!({"path": skills.path().to_string_lossy(), "max_depth": 1}))
+            .await;
+        assert!(!res.is_error, "{}", res.content);
+        assert!(res.content.contains("SKILL.md"));
     }
 }

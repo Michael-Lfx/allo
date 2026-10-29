@@ -24,6 +24,7 @@ use nomifun_common::secret_ref;
 use nomifun_common::{AppError, McpServerStatus};
 use nomifun_api_types::McpTransport;
 use nomifun_db::IPluginSnapshotRepository;
+use nomifun_importer::DisplayFields;
 use serde_json::Value;
 
 /// One field of an imported declaration.
@@ -86,6 +87,11 @@ pub struct ConnectorCredentialSource {
     pub auth_mode: String,
     /// The form, when this connector shipped a `token-schema.json`.
     pub declaration: Option<ConnectorDeclaration>,
+    /// Display metadata the importer stamped into the same `connector`
+    /// component (`50` §3.3): name / description / prompts / tags, already
+    /// merged with the market index row. Empty when the index declared nothing
+    /// (`50` INV-3).
+    pub display: DisplayFields,
 }
 
 fn localized(value: Option<&Value>, fallback: &str) -> AppServerLocalizedString {
@@ -484,7 +490,7 @@ impl AppServerConnectorCredentials {
         // `connector_id` is what distinguishes a marketplace entry from the
         // `.mcp.json` path (which hard-codes an `auth_mode` and has no directory
         // of its own).
-        let (connector_id, auth_mode) = components
+        let (connector_id, auth_mode, display) = components
             .iter()
             .filter(|component| component.kind == "connector")
             .find_map(|component| {
@@ -501,7 +507,10 @@ impl AppServerConnectorCredentials {
                     .get("auth_mode")
                     .and_then(Value::as_str)
                     .unwrap_or("none");
-                Some((connector_id.to_owned(), auth_mode.to_owned()))
+                // The display fields ride in this same payload (`50` §3.2), so
+                // reading them costs nothing beyond the parse already done here.
+                let display = crate::app_server_display::display_from_payload(&payload);
+                Some((connector_id.to_owned(), auth_mode.to_owned(), display))
             })?;
 
         let declaration = components
@@ -514,6 +523,7 @@ impl AppServerConnectorCredentials {
             connector_id,
             auth_mode,
             declaration,
+            display,
         })
     }
 
@@ -525,7 +535,29 @@ impl AppServerConnectorCredentials {
         last_test_status: McpServerStatus,
         principal: Option<&str>,
     ) -> Option<AppServerConnectorCredential> {
+        self.describe_with_display(mcp_server_id, transport, last_test_status, principal)
+            .await
+            .0
+    }
+
+    /// The credential block **and** the connector's display metadata from a
+    /// single component read (`50` §3.5).
+    ///
+    /// The catalog needs both, and both live in the same snapshot components.
+    /// Returning them together is what keeps `connector/list` at its existing
+    /// two queries per connector instead of adding a third.
+    pub async fn describe_with_display(
+        &self,
+        mcp_server_id: &str,
+        transport: &McpTransport,
+        last_test_status: McpServerStatus,
+        principal: Option<&str>,
+    ) -> (Option<AppServerConnectorCredential>, DisplayFields) {
         let source = self.source_for(mcp_server_id).await;
+        let display = source
+            .as_ref()
+            .map(|source| source.display.clone())
+            .unwrap_or_default();
         let mode = credential_mode(source.as_ref(), transport);
         // The form from both places it can come from: the marketplace's declaration
         // and the connector's own template (`34` §6.5).
@@ -541,22 +573,25 @@ impl AppServerConnectorCredentials {
         // and dropping it would leave 216 connectors indistinguishable from ones the
         // host knows nothing about.
         if source.is_none() && declaration.is_none() && mode == AppServerCredentialMode::None {
-            return None;
+            return (None, display);
         }
         let values = transport_values(transport);
         let installed = secret_ref::credentials();
         let operator = secret_ref::operator_principal();
-        Some(credential_block(
-            mcp_server_id,
-            declaration.as_ref(),
-            mode,
-            transport,
-            &values,
-            &installed,
-            operator.as_deref(),
-            principal,
-            last_test_status,
-        ))
+        (
+            Some(credential_block(
+                mcp_server_id,
+                declaration.as_ref(),
+                mode,
+                transport,
+                &values,
+                &installed,
+                operator.as_deref(),
+                principal,
+                last_test_status,
+            )),
+            display,
+        )
     }
 
     /// Store what the user typed (`34` §6.1).
@@ -958,6 +993,7 @@ mod tests {
             connector_id: "tdengine".to_owned(),
             auth_mode: auth_mode.to_owned(),
             declaration: declaration_from_payload(&declaration_payload()),
+            display: DisplayFields::default(),
         }
     }
 
@@ -1061,6 +1097,7 @@ mod tests {
             connector_id: "server-side-demo".to_owned(),
             auth_mode: "none".to_owned(),
             declaration: None,
+            display: DisplayFields::default(),
         };
         assert_eq!(
             credential_mode(Some(&source), &http_transport()),

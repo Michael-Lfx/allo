@@ -12,6 +12,9 @@
 Cargo.lock.bak
 # Packaging / runtime artifacts
 /dist/
+# Connector-market archives built by scripts/pack-connector-market.py; the
+# published copy lives on the release, never in git.
+/dist-market/
 # Legacy dev data dirs from before all hosts shared one per-user default
 # (%LOCALAPPDATA%\Flowy\Nomi etc.) — kept so stale checkouts don't commit them.
 /data/

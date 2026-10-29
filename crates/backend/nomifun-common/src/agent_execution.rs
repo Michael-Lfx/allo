@@ -235,6 +235,52 @@ impl Default for PlanGate {
     }
 }
 
+/// The approval mode the user chose for a leader session, if one was recorded.
+///
+/// `None` means nobody expressed a preference: App Server chats, cron jobs, IM
+/// channels and tests never write `extra.session_mode`, and the Nomi runtime
+/// then defaults the session to YOLO.
+pub fn lead_session_mode(extra: &serde_json::Value) -> Option<&str> {
+    extra
+        .get("session_mode")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Planning gate for a delegation started from a leader session in `lead_mode`.
+///
+/// A delegated execution runs each Attempt in its own YOLO session, and the
+/// execution transcript is read-only, so a per-tool approval card raised inside
+/// an Attempt has nobody who can answer it and only ever times out. The plan
+/// gate is the approval surface that actually reaches the user, and it is also
+/// the one that matches intent: a user who picked Default or Auto-Accept Edits
+/// asked to see what will run before it runs, so delegation parks the whole
+/// plan for a single review instead of silently escalating the child sessions
+/// to YOLO.
+///
+/// YOLO leads, and leads with no recorded preference, keep the unattended
+/// automatic gate: asking them to approve a plan they already opted out of
+/// reviewing would stall every run they start.
+pub fn plan_gate_for_lead_session_mode(lead_mode: Option<&str>) -> PlanGate {
+    match lead_mode {
+        Some("default" | "auto_edit") => PlanGate::RequireApproval,
+        Some(_) | None => PlanGate::Automatic,
+    }
+}
+
+/// Combine the host's planning floor with a caller-supplied gate.
+///
+/// A caller (the model, through `nomi_delegate`) may tighten the floor but must
+/// never loosen it: otherwise `plan_gate: automatic` in the tool arguments would
+/// quietly undo the review the user's session mode asked for.
+pub fn strictest_plan_gate(floor: PlanGate, requested: PlanGate) -> PlanGate {
+    match (floor, requested) {
+        (PlanGate::Automatic, PlanGate::Automatic) => PlanGate::Automatic,
+        _ => PlanGate::RequireApproval,
+    }
+}
+
 string_enum! {
     /// Whether a running execution may expand or revise its plan autonomously.
     pub enum AdaptationPolicy {
@@ -427,6 +473,60 @@ string_enum! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_oriented_lead_mode_gates_the_delegated_plan() {
+        for mode in ["default", "auto_edit"] {
+            assert_eq!(
+                plan_gate_for_lead_session_mode(Some(mode)),
+                PlanGate::RequireApproval,
+                "{mode} leads must review the plan before delegated Attempts run"
+            );
+        }
+        // YOLO opted out of review. An absent mode means no host recorded a
+        // preference and the runtime default is YOLO, so the gate stays open.
+        for mode in [Some("yolo"), None, Some("unrecognized-mode")] {
+            assert_eq!(
+                plan_gate_for_lead_session_mode(mode),
+                PlanGate::Automatic,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_caller_may_tighten_but_never_loosen_the_host_planning_floor() {
+        use PlanGate::{Automatic, RequireApproval};
+        assert_eq!(strictest_plan_gate(Automatic, Automatic), Automatic);
+        assert_eq!(strictest_plan_gate(Automatic, RequireApproval), RequireApproval);
+        assert_eq!(strictest_plan_gate(RequireApproval, RequireApproval), RequireApproval);
+        assert_eq!(
+            strictest_plan_gate(RequireApproval, Automatic),
+            RequireApproval,
+            "a review the session asked for must not be argued away from inside"
+        );
+    }
+
+    #[test]
+    fn a_blank_or_non_string_session_mode_is_not_a_preference() {
+        assert_eq!(
+            lead_session_mode(&serde_json::json!({ "session_mode": "default" })),
+            Some("default")
+        );
+        assert_eq!(
+            lead_session_mode(&serde_json::json!({ "session_mode": "  yolo  " })),
+            Some("yolo"),
+            "surrounding whitespace must not hide the preference"
+        );
+        for extra in [
+            serde_json::json!({}),
+            serde_json::json!({ "session_mode": "" }),
+            serde_json::json!({ "session_mode": "   " }),
+            serde_json::json!({ "session_mode": 7 }),
+        ] {
+            assert_eq!(lead_session_mode(&extra), None, "{extra}");
+        }
+    }
     use std::path::Path;
     use ts_rs::Config;
 
@@ -458,6 +558,10 @@ mod tests {
         assert_eq!(
             "read_only".parse::<AgentToolPolicy>().unwrap(),
             AgentToolPolicy::ReadOnly
+        );
+        assert_eq!(
+            "files_shell".parse::<AgentToolPolicy>().unwrap(),
+            AgentToolPolicy::FilesShell
         );
         assert!("admin".parse::<AgentToolPolicy>().is_err());
     }

@@ -207,7 +207,7 @@ export function CanvasProjectDialogs(props: CanvasProjectDialogsProps) {
     const { infoNode, activeScriptNode, activeDirectorScene, versionCompareNodes, cropNode, annotationNode, maskEditNode, splitNode, upscaleNode, previewNode } = renderModel;
     return (
         <>
-                    <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" className="hidden" onChange={handleImageInputChange} />
+                    <input ref={imageInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" multiple className="hidden" onChange={handleImageInputChange} />
 
                     <CanvasNodeInfoModal node={infoNode} open={Boolean(infoNode)} onClose={() => setInfoNodeId(null)} onMetadataChange={handleConfigNodeChange} />
 

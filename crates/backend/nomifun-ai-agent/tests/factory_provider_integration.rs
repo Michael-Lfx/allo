@@ -117,6 +117,7 @@ fn make_factory_with_summon(
         companion_summon,
         companion_skill_sink: None,
         skill_manager: AcpSkillManager::new(skill_paths),
+        skill_discovery: None,
         remote_agent_repo,
         provider_repo,
         provider_model_repo,

@@ -18,6 +18,7 @@ import {
 import { createSupervisor, waitForExit } from './run-dev-supervisor.mjs';
 import { createDevSessionLock } from './dev-session-lock.mjs';
 import { createViteHttpReadinessProbe } from './run-dev-vite-readiness.mjs';
+import { reconcileViteOptimizeDeps, viteOptimizeDepsIsIntact } from './run-dev-vite-deps.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VITE_ENTRY = join(ROOT, 'ui', 'node_modules', 'vite', 'bin', 'vite.js');
@@ -128,6 +129,8 @@ function hasExited(child) {
 
 async function waitForVite(viteProcess) {
   const deadline = Date.now() + VITE_READY_TIMEOUT_MS;
+  let lastWaitLog = 0;
+  const uiRoot = join(ROOT, 'ui');
   while (Date.now() < deadline) {
     if (hasExited(viteProcess)) {
       throw new Error(
@@ -144,7 +147,12 @@ async function waitForVite(viteProcess) {
           `Vite exited before becoming healthy (code ${viteProcess.exitCode ?? 'unknown'})`,
         );
       }
-      return;
+      if (viteOptimizeDepsIsIntact(uiRoot)) return;
+      const now = Date.now();
+      if (now - lastWaitLog > 5_000) {
+        lastWaitLog = now;
+        console.log('[run-dev] Vite is serving; waiting for optimize deps to finish');
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -154,6 +162,7 @@ async function waitForVite(viteProcess) {
 }
 
 function startVite() {
+  reconcileViteOptimizeDeps(join(ROOT, 'ui'));
   return spawn(process.execPath, [VITE_ENTRY, '--host', VITE_HOST, '--port', String(VITE_PORT)], {
     cwd: join(ROOT, 'ui'),
     stdio: 'inherit',

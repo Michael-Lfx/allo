@@ -84,9 +84,18 @@ fn hook_command(script: &Path) -> (OsString, Vec<OsString>) {
     match ext.as_deref() {
         Some("sh") => (OsString::from("sh"), vec![script_arg]),
         Some("ps1") => {
-            let program = if cfg!(windows) { "powershell" } else { "pwsh" };
+            let program = {
+                #[cfg(windows)]
+                {
+                    nomi_process_runtime::resolve_windows_powershell_exe()
+                        .map(|resolved| resolved.path.into_os_string())
+                        .unwrap_or_else(|_| OsString::from("powershell"))
+                }
+                #[cfg(not(windows))]
+                OsString::from("pwsh")
+            };
             (
-                OsString::from(program),
+                program,
                 vec![
                     OsString::from("-NoProfile"),
                     OsString::from("-ExecutionPolicy"),
@@ -374,8 +383,19 @@ mod tests {
     #[test]
     fn hook_command_ps1_runs_via_powershell_with_file_flag() {
         let (program, args) = dispatch("/ext/scripts/setup.ps1");
-        let expected_program = if cfg!(windows) { "powershell" } else { "pwsh" };
-        assert_eq!(program, expected_program);
+        let expected_name = if cfg!(windows) {
+            std::path::Path::new(&program)
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or(program.as_str())
+        } else {
+            "pwsh"
+        };
+        assert!(
+            expected_name.eq_ignore_ascii_case("powershell")
+                || expected_name.eq_ignore_ascii_case("pwsh"),
+            "unexpected .ps1 host {program}"
+        );
         // …-NoProfile -ExecutionPolicy Bypass -File <script>
         assert_eq!(args.first().map(String::as_str), Some("-NoProfile"));
         assert_eq!(args.get(1).map(String::as_str), Some("-ExecutionPolicy"));

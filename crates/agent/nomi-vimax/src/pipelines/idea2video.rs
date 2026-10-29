@@ -9,7 +9,7 @@ use crate::agents::{
 use crate::drama::{
     DramaEngine, with_drama_engine, with_scene_drama_engine,
 };
-use crate::error::{VimaxError, VimaxResult};
+use crate::error::VimaxResult;
 use crate::media_local;
 use crate::planning::{
     allocate_scene_budgets, enrich_requirement_for_scene,
@@ -276,63 +276,7 @@ impl Idea2VideoPipeline {
                 );
                 return Err(err);
             }
-            emit_pct(
-                &progress,
-                "voice_references_start",
-                "正在同步音色库并绑定角色参考音频",
-                43.0,
-            );
-            match film
-                .ensure_character_voice_references(
-                    &characters,
-                    crate::planning::resolve_output_language(&[idea]),
-                    &progress,
-                )
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(err) => {
-                    emit_pct(
-                        &progress,
-                        "voice_references_start",
-                        "音色参考生成失败",
-                        43.0,
-                    );
-                    Err(err)
-                }
-            }
-        };
-        let world = async {
-            emit_pct(
-                &progress,
-                "world_assets_start",
-                "正在生成全局环境与道具参考图",
-                45.0,
-            );
-            let world_planner = self.backends.world_planner(&self.working_dir).await;
-            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
-            match world_planner
-                .ensure(
-                    &self.working_dir,
-                    &story,
-                    &style,
-                    &style_refs,
-                    &scene_hint,
-                    &lock_token,
-                )
-                .await
-            {
-                Ok(_) => Ok::<_, VimaxError>(()),
-                Err(err) => {
-                    emit_pct(
-                        &progress,
-                        "world_assets_start",
-                        "世界参考图生成失败",
-                        45.0,
-                    );
-                    Err(err)
-                }
-            }
+            Ok(())
         };
         let script_fp = artifact_fingerprint(&[&story, drama_requirement]);
         let script = async {
@@ -346,7 +290,7 @@ impl Idea2VideoPipeline {
             })
             .await
         };
-        let ((), (), mut scenes) = tokio::try_join!(portraits_voices, world, script)?;
+        let ((), mut scenes) = tokio::try_join!(portraits_voices, script)?;
 
         let clip = self.backends.clip;
         if let Some(film_total) = film_total {
@@ -372,6 +316,39 @@ impl Idea2VideoPipeline {
                     );
                     write_json_artifact(&self.working_dir.join("script.json"), &scenes).await?;
                 }
+            }
+        }
+
+        // Environments mirror the final scenes' headings, so the world bible is built
+        // from the script (not the story), before the per-scene pipelines bind to it.
+        {
+            emit_pct(
+                &progress,
+                "world_assets_start",
+                "正在生成全局环境与道具参考图",
+                54.0,
+            );
+            let world_planner = self.backends.world_planner(&self.working_dir).await;
+            let (style_refs, scene_hint, lock_token) = world_cameo_context(&self.working_dir);
+            let script_text = scenes.join("\n\n");
+            if let Err(err) = world_planner
+                .ensure(
+                    &self.working_dir,
+                    &script_text,
+                    &style,
+                    &style_refs,
+                    &scene_hint,
+                    &lock_token,
+                )
+                .await
+            {
+                emit_pct(
+                    &progress,
+                    "world_assets_start",
+                    "世界参考图生成失败",
+                    54.0,
+                );
+                return Err(err);
             }
         }
 
@@ -537,7 +514,7 @@ impl Idea2VideoPipeline {
 
         // Sequential scenes so a mid-failure surfaces immediately (no stuck JoinSet wait)
         // and progress keeps moving. Per-shot videos are also sequential + fail-fast.
-        // Cross-scene: scene N+1's first shot match-cuts from scene N's last video_last_frame.
+        // Each scene opens from its own blocking text, not the previous tail frame.
         let mut reel = SceneReel::new();
         for (i, scene_script) in scenes.iter().enumerate() {
             let scene_dir = self.working_dir.join(format!("scene_{i}"));
@@ -550,7 +527,7 @@ impl Idea2VideoPipeline {
                     &format!("场景 {}/{scene_total} 已完成，跳过", i + 1),
                     20.0 + 70.0 * ((i + 1) as f32 / scene_total as f32),
                 );
-                reel.push(scene_final, &scene_dir).await;
+                reel.push(scene_final);
                 continue;
             }
 
@@ -591,10 +568,10 @@ impl Idea2VideoPipeline {
                     &scene_req,
                     &style,
                     progress.clone(),
-                    reel.tail_frame(),
+                    None,
                 )
                 .await?;
-            reel.push(video, &scene_dir).await;
+            reel.push(video);
             emit_pct(
                 &progress,
                 "render_scene_done",

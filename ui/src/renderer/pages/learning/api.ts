@@ -1,12 +1,15 @@
 import { httpRequest } from '@/common/adapter/httpBridge';
 import type {
   AttemptResult,
+  BasisView,
   CalendarStats,
   CheckinStatus,
+  ConceptAuditReport,
   CourseDetail,
   CourseSummary,
   CreateCustomQuestionRequest,
   CreateLessonActivityRequest,
+  DeclarationResultView,
   DueReview,
   GenerateCourseRequest,
   GenerateLessonActivityRequest,
@@ -48,6 +51,14 @@ export const learningApi = {
   // WS 的 `learning.course-generation` 推送，状态/取消用下方这对端点）。
   generateCourse: (request: GenerateCourseRequest) =>
     httpRequest<CourseDetail>('POST', `${BASE}/courses/generate`, request),
+  // t5 成本门估算：提交前对知识库流做一次规则分诊（零 LLM），读数含
+  // 文件数/批数/调用/耗时与跳过摘要；needs_confirm 由后端按阈值判定。
+  estimateGeneration: (request: GenerateCourseRequest) =>
+    httpRequest<import('./types').CourseGenerationEstimateView>(
+      'POST',
+      `${BASE}/courses/generate/estimate`,
+      request
+    ),
   // 学习图生成/生长状态/取消：后台运行对外可发现、可取消。
   generationStatus: () =>
     httpRequest<LearningGraphGenerationStatus>(
@@ -67,6 +78,13 @@ export const learningApi = {
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/grow`,
       {}
     ),
+  // 自动补批判定（m10 触发②，纯读零副作用）：工作区加载时先裁决——
+  // due 且非停摆才自动调上方 growGraph；disabled/below_threshold 如实不动作
+  growthVerdict: (courseId: string) =>
+    httpRequest<import('./types').GrowthVerdictView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/growth/verdict`
+    ),
   // 学习记录：批次时间线（倒序）
   graphHistory: (courseId: string) =>
     httpRequest<GraphHistoryView>(
@@ -78,6 +96,13 @@ export const learningApi = {
     httpRequest<GraphConceptRowView[]>(
       'GET',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/concepts`
+    ),
+  // 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+  // 缺口片段/自指/互指环；概念表行级标记的数据源
+  conceptAudit: (courseId: string) =>
+    httpRequest<ConceptAuditReport>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/concepts/audit`
     ),
   // 结构读侧投影（always 200；structure = null 表示未生成）：投影运行时
   // 重算、永不落盘；前端结构图以 WS structure_* 事件触发重取本接口
@@ -117,6 +142,26 @@ export const learningApi = {
       'POST',
       `${BASE}/courses/${encodeURIComponent(courseId)}/graph/structure/repair`,
       request
+    ),
+  // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点、
+  // 不排课、不计 XP）；幂等增量——已声明门口自动剔除，全已声明 = noop
+  declareBasis: (courseId: string, doors: string[]) =>
+    httpRequest<DeclarationResultView>(
+      'POST',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis/declare`,
+      { doors }
+    ),
+  // 已会声明读数：累计已声明 doors/blocks/concepts + 解析失败披露
+  basisView: (courseId: string) =>
+    httpRequest<BasisView>(
+      'GET',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
+    ),
+  // 撤销本课全部已会声明（删锚行；概念留池——声明可撤、概念不灭）
+  revokeBasis: (courseId: string) =>
+    httpRequest<{ revoked: number }>(
+      'DELETE',
+      `${BASE}/courses/${encodeURIComponent(courseId)}/basis`
     ),
   getCourse: (id: string) =>
     httpRequest<CourseDetail>('GET', `${BASE}/courses/${encodeURIComponent(id)}`),

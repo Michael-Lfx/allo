@@ -120,10 +120,23 @@ struct WaitParams {
     seconds: Option<f64>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SnapshotParams {
+    /// Optional window id from `list_windows`. When set, snapshot that window
+    /// without raising it.
+    #[serde(default)]
+    window_id: Option<u64>,
+}
+
 // ---- handlers (forward to the shared tool's action dispatcher) --------------
 
-async fn snapshot(deps: Arc<GatewayDeps>, _ctx: CallerCtx, _p: NoParams) -> Value {
-    run(&deps, json!({ "action": "observe" })).await
+async fn snapshot(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: SnapshotParams) -> Value {
+    let mut input = json!({ "action": "observe" });
+    if let Some(window_id) = p.window_id {
+        input["window_id"] = json!(window_id);
+    }
+    run(&deps, input).await
 }
 async fn screenshot(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: ScreenshotParams) -> Value {
     run(&deps, json!({ "action": "screenshot", "display": p.display })).await
@@ -170,11 +183,11 @@ async fn wait(deps: Arc<GatewayDeps>, _ctx: CallerCtx, p: WaitParams) -> Value {
 }
 
 pub(crate) fn register(out: &mut Vec<Capability>) {
-    out.push(Capability::new::<NoParams, _, _>(
+    out.push(Capability::new::<SnapshotParams, _, _>(
         CapabilityMeta::new(
             "nomi_computer_snapshot",
             "computer",
-            "Read the desktop accessibility tree (windows → controls, numbered [ref] + Set-of-Marks overlay). Do this first, then act on a [ref]. Re-run after any UI change. Read-only.",
+            "Read the accessibility tree (windows → controls, numbered [ref] + Set-of-Marks overlay). Optional `window_id` snapshots that window without raising it. Do this first, then act on a [ref]. Re-run after any UI change. Read-only.",
             DangerTier::Read,
         ),
         snapshot,

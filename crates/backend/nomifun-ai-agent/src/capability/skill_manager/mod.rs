@@ -53,6 +53,29 @@ impl AcpSkillManager {
         })
     }
 
+    pub fn paths(&self) -> Arc<nomifun_extension::SkillPaths> {
+        Arc::clone(&self.paths)
+    }
+
+    pub async fn catalog_index(&self) -> Vec<SkillIndex> {
+        match nomifun_extension::list_catalog_skills(self.paths.as_ref()).await {
+            Ok(items) => items
+                .into_iter()
+                .map(|item| {
+                    let skill_id = SkillId::new(item.source, item.source_key.as_deref(), &item.local_key);
+                    SkillIndex {
+                        name: format!("{} (`{}`)", item.name, skill_id.as_str()),
+                        description: item.description,
+                    }
+                })
+                .collect(),
+            Err(error) => {
+                warn!(error = %error, "catalog_index failed");
+                Vec::new()
+            }
+        }
+    }
+
     /// Populate the cache with only the named skills (no filtering by
     /// auto-inject/opt-in). Returns an all-or-nothing index. Used by the
     /// snapshot-driven first-message injector.

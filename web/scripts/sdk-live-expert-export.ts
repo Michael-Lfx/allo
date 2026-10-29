@@ -107,7 +107,7 @@ try {
   );
   check(
     "EX-002.export-and-fidelity",
-    pack.pack_format === 2 &&
+    pack.pack_format === 3 &&
       pack.kind === "agent" &&
       // The catalog face must have no field that could carry the body…
       !detailKeys.includes("instructions") &&
@@ -441,7 +441,7 @@ try {
     );
     check(
       "EX-012.asset-inventory",
-      assetPack.pack_format === 2 &&
+      assetPack.pack_format === 3 &&
         JSON.stringify(actualPaths) === JSON.stringify(expectedPaths) &&
         assetPack.assets.every(
           (asset) =>

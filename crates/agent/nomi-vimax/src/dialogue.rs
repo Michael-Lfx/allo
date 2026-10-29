@@ -232,6 +232,27 @@ pub(crate) fn speaker_line_start(s: &str, quote_byte: usize) -> usize {
         .unwrap_or(quote_byte)
 }
 
+/// Unique speakers of real spoken lines, in order. Foley quotes are skipped.
+pub(crate) fn spoken_speaker_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for_each_quote(text, |span| {
+        if !quote_is_spoken(text, &span) {
+            return;
+        }
+        let Some(name) = speaker_name_before_quote(text, span.open_byte) else {
+            return;
+        };
+        let name = name
+            .trim()
+            .trim_matches(|c: char| c == '<' || c == '>' || c == ' ');
+        if name.chars().count() < 2 || names.iter().any(|n| n == name) {
+            return;
+        }
+        names.push(name.to_string());
+    });
+    names
+}
+
 fn speaker_name_span(s: &str, quote_byte: usize) -> Option<(usize, usize)> {
     let prefix = s.get(..quote_byte)?;
     let chars: Vec<(usize, char)> = prefix.char_indices().collect();

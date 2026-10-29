@@ -19,6 +19,7 @@ pub use id_schema_contract::{
 pub use models::{
     AppServerIdempotencyReceiptRow, AppServerIdempotencyScope,
     AppServerRunMappingRow, NewAppServerIdempotencyReceipt,
+    ActiveSubagentRow,
     AgentExecutionAttemptDetailRow, AgentExecutionAttemptRow, AgentExecutionDetailRows,
     AgentExecutionEventRow, AgentExecutionParticipantRow, AgentExecutionRow,
     AgentExecutionStepDependencyRow, AgentExecutionStepDetailRow, AgentExecutionStepRow,
@@ -33,7 +34,8 @@ pub use models::{
     UpdateKnowledgeTagParams,
     UpsertAgentMetadataParams, UpsertSkillTagParams, WebhookRow,
     WorkshopAssetRow, WorkshopCanvasRow, ConversationExecutionLinkRow,
-    ConversationSkillLoad, NewConversationSkillLoad,
+    ConversationSkillLoad, ConversationSkillPin, NewConversationSkillLoad, NewSkillSelectionEvent,
+    SkillInvocationOverride, SkillSelectionEvent,
 };
 pub use models::{
     CreatePresetTagParams, PresetAgentPreferenceRow, PresetExampleRow,
@@ -126,7 +128,8 @@ pub use repository::{
     IMcpServerRepository, IOAuthClientRegistrationRepository, IOAuthTokenRepository,
     IPluginSnapshotRepository, ComponentRuntimeRef,
     IProviderConnectionRepository, IProviderModelRepository, IProviderRepository,
-    IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillTagRepository,
+    IRemoteAgentRepository, IRequirementRepository, ISettingsRepository, ISkillDiscoveryRepository,
+    ISkillTagRepository,
     ITagSettingRepository, ITerminalRepository, IUserRepository, IWebhookRepository,
     ListRequirementsParams, RequirementClaim, RequirementClaimResolution,
     MAX_IDMM_ACTION_FAILURE_REASON_CHARS, PER_TARGET_CAP, PER_USER_ACTIVITY_CAP,
@@ -143,7 +146,8 @@ pub use repository::{
     SqlitePluginSnapshotRepository,
     SqliteProviderConnectionRepository, SqliteProviderModelRepository, SqliteProviderRepository,
     SqliteRemoteAgentRepository, SqliteRequirementRepository, SqliteSettingsRepository,
-    SqliteSkillTagRepository, SqliteTagSettingRepository, SqliteTerminalRepository,
+    SqliteSkillDiscoveryRepository, SqliteSkillTagRepository, SqliteTagSettingRepository,
+    SqliteTerminalRepository,
     SqliteUserRepository, SqliteWebhookRepository, TerminalTurnAdmissionClaim,
     TerminalTurnAdmissionKey, TerminalTurnAdmissionScope, TerminalTurnEffectsStart,
     TerminalTurnOutcome, TerminalTurnSettlement, TTL_MS,

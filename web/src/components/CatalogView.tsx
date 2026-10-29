@@ -807,7 +807,7 @@ export function CatalogView() {
 
   const visibleConnectors = useMemo(() => {
     return (connectors ?? []).filter((connector) => {
-      const text = `${connector.name} ${connector.description ?? ""} ${connector.kind} ${connector.auth_mode}`.toLowerCase();
+      const text = `${connector.name} ${connector.description ?? ""} ${connector.kind} ${connector.auth_transport}`.toLowerCase();
       return text.includes(query.toLowerCase());
     });
   }, [connectors, query]);
@@ -1156,6 +1156,7 @@ export function CatalogView() {
                   {(pickLocalized(item.display_description, lang) || item.description) && (
                     <span className="market-card-desc">{pickLocalized(item.display_description, lang) || item.description}</span>
                   )}
+                  <StorePromptHint item={item} lang={lang} />
                 </div>
                 <div className="market-card-foot">
                   <div className="market-tags">
@@ -1255,7 +1256,7 @@ export function CatalogView() {
                   </div>
                   <span className={`status-dot ${connectorStateClass(connector.status)}`} aria-hidden="true" />
                 </div>
-                {/* The raw `auth_mode` enum used to sit in this row, and it read
+                {/* The raw `auth_transport` enum used to sit in this row, and it read
                     `oauth` for every url-shaped connector — including the 61 that
                     authenticate with a key (`34` §6.1). */}
                 <Tags tags={[connector.kind, ...(connector.description ? [connector.description] : [])]} />
@@ -1500,6 +1501,29 @@ function MarketGrid<T>({
 // drawers
 // ---------------------------------------------------------------------------
 
+/**
+ * The one prompt hint a store card shows (doc `49` §3.7 / D12).
+ *
+ * The text is whatever the market declared — the manifest's `quickPrompts`
+ * first, the index row's `examples_*` as the fallback the host fills in for
+ * connectors and skills. Nothing declared means nothing rendered: there is
+ * deliberately no "no examples" placeholder, and no second line (the card is a
+ * fixed-height grid cell; a second hint would push the tags and the install
+ * action out of place).
+ */
+function StorePromptHint({
+  item,
+  lang,
+}: {
+  item: StoreItem;
+  lang: ReturnType<typeof useLocalizedLang>;
+}) {
+  const { t } = useTranslation();
+  const prompt = pickLocalized(item.quick_prompts?.[0], lang);
+  if (!prompt) return null;
+  return <span className="market-card-hint">{t("catalog.storePromptHint", { prompt })}</span>;
+}
+
 function StoreDrawer({
   item,
   busy,
@@ -1547,9 +1571,17 @@ function StoreDrawer({
       {item.blocked_reason && <p className="market-block-reason">{item.blocked_reason}</p>}
       {quickPrompts.length > 0 && (
         <div className="drawer-quick-prompts">
-          <h3>{t("catalog.agentQuickPrompts")}</h3>
+          {/* Doc `49` D12: at most three. A connector like `baidu-netdisk`
+              declares six, and the full list buries the metadata and the
+              actions below it. The label names the kind, so a connector does
+              not get an expert's wording. */}
+          <h3>
+            {item.kind === "agent" || item.kind === "team"
+              ? t("catalog.agentQuickPrompts")
+              : t("catalog.storeQuickPrompts")}
+          </h3>
           <ul>
-            {quickPrompts.map((prompt, index) => (
+            {quickPrompts.slice(0, 3).map((prompt, index) => (
               <li key={index}>{pickLocalized(prompt, lang)}</li>
             ))}
           </ul>
@@ -1686,7 +1718,7 @@ export function ConnectorDrawer({
   const pending = auth?.state === "authorization_pending";
   const credential = detail.credential ?? null;
   // `34` §6.1: the auth affordance follows `credential.mode`, never the
-  // transport-derived `auth_mode`. The two disagreed on every url-shaped
+  // transport-derived `auth_transport`. The two disagreed on every url-shaped
   // connector, which handed the 61 `token` connectors an OAuth entry point.
   const mode = credential?.mode ?? "none";
   const status = credential

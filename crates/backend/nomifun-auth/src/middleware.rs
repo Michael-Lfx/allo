@@ -91,22 +91,30 @@ pub async fn auth_middleware(
     let token = extract_token_from_headers(request.headers())
         .ok_or_else(|| AppError::Forbidden("Authentication required".into()))?;
 
-    let payload = state.jwt_service.verify(&token).map_err(|e| {
-        tracing::debug!("Token verification failed: {e}");
-        AppError::Forbidden("Invalid or expired token".into())
-    })?;
+    let webui = match state.jwt_service.verify(&token) {
+        Ok(payload) => Some(payload),
+        Err(_) => None,
+    };
+    let user_id = if let Some(payload) = &webui {
+        payload.user_id.clone()
+    } else if let Ok(link) = state.jwt_service.verify_link(&token) {
+        link.user_id
+    } else {
+        tracing::debug!("token verification failed");
+        return Err(AppError::Forbidden("Invalid or expired token".into()));
+    };
 
     let user = state
         .user_repo
-        .find_by_id(payload.user_id.as_str())
+        .find_by_id(user_id.as_str())
         .await
         .map_err(|e| AppError::Internal(format!("Database error: {e}")))?
         .ok_or_else(|| AppError::Forbidden("User not found".into()))?;
 
-    // Renew only sessions that actually ride the cookie: a bearer token also
-    // present in the headers wins during extraction, so a renewed cookie
-    // would be ignored by that client — skip those.
-    let renew_cookie = is_past_half_life(&payload)
+    // Renew only WebUI cookies. A Link bearer must not slide into a desktop session.
+    let renew_cookie = webui
+        .as_ref()
+        .is_some_and(|payload| is_past_half_life(payload))
         && extract_bearer_token(request.headers()).is_none()
         && extract_cookie_value(request.headers(), COOKIE_NAME).as_deref() == Some(token.as_str());
     let renewed = if renew_cookie {

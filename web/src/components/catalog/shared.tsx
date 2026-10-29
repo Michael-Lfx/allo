@@ -68,7 +68,7 @@ export function credentialStatusLabel(t: Translate, status: string, mode: string
 /**
  * `credential.mode` → the localized noun.
  *
- * The drawer used to print the raw `auth_mode` enum here, which is derived from
+ * The drawer used to print the raw `auth_transport` enum here, which is derived from
  * the transport and therefore reads `oauth` for every url-shaped connector —
  * including the 61 that authenticate with a key. This is the value the UI acts
  * on, so this is the one it states.
@@ -179,8 +179,8 @@ export function installStateLabel(t: ReturnType<typeof useTranslation>["t"], sta
 /**
  * Whether a connector row should offer the OAuth 「连接」 action.
  *
- * The decision is `credential.mode`, **not** `auth_mode` (`34` §6.1):
- * `auth_mode` is derived from the transport, so it answers `oauth` for every
+ * The decision is `credential.mode`, **not** `auth_transport` (`34` §6.1):
+ * `auth_transport` is derived from the transport, so it answers `oauth` for every
  * url-shaped connector — including the 61 that authenticate with a key, which
  * then got an OAuth entry point they cannot use.
  *

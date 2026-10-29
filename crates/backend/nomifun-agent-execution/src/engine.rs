@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use nomifun_api_types::{
     AddExecutionStepsRequest, AdoptExecutionStepOutputRequest, AdjustAgentExecutionRequest,
-    AgentExecution, AgentExecutionDetail, AgentExecutionEvent, AgentExecutionTemplate,
+    ActiveSubagent, AgentExecution, AgentExecutionDetail, AgentExecutionEvent, AgentExecutionTemplate,
     AgentExecutionTemplateDetail, AgentExecutionTemplateParticipant,
     AgentExecutionTemplateParticipantInput, AnswerExecutionDecisionRequest,
     ConfigureExecutionStepRequest, ConversationResponse, CreateAgentExecutionRequest,
@@ -49,7 +49,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::attempt_runner::AttemptRunner;
-use crate::artifact_contract::validate_required_artifacts;
+use crate::artifact_contract::{merge_workspace_verified_outputs, validate_required_artifacts};
 use crate::conversation_effect::AttemptConversationEffects;
 use crate::domain_mapper;
 use crate::event_publisher::{
@@ -1240,6 +1240,37 @@ impl AgentExecutionEngine {
         Ok(executions)
     }
 
+    /// Read-only list of active delegated Agent invocations. This projection
+    /// does not mutate or reconstruct execution state; it exists so callers can
+    /// observe which subagents are queued, running, or waiting for input.
+    pub async fn list_active_subagents(
+        &self,
+        owner_id: &str,
+        execution_id: Option<&str>,
+        include_control_steps: bool,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<ActiveSubagent>, AppError> {
+        if let Some(execution_id) = execution_id {
+            canonical_id::<AgentExecutionId>("execution_id", execution_id)?;
+            self.require_execution(owner_id, execution_id).await?;
+        }
+        let limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
+        let offset = offset.unwrap_or(0).max(0);
+        self.repository
+            .list_active_subagents(
+                owner_id,
+                execution_id,
+                include_control_steps,
+                limit,
+                offset,
+            )
+            .await?
+            .into_iter()
+            .map(domain_mapper::active_subagent)
+            .collect()
+    }
+
     pub async fn events(
         &self,
         owner_id: &str,
@@ -2173,6 +2204,12 @@ impl AgentExecutionEngine {
             .scheduler
             .read_attempt_output_files(owner_id, &conversation_id)
             .await;
+        let output_files = merge_workspace_verified_outputs(
+            detail.execution.work_dir.as_deref().map(std::path::Path::new),
+            &step.spec,
+            output_files,
+            None,
+        );
         validate_required_artifacts(&step.spec, &output_files).map_err(|error| {
             AppError::BadRequest(format!(
                 "Agent conversation output cannot be adopted: {error}"

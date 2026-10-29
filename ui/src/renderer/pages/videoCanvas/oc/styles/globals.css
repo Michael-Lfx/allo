@@ -627,7 +627,7 @@
     .oc-portal-host {
         position: fixed;
         inset: 0;
-        z-index: var(--z-popover);
+        z-index: var(--z-max);
         pointer-events: none;
     }
     .oc-portal-host > * {
@@ -3415,6 +3415,15 @@
             transform: translate(var(--batch-from-x), var(--batch-from-y)) rotate(var(--batch-from-rotate)) scale(0.72);
         }
     }
+
+    .canvas-deck-node {
+        will-change: transform;
+    }
+
+    .canvas-deck-fan-in,
+    .canvas-deck-fan-out {
+        transform-origin: center center;
+    }
 }
 
 @keyframes workspace-state-enter {
@@ -3425,6 +3434,7 @@
 @media (prefers-reduced-motion: reduce) {
     .workspace-state { animation: none; }
     :where(.ant-btn:not(:disabled)):active { transform: none; }
+    .oc-root .canvas-deck-node { transition: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {

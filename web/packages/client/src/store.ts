@@ -29,12 +29,21 @@ import type {
   InstallOutcome,
   InstallStatus,
   SkillSummary,
+  StoreCategories,
   StoreInstallResult,
   StoreItem,
   StoreItemKind,
   StoreList,
   TeamDetail,
 } from "@flowy-agent-store/protocol";
+
+import {
+  matchStoreItem,
+  splitStoreQuery,
+  storeMatchRank,
+  type StoreMatch,
+  type StoreSearchOptions,
+} from "./store-search";
 
 /** Why a `waitForReady` check ended without every component being usable. */
 export type StoreReadyIssue =
@@ -168,6 +177,7 @@ export interface StoreOperationOutcome {
  */
 export interface StoreHost {
   listStore(): Promise<StoreList>;
+  listStoreCategories(): Promise<StoreCategories>;
   installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
   updateStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstallResult>;
   getInstallStatus(snapshotId: string): Promise<InstallStatus>;
@@ -187,31 +197,6 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_POLL_MS = 400;
 const DEFAULT_READY_POLL_MAX_MS = 4_000;
 const DEFAULT_READY_PROBE_MS = 5_000;
-
-/** Every string a `LocalizedText` carries, for haystack building. */
-function localizedValues(text: unknown): string[] {
-  if (typeof text === "string") return [text];
-  if (!text || typeof text !== "object") return [];
-  return Object.values(text as Record<string, unknown>).filter(
-    (value): value is string => typeof value === "string",
-  );
-}
-
-function haystack(item: StoreItem): string {
-  return [
-    item.entry_name,
-    item.name,
-    item.id,
-    item.description ?? "",
-    item.version,
-    ...localizedValues(item.display_name),
-    ...localizedValues(item.display_description),
-    ...localizedValues(item.profession),
-    ...(item.tags ?? []).flatMap(localizedValues),
-  ]
-    .join("\n")
-    .toLowerCase();
-}
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -259,15 +244,73 @@ export class StoreClient {
     return store.items;
   }
 
-  /** Case-insensitive substring search over the fields a user can see. */
+  /**
+   * Category dictionary + market tag vocabulary (doc `43`) — the filter-bar
+   * material. Empty `items` means no market declares a dictionary; the raw
+   * `category_id` on an item stays usable regardless.
+   */
+  async categories(): Promise<StoreCategories> {
+    return this.host.listStoreCategories();
+  }
+
+  /**
+   * Case-insensitive, whitespace-split term search over the fields a user can
+   * see (`store-search.ts` owns the field table and the semantics).
+   *
+   * Every term must match somewhere in the entry (AND); a single-term query
+   * behaves exactly as the old substring scan did. Results are ordered by
+   * relevance bucket — name hits first, long-description hits last — and keep
+   * catalogue order within a bucket.
+   */
   async search(query: string, filter: { kind?: StoreItemKind } = {}): Promise<StoreItem[]> {
-    const needle = query.trim().toLowerCase();
-    const items = await this.list();
-    return items.filter((item) => {
-      if (filter.kind && item.kind !== filter.kind) return false;
-      if (!needle) return true;
-      return haystack(item).includes(needle);
-    });
+    const matches = await this.searchWithHits(query, filter);
+    return matches.map((match) => match.item);
+  }
+
+  /**
+   * Same matching as {@link search}, plus where each hit landed.
+   *
+   * A caller that highlights results must not re-derive the field list: it would
+   * drift from this one. Pass the UI language so `offLanguage` can tell you when
+   * the matched text belongs to the *other* language (the rendered label then
+   * contains nothing to highlight).
+   */
+  async searchWithHits(query: string, options: StoreSearchOptions = {}): Promise<StoreMatch[]> {
+    const items = options.items ?? (await this.list());
+    const matches: StoreMatch[] = [];
+    for (const item of items) {
+      if (options.kind && item.kind !== options.kind) continue;
+      if (options.installedOnly && !item.installed) continue;
+      const match = matchStoreItem(item, query, { lang: options.lang });
+      if (match) matches.push(match);
+    }
+    if (splitStoreQuery(query).length === 0) return matches;
+    // `sort` is stable, so entries in the same bucket keep catalogue order.
+    return matches.sort((a, b) => storeMatchRank(a) - storeMatchRank(b));
+  }
+
+  /**
+   * Search restricted to installed entries.
+   *
+   * A thin wrapper rather than a `search()` flag: "what is it" and "how far does
+   * it reach" stay separate questions, and one call is issued either way.
+   */
+  async searchInstalled(query: string, options: Omit<StoreSearchOptions, "installedOnly"> = {}): Promise<StoreItem[]> {
+    const matches = await this.searchWithHits(query, { ...options, installedOnly: true });
+    return matches.map((match) => match.item);
+  }
+
+  /**
+   * The catalogue plus its completeness flag.
+   *
+   * `marketsPending` is the host saying "the builtin markets are still
+   * registering, this list may be short". {@link list} returns the items only,
+   * so a caller that searched immediately after startup could not tell "no such
+   * entry" from "not loaded yet" — this is the read that can.
+   */
+  async listStatus(): Promise<{ items: StoreItem[]; marketsPending: boolean }> {
+    const store = await this.host.listStore();
+    return { items: store.items, marketsPending: store.markets_pending === true };
   }
 
   /** Items currently installed on this host. */

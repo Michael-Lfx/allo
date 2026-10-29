@@ -104,6 +104,21 @@ impl WorkingSet {
         self.entries.is_empty()
     }
 
+    /// Drop the read coverage of `path` because the transcript no longer holds
+    /// the text that produced it (a microcompact cleared the `Read` result).
+    /// Edit bookkeeping survives; an entry with nothing left is removed.
+    pub fn forget_reads(&mut self, path: &str) {
+        let key = normalize_read_path(path);
+        let Some(entry) = self.entries.get_mut(&key) else {
+            return;
+        };
+        entry.covered.clear();
+        entry.total_lines = None;
+        if !entry.edited_this_request && entry.last_anchor.is_none() {
+            self.entries.remove(&key);
+        }
+    }
+
     pub fn record_read(
         &mut self,
         path: &str,
@@ -272,5 +287,33 @@ mod tests {
         set.record_read("C:\\a.md", 0, 10, 10, None);
         set.record_read("D:\\a.md", 0, 10, 10, None);
         assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn forgetting_a_read_removes_an_unedited_entry() {
+        let mut set = WorkingSet::default();
+        set.record_read("C:\\Work\\A.md", 0, 500, 500, Some(1));
+        set.forget_reads("c:/work/a.md");
+        assert!(set.is_empty());
+        assert!(!set.covers_range("C:\\Work\\A.md", 0, 10, 500, Some(1)));
+    }
+
+    #[test]
+    fn forgetting_a_read_keeps_edit_bookkeeping_without_coverage() {
+        let mut set = WorkingSet::default();
+        set.record_read("lib.rs", 0, 5, 5, Some(1));
+        set.record_edit("lib.rs", Some("3:ab12"));
+        set.forget_reads("lib.rs");
+        assert_eq!(set.len(), 1);
+        assert!(!set.covers_range("lib.rs", 0, 5, 5, Some(1)));
+        assert_eq!(set.edited_paths(), vec!["lib.rs"]);
+    }
+
+    #[test]
+    fn forgetting_an_unknown_path_is_a_no_op() {
+        let mut set = WorkingSet::default();
+        set.record_read("a.rs", 0, 5, 5, None);
+        set.forget_reads("b.rs");
+        assert_eq!(set.len(), 1);
     }
 }

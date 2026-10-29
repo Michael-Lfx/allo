@@ -398,6 +398,7 @@ fn catalog_skill_ids_from_conversation_extra(extra: &str) -> Vec<String> {
 struct PreparedSkillSnapshots {
     loaded: Vec<ResolvedSkillSnapshot>,
     persist: Vec<ResolvedSkillSnapshot>,
+    catalog_discovery: Option<nomifun_ai_agent::types::CatalogDiscoveryHint>,
 }
 
 fn canonical_skill_ids_from_request(skill_ids: &[String]) -> Result<Vec<String>, AppError> {
@@ -474,6 +475,7 @@ fn historical_skill_snapshots_from_loads(
                 source: load.source.clone(),
                 version_hash: load.version_hash.clone(),
                 content: load.content.clone(),
+                location: None,
             }
         });
     }
@@ -1730,6 +1732,8 @@ pub struct ConversationService {
     /// pause/resume/clear on conversations whose agent is not built. `None` =
     /// goal persistence off (fail-safe) — the route degrades gracefully.
     goal_repo: Arc<RwLock<Option<Arc<dyn nomifun_db::IGoalRepository>>>>,
+    /// Host skill ranking, pins, and invocation overrides (SQLite).
+    skill_discovery: Arc<RwLock<Option<Arc<dyn nomifun_db::ISkillDiscoveryRepository>>>>,
     /// LLM completer for conversation auto-titling (wired post-construction).
     title_completer: Arc<RwLock<Option<Arc<dyn ConversationTitleCompleter>>>>,
     /// POI/insights session lifecycle coordinator (wired post-construction).
@@ -1854,6 +1858,7 @@ impl ConversationService {
                             "source": &snapshot.source,
                             "version_hash": &snapshot.version_hash,
                             "content": &content,
+                            "invocation": "force",
                         })
                         .to_string(),
                         position: Some("center".to_owned()),
@@ -3176,6 +3181,7 @@ impl ConversationService {
             failover_provider_model_repo: Arc::new(RwLock::new(None)),
             failover_client_prefs: Arc::new(RwLock::new(None)),
             goal_repo: Arc::new(RwLock::new(None)),
+            skill_discovery: Arc::new(RwLock::new(None)),
             title_completer: Arc::new(RwLock::new(None)),
             session_lifecycle: Arc::new(RwLock::new(None)),
             execution_conversation_boundary,
@@ -3479,6 +3485,161 @@ impl ConversationService {
         if let Ok(mut guard) = self.goal_repo.write() {
             *guard = Some(goal_repo);
         }
+    }
+
+    pub fn with_skill_discovery(
+        &self,
+        skill_discovery: Arc<dyn nomifun_db::ISkillDiscoveryRepository>,
+    ) {
+        if let Ok(mut guard) = self.skill_discovery.write() {
+            *guard = Some(skill_discovery);
+        }
+    }
+
+    fn skill_discovery_repo(
+        &self,
+    ) -> Option<Arc<dyn nomifun_db::ISkillDiscoveryRepository>> {
+        self.skill_discovery
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    pub async fn list_skill_pins(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<String>, AppError> {
+        ConversationId::parse(conversation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Ok(Vec::new());
+        };
+        Ok(repo
+            .list_pins(conversation_id)
+            .await?
+            .into_iter()
+            .map(|row| row.skill_id)
+            .collect())
+    }
+
+    pub async fn pin_conversation_skill(
+        &self,
+        conversation_id: &str,
+        skill_id: &str,
+    ) -> Result<(), AppError> {
+        ConversationId::parse(conversation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        SkillId::parse(skill_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Err(AppError::Internal("Skill discovery store is not wired".into()));
+        };
+        repo.pin_skill(conversation_id, skill_id, now_ms()).await?;
+        Ok(())
+    }
+
+    pub async fn unpin_conversation_skill(
+        &self,
+        conversation_id: &str,
+        skill_id: &str,
+    ) -> Result<(), AppError> {
+        ConversationId::parse(conversation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Ok(());
+        };
+        repo.unpin_skill(conversation_id, skill_id).await?;
+        Ok(())
+    }
+
+    pub async fn list_skill_selection_events(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<nomifun_db::SkillSelectionEvent>, AppError> {
+        ConversationId::parse(conversation_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Ok(Vec::new());
+        };
+        Ok(repo.list_selection_events(conversation_id, 50).await?)
+    }
+
+    pub async fn list_skill_invocation_overrides(
+        &self,
+    ) -> Result<Vec<nomifun_db::SkillInvocationOverride>, AppError> {
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Ok(Vec::new());
+        };
+        Ok(repo.list_invocation_overrides().await?)
+    }
+
+    pub async fn set_skill_invocation_override(
+        &self,
+        skill_id: &str,
+        allow_model_auto: bool,
+    ) -> Result<nomifun_db::SkillInvocationOverride, AppError> {
+        SkillId::parse(skill_id).map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let Some(repo) = self.skill_discovery_repo() else {
+            return Err(AppError::Internal("Skill discovery store is not wired".into()));
+        };
+        Ok(repo
+            .set_invocation_override(skill_id, allow_model_auto, now_ms())
+            .await?)
+    }
+
+    async fn prepare_catalog_discovery(
+        &self,
+        conversation_id: &str,
+        query: &str,
+        files: &[String],
+        force_ids: &[String],
+    ) -> Option<nomifun_ai_agent::types::CatalogDiscoveryHint> {
+        let catalog = self.skill_resolver.list_catalog_index().await;
+        if catalog.is_empty() {
+            return None;
+        }
+        let path_sets: Vec<Vec<String>> = catalog
+            .iter()
+            .map(|item| {
+                nomifun_ai_agent::catalog_bridge::implied_attachment_globs(
+                    &item.name,
+                    &item.description,
+                )
+            })
+            .collect();
+        let items: Vec<nomifun_ai_agent::catalog_bridge::CatalogRankInput<'_>> = catalog
+            .iter()
+            .zip(path_sets.iter())
+            .map(|(item, paths)| nomifun_ai_agent::catalog_bridge::CatalogRankInput {
+                skill_id: item.skill_id.as_str(),
+                name: item.name.as_str(),
+                description: item.description.as_str(),
+                paths,
+            })
+            .collect();
+        let hint = nomifun_ai_agent::catalog_bridge::rank_catalog_for_turn(
+            query,
+            &items,
+            files,
+            force_ids,
+            None,
+        );
+        if let Some(repo) = self.skill_discovery_repo() {
+            let mut hasher = Sha256::new();
+            hasher.update(query.as_bytes());
+            let query_hash = format!("{:x}", hasher.finalize());
+            let event = nomifun_db::NewSkillSelectionEvent {
+                conversation_id: conversation_id.to_owned(),
+                turn: 0,
+                query_hash,
+                candidate_ids: serde_json::to_string(&hint.ranked_ids).unwrap_or_else(|_| "[]".into()),
+                model_loaded_ids: serde_json::to_string(force_ids).unwrap_or_else(|_| "[]".into()),
+                method: hint.method.clone(),
+                listing_truncated: hint.listing_truncated,
+                applied_to_l1: hint.applied_to_l1,
+                latency_ms: hint.latency_ms,
+                created_at: now_ms(),
+            };
+            if let Err(error) = repo.insert_selection_event(&event).await {
+                warn!(error = %error, "failed to persist skill_selection_event");
+            }
+        }
+        Some(hint)
     }
 
     /// Register a hook to be notified when a conversation is deleted.
@@ -7057,6 +7218,7 @@ impl ConversationService {
                 Arc::clone(&service.runtime_registry),
                 false,
                 true,
+                AgentKillReason::ConversationDeleted,
             );
             // The deletion tombstone's first synchronous boundary is the only
             // lossless capture point. A pre-existing completion owner can make
@@ -9828,12 +9990,21 @@ impl ConversationService {
         // first real turn so both paths capture one immutable snapshot and the
         // user-selected chips still retain precedence in the prompt order.
         let preset_skill_ids = catalog_skill_ids_from_conversation_extra(&row.extra);
+        let pinned_skill_ids = self
+            .list_skill_pins(conversation_key)
+            .await
+            .unwrap_or_default();
         if row.status.as_deref() == Some("pending") {
             if !preset_skill_ids.is_empty() {
                 let mut effective_skill_ids = preset_skill_ids.clone();
                 effective_skill_ids.extend(req.inject_skills);
                 req.inject_skills = dedupe_skill_ids(&effective_skill_ids);
             }
+        }
+        if !pinned_skill_ids.is_empty() {
+            let mut effective_skill_ids = pinned_skill_ids.clone();
+            effective_skill_ids.extend(std::mem::take(&mut req.inject_skills));
+            req.inject_skills = dedupe_skill_ids(&effective_skill_ids);
         }
 
         // A missing/oversized explicit Skill must fail before this request can
@@ -9874,12 +10045,42 @@ impl ConversationService {
                 loaded_skill_snapshots.push(snapshot.clone());
             }
         }
+        let mut loaded_skill_snapshots = loaded_skill_snapshots;
+        if let Ok(ledger) = self.conversation_repo.get_skill_loads(conversation_key).await {
+            for pin_id in &pinned_skill_ids {
+                if loaded_skill_snapshots
+                    .iter()
+                    .any(|loaded| loaded.skill_id == *pin_id)
+                {
+                    continue;
+                }
+                if let Some(row) = ledger.iter().find(|load| load.catalog_key == *pin_id) {
+                    loaded_skill_snapshots.push(ResolvedSkillSnapshot {
+                        skill_id: row.catalog_key.clone(),
+                        name: row.skill_name.clone(),
+                        source: row.source.clone(),
+                        version_hash: row.version_hash.clone(),
+                        content: row.content.clone(),
+                        location: None,
+                    });
+                }
+            }
+        }
+        let catalog_discovery = self
+            .prepare_catalog_discovery(
+                conversation_key,
+                &req.content,
+                &req.files,
+                &req.inject_skills,
+            )
+            .await;
         let prepared_skill_snapshots = PreparedSkillSnapshots {
             loaded: loaded_skill_snapshots,
             // Only newly resolved Skills are appended to the immutable ledger;
             // historical snapshots are injected into the runtime but are not
             // duplicated on every follow-up message.
             persist: explicit_skill_snapshots,
+            catalog_discovery,
         };
         let _ = owned_row;
         runtime_build_lease.ensure_active()?;
@@ -10476,13 +10677,23 @@ impl ConversationService {
         let PreparedSkillSnapshots {
             loaded: loaded_skill_snapshots,
             persist: persisted_skill_snapshots,
+            catalog_discovery,
         } = match preloaded_skill_snapshots {
             Some(prepared) => prepared,
             None => {
                 let snapshots = self.resolve_requested_skill_snapshots(&req).await?;
+                let catalog_discovery = self
+                    .prepare_catalog_discovery(
+                        conversation_key.as_str(),
+                        &req.content,
+                        &req.files,
+                        &req.inject_skills,
+                    )
+                    .await;
                 PreparedSkillSnapshots {
                     loaded: snapshots.clone(),
                     persist: snapshots,
+                    catalog_discovery,
                 }
             }
         };
@@ -11457,8 +11668,10 @@ impl ConversationService {
                             source: skill.source,
                             version_hash: skill.version_hash,
                             content: skill.content,
+                            location: skill.location,
                         })
                         .collect(),
+                    catalog_discovery: catalog_discovery.clone(),
                     origin: origin.clone(),
                 },
                 first_turn_msg_id,
@@ -11630,25 +11843,32 @@ impl ConversationService {
                 let (send_error_tx, send_error_rx) = oneshot::channel();
                 // 1. Send the message to the agent and concurrently run the relay to stream events.
                 tokio::spawn(async move {
-                    if send_cancellation.is_cancelled() {
-                        let _ = send_error_tx.send(Ok(()));
-                        return;
+                    // User stop cancels this token while send_message is inside
+                    // the provider read. The read must be dropped here: a local
+                    // model often emits nothing until the whole generation
+                    // finishes, so waiting for that read records a normal
+                    // completion after the user already pressed stop.
+                    tokio::select! {
+                        biased;
+                        _ = send_cancellation.cancelled() => {
+                            let _ = send_error_tx.send(Ok(()));
+                        }
+                        send_result = nomifun_ai_agent::with_flowy_chat_session_id(
+                            conv_id_send.clone(),
+                            nomifun_ai_agent::with_flowy_billing_turn_id(
+                                send_billing_turn_id,
+                                send_agent.send_message(current_send),
+                            ),
+                        ) => {
+                            if let Err(e) = send_result.as_ref() {
+                                error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
+                            }
+                            // Explicit success matters: a dropped sender now denotes
+                            // panic/abort and is converted by StreamRelay into a
+                            // terminal Error instead of waiting forever.
+                            let _ = send_error_tx.send(send_result);
+                        }
                     }
-                    let send_result = nomifun_ai_agent::with_flowy_chat_session_id(
-                        conv_id_send.clone(),
-                        nomifun_ai_agent::with_flowy_billing_turn_id(
-                            send_billing_turn_id,
-                            send_agent.send_message(current_send),
-                        ),
-                    )
-                    .await;
-                    if let Err(e) = send_result.as_ref() {
-                        error!(conversation_id = %conv_id_send, error = %ErrorChain(e), "Agent send_message failed");
-                    }
-                    // Explicit success matters: a dropped sender now denotes
-                    // panic/abort and is converted by StreamRelay into a
-                    // terminal Error instead of waiting forever.
-                    let _ = send_error_tx.send(send_result);
                 });
                 // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
                 let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
@@ -11970,6 +12190,7 @@ impl ConversationService {
                         files: vec![],
                         inject_skills: vec![],
                         loaded_skill_snapshots: Vec::new(),
+                        catalog_discovery: None,
                         // A system-driven continuation is not the human owner
                         // speaking; mark it so it is never distilled. Falls
                         // back to the turn's own origin when one was set.
@@ -14049,6 +14270,7 @@ impl ConversationService {
         runtime_registry: Arc<dyn AgentRuntimeRegistry>,
         publish_completion: bool,
         deletion_owned: bool,
+        kill_reason: AgentKillReason,
     ) -> oneshot::Receiver<Result<(), AppError>> {
         let (result_tx, result_rx) = oneshot::channel();
         let stop_admission = if deletion_owned {
@@ -14103,12 +14325,16 @@ impl ConversationService {
         let kill_reason = if deletion_owned {
             AgentKillReason::ConversationDeleted
         } else {
-            AgentKillReason::UserCancelled
+            kill_reason
         };
-        let durable_reason = if deletion_owned {
-            "Conversation turn was terminated for deletion after runtime exit"
-        } else {
-            "Conversation turn was cancelled after runtime exit"
+        let durable_reason = match kill_reason {
+            AgentKillReason::ConversationDeleted => {
+                "Conversation turn was terminated for deletion after runtime exit"
+            }
+            AgentKillReason::AttemptSettled => {
+                "Agent execution attempt was cleaned up after runtime exit"
+            }
+            _ => "Conversation turn was cancelled after runtime exit",
         };
 
         tokio::spawn(async move {
@@ -14520,6 +14746,10 @@ impl ConversationService {
             Arc::clone(runtime_registry),
             true,
             false,
+            match origin {
+                CancelOrigin::User => AgentKillReason::UserCancelled,
+                CancelOrigin::AgentExecution => AgentKillReason::AttemptSettled,
+            },
         );
         // `spawn_turn_stop_cleanup` synchronously establishes the stronger
         // conversation stop tombstone before returning. Releasing the

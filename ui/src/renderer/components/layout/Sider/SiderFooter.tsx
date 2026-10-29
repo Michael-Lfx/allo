@@ -21,6 +21,7 @@ interface SiderFooterProps {
   showEditNickname?: boolean;
   onLogout?: () => void;
   onOpenCompanion?: () => void;
+  onOpenLink?: () => void;
   onSettingsClick: () => void;
 }
 
@@ -43,6 +44,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   showEditNickname = false,
   onLogout,
   onOpenCompanion,
+  onOpenLink,
   onSettingsClick,
 }) => {
   const { t } = useTranslation();
@@ -119,6 +121,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             showEditNickname={showEditNickname}
             onLogout={onLogout}
             onOpenCompanion={onOpenCompanion}
+            onOpenLink={onOpenLink}
           />
           {settingsControl}
         </div>
@@ -134,6 +137,7 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
             showEditNickname={showEditNickname}
             onLogout={onLogout}
             onOpenCompanion={onOpenCompanion}
+            onOpenLink={onOpenLink}
           />
           <div className='shrink-0 flex items-center'>{settingsControl}</div>
         </div>

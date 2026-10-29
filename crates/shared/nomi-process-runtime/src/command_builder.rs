@@ -1,8 +1,9 @@
 use std::{
     ffi::{OsStr, OsString},
+    fmt,
     io,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{Output, Stdio},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -686,7 +687,8 @@ fn strip_process_environment(command: &mut Command) {
 /// Hide console windows for console-subsystem CLIs under a Windows GUI host.
 ///
 /// No-op on non-Windows. Does **not** attach Job objects, strip env, or change
-/// Unix process groups — use [`ChildProcessBuilder`] / [`crate::ProcessSupervisor`]
+/// Unix process groups — use [`hidden_command`] / [`hidden_std_command`] for
+/// host-lifetime helpers, or [`ChildProcessBuilder`] / [`crate::ProcessSupervisor`]
 /// when you need managed-tree lifecycle.
 pub fn apply_hidden_console(command: &mut Command) {
     #[cfg(windows)]
@@ -712,18 +714,201 @@ pub fn apply_hidden_console_std(command: &mut std::process::Command) {
     }
 }
 
-/// One-shot tokio spawn helper with Windows console hide applied.
-pub fn hidden_command(program: impl AsRef<OsStr>) -> Command {
-    let mut command = Command::new(program.as_ref());
-    apply_hidden_console(&mut command);
-    command
+/// Create the host-lifetime process authority so unmanaged helpers die with the
+/// client. Safe to call more than once; first spawn of [`hidden_command`] also
+/// installs lazily.
+pub fn install_host_process_lifetime() {
+    crate::platform::install_host_process_lifetime();
 }
 
-/// One-shot `std::process::Command` helper with Windows console hide applied.
-pub fn hidden_std_command(program: impl AsRef<OsStr>) -> std::process::Command {
-    let mut command = std::process::Command::new(program.as_ref());
-    apply_hidden_console_std(&mut command);
-    command
+/// Terminate unmanaged helper trees (`ffmpeg`, compositor `node`, …) that were
+/// bound through [`hidden_command`] / [`hidden_std_command`]. Idempotent.
+pub fn terminate_host_lifetime_descendants() {
+    crate::platform::terminate_host_lifetime_descendants();
+}
+
+/// Tokio spawn helper: hidden console on Windows, and bound to the host-lifetime
+/// process tree so the child (and its descendants) die when the client exits.
+pub fn hidden_command(program: impl AsRef<OsStr>) -> HiddenCommand {
+    let mut inner = Command::new(program.as_ref());
+    apply_hidden_console(&mut inner);
+    inner.kill_on_drop(true);
+    HiddenCommand { inner }
+}
+
+/// `std::process::Command` counterpart of [`hidden_command`].
+pub fn hidden_std_command(program: impl AsRef<OsStr>) -> HiddenStdCommand {
+    let mut inner = std::process::Command::new(program.as_ref());
+    apply_hidden_console_std(&mut inner);
+    HiddenStdCommand { inner }
+}
+
+/// Tokio command whose `spawn`/`status`/`output` join the host-lifetime tree.
+pub struct HiddenCommand {
+    inner: Command,
+}
+
+impl fmt::Debug for HiddenCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl HiddenCommand {
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.inner.arg(arg);
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.inner.args(args);
+        self
+    }
+
+    pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.inner.env(key, val);
+        self
+    }
+
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) -> &mut Self {
+        self.inner.env_remove(key);
+        self
+    }
+
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.inner.env_clear();
+        self
+    }
+
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.inner.current_dir(dir);
+        self
+    }
+
+    pub fn stdin(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stdin(cfg);
+        self
+    }
+
+    pub fn stdout(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stdout(cfg);
+        self
+    }
+
+    pub fn stderr(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stderr(cfg);
+        self
+    }
+
+    pub fn kill_on_drop(&mut self, kill_on_drop: bool) -> &mut Self {
+        self.inner.kill_on_drop(kill_on_drop);
+        self
+    }
+
+    pub fn spawn(&mut self) -> io::Result<Child> {
+        crate::platform::spawn_host_lifetime_tokio(&mut self.inner)
+    }
+
+    pub async fn status(&mut self) -> io::Result<std::process::ExitStatus> {
+        let mut child = self.spawn()?;
+        child.wait().await
+    }
+
+    pub async fn output(&mut self) -> io::Result<Output> {
+        self.inner.stdout(Stdio::piped());
+        self.inner.stderr(Stdio::piped());
+        let child = self.spawn()?;
+        child.wait_with_output().await
+    }
+}
+
+/// `std::process::Command` whose `spawn`/`status`/`output` join the host-lifetime tree.
+pub struct HiddenStdCommand {
+    inner: std::process::Command,
+}
+
+impl fmt::Debug for HiddenStdCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl HiddenStdCommand {
+    pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
+        self.inner.arg(arg);
+        self
+    }
+
+    pub fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.inner.args(args);
+        self
+    }
+
+    pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
+    {
+        self.inner.env(key, val);
+        self
+    }
+
+    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) -> &mut Self {
+        self.inner.env_remove(key);
+        self
+    }
+
+    pub fn env_clear(&mut self) -> &mut Self {
+        self.inner.env_clear();
+        self
+    }
+
+    pub fn current_dir(&mut self, dir: impl AsRef<Path>) -> &mut Self {
+        self.inner.current_dir(dir);
+        self
+    }
+
+    pub fn stdin(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stdin(cfg);
+        self
+    }
+
+    pub fn stdout(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stdout(cfg);
+        self
+    }
+
+    pub fn stderr(&mut self, cfg: impl Into<Stdio>) -> &mut Self {
+        self.inner.stderr(cfg);
+        self
+    }
+
+    pub fn spawn(&mut self) -> io::Result<std::process::Child> {
+        crate::platform::spawn_host_lifetime_std(&mut self.inner)
+    }
+
+    pub fn status(&mut self) -> io::Result<std::process::ExitStatus> {
+        self.spawn()?.wait()
+    }
+
+    pub fn output(&mut self) -> io::Result<Output> {
+        self.inner.stdin(Stdio::null());
+        self.inner.stdout(Stdio::piped());
+        self.inner.stderr(Stdio::piped());
+        self.spawn()?.wait_with_output()
+    }
 }
 
 #[cfg(unix)]

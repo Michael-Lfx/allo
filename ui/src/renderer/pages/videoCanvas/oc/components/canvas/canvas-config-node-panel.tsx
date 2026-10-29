@@ -7,7 +7,7 @@ import { ModelPicker } from "@oc/components/model-picker";
 import { useEffectiveConfig } from "@oc/stores/use-config-store";
 import { canvasT } from "@oc/lib/canvas/canvas-i18n";
 import { canvasThemes } from "@oc/lib/canvas-theme";
-import { canvasModelSpecPatch, modelCapabilityConfigFor, videoDurationAllowed } from "@oc/lib/model-capabilities";
+import { canvasModelSpecPatch, modelCapabilityConfigFor, videoDurationAllowed, videoPromptHardMaxChars } from "@oc/lib/model-capabilities";
 import { buildGenerationConfig } from "@oc/lib/canvas/canvas-project-generation";
 import { navigateToSettings } from "@oc/lib/settings-navigation";
 import { useCanvasColorTheme } from "@oc/stores/use-canvas-color-theme";
@@ -251,7 +251,8 @@ function videoConfigPatch(key: CanvasVideoSettingKey, value: string) {
 
 function videoCapabilityError(profile: NonNullable<ReturnType<typeof modelCapabilityConfigFor>["video"]>, seconds: string, prompt: string, input: CanvasConfigNodePanelProps["inputSummary"], operation?: string) {
     if (!videoDurationAllowed(profile, Number(seconds))) return canvasT("videoCanvas.config.durationUnsupported", "当前模型不支持该视频时长");
-    if (Array.from(prompt).length > profile.references.promptMaxChars) return canvasT("videoCanvas.config.promptTooLong", "提示词超过模型限制（最多 {{count}} 字）", { count: profile.references.promptMaxChars });
+    const promptMaxChars = videoPromptHardMaxChars(profile.references.promptMaxChars);
+    if (promptMaxChars && Array.from(prompt).length > promptMaxChars) return canvasT("videoCanvas.config.promptTooLong", "提示词超过模型限制（最多 {{count}} 字）", { count: promptMaxChars });
     if (input.imageCount > profile.references.maxImages || input.videoCount > profile.references.maxVideos || input.audioCount > profile.references.maxAudios) return canvasT("videoCanvas.config.refsExceeded", "参考素材数量超过当前模型限制");
     const resolvedOperation = operation || defaultVideoOperation(input);
     if (!profile.operations.includes(resolvedOperation)) return canvasT("videoCanvas.config.operationUnsupported", "当前模型不支持该生成模式");

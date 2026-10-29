@@ -17,7 +17,7 @@ use url::form_urlencoded;
 
 use crate::models::{
     AnswerReviewRequest, CalendarStats, CheckinStatus, CoursePack,
-    CreateCustomQuestionRequest, CreateLessonActivityRequest,
+    CreateCustomQuestionRequest, CreateLessonActivityRequest, DeclareBasisRequest,
     GenerateCourseRequest, GenerateLessonActivityRequest,
     GenerateLessonRequest, LearningGraphGenerationStatus, MemoryCalibrationBin, MountRoundSummary,
     QuizGradeFeedback, QuizProgressView, QuizRoundReport, QuizRoundView,
@@ -34,6 +34,10 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             get(list_courses).post(import_course),
         )
         .route("/api/learning/courses/generate", post(generate_course))
+        .route(
+            "/api/learning/courses/generate/estimate",
+            post(estimate_course_generation),
+        )
         .route("/api/learning/courses/generate/status", get(learning_graph_generation_status))
         .route("/api/learning/generation-tasks", get(list_generation_tasks))
         .route("/api/learning/generation-tasks/{key}/cancel", post(cancel_generation_task))
@@ -46,12 +50,20 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             post(grow_learning_graph),
         )
         .route(
+            "/api/learning/courses/{id}/growth/verdict",
+            get(growth_verdict),
+        )
+        .route(
             "/api/learning/courses/{id}/graph/history",
             get(graph_history),
         )
         .route(
             "/api/learning/courses/{id}/graph/concepts",
             get(graph_concepts),
+        )
+        .route(
+            "/api/learning/courses/{id}/concepts/audit",
+            get(concept_audit),
         )
         .route(
             "/api/learning/courses/{id}/graph/structure/regenerate",
@@ -69,6 +81,13 @@ pub fn learning_routes(state: LearningRouterState) -> Router {
             "/api/learning/courses/{id}/graph/structure",
             get(get_structure_view),
         )
+        // 已会声明（Declared Known，m2）：勾选门口 → 按声明铸概念（不落节点）
+        // + 读数 + 撤销（概念留池）。off 开关 = 409 如实拒绝（service 侧执法）。
+        .route(
+            "/api/learning/courses/{id}/basis/declare",
+            post(declare_basis),
+        )
+        .route("/api/learning/courses/{id}/basis", get(get_basis).delete(revoke_basis))
         .route("/api/learning/courses/{id}", get(get_course))
         .route("/api/learning/courses/{id}", delete(delete_course))
         .route("/api/learning/courses/{id}", patch(rename_course))
@@ -224,6 +243,18 @@ async fn generate_course(
     )))
 }
 
+/// t5 成本门估算：提交建课前对知识库流做一次规则分诊（零 LLM），返回
+/// 文件数/批数/预估调用/耗时与 `needs_confirm`（阈值后端单源）。
+async fn estimate_course_generation(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Json(request): Json<GenerateCourseRequest>,
+) -> Result<Json<ApiResponse<crate::models::CourseGenerationEstimateView>>, AppError> {
+    Ok(Json(ApiResponse::ok(
+        state.service.estimate_course_generation(&user.id, request).await?,
+    )))
+}
+
 /// 课程生成状态（学习图生长与大纲流共用）：后台指示条的数据源。
 async fn learning_graph_generation_status(
     State(state): State<LearningRouterState>,
@@ -278,6 +309,23 @@ async fn grow_learning_graph(
     Ok(Json(ApiResponse::ok(serde_json::json!({ "kicked": kicked }))))
 }
 
+/// 自动补批判定（m10 触发②）：纯读裁决——就绪存量 × 开关合力 →
+/// due | below_threshold | disabled。零 LLM 零写入，Disabled 臂与停摆臂
+/// 如实读数；前端课程工作区加载时据此决定是否自动调既有 POST grow。
+async fn growth_verdict(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::GrowthVerdictView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .growth_verdict(&user.id, &course_id)
+            .await?,
+    )))
+}
+
 async fn graph_history(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -310,6 +358,63 @@ async fn graph_concepts(
     let course_id = parse_id::<LearningCourseId>(id)?;
     Ok(Json(ApiResponse::ok(
         state.service.graph_concepts(&course_id, &user.id).await?,
+    )))
+}
+
+/// 已会声明（m2）：勾选门口 → 幂等增量铸概念（零节点写）。整个管线同步跑
+/// 在 handler 里（generate_course 先例）：一次结构化 LLM 调用 + 命名门，
+/// 落库在单事务。
+async fn declare_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    Json(request): Json<DeclareBasisRequest>,
+) -> Result<Json<ApiResponse<crate::models::DeclarationResultView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state
+            .service
+            .declare_basis(&user.id, &course_id, request)
+            .await?,
+    )))
+}
+
+/// 已会声明读数（GET basis）：已声明 doors/blocks/concepts + Broken 降级披露。
+async fn get_basis(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::BasisView>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.basis_view(&course_id).await?,
+    )))
+}
+
+/// 撤销本课全部已会声明（删锚行；概念留池——「声明可撤、概念不灭」）。
+async fn revoke_basis(
+    State(state): State<LearningRouterState>,
+    Extension(user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    let revoked = state.service.revoke_basis(&user.id, &course_id).await?;
+    Ok(Json(ApiResponse::ok(
+        serde_json::json!({ "revoked": revoked }),
+    )))
+}
+
+/// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层 →
+/// 缺口片段/自指/互指环。「读侧先看见」——审计是缺口标记不是拦截门；
+/// 概念表 Tab 的行级标记数据源。
+async fn concept_audit(
+    State(state): State<LearningRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<crate::models::ConceptAuditReport>>, AppError> {
+    let course_id = parse_id::<LearningCourseId>(id)?;
+    Ok(Json(ApiResponse::ok(
+        state.service.concept_audit(&course_id).await?,
     )))
 }
 

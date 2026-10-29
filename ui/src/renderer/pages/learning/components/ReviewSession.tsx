@@ -11,12 +11,14 @@ import {
 } from '@arco-design/web-react';
 import { IconDelete, IconEdit, IconLock, IconMore, IconPushpin, IconQuestionCircle } from '@arco-design/web-react/icon';
 import { AppMessage as Message } from '@/renderer/components/notifications';
+import { InlineMarkdown } from '@renderer/components/Markdown';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { learningApi } from '../api';
 import type { DueReview, QuestionEntry, ReviewAnswerResult, ReviewRating } from '../types';
 import { errorMessage, isReviewUnderdeveloped } from '../utils';
 import { ActivityInput } from './ActivityInput';
+import { QuestionExplanation } from './QuestionExplanation';
 import { QuestionEditDialog } from './QuestionDialogs';
 
 const { Text } = Typography;
@@ -187,8 +189,9 @@ export function ReviewCard({
           ))}
         <div className='ml-auto'>{actions}</div>
       </div>
+      {/* 复习题干走内联渲染管线（与课时面题干同通道，口径统一） */}
       <div className='mb-12px text-16px font-500 leading-relaxed text-t-primary'>
-        {question.prompt}
+        <InlineMarkdown text={question.prompt} />
       </div>
       <ActivityInput
         kind={question.kind}
@@ -292,10 +295,18 @@ export function ReviewCard({
           </Text>
           {result.correct_answer !== null && (
             <Text type='secondary'>
-              {t('learning.reviewCorrectAnswer')}: {answerText(result.correct_answer)}
+              {/* 正确答案文本内联渲染（可能含 $…$ 公式） */}
+              {t('learning.reviewCorrectAnswer')}:{' '}
+              <InlineMarkdown text={answerText(result.correct_answer)} />
             </Text>
           )}
-          {result.feedback && <Text type='secondary'>{result.feedback}</Text>}
+          {/* 答错揭示的解析与课时面口径统一：按内容分流（围栏/多段 → 块级
+              Markdown，```svg fence 不露源码；短解析 → 内联） */}
+          {result.feedback && (
+            <div className='text-13px text-t-secondary'>
+              <QuestionExplanation text={result.feedback} />
+            </div>
+          )}
           <Button
             type='primary'
             status='danger'

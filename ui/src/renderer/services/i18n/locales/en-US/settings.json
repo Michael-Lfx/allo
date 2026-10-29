@@ -75,7 +75,11 @@
     "detailLoadFailed": "Could not load this skill file.",
     "detailLoadFailedHint": "The file may have moved or is no longer readable. Refresh the skill list and try again.",
     "tagsSaved": "Tags saved",
-    "tagsSaveFailed": "Failed to save tags"
+    "tagsSaveFailed": "Failed to save tags",
+    "allowModelAuto": "Allow model auto-invoke",
+    "allowModelAutoHint": "When on, the agent may load this skill from its description without a / selection.",
+    "invocationSaved": "Invocation setting saved",
+    "invocationSaveFailed": "Failed to save invocation setting"
   },
   "capabilityHub": {
     "navLabel": "Capability Hub",
@@ -1486,6 +1490,15 @@
       "note": "Provider models run in the cloud, so avoid sending sensitive information. Custom provider models are currently available to Flowy only.",
       "scopeNote": "Finding a model by purpose now lives in the Chat / Voice / Vision / Creation / Embedding sections on the left. This page is only about access and credentials."
     },
+    "herdsman": {
+      "title": "Herdsman",
+      "searchingTitle": "Looking for Herdsman on this computer",
+      "searchingBody": "After Herdsman is installed and running, its running local models appear in conversation model lists, and requests stay on this machine.",
+      "connectedTitle": "Herdsman is connected",
+      "connectedBody": "Running local models can be selected in any conversation. A model leaves the list when it stops and comes back when it is running again.",
+      "disconnectedTitle": "Herdsman is not connected",
+      "disconnectedBody": "It reconnects when the engine is available again. A conversation that already selected it shows the model as unavailable until then."
+    },
     "modality": {
       "chatTitle": "Chat Models",
       "chatSubtitle": "Models that can hold a conversation. The default model for new sessions is set here too.",
@@ -1639,6 +1652,19 @@
     "title": "MCP",
     "subtitle": "Register MCP servers and browse MCP markets.",
     "railTitle": "MCP"
+  },
+  "link": {
+    "title": "Connect a phone",
+    "subtitle": "Without the app, scan with WeChat or another scanner to open the web page. With the phone app, create a pairing code and allow it here.",
+    "browserTitle": "Open in a browser",
+    "browserDesc": "No app install. Scan with WeChat, the system camera, or another scanner. The phone opens this computer’s web page on the local network and signs in. Creating the code turns on web access.",
+    "browserAction": "Create web QR code",
+    "browserWechat": "If WeChat stays inside its own page and cannot open it, use the menu and open it in the system browser.",
+    "browserVirtualAddress": "This address belongs to a virtual adapter, so a phone browser cannot open it. Connect this computer to Wi-Fi, then create the QR code again.",
+    "browserNoAddress": "This computer has no local-network address a phone can open. Keep the phone and computer on the same network, and allow the web port through the firewall.",
+    "browserFailed": "Web access did not start.",
+    "appTitle": "Use the Flowy phone app",
+    "appDesc": "After installing the app, scan the pairing code. The phone gets no login until you allow it here. Conversation text does not go through the cloud."
   },
   "openCapabilities": {
     "title": "Remote & Open",

@@ -8,7 +8,7 @@ import type { PresetTag } from '@/common/types/agent/presetTypes';
 import LazyMarkdownView from '@/renderer/components/Markdown/LazyMarkdownView';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
-import { Button, Drawer, Spin } from '@arco-design/web-react';
+import { Button, Drawer, Message, Spin, Switch } from '@arco-design/web-react';
 import { Code, FileText, FolderOpen, Refresh, SettingOne } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -43,6 +43,9 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
+  const [allowModelAuto, setAllowModelAuto] = useState(true);
+  const [savingInvocation, setSavingInvocation] = useState(false);
+  const [catalogSkillId, setCatalogSkillId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
 
   const loadContent = useCallback(async () => {
@@ -72,8 +75,54 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
     if (!visible || !skill) return;
     setContent('');
     setViewMode('preview');
+    setCatalogSkillId(null);
+    setAllowModelAuto(true);
     void loadContent();
   }, [loadContent, skill, visible]);
+
+  useEffect(() => {
+    if (!visible || !skill) return;
+    let cancelled = false;
+    const sourceHint =
+      skill.source === 'builtin' ? 'builtin' : skill.source === 'extension' ? 'extension' : 'user';
+    void (async () => {
+      try {
+        const [catalog, overrides] = await Promise.all([
+          ipcBridge.fs.listSkillCatalog.invoke(),
+          ipcBridge.fs.listSkillInvocation.invoke(),
+        ]);
+        if (cancelled) return;
+        const match =
+          catalog.skills.find(
+            (entry) => entry.name === skill.name && entry.source === sourceHint
+          ) ?? catalog.skills.find((entry) => entry.name === skill.name);
+        const skillId = match?.skill_id ?? null;
+        setCatalogSkillId(skillId);
+        const override = skillId
+          ? overrides.find((row) => row.skill_id === skillId)
+          : undefined;
+        if (override) {
+          setAllowModelAuto(override.allow_model_auto !== 0);
+          return;
+        }
+        const body = await readSkillContent(skill, {
+          readBuiltinSkill: (relativeLocation) =>
+            ipcBridge.fs.readBuiltinSkill.invoke({ file_name: relativeLocation }),
+          readFile: (location) => ipcBridge.fs.readFile.invoke({ path: location }),
+        });
+        if (cancelled) return;
+        const slashOnly =
+          /disable-model-invocation:\s*true/i.test(body) ||
+          /invocation-policy:\s*\/invoke/i.test(body);
+        setAllowModelAuto(!slashOnly);
+      } catch (error) {
+        console.warn('[skills] failed to load invocation policy', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [skill, visible]);
 
   const display = skill ? resolveSkillDisplay(skill, localeKey) : null;
   const previewContent = useMemo(() => stripSkillFrontmatter(content).trim(), [content]);
@@ -170,6 +219,51 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
                 <p className='mb-0 mt-6px text-13px leading-20px text-t-secondary'>
                   {display.description || t('settings.skillsHub.noDescription', { defaultValue: 'No description provided.' })}
                 </p>
+                {catalogSkillId && (
+                  <div
+                    className='mt-10px flex items-center justify-between gap-12px rounded-12px bg-fill-2 px-12px py-8px'
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <div className='min-w-0'>
+                      <div className='text-12px font-600 text-t-primary'>
+                        {t('settings.skillsHub.allowModelAuto', { defaultValue: 'Allow model auto-invoke' })}
+                      </div>
+                      <div className='mt-2px text-11px text-t-tertiary'>
+                        {t('settings.skillsHub.allowModelAutoHint', {
+                          defaultValue: 'When on, the agent may load this skill from its description without a / selection.',
+                        })}
+                      </div>
+                    </div>
+                    <Switch
+                      size='small'
+                      checked={allowModelAuto}
+                      loading={savingInvocation}
+                      data-testid='skill-allow-model-auto'
+                      onChange={async (checked) => {
+                        setSavingInvocation(true);
+                        try {
+                          await ipcBridge.fs.setSkillInvocation.invoke({
+                            skill_id: catalogSkillId,
+                            allow_model_auto: checked,
+                          });
+                          setAllowModelAuto(checked);
+                          Message.success(
+                            t('settings.skillsHub.invocationSaved', { defaultValue: 'Invocation setting saved' })
+                          );
+                        } catch (error) {
+                          console.error('Failed to save skill invocation policy', error);
+                          Message.error(
+                            t('settings.skillsHub.invocationSaveFailed', {
+                              defaultValue: 'Failed to save invocation setting',
+                            })
+                          );
+                        } finally {
+                          setSavingInvocation(false);
+                        }
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
 

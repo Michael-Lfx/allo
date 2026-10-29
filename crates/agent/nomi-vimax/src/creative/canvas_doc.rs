@@ -131,11 +131,6 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             meta["characterVoiceInstructions"] = json!(voice_clause);
             meta["characterVoiceStatus"] = json!("ready");
         }
-        if let Some(voice_media) = ch.portraits.get("voice_ref") {
-            if let Some(entry) = media_ids.get(&voice_media.rel_path) {
-                meta["sampleResourceId"] = json!(entry.media_id);
-            }
-        }
         nodes.push(json!({
             "id": node_id,
             "type": if content.is_some() { "image" } else { "text" },
@@ -161,28 +156,10 @@ pub fn build_canvas_document(film: &CreativeFilm, media_ids: &MediaIdMap) -> Val
             let (_, Some((_, entry)), st) = media_content(Some(media), media_ids) else {
                 continue;
             };
-            let node = if media.kind == CreativeMediaKind::Audio {
-                audio_node(
-                    &vid,
-                    &format!("{} · 音色参考", ch.identifier_in_scene),
-                    X_CAST + 260.0,
-                    view_y,
-                    entry,
-                    st,
-                    json!({
-                        "workflowKind": "character",
-                        "characterName": ch.identifier_in_scene,
-                        "characterView": view,
-                        "assetCategory": "character_voice",
-                        "alloVimax": {
-                            "kind": "voice_ref",
-                            "sessionId": film.session_id,
-                            "characterIdx": ch.idx,
-                            "view": view,
-                        }
-                    }),
-                )
-            } else {
+            if media.kind == CreativeMediaKind::Audio {
+                continue;
+            }
+            let node = {
                 image_node(
                     &vid,
                     &format!("{} · {view}", ch.identifier_in_scene),
@@ -416,16 +393,14 @@ fn build_scene_block(
         scene.shots.iter().map(|s| s.idx).collect()
     };
 
-    // (video_id, shot_idx, char_idxs, ff_id, continuity_in_id, vlf_id)
+    // (video_id, shot_idx, char_idxs, ff_id, vlf_id)
     let mut video_nodes_meta: Vec<(
         String,
         i32,
         Vec<i32>,
         Option<String>,
         Option<String>,
-        Option<String>,
     )> = Vec::new();
-    let mut prev_vlf_id: Option<String> = None;
     let mut shot_video_ids: Vec<String> = Vec::new();
 
     for (order, &shot_idx) in shot_order.iter().enumerate() {
@@ -481,29 +456,14 @@ fn build_scene_block(
             })
             .collect();
 
-        let voice_clauses: Vec<String> = if char_idxs.iter().any(|idx| {
-            cast_for_scene
-                .iter()
-                .find(|c| c.idx == *idx)
-                .is_some_and(|c| c.portraits.contains_key("voice_ref"))
-        }) {
-            Vec::new()
-        } else {
-            char_idxs
-                .iter()
-                .filter_map(|idx| cast_for_scene.iter().find(|c| c.idx == *idx))
-                .filter_map(|c| c.seedance_voice_clause())
-                .collect()
-        };
+        let voice_clauses: Vec<String> = char_idxs
+            .iter()
+            .filter_map(|idx| cast_for_scene.iter().find(|c| c.idx == *idx))
+            .filter_map(|c| c.seedance_voice_clause())
+            .collect();
 
         let camera_label = format_camera_label(cam_idx, camera);
         let image_prompt = compose_image_prompt(visual, ff_desc, &cast_for_scene, &char_idxs);
-        let use_voice_ref = char_idxs.iter().any(|idx| {
-            cast_for_scene
-                .iter()
-                .find(|c| c.idx == *idx)
-                .is_some_and(|c| c.portraits.contains_key("voice_ref"))
-        });
         let video_prompt = compose_video_prompt(
             visual,
             motion,
@@ -512,7 +472,6 @@ fn build_scene_block(
             lf_desc,
             &voice_clauses,
             film,
-            use_voice_ref,
         );
 
         let mut reference_node_ids: Vec<String> = char_idxs
@@ -548,7 +507,6 @@ fn build_scene_block(
             "status": if shot_media.and_then(|s| s.video.as_ref()).is_some() { "success" } else { "idle" },
         });
 
-        let continuity_in = prev_vlf_id.clone();
         let mut ff_node_id = None;
         let mut this_vlf_id = None;
 
@@ -581,7 +539,7 @@ fn build_scene_block(
                 }
             }
 
-            // video_last_frame — primary continuity asset for next Seedance R2V shot
+            // video_last_frame — filmstrip still. Not a reference for the next shot.
             let vlf_src = shot
                 .video_last_frame
                 .as_ref()
@@ -614,10 +572,10 @@ fn build_scene_block(
 
             if let Some(video) = &shot.video {
                 if let Some(entry) = media_ids.get(&video.rel_path) {
-                    let edit_op = if ff_node_id.is_some() || continuity_in.is_some() {
+                    let edit_op = if ff_node_id.is_some() {
                         "image_to_video"
                     } else {
-                        "text_to_video"
+                        "reference_to_video"
                     };
                     let mut vmeta = json!({
                         "status": "success",
@@ -651,9 +609,6 @@ fn build_scene_block(
                     });
                     if let Some(ref id) = ff_node_id {
                         vmeta["videoStartFrameNodeId"] = json!(id);
-                    } else if let Some(ref id) = continuity_in {
-                        // Agent default: prev video_last_frame is continuity Image 1
-                        vmeta["videoStartFrameNodeId"] = json!(id);
                     }
                     if let Some(ref id) = this_vlf_id {
                         vmeta["videoEndFrameNodeId"] = json!(id);
@@ -673,14 +628,11 @@ fn build_scene_block(
                         shot_idx,
                         char_idxs.clone(),
                         ff_node_id.clone(),
-                        continuity_in.clone(),
                         this_vlf_id.clone(),
                     ));
                 }
             }
         }
-
-        prev_vlf_id = this_vlf_id;
         rows.push(row);
     }
 
@@ -700,7 +652,7 @@ fn build_scene_block(
             "workflowKind": "storyboard",
             "workflowTitle": scene.title,
             "workflowDescription": format!(
-                "{} 个镜头 · Agent {} · 多参考图 R2V（角色+环境+道具+连续末帧）",
+                "{} 个镜头 · Agent {} · 多参考图 R2V（角色定妆+场景空镜+道具，站位写在分镜里）",
                 rows.len(),
                 film.workflow.as_str()
             ),
@@ -756,9 +708,9 @@ fn build_scene_block(
         ));
     }
 
-    // Per-shot wiring matching Seedance multi-ref order:
-    // continuity_in + cast + world → video ← script row; video → video_last_frame
-    for (video_id, shot_idx, char_idxs, ff_id, continuity_in, vlf_out) in &video_nodes_meta {
+    // Per-shot wiring: cast + world → video ← script row; video → video_last_frame.
+    // The previous shot's last frame is not an input.
+    for (video_id, shot_idx, char_idxs, ff_id, vlf_out) in &video_nodes_meta {
         let row_id = format!("vimax-row-{}-{shot_idx}", scene.key);
         connections.push(conn(
             &format!("conn-row-{video_id}"),
@@ -770,14 +722,6 @@ fn build_scene_block(
             connections.push(conn(
                 &format!("conn-ff-{video_id}"),
                 ff,
-                video_id,
-                None,
-            ));
-        }
-        if let Some(cont) = continuity_in {
-            connections.push(conn(
-                &format!("conn-cont-{video_id}"),
-                cont,
                 video_id,
                 None,
             ));
@@ -946,7 +890,7 @@ fn compose_brief(film: &CreativeFilm) -> String {
         parts.push(format!("世界资产：{env_n} 环境板 · {prop_n} 道具板"));
     }
     parts.push(
-        "质量护栏：重生成视频时保留 FIXED SPEAKER VOICE、角色定妆、环境/道具参考与连续末帧连线；机位树见分镜 alloVimax.cameraTree。"
+        "质量护栏：重生成视频时保留文字声线、角色定妆、环境/道具参考；不传人物参考音频。站位以本镜画面描述为准，不接上一镜尾帧。同一条视频内换景别是硬切，人物不要换边或闪现。机位树见分镜 alloVimax.cameraTree。"
             .into(),
     );
     parts.join("\n")
@@ -986,7 +930,6 @@ fn compose_video_prompt(
     lf_desc: &str,
     voice_clauses: &[String],
     film: &CreativeFilm,
-    use_voice_audio_ref: bool,
 ) -> String {
     let mut parts = Vec::new();
     if !motion.trim().is_empty() {
@@ -1028,12 +971,7 @@ fn compose_video_prompt(
             ));
         }
     }
-    if use_voice_audio_ref {
-        parts.push(
-            "@Audio1 is the voice timbre bible; match speaker identity for dialogue. Keep the scene's room tone and BGM."
-                .into(),
-        );
-    } else if !audio.trim().is_empty() {
+    if !audio.trim().is_empty() {
         parts.push(format!("Audio / dialogue: {}", audio.trim()));
     }
     for clause in voice_clauses {
@@ -1161,41 +1099,6 @@ fn image_node(
         "position": { "x": x, "y": y },
         "width": 220.0,
         "height": 200.0,
-        "metadata": meta,
-    })
-}
-
-fn audio_node(
-    id: &str,
-    title: &str,
-    x: f64,
-    y: f64,
-    entry: &IngestedMedia,
-    status: &str,
-    extra: Value,
-) -> Value {
-    let mut meta = extra;
-    if let Some(obj) = meta.as_object_mut() {
-        obj.insert(
-            "content".into(),
-            json!(format!("/api/video-canvas/media/{}", entry.media_id)),
-        );
-        obj.insert(
-            "storageKey".into(),
-            json!(format!("resource:{}", entry.media_id)),
-        );
-        obj.insert("mediaId".into(), json!(entry.media_id));
-        obj.insert("mimeType".into(), json!(entry.mime));
-        obj.insert("bytes".into(), json!(entry.bytes));
-        obj.insert("status".into(), json!(status));
-    }
-    json!({
-        "id": id,
-        "type": "audio",
-        "title": title,
-        "position": { "x": x, "y": y },
-        "width": 220.0,
-        "height": 120.0,
         "metadata": meta,
     })
 }

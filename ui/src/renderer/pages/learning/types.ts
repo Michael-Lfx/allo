@@ -61,11 +61,14 @@ export interface GenerateCourseRequest {
 }
 
 /** 学习图生成状态（后台指示条/取消入口的数据源）。创建在请求内完成，
- * 生长在后台任务执行——注册表让运行对外可发现、可取消。 */
+ * 生长在后台任务执行——注册表让运行对外可发现、可取消。m7 资源闸：
+ * `queued` = 排队中的任务数（闸开时提交先落排队，空闲许可就位才开跑；
+ * off 臂恒 0）。无在跑任务时 `topic` 回退最新排队主题。 */
 export interface LearningGraphGenerationStatus {
   running: boolean;
   topic: string | null;
   elapsed_secs: number | null;
+  queued: number;
 }
 
 /** 按需生成单个课时内容时可选的模型偏好；两个字段同时传或不传。
@@ -108,6 +111,122 @@ export interface CourseSamplingBaseView {
   goal_fallback: boolean;
 }
 
+// ── t5：来源计划（SourcePlan）/ 来源覆盖（SourceCoverage）的读侧视图 ────
+// 术语铁律：这里只谈「来源结构计划 / 来源覆盖」，与学习图的
+// Structure / Coverage Gauge 是两回事，禁止混用。
+
+/** 来源计划快照的版本面：available=false = 未知版本/坏形状（读侧降级，
+ * 计数不可信置零；课程本身照常可学）。 */
+export interface CourseSourcePlanSnapshotView {
+  version: number | null;
+  available: boolean;
+}
+
+/** 分诊摘要：七角色计数（总数守恒：各角色之和 = total_files）+ degraded
+ * （规则分诊，未做 LLM 判定）。 */
+export interface CourseSourcePlanTriageView {
+  total_files: number;
+  core: number;
+  prerequisite: number;
+  practice: number;
+  mixed: number;
+  noise: number;
+  duplicate: number;
+  uncertain: number;
+  degraded: boolean;
+  warnings?: string[];
+}
+
+/** t2 计划一章的来源映射摘要（章 → 概念/课时/来源文件；零课时章显式
+ * skipped + 理由）。 */
+export interface CourseSourcePlanChapterSummaryView {
+  title: string;
+  concepts: number;
+  lessons: number;
+  skipped: boolean;
+  skip_reason: string | null;
+  source_files: number;
+}
+
+/** 计划摘要：章/概念/边计数 + 证据 gaps + 章节映射摘要。 */
+export interface CourseSourcePlanPlanView {
+  chapters: number;
+  concepts: number;
+  edges: number;
+  gaps?: string[];
+  chapter_summaries: CourseSourcePlanChapterSummaryView[];
+  warnings?: string[];
+}
+
+/** 被显式跳过的 topic 示例（label + 理由）。 */
+export interface CourseSourcePlanSkippedTopicView {
+  label: string;
+  reason: string | null;
+}
+
+/** 展开覆盖摘要：topic 四态 + 前置/练习去向 + 锚点不确定 + 兜底课时。 */
+export interface CourseSourcePlanCoverageView {
+  topics_covered: number;
+  topics_skipped: number;
+  prerequisite_topics: number;
+  practice_topics: number;
+  anchor_uncertain_topics: number;
+  uncertain?: string[];
+  skipped_examples?: CourseSourcePlanSkippedTopicView[];
+  fallback_lessons: number;
+  warnings?: string[];
+}
+
+/** 一条重复/翻译副本示例（path + 指向的 canonical + canonical 入选理由）。 */
+export interface CourseSourcePlanDuplicateExampleView {
+  path: string;
+  duplicate_of: string;
+  canonical_reason: string;
+}
+
+/** 重复面：计数（全量）+ 示例（≤20）。 */
+export interface CourseSourcePlanDuplicatesView {
+  count: number;
+  examples: CourseSourcePlanDuplicateExampleView[];
+}
+
+/** 来源计划快照的摘要视图（t5 细化分面）：列表/详情共用；旧课程/描述流
+ * 为 null（字段不出现，UI 不显示空卡）。 */
+export interface CourseSourcePlanView {
+  snapshot: CourseSourcePlanSnapshotView;
+  triage: CourseSourcePlanTriageView;
+  plan: CourseSourcePlanPlanView;
+  coverage: CourseSourcePlanCoverageView;
+  duplicates: CourseSourcePlanDuplicatesView;
+}
+
+/** 一条被排除出候选集的文件（noise/duplicate，path + 角色名 + 理由）。 */
+export interface CourseSourcePlanExcludedView {
+  path: string;
+  role: string;
+  reason: string;
+}
+
+/** 详情端点独有的诊断明细：全量 excluded/duplicates（限长 200）——列表
+ * 摘要只给计数/示例，详情页看完整「为什么没进课程」。 */
+export interface CourseSourcePlanDetailView {
+  excluded: CourseSourcePlanExcludedView[];
+  duplicates: CourseSourcePlanDuplicateExampleView[];
+}
+
+/** t5 成本门估算：提交建课前的一次规则分诊读数（零 LLM、degraded=true）。
+ * needs_confirm 由后端按 >40 文件或 >20 次预估调用判定（阈值单源）。 */
+export interface CourseGenerationEstimateView {
+  total_files: number;
+  estimated_batches: number;
+  estimated_llm_calls: number;
+  /** 粗估耗时（秒；按调用数 × 经验常数，仅供确认弹窗展示）。 */
+  estimated_seconds: number;
+  needs_confirm: boolean;
+  triage: CourseSourcePlanTriageView;
+  skipped_examples?: CourseSourcePlanExcludedView[];
+}
+
 export interface CourseSummary {
   id: string;
   title: string;
@@ -136,6 +255,9 @@ export interface CourseSummary {
   learning_goal: string | null;
   /** 目标感知采样的披露（t2）：无目标路径/旧课程为 null。 */
   sampling: CourseSamplingView | null;
+  /** 来源计划快照摘要（t5）：旧课程/描述流/未知版本降级见 snapshot.available；
+   * 列上 NULL 时为 null（字段不出现，UI 不显示空卡）。 */
+  source_plan: CourseSourcePlanView | null;
 }
 
 export interface Activity {
@@ -187,6 +309,9 @@ export interface CourseDetail {
   due_review_count: number;
   /** 仅 learning_graph 课程携带：终点锚 + 罗盘 + 就绪集（ADR-0009） */
   graph: LearningGraphView | null;
+  /** 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）；只挂详情
+   * 端点，旧课程/描述流为 null。 */
+  source_plan_detail?: CourseSourcePlanDetailView | null;
 }
 
 export interface AttemptResult {
@@ -194,6 +319,9 @@ export interface AttemptResult {
   score: number;
   passed: boolean;
   feedback: string;
+  /** AI 评审判错时点名的缺失要点（判对恒空；判对-缺失互斥，n4 D3）。
+   * 旧后端/对照臂不带此字段，可选承载。 */
+  missing_points?: string[];
 }
 
 /** 作答记录 = 判卷结果 + 提交的原始作答；response 用于回看时回显用户答案 */
@@ -463,6 +591,22 @@ export interface LearningGraphView {
   growth_running: boolean;
 }
 
+/** 自动补批判定读数（m10 触发②，GET /courses/{id}/growth/verdict，纯读零
+ * 副作用）：与后端 `GrowthVerdictView` 同形。verdict ∈ due（水位以下，前端
+ * 自动补一批）| below_threshold（水位以上）| disabled（开关关，如实）；
+ * stalled = 停摆臂（空图）随行——true 时前端抑制自动补批（ADR-0010）。 */
+export interface GrowthVerdictView {
+  verdict: 'due' | 'below_threshold' | 'disabled';
+  /** 就绪存量（裁决输入原样回显） */
+  ready_count: number;
+  /** 触发水位（与后端 READY_TRIGGER 同源的唯一数字） */
+  trigger: number;
+  /** 开关合力（环境闸 ∧ 设置开关） */
+  enabled: boolean;
+  /** 停摆臂（空图）：自动触发不进入 */
+  stalled: boolean;
+}
+
 /** 结构读侧投影（GET /courses/{id}/graph/structure，always 200）：
  * structure = null 表示知识结构未生成（Missing 合法空状态，生成中态由
  * WS structure_* 事件表达）；投影运行时重算、永不落盘；严格课程内——
@@ -606,7 +750,8 @@ export interface SpineView {
 }
 
 /** 块视图行：layer = assumes 前置链深度（L0 起算，层号不是排期）；
- * no_prereq = 本块不做任何 assumes 边之源 */
+ * no_prereq = 本块不做任何 assumes 边之源；
+ * door_refs = 门位标签（覆盖本块主题的门口编号，旧快照无键 = 空数组） */
 export interface BlockView {
   name: string;
   slug: string;
@@ -616,6 +761,7 @@ export interface BlockView {
   note: string;
   layer: number;
   no_prereq: boolean;
+  door_refs: string[];
 }
 
 export interface StructureEdgeView {
@@ -670,6 +816,8 @@ export interface TerrainDoorView {
   criterion: string;
   /** hard | self_check */
   kind: 'hard' | 'self_check';
+  /** 块覆盖统计：结构中被该门口 door_refs 标注覆盖的块数（无标注 = 0） */
+  covered_blocks: number;
 }
 
 /** 学习记录视图：批次时间线（倒序）——生长史即课程史 */
@@ -708,6 +856,62 @@ export interface GraphConceptRowView {
   refs: GraphConceptRefView[];
   /** 其他还在教该概念的课程标题（跨课程就绪的来源可见性） */
   other_courses: string[];
+  /** 铸造出处（attestation 簿记；'basis-declaration' = 已会声明铸入） */
+  source?: string | null;
+  /** 本课已会声明覆盖该概念（声明锚反查；无节点也入表） */
+  declared?: boolean;
+}
+
+// ── 已会声明（Declared Known，m2）──────────────────────────────────────────
+
+/** 一次已会声明的返回面（noop = 幂等空跑，全空清单） */
+export interface DeclarationResultView {
+  course_id: string;
+  /** 本次实际声明的门口（差集；noop = 空） */
+  doors: string[];
+  /** 本次命中的目标块显示名（AND 口径） */
+  blocks: string[];
+  /** 本次铸出或复用的概念 */
+  concepts: DeclaredConceptView[];
+  minted: number;
+  reused: number;
+  /** 幂等空跑（勾选全部已声明）：零 LLM 零写 */
+  noop: boolean;
+  /** 铸造软提示（人面，如清单截断） */
+  warnings: string[];
+}
+
+export interface DeclaredConceptView {
+  concept_id: string;
+  name: string;
+  /** 新铸 | 复用（复用 = 命名门撞既有概念，入池不重铸） */
+  minted: boolean;
+}
+
+/** 已会声明读数（GET basis）：累计声明 + 概念回显 + 解析失败披露 */
+export interface BasisView {
+  course_id: string;
+  /** 累计已声明门口（全部锚行并集） */
+  doors: string[];
+  /** 累计命中块 slug（全部锚行并集） */
+  blocks: string[];
+  /** 已声明概念（正名 + 铸造出处） */
+  concepts: BasisConceptView[];
+  /** 锚行里已无法在登记表解析的概念 id（概念被移除后的如实披露） */
+  unresolved_concept_ids: string[];
+  /** 累计声明次数（锚行数） */
+  declarations: number;
+  /** 机制开关状态（off 时端点 409，读数照常可读） */
+  enabled: boolean;
+}
+
+export interface BasisConceptView {
+  concept_id: string;
+  canonical: string;
+  /** 声明来源标记（恒 'basis-declaration'；来源保留不抹） */
+  source: string | null;
+  /** 该概念出现在几次声明里 */
+  declaration_count: number;
 }
 
 /** 一条活跃别名（j04）：该名字的意义（缺席 = 与概念定义同义）与出处 */
@@ -727,6 +931,41 @@ export interface GraphConceptRefView {
   /** 投影名（j04）：节点引用该概念时使用的名字；老行为 null（回退正名） */
   ref_name: string | null;
   status: LessonStatus;
+}
+
+/** 定义审计条目（m9 只读报告）：概念 + 机械点名片段（课程豁免过滤后） */
+export interface ConceptAuditEntry {
+  concept_id: string;
+  canonical: string;
+  definition: string;
+  /** 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声） */
+  fragments: string[];
+}
+
+/** 定义审计自指条目：定义含自身正名（ISO 704 禁止） */
+export interface ConceptAuditSelfRef {
+  concept_id: string;
+  name: string;
+}
+
+/** 定义审计互指对（循环定义的最短形态 A↔B） */
+export interface ConceptAuditCycle {
+  a_concept_id: string;
+  a_name: string;
+  b_concept_id: string;
+  b_name: string;
+}
+
+/** 定义审计报告（只读，零 LLM 零写入）：登记表全量 × 用语表三层的机械读数 */
+export interface ConceptAuditReport {
+  /** 审计的概念总数（登记表全量、非废弃） */
+  concept_count: number;
+  /** 有缺口的概念条目（零片段的概念不占行；按片段数降序） */
+  flagged: ConceptAuditEntry[];
+  /** 自指概念（定义含自身正名） */
+  self_refs: ConceptAuditSelfRef[];
+  /** 两两互指（按 (a, b) 字典序） */
+  mutual_cycles: ConceptAuditCycle[];
 }
 
 /** 记忆健康面板：到期预报、卡池状态、真实保留率与预测对照/遗忘曲线 */

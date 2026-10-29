@@ -22,11 +22,22 @@ use nomifun_api_types::{
     AppServerMarketplaceRemoveResult, AppServerMarketplaceSummary,
     AppServerModelList,
     AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary, AppServerStoreInstallResult,
-    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
+    AppServerStoreInstallResult,
+    AppServerStoreCategoriesResponse, AppServerStoreItem, AppServerStoreList, AppServerTeamDetail,
+    AppServerTeamSummary,
 };
 use nomifun_common::{AppError, LocalizedVariant};
 use std::collections::BTreeMap;
+
+/// Wall-clock seconds for `fetched_at` fields. A free function so the trait's
+/// default body needs no `chrono` dependency of its own.
+fn chrono_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
 
 /// Read-side Skill catalog (`skill/list`, `skill/get`).
 #[async_trait]
@@ -455,6 +466,18 @@ pub trait AgentCatalogProvider: Send + Sync {
 pub trait StoreProvider: Send + Sync {
     /// All store items across enabled marketplaces (grouped client-side).
     async fn list(&self) -> Result<AppServerStoreList, AppError>;
+
+    /// The category dictionary across enabled markets plus the market-level
+    /// tag vocabulary (`store/categories`, `43` §3.1). A market with no
+    /// dictionary contributes nothing; absence is never an error.
+    async fn categories(&self) -> Result<AppServerStoreCategoriesResponse, AppError> {
+        let _ = self;
+        Ok(AppServerStoreCategoriesResponse {
+            fetched_at: chrono_now_secs(),
+            marketplace_tags: vec![],
+            items: vec![],
+        })
+    }
 
     /// Install one marketplace entry: import missing snapshots and register
     /// their components into the runtime. Idempotent — an already-installed
@@ -1160,12 +1183,8 @@ impl AgentCatalogProvider for FakeAgentCatalog {
             background: None,
             isolation: None,
             permission_mode_ignored: false,
-            display_description: None,
-            quick_prompts: vec![],
-            tags: vec![],
             default_init_prompt: None,
             expert_type: None,
-            category_id: None,
         })
     }
 }
@@ -1215,6 +1234,9 @@ impl TeamCatalogProvider for FakeTeamCatalog {
 pub struct FakeStoreProvider {
     pub items: Vec<AppServerStoreItem>,
     pub install_result: AppServerStoreInstallResult,
+    /// Canned `store/categories` answer. Empty by default — the catalog fake
+    /// has no market source to read a dictionary from.
+    pub categories: AppServerStoreCategoriesResponse,
 }
 
 impl Default for FakeStoreProvider {
@@ -1248,6 +1270,8 @@ impl FakeStoreProvider {
                 snapshot_id: None,
                 installed_version: None,
                 blocked_reason: None,
+                category_id: None,
+                category: None,
             }],
             install_result: AppServerStoreInstallResult {
                 marketplace_id: "company-tools".into(),
@@ -1263,6 +1287,11 @@ impl FakeStoreProvider {
                 previous_snapshot_id: None,
                 released_count: 0,
             },
+            categories: AppServerStoreCategoriesResponse {
+                fetched_at: 0,
+                marketplace_tags: vec![],
+                items: vec![],
+            },
         }
     }
 }
@@ -1271,6 +1300,10 @@ impl FakeStoreProvider {
 impl StoreProvider for FakeStoreProvider {
     async fn list(&self) -> Result<AppServerStoreList, AppError> {
         Ok(AppServerStoreList { items: self.items.clone(), markets_pending: false })
+    }
+
+    async fn categories(&self) -> Result<AppServerStoreCategoriesResponse, AppError> {
+        Ok(self.categories.clone())
     }
 
     async fn install_entry(
@@ -1355,6 +1388,10 @@ mod tests {
             enabled: true,
             required_connectors: vec![],
             avatar_url: None,
+            tags: vec![],
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -1365,11 +1402,15 @@ mod tests {
             description: None,
             kind: "stdio-mcp".into(),
             transport_summary: "npx @playwright/mcp".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             credential: None,
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         }
     }
 

@@ -41,6 +41,25 @@
   大纲（modules/lessons）导入即落库；课时正文在学习者打开该课时
   时按需生成（`content_generated` 列支撑幂等），分节落
   `learning_lesson_sections`（ADR-0002）；
+
+  **脏库/大教材路径（v2，ADR-0014）**：知识库流且有引擎注入时不再用采样
+  承担结构发现，改走四段——①清点（`run_kb_triage` 列全部 md + 指纹）②分诊
+  （七角色：core/prerequisite/practice/mixed/noise/duplicate/uncertain，规则
+  零 LLM + LLM 批判定 ≤40 文件/批，失败降级规则且 degraded 必须可见）③证据
+  结构计划（`run_kb_structure`：标题+锚点片段建概念图与章节骨架，零证据降级
+  空章节回退采样路径）④分批展开（`run_kb_expansion`：按章展开产 Blueprint，
+  跳过对称账台账 SourceCoverage）。四件套（inventory/triage/plan/coverage）
+  以 v1 信封落 `course_source_plan_json`（迁移 069）；描述流/回退路径列
+  NULL 不伪造。**40 文件预算的新定位**：只是单批分诊/展开的批预算与成本门
+  阈值之一（>40 文件或预估 >20 次调用时 `POST /courses/generate/estimate`
+  规则分诊 + 估算确认），不再承担结构发现。与 t3 课时检索的关系：课时正文
+  grounding 仍按课时 `sources` 走既有 24KB/40KB 预算，锚点 rel_path 必须出
+  自清点清单（防幻觉门）；文件级 role 只作诊断，覆盖以 topic 为主单位。WS
+  进度帧新增 `triage_started/triage_completed/source_plan_started/
+  source_plan_ready/coverage_ready`（旧客户端忽略未知 phase）。UI：建课进度
+  新步骤条（来源分诊→来源结构计划→课时展开）、成本门确认弹窗、课程详情
+  「来源覆盖」卡（旧课程/描述流不显示空卡、未知版本显式不可用）。契约见
+  [docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)。
 - **learning_graph**（beta）—— **先成结构地图，再从概念网生长**（ADR-0009 /
   ADR-0010）：建课单步向导 = 学习目标（必填）+ 程度声明/基础声明（可选）；
   后台先跑**知识结构生成**（双产物 structure + 前置地形，gd.* 契约门 +
@@ -60,7 +79,7 @@
   评审必打回且修法只有移出本批），门直接摘除该节点留痕，其余照常落库，不烧
   模型轮次。每批落 `learning_growth_batches` 出生档案。读侧投影 `structure_view` 纯函数
   （零 IO 零 LLM，课程内作用域）支撑前端结构图 Tab。**终点锚与罗盘已整体
-  退役**（迁移 071；方向感由结构投影承担）。概念本身登记在全局跨课程的
+  退役**（迁移 068；方向感由结构投影承担）。概念本身登记在全局跨课程的
   `learning_concept_registry`（canonical + 别名联合唯一，生长按需铸名）。
   **别名闭环（j04 = 二轮 g3 机制 + 三轮 g2 数据形态）**：别名是结构化记录
   `{name, definition?, attestation?, status}`（退役名不占名池）；铸名门带
@@ -159,19 +178,22 @@ teaching_style）、`051_learning_section_visual.sql`（节 visual 承诺落库�
 `052_learning_review_log.sql`（逐次复习日志 `learning_review_log` +
 `learning_attempts.elapsed_ms`）、`053_learning_section_degraded.sql`
 （节降级兜底标记落库，ADR-0008）、
-`066_retire_graph_dag_and_concepts.sql`（**退役**：旧 DAG 图课程数据与
-per-course 概念体系五表全部删除，ADR-0009）、
-`067_concept_web_growth.sql`（概念登记表 / 概念网边
-`learning_lesson_concepts(role,tier)` / 生长批次）、`068` 批行状态机、
-`069` 课程软删墓碑、`070` 课时难度列、
-`071_retire_endpoints_compass_structure_snapshot.sql`（**退役**：终点表 + 标记
-课时行 + `compass_md`/`compass_updated_at` 列删除；新增
-`learning_courses.structure_json` 结构快照列，ADR-0010）、
-`076_learning_course_enabled.sql`（现存且启用口径）、
-`077_concept_alias_records.sql`（别名结构化记录 + 概念网边 ref_name）、
-`078_learning_xp_events.sql`（XP 结算账本 + 复习作答流水补列）、
-`079_learning_structure_mounts.sql`（挂载事实层 + findings 留痕，ADR-0012）、
-`080_learning_structure_repairs.sql`（修补审计表，ADR-0012）。
+`068_learning_domain_rebuild.sql`（**学习域合并基线**：原 068–084 十七段学习
+迁移按序合并为一个版本；分段链未随正式版本发布、没有真实用户库承载。含：
+旧 DAG 图课程数据与 per-course 概念体系五表退役，ADR-0009；概念登记表 /
+概念网边 `learning_lesson_concepts(role,tier)` / 生长批次与批行状态机；
+终点表 + 标记课时行 + `compass_md`/`compass_updated_at` 列退役、新增
+`learning_courses.structure_json` 结构快照列，ADR-0010；课程软删墓碑 /
+课时难度 / `samples_meta_json` / `source_kb_ids` / `source_paths_json` /
+`enabled` 等课程与课时列演进；别名结构化记录 + 概念网边 ref_name；
+XP 结算账本 + 复习作答流水补列；挂载事实层 + findings 留痕、修补审计表，
+ADR-0012；quiz 回合记录表）、
+`069_learning_course_source_plan.sql`（t4：`learning_courses` 加
+`course_source_plan_json` TEXT 列，nullable + CHECK JSON object；承载来源
+计划 v1 信封 {version, inventory, triage, plan, coverage, warnings}——
+ADR-0014 脏库路径的落盘真相；旧行 NULL 不回填，读侧未知 version 降级
+available=false；契约见
+[docs/contracts/learning-course-source-plan.md](../contracts/learning-course-source-plan.md)）。
 
 HTTP 面（`nomifun-app/src/router/routes.rs` 挂载，实例 owner 保护）：
 `/api/learning/courses*`（列表/导入/生成/状态/取消/删除/标签/注册/诊断）、
@@ -197,12 +219,19 @@ outline/lesson）、
 生成/生长进度经 WebSocket 推送：`learning.course-generation` /
 `learning.lesson-generation`（学习图帧带 `kind=learning_graph` 与 `event` 细分
 名：growth_* 与 structure_started/completed/failed，j08/j09 起
-structure_mount_* / structure_repair_* 同通道）。
+structure_mount_* / structure_repair_* 同通道；v2 脏库路径的知识库流另发
+`triage_started/triage_completed`（七角色计数 + degraded + 有界跳过/重复/
+uncertain 示例）、`source_plan_started/source_plan_ready`（章/概念/gaps）、
+`coverage_ready`（topic 覆盖/跳过/兜底），旧客户端忽略未知 phase，
+started/publishing/completed/failed 语义不变）。
 
 ## 前端
 
 `ui/src/renderer/pages/learning/`：CourseWorkspace（分节 stepper、按需拉取
-课时详情）、LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
+课时详情；v2 起「来源覆盖」卡——topic 覆盖/mixed 部分进入/前置练习去向/
+duplicate canonical/anchor_uncertain/fallback 课时/warnings 与文件级诊断
+明细，旧课程/描述流不显示空卡、未知快照版本显式不可用）、
+LearningGraphWorkspace（知识结构状态条 + 就绪 x/7 补充节点 +
 四视图：学习 / 学习记录批次时间线 / 概念表 / **结构图**——思维导图、关系
 图谱（dagre 分层、assumes=门方向反转）、学习路线（主干子图 + 传递闭包自动
 补前导）、矩阵；j08/j09 起结构图带挂载三态段（三态计数/stale 显影/已挂清
@@ -220,7 +249,18 @@ QuestionManager、LearningModelSelector 等；hooks `useCourseLearning` /
 wayfinder 票 s1 + j05/j07/j08/j09 扩档 + q1/q2/q3 quiz 档）：与应用同接线
 （DB pool → LearningService + set_generation_dependencies + 课时/生成通道注入；
 provider 凭据复用 `resolve_provider_config` 现链），缺省从零临时 SQLite（`--db` 可
-指开发库）。九档：
+指开发库）。十档：
+
+- `course`（v2 起带三变体）：目录递归收 md → 建临时库 → `generate_course`
+  全链（判据 = 课程落库、课时来源可解析、采样披露可读；章节覆盖/顺序作为
+  负优化读数打印不判红）。`--triage-only` 只跑清点+分诊，打印 counts/
+  excluded reasons/uncertain，有 warning 也 EXIT=0（读数面非门禁）；
+  `--plan-only` 跑分诊+结构计划，打印 chapters/coverage 台账/gaps（计划
+  不可用 EXIT=2）；`--report-json <path>` 把 triage[/plan]（full 档为库内
+  快照信封）落 JSON 便于对账。三库冒烟口径：clean（19 文件教材无回归）/
+  dirty（干净教材 + 无关文件/翻译副本/重复/乱序名/缺标题/推广尾段/一个
+  mixed 文件——noise/duplicate 带 reason 不进课程、mixed 有进入/跳过段）/
+  large（105 文件大书——章覆盖或显式 skipped，无未解释倒挂）；
 
 - `structure`：结构生成双产物过 gd.* 契约门 + 门口对账 + 落列，落列后重读
   重验（失败非零退出）；

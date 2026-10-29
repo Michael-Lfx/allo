@@ -21,7 +21,7 @@ import { ipcBridge } from '@/common';
 import { parseKnowledgeBaseId } from '@/common/types/ids';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import MarkdownEditor from '@renderer/pages/conversation/Preview/components/editors/MarkdownEditor';
-import Markdown from '@renderer/components/Markdown';
+import Markdown, { InlineMarkdown } from '@renderer/components/Markdown';
 import { learningApi } from '../api';
 import {
   buildSteps,
@@ -41,12 +41,15 @@ import type {
 } from '../types';
 import { sliceSourceContent, statusLabel } from '../utils';
 import { ActivityInput } from './ActivityInput';
+import { QuestionExplanation } from './QuestionExplanation';
 import { useLearningAutogenModel } from './LearningModelSelector';
 import { LessonQuestionDialog } from './LessonQuestionDialog';
 
 const { Text, Paragraph } = Typography;
 
-function ActivityBlock({
+/// 逐题练习块（测试缝：导出供 missingPointsTitle 双语断言单测直接渲染判
+/// 错结果面，InlineRenderBoundary 先例同款）。
+export function ActivityBlock({
   activity,
   disabled,
   loading,
@@ -72,7 +75,10 @@ function ActivityBlock({
         : response !== undefined && response !== null;
   return (
     <div className='rounded-10px border border-solid border-[var(--color-border-2)] p-14px'>
-      <div className='mb-10px font-500 text-t-primary'>{activity.prompt}</div>
+      {/* 题干走内联渲染管线（题面契约允许 $…$ 公式与内联 markdown） */}
+      <div className='mb-10px font-500 text-t-primary'>
+        <InlineMarkdown text={activity.prompt} />
+      </div>
       <ActivityInput
         kind={activity.kind}
         options={activity.options}
@@ -96,10 +102,26 @@ function ActivityBlock({
             <Text type={result.passed ? 'success' : 'error'}>
               {result.passed ? t('learning.correct') : t('learning.incorrect')}
             </Text>
-            {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染 */}
+            {/* AI 批改的反馈是多段 Markdown（评价/覆盖情况/建议），独立渲染；
+                通道按内容分流（围栏/多段 → 块级，短解析 → 内联），与复习面共用 */}
             {result.feedback && (
               <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
-                <Markdown>{result.feedback}</Markdown>
+                <QuestionExplanation text={result.feedback} />
+              </div>
+            )}
+            {/* AI 评审判错点名的缺失要点（判对恒空不渲染；n4 D3 互斥契约） */}
+            {result.missing_points && result.missing_points.length > 0 && (
+              <div className='mt-8px rounded-8px bg-[var(--color-fill-1)] p-10px'>
+                <Text type='warning' className='mb-4px block'>
+                  {t('learning.missingPointsTitle')}
+                </Text>
+                <ul className='m-0 pl-18px'>
+                  {result.missing_points.map((point, index) => (
+                    <li key={index} className='text-t-secondary'>
+                      {point}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

@@ -29,6 +29,7 @@ async-trait.workspace = true
 fuzzy-matcher.workspace = true
 futures-util.workspace = true
 sha2.workspace = true
+nomi-skills.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

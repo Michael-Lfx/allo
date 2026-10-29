@@ -1,4 +1,4 @@
-//! 迁移 073（`learning_courses.source_kb_ids`）的契约：多知识库（t4）的
+//! 迁移 076（`learning_courses.source_kb_ids`）的契约：多知识库（t4）的
 //! 来源库列表是 `source_kb_id` 的伴随列（首个 = 主来源 = 旧单列），老行由
 //! 单列回填成单元素数组；`source_kb_id` 列保留不动（读侧对已删库 id 过滤）。
 

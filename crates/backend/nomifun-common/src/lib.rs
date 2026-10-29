@@ -19,6 +19,7 @@ mod fsname;
 mod hooks;
 mod id;
 mod idempotency;
+pub mod herdsman;
 pub mod managed_free_model;
 pub mod localized_variant;
 mod scoped_auth;
@@ -43,11 +44,12 @@ pub use agent_execution::{
     ParticipantAssignmentSource, PlanGate, StepFailurePolicy, UnknownAgentExecutionValue,
     MAX_AGENT_DELEGATION_DEPTH, MAX_AGENT_EXECUTION_MODELS,
     MAX_AGENT_EXECUTION_PARALLELISM, MAX_AGENT_EXECUTION_PARTICIPANTS,
-    MAX_AGENT_EXECUTION_STEPS,
+    MAX_AGENT_EXECUTION_STEPS, lead_session_mode, plan_gate_for_lead_session_mode,
+    strictest_plan_gate,
 };
 pub use nomi_types::agent::{
-    AgentDelegationTask, ParallelDelegationRequest, ParallelDelegationStrategy,
-    apply_agent_role_context,
+    AgentDelegationModel, AgentDelegationTask, ParallelDelegationRequest,
+    ParallelDelegationStrategy, apply_agent_role_context,
 };
 pub use crypto::{decrypt_string, encrypt_string};
 pub use enums::{
@@ -81,6 +83,9 @@ pub use id::{
     RequirementId, SshHostId, UserId, UuidV7Error, WebhookId,
     WorkshopAssetId, WorkshopCanvasId, WorkshopEdgeId, WorkshopNodeId, generate_id,
     is_reserved_provider_id, validate_uuidv7,
+};
+pub use herdsman::{
+    HERDSMAN_PLATFORM, HERDSMAN_PROVIDER_ID, is_herdsman_platform, is_herdsman_provider_id,
 };
 pub use managed_free_model::{
     FREE_MODEL_PLATFORM, FREE_MODELS_ENV, MANAGED_FREE_MODELS_DISABLED_CODE,

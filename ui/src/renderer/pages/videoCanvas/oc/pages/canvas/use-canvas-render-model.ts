@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { buildNodeGenerationInputs, type NodeGenerationInput } from "@oc/components/canvas/canvas-node-generation";
 import { isFrameNode } from "@oc/lib/canvas/canvas-frame";
+import { getNodeGenerationMode } from "@oc/lib/canvas/node-registry";
 import { CANVAS_MAX_RENDERED_CONNECTIONS, canvasNodeRenderBudget, canvasNodeRenderPadding, shouldReduceCanvasMediaEffects } from "@oc/lib/canvas/canvas-performance-mode";
 import { sameNodeSemanticData } from "@oc/lib/canvas/canvas-project-domain";
 import { buildCanvasResourceReferences, buildNodeMentionReferences, canvasResourceReferencesSignature, type CanvasResourceReference } from "@oc/lib/canvas/canvas-resource-references";
@@ -84,7 +85,7 @@ export function useCanvasRenderModel({
         for (const node of nodes) {
             const rootId = node.metadata?.batchRootId;
             const root = rootId ? nodeById.get(rootId) : undefined;
-            if (root && !root.metadata?.imageBatchExpanded) {
+            if (root && root.metadata?.imageStackLayout !== "deck" && !root.metadata?.imageBatchExpanded) {
                 collapsedBatchChildIds.add(node.id);
                 if (!collapsingBatchIds.has(root.id)) renderHiddenNodeIds.add(node.id);
             }
@@ -125,7 +126,7 @@ export function useCanvasRenderModel({
         for (const root of batchRoots) {
             const childIndex = batchChildIndexByRootId.get(root.id);
             const liveChildCount = [...(childIndex?.keys() || [])].filter((childId) => nodeById.get(childId)?.metadata?.batchRootId === root.id).length;
-            batchChildCountById.set(root.id, liveChildCount);
+            batchChildCountById.set(root.id, root.metadata?.imageStackLayout === "deck" ? liveChildCount + 1 : liveChildCount);
         }
 
         return { batchChildCountById, batchMotionById, canvasImageNodes, canvasMediaNodes, collapsedBatchChildIds, frameChildrenById, renderHiddenNodeIds };
@@ -301,15 +302,14 @@ export function useCanvasRenderModel({
 
     const configInputsById = useMemo(() => {
         const map = new Map<string, NodeGenerationInput[]>();
-        const configNodeIds = new Set<string>();
-        visibleNodes.forEach((node) => {
-            if (node.type === CanvasNodeType.Config) configNodeIds.add(node.id);
-        });
-        selectedNodeIds.forEach((nodeId) => {
-            if (nodeById.get(nodeId)?.type === CanvasNodeType.Config) configNodeIds.add(nodeId);
-        });
-        if (dialogNodeId && nodeById.get(dialogNodeId)?.type === CanvasNodeType.Config) configNodeIds.add(dialogNodeId);
-        configNodeIds.forEach((nodeId) => map.set(nodeId, buildNodeGenerationInputs(nodeId, semanticNodes, connections)));
+        const generatorIds = new Set<string>();
+        const consider = (node: CanvasNodeData | undefined) => {
+            if (node && getNodeGenerationMode(node)) generatorIds.add(node.id);
+        };
+        visibleNodes.forEach(consider);
+        selectedNodeIds.forEach((nodeId) => consider(nodeById.get(nodeId)));
+        consider(dialogNodeId ? nodeById.get(dialogNodeId) : undefined);
+        generatorIds.forEach((nodeId) => map.set(nodeId, buildNodeGenerationInputs(nodeId, semanticNodes, connections)));
         return map;
     }, [connections, dialogNodeId, nodeById, selectedNodeIds, semanticNodes, visibleNodes]);
     const activeDirectorNode = useMemo(() => semanticNodes.find((node) => node.id === directorNodeId) || null, [directorNodeId, semanticNodes]);

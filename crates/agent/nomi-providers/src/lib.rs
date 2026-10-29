@@ -163,6 +163,8 @@ pub struct WireFacts {
     pub reasoning_placeholders: usize,
     pub drop_prior_turn_reasoning: bool,
     pub require_reasoning_content: bool,
+    /// Image parts that survive the provider's capability filter.
+    pub images: usize,
 }
 
 /// Unified interface for LLM API providers

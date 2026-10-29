@@ -41,6 +41,7 @@ fn main() -> Result<ExitCode> {
     let needs_runtime = matches!(cli.command, None | Some(Command::Doctor));
     if needs_runtime {
         nomifun_runtime::init(&cli.data_dir);
+        nomi_process_runtime::install_host_process_lifetime();
     }
 
     // SAFETY: called before any worker thread exists (including the tokio

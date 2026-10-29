@@ -17,7 +17,9 @@ use crate::protocol::send_error::AgentSendError;
 use crate::persistence::AcpSessionPersistenceBarrier;
 use crate::registry::CatalogSender;
 use crate::session::{ModeId, ModelId, SessionId as DomainSessionId};
-use crate::types::{SendMessageData, inject_loaded_skill_context};
+use crate::types::{
+    SendMessageData, inject_catalog_discovery_context, inject_loaded_skill_context,
+};
 use agent_client_protocol::schema::{
     CancelNotification, SessionId, SessionModelState, SessionNotification, UsageUpdate,
 };
@@ -831,6 +833,7 @@ impl AcpAgentManager {
             transformed
         };
         let content = inject_loaded_skill_context(content, &data.loaded_skill_snapshots);
+        let content = inject_catalog_discovery_context(content, data.catalog_discovery.as_ref());
 
         let data = SendMessageData {
             content,
@@ -1059,10 +1062,17 @@ impl crate::runtime_handle::AgentRuntimeControl for AcpAgentManager {
         if let Ok(mut session) = self.session.try_write() {
             session.record_close_reason(Some(close_reason));
         }
-        if reason == Some(AgentKillReason::UserCancelled) {
+        if matches!(
+            reason,
+            Some(AgentKillReason::UserCancelled) | Some(AgentKillReason::AttemptSettled)
+        ) {
             if let Some(turn) = turn {
-                self.runtime
-                    .emit_finish_for_turn(turn, None, Some(TurnStopReason::Cancelled));
+                let stop = if reason == Some(AgentKillReason::UserCancelled) {
+                    TurnStopReason::Cancelled
+                } else {
+                    TurnStopReason::EndTurn
+                };
+                self.runtime.emit_finish_for_turn(turn, None, Some(stop));
             }
         } else if let Some(turn) = turn {
             self.runtime

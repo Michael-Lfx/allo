@@ -3,6 +3,51 @@
 Flowy 1.0.0 is the first public release. This file records user-facing notes
 at a high level rather than a complete commit log.
 
+## Unreleased
+
+- Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
+- Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
+- Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.
+- Note for 1.6.5–1.6.8: Default and Auto-Accept Edits sessions could hit this loop when delegating write tasks. Workaround: use YOLO, add the tool to `[tools].allow_list`, or avoid delegated writes until this fix ships.
+
+## v1.6.8 - 2026-10-23
+
+- Local Herdsman connections use `127.0.0.1` when the daemon listens on `0.0.0.0`, so the client can actually dial it.
+
+## v1.6.7 - 2026-10-23
+
+- Link a phone from profile: the desktop hosts a TLS pairing listener, and a QR code opens a LAN page the phone can reach. Wakes carry no message body.
+
+## v1.6.6 - 2026-10-22
+
+- Pinning a local Herdsman model keeps inference on this machine and reports the local error instead of falling through to the cloud.
+- Short-drama shots constrain characters with written blocking so one reference face is not pasted onto two bodies.
+- Opening a collaboration task works again, and running sub-agents expose a read-only projection. Agent Store listings return localized display fields (`fp-18`), and catalog search matches multiple terms with highlight ranges plus usage hints.
+
+## v1.6.5 - 2026-10-21
+
+- The app discovers a local Herdsman instance and lists its running models.
+- Parallel delegated tasks can pick a model from the pool. Subagents refuse tools unless they are approved.
+- Text-only models skip screenshots, and compaction no longer leaves stale state or forced retries.
+
+## v1.6.4 - 2026-10-20
+
+- Storyboard canvas no longer shows a cut badge. Video prompts are truncated only after a vendor hard-rejects them, not by a local character cap.
+- News briefings can be deleted, and the instant-film player maximize control works again.
+- Token connectors in the Agent Store are renamed to avoid colliding with official entries, keep structured MCP transport on import, and carry entry avatars.
+
+## v1.6.3 - 2026-10-16
+
+- Session-directory skills can load automatically, and OpenAI `tool_calls` pairing is fixed.
+- Canvas uploads images independently and video nodes can `@` connected stills. Windows downloads a private PowerShell 7 sidecar at startup so the agent uses pwsh 7.
+- Short-drama shots no longer stretch silent actions to the model's minimum clip length; over-window rows split instead of dropping lines; environment plates follow scene headings; and other shots stay movable while one is rendering.
+- Connector summaries rename `auth_mode` to `auth_transport` and follow `credential.mode` for the authorize button (`fp-16` → `fp-17`). Sidebar and session titlebar chrome is tighter, and the home Meetings entry is hidden.
+
+## 0.1.0-beta.11 - 2026-10-14
+
+- Market categories and tags are now visible over the wire. A new `store/categories` method returns the category dictionaries of all enabled markets plus each market's top-level tag vocabulary; store items carry `category_id` and a host-resolved `category` (absent when the id misses the dictionary — never guessed); agent summaries now carry localized `tags` and `category_id`, moved up from the agent detail (which drops the two fields — a flattened JSON object cannot carry the same key twice). Skill and connector entries, which ship no plugin.json, take their tags from the marketplace index row, with legacy tag names merged in. Protocol fingerprint `fp-14` → `fp-15` (`56 / 83` methods); clients and hosts must upgrade together.
+- The market's category and tag metadata now reaches every remaining face. Team listings carry the package's `tags` and `category_id`, skill listings carry the skill's `tags` (taken from the marketplace index row at import time — a skill ships no `plugin.json` — and read back through the same provenance chain the icon uses, so a later market edit only takes effect through an upgrade, exactly like the skill's own content). Exported expert packs carry the display metadata too and move to `pack_format 3`: the top-level pack from its own package row, each member pack from its own declaration (the opposite scope from the snapshot-level `assets`). Protocol fingerprint `fp-15` → `fp-16`; no method was added or removed, so the wire method count is unchanged and clients only gain fields.
+
 ## v1.6.2 - 2026-10-13
 
 - The billing page explains credits from the real account: a check-in calendar with each day's credited amount, today's arrival status, the batches that actually expire (including team-seat credits) with their dates, and the sources behind the balance. Plans, packs, and the payment flow are unchanged.

@@ -45,6 +45,17 @@ describe("canvas video-to-video connections", () => {
     });
 });
 
+describe("canvas image deck connections", () => {
+    test("connecting a stacked deck counts as one image input", () => {
+        const root = node("root", CanvasNodeType.Image);
+        root.metadata = { isBatchRoot: true, imageStackLayout: "deck", batchChildIds: ["a", "b", "c"], content: "r" };
+        const child = node("a", CanvasNodeType.Image);
+        child.metadata = { batchRootId: "root", imageStackLayout: "deck", content: "a" };
+        const video = node("video", CanvasNodeType.Video);
+        expect(canvasConnectionError(videoConfig("flowy::doubao-seedance-2-0"), [root, child, video], [], { fromNodeId: root.id, toNodeId: video.id })).toBe("");
+    });
+});
+
 describe("canvas art-critique connections", () => {
     test("allows image and drawing into an art critique node", () => {
         const image = node("img", CanvasNodeType.Image);

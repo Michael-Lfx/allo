@@ -1,6 +1,7 @@
 # 专家 / 专家团导出补齐插件级资产（avatars · bin · scripts）· 技术方案
 
 > **状态**：✅ 已实施（2026-10-12，与本方案同批落地；`pack_format 1 → 2`，指纹 `fp-13 → fp-14`）
+> **此后**：`pack_format` 继续演进——`44` 提到 `3`（`tags` / `category_id`），`51` 提到 `4`（`skills[].icon` / `connectors[].icon`）。本方案的**资产面决定全部不变**（三前缀白名单、按引用、`kind` 诚实标注）；`51` 唯一改到这里的是一处 F2 边界：`avatars/connectors/` 子路径同样是 `avatars/` 前缀下的普通资产，`collect_assets` 的递归与 `asset_kind` 只看首段，因此**不需要扩白名单**。
 > **核心原则**：**定义照旧轻、资产按引用** —— 字节永远走 `import/asset` 拉取面而非内联进包；**地址空间对齐**（pack 能列出的才读得到，读面能读的才列得出，同一 provider 同一白名单）；**可执行内容诚实标注**（`kind: "script"`），操作者可用 `[expert_export] scripts = false` 从包里减掉。
 
 ---

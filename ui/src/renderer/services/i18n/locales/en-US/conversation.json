@@ -746,6 +746,11 @@
     "loaded": "Loaded Skills",
     "selected": "Selected Skills",
     "remove": "Remove {{name}}",
+    "modeBar": "Session skills",
+    "autoLoaded": "Auto",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "slashOnly": "Slash only",
     "sources": {
       "builtin": "Built-in",
       "user": "User",

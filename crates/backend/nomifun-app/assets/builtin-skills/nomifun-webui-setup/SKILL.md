@@ -1,6 +1,8 @@
 ---
 name: nomifun-webui-setup
 description: 'Flowy WebUI configuration expert: Helps users configure Flowy WebUI remote access through the Open Capabilities panel. Supports LAN connection, Tailscale VPN, and server deployment. Use when users need to set up Flowy WebUI, configure remote access, troubleshoot WebUI issues, or deploy Flowy on servers.'
+disable-model-invocation: true
+invocation-policy: /invoke
 ---
 
 # Flowy WebUI 配置专家

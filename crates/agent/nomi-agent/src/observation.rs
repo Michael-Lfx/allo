@@ -924,7 +924,17 @@ fn wrap_stream(
         let mut tool_use: Vec<Value> = Vec::new();
         let mut saw_terminal = false;
 
-        while let Some(event) = rx.recv().await {
+        loop {
+            // Stop drops the live consumer before the next provider byte.
+            // Leave immediately so the inner HTTP reader is dropped too.
+            let event = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                event = rx.recv() => event,
+            };
+            let Some(event) = event else {
+                break;
+            };
             if ttft_ms.is_none()
                 && matches!(
                     event,
@@ -2475,6 +2485,7 @@ mod tests {
             reasoning_placeholders: 1,
             drop_prior_turn_reasoning: true,
             require_reasoning_content: true,
+            ..WireFacts::default()
         }
     }
 

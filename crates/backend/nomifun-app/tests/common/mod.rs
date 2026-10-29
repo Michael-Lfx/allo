@@ -142,6 +142,7 @@ pub async fn build_app_with_skill_paths(root: &std::path::Path) -> (axum::Router
             services.database.pool().clone(),
         )),
         builtin_skill_tags: std::sync::Arc::new(std::collections::HashMap::new()),
+        skill_discovery: None,
     };
 
     let router = create_router_with_states(&services, states);

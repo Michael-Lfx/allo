@@ -41,6 +41,7 @@ import { syncOcConfigFromAlloMediaModels } from '@renderer/pages/videoCanvas/lib
 import { VIDEO_NODE_ID, clampScale, fitViewport } from '../shotMiniCanvas/layout';
 import { parseShotNodeId } from './packetToCanvas';
 import { shotBoundMentionReferences } from './shotMentions';
+import { useShotNodeDrag } from './useShotNodeDrag';
 import styles from '../index.module.css';
 
 const NOOP = () => undefined;
@@ -55,7 +56,10 @@ export type ShotInfiniteCanvasProps = {
   onViewportChange: (viewport: ViewportTransform) => void;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
+  /** Content is read-only (links, uploads, deletes). */
   readOnly: boolean;
+  /** Node positions are read-only. Independent from `readOnly`: moving a node never changes the video. */
+  layoutLocked?: boolean;
   generating: boolean;
   overlay?: React.ReactNode;
   expanded?: boolean;
@@ -80,6 +84,8 @@ export type ShotInfiniteCanvasProps = {
   onOpenVersions?: (node: CanvasNodeData) => void;
   onDrop?: (event: React.DragEvent<HTMLDivElement>) => void;
   containerRef?: React.RefObject<HTMLDivElement | null>;
+  /** Prefix React keys so a filmstrip switch remounts nodes without mixing shot state. */
+  shotKey?: string;
 };
 
 function screenToCanvas(
@@ -115,6 +121,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   selectedNodeId,
   onSelectNode,
   readOnly,
+  layoutLocked = false,
   generating,
   overlay,
   expanded = false,
@@ -139,6 +146,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   onOpenVersions,
   onDrop,
   containerRef: containerRefProp,
+  shotKey = '',
 }) => {
   const { t } = useTranslation();
   const { theme: appTheme } = useThemeContext();
@@ -146,16 +154,10 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
   const theme = canvasThemes[colorTheme] ?? canvasThemes.light;
   const innerRef = useRef<HTMLDivElement>(null);
   const containerRef = containerRefProp ?? innerRef;
-  const nodeDraggingRef = useRef(false);
-  const dragRef = useRef<{
-    id: string;
-    startX: number;
-    startY: number;
-    origin: Position;
-    moved: boolean;
-  } | null>(null);
   const viewportRef = useRef(viewport);
   const nodesRef = useRef(nodes);
+  const layoutLockedRef = useRef(layoutLocked);
+  const [nodeDragging, setNodeDragging] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [toolbarNodeId, setToolbarNodeId] = useState<string | null>(null);
@@ -176,6 +178,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
 
   viewportRef.current = viewport;
   nodesRef.current = nodes;
+  layoutLockedRef.current = layoutLocked;
 
   useEffect(() => {
     void syncOcConfigFromAlloMediaModels().catch(() => undefined);
@@ -228,19 +231,36 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     return () => observer.disconnect();
   }, [containerRef]);
 
-  useEffect(() => {
-    setDialogNodeId((current) => {
-      if (selectedNodeId && current && current !== selectedNodeId) return selectedNodeId;
-      if (!current && selectedNodeId) {
-        const node = nodesRef.current.find((item) => item.id === selectedNodeId);
-        if (node?.type === CanvasNodeType.Video || node?.type === CanvasNodeType.Image) return selectedNodeId;
+  const { nodeDraggingRef } = useShotNodeDrag({
+    containerRef,
+    nodesRef,
+    viewportRef,
+    layoutLockedRef,
+    enabled: viewportSize.width > 0,
+    onSelectNode: (nodeId) => {
+      onSelectNode(nodeId);
+      setSelectedConnectionId(null);
+      setMenu(null);
+      setDialogNodeId((current) => (current && current !== nodeId ? null : current));
+    },
+    onNodeClick: (nodeId) => {
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      if (node?.type !== CanvasNodeType.Video && node?.type !== CanvasNodeType.Image) return;
+      onSelectNode(nodeId);
+      setDialogNodeId(nodeId);
+    },
+    onNodeMove,
+    onDragActiveChange: (active) => {
+      setNodeDragging(active);
+      if (active) {
+        setDialogNodeId(null);
+        setToolbarNodeId(null);
       }
-      if (!selectedNodeId) return null;
-      return current;
-    });
-  }, [selectedNodeId]);
+    },
+  });
 
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const boundMentions = useMemo(() => shotBoundMentionReferences(nodes), [nodes]);
   const selectedNodeIds = useMemo(
     () => (selectedNodeId ? new Set([selectedNodeId]) : new Set<string>()),
     [selectedNodeId]
@@ -262,17 +282,14 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     () => new Map(resourceReferences.map((item) => [item.nodeId, item])),
     [resourceReferences]
   );
-  const mentionByNodeId = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof buildCanvasResourceReferences>>();
-    for (const node of nodes) {
-      const mentioned = getMentionResourceNodes(node.id, nodes, connections);
-      map.set(
-        node.id,
-        resourceReferences.filter((item) => mentioned.some((ref) => ref.id === item.nodeId) || item.nodeId === node.id)
-      );
-    }
-    return map;
-  }, [connections, nodes, resourceReferences]);
+  const dialogMentions = useMemo(() => {
+    if (!dialogNodeId) return boundMentions;
+    if (dialogNodeId === VIDEO_NODE_ID) return boundMentions;
+    const mentioned = getMentionResourceNodes(dialogNodeId, nodes, connections);
+    return resourceReferences.filter(
+      (item) => mentioned.some((ref) => ref.id === item.nodeId) || item.nodeId === dialogNodeId
+    );
+  }, [boundMentions, connections, dialogNodeId, nodes, resourceReferences]);
   const bounds = useMemo(
     () => connectionLayerBounds(viewport, viewportSize),
     [viewport, viewportSize]
@@ -285,7 +302,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
       toolbarHideTimer.current = null;
     }
     setToolbarNodeId(nodeId);
-  }, []);
+  }, [nodeDraggingRef]);
 
   const hideToolbar = useCallback(() => {
     if (toolbarHideTimer.current) clearTimeout(toolbarHideTimer.current);
@@ -327,49 +344,13 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     persistViewport(fitViewport(rects, el.clientWidth, el.clientHeight));
   }, [containerRef, nodes, persistViewport]);
 
-  useEffect(() => {
-    const onMove = (event: MouseEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      const dx = (event.clientX - drag.startX) / viewportRef.current.k;
-      const dy = (event.clientY - drag.startY) / viewportRef.current.k;
-      if (Math.abs(event.clientX - drag.startX) > 3 || Math.abs(event.clientY - drag.startY) > 3) {
-        drag.moved = true;
-        nodeDraggingRef.current = true;
-      }
-      onNodeMove(drag.id, { x: drag.origin.x + dx, y: drag.origin.y + dy });
-    };
-    const onUp = () => {
-      if (dragRef.current?.moved) nodeDraggingRef.current = false;
-      dragRef.current = null;
-      nodeDraggingRef.current = false;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [onNodeMove]);
-
   const handleNodeMouseDown = (event: ReactMouseEvent, nodeId: string) => {
     event.stopPropagation();
     if (event.button !== 0) return;
-    const node = nodeById.get(nodeId);
-    if (!node) return;
     onSelectNode(nodeId);
     setSelectedConnectionId(null);
     setMenu(null);
-    if (readOnly || node.metadata?.locked) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('button, input, textarea, select, label, [data-canvas-no-zoom], .canvas-node-resize')) return;
-    dragRef.current = {
-      id: nodeId,
-      startX: event.clientX,
-      startY: event.clientY,
-      origin: { ...node.position },
-      moved: false,
-    };
+    setDialogNodeId((current) => (current && current !== nodeId ? null : current));
   };
 
   const handleConnectStart = (
@@ -438,13 +419,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
     [onConfigChange, onDeleteNode, onNodeResize]
   );
 
-  const boundMentions = useMemo(() => shotBoundMentionReferences(nodes), [nodes]);
-  const promptMentions =
-    dialogNode?.id === VIDEO_NODE_ID
-      ? boundMentions
-      : dialogNode
-        ? (mentionByNodeId.get(dialogNode.id) ?? boundMentions)
-        : boundMentions;
+  const promptMentions = dialogNode?.id === VIDEO_NODE_ID || !dialogNode ? boundMentions : dialogMentions;
 
   const draftConnection = connecting
     ? activeConnectionPath(nodeById.get(connecting.fromNodeId), { nodeId: connecting.fromNodeId, handleType: 'source' }, connecting.mouseWorld)
@@ -558,7 +533,7 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
                 </svg>
                 {nodes.map((node) => (
                   <CanvasNode
-                    key={node.id}
+                    key={shotKey ? `${shotKey}:${node.id}` : node.id}
                     data={node}
                     isSelected={selectedNodeId === node.id}
                     isRelated={relatedHighlight.nodeIds.has(node.id)}
@@ -567,14 +542,11 @@ const ShotInfiniteCanvas: React.FC<ShotInfiniteCanvasProps> = ({
                     isConnecting={Boolean(connecting)}
                     showImageInfo
                     mediaActive={selectedNodeId === node.id}
-                    hydrateMediaPreview
+                    hydrateMediaPreview={selectedNodeId === node.id}
+                    reduceMediaEffects={nodeDragging}
                     readOnly={readOnly}
                     resourceLabel={resourceByNodeId.get(node.id)}
-                    mentionReferences={
-                      node.id === VIDEO_NODE_ID
-                        ? boundMentions
-                        : (mentionByNodeId.get(node.id) ?? EMPTY_REFS)
-                    }
+                    mentionReferences={node.id === VIDEO_NODE_ID ? boundMentions : EMPTY_REFS}
                     onMouseDown={handleNodeMouseDown}
                     onHoverStart={(nodeId) => {
                       setHoveredNodeId(nodeId);

@@ -10,12 +10,12 @@ use async_trait::async_trait;
 use std::path::Path;
 
 use nomifun_api_types::{
-    AppServerCompatibilityStatus, AppServerConnectorDetail, AppServerConnectorProbeResult,
-    AppServerConnectorStatus, AppServerConnectorStatusView, AppServerConnectorSummary,
-    AppServerConnectorTool, AppServerModelList, AppServerModelSummary,
-    AppServerOAuthStartResult, AppServerOAuthStatusView,
-    AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult, McpToolResponse,
-    McpTransport, oauth_state,
+    AppServerCompatibilityStatus, AppServerConnectorCredential, AppServerConnectorDetail,
+    AppServerConnectorProbeResult, AppServerConnectorStatus, AppServerConnectorStatusView,
+    AppServerConnectorSummary, AppServerCredentialMode, AppServerConnectorTool,
+    AppServerModelList, AppServerModelSummary, AppServerOAuthStartResult,
+    AppServerOAuthStatusView, AppServerSkillDetail, AppServerSkillSummary, McpConnectionTestResult,
+    McpToolResponse, McpTransport, oauth_state,
 };
 use nomifun_app_server::{
     agent_store::AgentStoreConfig, ConnectorAuthProvider, ConnectorCatalogProvider,
@@ -68,6 +68,24 @@ impl AppServerSkillCatalog {
         let (snapshot_id, slug) = managed_snapshot_provenance(&self.paths, Path::new(location))?;
         assets.avatar_for_snapshot_slug(&snapshot_id, Some(&slug)).await
     }
+
+    /// Display metadata for one skill (`50` §3.5): marketplace products read
+    /// what their index row declared (stamped into the snapshot payload);
+    /// builtin / user skills have none, and `SKILL.md` declares one language
+    /// only.
+    async fn display_for(&self, location: &str) -> nomifun_importer::DisplayFields {
+        let Some(assets) = self.assets.as_ref() else {
+            return nomifun_importer::DisplayFields::default();
+        };
+        let Some((snapshot_id, slug)) = managed_snapshot_provenance(&self.paths, Path::new(location))
+        else {
+            return nomifun_importer::DisplayFields::default();
+        };
+        assets
+            .display_for_skill(&snapshot_id, Some(&slug))
+            .await
+            .unwrap_or_default()
+    }
 }
 
 fn skill_summary(
@@ -75,6 +93,7 @@ fn skill_summary(
     origin: SkillOrigin,
     writable: bool,
     avatar_url: Option<String>,
+    display: nomifun_importer::DisplayFields,
 ) -> AppServerSkillSummary {
     let (source, compatibility) = match item.source {
         SkillSource::Builtin => ("builtin", AppServerCompatibilityStatus::Compatible),
@@ -99,6 +118,24 @@ fn skill_summary(
         enabled: true,
         required_connectors: Vec::new(),
         avatar_url,
+        tags: display
+            .tags
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
+        display_name: display
+            .name
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        display_description: display
+            .description
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        quick_prompts: display
+            .prompts
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
     }
 }
 
@@ -130,7 +167,8 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
             let writable =
                 skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
             let avatar_url = self.avatar_for(&item.location).await;
-            out.push(skill_summary(item, origin, writable, avatar_url));
+            let display = self.display_for(&item.location).await;
+            out.push(skill_summary(item, origin, writable, avatar_url, display));
         }
         Ok(out)
     }
@@ -146,6 +184,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         let writable =
             skill_service::is_writable_skill(&self.paths, &item.name, Path::new(&item.location));
         let avatar_url = self.avatar_for(&item.location).await;
+        let display = self.display_for(&item.location).await;
         // Public body is a bounded, trimmed summary. Internal routing rules,
         // credentials and the full raw Markdown stay behind the seam.
         //
@@ -159,7 +198,7 @@ impl SkillCatalogProvider for AppServerSkillCatalog {
         .map(|body| body.trim().chars().take(1200).collect::<String>())
         .filter(|body| !body.is_empty());
         Ok(AppServerSkillDetail {
-            summary: skill_summary(item, origin, writable, avatar_url),
+            summary: skill_summary(item, origin, writable, avatar_url, display),
             mode: "store-agent".into(),
             invocation_policy: "model-auto".into(),
             instructions_summary,
@@ -196,21 +235,49 @@ fn transport_url(transport: &McpTransport) -> Option<String> {
     }
 }
 
-fn auth_mode_for(transport: &McpTransport) -> &'static str {
+/// The connector's **transport shape**, projected into the summary's `auth_mode`
+/// field. Display-only: it never decides anything. What a connector actually
+/// needs is `credential.mode` (`34` §6.1), and the transport guess itself lives
+/// in exactly one place — [`crate::app_server_credentials::credential_mode`].
+fn transport_auth_shape(transport: &McpTransport) -> &'static str {
     match transport {
         McpTransport::Stdio { .. } => "none",
         McpTransport::Sse { .. } | McpTransport::Http { .. } => "oauth",
     }
 }
 
-fn summary_status(enabled: bool, last_test: McpServerStatus, auth_mode: &str) -> AppServerConnectorStatus {
+/// Whether this connector offers an OAuth entry point at all.
+///
+/// The declaration wins: a marketplace connector declaring `server-side` /
+/// `mcp` / `oneid-token` / nothing is answered `none` by the importer's mapping
+/// (`34` §6.1) and must never grow an authorization button. Only a connector
+/// with no declaration falls back to the transport guess — through the *same*
+/// function the credential block uses, so the guess exists in one place, not
+/// two. A host with no declaration reader wired (tests, no import history)
+/// takes that same fallback instead of losing the entry point.
+fn needs_auth_for(
+    credential: Option<&AppServerConnectorCredential>,
+    transport: &McpTransport,
+) -> bool {
+    match credential {
+        Some(credential) => credential.mode == AppServerCredentialMode::Oauth,
+        None => crate::app_server_credentials::credential_mode(None, transport)
+            == AppServerCredentialMode::Oauth,
+    }
+}
+
+fn summary_status(
+    enabled: bool,
+    last_test: McpServerStatus,
+    needs_auth: bool,
+) -> AppServerConnectorStatus {
     if !enabled {
         return AppServerConnectorStatus::Installed;
     }
     match last_test {
         McpServerStatus::Error => AppServerConnectorStatus::Error,
         McpServerStatus::Connected => AppServerConnectorStatus::Connected,
-        _ if auth_mode == "oauth" => AppServerConnectorStatus::AuthorizationRequired,
+        _ if needs_auth => AppServerConnectorStatus::AuthorizationRequired,
         _ => AppServerConnectorStatus::Configured,
     }
 }
@@ -223,29 +290,52 @@ fn connector_summary(
     transport: &McpTransport,
     last_test: McpServerStatus,
     avatar_url: Option<String>,
+    credential: Option<&AppServerConnectorCredential>,
+    display: &nomifun_importer::DisplayFields,
 ) -> AppServerConnectorSummary {
     let (kind, transport_summary) = transport_kind(transport);
-    let auth_mode = auth_mode_for(transport);
+    let needs_auth = needs_auth_for(credential, transport);
     AppServerConnectorSummary {
         id,
         name,
         description,
         kind: kind.to_owned(),
         transport_summary,
-        auth_mode: auth_mode.to_owned(),
+        auth_transport: transport_auth_shape(transport).to_owned(),
         enabled,
-        status: summary_status(enabled, last_test, auth_mode),
+        status: summary_status(enabled, last_test, needs_auth),
         avatar_url,
-        // Filled by `AppServerConnectorCatalog` when a declaration reader is
-        // wired; a projection with no snapshot behind it leaves it `None`.
-        credential: None,
+        // The credential block is read *before* the summary is built: the status
+        // below depends on it, so attaching it afterwards was an ordering bug
+        // that let the transport guess outvote the declaration.
+        credential: credential.cloned(),
+        // Display-only additions (`50` §3.1). They never feed `status`, `kind`
+        // or the tool namespace — those read `name` and the declaration.
+        display_name: display
+            .name
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        display_description: display
+            .description
+            .as_ref()
+            .and_then(crate::app_server_display::localized_or_none),
+        tags: display
+            .tags
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
+        quick_prompts: display
+            .prompts
+            .iter()
+            .filter_map(crate::app_server_display::localized_or_none)
+            .collect(),
     }
 }
 
 fn probe_status(
     enabled: bool,
     authenticated: bool,
-    auth_mode: &str,
+    needs_auth: bool,
     last_test: McpServerStatus,
 ) -> AppServerConnectorStatus {
     if !enabled {
@@ -253,7 +343,7 @@ fn probe_status(
     }
     match last_test {
         McpServerStatus::Error => AppServerConnectorStatus::Error,
-        _ if auth_mode == "oauth" && !authenticated => AppServerConnectorStatus::AuthorizationRequired,
+        _ if needs_auth && !authenticated => AppServerConnectorStatus::AuthorizationRequired,
         McpServerStatus::Connected => AppServerConnectorStatus::Connected,
         _ => AppServerConnectorStatus::Configured,
     }
@@ -291,16 +381,22 @@ impl AppServerConnectorCatalog {
         self
     }
 
-    /// The `credential` block for one server, as `principal` sees it.
-    async fn credential_block(
+    /// The `credential` block and the display metadata for one server, from a
+    /// single component read (`50` §3.5).
+    async fn credential_and_display(
         &self,
         mcp_server_id: &str,
         server: &nomifun_api_types::McpServerResponse,
         principal: Option<&str>,
-    ) -> Option<nomifun_api_types::AppServerConnectorCredential> {
-        let reader = self.credentials.as_ref()?;
+    ) -> (
+        Option<nomifun_api_types::AppServerConnectorCredential>,
+        nomifun_importer::DisplayFields,
+    ) {
+        let Some(reader) = self.credentials.as_ref() else {
+            return (None, nomifun_importer::DisplayFields::default());
+        };
         reader
-            .describe(
+            .describe_with_display(
                 mcp_server_id,
                 &server.transport,
                 server.last_test_status,
@@ -365,7 +461,8 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
                 Some(assets) => assets.avatar_for_mcp_server(&id).await,
                 None => None,
             };
-            let mut summary = connector_summary(
+            let (credential, display) = self.credential_and_display(&id, &server, principal).await;
+            out.push(connector_summary(
                 id.clone(),
                 server.name.clone(),
                 server.description.clone(),
@@ -373,9 +470,9 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
                 &server.transport,
                 server.last_test_status,
                 avatar_url,
-            );
-            summary.credential = self.credential_block(&id, &server, principal).await;
-            out.push(summary);
+                credential.as_ref(),
+                &display,
+            ));
         }
         Ok(out)
     }
@@ -390,12 +487,13 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
         // Cloned, not moved: the `credential` block below still needs the whole
         // server row (its `values` live inside the transport).
         let transport = server.transport.clone();
-        let auth_mode = auth_mode_for(&transport);
         let avatar_url = match self.assets.as_ref() {
             Some(assets) => assets.avatar_for_mcp_server(&connector_id).await,
             None => None,
         };
-        let mut summary = connector_summary(
+        let (credential, display) = self.credential_and_display(&connector_id, &server, principal).await;
+        let needs_auth = needs_auth_for(credential.as_ref(), &transport);
+        let summary = connector_summary(
             connector_id.clone(),
             server.name.clone(),
             server.description.clone(),
@@ -403,9 +501,10 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
             &transport,
             server.last_test_status,
             avatar_url,
+            credential.as_ref(),
+            &display,
         );
-        summary.credential = self.credential_block(&connector_id, &server, principal).await;
-        let auth_status = if auth_mode == "oauth" {
+        let auth_status = if needs_auth {
             match self.pending_auth_view(&transport) {
                 Some(pending) => Some(pending),
                 None => self.oauth_authenticated(&transport).await.map(|authenticated| {
@@ -437,18 +536,22 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     ) -> Result<AppServerConnectorStatusView, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
+        // Borrowed before the transport moves out below: the credential block
+        // reads the whole server row (its `values` live inside the transport).
+        let (credential, _display) =
+            self.credential_and_display(&connector_id, &server, principal).await;
         let transport = server.transport;
-        let auth_mode = auth_mode_for(&transport);
-        let authenticated = if auth_mode == "oauth" {
+        let needs_auth = needs_auth_for(credential.as_ref(), &transport);
+        let authenticated = if needs_auth {
             self.oauth_authenticated(&transport).await.unwrap_or(false)
         } else {
             false
         };
-        let status = probe_status(server.enabled, authenticated, auth_mode, server.last_test_status);
+        let status = probe_status(server.enabled, authenticated, needs_auth, server.last_test_status);
         Ok(AppServerConnectorStatusView {
             connector_id,
             status,
-            auth_status: if auth_mode == "oauth" {
+            auth_status: if needs_auth {
                 match self.pending_auth_view(&transport) {
                     Some(pending) => Some(pending),
                     None => Some(AppServerOAuthStatusView {
@@ -1194,6 +1297,231 @@ mod connector_auth_tests {
             authorized.auth_status(&authorized_id).await.unwrap().state,
             oauth_state::NOT_AUTHENTICATED,
             "the state is gone with the flow"
+        );
+    }
+
+    /// `46` TC-FIX-001 / 003 / 004: the OAuth entry point follows the
+    /// declaration. A url-shaped connector that declares `server-side`
+    /// (normalized to `none` by the importer) must not grow an authorization
+    /// button — the transport guess may never outvote what the market declared.
+    /// With no declaration at all the same fallback the credential block uses
+    /// applies, so a hand-registered remote server keeps its entry point.
+    #[test]
+    fn needs_auth_follows_the_declaration_not_the_transport_shape() {
+        let url = McpTransport::Http {
+            url: "https://example.test/mcp".to_owned(),
+            headers: Default::default(),
+            values: Default::default(),
+        };
+        let stdio = McpTransport::Stdio {
+            command: "npx".to_owned(),
+            args: vec!["@playwright/mcp".to_owned()],
+            env: Default::default(),
+        };
+        let declared = |mode: &str| -> AppServerConnectorCredential {
+            serde_json::from_value(serde_json::json!({
+                "connector_id": "netdisk",
+                "mode": mode,
+                "status": "not_required",
+            }))
+            .expect("a credential block")
+        };
+
+        assert!(!needs_auth_for(Some(&declared("none")), &url));
+        assert!(needs_auth_for(Some(&declared("oauth")), &url));
+        assert!(!needs_auth_for(Some(&declared("token")), &url));
+        assert!(needs_auth_for(None, &url));
+        assert!(!needs_auth_for(None, &stdio));
+    }
+
+    /// `46` TC-FIX-003 at the projection level: a host with **no declaration
+    /// reader wired** (no import history, tests) must not lose the fallback.
+    /// A hand-registered remote server keeps its authorization entry point; a
+    /// stdio one never grows one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_host_without_a_declaration_reader_keeps_the_transport_fallback() {
+        let db = nomifun_db::init_database_memory().await.unwrap();
+        let pool = db.pool().clone();
+        std::mem::forget(db);
+        let config = McpConfigService::new(std::sync::Arc::new(
+            nomifun_db::SqliteMcpServerRepository::new(pool.clone()),
+        ));
+        let oauth = McpOAuthService::new(
+            std::sync::Arc::new(nomifun_db::SqliteOAuthTokenRepository::new(pool)),
+            reqwest::Client::builder().no_proxy().build().expect("client"),
+        );
+        let connection_test =
+            McpConnectionTestService::new(reqwest::Client::builder().no_proxy().build().expect("client"));
+        let catalog = AppServerConnectorCatalog::new(config, connection_test, oauth);
+
+        for (name, transport) in [
+            ("remote_mcp", serde_json::json!({ "type": "http", "url": "https://mcp.example.com/mcp" })),
+            ("local_mcp", serde_json::json!({ "type": "stdio", "command": "npx", "args": ["-y", "some-mcp"] })),
+        ] {
+            let created = catalog
+                .config
+                .add_server(serde_json::from_value(serde_json::json!({
+                    "name": name,
+                    "transport": transport,
+                }))
+                .expect("request"))
+                .await
+                .expect("add server");
+            // A fresh row is disabled, and a disabled connector reports
+            // `installed` before any auth question is asked — enable it so the
+            // status under test is the auth decision, not the enablement one.
+            catalog
+                .config
+                .set_server_enabled(&created.mcp_server_id, true)
+                .await
+                .expect("enable server");
+        }
+
+        let summaries = catalog.list(None).await.expect("list");
+        let by_name = |name: &str| {
+            summaries
+                .iter()
+                .find(|summary| summary.name == name)
+                .unwrap_or_else(|| panic!("{name} must be listed"))
+        };
+        assert_eq!(
+            by_name("remote_mcp").status,
+            AppServerConnectorStatus::AuthorizationRequired,
+            "an undeclared remote server keeps the OAuth entry point"
+        );
+        assert_ne!(
+            by_name("local_mcp").status,
+            AppServerConnectorStatus::AuthorizationRequired,
+            "a stdio server never grows one"
+        );
+        assert!(by_name("local_mcp").credential.is_none());
+    }
+
+    /// `46` TC-FIX-001: the declaration decides the entry point, even for a
+    /// url-shaped connector. A marketplace entry declaring `server-side` (the
+    /// importer normalizes it to `none`) used to be reported
+    /// `authorization_required` with a `not_authenticated` `auth_status`, so the
+    /// UI grew a button whose flow could only die in discovery — github does not
+    /// even publish RFC 8414 metadata. A declared `oauth` entry keeps its entry
+    /// point, so the fix removes the false affordance, not the real one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_declared_none_connector_gets_no_authorization_entry_point() {
+        let db = nomifun_db::init_database_memory().await.unwrap();
+        let pool = db.pool().clone();
+        std::mem::forget(db);
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let config = McpConfigService::new(std::sync::Arc::new(
+            nomifun_db::SqliteMcpServerRepository::new(pool.clone()),
+        ));
+        let oauth = McpOAuthService::new(
+            std::sync::Arc::new(nomifun_db::SqliteOAuthTokenRepository::new(pool.clone())),
+            client.clone(),
+        );
+        let snapshots = std::sync::Arc::new(nomifun_db::SqlitePluginSnapshotRepository::new(pool));
+        let catalog = AppServerConnectorCatalog::new(config, McpConnectionTestService::new(client), oauth)
+            .with_credentials(crate::app_server_credentials::AppServerConnectorCredentials::new(
+                snapshots.clone(),
+            ));
+
+        // Both entries are url-shaped; only the declaration differs.
+        let mut ids = std::collections::HashMap::new();
+        for (name, declared) in [("netdisk", "none"), ("flova", "oauth")] {
+            let created = catalog
+                .config
+                .add_server(
+                    serde_json::from_value(serde_json::json!({
+                        "name": name,
+                        "transport": { "type": "http", "url": format!("https://{name}.example.com/mcp") },
+                    }))
+                    .expect("request"),
+                )
+                .await
+                .expect("add server");
+            catalog
+                .config
+                .set_server_enabled(&created.mcp_server_id, true)
+                .await
+                .expect("enable server");
+            let mcp_server_id = created.mcp_server_id.as_str().to_owned();
+
+            // The marketplace snapshot that registered this row: its
+            // `connector` component carries the normalized `auth_mode`.
+            let snapshot_id = nomifun_common::generate_id();
+            let component_id = format!("wb-{name}");
+            let payload =
+                serde_json::json!({ "connector_id": name, "auth_mode": declared }).to_string();
+            nomifun_db::IPluginSnapshotRepository::insert_snapshot_with_components(
+                snapshots.as_ref(),
+                nomifun_db::NewPluginSnapshot {
+                    snapshot_id: &snapshot_id,
+                    name,
+                    version: "1.0.0",
+                    source_kind: "codebuddy-connector",
+                    source_uri: Some("/local/market"),
+                    plugin_id: name,
+                    declared_version: "1.0.0",
+                    resolved_revision: None,
+                    content_digest: "digest",
+                    status: "completed",
+                    marketplace_id: Some("market"),
+                    entry_name: Some(name),
+                    source_revision: None,
+                    components: vec![nomifun_db::NewPluginSnapshotComponent {
+                        component_id: &component_id,
+                        kind: "connector",
+                        name,
+                        relative_path: None,
+                        compatibility_json: "{}",
+                        payload_json: &payload,
+                    }],
+                })
+                .await
+                .expect("insert snapshot");
+            nomifun_db::IPluginSnapshotRepository::mark_components_installed(
+                snapshots.as_ref(),
+                &[nomifun_db::ComponentRuntimeRef {
+                    snapshot_id: &snapshot_id,
+                    component_id: &component_id,
+                    runtime_type: "connector",
+                    location: name,
+                    mcp_server_id: Some(&mcp_server_id),
+                }],
+                nomifun_common::now_ms(),
+            )
+            .await
+            .expect("mark installed");
+            ids.insert(name, mcp_server_id);
+        }
+
+        let summaries = catalog.list(None).await.expect("list");
+        let by_name = |name: &str| {
+            summaries
+                .iter()
+                .find(|summary| summary.name == name)
+                .unwrap_or_else(|| panic!("{name} must be listed"))
+        };
+        assert_eq!(
+            by_name("netdisk").status,
+            AppServerConnectorStatus::Configured,
+            "a declared `server-side` connector needs no authorization"
+        );
+        assert_eq!(
+            by_name("netdisk").credential.as_ref().map(|c| c.mode),
+            Some(AppServerCredentialMode::None)
+        );
+        assert_eq!(
+            by_name("flova").status,
+            AppServerConnectorStatus::AuthorizationRequired,
+            "a declared `oauth` connector keeps its entry point"
+        );
+
+        let detail = catalog
+            .get(ids.get("netdisk").expect("id"), None)
+            .await
+            .expect("detail");
+        assert!(
+            detail.auth_status.is_none(),
+            "no OAuth state to report for a connector that needs none"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! 迁移 077（概念别名结构化 + 概念网边 ref_name）的契约（三轮 g2，j04）：
+//! 迁移 080（概念别名结构化 + 概念网边 ref_name）的契约（三轮 g2，j04）：
 //! `aliases_json` 元素从字符串回填为 `{name, status:"active"}` 记录（定义/
 //! 出处缺席 = 与概念定义同义/出处未知）；`learning_lesson_concepts.ref_name`
 //! 可空列承载节点引用时的投影名（老行为 NULL）。

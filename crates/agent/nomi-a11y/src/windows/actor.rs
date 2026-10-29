@@ -16,13 +16,14 @@
 //! returned verbatim with no flip or logical↔physical conversion (see the
 //! backend guide §5).
 //!
-//! Observe model: `observe()` with `pid == None` captures the **desktop** — the
-//! foreground window plus the other visible top-level application windows — as a
+//! Observe model: `observe()` with `window_id == Some` captures that exact
+//! window (xcap ids are HWNDs) without raising it. `pid == Some` captures that
+//! app's main window. `None`/`None` captures the **desktop** — the foreground
+//! window plus the other visible top-level application windows — as a
 //! `desktop → window → …` forest, so the model can see and act across windows
-//! (dialogs, pickers, a second app). `pid == Some` captures just that app's main
-//! window. Each window's subtree is pulled in a single `find_first_build_cache`
-//! IPC; per-window failures are logged and skipped rather than failing the whole
-//! observe.
+//! (dialogs, pickers, a second app). Each window's subtree is pulled in a
+//! single `find_first_build_cache` IPC; per-window failures are logged and
+//! skipped rather than failing the whole observe.
 //!
 //! Snapshot caching: this backend re-walks the tree on every `observe`. A
 //! macOS-style event-driven cache was prototyped and removed: correct
@@ -31,6 +32,7 @@
 //! observes are seconds apart any short-TTL cache never hits, and a partial
 //! cache silently serves stale snapshots — strictly worse than a fast re-walk.
 
+use core::ffi::c_void;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::mpsc::{Sender, channel};
@@ -49,7 +51,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GW_OWNER, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowTextLengthW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, SW_RESTORE, SetForegroundWindow,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE, SetForegroundWindow,
     ShowWindow,
 };
 use windows::core::{BOOL, PWSTR};
@@ -827,8 +829,8 @@ fn build_window_node(
 fn do_observe(opts: &ObserveOpts, state: &mut State) -> Result<Snapshot, A11yError> {
     let self_pid = unsafe { GetCurrentProcessId() };
 
-    // Resolve the windows to capture. pid==Some → just that app's main window;
-    // pid==None → the desktop: the foreground window + other visible app windows.
+    // Resolve the windows to capture. window_id → that HWND without raising it;
+    // pid==Some → that app's main window; neither → the desktop forest.
     struct WinTarget {
         el: UIElement,
         title: Option<String>,
@@ -836,56 +838,81 @@ fn do_observe(opts: &ObserveOpts, state: &mut State) -> Result<Snapshot, A11yErr
     }
     let mut targets: Vec<WinTarget> = Vec::new();
 
-    match opts.pid {
-        Some(pid) => {
-            let el = window_for_pid(&state.automation, pid)?;
-            let title = el.get_name().ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            targets.push(WinTarget {
-                title,
-                el,
-                pid: pid as u32,
-            });
+    if let Some(window_id) = opts.window_id {
+        let hwnd = HWND(window_id as usize as *mut c_void);
+        // SAFETY: `IsWindow` rejects a stale handle before any UIA call.
+        if unsafe { !IsWindow(Some(hwnd)).as_bool() } {
+            return Err(A11yError::NotFound(format!(
+                "window {window_id} no longer exists; use list_windows to get current ids"
+            )));
         }
-        None => {
-            let mut seen: Vec<isize> = Vec::new();
-            // Foreground first (so it numbers first and is the snapshot's pid).
-            let fg = foreground_hwnd().ok().and_then(|(hwnd, pid)| {
-                state
-                    .automation
-                    .element_from_handle((hwnd.0 as isize).into())
-                    .ok()
-                    .map(|el| (hwnd, pid, el))
-            });
-            if let Some((hwnd, pid, el)) = fg {
-                seen.push(hwnd.0 as isize);
+        let el = state
+            .automation
+            .element_from_handle((hwnd.0 as isize).into())
+            .map_err(|e| {
+                A11yError::Backend(format!("UIA element_from_handle({window_id}): {e}"))
+            })?;
+        let mut pid = 0u32;
+        unsafe {
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        }
+        targets.push(WinTarget {
+            title: window_title(hwnd),
+            el,
+            pid,
+        });
+    } else {
+        match opts.pid {
+            Some(pid) => {
+                let el = window_for_pid(&state.automation, pid)?;
+                let title = el.get_name().ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
                 targets.push(WinTarget {
-                    title: window_title(hwnd),
+                    title,
                     el,
-                    pid,
+                    pid: pid as u32,
                 });
             }
-            // Then the other visible top-level application windows (z-order).
-            for (hwnd, pid) in enumerate_app_windows(self_pid) {
-                if seen.contains(&(hwnd.0 as isize)) {
-                    continue;
-                }
-                if targets.len() >= MAX_WINDOWS {
-                    break;
-                }
-                if let Ok(el) = state.automation.element_from_handle((hwnd.0 as isize).into()) {
+            None => {
+                let mut seen: Vec<isize> = Vec::new();
+                // Foreground first (so it numbers first and is the snapshot's pid).
+                let fg = foreground_hwnd().ok().and_then(|(hwnd, pid)| {
+                    state
+                        .automation
+                        .element_from_handle((hwnd.0 as isize).into())
+                        .ok()
+                        .map(|el| (hwnd, pid, el))
+                });
+                if let Some((hwnd, pid, el)) = fg {
+                    seen.push(hwnd.0 as isize);
                     targets.push(WinTarget {
                         title: window_title(hwnd),
                         el,
                         pid,
                     });
                 }
-            }
-            if targets.is_empty() {
-                return Err(A11yError::NotFound(
-                    "no observable application window (the desktop or this app may have focus); \
-                     open or focus a target application and retry"
-                        .to_string(),
-                ));
+                // Then the other visible top-level application windows (z-order).
+                for (hwnd, pid) in enumerate_app_windows(self_pid) {
+                    if seen.contains(&(hwnd.0 as isize)) {
+                        continue;
+                    }
+                    if targets.len() >= MAX_WINDOWS {
+                        break;
+                    }
+                    if let Ok(el) = state.automation.element_from_handle((hwnd.0 as isize).into()) {
+                        targets.push(WinTarget {
+                            title: window_title(hwnd),
+                            el,
+                            pid,
+                        });
+                    }
+                }
+                if targets.is_empty() {
+                    return Err(A11yError::NotFound(
+                        "no observable application window (the desktop or this app may have focus); \
+                         open or focus a target application and retry"
+                            .to_string(),
+                    ));
+                }
             }
         }
     }

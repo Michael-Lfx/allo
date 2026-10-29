@@ -232,32 +232,104 @@ fn is_lan_ip_candidate(ip: Ipv4Addr) -> bool {
     true
 }
 
-/// All LAN-usable IPv4 NIC addresses — routing-preferred first, then the rest
-/// (private ranges before public). A multi-homed / VPN host still yields
-/// several; obvious virtual/special-purpose addresses are filtered out.
-pub fn detect_all_lan_ipv4s() -> Vec<Ipv4Addr> {
-    let mut addrs: Vec<Ipv4Addr> = Vec::new();
-    if let Some(primary) = routing_primary_ipv4() {
-        addrs.push(primary);
+/// Host-only virtual adapters. A phone on Wi-Fi cannot open these, and Windows
+/// often lists them before the real WLAN address.
+fn interface_is_virtual(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    if name.is_empty() {
+        return false;
     }
-    let mut rest: Vec<Ipv4Addr> = Vec::new();
-    if let Ok(ifaces) = if_addrs::get_if_addrs() {
-        for iface in ifaces {
-            if iface.is_loopback() {
-                continue;
-            }
-            if let IpAddr::V4(v4) = iface.ip()
-                && is_lan_ip_candidate(v4)
-                && !addrs.contains(&v4)
-                && !rest.contains(&v4)
-            {
-                rest.push(v4);
-            }
+    if name == "meta" {
+        return true;
+    }
+    [
+        "vethernet",
+        "hyper-v",
+        "hyperv",
+        "wsl",
+        "docker",
+        "virtualbox",
+        "vmware",
+        "vbox",
+        "bluetooth",
+        "npcap",
+        "default switch",
+        "isatap",
+        "teredo",
+        "veth",
+        "br-",
+        "loopback",
+        "pseudo-interface",
+        "clash",
+        "mihomo",
+        "sing-box",
+        "wintun",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+}
+
+/// Wi-Fi and ordinary LAN addresses before host-only virtual adapters.
+fn phone_address_rank(ip: Ipv4Addr) -> u8 {
+    let [a, b, _, _] = ip.octets();
+    if a == 192 && b == 168 {
+        0
+    } else if a == 10 {
+        1
+    } else if a == 172 && (16..=31).contains(&b) {
+        3
+    } else {
+        2
+    }
+}
+
+fn order_detected_ipv4s(primary: Option<Ipv4Addr>, found: Vec<(String, Ipv4Addr)>) -> Vec<Ipv4Addr> {
+    let mut physical = Vec::new();
+    let mut virtual_addrs = Vec::new();
+    for (name, ip) in found {
+        if !is_lan_ip_candidate(ip) {
+            continue;
+        }
+        let bucket = if interface_is_virtual(&name) {
+            &mut virtual_addrs
+        } else {
+            &mut physical
+        };
+        if !bucket.contains(&ip) {
+            bucket.push(ip);
         }
     }
-    rest.sort_by_key(|ip| !ip.is_private()); // private (false→0) first
-    addrs.extend(rest);
-    addrs
+    physical.sort_by_key(|ip| phone_address_rank(*ip));
+    virtual_addrs.sort_by_key(|ip| phone_address_rank(*ip));
+
+    let mut ordered = Vec::new();
+    if let Some(primary) = primary
+        && physical.contains(&primary)
+    {
+        ordered.push(primary);
+    }
+    for ip in physical.into_iter().chain(virtual_addrs) {
+        if !ordered.contains(&ip) {
+            ordered.push(ip);
+        }
+    }
+    ordered
+}
+
+/// All LAN-usable IPv4 NIC addresses. A phone-reachable Wi-Fi address comes
+/// before Hyper-V, WSL, and Docker adapters. The routing-preferred address is
+/// first only when it belongs to a physical interface.
+pub fn detect_all_lan_ipv4s() -> Vec<Ipv4Addr> {
+    let found = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter_map(|iface| match iface.ip() {
+            IpAddr::V4(ip) => Some((iface.name, ip)),
+            IpAddr::V6(_) => None,
+        })
+        .collect();
+    order_detected_ipv4s(routing_primary_ipv4(), found)
 }
 
 #[cfg(test)]
@@ -381,6 +453,39 @@ mod tests {
         assert!(!is_lan_ip_candidate(Ipv4Addr::new(198, 19, 255, 1)));
         assert!(!is_lan_ip_candidate(Ipv4Addr::new(224, 0, 0, 1)));
         assert!(!is_lan_ip_candidate(Ipv4Addr::new(255, 255, 255, 255)));
+    }
+
+    #[test]
+    fn virtual_adapters_sort_after_the_wifi_address_a_phone_can_open() {
+        let ordered = order_detected_ipv4s(
+            Some(Ipv4Addr::new(198, 18, 0, 1)),
+            vec![
+                ("vEthernet (WSL)".to_owned(), Ipv4Addr::new(172, 17, 0, 1)),
+                (
+                    "vEthernet (Default Switch)".to_owned(),
+                    Ipv4Addr::new(172, 30, 16, 1),
+                ),
+                ("Meta".to_owned(), Ipv4Addr::new(198, 18, 0, 1)),
+                ("WLAN".to_owned(), Ipv4Addr::new(192, 168, 2, 155)),
+            ],
+        );
+        assert_eq!(
+            ordered,
+            vec![
+                Ipv4Addr::new(192, 168, 2, 155),
+                Ipv4Addr::new(172, 17, 0, 1),
+                Ipv4Addr::new(172, 30, 16, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_physical_ethernet_name_is_not_treated_as_virtual() {
+        assert!(!interface_is_virtual("以太网"));
+        assert!(!interface_is_virtual("Ethernet"));
+        assert!(!interface_is_virtual("WLAN"));
+        assert!(interface_is_virtual("vEthernet (Default Switch)"));
+        assert!(interface_is_virtual("Meta"));
     }
 
     #[test]

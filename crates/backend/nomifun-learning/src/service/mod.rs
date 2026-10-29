@@ -17,6 +17,7 @@ pub(super) use serde_json::Value;
 pub(super) use sqlx::{Row, Sqlite, Transaction};
 
 pub(super) use crate::completer::LearningCompleter;
+pub(super) use flowy_web::provider::SearchProvider;
 pub(super) use crate::events::LearningEventEmitter;
 pub(super) use crate::course_outline::draft::OutlineDraft;
 pub(super) use crate::course_outline::{CourseOutlineAgentEngine, KnowledgeBaseBrief, OutlineBrief};
@@ -62,6 +63,11 @@ pub(crate) struct OutlineSnapshot {
     pub learning_goal: String,
     pub samples_meta_json: Option<String>,
     pub source_kb_ids: Vec<KnowledgeBaseId>,
+    /// 来源计划快照（t4）：建课走了「计划 → 展开」管线时的
+    /// `CourseSourcePlanSnapshot` 信封序列化；描述流/legacy/回退采样路径
+    /// 一律 `None`（列上 NULL，与旧课程不可区分——快照不伪造）。与
+    /// modules/lessons 同一事务写入，导入中途失败零残留。
+    pub course_source_plan_json: Option<String>,
 }
 
 #[derive(Clone)]
@@ -117,6 +123,13 @@ pub struct LearningService {
     /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
     /// 读数面）。内存态，仅诊断。
     growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
+    /// 铸名门外部证据搜索提供方（m11，ADR-0030 门内增强）：`None` = 零搜
+    /// 索（fail-open 无证据）。组合根接线 DDG 无 key 提供方；开关
+    /// `NOMI_LEARNING_MINT_RESEARCH` 在机制内再闸一道。
+    mint_search: Arc<RwLock<Option<Arc<dyn SearchProvider>>>>,
+    /// 最近一次生长的铸名门外部证据读数（搜索/命中/扩邻/降级，m11 smoke
+    /// grow 读数面；读数面非门禁）。内存态，仅诊断。
+    mint_research_stats: Arc<Mutex<Option<crate::learning_graph::mint_evidence::MintResearchStats>>>,
     /// companion XP 桥（j05 统一账）：结算落账后的同步授予接缝。缺省
     /// `None`（测试/CLI/无伙伴花名册）——只落学习账，companion 余额滞后。
     companion_xp_sink: Arc<RwLock<Option<Arc<dyn CompanionXpSink>>>>,
@@ -128,6 +141,22 @@ pub struct GrowthRunStats {
     pub attempts_used: usize,
     /// success | early_stop | exhausted | cancelled。
     pub stop_reason: String,
+    /// 挂号表机械校验读数（m3）：评审接受的表行数 / 判「结论不可用」次数 /
+    /// 带死因重试次数 / 两连败 Degraded 保守放行。
+    pub review_provenance_rows: usize,
+    pub review_provenance_invalid: usize,
+    pub review_provenance_retried: usize,
+    pub review_provenance_degraded: bool,
+    /// 碎片裁决机械读数（m9 补接）：点名片段数 / 评审裁决行数 / 未处置片段
+    /// 数（report-only 降 findings / enforce 合成打回）/ 两连败 Degraded。
+    pub review_fragments_total: usize,
+    pub review_fragments_rows: usize,
+    pub review_fragments_unhandled: usize,
+    pub review_fragments_degraded: bool,
+    /// 有状态复审臂（m5）：`NOMI_LEARNING_REVIEW_STATE` 开关状态。
+    pub review_state: bool,
+    /// 前轮评审意见回灌重排的次数（0 = 本轮无回灌；off 臂恒 0）。
+    pub review_state_injections: usize,
 }
 
 /// 生成注册的内部状态（见 [`LearningService::generation_tasks`]）。
@@ -149,6 +178,8 @@ impl LearningService {
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
             generation_tasks: Arc::new(GenerationTaskRegistry::new()),
             growth_run_stats: Arc::new(Mutex::new(None)),
+            mint_search: Arc::new(RwLock::new(None)),
+            mint_research_stats: Arc::new(Mutex::new(None)),
             companion_xp_sink: Arc::new(RwLock::new(None)),
         }
     }
@@ -160,6 +191,15 @@ impl LearningService {
         observer: Arc<dyn Fn(&str) + Send + Sync>,
     ) {
         self.generation_tasks.set_observer(observer);
+    }
+
+    /// 注入铸名门外部证据搜索提供方（m11；不注入 = 零搜索零证据，fail-open
+    /// 同律）。组合根接 `DuckDuckGoSearchProvider`（无 key，代理感知）。
+    pub fn set_mint_search_provider(&self, provider: Arc<dyn SearchProvider>) {
+        *self
+            .mint_search
+            .write()
+            .expect("learning mint search lock poisoned") = Some(provider);
     }
 
     pub fn set_generation_dependencies(
@@ -490,6 +530,12 @@ struct AgentCourseJobEntry {
 
 mod checkin;
 mod learning_graph;
+pub use learning_graph::{
+    DEFAULT_AUTO_REFILL_ENABLED, DEFAULT_MAINTENANCE_ENABLED,
+    DEFAULT_MAINTENANCE_INTERVAL_MINUTES, FINDINGS_WATERMARK_SWITCH_ENV,
+    MAINTENANCE_INTERVAL_MINUTES,
+    is_findings_watermark_disabled_value,
+};
 mod course;
 mod course_outline;
 mod diagnostic;
@@ -498,6 +544,7 @@ mod generate;
 mod lesson;
 mod lesson_draft;
 mod memory;
+mod open_judge;
 mod progress;
 mod quiz;
 mod review;
@@ -506,12 +553,18 @@ mod xp;
 
 pub use xp::CompanionXpSink;
 
+/// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
+/// `ArchivingCompleter` 时引用同一常量——占位文本单源。
+pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
+
 pub(crate) use generation_tasks::{
     CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
     GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
     KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
 };
 
+#[cfg(test)]
+mod basis_tests;
 #[cfg(test)]
 mod tests;
 

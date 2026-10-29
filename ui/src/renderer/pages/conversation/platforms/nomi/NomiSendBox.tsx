@@ -79,7 +79,6 @@ import {
   shouldReleaseStopInteraction,
   useConversationStopAttemptGuard,
 } from '@/renderer/pages/conversation/platforms/useConversationStopAttemptGuard';
-import { getConversationOrNull } from '@/renderer/pages/conversation/utils/conversationCache';
 import { CHAT_COMPOSER_WRAPPER_CLASSES } from '@/renderer/pages/conversation/components/conversationLayoutClasses';
 import { awaitConversationConfig } from '@/renderer/pages/conversation/utils/conversationConfigGate';
 import { getConversationRuntimeWorkspaceErrorMessage } from '@/renderer/pages/conversation/utils/conversationCreateError';
@@ -437,11 +436,9 @@ const NomiSendBox: React.FC<{
   }, [conversation_id]);
 
   useEffect(() => {
-    void getConversationOrNull(conversation_id).then((res) => {
-      if (!res?.extra?.workspace) return;
-      setWorkspacePath(res.extra.workspace);
-    });
-  }, [conversation_id]);
+    if (!conversationContext?.workspace) return;
+    setWorkspacePath(conversationContext.workspace);
+  }, [conversationContext?.workspace]);
 
   useEffect(() => {
     if (!conversation_id) return;
@@ -458,6 +455,7 @@ const NomiSendBox: React.FC<{
   const slash_commands = useSlashCommands(conversation_id, {
     conversation_type: 'nomi',
     agentStatus: agentWarmed ? 'active' : null,
+    enabled: content.trimStart().startsWith('/'),
   });
 
   const addOrUpdateMessage = useAddOrUpdateMessage();

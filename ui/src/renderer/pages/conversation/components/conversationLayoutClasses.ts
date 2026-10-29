@@ -9,11 +9,11 @@
 /** Real interactive header (ChatLayout). The overlay's header replica reuses
  *  it so the title bar already has the right height/padding at reveal. */
 export const CHAT_HEADER_CLASSES =
-  'min-h-44px flex items-center justify-between px-16px pt-8px pb-10px gap-16px !bg-1 chat-layout-header chat-layout-header--glass overflow-hidden';
+  'min-h-36px flex items-center justify-between px-16px py-2px gap-16px !bg-1 chat-layout-header chat-layout-header--glass overflow-hidden';
 
 /** Header variant shared by ChatLayout and PendingConversationOverlay when a
  * workspace path is rendered below the conversation title. */
-export const CHAT_HEADER_WITH_SUBTITLE_CLASSES = 'min-h-60px';
+export const CHAT_HEADER_WITH_SUBTITLE_CLASSES = 'min-h-44px';
 
 /**
  * Pending conversations share the desktop title bar contract, but mobile

@@ -13,6 +13,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -23,11 +24,14 @@ import { lessonStatusTagColors } from '../model';
 import { contentColumnWidth, STANDARD_GRAPH_MAX_WIDTH } from '../layout';
 import { statusLabel } from '../utils';
 import { useGraphGenerationEvents } from '../hooks/useGraphGenerationEvents';
+import { useAutoRefill } from '../hooks/useAutoRefill';
 import { learningApi } from '../api';
 import { errorMessage } from '../utils';
 import type {
   Activity,
   AttemptRecord,
+  BasisView,
+  ConceptAuditReport,
   CourseDetail,
   GraphBatchView,
   GraphConceptRowView,
@@ -90,6 +94,10 @@ const LearningGraphWorkspace: React.FC<{
   // 画完立即上屏、终结（完成/失败/取消）落定状态——思考化之后结构与生长
   // 都要跑分钟级，不刷新用户会以为什么都没发生。
   useGraphGenerationEvents(detail.course.id, () => onRefresh());
+
+  // 自动补批触发②（m10）：工作区加载 → 纯读裁决 → Due 自动补一批（后台）。
+  // autoPreparing 是派发窗口的诚实读数，批次运行期仍由 growth_running 表达。
+  const { autoPreparing } = useAutoRefill(detail.course.id, onRefresh);
 
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(
     () => graph?.recommended[0] ?? null
@@ -227,6 +235,84 @@ const LearningGraphWorkspace: React.FC<{
     }
   }, [detail.course.id, refetchStructure, t]);
 
+  // ── 已会声明（Declared Known，m2）：读数 + 声明 + 撤销 ──────────────────
+  const [basis, setBasis] = useState<BasisView | null>(null);
+  const [declaringBasis, setDeclaringBasis] = useState(false);
+  const [revokingBasis, setRevokingBasis] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      learningApi
+        .basisView(detail.course.id)
+        .then((view) => {
+          if (!cancelled) setBasis(view);
+        })
+        .catch(() => {
+          // 读数缺席不挡结构 Tab：保留 null（声明入口按未声明渲染）。
+          if (!cancelled) setBasis(null);
+        });
+    };
+    load();
+    // 声明/撤销/生长经 WS course-generation 流（basis_declared /
+    // basis_revoked 复用既有事件面）驱动重拉。
+    const off = ipcBridge.learning.courseGeneration.on((event) => {
+      if (event.course_id === detail.course.id) load();
+    });
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [detail.course.id]);
+
+  const declareBasis = useCallback(
+    async (doors: string[]) => {
+      setDeclaringBasis(true);
+      try {
+        const result = await learningApi.declareBasis(detail.course.id, doors);
+        if (result.noop) {
+          Modal.info({ title: t('learning.learningGraphBasisDeclareNoop') });
+        } else {
+          Modal.info({
+            title: t('learning.learningGraphBasisDeclareDoneTitle'),
+            content: t('learning.learningGraphBasisDeclareDone', {
+              doors: result.doors.join('、'),
+              blocks: result.blocks.join('、'),
+              minted: result.minted,
+              reused: result.reused,
+            }),
+          });
+        }
+        const view = await learningApi.basisView(detail.course.id);
+        setBasis(view);
+      } catch (actionError) {
+        Modal.error({
+          title: t('learning.learningGraphBasisDeclareFailed'),
+          content: errorMessage(t, actionError),
+        });
+      } finally {
+        setDeclaringBasis(false);
+      }
+    },
+    [detail.course.id, t]
+  );
+
+  const revokeBasis = useCallback(async () => {
+    setRevokingBasis(true);
+    try {
+      await learningApi.revokeBasis(detail.course.id);
+      const view = await learningApi.basisView(detail.course.id);
+      setBasis(view);
+    } catch (actionError) {
+      Modal.error({
+        title: t('learning.learningGraphBasisRevokeFailed'),
+        content: errorMessage(t, actionError),
+      });
+    } finally {
+      setRevokingBasis(false);
+    }
+  }, [detail.course.id, t]);
+
   // ── 手动补充节点 ────────────────────────────────────────────────────────
   const [growing, setGrowing] = useState(false);
   const grow = useCallback(async () => {
@@ -343,6 +429,11 @@ const LearningGraphWorkspace: React.FC<{
               : t('learning.learningGraphStructureGenerate')}
           </Button>
           <span className='flex-1' />
+          {autoPreparing && (
+            <Tag size='small' color='processing' className='!mx-0'>
+              {t('learning.learningGraphAutoPreparing')}
+            </Tag>
+          )}
           {graph.growth_running && (
             <Tag size='small' color='processing' className='!mx-0'>
               {t('learning.learningGraphGrowing')}
@@ -516,10 +607,15 @@ const LearningGraphWorkspace: React.FC<{
         <Tabs.TabPane key='structure' title={t('learning.learningGraphTabStructure')}>
           <StructureGraphTab
             view={structure}
+            basis={basis}
             onMount={() => void mountStructure()}
             mounting={mounting}
             onRepair={() => void repairStructure()}
             repairing={repairing}
+            onDeclareBasis={(doors) => void declareBasis(doors)}
+            declaringBasis={declaringBasis}
+            onRevokeBasis={() => void revokeBasis()}
+            revokingBasis={revokingBasis}
           />
         </Tabs.TabPane>
       </Tabs>
@@ -634,10 +730,11 @@ const GraphHistory: React.FC<{ courseId: string; enrollmentKey: string | null }>
   );
 };
 
-/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源。 */
+/** 概念表：本课程涉及的概念（教/假定 × 档位 × 节点）+ 跨课程来源 + 定义审计行级标记。 */
 const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   const { t } = useTranslation();
   const [rows, setRows] = useState<GraphConceptRowView[] | null>(null);
+  const [audit, setAudit] = useState<ConceptAuditReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -647,6 +744,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
         .graphConcepts(courseId)
         .then((view) => {
           if (!cancelled) setRows(view);
+        })
+        .catch((loadError) => {
+          if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
+        });
+      // 定义审计（m9 只读）：与行表并行拉取，任一失败都明示（审计缺席是
+      // 静默误导——缺口看不见不等于没有缺口）。
+      learningApi
+        .conceptAudit(courseId)
+        .then((report) => {
+          if (!cancelled) setAudit(report);
         })
         .catch((loadError) => {
           if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -663,6 +770,22 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
     };
   }, [courseId]);
 
+  // 行级标记索引（concept_id → 缺口片段 / 自指 / 互指对手名）。
+  const auditMarkers = useMemo(() => {
+    const fragments = new Map<string, string[]>();
+    const selfRefs = new Set<string>();
+    const mutualWith = new Map<string, string>();
+    if (audit) {
+      for (const entry of audit.flagged) fragments.set(entry.concept_id, entry.fragments);
+      for (const entry of audit.self_refs) selfRefs.add(entry.concept_id);
+      for (const pair of audit.mutual_cycles) {
+        mutualWith.set(pair.a_concept_id, pair.b_name);
+        mutualWith.set(pair.b_concept_id, pair.a_name);
+      }
+    }
+    return { fragments, selfRefs, mutualWith };
+  }, [audit]);
+
   if (error) {
     return <Alert type='error' content={`${t('learning.loadFailed')}: ${error}`} />;
   }
@@ -676,6 +799,45 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
   if (rows.length === 0) {
     return <Empty description={t('learning.learningGraphConceptsEmpty')} />;
   }
+  const renderAuditMarkers = (row: GraphConceptRowView) => {
+    const fragments = auditMarkers.fragments.get(row.concept_id) ?? [];
+    const isSelfRef = auditMarkers.selfRefs.has(row.concept_id);
+    const mutualPartner = auditMarkers.mutualWith.get(row.concept_id);
+    if (fragments.length === 0 && !isSelfRef && !mutualPartner) {
+      return <span className='text-12px text-t-tertiary'>—</span>;
+    }
+    return (
+      <div className='flex flex-wrap items-center gap-4px'>
+        {isSelfRef && (
+          <Tooltip content={t('learning.learningGraphAuditSelfRefTooltip')}>
+            <Tag size='small' color='red' className='!mx-0'>
+              {t('learning.learningGraphAuditSelfRef')}
+            </Tag>
+          </Tooltip>
+        )}
+        {mutualPartner && (
+          <Tooltip
+            content={t('learning.learningGraphAuditMutualTooltip', { name: mutualPartner })}
+          >
+            <Tag size='small' color='purple' className='!mx-0'>
+              {t('learning.learningGraphAuditMutual', { name: mutualPartner })}
+            </Tag>
+          </Tooltip>
+        )}
+        {fragments.length > 0 && (
+          <Tooltip
+            content={t('learning.learningGraphAuditFragmentsTooltip', {
+              fragments: fragments.join('、'),
+            })}
+          >
+            <Tag size='small' color='orange' className='!mx-0'>
+              {t('learning.learningGraphAuditFragments', { count: fragments.length })}
+            </Tag>
+          </Tooltip>
+        )}
+      </div>
+    );
+  };
   return (
     <Table
       size='small'
@@ -690,7 +852,16 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           width: 160,
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='min-w-0'>
-              <div className='truncate font-500 text-[var(--color-text-1)]'>{row.canonical}</div>
+              <div className='flex items-center gap-4px'>
+                <span className='min-w-0 truncate font-500 text-[var(--color-text-1)]'>
+                  {row.canonical}
+                </span>
+                {row.source === 'basis-declaration' && (
+                  <Tag size='small' color='green' className='!mx-0 shrink-0'>
+                    {t('learning.learningGraphConceptSourceDeclaration')}
+                  </Tag>
+                )}
+              </div>
               {row.aliases.length > 0 && (
                 <div className='truncate text-11px text-t-tertiary'>
                   {row.aliases
@@ -708,6 +879,11 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
           dataIndex: 'refs',
           render: (_: unknown, row: GraphConceptRowView) => (
             <div className='flex flex-col gap-2px'>
+              {row.refs.length === 0 && row.declared && (
+                <span className='text-12px text-t-tertiary'>
+                  {t('learning.learningGraphConceptDeclaredOnly')}
+                </span>
+              )}
               {row.refs.map((reference) => (
                 <div key={`${reference.lesson_id}:${reference.role}`} className='flex items-center gap-6px text-12px'>
                   <Tag
@@ -747,6 +923,12 @@ const ConceptTable: React.FC<{ courseId: string }> = ({ courseId }) => {
             ) : (
               <span className='text-12px text-t-tertiary'>—</span>
             ),
+        },
+        {
+          title: t('learning.learningGraphConceptAudit'),
+          dataIndex: 'audit',
+          width: 200,
+          render: (_: unknown, row: GraphConceptRowView) => renderAuditMarkers(row),
         },
       ]}
     />

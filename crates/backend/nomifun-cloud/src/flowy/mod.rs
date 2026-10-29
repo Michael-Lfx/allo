@@ -314,7 +314,7 @@ impl FlowyApiClient {
         &self,
         session: &ServerSession,
         client_id: Option<String>,
-    ) -> Result<(), ServerClientError> {
+    ) -> Result<Vec<String>, ServerClientError> {
         let app = self.config.app.trim();
         let body = PresenceHeartbeatRequest {
             platform: Some(crate::platform::client_platform()),
@@ -326,8 +326,28 @@ impl FlowyApiClient {
                 Some(app.to_string())
             },
         };
-        self.post_no_data("/presence/heartbeat", Some(session), &body)
-            .await
+        self.post_envelope("/presence/heartbeat", Some(session), &body)
+            .await?
+            .into_data_opt::<types::PresenceHeartbeatData>()
+            .map(|data| data.map(|row| row.revoked_device_ids).unwrap_or_default())
+    }
+
+    pub async fn register_link_device(
+        &self,
+        session: &ServerSession,
+        body: &LinkDeviceUpsert,
+    ) -> Result<(), ServerClientError> {
+        self.post_no_data("/link/devices", Some(session), body).await
+    }
+
+    pub async fn notify_link_device<B: Serialize>(
+        &self,
+        session: &ServerSession,
+        device_id: &str,
+        body: &B,
+    ) -> Result<(), ServerClientError> {
+        let path = format!("/link/devices/{}/notify", form_urlencode(device_id));
+        self.post_no_data(&path, Some(session), body).await
     }
 
     pub async fn device_activate(

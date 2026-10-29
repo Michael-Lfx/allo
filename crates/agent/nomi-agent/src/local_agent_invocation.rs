@@ -84,6 +84,11 @@ impl LocalAgentInvocationRunner {
         self
     }
 
+    /// Model name inherited by a delegated Agent that does not name another one.
+    pub(crate) fn session_model(&self) -> &str {
+        &self.base_config.model
+    }
+
     /// Execute a single delegated Agent and await its result.
     pub(crate) async fn invoke_one(&self, input: AgentInvocationInput) -> AgentInvocationOutput {
         self.invoke_with_context(input, None).await
@@ -123,6 +128,17 @@ impl LocalAgentInvocationRunner {
         contributor: Option<Arc<dyn ContextContributor>>,
         effective_scope: ToolScope,
     ) -> AgentInvocationOutput {
+        if let Some(gap) = self.approval_gap(&invocation) {
+            return AgentInvocationOutput {
+                name: invocation.name,
+                text: gap,
+                usage: TokenUsage::default(),
+                turns: 0,
+                is_error: true,
+                denied_tool_calls: 0,
+            };
+        }
+        let effective_scope = self.approvable_scope(&effective_scope);
         // Shared token ceiling (opt-in): refuse to start a new delegated Agent once
         // the budget is spent, rather than launching work that won't be paid for.
         if let Some(budget) = &self.token_budget
@@ -134,6 +150,7 @@ impl LocalAgentInvocationRunner {
                 usage: TokenUsage::default(),
                 turns: 0,
                 is_error: true,
+                denied_tool_calls: 0,
             };
         }
 
@@ -157,6 +174,7 @@ impl LocalAgentInvocationRunner {
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
+                    denied_tool_calls: 0,
                 };
             }
         };
@@ -168,6 +186,10 @@ impl LocalAgentInvocationRunner {
             output,
             self.cwd.clone(),
         );
+        // A delegated Agent cannot reach the host's approval UI. Deny every
+        // tool that is not explicitly auto-approved instead of falling back to
+        // the terminal confirmer (EOF used to be treated as approval).
+        engine.deny_unconfirmed_tools();
         engine.set_process_supervisor(Arc::clone(&supervisor));
         engine.set_initial_reasoning_effort(invocation.effort.clone());
         if let Some(contributor) = contributor {
@@ -189,6 +211,68 @@ impl LocalAgentInvocationRunner {
             .intersect(&ToolScope::from_exact_tools(&invocation.exact_tools))
     }
 
+    /// Mutation-capable tools this invocation would be denied because the host
+    /// has no approval channel. Empty means every tool in the effective scope
+    /// can run unattended.
+    pub(crate) fn approval_gap(&self, invocation: &AgentInvocationInput) -> Option<String> {
+        let scope = self.effective_tool_scope(invocation);
+        self.approval_gap_for_scope(&invocation.name, &scope)
+    }
+
+    fn approval_gap_for_scope(&self, name: &str, scope: &ToolScope) -> Option<String> {
+        if self.base_config.tools.auto_approve {
+            return None;
+        }
+        let requested: Vec<&str> = CHILD_TOOL_CATALOG
+            .iter()
+            .filter(|descriptor| descriptor.workspace_effect == WorkspaceEffect::MayMutate)
+            .filter(|descriptor| scope.allows(descriptor.name))
+            .map(|descriptor| descriptor.name)
+            .collect();
+        if requested.is_empty() {
+            return None;
+        }
+        let approvable = requested.iter().any(|name| {
+            self.base_config
+                .tools
+                .allow_list
+                .iter()
+                .any(|allowed| allowed == name)
+        });
+        if approvable {
+            // A partial grant is fine: approvable_scope removes the tools the
+            // host cannot approve instead of failing the whole assignment.
+            return None;
+        }
+        Some(format!(
+            "Delegated Agent '{name}' requires approval for {} but a delegated Agent has no approval channel. Add at least one of these tools to [tools].allow_list or enable auto-approve (--auto-approve / yolo).",
+            requested.join(", ")
+        ))
+    }
+
+    /// Intersect the caller's scope with the tools this delegated engine can
+    /// actually obtain approval for. Read-only tools are always safe; mutation
+    /// tools require auto-approve or an explicit allow-list entry.
+    fn approvable_scope(&self, scope: &ToolScope) -> ToolScope {
+        if self.base_config.tools.auto_approve {
+            return scope.clone();
+        }
+        let allowed: std::collections::BTreeSet<String> = CHILD_TOOL_CATALOG
+            .iter()
+            .filter(|descriptor| {
+                descriptor.workspace_effect == WorkspaceEffect::ReadOnly
+                    || self
+                        .base_config
+                        .tools
+                        .allow_list
+                        .iter()
+                        .any(|name| name == descriptor.name)
+            })
+            .map(|descriptor| descriptor.name.to_owned())
+            .collect();
+        scope.intersect(&ToolScope::Restricted(allowed))
+    }
+
     fn config_for_invocation(&self, invocation: &AgentInvocationInput) -> Config {
         let mut config = self.base_config.clone();
         config.max_turns = Some(invocation.max_turns);
@@ -199,6 +283,20 @@ impl LocalAgentInvocationRunner {
             config.model = model;
         }
         config.session.enabled = false;
+        // A delegated Agent has no approval channel. Read-only child tools are
+        // always safe to admit; mutation-capable tools stay gated on the host's
+        // auto-approve / allow-list decision (see `approval_gap_for_scope`).
+        for descriptor in CHILD_TOOL_CATALOG {
+            if descriptor.workspace_effect == WorkspaceEffect::ReadOnly
+                && !config
+                    .tools
+                    .allow_list
+                    .iter()
+                    .any(|name| name == descriptor.name)
+            {
+                config.tools.allow_list.push(descriptor.name.to_owned());
+            }
+        }
         // Hooks are executable host policy, not AgentInvocation authority. The
         // child registry is capability-scoped, while inherited hooks currently
         // execute raw shell commands outside that registry and its supervisor.
@@ -222,7 +320,7 @@ impl LocalAgentInvocationRunner {
     ) -> Vec<AgentInvocationOutput> {
         let effective_scopes = invocations
             .iter()
-            .map(|invocation| self.effective_tool_scope(invocation))
+            .map(|invocation| self.approvable_scope(&self.effective_tool_scope(invocation)))
             .collect::<Vec<_>>();
         let workspace_plan = FanoutWorkspacePlan::for_scopes(
             &effective_scopes,
@@ -279,14 +377,13 @@ impl LocalAgentInvocationRunner {
                             .expect("isolation plan always captures one source baseline")
                         {
                             Ok(baseline) => {
-                                runner
-                                    .invoke_isolated_one(
-                                        config,
-                                        contributor,
-                                        effective_scope,
-                                        Arc::clone(baseline),
-                                    )
-                                    .await
+                                Box::pin(runner.invoke_isolated_one(
+                                    config,
+                                    contributor,
+                                    effective_scope,
+                                    Arc::clone(baseline),
+                                ))
+                                .await
                             }
                             Err(error) => AgentInvocationOutput {
                                 name: config.name,
@@ -297,12 +394,16 @@ impl LocalAgentInvocationRunner {
                                 usage: TokenUsage::default(),
                                 turns: 0,
                                 is_error: true,
+                                denied_tool_calls: 0,
                             },
                         }
                     } else {
-                        runner
-                            .invoke_with_effective_scope(config, contributor, effective_scope)
-                            .await
+                        Box::pin(runner.invoke_with_effective_scope(
+                            config,
+                            contributor,
+                            effective_scope,
+                        ))
+                        .await
                     };
                     if warn {
                         append_shared_mutation_warning(&mut output);
@@ -325,6 +426,7 @@ impl LocalAgentInvocationRunner {
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
+                    denied_tool_calls: 0,
                 })
             })
             .collect()
@@ -346,6 +448,7 @@ impl LocalAgentInvocationRunner {
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
+                    denied_tool_calls: 0,
                 };
             }
             Err(error) => {
@@ -355,6 +458,7 @@ impl LocalAgentInvocationRunner {
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
+                    denied_tool_calls: 0,
                 };
             }
         };
@@ -368,6 +472,7 @@ impl LocalAgentInvocationRunner {
                     usage: TokenUsage::default(),
                     turns: 0,
                     is_error: true,
+                    denied_tool_calls: 0,
                 };
             }
         };
@@ -658,6 +763,7 @@ fn map_agent_invocation_outcome(
                 usage: result.usage,
                 turns: result.turns,
                 is_error: incomplete.is_some(),
+                denied_tool_calls: 0,
             }
         }
         Ok(Err(e)) => AgentInvocationOutput {
@@ -666,6 +772,7 @@ fn map_agent_invocation_outcome(
             usage: TokenUsage::default(),
             turns: 0,
             is_error: true,
+            denied_tool_calls: 0,
         },
         Err(_elapsed) => AgentInvocationOutput {
             name,
@@ -673,6 +780,7 @@ fn map_agent_invocation_outcome(
             usage: TokenUsage::default(),
             turns: 0,
             is_error: true,
+            denied_tool_calls: 0,
         },
     }
 }
@@ -687,11 +795,10 @@ async fn execute_delegated_agent(
     let mut shutdown_guard = SupervisorShutdownOnDrop::new(Arc::clone(&supervisor));
     let outcome = tokio::time::timeout(DELEGATED_AGENT_TIMEOUT, engine.execute_turn(prompt, "")).await;
     let mut result = map_agent_invocation_outcome(name, outcome, DELEGATED_AGENT_TIMEOUT.as_secs());
+    let denied_tool_calls = engine.denied_tool_calls();
     let shutdown = supervisor.shutdown().await;
     shutdown_guard.disarm();
-    if shutdown.sessions.is_empty() {
-        result
-    } else {
+    if !shutdown.sessions.is_empty() {
         let unresolved = shutdown.sessions.iter().any(|session| {
             matches!(
                 &session.outcome,
@@ -708,8 +815,16 @@ async fn execute_delegated_agent(
                 .push_str(" At least one process tree could not be proven reaped.");
             result.is_error = true;
         }
-        result
     }
+    if denied_tool_calls > 0 {
+        result.denied_tool_calls = denied_tool_calls;
+        result.is_error = true;
+        result.text.push_str(&format!(
+            "\n\nDelegated Agent had {denied_tool_calls} tool call(s) denied by the host; \
+             the assignment may be incomplete."
+        ));
+    }
+    result
 }
 
 struct SupervisorShutdownOnDrop {
@@ -890,6 +1005,15 @@ impl ToolScope {
                 .iter()
                 .filter(|descriptor| match policy {
                     AgentToolPolicy::Full => true,
+                    AgentToolPolicy::FilesShell => {
+                        descriptor.workspace_effect == WorkspaceEffect::ReadOnly
+                            || matches!(
+                                descriptor.kind,
+                                ChildToolKind::Write
+                                    | ChildToolKind::Edit
+                                    | ChildToolKind::Bash
+                            )
+                    }
                     AgentToolPolicy::ReadOnly => {
                         descriptor.workspace_effect == WorkspaceEffect::ReadOnly
                     }
@@ -1049,7 +1173,8 @@ fn translate_root_to_worktree(
 mod phase7_tests {
     use super::{
         CHILD_TOOL_CATALOG, ChildToolKind, FanoutWorkspacePlan, LocalAgentInvocationRunner,
-        ToolScope, WorkspaceEffect, build_tool_registry, map_agent_invocation_outcome,
+        ToolScope, WorkspaceEffect, build_tool_registry, execute_delegated_agent,
+        map_agent_invocation_outcome,
     };
     use crate::engine::{AgentError, AgentResult};
     use async_trait::async_trait;
@@ -1156,6 +1281,64 @@ mod phase7_tests {
         }
     }
 
+    /// Answers the first provider turn with a Write tool call, then a final
+    /// EndTurn. The test asserts the file, not an exact call count.
+    struct WriteThenDoneProvider {
+        target: std::path::PathBuf,
+        content: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl WriteThenDoneProvider {
+        fn new(target: std::path::PathBuf, content: &'static str) -> Self {
+            Self {
+                target,
+                content,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for WriteThenDoneProvider {
+        async fn stream(
+            &self,
+            _request: &LlmRequest,
+        ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, ProviderError> {
+            let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            let events = if first {
+                vec![
+                    LlmEvent::ToolUse {
+                        id: "write-one".to_owned(),
+                        name: "Write".to_owned(),
+                        input: serde_json::json!({
+                            "file_path": self.target,
+                            "content": self.content,
+                        }),
+                        extra: None,
+                    },
+                    LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage::default(),
+                    },
+                ]
+            } else {
+                vec![
+                    LlmEvent::TextDelta("written".to_owned()),
+                    LlmEvent::Done {
+                        stop_reason: StopReason::EndTurn,
+                        usage: TokenUsage::default(),
+                    },
+                ]
+            };
+            let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+            for event in events {
+                sender.try_send(event).unwrap();
+            }
+            Ok(receiver)
+        }
+    }
+
     fn invocation(name: &str) -> AgentInvocationInput {
         AgentInvocationInput {
             name: name.to_owned(),
@@ -1184,7 +1367,7 @@ mod phase7_tests {
             test_config(),
             cwd.path().to_path_buf(),
         );
-        let output = runner.invoke_one(invocation("one")).await;
+        let output = runner.invoke_one(read_only_invocation("one")).await;
         assert_eq!(output.name, "one");
         assert_eq!(output.text, "done");
         assert!(!output.is_error);
@@ -1372,11 +1555,127 @@ mod phase7_tests {
     }
 
     #[tokio::test]
-    async fn non_git_parallel_writers_receive_a_visible_receipt_warning() {
+    async fn delegated_agent_rejects_mutation_policy_without_approval_channel() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("must-not-exist.txt");
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(SequenceProvider::new(&["provider-must-not-run"])),
+            test_config(),
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert!(output.is_error, "{}", output.text);
+        assert_eq!(output.denied_tool_calls, 0);
+        assert_eq!(output.turns, 0, "the provider must not be called");
+        assert!(
+            output.text.contains("Write") && output.text.contains("allow_list"),
+            "the rejection must name the blocked tool and the remedy: {}",
+            output.text
+        );
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn delegated_engine_marks_denied_tool_calls_as_error() {
+        // Defense in depth: even if a mutation tool reaches a confined child
+        // engine (for example a future catalog entry bypassing the preflight),
+        // a denial must flip the task to error and reach the parent receipt.
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("must-not-exist.txt");
+        let provider = WriteThenDoneProvider::new(target.clone(), "denied");
+        let mut registry = nomi_tools::ToolRegistry::new();
+        registry.register(Box::new(
+            nomi_tools::write::WriteTool::new(None).with_cwd(Some(cwd.path().to_path_buf())),
+        ));
+        let mut engine = crate::engine::AgentEngine::new_with_provider(
+            Arc::new(provider),
+            test_config(),
+            registry,
+            Arc::new(crate::output::null_sink::NullSink),
+            cwd.path().to_path_buf(),
+        );
+        engine.deny_unconfirmed_tools();
+        let supervisor = ProcessSupervisor::new(SupervisorConfig::default());
+
+        let output = execute_delegated_agent(
+            engine,
+            "writer".to_owned(),
+            "write it",
+            supervisor,
+        )
+        .await;
+
+        assert!(output.is_error, "{}", output.text);
+        assert_eq!(output.denied_tool_calls, 1);
+        assert!(output.text.contains("denied by the host"), "{}", output.text);
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_read_only_policy_runs_without_approval_channel() {
         let cwd = tempfile::tempdir().unwrap();
         let runner = LocalAgentInvocationRunner::new(
-            Arc::new(SequenceProvider::new(&["A", "B", "C"])),
+            Arc::new(SequenceProvider::new(&["read done"])),
             test_config(),
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(read_only_invocation("reader")).await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(output.text, "read done");
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_with_auto_approve_writes_without_prompting() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("yolo-write.txt");
+        let provider = WriteThenDoneProvider::new(target.clone(), "yolo");
+        let mut config = test_config();
+        config.tools.auto_approve = true;
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            config,
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(output.denied_tool_calls, 0);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "yolo");
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_with_allowlisted_write_writes_without_prompting() {
+        let cwd = tempfile::tempdir().unwrap();
+        let target = cwd.path().join("allowlisted-write.txt");
+        let provider = WriteThenDoneProvider::new(target.clone(), "allowlisted");
+        let mut config = test_config();
+        config.tools.allow_list = vec!["Write".to_owned()];
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(provider),
+            config,
+            cwd.path().to_path_buf(),
+        );
+
+        let output = runner.invoke_one(invocation("writer")).await;
+
+        assert!(!output.is_error, "{}", output.text);
+        assert_eq!(output.denied_tool_calls, 0);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "allowlisted");
+    }
+
+    #[tokio::test]
+    async fn non_git_parallel_writers_receive_a_visible_receipt_warning() {
+        let cwd = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.tools.auto_approve = true;
+        let runner = LocalAgentInvocationRunner::new(
+            Arc::new(SequenceProvider::new(&["A", "B", "C"])),
+            config,
             cwd.path().to_path_buf(),
         );
 

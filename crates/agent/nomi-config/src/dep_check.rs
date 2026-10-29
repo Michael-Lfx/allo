@@ -16,6 +16,7 @@ pub enum RuntimeDep {
     Browser,
     Ripgrep,
     Ffmpeg,
+    Pwsh,
 }
 
 impl std::fmt::Display for RuntimeDep {
@@ -25,6 +26,7 @@ impl std::fmt::Display for RuntimeDep {
             Self::Browser => "browser",
             Self::Ripgrep => "ripgrep",
             Self::Ffmpeg => "ffmpeg",
+            Self::Pwsh => "pwsh",
         })
     }
 }
@@ -37,6 +39,9 @@ pub fn description(dep: RuntimeDep) -> &'static str {
             "ripgrep (fast file search — bundled or auto-installed to Flowy/Nomi/bin)"
         }
         RuntimeDep::Ffmpeg => "ffmpeg (TTS, long video concat — auto-installed to Flowy/Nomi/bin)",
+        RuntimeDep::Pwsh => {
+            "PowerShell 7 (Windows agent shell — auto-installed to Flowy/Nomi/runtime/pwsh)"
+        }
     }
 }
 
@@ -84,6 +89,16 @@ pub fn is_available(dep: RuntimeDep) -> bool {
         RuntimeDep::Ffmpeg => {
             let managed = supplemental_path_entries();
             is_on_path_or_managed("ffmpeg", &managed)
+        }
+        RuntimeDep::Pwsh => {
+            #[cfg(windows)]
+            {
+                crate::runtime_dep_install::managed_pwsh_ready()
+            }
+            #[cfg(not(windows))]
+            {
+                true
+            }
         }
     }
 }

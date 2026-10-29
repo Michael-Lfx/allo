@@ -9,6 +9,14 @@ use async_trait::async_trait;
 use nomifun_common::AppError;
 pub use nomifun_extension::ResolvedAgentSkill;
 
+/// Lightweight catalog row used for host ranking (no SKILL.md body).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSkillIndex {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+}
+
 /// Immutable markdown snapshot resolved at the conversation boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedSkillSnapshot {
@@ -17,6 +25,7 @@ pub struct ResolvedSkillSnapshot {
     pub source: String,
     pub version_hash: String,
     pub content: String,
+    pub location: Option<String>,
 }
 
 #[async_trait]
@@ -48,6 +57,12 @@ pub trait SkillResolver: Send + Sync {
         Err(AppError::BadRequest(
             "This runtime cannot load the selected Skills".to_owned(),
         ))
+    }
+
+    /// Metadata for every authorized catalog skill. Default is empty so
+    /// test resolvers stay source-compatible.
+    async fn list_catalog_index(&self) -> Vec<CatalogSkillIndex> {
+        Vec::new()
     }
 }
 
@@ -131,10 +146,34 @@ impl SkillResolver for ExtensionSkillResolver {
                         source: skill.source,
                         version_hash: skill.version_hash,
                         content: skill.content,
+                        location: skill.location,
                     })
                     .collect()
             })
             .map_err(Into::into)
+    }
+
+    async fn list_catalog_index(&self) -> Vec<CatalogSkillIndex> {
+        match nomifun_extension::list_catalog_skills(&self.paths).await {
+            Ok(items) => items
+                .into_iter()
+                .map(|item| CatalogSkillIndex {
+                    skill_id: nomifun_api_types::SkillId::new(
+                        item.source,
+                        item.source_key.as_deref(),
+                        &item.local_key,
+                    )
+                    .as_str()
+                    .to_owned(),
+                    name: item.name,
+                    description: item.description,
+                })
+                .collect(),
+            Err(error) => {
+                tracing::warn!(error = %error, "list_catalog_index failed");
+                Vec::new()
+            }
+        }
     }
 }
 

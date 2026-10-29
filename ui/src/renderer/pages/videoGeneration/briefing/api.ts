@@ -204,6 +204,10 @@ export async function cancelBriefing(id: string): Promise<void> {
   await httpRequest('POST', `${BASE}/sessions/${encodeURIComponent(id)}/cancel`);
 }
 
+export async function deleteBriefing(id: string): Promise<void> {
+  await httpRequest('DELETE', `${BASE}/sessions/${encodeURIComponent(id)}`);
+}
+
 export function briefingWorkspacePath(id: string): string {
   return `/video-generation/briefing/${encodeURIComponent(id)}`;
 }

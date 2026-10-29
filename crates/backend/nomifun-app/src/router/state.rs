@@ -805,7 +805,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
     }
 }
 
-/// Build the default `ConversationRouterState` from application services.
+/// Stamp the embedded build info onto the agent engine (once per turn setup).
 fn stamp_trace_build_info() {
     nomifun_ai_agent::set_build_info(trace_build_info());
 }
@@ -821,24 +821,7 @@ fn trace_build_info() -> nomifun_ai_agent::BuildInfo {
     )
 }
 
-#[cfg(test)]
-mod build_info_tests {
-    use super::trace_build_info;
-
-    #[test]
-    fn trace_build_info_identifies_the_source_this_binary_was_built_from() {
-        let info = trace_build_info();
-
-        assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
-        let sha = info.git_sha.expect("tests run inside a git checkout");
-        assert!(
-            sha.len() == 12 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "{sha}"
-        );
-        assert!(info.git_dirty.is_some());
-    }
-}
-
+/// Build the default `ConversationRouterState` from application services.
 pub fn build_conversation_state(
     services: &AppServices,
     cron_service: Option<Arc<nomifun_cron::service::CronService>>,
@@ -881,6 +864,10 @@ pub fn build_conversation_state(
     conversation_service.with_goal_repo(Arc::new(nomifun_db::SqliteGoalRepository::new(
         services.database.pool().clone(),
     )));
+    let skill_discovery = Arc::new(nomifun_db::SqliteSkillDiscoveryRepository::new(
+        services.database.pool().clone(),
+    ));
+    conversation_service.with_skill_discovery(skill_discovery.clone());
     // Wire the LLM auto-title completer: a new conversation's first user
     // message is summarized into a short work-content title. The backend CAS
     // writes the cleaned first-message fallback before this completer runs, so
@@ -2514,6 +2501,9 @@ pub async fn build_extension_states(
         market_package_preset_installer: None,
         skill_tag_repo,
         builtin_skill_tags,
+        skill_discovery: Some(Arc::new(nomifun_db::SqliteSkillDiscoveryRepository::new(
+            services.database.pool().clone(),
+        ))),
     };
 
     (ext_state, hub_state, skill_state)
@@ -2544,7 +2534,11 @@ pub fn build_ws_state(services: &AppServices) -> WsHandlerState {
         {
             return Some(authoritative_user_id.clone());
         }
-        jwt_service.verify(token).ok().map(|claims| claims.user_id.into_string())
+        jwt_service
+            .verify(token)
+            .ok()
+            .map(|claims| claims.user_id.into_string())
+            .or_else(|| jwt_service.verify_link(token).ok().map(|claims| claims.user_id.into_string()))
     });
 
     let token_extractor = Arc::new(|headers: &axum::http::HeaderMap| extract_token_from_ws_headers(headers));
@@ -2562,6 +2556,19 @@ mod tests {
 
     use crate::AppConfig;
     use nomifun_extension::{ExtensionSource, ScanPath};
+
+    #[test]
+    fn trace_build_info_identifies_the_source_this_binary_was_built_from() {
+        let info = trace_build_info();
+
+        assert_eq!(info.app_version, env!("CARGO_PKG_VERSION"));
+        let sha = info.git_sha.expect("tests run inside a git checkout");
+        assert!(
+            sha.len() == 12 && sha.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{sha}"
+        );
+        assert!(info.git_dirty.is_some());
+    }
 
     #[test]
     fn terminal_exit_notice_rejects_stale_relaunch_epochs() {

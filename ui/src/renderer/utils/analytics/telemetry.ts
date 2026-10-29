@@ -55,6 +55,7 @@ const ALLOWED_PROPERTIES = new Set([
   'request_key',
   'runtime',
   'session_id',
+  'session_kind',
   'source',
   'status',
   'status_ms',

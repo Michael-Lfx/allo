@@ -7,11 +7,10 @@ use std::{
 };
 
 use nomi_process_runtime::{
-    CapabilityPolicy, CommandSpec, OutputCursor, OutputSnapshot, OutputStream, PollResult,
-    ProcessOutcome, ProcessOwner, ProcessPolicy, ProcessRequest, ProcessSupervisor, ShellKind,
-    Transport, normalize_request,
+    CapabilityPolicy, CommandSpec, HiddenCommand, OutputCursor, OutputSnapshot, OutputStream,
+    PollResult, ProcessOutcome, ProcessOwner, ProcessPolicy, ProcessRequest, ProcessSupervisor,
+    ShellKind, Transport, normalize_request,
 };
-use tokio::process::Command;
 use uuid::Uuid;
 
 const POWERSHELL_EXE: &str = "powershell.exe";
@@ -218,11 +217,23 @@ pub fn shell_command_args(command_str: &str) -> Vec<String> {
     args
 }
 
-pub fn shell_command_builder(command_str: &str) -> Command {
-    let info = shell_info();
-    let mut cmd = nomi_process_runtime::hidden_command(info.program);
-    cmd.args(shell_command_args(command_str));
-    cmd
+pub fn shell_command_builder(command_str: &str) -> HiddenCommand {
+    #[cfg(windows)]
+    {
+        let program = nomi_process_runtime::resolve_windows_powershell_exe()
+            .map(|resolved| resolved.path.into_os_string())
+            .unwrap_or_else(|_| OsString::from("powershell.exe"));
+        let mut cmd = nomi_process_runtime::hidden_command(&program);
+        cmd.args(shell_command_args(command_str));
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let info = shell_info();
+        let mut cmd = nomi_process_runtime::hidden_command(info.program);
+        cmd.args(shell_command_args(command_str));
+        cmd
+    }
 }
 
 fn shell_command_payload(command_str: &str) -> String {

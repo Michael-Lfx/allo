@@ -76,8 +76,25 @@
  * (`pack_format 2`), so an exported team can materialize a directory the
  * package's own scripts recognize as the plugin root. Both methods are
  * WebSocket-only, so the documented route split becomes `55 / 82`.
+ * **`fp-15` exposes market categories and tags over the wire** (doc `43`):
+ * `store/categories` returns the category dictionaries of all enabled markets
+ * plus the market-level tag vocabulary; `StoreItem` gains `category_id` /
+ * `category` (the host joins the dictionary); `AgentSummary` gains `tags` /
+ * `category_id` — moved up from `AgentDetail`, which loses those two fields. A
+ * mapped method, so the documented route split becomes `56 / 83`.
+ * **`fp-16` closes the remaining category gaps** (doc `44`): `TeamSummary` gains
+ * `tags` / `category_id` and `SkillSummary` gains `tags`, so the installed
+ * catalogs show what the store shows. No method changes, so the documented route
+ * split stays `56 / 83`; the expert pack's own version moves independently
+ * (`pack_format 2 → 3`, same doc).
+ * **`fp-17` renames the connector summary's auth field** (doc `47`):
+ * `ConnectorSummary.auth_mode` becomes `auth_transport`. The field is derived
+ * from the transport and says nothing about what the connector needs — the
+ * declaration answers that through `credential.mode` (`34` §6.1), and a client
+ * must never pick an auth affordance from a shape. No method changes, so the
+ * documented route split stays `56 / 83`.
  */
-export const APP_SERVER_PROTOCOL_VERSION = "fp-14";
+export const APP_SERVER_PROTOCOL_VERSION = "fp-19";
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -675,6 +692,29 @@ export interface SkillSummary {
    * builtin / user skills and for markets that ship no icon for the entry.
    */
   avatar_url?: string | null;
+  /**
+   * Localized display tags (doc `44`). A skill ships no `plugin.json`, so its
+   * only tag source is the market index row; builtin / user skills have none.
+   * Skills have no category concept at all (the skill market declares flat
+   * tags), so there is deliberately no `category_id` here.
+   */
+  tags?: LocalizedText[] | null;
+  /**
+   * Display name from the index row's `name_zh` / `name_en` (`fp-18`, doc `50`
+   * §3.1). Absent for 253 of the market's 268 skills — fall back to `name`,
+   * which is the technical skill name.
+   */
+  display_name?: LocalizedText | null;
+  /**
+   * Localized long description (`fp-18`, doc `50` §3.1). `SKILL.md` declares
+   * one language only, so a marketplace skill's comes from the index row.
+   */
+  display_description?: LocalizedText | null;
+  /**
+   * Prompt examples from the index row's `examples_zh` / `examples_en`
+   * (`fp-18`, doc `50` §3.1): the skill market's only prompt source.
+   */
+  quick_prompts?: LocalizedText[];
 }
 
 /** Where a skill lives on the host (`SkillSummary.origin`). */
@@ -963,7 +1003,8 @@ export interface ConnectorSummary {
   description?: string | null;
   kind: string;
   transport_summary: string;
-  auth_mode: string;
+  /** Transport shape only (`none` | `oauth`); the auth affordance comes from `credential.mode`. */
+  auth_transport: string;
   enabled: boolean;
   status: ConnectorStatus;
   /**
@@ -981,6 +1022,28 @@ export interface ConnectorSummary {
    * `missing` holds key names.
    */
   credential?: ConnectorCredential | null;
+  /**
+   * Display name from the market index row's `name_zh` / `name_en` (`fp-18`,
+   * doc `50` §3.1).
+   *
+   * Deliberately separate from `name`: that one is the runtime identity the
+   * tool namespace is built from (`connector__<name>__<tool>`), so rendering it
+   * would leak `fenbi_mcp` into the UI. Absent for 172 of the 283 market rows.
+   */
+  display_name?: LocalizedText | null;
+  /**
+   * Localized long description (`fp-18`, doc `50` §3.1). Comes from the index
+   * row's `description_zh` / `description_en` — never from `description`,
+   * whose language is unreliable (210 of 283 rows carry English there).
+   */
+  display_description?: LocalizedText | null;
+  /** Localized tags from the index row (`fp-18`, doc `50` §3.1). */
+  tags?: LocalizedText[] | null;
+  /**
+   * Prompt examples from the index row's `examples_zh` / `examples_en`
+   * (`fp-18`, doc `50` §3.1).
+   */
+  quick_prompts?: LocalizedText[];
 }
 
 /** Both languages, already resolved by the host (doc `34` §5.2). */
@@ -1416,6 +1479,10 @@ export interface StoreItem {
    * Treat as optional: `item.tags ?? []`. */
   tags?: LocalizedText[] | null;
   quick_prompts?: LocalizedText[] | null;
+  /** Raw category reference from the source manifest (`plugin.json`). */
+  category_id?: string | null;
+  /** The host-joined category; absent when the id misses the dictionary (doc `43`). */
+  category?: StoreCategory | null;
   /**
    * The market entry's own `publishedAt`, `YYYY-MM-DD` (`18` §3).
    *
@@ -1446,6 +1513,21 @@ export interface StoreList {
   /** `true` while the builtin default marketplaces are still registering in the
    *  background (D-SDK-1 ①) — the catalog may be incomplete. */
   markets_pending?: boolean;
+}
+
+/** One category of a market's dictionary (experts manifest `categories[]`). */
+export interface StoreCategory {
+  id: string;
+  name: LocalizedText;
+  description?: LocalizedText | null;
+}
+
+/** `store/categories` response: dictionary union + market-level tag vocabulary. */
+export interface StoreCategories {
+  fetched_at: number;
+  /** Market-level `tags_zh`/`tags_en` vocabulary, position-paired. */
+  marketplace_tags?: LocalizedText[];
+  items: StoreCategory[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,9 +1671,27 @@ export interface AgentSummary {
   source: string;
   compatibility_status: CompatibilityStatus;
   display_name?: LocalizedText | null;
+  /**
+   * Localized long description (`plugin.json` `displayDescription`).
+   *
+   * On the summary since `fp-18` (doc `50` §3.1): all four entity kinds carry
+   * the same four display fields, and the card is the surface that renders
+   * them. `AgentDetail` still has it through this summary, so the JSON is
+   * unchanged.
+   */
+  display_description?: LocalizedText | null;
   profession?: LocalizedText | null;
   /** Public avatar URL (server-asset endpoint); relative to the API host. */
   avatar_url?: string | null;
+  /** Localized display tags (`plugin.json`); moved up from AgentDetail (doc `43`). */
+  tags?: LocalizedText[];
+  /**
+   * `quickPrompts`: the "expert can do this for you" entries on the card.
+   * Moved up from `AgentDetail` in `fp-18` (doc `50` D2).
+   */
+  quick_prompts?: LocalizedText[];
+  /** Raw category reference; resolve through `store/categories`. */
+  category_id?: string | null;
 }
 
 /** `agent/get` — structured frontmatter fields only; raw prompts never cross. */
@@ -1603,12 +1703,8 @@ export interface AgentDetail extends AgentSummary {
   background?: string | null;
   isolation?: string | null;
   permission_mode_ignored: boolean;
-  display_description?: LocalizedText | null;
-  quick_prompts?: LocalizedText[];
-  tags?: LocalizedText[];
   default_init_prompt?: LocalizedText | null;
   expert_type?: string | null;
-  category_id?: string | null;
 }
 
 export interface TeamSummary {
@@ -1620,6 +1716,22 @@ export interface TeamSummary {
   member_agent_ids: string[];
   source: string;
   compatibility_status: CompatibilityStatus;
+  /** Localized display tags from the package's `plugin.json` (doc `44`). */
+  tags?: LocalizedText[] | null;
+  /**
+   * Display name, both languages merged at import (`fp-18`, doc `50` §3.1).
+   * `None` for 29 of the 30 teams the market ships — fall back to `name`.
+   */
+  display_name?: LocalizedText | null;
+  /**
+   * Localized long description (`fp-18`, doc `50` §3.1). Half the teams market
+   * declares it as `description_zh` / `description_en` in `plugin.json`.
+   */
+  display_description?: LocalizedText | null;
+  /** `quickPrompts` from the package's `plugin.json` (`fp-18`, doc `50` §3.1). */
+  quick_prompts?: LocalizedText[];
+  /** Raw category reference; resolve through `store/categories` (doc `44`). */
+  category_id?: string | null;
 }
 
 export interface TeamDetail extends TeamSummary {
@@ -1646,8 +1758,15 @@ export interface TeamDetail extends TeamSummary {
  * fingerprint versions *our* wire compatibility, this versions the **artifact
  * contract for third-party runtimes**. Gate on this one; the fingerprint is
  * about whether your client can talk to the host at all.
+ *
+ * History: `1` was the doc-`32` shape; **`2` added the plugin-level asset list**
+ * (`assets` / `avatar`, doc `38`); **`3` adds the display metadata** (`tags` /
+ * `category_id`, doc `44`) so the market's organization structure travels with
+ * the pack; **`4` adds the per-entity icons** (`skills[].icon` /
+ * `connectors[].icon`, doc `51`), so a consumer can render a complete card list
+ * without guessing file names or reading the market.
  */
-export const APP_SERVER_EXPERT_PACK_FORMAT = 2;
+export const APP_SERVER_EXPERT_PACK_FORMAT = 4;
 
 export type ExpertPackKind = "agent" | "team";
 
@@ -1718,6 +1837,16 @@ export interface ExpertModel {
 export interface ExpertSkillRef {
   name: string;
   id: string;
+  /**
+   * The skill's icon as a **skill-directory-relative** path (`assets/icon.png`) —
+   * the coordinate system `skill/files` publishes and `skill/file` reads
+   * (doc `51` §3.3, `pack_format 4`). Absent when the skill ships none.
+   *
+   * A bare path on purpose: a skill's bytes live on the *skill* file face, which
+   * publishes no per-file size/digest of its own, so an `ExpertAssetRef` here
+   * would carry metadata this pack cannot verify (doc `51` D3).
+   */
+  icon?: string | null;
 }
 
 /**
@@ -1732,6 +1861,13 @@ export interface ExpertConnectorRef {
   id: string;
   name: string;
   enabled: boolean;
+  /**
+   * The connector's icon as a **snapshot-relative** path
+   * (`avatars/connectors/github.svg`), and — like {@link ExpertPack.avatar} —
+   * only when that exact file appears in the pack's `assets` list, so it can
+   * never name bytes you cannot fetch (doc `51` INV-2, `pack_format 4`).
+   */
+  icon?: string | null;
 }
 
 /** A declaration, never a permission boundary (doc 32 §5 R9). */
@@ -1792,6 +1928,19 @@ export interface ExpertPack {
   name: string;
   display_name?: LocalizedText | null;
   description?: string | null;
+  /**
+   * Localized display tags from the package's `plugin.json` (doc `44`, format
+   * `3`). Present on **every** pack including member packs — a member's
+   * category is its own declaration, unlike the snapshot-scoped `assets`.
+   */
+  tags?: LocalizedText[] | null;
+  /**
+   * Raw category reference from the package's `plugin.json` (e.g. `04-DataAI`).
+   *
+   * The pack deliberately carries no resolved form: joining the dictionary
+   * needs the market's `store.categories()`, which the *consuming* host owns.
+   */
+  category_id?: string | null;
   persona: ExpertPersona;
   model: ExpertModel;
   /**

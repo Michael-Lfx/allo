@@ -16,7 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use nomifun_api_types::{
-    AppServerLocalizedText, AppServerStoreInstallResult, AppServerStoreItem, AppServerStoreList,
+    AppServerLocalizedText, AppServerStoreCategoriesResponse, AppServerStoreInstallResult,
+    AppServerStoreItem, AppServerStoreList,
 };
 use nomifun_app_server::{InstallProvider, MarketplaceProvider, StoreProvider};
 use nomifun_common::AppError;
@@ -24,7 +25,7 @@ use nomifun_db::{
     IMarketplaceRepository, IPluginSnapshotRepository, PluginMarketplaceRow,
     PluginSnapshotComponentRow,
 };
-use nomifun_importer::{ImporterService, LocalizedText, PluginManifest};
+use nomifun_importer::{DisplayFields, ImporterService, LocalizedText, PluginManifest};
 
 /// Composition-root Store provider: marketplace catalog + provenance install
 /// state + one-click install.
@@ -39,6 +40,10 @@ pub struct AppServerStoreProvider {
     /// Remote materialization root (`{work_dir}/agent-store-markets`),
     /// shared with the marketplace provider so relative entry sources resolve.
     market_root: PathBuf,
+    /// Category dictionary reader (`43` M4): one cached read across
+    /// `list()` and the `store/categories` face. Shared through an `Arc`
+    /// because the provider itself is `Clone` and the cache holds a mutex.
+    categories: std::sync::Arc<crate::app_server_categories::CategoryDictionary>,
 }
 
 impl AppServerStoreProvider {
@@ -50,7 +55,39 @@ impl AppServerStoreProvider {
         installs: Arc<dyn InstallProvider>,
         market_root: PathBuf,
     ) -> Self {
-        Self { markets, market_rows, snapshots, importer, installs, market_root }
+        Self {
+            markets,
+            market_rows,
+            snapshots,
+            importer,
+            installs,
+            market_root,
+            categories: std::sync::Arc::new(
+                crate::app_server_categories::CategoryDictionary::default(),
+            ),
+        }
+    }
+
+    /// Point the dictionary reader at the currently enabled markets' roots.
+    ///
+    /// One helper for both store faces on purpose: `list()` used to be the only
+    /// caller, which made `store/categories` answer differently depending on
+    /// whether a `store/list` had happened first (a client whose first call is
+    /// the filter-bar call got the built-in dictionary and no tag vocabulary —
+    /// probed 2026-10-14). Cheap: a registry read plus path resolution, no
+    /// per-entry work, so calling it from both is free.
+    async fn remember_market_roots(&self) -> Result<(), AppError> {
+        let markets = self.market_rows.list_marketplaces().await.map_err(AppError::from)?;
+        let roots = markets
+            .iter()
+            .filter(|market| market.enabled == 1)
+            .filter_map(|market| {
+                market_root_dir(market, &self.market_root)
+                    .map(|root| (market.marketplace_id.clone(), root))
+            })
+            .collect();
+        self.categories.set_roots(roots);
+        Ok(())
     }
 }
 
@@ -86,8 +123,47 @@ pub(crate) struct MarketIndexInfo {
     /// own, so without it the entry is pinned at the `1.0.0` placeholder and can
     /// never be seen to change (`36` D2 / `18` §11 D9).
     version: Option<String>,
-    #[allow(dead_code)]
-    description: Option<String>,
+    /// The row's description, both languages kept apart (`50` §3.3).
+    ///
+    /// The row's **top-level** `description` is deliberately not used: its
+    /// language is not reliable (210 of 283 connector rows carry English there,
+    /// `50` P4), so it must never stand in for a missing locale (`50` INV-3).
+    description: LocalizedText,
+    /// The index row's localized tags (`tags_zh`/`tags_en`, position-paired,
+    /// `legacy_tags_*` merged with zh-value dedup — `43` §3.3). The only tag
+    /// source for skill/connector entries, which carry no `plugin.json`. Read
+    /// by the marketplace import face to stamp them into the component payload
+    /// (`44`).
+    pub(crate) tags: Vec<LocalizedText>,
+    /// The index row's `examples_zh` / `examples_en`, position-paired like
+    /// `tags_*`. These are the **prompt examples** the market declares for a
+    /// connector or skill node — the only prompt source those kinds have, since
+    /// neither ships a `plugin.json` (doc `49` §3.7). Display data only: never
+    /// search input (doc `49` D9).
+    pub(crate) examples: Vec<LocalizedText>,
+}
+
+impl MarketIndexInfo {
+    /// The display metadata this row declares (`50` §3.3), in the shape the
+    /// importer stamps into a payload and the catalogs read back out.
+    pub(crate) fn display(&self) -> DisplayFields {
+        DisplayFields {
+            name: localized_pair(self.name_zh.as_deref(), self.name_en.as_deref()),
+            description: (!self.description.is_empty()).then(|| self.description.clone()),
+            prompts: self.examples.clone(),
+            tags: self.tags.clone(),
+        }
+    }
+}
+
+/// A `{zh, en}` pair with blank sides dropped — a market that writes `""`
+/// declared nothing (`50` INV-3).
+fn localized_pair(zh: Option<&str>, en: Option<&str>) -> Option<LocalizedText> {
+    let text = LocalizedText {
+        zh: zh.map(str::to_owned).filter(|text| !text.trim().is_empty()),
+        en: en.map(str::to_owned).filter(|text| !text.trim().is_empty()),
+    };
+    (!text.is_empty()).then_some(text)
 }
 
 /// One market's own entry indexes, read once per market.
@@ -145,21 +221,158 @@ fn read_index(
             key.to_owned(),
             MarketIndexInfo {
                 name_zh: item.get("name_zh").and_then(|v| v.as_str()).map(str::to_owned),
-                name_en: item
-                    .get("name_en")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("name").and_then(|v| v.as_str()))
-                    .map(str::to_owned),
+                // The row's `name` is deliberately **not** a fallback here
+                // (`50` D6): for a connector it is the entry's display text and
+                // for a skill it is the technical slug, so copying it in would
+                // put either Chinese into the `en` slot or a slug into
+                // `display_name`. The store item's own `name` chain already ends
+                // with the entry name, so dropping it changes nothing there.
+                name_en: item.get("name_en").and_then(|v| v.as_str()).map(str::to_owned),
                 version: item.get("version").and_then(|v| v.as_str()).map(str::to_owned),
-                description: item
-                    .get("description_zh")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| item.get("description").and_then(|v| v.as_str()))
-                    .map(str::to_owned),
+                description: LocalizedText {
+                    zh: item
+                        .get("description_zh")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_owned),
+                    en: item
+                        .get("description_en")
+                        .and_then(|v| v.as_str())
+                        .filter(|text| !text.trim().is_empty())
+                        .map(str::to_owned),
+                },
+                tags: localized_tags_from_index(item),
+                examples: localized_examples_from_index(item),
             },
         );
     }
     map
+}
+
+/// Pair an index row's `tags_zh`/`tags_en` into `LocalizedText`s, by position
+/// (`43` §3.3). One side alone is fine — the missing locale stays `None`.
+/// `legacy_tags_*` (a real market shape, e.g. 腾讯会议's `legacy_tags_zh`) are
+/// appended after the primary tags; a legacy tag whose zh value duplicates a
+/// primary one is dropped, because its meaning *is* "the old name of one of
+/// these tags".
+fn localized_tags_from_index(item: &serde_json::Value) -> Vec<LocalizedText> {
+    let strings = |keys: &[&str]| -> Vec<String> {
+        keys.iter()
+            .filter_map(|key| item.get(*key))
+            .filter_map(|value| value.as_array())
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
+    let zh = strings(&["tags_zh"]);
+    let en = strings(&["tags_en"]);
+    let mut out: Vec<LocalizedText> = zh
+        .into_iter()
+        .zip(en.into_iter().chain(std::iter::repeat(String::new())))
+        .map(|(zh, en)| LocalizedText {
+            zh: Some(zh),
+            en: (!en.is_empty()).then_some(en),
+        })
+        .collect();
+    // If English was the longer list, the tail entries have no zh.
+    let en_len = item.get("tags_en").and_then(|v| v.as_array()).map_or(0, Vec::len);
+    if en_len > out.len() {
+        let extra: Vec<String> = item
+            .get("tags_en")
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                values[out.len()..]
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.extend(extra.into_iter().map(|en| LocalizedText { en: Some(en), zh: None }));
+    }
+    let seen: std::collections::HashSet<String> =
+        out.iter().filter_map(|tag| tag.zh.clone()).collect();
+    for (legacy_zh, legacy_en) in strings(&["legacy_tags_zh"])
+        .into_iter()
+        .zip(strings(&["legacy_tags_en"]).into_iter().chain(std::iter::repeat(String::new())))
+    {
+        if seen.contains(&legacy_zh) {
+            continue;
+        }
+        out.push(LocalizedText {
+            zh: Some(legacy_zh.clone()),
+            en: (!legacy_en.is_empty()).then_some(legacy_en),
+        });
+    }
+    out
+}
+
+/// Pair an index row's `examples_zh` / `examples_en` into `LocalizedText`s, by
+/// position — the same rule `tags_*` follows (`43` §3.3). One side alone is
+/// fine; the missing locale stays `None`. Empty strings are dropped (an empty
+/// hint is not a hint).
+///
+/// Doc `49` §3.7: these reach the store card as `StoreItem.quick_prompts` for
+/// entries that ship no `plugin.json` (connectors and skills).
+fn localized_examples_from_index(item: &serde_json::Value) -> Vec<LocalizedText> {
+    let strings = |key: &str| -> Vec<String> {
+        item.get(key)
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let zh = strings("examples_zh");
+    let en = strings("examples_en");
+    if zh.is_empty() && en.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<LocalizedText> = zh
+        .iter()
+        .cloned()
+        .zip(en.iter().cloned().chain(std::iter::repeat(String::new())))
+        .map(|(zh, en)| LocalizedText {
+            zh: Some(zh),
+            en: (!en.is_empty()).then_some(en),
+        })
+        .collect();
+    // If the English list is longer, its tail entries have no zh counterpart.
+    for extra in en.iter().skip(out.len()) {
+        out.push(LocalizedText { zh: None, en: Some(extra.clone()) });
+    }
+    out
+}
+
+/// The prompt hints a store card shows for one entry.
+///
+/// `plugin.json` wins; the market index row's `examples_*` fills the gap for the
+/// kinds that ship no manifest (connectors and skills — doc `49` §3.7). Both
+/// empty means "this market declared no hints", which travels as an empty array
+/// so the card renders no hint line at all (INV-6).
+fn store_quick_prompts(
+    manifest: Option<&PluginManifest>,
+    index_info: Option<&MarketIndexInfo>,
+) -> Vec<AppServerLocalizedText> {
+    let from_manifest: Vec<AppServerLocalizedText> = manifest
+        .map(|manifest| {
+            manifest.quick_prompts.iter().filter_map(|prompt| localized_or_none(prompt)).collect()
+        })
+        .unwrap_or_default();
+    if !from_manifest.is_empty() {
+        return from_manifest;
+    }
+    index_info
+        .map(|info| info.examples.iter().filter_map(|example| localized_or_none(example)).collect())
+        .unwrap_or_default()
 }
 
 /// The version this entry currently advertises in its marketplace.
@@ -247,7 +460,11 @@ const ICON_EXTS: [&str; 6] = ["png", "svg", "jpg", "jpeg", "webp", "gif"];
 /// `tencent-docs.svg`, `agent-earth.png`). Skills and connectors declare no
 /// plugin.json avatar; the market ships an `icons/` directory instead.
 /// Returns the icon file name (relative to the market root) when present.
-fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
+///
+/// Doubles as the resolver the **import** path uses to carry that icon into the
+/// snapshot (doc `51` §3.2): the listing face and the import face must agree on
+/// which file "this entry's icon" means, so they share this one function.
+pub(crate) fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
     let base = Path::new(source_uri)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -263,12 +480,45 @@ fn market_icon_for(root: &Path, source_uri: &str) -> Option<String> {
 
 #[async_trait]
 impl StoreProvider for AppServerStoreProvider {
+    /// The category dictionary + market tag vocabulary (`43` §3.1).
+    async fn categories(&self) -> Result<AppServerStoreCategoriesResponse, AppError> {
+        // The roots are learned by `list()`, so a cold `categories` call before
+        // any `store/list` legitimately answers empty — same partial-catalog
+        // honesty as `markets_pending`.
+        // Learn the enabled markets' roots first: the dictionary reader is
+        // otherwise blind on a cold provider, and this endpoint is exactly the
+        // filter-bar call a client may make **before** any `store/list`.
+        self.remember_market_roots().await?;
+        let items = self.categories.load().await?;
+        let marketplace_tags = self.categories.load_marketplace_tags().await;
+        Ok(AppServerStoreCategoriesResponse {
+            fetched_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or_default(),
+            marketplace_tags,
+            items,
+        })
+    }
+
     async fn list(&self) -> Result<AppServerStoreList, AppError> {
         let market_rows = self
             .market_rows
             .list_marketplaces()
             .await
             .map_err(AppError::from)?;
+        // The dictionary reader learns each enabled market's root here — shared
+        // with `categories()` through one helper so the two faces cannot drift.
+        self.remember_market_roots().await?;
+        // One dictionary read per catalog build (`43` §3.3): the join needs the
+        // enabled markets' category rows, and re-reading the (31k-line) experts
+        // manifest per entry would be waste.
+        let categories = match self.categories.load().await {
+            Ok(items) => Some(items),
+            // A missing or malformed dictionary is not an error: the raw
+            // `category_id` still travels, only the resolved form is absent.
+            Err(_) => None,
+        };
         let mut items = Vec::new();
         for market in market_rows {
             if market.enabled != 1 {
@@ -374,13 +624,34 @@ impl StoreProvider for AppServerStoreProvider {
                     tags: manifest
                         .as_ref()
                         .map(|m| m.tags.iter().filter_map(|t| localized_or_none(t)).collect())
-                        .unwrap_or_default(),
-                    quick_prompts: manifest
-                        .as_ref()
-                        .map(|m| {
-                            m.quick_prompts.iter().filter_map(|p| localized_or_none(p)).collect()
-                        })
-                        .unwrap_or_default(),
+                        .filter(|tags: &Vec<AppServerLocalizedText>| !tags.is_empty())
+                        // Skill/connector entries carry no plugin.json: the
+                        // market index row is their only tag source (`43` §3.3).
+                        .unwrap_or_else(|| {
+                            index_info
+                                .as_ref()
+                                .map(|info| {
+                                    info.tags.iter().filter_map(|t| localized_or_none(t)).collect()
+                                })
+                                .unwrap_or_default()
+                        }),
+                    category_id: manifest.as_ref().and_then(|m| m.category_id.clone()),
+                    category: {
+                        // The host joins the dictionary (`43` D1): the raw
+                        // `category_id` travels regardless, and the resolved
+                        // category only appears on an exact dictionary hit —
+                        // never guessed from the id's text.
+                        match manifest.as_ref().and_then(|m| m.category_id.as_deref()) {
+                            Some(category_id) => categories
+                                .as_ref()
+                                .and_then(|items| {
+                                    items.iter().find(|category| category.id == category_id)
+                                })
+                                .cloned(),
+                            None => None,
+                        }
+                    },
+                    quick_prompts: store_quick_prompts(manifest.as_ref(), index_info.as_ref()),
                     // Carried verbatim from the market's own manifest row; the
                     // discovery layer already dropped anything that was not a
                     // calendar date (`18` §3), so this needs no second check.
@@ -853,6 +1124,8 @@ mod tests {
             snapshot_id: Some("snap-1".into()),
             installed_version: Some("1.0.0".into()),
             blocked_reason: None,
+            category_id: None,
+            category: None,
         }
     }
 
@@ -918,5 +1191,131 @@ mod tests {
         assert!(!all_components_disabled(&[component(1), component(0)]));
         assert!(all_components_disabled(&[component(1)]));
         assert!(all_components_disabled(&[component(1), component(1)]));
+    }
+
+    /// Doc `43` §3.3: `tags_zh`/`tags_en` pair by position, an unmatched
+    /// locale travels alone, and `legacy_tags_*` merge in with zh-value
+    /// deduplication (the real 腾讯会议 row duplicates its legacy tag).
+    #[test]
+    fn index_row_tags_pair_and_merge_legacy_without_duplicates() {
+        let paired = serde_json::json!({
+            "name": "腾讯文档",
+            "tags_zh": ["办公协同", "效率工具"],
+            "tags_en": ["Collaboration", "Productivity"],
+        });
+        let tags = localized_tags_from_index(&paired);
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].zh.as_deref(), Some("办公协同"));
+        assert_eq!(tags[0].en.as_deref(), Some("Collaboration"));
+        assert_eq!(tags[1].zh.as_deref(), Some("效率工具"));
+
+        // zh-only and en-only rows both survive; the missing locale is None.
+        let zh_only = serde_json::json!({ "name": "x", "tags_zh": ["开发工具"] });
+        let tags = localized_tags_from_index(&zh_only);
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].zh.as_deref(), Some("开发工具"));
+        assert_eq!(tags[0].en, None);
+
+        let en_only = serde_json::json!({ "name": "x", "tags_en": ["Website Deployment"] });
+        let tags = localized_tags_from_index(&en_only);
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].en.as_deref(), Some("Website Deployment"));
+        assert_eq!(tags[0].zh, None);
+
+        // The real legacy shape: a legacy zh tag duplicating a primary one is
+        // dropped; a genuinely new legacy name is appended.
+        let legacy = serde_json::json!({
+            "name": "腾讯会议",
+            "tags_zh": ["办公协同"],
+            "tags_en": ["Collaboration"],
+            "legacy_tags_zh": ["办公效率"],
+            "legacy_tags_en": ["Productivity"],
+        });
+        let tags = localized_tags_from_index(&legacy);
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[1].zh.as_deref(), Some("办公效率"));
+
+        let duplicate_legacy = serde_json::json!({
+            "name": "x",
+            "tags_zh": ["办公协同"],
+            "legacy_tags_zh": ["办公协同"],
+            "legacy_tags_en": ["Collaboration"],
+        });
+        assert_eq!(localized_tags_from_index(&duplicate_legacy).len(), 1);
+
+        // A row without any tag declaration contributes nothing.
+        assert!(localized_tags_from_index(&serde_json::json!({ "name": "y" })).is_empty());
+    }
+
+    /// Doc `49` §3.7: `examples_zh`/`examples_en` pair by position, exactly like
+    /// `tags_*`, and an empty hint is not a hint.
+    #[test]
+    fn index_row_examples_pair_by_position() {
+        let paired = serde_json::json!({
+            "id": "baidu-netdisk",
+            "examples_zh": ["查看我百度网盘根目录下的文件", "搜索与「项目合同」相关的文件"],
+            "examples_en": ["List my root folder", "Find files about the contract"],
+        });
+        let examples = localized_examples_from_index(&paired);
+        assert_eq!(examples.len(), 2);
+        assert_eq!(examples[0].zh.as_deref(), Some("查看我百度网盘根目录下的文件"));
+        assert_eq!(examples[0].en.as_deref(), Some("List my root folder"));
+        assert_eq!(examples[1].en.as_deref(), Some("Find files about the contract"));
+
+        // zh-only survives with `en: None`.
+        let zh_only = localized_examples_from_index(&serde_json::json!({
+            "examples_zh": ["今天 AI 圈有什么新动态？"],
+        }));
+        assert_eq!(zh_only.len(), 1);
+        assert_eq!(zh_only[0].zh.as_deref(), Some("今天 AI 圈有什么新动态？"));
+        assert_eq!(zh_only[0].en, None);
+
+        // An English-only tail keeps its position instead of shifting left.
+        let en_longer = localized_examples_from_index(&serde_json::json!({
+            "examples_zh": ["第一个"],
+            "examples_en": ["first", "second"],
+        }));
+        assert_eq!(en_longer.len(), 2);
+        assert_eq!(en_longer[0].zh.as_deref(), Some("第一个"));
+        assert_eq!(en_longer[1].zh, None);
+        assert_eq!(en_longer[1].en.as_deref(), Some("second"));
+
+        // Empty strings and a missing declaration both mean "nothing to show".
+        assert!(localized_examples_from_index(&serde_json::json!({
+            "examples_zh": [""],
+            "examples_en": [],
+        }))
+        .is_empty());
+        assert!(localized_examples_from_index(&serde_json::json!({ "id": "x" })).is_empty());
+    }
+
+    /// Doc `49` TC-13…TC-16: manifest first, index row as the fallback, empty
+    /// when neither declares anything (INV-6).
+    #[test]
+    fn quick_prompts_prefer_the_manifest_and_fall_back_to_the_index_row() {
+        let manifest: PluginManifest = serde_json::from_value(serde_json::json!({
+            "name": "aihot",
+            "quickPrompts": [{ "zh": "今天 AI 圈有什么新动态？", "en": "What's new in AI today?" }],
+        }))
+        .expect("manifest");
+
+        let index_info = MarketIndexInfo {
+            examples: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
+            ..MarketIndexInfo::default()
+        };
+
+        // Manifest wins even when the index row also declares examples.
+        let from_manifest = store_quick_prompts(Some(&manifest), Some(&index_info));
+        assert_eq!(from_manifest.len(), 1);
+        assert_eq!(from_manifest[0].zh.as_deref(), Some("今天 AI 圈有什么新动态？"));
+
+        // A connector / skill entry has no manifest: the index row fills in.
+        let from_index = store_quick_prompts(None, Some(&index_info));
+        assert_eq!(from_index.len(), 1);
+        assert_eq!(from_index[0].zh.as_deref(), Some("索引行示例"));
+
+        // Neither declares anything → no hint line on the card.
+        assert!(store_quick_prompts(None, None).is_empty());
+        assert!(store_quick_prompts(None, Some(&MarketIndexInfo::default())).is_empty());
     }
 }

@@ -99,15 +99,62 @@ impl SkillTool {
 
     /// Find a skill by exact name (case-sensitive, leading `/` stripped).
     fn find_skill(&self, name: &str) -> Option<&SkillMetadata> {
-        let name = name.trim_start_matches('/');
-        self.skills.iter().find(|s| s.name == name)
+        self.resolve_skill(name).ok()
+    }
+
+    /// Resolve by canonical catalog id first, then unique short name.
+    fn resolve_skill(&self, name: &str) -> Result<&SkillMetadata, String> {
+        let needle = name.trim().trim_start_matches('/');
+        if needle.is_empty() {
+            return Err("Missing required parameter: skill".to_string());
+        }
+        let by_id: Vec<&SkillMetadata> = self
+            .skills
+            .iter()
+            .filter(|skill| skill.catalog_id.as_deref() == Some(needle))
+            .collect();
+        if by_id.len() == 1 {
+            return Ok(by_id[0]);
+        }
+        if by_id.len() > 1 {
+            return Err(format!(
+                "Skill '{}' is ambiguous. Use a canonical id from: {}",
+                needle,
+                self.available_names()
+            ));
+        }
+        let by_name: Vec<&SkillMetadata> = self
+            .skills
+            .iter()
+            .filter(|skill| skill.name == needle)
+            .collect();
+        match by_name.as_slice() {
+            [skill] => Ok(skill),
+            [] => Err(format!(
+                "Skill '{}' not found. Available skills: {}",
+                needle,
+                self.available_names()
+            )),
+            _ => Err(format!(
+                "Skill name '{}' is ambiguous. Call Skill with a canonical id from: {}",
+                needle,
+                by_name
+                    .iter()
+                    .filter_map(|skill| skill.catalog_id.as_deref())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     /// Build a comma-separated list of available skill names for error messages.
     fn available_names(&self) -> String {
         self.skills
             .iter()
-            .map(|s| s.name.as_str())
+            .map(|skill| match skill.catalog_id.as_deref() {
+                Some(id) if id != skill.name => format!("{} (`{}`)", skill.name, id),
+                _ => skill.name.clone(),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -120,8 +167,14 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Invoke a named skill by name. \
-         Use the skill name exactly as listed in the system prompt. \
+        "Load a skill's SKILL.md instructions before doing specialized work. \
+         Match the user task against the skill listing in the system prompt \
+         (name, catalog id, and description). If a skill matches, call this \
+         tool with that exact catalog id or unique name and read the returned \
+         instructions completely before taking task actions. Then open only \
+         referenced files or run bundled scripts as directed. Do not skip a \
+         matching skill, and do not delegate reading the skill to a subagent. \
+         Slash-only skills are absent from the listing and must not be guessed. \
          Optionally pass arguments as a single string."
     }
 
@@ -131,7 +184,7 @@ impl Tool for SkillTool {
             "properties": {
                 "skill": {
                     "type": "string",
-                    "description": "The skill name. E.g., \"commit\", \"review-pr\", or \"pdf\""
+                    "description": "Catalog id (preferred, e.g. \"builtin:officecli\") or unique skill name"
                 },
                 "args": {
                     "type": "string",
@@ -156,22 +209,31 @@ impl Tool for SkillTool {
             };
         };
 
-        let skill = match self.find_skill(skill_name) {
-            Some(s) => s,
-            None => {
-                let available = self.available_names();
+        let skill = match self.resolve_skill(skill_name) {
+            Ok(s) => s,
+            Err(message) => {
                 return ToolResult {
-                    content: format!(
-                        "Skill '{}' not found. Available skills: {}",
-                        skill_name, available
-                    ),
+                    content: message,
                     is_error: true,
                     images: Vec::new(),
                 };
             }
         };
 
+        if skill.disable_model_invocation {
+            return ToolResult {
+                content: format!(
+                    "Skill '{}' is slash-only. Do not invoke it unless the user explicitly selected it.",
+                    skill.catalog_id.as_deref().unwrap_or(skill.name.as_str())
+                ),
+                is_error: true,
+                images: Vec::new(),
+            };
+        }
+
         // Check skill-level permissions (applies to both inline and fork modes).
+        // Script/hook skills are Exec-gated by category_for; reaching execute
+        // means the host already collected confirmation (or auto-approved).
         match self.checker.check(skill) {
             SkillPermission::Deny => {
                 return ToolResult {
@@ -181,16 +243,11 @@ impl Tool for SkillTool {
                 };
             }
             SkillPermission::Ask { reason } => {
-                return ToolResult {
-                    content: format!(
-                        "Skill '{}' requires user approval before execution. \
-                         {} \
-                         Please ask the user to approve this skill in their configuration.",
-                        skill.name, reason
-                    ),
-                    is_error: true,
-                    images: Vec::new(),
-                };
+                tracing::info!(
+                    skill = %skill.name,
+                    %reason,
+                    "script skill proceeding after host confirmation"
+                );
             }
             SkillPermission::Allow => {}
         }
@@ -285,6 +342,28 @@ impl Tool for SkillTool {
         ToolCategory::Info
     }
 
+    fn category_for(&self, input: &Value) -> ToolCategory {
+        input["skill"]
+            .as_str()
+            .and_then(|name| self.find_skill(name))
+            .map(|skill| {
+                if skill.requires_confirmation {
+                    ToolCategory::Exec
+                } else {
+                    ToolCategory::Info
+                }
+            })
+            .unwrap_or(ToolCategory::Info)
+    }
+
+    fn auto_approve_invocation(&self, input: &Value, _category: ToolCategory) -> bool {
+        input["skill"]
+            .as_str()
+            .and_then(|name| self.find_skill(name))
+            .map(|skill| !skill.requires_confirmation)
+            .unwrap_or(true)
+    }
+
     fn describe(&self, input: &Value) -> String {
         let name = input.get("skill").and_then(|v| v.as_str()).unwrap_or("?");
         match input.get("args").and_then(|v| v.as_str()) {
@@ -301,8 +380,10 @@ impl Tool for SkillTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomi_protocol::events::ToolCategory;
     use nomi_skills::permissions::SkillPermissionChecker;
     use nomi_skills::types::{ExecutionContext, LoadedFrom, SkillSource};
+    use nomi_tools::Tool;
     use serde_json::json;
 
     fn make_skill(name: &str, content: &str) -> SkillMetadata {
@@ -329,6 +410,9 @@ mod tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -362,6 +446,62 @@ mod tests {
         let tool = tool_with(vec![make_skill("commit", "body")]);
         let result = tool.execute(json!({ "skill": "/commit" })).await;
         assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn test_catalog_id_lookup() {
+        let mut skill = make_skill("officecli", "Use officecli.");
+        skill.catalog_id = Some("builtin:officecli".to_string());
+        let tool = tool_with(vec![skill]);
+        let result = tool
+            .execute(json!({ "skill": "builtin:officecli" }))
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("Use officecli."));
+    }
+
+    #[tokio::test]
+    async fn test_ambiguous_short_name_requires_catalog_id() {
+        let mut left = make_skill("writer", "user writer");
+        left.catalog_id = Some("user:writer".to_string());
+        let mut right = make_skill("writer", "builtin writer");
+        right.catalog_id = Some("builtin:writer".to_string());
+        let tool = tool_with(vec![left, right]);
+        let result = tool.execute(json!({ "skill": "writer" })).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("ambiguous"));
+        assert!(result.content.contains("builtin:writer"));
+    }
+
+    #[test]
+    fn script_skill_is_exec_gated_until_host_confirms() {
+        let mut skill = make_skill("art-motion", "run scripts");
+        skill.requires_confirmation = true;
+        skill.catalog_id = Some("builtin:art-motion".to_string());
+        let tool = tool_with(vec![skill]);
+        let input = json!({ "skill": "builtin:art-motion" });
+        assert_eq!(tool.category_for(&input), ToolCategory::Exec);
+        assert!(!tool.auto_approve_invocation(&input, ToolCategory::Exec));
+    }
+
+    #[test]
+    fn documentation_skill_stays_info_and_auto_approved() {
+        let skill = make_skill("officecli", "write docs");
+        let tool = tool_with(vec![skill]);
+        let input = json!({ "skill": "officecli" });
+        assert_eq!(tool.category_for(&input), ToolCategory::Info);
+        assert!(tool.auto_approve_invocation(&input, ToolCategory::Info));
+    }
+
+    #[tokio::test]
+    async fn test_slash_only_skill_is_refused() {
+        let mut skill = make_skill("deploy", "deploy prod");
+        skill.disable_model_invocation = true;
+        skill.catalog_id = Some("user:deploy".to_string());
+        let tool = tool_with(vec![skill]);
+        let result = tool.execute(json!({ "skill": "deploy" })).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("slash-only"));
     }
 
     #[tokio::test]
@@ -459,6 +599,9 @@ mod supplemental_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -697,6 +840,9 @@ mod supplemental_tests_p6 {
             content: "body".to_string(),
             content_length: 4,
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -848,6 +994,7 @@ mod permission_tests {
 
     use serde_json::json;
 
+    use nomi_protocol::events::ToolCategory;
     use nomi_skills::permissions::SkillPermissionChecker;
     use nomi_skills::types::{ExecutionContext, LoadedFrom, SkillMetadata, SkillSource};
 
@@ -878,6 +1025,9 @@ mod permission_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -899,20 +1049,19 @@ mod permission_tests {
         );
     }
 
-    // P5-12: SkillTool returns informative message for a skill that needs approval.
-    #[tokio::test]
-    async fn p5_12_ask_skill_returns_approval_prompt() {
+    // P5-12: hook/script skills are Exec-gated before execute(). The host
+    // collects confirmation (or auto-approves) before the tool runs.
+    #[test]
+    fn p5_12_hook_skill_requires_host_approval_before_execution() {
         let checker = SkillPermissionChecker::new(vec![], vec![], false);
         let mut skill = make_skill("hooked", "body");
         skill.hooks_raw = Some(serde_json::json!({ "pre": "echo hi" }));
+        // The loader derives this from hooks_raw; keep the fixture consistent.
+        skill.requires_confirmation = true;
         let tool = SkillTool::new(Arc::new(vec![skill]), "/tmp".to_string(), checker);
-        let result = tool.execute(json!({"skill": "hooked"})).await;
-        assert!(result.is_error);
-        assert!(
-            result.content.contains("approval") || result.content.contains("approve"),
-            "content should mention approval: {}",
-            result.content
-        );
+        let input = json!({"skill": "hooked"});
+        assert_eq!(tool.category_for(&input), ToolCategory::Exec);
+        assert!(!tool.auto_approve_invocation(&input, ToolCategory::Exec));
     }
 }
 
@@ -987,6 +1136,7 @@ mod phase7_tests {
                 usage: TokenUsage::default(),
                 turns: 1,
                 is_error: self.is_error,
+                denied_tool_calls: 0,
             }
         }
     }
@@ -1019,6 +1169,9 @@ mod phase7_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -1046,6 +1199,9 @@ mod phase7_tests {
             content: content.to_string(),
             content_length: content.len(),
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -1285,6 +1441,9 @@ mod phase11_tests {
             content: "body".to_string(),
             content_length: 4,
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 

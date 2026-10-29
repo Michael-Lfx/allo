@@ -93,7 +93,7 @@ use nomifun_api_types::{
     AppServerOAuthStartResult, AppServerOAuthStatusView,
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFileList, AppServerSkillSummary,
     AppServerStoreInstallResult,
-    AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerStoreCategoriesResponse, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
     AnswerExecutionDecisionRequest, CreateProviderRequest, ListMessagesQuery, McpServerId, MessageResponse,
     PresetOverrides, PresetSource,
     PresetTarget, SendMessageRequest, UpdateProviderModelRequest,
@@ -218,7 +218,47 @@ use tokio::sync::mpsc;
 /// on `AppServerExpertPack` (`pack_format 2`), so `exportTeam` can materialize a
 /// directory the package's own scripts recognize as the plugin root. Both new
 /// methods are unmapped, so the documented split moves to `55 / 82`.
-pub const PROTOCOL_VERSION: &str = "fp-14";
+/// **`fp-15` exposes market categories and tags over the wire** (doc 43): a new
+/// **mapped** method `store/categories`
+/// (`GET /api/app-server/store/categories`) returns the category dictionaries
+/// of all enabled markets plus the market-level tag vocabulary;
+/// `AppServerStoreItem` gains `category_id` / `category` (the host joins the
+/// dictionary); `AppServerAgentSummary` gains `tags` / `category_id` — moved
+/// up from `AppServerAgentDetail`, which loses those two fields (a `flatten`
+/// cannot carry the same key twice). One method with an HTTP route, so the
+/// documented split moves to `56 / 83`.
+/// **`fp-16` closes the remaining category gaps** (doc 44):
+/// `AppServerTeamSummary` gains `tags` / `category_id` (the package-level
+/// display metadata the import already records) and `AppServerSkillSummary`
+/// gains `tags` (from the market index row — the only tag source a skill, which
+/// ships no `plugin.json`, has). No method is added or removed, so the
+/// documented split stays `56 / 83`; the expert pack's own version moves
+/// independently (`pack_format 2 → 3`).
+/// **`fp-17` renames the connector summary's auth field** (doc `47`):
+/// `AppServerConnectorSummary.auth_mode` becomes `auth_transport`, because the
+/// field is derived from the transport and says nothing about what the
+/// connector needs — the declaration answers that through `credential.mode`
+/// (`34` §6.1), and a client must never pick an auth affordance from a shape.
+/// **`fp-18` also gives all four entity kinds the same display fields** (doc
+/// `50`): `AppServerAgentSummary`, `AppServerTeamSummary`,
+/// `AppServerSkillSummary` and `AppServerConnectorSummary` each carry
+/// `display_name` / `display_description` / `tags` / `quick_prompts` with
+/// identical names and types. `display_description` and `quick_prompts` move up
+/// from `AppServerAgentDetail` (which keeps them through `flatten`, so the JSON
+/// is unchanged), and the connector summary gains all four for the first time —
+/// `name` stays the runtime identity the tool namespace is built from. The
+/// values are merged at import from the author's `plugin.json` and the market
+/// index row, then read back from the component payload; no method is added or
+/// removed, so the documented split stays `56 / 83`.
+/// **`fp-19` gives the exported expert pack its per-entity icons** (doc `51`):
+/// `AppServerExpertSkillRef` gains `icon` (a skill-directory-relative path, read
+/// back with `skill/file`) and `AppServerExpertConnectorRef` gains `icon` (a
+/// snapshot-relative path that must appear in the pack's own `assets`, like
+/// `pack.avatar`). Both are optional and omitted when absent, so an existing
+/// consumer's JSON is unchanged; no method is added or removed, so the documented
+/// split stays `56 / 83`. The artifact contract moves with it
+/// (`pack_format 3 → 4`).
+pub const PROTOCOL_VERSION: &str = "fp-19";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1447,6 +1487,9 @@ pub fn app_server_routes(state: AppServerRouterState) -> Router {
         )
         // Agent Store unified store catalog (winget-style)
         .route("/api/app-server/store", get(store_list_route))
+        // Static segment, registered like `market-settings` before the
+        // parameterized entry routes: a market id could otherwise shadow it.
+        .route("/api/app-server/store/categories", get(store_categories_route))
         .route(
             "/api/app-server/store/{marketplace_id}/entries/{entry_name}/install",
             post(store_install_entry_route),
@@ -2707,6 +2750,87 @@ pub fn warm_default_marketplaces(state: &AppServerRouterState) {
 static MARKETPLACES_AUTO_UPDATE_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// 学习自动维护调度器：每进程一枚（k02）。
+static LEARNING_MAINTENANCE_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 学习维护调度器的唤醒步长（不是间隔本身——间隔每醒重读设置，改设置
+/// 无需重启；learnhub maintenance.rs sleep-then-work 同构）。
+const LEARNING_MAINTENANCE_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 学习域自动维护回合调度（k02，learnhub ADR-0028 / maintenance.rs）：
+/// 定时醒来 → 重读设置 → 到期则跑**一轮**维护（先修补后挂载、纯读判定、
+/// 零工作不提交）。单轮在途由「本任务 await 回合」保证；回合内部逐课在
+/// 生成槽上串行（busy = 跳过该课含挂载）。
+///
+/// 两枚开关都生效：`NOMI_LEARNING_AUTO_MAINTENANCE=off` 不注册调度器；
+/// `learning.maintenanceAutoEnabled=false` 运行期关（设置页/配置写入即生效）。
+pub fn start_learning_auto_maintenance(
+    service: std::sync::Arc<nomifun_learning::LearningService>,
+    pool: nomifun_db::sqlx::SqlitePool,
+) {
+    use std::sync::atomic::Ordering;
+    let disabled = std::env::var("NOMI_LEARNING_AUTO_MAINTENANCE")
+        .map(|value| nomifun_learning::is_off_switch_value(&value))
+        .unwrap_or(false);
+    if disabled {
+        return;
+    }
+    if LEARNING_MAINTENANCE_STARTED.swap(true, Ordering::SeqCst) {
+        return; // already scheduling
+    }
+    tokio::spawn(async move {
+        // 首轮不立即跑：启动流量留给预热，先等一个缺省间隔。
+        let mut last_run = std::time::Instant::now();
+        loop {
+            tokio::time::sleep(LEARNING_MAINTENANCE_TICK).await;
+            // 每醒重读设置：开关/间隔改动下个周期生效。
+            let settings = service.maintenance_settings().await;
+            if !settings.enabled {
+                last_run = std::time::Instant::now();
+                continue;
+            }
+            let due = std::time::Duration::from_secs(settings.interval_minutes as u64 * 60);
+            if last_run.elapsed() < due {
+                continue;
+            }
+            // 单轮在途：本任务 await 回合，不会重入。
+            let owner = match nomifun_db::installation_owner_id(&pool).await {
+                Ok(owner) => owner,
+                Err(error) => {
+                    tracing::warn!(%error, "learning maintenance: owner resolution failed; tick skipped");
+                    last_run = std::time::Instant::now();
+                    continue;
+                }
+            };
+            let user_id = match nomifun_common::UserId::parse(&owner) {
+                Ok(user_id) => user_id,
+                Err(error) => {
+                    tracing::warn!(%error, "learning maintenance: owner id invalid; tick skipped");
+                    last_run = std::time::Instant::now();
+                    continue;
+                }
+            };
+            match service.run_maintenance_tick(&user_id, None).await {
+                Ok(report) => {
+                    if !report.courses.is_empty() {
+                        tracing::info!(
+                            scanned = report.scanned,
+                            idle = report.idle,
+                            worked = report.courses.len(),
+                            "learning auto maintenance tick"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "learning auto maintenance tick failed");
+                }
+            }
+            last_run = std::time::Instant::now();
+        }
+    });
+}
+
 /// How often the scheduler wakes up to ask whether a sweep is due (doc `37`
 /// §3.3).
 ///
@@ -3112,6 +3236,16 @@ async fn store_list_impl(
 ) -> Result<AppServerStoreList, AppServerError> {
     warm_default_marketplaces(state);
     store_provider(state)?.list().await.map_err(AppServerError::from)
+}
+
+/// `store/categories` (`43` §3.1): dictionary + market tag vocabulary. Warms
+/// the default marketplaces too — the roots the dictionary reads are learned
+/// during `list()`'s market walk, so a cold call needs the same warm-up.
+async fn store_categories_impl(
+    state: &AppServerRouterState,
+) -> Result<AppServerStoreCategoriesResponse, AppServerError> {
+    warm_default_marketplaces(state);
+    store_provider(state)?.categories().await.map_err(AppServerError::from)
 }
 
 async fn store_install_entry_impl(
@@ -3554,6 +3688,15 @@ async fn store_list_route(
 ) -> Result<Json<AppServerStoreList>, AppServerError> {
     state.registry.require_ready(connection_id(&headers)?, &user.id)?;
     Ok(Json(store_list_impl(&state).await?))
+}
+
+async fn store_categories_route(
+    State(state): State<AppServerRouterState>,
+    headers: HeaderMap,
+    Extension(user): Extension<CurrentUser>,
+) -> Result<Json<AppServerStoreCategoriesResponse>, AppServerError> {
+    state.registry.require_ready(connection_id(&headers)?, &user.id)?;
+    Ok(Json(store_categories_impl(&state).await?))
 }
 
 async fn store_install_entry_route(
@@ -8059,6 +8202,13 @@ async fn dispatch_connection_request(
                 AppServerError::new("internal_error", format!("failed to encode store: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
             })?))
         }
+        "store/categories" => {
+            state.registry.require_ready(connection.connection_id(), &user.id)?;
+            let categories = store_categories_impl(state).await?;
+            Ok(ws_response(request_id, serde_json::to_value(categories).map_err(|error| {
+                AppServerError::new("internal_error", format!("failed to encode store categories: {error}"), StatusCode::INTERNAL_SERVER_ERROR, true)
+            })?))
+        }
         "store/install-entry" => {
             state.registry.require_ready(connection.connection_id(), &user.id)?;
             let params = parse_ws_params::<WsStoreEntry>(params)?;
@@ -9340,6 +9490,10 @@ mod tests {
             display_name: None,
             profession: None,
             avatar_url: None,
+            tags: vec![],
+            category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.agent_catalog = Some(Arc::new(crate::catalog::FakeAgentCatalog {
@@ -9372,7 +9526,7 @@ mod tests {
             description: None,
             kind: "mcp".into(),
             transport_summary: "stdio".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             enabled,
             status: if enabled {
                 nomifun_api_types::AppServerConnectorStatus::Configured
@@ -9381,6 +9535,10 @@ mod tests {
             },
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         };
         let mut state = AppServerRouterState::default();
         state.connectors = Some(Arc::new(crate::catalog::FakeConnectorCatalog {
@@ -9462,6 +9620,10 @@ mod tests {
                 display_name: None,
                 profession: None,
                 avatar_url: None,
+                tags: vec![],
+                category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -9531,6 +9693,10 @@ mod tests {
                 display_name: None,
                 profession: None,
                 avatar_url: None,
+                tags: vec![],
+                category_id: None,
+                display_description: None,
+                quick_prompts: vec![],
             }],
         }));
         let mut preset_id = String::new();
@@ -12185,6 +12351,10 @@ model = "mimo-v2.5-free"
             enabled: true,
             required_connectors: vec![],
             avatar_url: None,
+            tags: vec![],
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12195,12 +12365,30 @@ model = "mimo-v2.5-free"
             description: None,
             kind: "stdio-mcp".into(),
             transport_summary: "npx @playwright/mcp".into(),
-            auth_mode: "none".into(),
+            auth_transport: "none".into(),
             enabled: true,
             status: nomifun_api_types::AppServerConnectorStatus::Connected,
             avatar_url: None,
             credential: None,
+            display_name: None,
+            display_description: None,
+            tags: vec![],
+            quick_prompts: vec![],
         }
+    }
+
+    /// `47` TC-S2-001: the wire shape carries `auth_transport` and nothing named
+    /// `auth_mode`. A client that reads the old key must fail loudly at the
+    /// handshake rather than silently decide an auth affordance from a field the
+    /// host no longer sends.
+    #[test]
+    fn connector_summary_serializes_auth_transport_and_not_auth_mode() {
+        let json = serde_json::to_value(sample_connector_summary()).expect("serialize");
+        assert_eq!(json["auth_transport"], "none");
+        assert!(
+            json.get("auth_mode").is_none(),
+            "the renamed field must leave no old key behind: {json}"
+        );
     }
 
     fn sample_model_summary() -> nomifun_api_types::AppServerModelSummary {
@@ -12619,6 +12807,10 @@ model = "mimo-v2.5-free"
             display_name: None,
             profession: None,
             avatar_url: None,
+            tags: vec![],
+            category_id: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12632,6 +12824,11 @@ model = "mimo-v2.5-free"
             member_agent_ids: vec!["wb-demo-software-qa-engineer".into()],
             source: "codebuddy-plugin".into(),
             compatibility_status: nomifun_api_types::AppServerCompatibilityStatus::CompatibleWithAdapter,
+            tags: vec![],
+            category_id: None,
+            display_name: None,
+            display_description: None,
+            quick_prompts: vec![],
         }
     }
 
@@ -12771,6 +12968,8 @@ model = "mimo-v2.5-free"
             name: "software-team-lead".into(),
             display_name: None,
             description: Some("lead".into()),
+            tags: vec![],
+            category_id: None,
             persona: nomifun_api_types::AppServerExpertPersona {
                 instructions: PERSONA_SENTINEL.into(),
                 memory: None,
@@ -12785,6 +12984,7 @@ model = "mimo-v2.5-free"
             skills: vec![nomifun_api_types::AppServerExpertSkillRef {
                 name: "release-notes".into(),
                 id: "release-notes".into(),
+                icon: None,
             }],
             connectors: vec![],
             assets: vec![nomifun_api_types::AppServerExpertAssetRef {
@@ -12983,12 +13183,8 @@ model = "mimo-v2.5-free"
             background: None,
             isolation: None,
             permission_mode_ignored: false,
-            display_description: None,
-            quick_prompts: vec![],
-            tags: vec![],
             default_init_prompt: None,
             expert_type: None,
-            category_id: None,
         };
         let catalog_json = serde_json::to_value(&detail).unwrap();
         assert!(
@@ -13289,16 +13485,26 @@ model = "mimo-v2.5-free"
     }
 
     #[test]
-    fn sample_expert_pack_serializes_pack_format_2_with_assets() {
-        // Doc `38` flips `pack_format` to 2 and puts the asset list on the wire;
-        // the shape guard here keeps a future bump a conscious act.
+    fn sample_expert_pack_serializes_the_current_pack_format_with_assets() {
+        // Doc `38` flipped `pack_format` to 2 and put the asset list on the wire;
+        // doc `44` moved it to 3 for the display metadata; doc `51` moved it to 4
+        // for the per-entity icons. The shape guard here keeps a future bump a
+        // conscious act.
         let json = serde_json::to_value(sample_expert_pack()).unwrap();
-        assert_eq!(json["pack_format"], 2);
+        assert_eq!(
+            json["pack_format"],
+            nomifun_api_types::APP_SERVER_EXPERT_PACK_FORMAT
+        );
+        assert_eq!(json["pack_format"], 4);
         assert_eq!(json["assets"][0]["path"], "bin/init_task.py");
         assert_eq!(json["assets"][0]["kind"], "script");
         // `avatar` is absent when unset (`skip_serializing_if`), so `null` can
         // never imply "no avatar" versus "no field".
         assert!(json.get("avatar").is_none());
+        // Doc `44`: the display metadata is optional in the same way — an
+        // undeclared category is an absent key, never a null placeholder.
+        assert!(json.get("tags").is_none());
+        assert!(json.get("category_id").is_none());
     }
 
     // ---- Connector call proxy: `connector/call` (doc 24 §5) ---------------
@@ -13503,6 +13709,10 @@ model = "mimo-v2.5-free"
                         // 这个测试替身只枚举磁盘上的技能；市场图标的解析在
                         // `nomifun-app`（`app_server_entry_assets`），不在这里。
                         avatar_url: None,
+                        tags: vec![],
+                        display_name: None,
+                        display_description: None,
+                        quick_prompts: vec![],
                     }
                 })
                 .collect())

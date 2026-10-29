@@ -420,6 +420,7 @@ pub struct AgentBootstrap {
     extract_coordinator: ExtractCoordinatorBinding,
     resume_session: Option<Session>,
     extra_skill_dirs: Vec<PathBuf>,
+    host_catalog_skills: Vec<nomi_skills::types::SkillMetadata>,
     goal: Option<crate::goal::runtime::GoalSpec>,
     /// Host composition switch for embedded AgentExecution. CLI
     /// and standalone embeddings default to installing it; backend sessions
@@ -497,6 +498,17 @@ pub struct AgentBootstrap {
     memory_enabled: bool,
 }
 
+/// Read-only trees Glob/DirTree may inspect besides the session workspace.
+/// The application data root itself is intentionally excluded so a listing
+/// cannot surface `encryption_key` / tokens / logs.
+fn local_explore_extra_roots() -> Vec<PathBuf> {
+    let data = nomi_config::config::app_data_dir();
+    ["builtin-skills", "skills", "preset-skills"]
+        .into_iter()
+        .map(|name| data.join(name))
+        .collect()
+}
+
 impl AgentBootstrap {
     pub fn new(config: Config, workspace: impl Into<String>, output: Arc<dyn OutputSink>) -> Self {
         Self {
@@ -508,6 +520,7 @@ impl AgentBootstrap {
             extract_coordinator: ExtractCoordinatorBinding::LocalDefault,
             resume_session: None,
             extra_skill_dirs: Vec::new(),
+            host_catalog_skills: Vec::new(),
             goal: None,
             install_embedded_agent_execution: true,
             approval_manager: None,
@@ -678,6 +691,12 @@ impl AgentBootstrap {
         self
     }
 
+    /// Session-authorized Flowy catalog skills (metadata + body for the Skill tool).
+    pub fn host_catalog_skills(mut self, skills: Vec<nomi_skills::types::SkillMetadata>) -> Self {
+        self.host_catalog_skills = skills;
+        self
+    }
+
     /// Read-only access to the config (for session management before build).
     pub fn config(&self) -> &Config {
         &self.config
@@ -812,7 +831,11 @@ impl AgentBootstrap {
             // Grep needs ripgrep; register install hooks and warm the managed
             // binary in the background so the first search rarely blocks.
             nomi_config::register_dep_gate_hooks();
-            nomi_config::spawn_background_install(vec![nomi_config::RuntimeDep::Ripgrep]);
+            let mut warmup = vec![nomi_config::RuntimeDep::Ripgrep];
+            if cfg!(windows) {
+                warmup.push(nomi_config::RuntimeDep::Pwsh);
+            }
+            nomi_config::spawn_background_install(warmup);
 
             registry.register(Box::new(
                 nomi_tools::bash::BashTool::new(
@@ -825,12 +848,14 @@ impl AgentBootstrap {
             registry.register(Box::new(nomi_tools::grep::GrepTool::new(
                 cwd_path.to_path_buf(),
             )));
-            registry.register(Box::new(nomi_tools::glob::GlobTool::new(
-                cwd_path.to_path_buf(),
-            )));
-            registry.register(Box::new(nomi_tools::dir_tree::DirTreeTool::new(
-                cwd_path.to_path_buf(),
-            )));
+            registry.register(Box::new(
+                nomi_tools::glob::GlobTool::new(cwd_path.to_path_buf())
+                    .with_extra_roots(local_explore_extra_roots()),
+            ));
+            registry.register(Box::new(
+                nomi_tools::dir_tree::DirTreeTool::new(cwd_path.to_path_buf())
+                    .with_extra_roots(local_explore_extra_roots()),
+            ));
 
             // Numeric-session schemas share the same supervisor as Bash. The
             // ProcessStore is only a numeric-id adapter; it owns no OS process.
@@ -906,13 +931,17 @@ impl AgentBootstrap {
         };
         let has_mcp = mcp_manager.is_some();
 
-        let skills = nomi_skills::loader::load_all_skills(
+        let disk_skills = nomi_skills::loader::load_all_skills(
             cwd_path,
             &self.extra_skill_dirs,
             false,
             mcp_manager.as_deref(),
         )
         .await;
+        let skills = nomi_skills::loader::merge_host_catalog_skills(
+            disk_skills,
+            std::mem::take(&mut self.host_catalog_skills),
+        );
 
         let agents_snapshot = crate::agents_md::resolve_agents_md(
             cwd_path,
@@ -1025,7 +1054,7 @@ impl AgentBootstrap {
         };
         registry.register(Box::new(
             crate::skill_tool::SkillTool::with_invocation_runner(
-                skills_arc,
+                Arc::clone(&skills_arc),
                 cwd.to_string(),
                 skill_checker,
                 None,
@@ -1033,6 +1062,11 @@ impl AgentBootstrap {
             )
             .with_process_supervisor(Arc::clone(&process_supervisor)),
         ));
+        if crate::skill_search_tool::should_register_skill_search(skills_arc.len()) {
+            registry.register(Box::new(crate::skill_search_tool::SkillSearchTool::new(
+                Arc::clone(&skills_arc),
+            )));
+        }
         if self.install_embedded_agent_execution {
             registry.register(Box::new(crate::local_delegate_tool::LocalDelegateTool::new(
                 Arc::clone(&local_invocation_runner),
@@ -1072,9 +1106,10 @@ impl AgentBootstrap {
                 "computer-use ENABLED: registering the Computer tool (observe / click_element / \
                  launch / type / scroll). Desktop control is available to this session."
             );
-            registry.register(Box::new(nomi_computer::ComputerTool::new(
-                &self.config.tools.computer,
-            )));
+            registry.register(Box::new(
+                nomi_computer::ComputerTool::new(&self.config.tools.computer)
+                    .with_image_input(self.config.compat.supports_image()),
+            ));
         }
         #[cfg(feature = "computer-use")]
         if !self.config.tools.computer.enabled {

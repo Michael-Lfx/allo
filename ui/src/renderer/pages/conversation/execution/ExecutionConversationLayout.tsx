@@ -37,11 +37,17 @@ const ExecutionConversationLayout: React.FC<ChatLayoutProps> = ({
   headerExtra,
   workspaceExtraTabs,
   conversation_id,
+  workspaceEnabled = true,
   ...layoutProps
 }) => {
   const { t } = useTranslation();
   const execution = useExecution();
   const status = execution.detail?.execution.status ?? '';
+  // The collaboration pane is hosted by the workspace preview surface. Without
+  // a workspace that host never mounts, so offering the entry point would be a
+  // dead control: gate every affordance (header button, rail entry, auto-open,
+  // merged tab) on the same condition.
+  const collaborationAvailable = Boolean(execution.executionId) && workspaceEnabled;
   const workspaceTarget = conversation_id != null ? conversationTarget(conversation_id) : undefined;
 
   const openCollaborationTab = () => {
@@ -52,13 +58,13 @@ const ExecutionConversationLayout: React.FC<ChatLayoutProps> = ({
   // When an execution appears, surface it in the preview strip (same moment the
   // old side canvas used to auto-open).
   useEffect(() => {
-    if (!execution.executionId || !workspaceTarget) return;
+    if (!collaborationAvailable || !workspaceTarget) return;
     dispatchWorkspaceOpenPreviewTool(AGENT_EXECUTION_WORKSPACE_TAB, workspaceTarget);
-  }, [execution.executionId, workspaceTarget?.id, workspaceTarget?.kind]);
+  }, [collaborationAvailable, workspaceTarget?.id, workspaceTarget?.kind]);
 
   const mergedExtraTabs = useMemo(() => {
     const base = workspaceExtraTabs ?? [];
-    if (!execution.executionId) {
+    if (!collaborationAvailable) {
       return base.filter((tab) => tab.key !== AGENT_EXECUTION_WORKSPACE_TAB);
     }
     if (base.some((tab) => tab.key === AGENT_EXECUTION_WORKSPACE_TAB)) return base;
@@ -71,17 +77,18 @@ const ExecutionConversationLayout: React.FC<ChatLayoutProps> = ({
         content: <ExecutionTopPanel embedded />,
       },
     ];
-  }, [execution.executionId, t, workspaceExtraTabs]);
+  }, [collaborationAvailable, t, workspaceExtraTabs]);
 
   return (
     <ChatLayout
       {...layoutProps}
       conversation_id={conversation_id}
+      workspaceEnabled={workspaceEnabled}
       workspaceExtraTabs={mergedExtraTabs}
       headerExtra={
         <div className='flex items-center gap-8px'>
           {headerExtra}
-          {execution.executionId && (
+          {collaborationAvailable && (
             <Tooltip content={t('agentExecution.panel.open', { defaultValue: '打开协作任务' })}>
               <Button
                 size='mini'
@@ -96,7 +103,7 @@ const ExecutionConversationLayout: React.FC<ChatLayoutProps> = ({
       }
       workspaceCollaboration={{
         active: false,
-        available: Boolean(execution.executionId),
+        available: collaborationAvailable,
         statusColor: EXECUTION_STATUS_META[status as keyof typeof EXECUTION_STATUS_META]?.color,
         onClick: openCollaborationTab,
       }}

@@ -251,6 +251,10 @@ silero-vad = ["nomifun-robot/silero-vad"]
 [dependencies]
 tempfile.workspace = true
 
+# 铸名门外部通行名证据（m11）：组合根接线 DDG 无 key 搜索提供方。
+# backend → flowy-web 直依赖先例 = nomifun-briefing。
+flowy-web.workspace = true
+
 nomifun-common.workspace = true
 nomifun-assets.workspace = true
 nomifun-db.workspace = true
@@ -272,6 +276,7 @@ nomifun-requirement.workspace = true
 nomifun-notify.workspace = true
 nomifun-idmm.workspace = true
 nomifun-knowledge.workspace = true
+nomifun-link.workspace = true
 nomifun-learning.workspace = true
 nomifun-poi.workspace = true
 nomifun-insights.workspace = true
@@ -347,6 +352,7 @@ nomi-browser = { workspace = true, optional = true }
 # engine. Only the browser-use feature pulls this dependency.
 nomi-browser-engine = { workspace = true, optional = true }
 nomi-config.workspace = true
+nomi-process-runtime.workspace = true
 nomifun-browser-platform = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
 nomi-tools = { workspace = true, optional = true }

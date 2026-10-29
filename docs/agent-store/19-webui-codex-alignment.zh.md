@@ -481,7 +481,7 @@ Codex app 的官方定位是「agent 指挥中心」：多项目侧栏 + 并行�
 - 等级：P1
 - 前置：生产装配注入 Skill/Connector/OAuth provider
 - 操作：WS 初始化后调用 `skill/list`、`skill/get`、`connector/list`、`connector/get`、`connector/status`、`connector/test`、`connector/auth/start`、`connector/auth/status`、`connector/auth/logout`
-- 断言：`initialize` 返回 `skills=true`、`connectors=true`、`oauth=true`；目录方法返回 Agent Store 公共形状（id/name/version/source/compatibility_status/enabled；Connector 含 kind/transport_summary/auth_mode/status），不含真实凭据、内部 ID 或文件系统绝对路径；未注入 provider 时对应方法返回 `unsupported_operation`
+- 断言：`initialize` 返回 `skills=true`、`connectors=true`、`oauth=true`；目录方法返回 Agent Store 公共形状（id/name/version/source/compatibility_status/enabled；Connector 含 kind/transport_summary/auth_transport/status），不含真实凭据、内部 ID 或文件系统绝对路径；未注入 provider 时对应方法返回 `unsupported_operation`
 
 #### TC-CATALOG-002：Connector 状态合并规则
 

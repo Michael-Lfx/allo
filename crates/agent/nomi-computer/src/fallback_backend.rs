@@ -32,6 +32,9 @@ pub struct WindowInfo {
     pub width: u32,
     pub height: u32,
     pub is_focused: bool,
+    /// Owning process id from xcap, used to scope `observe` without raising
+    /// the window. `None` when the platform cannot report it.
+    pub pid: Option<i32>,
 }
 
 /// Enumerate windows (front-to-back z order). Blocking: call from
@@ -57,6 +60,7 @@ fn list_windows_inner() -> Result<Vec<WindowInfo>, String> {
             width: w.width().unwrap_or(0),
             height: w.height().unwrap_or(0),
             is_focused: w.is_focused().unwrap_or(false),
+            pid: w.pid().ok().and_then(|pid| i32::try_from(pid).ok()),
         });
     }
     Ok(infos)
@@ -70,8 +74,12 @@ pub fn format_window_list(windows: &[WindowInfo]) -> String {
     let mut out = String::from("Windows (front to back):\n");
     for w in windows {
         let focus = if w.is_focused { " [focused]" } else { "" };
+        let pid = match w.pid {
+            Some(pid) => format!(" pid={pid}"),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "- id={} app={:?} title={:?} at ({}, {}) size {}x{}{}\n",
+            "- id={}{pid} app={:?} title={:?} at ({}, {}) size {}x{}{}\n",
             w.id, w.app_name, w.title, w.x, w.y, w.width, w.height, focus
         ));
     }
@@ -215,9 +223,11 @@ mod tests {
             width: 800,
             height: 600,
             is_focused: true,
+            pid: Some(1001),
         }];
         let text = format_window_list(&windows);
         assert!(text.contains("id=42"));
+        assert!(text.contains("pid=1001"));
         assert!(text.contains("Mail"));
         assert!(text.contains("Inbox"));
         assert!(text.contains("800x600"));

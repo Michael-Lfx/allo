@@ -12,6 +12,51 @@ pub(crate) const GRAPH_RECOMMEND_LIMIT: usize = 10;
 /// 花名册/已教账为主，切片只服务撞名预防）。
 const REGISTRY_EXCERPT_LIMIT: usize = 200;
 
+/// findings 消费水位的运维开关（k02，learnhub #146/#147）：置 off/0/false
+/// 时修补回合读全量留痕且不推水位（旧行为臂）。
+pub const FINDINGS_WATERMARK_SWITCH_ENV: &str = "NOMI_LEARNING_FINDINGS_WATERMARK";
+
+/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_findings_watermark_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 水位机制是否开启（未设/其它值 = 开启）。
+fn findings_watermark_enabled() -> bool {
+    std::env::var(FINDINGS_WATERMARK_SWITCH_ENV)
+        .map(|value| !is_findings_watermark_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 自动维护设置缺省与边界（learnhub `infra/settings.rs` 同量级：缺省开、
+/// 360 分钟、30..=10080；越界读侧回退缺省不报错）。
+pub const DEFAULT_MAINTENANCE_ENABLED: bool = true;
+pub const DEFAULT_MAINTENANCE_INTERVAL_MINUTES: i64 = 360;
+pub const MAINTENANCE_INTERVAL_MINUTES: std::ops::RangeInclusive<i64> = 30..=10080;
+
+/// 自动补批设置缺省（m10）：`learning.autoRefillEnabled` 缺省开——环境闸
+/// `NOMI_LEARNING_AUTO_REFILL` 兜底（off = verdict 恒 Disabled）。
+pub const DEFAULT_AUTO_REFILL_ENABLED: bool = true;
+
+/// 布尔偏好的宽容解析（bool / "true"|"1"|"yes" / 1|0 / 其它回退缺省）：
+/// maintenance 与 autoRefill 两个开关同式（k02 读侧纪律，坏值不报错）。
+fn parse_bool_pref(parsed: &serde_json::Value, default: bool) -> bool {
+    match parsed {
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            _ => default,
+        },
+        serde_json::Value::Number(number) => match number.as_i64() {
+            Some(1) => true,
+            Some(0) => false,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
 /// 生长修复循环的轮数上限（g4：与结构门面同款 ≤3——首轮 + 至多 2 次带条款
 /// 报告的重裁；形状违约/传输错误同样入轮次预算）。该上限只是成本/超时护栏，
 /// 并非"两次即弃"的语义。
@@ -142,7 +187,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "知识结构生成",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("structure", "正在生成知识结构与前置地形…");
         self.emit_graph_event(
@@ -179,10 +224,23 @@ impl LearningService {
                         crate::service::CANCELLED_MESSAGE.to_owned(),
                     ));
                 }
-                let envelope = crate::learning_graph::structure_gen::snapshot_envelope(
+                let mut envelope = crate::learning_graph::structure_gen::snapshot_envelope(
                     &artifacts.structure,
                     &artifacts.terrain,
                     now_ms(),
+                );
+                // 课程层旁键（m9）：重跑覆盖整信封重建时，lexicon 旁键从旧
+                // 快照原样带过（本课程 slot 锁在手，无并发结构写）。
+                let previous_snapshot: Option<String> = sqlx::query_scalar(
+                    "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+                )
+                .bind(course_id.as_str())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+                crate::learning_graph::lexicon::carry_lexicon_side_key(
+                    &mut envelope,
+                    previous_snapshot.as_deref(),
                 );
                 let snapshot = serde_json::to_string(&envelope).map_err(internal)?;
                 sqlx::query(
@@ -338,7 +396,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "结构挂载",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("mount", "正在挂载节点到结构块…");
         self.emit_graph_event(
@@ -610,7 +668,7 @@ impl LearningService {
             course_id.as_str(),
             None,
             "结构修补",
-        )?;
+        ).await?;
         let token = task.token();
         task.set_step("repair", "正在按留痕与观察修补结构…");
         self.emit_graph_event(
@@ -659,21 +717,31 @@ impl LearningService {
             .to_owned();
         let old_hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
 
-        // 触发面：findings 行 + 挂载观察。
-        let finding_rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-            "SELECT source, node, field, issue, advice FROM learning_structure_findings \
-             WHERE course_id = ? ORDER BY ts, id",
+        // 触发面：findings 行（k02 水位化——只读未消费留痕）+ 挂载观察。
+        // off 臂 = 水位恒 0 读全量且不推（旧行为）。
+        let watermark_enabled = findings_watermark_enabled();
+        let watermark = if watermark_enabled {
+            self.findings_watermark(course_id).await?
+        } else {
+            0
+        };
+        let finding_rows: Vec<(i64, String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, source, node, field, issue, advice FROM learning_structure_findings \
+             WHERE course_id = ? AND id > ? ORDER BY id",
         )
         .bind(course_id.as_str())
+        .bind(watermark)
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
+        // 本回合消费上界 = 本回合读到的最大 id（成功终态才推进）。
+        let consumed_through = finding_rows.last().map(|row| row.0);
         let findings_text = if finding_rows.is_empty() {
             "（无留痕）".to_owned()
         } else {
             finding_rows
                 .iter()
-                .map(|(source, node, field, issue, advice)| {
+                .map(|(_, source, node, field, issue, advice)| {
                     format!(
                         "- [{source}] {node}.{field}: {issue}（建议：{advice}）",
                         node = node.trim(),
@@ -850,13 +918,18 @@ impl LearningService {
             }
             (candidate, cascade)
         };
-        let new_structure_raw = serde_json::to_string(&serde_json::json!({
+        let mut next_envelope = serde_json::json!({
             "version": envelope.get("version").cloned().unwrap_or(serde_json::json!(1)),
             "generated_at": envelope.get("generated_at").cloned().unwrap_or(serde_json::json!(now_ms())),
             "structure": new_structure,
             "terrain": terrain,
-        }))
-        .map_err(internal)?;
+        });
+        // 课程层旁键（m9）：修补重写信封时 lexicon 旁键原样带过。
+        crate::learning_graph::lexicon::attach_lexicon_side_key(
+            &mut next_envelope,
+            envelope.get(crate::learning_graph::lexicon::COURSE_LEXICON_KEY),
+        );
+        let new_structure_raw = serde_json::to_string(&next_envelope).map_err(internal)?;
         let new_hash = crate::learning_graph::mounting::fnv1a_64(new_structure_raw.as_bytes());
         if !noop {
             // 结构快照原子写（唯一权威）+ 修补审计行。
@@ -895,6 +968,13 @@ impl LearningService {
         // 无修补动作是合法结论，但没发生的事不造档案）。
         let applied: Vec<String> = ops.iter().map(|op| op.label()).collect();
         let mounts_stale = old_hash != new_hash;
+        // 水位推进（k02）：applied/noop 才算本回合读到的留痕已消费；失败
+        // 路径在函数前面已 return，skipped 路径没有可推进的留痕。
+        if watermark_enabled {
+            if let Some(through) = consumed_through {
+                self.advance_findings_watermark(course_id, through).await?;
+            }
+        }
         task.finish_done(if noop {
             "修补完成：本轮无修补动作（noop）".to_owned()
         } else {
@@ -961,6 +1041,352 @@ impl LearningService {
         }
     }
 
+    // ── 维护水位 + 自动维护回合（k02）────────────────────────────────────
+
+    /// 当前消费水位（钳制到本课 findings 的 MAX(id)，越界不阻断）。
+    async fn findings_watermark(&self, course_id: &LearningCourseId) -> Result<i64, AppError> {
+        let stored: Option<i64> = sqlx::query_scalar(
+            "SELECT findings_watermark FROM learning_maintenance_state WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let max_id: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(stored.unwrap_or(0).clamp(0, max_id))
+    }
+
+    /// 推进消费水位（只升不降：`max(旧值, 新值)` 的原子 upsert；钳制到
+    /// MAX(id)）。成功回合才调用。
+    async fn advance_findings_watermark(
+        &self,
+        course_id: &LearningCourseId,
+        through_id: i64,
+    ) -> Result<(), AppError> {
+        let max_id: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM learning_structure_findings WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let through = through_id.clamp(0, max_id);
+        sqlx::query(
+            "INSERT INTO learning_maintenance_state \
+             (course_id, findings_watermark, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(course_id) DO UPDATE SET \
+             findings_watermark = MAX(findings_watermark, excluded.findings_watermark), \
+             updated_at = excluded.updated_at",
+        )
+        .bind(course_id.as_str())
+        .bind(through)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    /// 维护需求纯读判定（k02 `maintenance_needs`）：零 LLM。归档/软删/非图
+    /// 课程/无结构 = `eligible = false`（不在扫描面）。
+    pub async fn maintenance_needs(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::MaintenanceNeedsView, AppError> {
+        let course: Option<(String, Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT course_kind, deleted_at, enabled, structure_json \
+             FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let ineligible = crate::models::MaintenanceNeedsView {
+            eligible: false,
+            unconsumed_findings: 0,
+            pending_mounts: 0,
+            mounts_stale: false,
+            needs_repair: false,
+            needs_mount: false,
+        };
+        let Some((course_kind, deleted_at, enabled, structure_json)) = course else {
+            return Ok(ineligible);
+        };
+        let Some(structure_raw) = structure_json.filter(|raw| !raw.trim().is_empty()) else {
+            return Ok(ineligible);
+        };
+        if deleted_at.is_some() || enabled == 0 || course_kind != "learning_graph" {
+            return Ok(ineligible);
+        }
+
+        // 未消费留痕（水位之后的条数；off 臂 = 全量）。
+        let watermark = if findings_watermark_enabled() {
+            self.findings_watermark(course_id).await?
+        } else {
+            0
+        };
+        let unconsumed_findings: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_structure_findings \
+             WHERE course_id = ? AND id > ?",
+        )
+        .bind(course_id.as_str())
+        .bind(watermark)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // 挂载面：待挂集（未评估 ∪ 失效 slug）+ stale（hash 失配/无挂载行）。
+        let hash = crate::learning_graph::mounting::fnv1a_64(structure_raw.as_bytes());
+        let node_titles: Vec<String> = sqlx::query_scalar(
+            "SELECT l.title FROM learning_lessons l \
+             JOIN learning_modules m ON m.module_id = l.module_id \
+             WHERE m.course_id = ? ORDER BY l.position, l.lesson_id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mount_row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT mounts_json, structure_hash FROM learning_structure_mounts WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let envelope: serde_json::Value =
+            serde_json::from_str(&structure_raw).map_err(internal)?;
+        let block_slugs: std::collections::HashSet<String> = envelope
+            .pointer("/structure/blocks")
+            .and_then(|value| value.as_array())
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("slug")?.as_str())
+                    .filter(|slug| !slug.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (existing, mounts_stale) = match &mount_row {
+            Some((mounts_json, stored_hash)) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(mounts_json).unwrap_or(serde_json::Value::Null);
+                (
+                    crate::learning_graph::mounting::parse_mount_entries(&value),
+                    (*stored_hash as u64) != hash,
+                )
+            }
+            None => (Vec::new(), true),
+        };
+        let pending_mounts = if mounts_stale {
+            node_titles.len()
+        } else {
+            crate::learning_graph::mounting::pending_nodes(
+                &node_titles,
+                &existing,
+                &block_slugs,
+            )
+            .len()
+        };
+
+        Ok(crate::models::MaintenanceNeedsView {
+            eligible: true,
+            unconsumed_findings,
+            pending_mounts,
+            mounts_stale,
+            needs_repair: unconsumed_findings > 0 || mounts_stale,
+            needs_mount: pending_mounts > 0 || mounts_stale,
+        })
+    }
+
+    /// 自动维护设置（k02）：`learning.maintenanceAutoEnabled` +
+    /// `learning.maintenanceIntervalMinutes`。缺省开 / 360 分钟；越界或坏值
+    /// 读侧回退缺省（dailyXpGoal 同款）。
+    pub async fn maintenance_settings(&self) -> crate::models::MaintenanceSettings {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT key, value FROM client_preferences \
+             WHERE key IN ('learning.maintenanceAutoEnabled', \
+                           'learning.maintenanceIntervalMinutes')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+        let mut settings = crate::models::MaintenanceSettings {
+            enabled: DEFAULT_MAINTENANCE_ENABLED,
+            interval_minutes: DEFAULT_MAINTENANCE_INTERVAL_MINUTES,
+        };
+        for (key, value) in rows {
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+            match key.as_str() {
+                "learning.maintenanceAutoEnabled" => {
+                    settings.enabled = parse_bool_pref(&parsed, DEFAULT_MAINTENANCE_ENABLED);
+                }
+                "learning.maintenanceIntervalMinutes" => {
+                    settings.interval_minutes = parsed
+                        .as_i64()
+                        .filter(|minutes| MAINTENANCE_INTERVAL_MINUTES.contains(minutes))
+                        .unwrap_or(DEFAULT_MAINTENANCE_INTERVAL_MINUTES);
+                }
+                _ => {}
+            }
+        }
+        settings
+    }
+
+    /// 自动补批开关合力（m10）：环境闸 `NOMI_LEARNING_AUTO_REFILL`（off =
+    /// 恒 Disabled）∧ 设置 `learning.autoRefillEnabled`（缺省开；坏值读侧
+    /// 回退缺省，写侧拒绝在 nomifun-system）。任一关闭即 Disabled。
+    pub async fn auto_refill_enabled(&self) -> bool {
+        if !crate::learning_graph::auto_refill_env_enabled() {
+            return false;
+        }
+        let raw: Option<String> = sqlx::query_scalar(
+            "SELECT value FROM client_preferences WHERE key = 'learning.autoRefillEnabled'",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(raw) = raw else {
+            return DEFAULT_AUTO_REFILL_ENABLED;
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return DEFAULT_AUTO_REFILL_ENABLED;
+        };
+        parse_bool_pref(&parsed, DEFAULT_AUTO_REFILL_ENABLED)
+    }
+
+    /// 自动补批判定（m10 触发②）：纯读零 LLM 零写入——守卫与 grow 同源
+    /// （`require_live_graph_course`：非图课程/软删 404、归档 409），裁决
+    /// 三态如实读数（Disabled 臂不藏），停摆臂随行（空图 = stalled，前端
+    /// 以此抑制自动补批）。无副作用：不占 slot、不 spawn。
+    pub async fn growth_verdict(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::GrowthVerdictView, AppError> {
+        self.require_live_graph_course(course_id).await?;
+        let enabled = self.auto_refill_enabled().await;
+        let ready_count = self.ready_count(course_id, user_id).await?;
+        let verdict = crate::learning_graph::auto_refill_verdict(ready_count, enabled);
+        let stalled = self.growth_stalled(course_id).await?;
+        Ok(crate::models::GrowthVerdictView {
+            verdict: verdict.as_str().to_owned(),
+            ready_count,
+            trigger: crate::learning_graph::READY_TRIGGER,
+            enabled,
+            stalled,
+        })
+    }
+
+    /// 一次自动维护回合（k02，learnhub `tick_with` 同构）：逐 enabled 图
+    /// 课程纯读判定 → **先修补后挂载**；busy/失败跳过该课（含挂载）；
+    /// 零工作 = 零任务零 LLM。归档课（enabled=0）与软删课不在扫描面。
+    /// findings 水位是 `findings.readings` 的消费侧；调度器（app-server）
+    /// 负责节奏与开关，本函数只跑一轮。
+    pub async fn run_maintenance_tick(
+        &self,
+        user_id: &UserId,
+        model_override: Option<(&ProviderId, &str)>,
+    ) -> Result<crate::models::MaintenanceTickReport, AppError> {
+        let course_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT course_id FROM learning_courses \
+             WHERE deleted_at IS NULL AND enabled = 1 \
+             AND course_kind = 'learning_graph' \
+             AND structure_json IS NOT NULL AND trim(structure_json) <> '' \
+             ORDER BY course_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        let mut report = crate::models::MaintenanceTickReport {
+            scanned: course_ids.len(),
+            idle: 0,
+            courses: Vec::new(),
+        };
+        for raw in course_ids {
+            let Ok(course_id) = LearningCourseId::parse(&raw) else {
+                continue;
+            };
+            let needs = match self.maintenance_needs(&course_id).await {
+                Ok(needs) => needs,
+                Err(error) => {
+                    report.courses.push(crate::models::MaintenanceCourseOutcome {
+                        course_id: raw,
+                        needs: crate::models::MaintenanceNeedsView {
+                            eligible: false,
+                            unconsumed_findings: 0,
+                            pending_mounts: 0,
+                            mounts_stale: false,
+                            needs_repair: false,
+                            needs_mount: false,
+                        },
+                        repair: None,
+                        mount: None,
+                        recheck: None,
+                        skipped_busy: false,
+                        error: Some(error.to_string()),
+                    });
+                    continue;
+                }
+            };
+            if needs.is_idle() {
+                report.idle += 1;
+                continue;
+            }
+            let mut outcome = crate::models::MaintenanceCourseOutcome {
+                course_id: raw,
+                needs: needs.clone(),
+                repair: None,
+                mount: None,
+                recheck: None,
+                skipped_busy: false,
+                error: None,
+            };
+            // 先修补：失败/在途 = 跳过该课含挂载（不掩错）。
+            if needs.needs_repair {
+                match self
+                    .run_structure_repair(user_id, &course_id, model_override)
+                    .await
+                {
+                    Ok(summary) => outcome.repair = Some(summary.status),
+                    Err(error) => {
+                        outcome.skipped_busy = matches!(error, AppError::Conflict(_));
+                        outcome.error = Some(error.to_string());
+                        report.courses.push(outcome);
+                        continue;
+                    }
+                }
+                // 修补可能改了结构 → 重判定（挂载 stale 随之点亮）。
+                outcome.recheck = Some(self.maintenance_needs(&course_id).await?);
+            }
+            let after = outcome.recheck.as_ref().unwrap_or(&needs);
+            if after.needs_mount {
+                match self
+                    .run_structure_mount(user_id, &course_id, model_override)
+                    .await
+                {
+                    Ok(summary) => outcome.mount = Some(summary.status),
+                    Err(error) => {
+                        outcome.error = Some(error.to_string());
+                        report.courses.push(outcome);
+                        continue;
+                    }
+                }
+            }
+            report.courses.push(outcome);
+        }
+        Ok(report)
+    }
+
     /// 学习图课程守卫（对齐软删语义 + 现存且启用口径）：存在、未软删、未
     /// 归档、且是学习图课程。已归档 = 人面错误（可恢复），不是 404。
     async fn require_live_graph_course(&self, course_id: &LearningCourseId) -> Result<(), AppError> {
@@ -1004,8 +1430,17 @@ impl LearningService {
         // 的手动/自动触发都给人面错误（可恢复），不再烧教练预算。
         self.require_live_graph_course(course_id).await?;
         let ready_count = self.ready_count(course_id, user_id).await?;
-        if !force && ready_count >= crate::learning_graph::READY_TRIGGER {
-            return Ok(false);
+        // 自动臂的门消费 verdict 纯函数（m10 显式化，行为等价重构）：默认
+        // 开关组合下与原 `ready_count >= READY_TRIGGER → Ok(false)` 门逐字
+        // 同语义；开关关 = Disabled 同样在此早退。手动 force 不进裁决——
+        // 补批开关只管自动臂，手动补充永远可达（ADR-0010 豁免纪律）。
+        if !force {
+            let enabled = self.auto_refill_enabled().await;
+            if crate::learning_graph::auto_refill_verdict(ready_count, enabled)
+                != crate::learning_graph::AutoRefillVerdict::Due
+            {
+                return Ok(false);
+            }
         }
         // 停摆臂只约束自动触发；手动 force 永远豁免（ADR-0010：只留空图臂）。
         if !force && self.growth_stalled(course_id).await? {
@@ -1223,7 +1658,7 @@ impl LearningService {
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
-            redraft_guard_violation, should_stop_early,
+            redraft_guard_violation, review_history_round, review_point_names, should_stop_early,
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
@@ -1263,6 +1698,28 @@ impl LearningService {
         let mut batch: Option<crate::learning_graph::ProposedBatch> = None;
         let mut batch_rulings: Option<HashMap<String, String>> = None;
         let mut attempts_used = 0usize;
+        // 挂号表机械校验读数（m3 smoke rows/invalid/retried/degraded）：
+        // 跨预算轮累加，随 growth stats 落内存态（读数面非门禁）。
+        let mut provenance_readout = crate::learning_graph::provenance::ProvenanceReadout::default();
+        // 碎片裁决机械读数（m9 补接 smoke total/rows/unhandled/degraded）：
+        // 同款跨轮累加（读数面非门禁）。
+        let mut fragment_readout = crate::learning_graph::fragment_verdict::FragmentReadout::default();
+        // 有状态复审（m5 #175C，learnhub prior_review/AttemptFail.review_history
+        // 同构）：评审往返记录（点名集合 + 结论）随 attempt 传递，守卫违规/
+        // 输出违约上抛时经 into_feedback 作独立段回灌重排；评审放行即清空
+        // （已过不翻案）。off 臂（NOMI_LEARNING_REVIEW_STATE=off）= 不积累
+        // 不回灌（m5 前行为）。
+        let review_state = crate::learning_graph::review_state_enabled();
+        let mut review_history: Vec<String> = Vec::new();
+        let mut review_state_injections = 0usize;
+        // 上一条反馈是否已内嵌评审意见段（m5 #175C：守卫/输出违约收口时
+        // into_feedback 注入；重排处据此免二次注入——评审打回路的意见段由
+        // 重排 prior 参数独立注入）。
+        let mut feedback_has_review_section = false;
+        // 点名集（m5 #175A 机械面）：评审问题清单各条的 node 字段集（批级
+        // 意见不点名任何节点）；门/契约等散文报告 = None（守卫退回子串口
+        // 径）。守卫文案不得扩张点名集——原地重试期间保持评审集不变。
+        let mut point_names: Option<HashSet<String>> = None;
         let mut stop_reason = "exhausted";
         'budget: for attempt in 1..=GROWTH_MAX_ATTEMPTS {
             attempts_used = attempt;
@@ -1279,15 +1736,46 @@ impl LearningService {
                 }
                 let drafted = match previous.as_ref() {
                     Some(previous) => {
+                        // 前轮评审意见回灌（m5 #175C）：非首轮评审打回史在场
+                        // 且开关开启 = 重排带独立意见段 + 反乒乓纪律句；反馈
+                        // 已内嵌意见段（守卫/契约收口）时免二次注入。
+                        let prior_review =
+                            if review_state && !review_history.is_empty() && !feedback_has_review_section
+                            {
+                                review_state_injections += 1;
+                                tracing::info!(
+                                    course = course_id.as_str(),
+                                    attempt,
+                                    rounds = review_history.len(),
+                                    "coach redraft carries prior review opinions — stateful re-review active"
+                                );
+                                review_history.join("\n")
+                            } else {
+                                if feedback_has_review_section {
+                                    review_state_injections += 1;
+                                }
+                                String::new()
+                            };
                         crate::learning_graph::coach_redraft(
                             completer,
                             model_override,
                             &context,
                             previous,
                             &feedback,
+                            &prior_review,
                         )
                         .await
-                        .map_err(|error| AttemptFail::generation(error.to_string()))
+                        .map_err(|error| {
+                            // 输出违约上抛（m5 #175C 契约命中路）：前轮评审
+                            // 意见随失败携带，经 into_feedback 作独立段回灌
+                            // ——重排不只剩 ng.* 固定文案。
+                            let fail = AttemptFail::generation(error.to_string());
+                            if review_state && !review_history.is_empty() {
+                                fail.with_review_history(Some(review_history.join("\n")))
+                            } else {
+                                fail
+                            }
+                        })
                     }
                     None => crate::learning_graph::coach_draft(
                         completer,
@@ -1301,14 +1789,19 @@ impl LearningService {
                 let outcome: Result<crate::learning_graph::ProposedBatch, AttemptFail> =
                     match drafted {
                         Ok(candidate) => {
-                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比）。
+                            // 「未点名被改」机械守卫（仅重裁路径有上一稿可比；
+                            // 全量枚举 + 点名集口径 = m5 #175A/#175B）。
                             if let Some(prev_ref) = previous.as_ref() {
-                                if let Some(violation) =
-                                    redraft_guard_violation(prev_ref, &candidate, &feedback)
-                                {
+                                if let Some(violation) = redraft_guard_violation(
+                                    prev_ref,
+                                    &candidate,
+                                    &feedback,
+                                    point_names.as_ref(),
+                                ) {
                                     if !in_place_retried {
                                         // 原地重试恰一次（不占轮预算）：带守
-                                        // 卫原因对最新一稿点修，评审上下文保留。
+                                        // 卫原因对最新一稿点修，评审上下文保留；
+                                        // 点名集不因守卫文案扩张。
                                         in_place_retried = true;
                                         tracing::warn!(
                                             course = course_id.as_str(),
@@ -1320,13 +1813,20 @@ impl LearningService {
                                         continue 'drafting;
                                     }
                                     // 二次越权 = 本 attempt 失败，计轮推进
-                                    //（guard 豁免早停——固定文案 ≠ 同输出）。
+                                    //（guard 豁免早停——固定文案 ≠ 同输出）；
+                                    // 前轮评审意见随失败回灌（m5 #175C 守卫
+                                    // 违约路：重装不只剩守卫固定文案）。
                                     tracing::warn!(
                                         course = course_id.as_str(),
                                         attempt,
                                         "coach redraft violated the point-edit guard twice — attempt consumed"
                                     );
-                                    Err(AttemptFail::guard(violation))
+                                    let fail = AttemptFail::guard(violation);
+                                    Err(if review_state && !review_history.is_empty() {
+                                        fail.with_review_history(Some(review_history.join("\n")))
+                                    } else {
+                                        fail
+                                    })
                                 } else {
                                     Ok(candidate)
                                 }
@@ -1348,7 +1848,9 @@ impl LearningService {
                 let candidate = match outcome {
                     Ok(candidate) => candidate,
                     Err(fail) => {
-                        // 本 attempt 失败收口：早停判据 + 报告回灌。
+                        // 本 attempt 失败收口：早停判据 + 报告回灌。指纹只取
+                        // `report`——前轮评审意见（#175C）走独立段，逐轮漂移
+                        // 不得击穿同指纹早停。
                         let guard = fail.guard;
                         let fingerprint = normalize_report(&fail.report);
                         if should_stop_early(
@@ -1368,7 +1870,8 @@ impl LearningService {
                         }
                         prev_fingerprint = if guard { None } else { Some(fingerprint) };
                         last = fail.report.clone();
-                        feedback = fail.report;
+                        feedback_has_review_section = fail.review_history.is_some();
+                        feedback = fail.into_feedback();
                         tracing::warn!(
                             course = course_id.as_str(),
                             attempt,
@@ -1402,7 +1905,10 @@ impl LearningService {
                     "stage": "gates",
                     "problems": report,
                 }));
-                // 指纹 = 门报告结构化序列化（字段序稳定即确定性）。
+                // 指纹 = 门报告结构化序列化（字段序稳定即确定性）；门报告是
+                // 散文（无 node 字段面），点名集退回子串口径。
+                point_names = None;
+                feedback_has_review_section = false;
                 let fingerprint = serde_json::to_string(&outcome.errors)
                     .unwrap_or_else(|_| normalize_report(&report));
                 if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
@@ -1425,15 +1931,43 @@ impl LearningService {
                 stop_reason = "cancelled";
                 return Err(cancel_err());
             }
+            // 铸名门外部通行名证据（m11，ADR-0030 纪律移植）：歧义多候选案
+            // 恰一次搜索（flowy-web 无 key 缝，查询词机械派生），证据标题
+            // 命中扩候选集 + 证据块随 j04 候选集注入通道进评审 user 消息。
+            // fail-open：开关关/无提供方/搜索失败/零结果 = 无证据照常评审，
+            // 判据条款与评审输出契约零改动；off 臂读数记显式零。
+            let mint_stats = crate::learning_graph::mint_evidence::attach_evidence(
+                &mut outcome.nominations,
+                &outcome.mint_registry,
+                self.mint_search_provider().as_deref(),
+            )
+            .await;
+            self.record_mint_research_stats(mint_stats);
             let candidates_text = Self::render_nomination_candidates(&outcome.nominations);
+            // 碎片点名清单（m9 补接，learnhub ReviewInput.naming_list 同缝）：
+            // 本批提名定义 × 已知面（已教账 ∪ 登记表 ∪ 本批 ∪ base ∪ 课程增
+            // 词）→ 未着落片段；课程豁免的片段视而不见。off 臂零派生（整面
+            // 休眠，连 DB 读都没有）；课程层损坏 = fail loud（旁键坏了不能
+            // 悄悄放行，与审计面同律）。
+            let naming_list = if crate::learning_graph::review_fragments_enabled() {
+                self.derive_naming_list(course_id, &candidate, &outcome.provenance_known)
+                    .await?
+            } else {
+                Vec::new()
+            };
             let mut review = crate::learning_graph::concept_review(
                 completer,
                 model_override,
                 &candidate,
                 &context,
                 &candidates_text,
+                &outcome.provenance_known.iter().cloned().collect::<Vec<_>>(),
+                &naming_list,
+                crate::lexicon_enforce_enabled(),
             )
             .await;
+            provenance_readout.merge(&review.provenance);
+            fragment_readout.merge(&review.fragments);
             // findings warn 通道（j09）：数据缺陷观察落 findings 表（追加、
             // 坏行跳过）——第一轮生长即开始留痕，修补回合的输入源。留痕是
             // 线索不是第二真相：reject 照旧打回，findings 不参与判定。
@@ -1628,6 +2162,14 @@ impl LearningService {
                     "stage": "concept_review",
                     "problems": report,
                 }));
+                // 点名集 = 评审问题清单各条的 node 字段（m5 #175A 机械面）；
+                // 评审往返记录随 attempt 传递（m5 #175C，off 臂不积累）。
+                point_names = Some(review_point_names(&review.problems));
+                feedback_has_review_section = false;
+                if review_state {
+                    let round = review_history.len() + 1;
+                    review_history.push(review_history_round(round, &report));
+                }
                 let fingerprint = serde_json::to_string(&review.problems)
                     .unwrap_or_else(|_| normalize_report(&report));
                 if should_stop_early(attempt, &fingerprint, prev_fingerprint.as_deref(), false) {
@@ -1646,6 +2188,12 @@ impl LearningService {
                 previous = Some(candidate);
                 continue;
             }
+            // 评审放行 = 前轮意见全部有着落：往返记录就地清空（已过不翻案
+            // ——放行后的别名/落库打回不带陈旧意见）；点名集随之退回散文口
+            // 径（后续反馈非评审问题清单）。
+            review_history.clear();
+            point_names = None;
+            feedback_has_review_section = false;
             // new_alias 必须裁复用或直定宿主，否则整批打回指点改走 mints
             // （rulings 已在 problems 处置前核验构建；直定宿主在此并入）。
             let mut reuse_failures: Vec<String> = Vec::new();
@@ -1717,7 +2265,14 @@ impl LearningService {
             stop_reason = "success";
             break;
         }
-        self.record_growth_stats(attempts_used, stop_reason);
+        self.record_growth_stats(
+            attempts_used,
+            stop_reason,
+            provenance_readout,
+            fragment_readout,
+            review_state,
+            review_state_injections,
+        );
         if stop_reason == "cancelled" {
             return Err(cancel_err());
         }
@@ -1760,7 +2315,9 @@ impl LearningService {
         .await
     }
 
-    /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明。
+    /// 提名候选集的评审可见面渲染（j04）：每条提名一节，直定宿主注明；
+    /// 外部通行名证据块（m11）随同一节进评审 user 消息（判据面零污染：
+    /// 只加参考段，判据条款一字不动）。
     fn render_nomination_candidates(
         nominations: &[crate::learning_graph::NominationPlan],
     ) -> String {
@@ -1778,18 +2335,65 @@ impl LearningService {
                     candidate.canonical, candidate.concept_id, candidate.reason
                 ));
             }
+            if let Some(block) =
+                crate::learning_graph::mint_evidence::render_evidence_block(&plan.evidence)
+            {
+                lines.push(block);
+            }
             sections.push(format!("提名「{}」的候选：\n{}", plan.name, lines.join("\n")));
         }
         sections.join("\n")
     }
 
-    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 的数据
-    /// 源；读数面非门禁）。内存态，仅诊断。
-    pub(crate) fn record_growth_stats(&self, attempts_used: usize, stop_reason: &str) {
+    /// 记录最近一次生长的铸名门外部证据读数（m11 smoke grow 读数面；
+    /// off 臂记录显式零——证明零搜索）。
+    pub(crate) fn record_mint_research_stats(
+        &self,
+        stats: crate::learning_graph::mint_evidence::MintResearchStats,
+    ) {
+        if let Ok(mut slot) = self.mint_research_stats.lock() {
+            *slot = Some(stats);
+        }
+    }
+
+    /// 最近一次生长的铸名门外部证据读数（smoke 读数面非门禁）。
+    pub fn mint_research_stats(
+        &self,
+    ) -> Option<crate::learning_graph::mint_evidence::MintResearchStats> {
+        self.mint_research_stats.lock().ok().and_then(|stats| *stats)
+    }
+
+    /// 铸名门搜索提供方快照（None = 未接线，零搜索）。
+    fn mint_search_provider(&self) -> Option<Arc<dyn SearchProvider>> {
+        self.mint_search.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// 最近一次生长的重试读数（smoke `attempts_used`/`stop_reason` 与 m3 挂
+    /// 号表读数行 rows/invalid/retried/degraded 的数据源；m5 增有状态复审臂
+    /// `review_state` 与前轮意见回灌次数。读数面非门禁）。内存态，仅诊断。
+    pub(crate) fn record_growth_stats(
+        &self,
+        attempts_used: usize,
+        stop_reason: &str,
+        provenance: crate::learning_graph::provenance::ProvenanceReadout,
+        fragments: crate::learning_graph::fragment_verdict::FragmentReadout,
+        review_state: bool,
+        review_state_injections: usize,
+    ) {
         if let Ok(mut stats) = self.growth_run_stats.lock() {
             *stats = Some(GrowthRunStats {
                 attempts_used,
                 stop_reason: stop_reason.to_owned(),
+                review_provenance_rows: provenance.rows,
+                review_provenance_invalid: provenance.invalid,
+                review_provenance_retried: provenance.retried,
+                review_provenance_degraded: provenance.degraded,
+                review_fragments_total: fragments.fragments,
+                review_fragments_rows: fragments.rows,
+                review_fragments_unhandled: fragments.unhandled,
+                review_fragments_degraded: fragments.degraded,
+                review_state,
+                review_state_injections,
             });
         }
     }
@@ -2109,6 +2713,28 @@ impl LearningService {
                 *entry = tier;
             }
         }
+        // 已会声明并网（m2）：声明概念按「已会」= 满档供给——下游 assumes
+        // 在生长语义门即判就绪（与 taught_ledger 投影同源，机械保证）。名字
+        // 键 = 登记表正名（声明概念必在册；已删概念的声明引用在此无行可加，
+        // 自然降级）。
+        for concept_id in self.declared_concept_ids().await? {
+            let canonical: Option<String> = sqlx::query_scalar(
+                "SELECT canonical FROM learning_concept_registry \
+                 WHERE concept_id = ? AND deprecated = 0",
+            )
+            .bind(&concept_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+            if let Some(canonical) = canonical {
+                let entry = coverage
+                    .entry(canonical.trim().to_lowercase())
+                    .or_insert(crate::learning_graph::ConceptTier::Teach);
+                if crate::learning_graph::ConceptTier::Teach > *entry {
+                    *entry = crate::learning_graph::ConceptTier::Teach;
+                }
+            }
+        }
 
         // 登记表全部活跃名字（canonical ∪ 活跃别名，小写）+ 名字宿主映射
         // （撞名消息指引）+ 近邻装配条目（j04 复用通道）。
@@ -2300,6 +2926,7 @@ impl LearningService {
                 name: name.to_owned(),
                 direct_host,
                 candidates,
+                evidence: Vec::new(),
             });
         };
         for mint in &batch.mints {
@@ -2325,16 +2952,68 @@ impl LearningService {
         }
         // 深度水位门已退役（g3：档位比较是精度剧场）——难度诚实性由 AI 概念
         // 评审门作语义兜底。
+        let registry_concept_ids: HashSet<String> = registry_entries
+            .iter()
+            .map(|entry| entry.concept_id.clone())
+            .collect();
+        // 评审挂号表的已知名池（m3）：已教账 ∪ 登记表活跃名+别名 ∪ 本批
+        // 铸名/提名（小写折叠）——机械校验所需的已知名字池，评审上下文已
+        // 装配的机械面输入原样复用（learnhub `ReviewInput.known_names` 同缝）。
+        let mut provenance_known: HashSet<String> = coverage.keys().cloned().collect();
+        provenance_known.extend(registry_names.iter().cloned());
+        for mint in &batch.mints {
+            provenance_known.insert(mint.canonical.trim().to_lowercase());
+            for alias in &mint.aliases {
+                let alias = alias.trim();
+                if !alias.is_empty() {
+                    provenance_known.insert(alias.to_lowercase());
+                }
+            }
+        }
+        for nomination in &batch.new_aliases {
+            let name = nomination.name.trim();
+            if !name.is_empty() {
+                provenance_known.insert(name.to_lowercase());
+            }
+        }
         Ok(crate::learning_graph::GateOutcome {
             errors,
             nominations,
-            registry_concept_ids: registry_entries
-                .iter()
-                .map(|entry| entry.concept_id.clone())
-                .collect(),
+            mint_registry: registry_entries,
+            registry_concept_ids,
             registry_name_hosts,
             auto_reusals,
+            provenance_known,
         })
+    }
+
+    /// 碎片点名清单派生（m9 补接；纯函数在
+    /// [`crate::learning_graph::fragment_verdict::derive_naming_list`]，本
+    /// 方法只管取数）：读本课 `structure_json` 的课程层旁键（损坏 = fail
+    /// loud）∪ 仓库 base ∪ gate 装配的已知名池（已教账 ∪ 登记表活跃名+别名
+    /// ∪ 本批铸名/提名）→ 本批提名定义的未着落片段。
+    async fn derive_naming_list(
+        &self,
+        course_id: &LearningCourseId,
+        batch: &crate::learning_graph::ProposedBatch,
+        provenance_known: &HashSet<String>,
+    ) -> Result<Vec<String>, AppError> {
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_lexicon =
+            crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
+                .map_err(AppError::Internal)?;
+        let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
+        let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
+        known.extend(provenance_known.iter().cloned());
+        Ok(crate::learning_graph::fragment_verdict::derive_naming_list(
+            batch, &known, &course_lexicon,
+        ))
     }
 
     /// 落库：铸名（含复用落池）→ 节点 → 概念网 → 完成裁决 → 批次档案，单事务。
@@ -2610,7 +3289,39 @@ impl LearningService {
                 crate::learning_graph::ConceptTier::try_from_str(&tier)
                     .map(|tier| (concept_id, tier))
             });
-        Ok(crate::learning_graph::taught_ledger(teaches))
+        let mut ledger = crate::learning_graph::taught_ledger(teaches);
+        // 已会声明并网（m2，learnhub 506d107 同构）：声明概念无档位——就绪
+        // 语义按「已会」= 满档供给（任何 assumes 档位都被覆盖）。下游节点
+        // 的 assumes 就此就绪，教练教新与「当前可学」徽标同源。声明锚里解
+        // 析不了的概念（已删）如实降级：登记表里已无行，账面残留无害——
+        // assumes 引用解析只对在册概念成立，这里只留痕不炸。
+        let declared = self.declared_concept_ids().await?;
+        if !declared.is_empty() {
+            let live: HashSet<String> = sqlx::query(
+                "SELECT concept_id FROM learning_concept_registry WHERE deprecated = 0",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .filter_map(|row| {
+                row.try_get::<String, _>("concept_id")
+                    .map_err(internal)
+                    .ok()
+            })
+            .collect();
+            for concept_id in declared {
+                if live.contains(&concept_id) {
+                    ledger.insert(concept_id, crate::learning_graph::ConceptTier::Teach);
+                } else {
+                    tracing::warn!(
+                        concept_id = %concept_id,
+                        "已会声明引用的概念已不在登记表——Broken 如实降级（跳过不炸）"
+                    );
+                }
+            }
+        }
+        Ok(ledger)
     }
 
     /// 一门课程的就绪候选（全部节点及其 assumes + 学习者满足状态）。
@@ -3071,15 +3782,30 @@ impl LearningService {
         user_id: &UserId,
     ) -> Result<Vec<crate::models::GraphConceptRowView>, AppError> {
         // 概念 × 本课程节点（教/假定 + 档位 + 学习者状态 + 投影名 ref_name）。
+        // 已会声明概念（m2）无节点引用——单列锚行反查入表（declared 行）。
         let ref_rows = sqlx::query(
-            "SELECT reg.concept_id, reg.canonical, reg.aliases_json, reg.definition,                     lc.role, lc.tier, lc.ref_name, l.lesson_id, l.title,                     COALESCE(p.status, 'not_started') AS status              FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id              LEFT JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ?              LEFT JOIN learning_lesson_progress p                ON p.lesson_id = l.lesson_id AND p.enrollment_id = e.enrollment_id              WHERE m.course_id = ?              ORDER BY reg.canonical, l.position, l.lesson_id",
+            "SELECT reg.concept_id, reg.canonical, reg.aliases_json, reg.definition, \
+             reg.source AS reg_source, \
+             lc.role, lc.tier, lc.ref_name, l.lesson_id, l.title, \
+                     COALESCE(p.status, 'not_started') AS status              FROM learning_lesson_concepts lc              JOIN learning_lessons l ON l.lesson_id = lc.lesson_id              JOIN learning_modules m ON m.module_id = l.module_id              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id              LEFT JOIN learning_enrollments e ON e.course_id = m.course_id AND e.user_id = ?              LEFT JOIN learning_lesson_progress p                ON p.lesson_id = l.lesson_id AND p.enrollment_id = e.enrollment_id              WHERE m.course_id = ?              ORDER BY reg.canonical, l.position, l.lesson_id",
         )
         .bind(user_id.as_str())
         .bind(course_id.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(internal)?;
-        if ref_rows.is_empty() {
+        // 本课声明锚反查（concept_id → 声明次数）。
+        let mut declared_counts: HashMap<String, u32> = HashMap::new();
+        for (doors_json, blocks_json, concept_ids_json) in
+            self.declared_anchor_rows_for_course(course_id).await?
+        {
+            let (_, _, concepts) =
+                Self::parse_anchor_row(&doors_json, &blocks_json, &concept_ids_json)?;
+            for concept_id in concepts {
+                *declared_counts.entry(concept_id).or_insert(0) += 1;
+            }
+        }
+        if ref_rows.is_empty() && declared_counts.is_empty() {
             return Ok(Vec::new());
         }
         // 跨课程来源：还有哪些别的课程在教这些概念。
@@ -3108,7 +3834,6 @@ impl LearningService {
             let index = match index_by_concept.get(&concept_id) {
                 Some(index) => *index,
                 None => {
-                    let aliases_json: String = row.try_get("aliases_json").map_err(internal)?;
                     let index = rows.len();
                     rows.push(crate::models::GraphConceptRowView {
                         concept_id: concept_id.clone(),
@@ -3135,6 +3860,11 @@ impl LearningService {
                         definition: row.try_get("definition").map_err(internal)?,
                         refs: Vec::new(),
                         other_courses: other_courses.get(&concept_id).cloned().unwrap_or_default(),
+                        // 铸造出处（t8 簿记；basis-declaration = 已会声明徽标）。
+                        source: row
+                            .try_get::<Option<String>, _>("reg_source")
+                            .map_err(internal)?,
+                        declared: declared_counts.contains_key(&concept_id),
                     });
                     index_by_concept.insert(concept_id.clone(), index);
                     index
@@ -3154,35 +3884,201 @@ impl LearningService {
                 status: LessonStatus::try_from(status_text.as_str()).map_err(AppError::Internal)?,
             });
         }
+        // 已会声明概念（m2）：无节点引用也入表（概念表的本课位置）；
+        // 已在 ref 行里的只翻 declared 旗标。
+        let declared_only: Vec<(String, u32)> = declared_counts
+            .iter()
+            .filter(|(concept_id, _)| !index_by_concept.contains_key(concept_id.as_str()))
+            .map(|(concept_id, count)| (concept_id.clone(), *count))
+            .collect();
+        if !declared_only.is_empty() {
+            let mut placeholders = sqlx::QueryBuilder::new(
+                "SELECT concept_id, canonical, definition, source FROM learning_concept_registry \
+                 WHERE deprecated = 0 AND concept_id IN (",
+            );
+            let mut separated = placeholders.separated(", ");
+            for (concept_id, _) in &declared_only {
+                separated.push_bind(concept_id.clone());
+            }
+            placeholders.push(")");
+            let declared_rows = placeholders
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(internal)?;
+            let mut declared_view: Vec<crate::models::GraphConceptRowView> = Vec::new();
+            for row in &declared_rows {
+                let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+                if !declared_counts.contains_key(&concept_id) {
+                    continue;
+                };
+                declared_view.push(crate::models::GraphConceptRowView {
+                    concept_id: concept_id.clone(),
+                    canonical: row.try_get("canonical").map_err(internal)?,
+                    aliases: Vec::new(),
+                    definition: row.try_get("definition").map_err(internal)?,
+                    refs: Vec::new(),
+                    other_courses: other_courses
+                        .get(&concept_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    source: row.try_get("source").map_err(internal)?,
+                    declared: true,
+                });
+            }
+            declared_view.sort_by(|left, right| left.canonical.cmp(&right.canonical));
+            rows.extend(declared_view);
+        }
         Ok(rows)
+    }
+
+    /// 定义审计（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+    /// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）→ 缺口片段/自指/互指环。
+    /// 「读侧先看见」——审计是缺口标记不是拦截门；概念表 Tab 的行级标记
+    /// 以 concept_id join 本报告。课程层损坏 = fail loud（旁键坏了不能
+    /// 悄悄放行）。
+    pub async fn concept_audit(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::ConceptAuditReport, AppError> {
+        // 概念表入口同款守卫：现存、未软删、未归档的学习图课程（课程层
+        // 豁免/增词挂在本课 structure_json 的 lexicon 旁键上）。
+        self.require_live_graph_course(course_id).await?;
+        let snapshot: Option<String> = sqlx::query_scalar(
+            "SELECT structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let course_lexicon =
+            crate::learning_graph::lexicon::course_lexicon_from_snapshot(snapshot.as_deref())
+                .map_err(AppError::Internal)?;
+        let base = crate::learning_graph::lexicon::parse_base().map_err(AppError::Internal)?;
+
+        let rows = sqlx::query(
+            "SELECT concept_id, canonical, aliases_json, definition \
+             FROM learning_concept_registry \
+             WHERE deprecated = 0 ORDER BY canonical, concept_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+
+        // 已知面 = 登记表活跃名（正名 + 活跃别名，退役名不掩码）∪ base
+        // ∪ 课程增词。译名（英文）永不匹配 CJK 片段，进已知面无害；
+        // 中文名必须进（掩码面）。
+        let mut known = crate::learning_graph::lexicon::grounded_words(&base, &course_lexicon);
+        let mut entries: Vec<(String, String, String)> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let concept_id: String = row.try_get("concept_id").map_err(internal)?;
+            let canonical: String = row.try_get("canonical").map_err(internal)?;
+            known.push(canonical.clone());
+            let aliases_json: String = row.try_get("aliases_json").map_err(internal)?;
+            for record in
+                crate::learning_graph::alias_records::parse_alias_records(&aliases_json)
+            {
+                if record.status == crate::learning_graph::alias_records::ALIAS_ACTIVE
+                    && !record.name.is_empty()
+                {
+                    known.push(record.name);
+                }
+            }
+            let definition: String = row.try_get("definition").map_err(internal)?;
+            entries.push((concept_id, canonical, definition));
+        }
+
+        // 自指与互指控 (正名, 定义) 对做纯图/字符串检查（跨域零失败）。
+        let pairs: Vec<(String, String)> = entries
+            .iter()
+            .map(|(_, name, definition)| (name.clone(), definition.clone()))
+            .collect();
+        let self_ref_names = crate::learning_graph::definition_audit::self_references(&pairs);
+        let cycles = crate::learning_graph::definition_audit::mutual_cycles(&pairs);
+        let id_of: HashMap<String, String> = entries
+            .iter()
+            .map(|(concept_id, name, _)| (name.clone(), concept_id.clone()))
+            .collect();
+        let self_refs = self_ref_names
+            .iter()
+            .filter_map(|name| {
+                id_of.get(name).map(|concept_id| crate::models::ConceptAuditSelfRef {
+                    concept_id: concept_id.clone(),
+                    name: name.clone(),
+                })
+            })
+            .collect();
+        let mutual_cycles = cycles
+            .iter()
+            .filter_map(|(a, b)| {
+                Some(crate::models::ConceptAuditCycle {
+                    a_concept_id: id_of.get(a)?.clone(),
+                    a_name: a.clone(),
+                    b_concept_id: id_of.get(b)?.clone(),
+                    b_name: b.clone(),
+                })
+            })
+            .collect();
+
+        // 缺口片段：最长优先掩码 → 课程豁免过滤（含豁免词的片段视而不见）；
+        // 零片段的概念不占行，有缺口的按片段数降序（learnhub 同款读数形）。
+        let mut flagged = Vec::new();
+        for (concept_id, canonical, definition) in &entries {
+            let fragments = crate::learning_graph::lexicon::apply_ignores(
+                &crate::learning_graph::definition_audit::grounding_runs(definition, &known),
+                &course_lexicon,
+            );
+            if !fragments.is_empty() {
+                flagged.push(crate::models::ConceptAuditEntry {
+                    concept_id: concept_id.clone(),
+                    canonical: canonical.clone(),
+                    definition: definition.clone(),
+                    fragments,
+                });
+            }
+        }
+        flagged.sort_by_key(|entry| std::cmp::Reverse(entry.fragments.len()));
+        Ok(crate::models::ConceptAuditReport {
+            concept_count: entries.len() as u32,
+            flagged,
+            self_refs,
+            mutual_cycles,
+        })
     }
 
     // ── Status/cancel（generation_tasks 注册表薄封装，端点不变）────────────
 
-    /// 登记一个长任务（三轮 t2 统一注册表）：同键并发拒绝（Conflict），
-    /// 守卫 drop 未收尾按 failed 留痕；token 供任务体接取消检查点。
-    pub(crate) fn begin_generation_task(
+    /// 登记一个长任务（三轮 t2 统一注册表；m7 起异步过闸）：同键并发拒绝
+    /// （Conflict，排队态同样拒绝），守卫 drop 未收尾按 failed 留痕；token
+    /// 供任务体接取消检查点。排队期取消 = Err（取消冲突文案，body 零执行）。
+    pub(crate) async fn begin_generation_task(
         &self,
         kind: &'static str,
         course_key: &str,
         node_id: Option<&str>,
         topic: &str,
     ) -> Result<crate::service::GenerationTaskGuard, AppError> {
-        self.generation_tasks.begin(kind, course_key, node_id, topic)
+        self.generation_tasks
+            .begin(kind, course_key, node_id, topic)
+            .await
     }
 
-    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数。
+    /// 生成状态（后台指示条的数据源）：在跑的最新任务带主题与已运行秒数；
+    /// 无在跑而有排队时回退最新排队主题（m7 排队可见），queued = 排队计数。
     pub fn generation_status(&self) -> crate::models::LearningGraphGenerationStatus {
+        let (queued, queued_topic) = self.generation_tasks.queued_summary();
         match self.generation_tasks.running_newest() {
             Some((topic, elapsed_secs)) => crate::models::LearningGraphGenerationStatus {
                 running: true,
                 topic: Some(topic),
                 elapsed_secs: Some(elapsed_secs),
+                queued,
             },
             None => crate::models::LearningGraphGenerationStatus {
                 running: false,
-                topic: None,
+                topic: queued_topic,
                 elapsed_secs: None,
+                queued,
             },
         }
     }
@@ -3190,6 +4086,11 @@ impl LearningService {
     /// 长任务快照（`GET /api/learning/generation-tasks`）。
     pub fn generation_task_snapshot(&self) -> Vec<crate::service::GenerationTaskView> {
         self.generation_tasks.snapshot()
+    }
+
+    /// 任务资源闸读数（m7，smoke 对照卡数据源）。
+    pub fn generation_gate_readout(&self) -> crate::models::LearningTaskGateReadout {
+        self.generation_tasks.gate_readout()
     }
 
     /// 统一取消（按任务键）：取消胜出 = cancelled 终态；任务已终态（竞速
@@ -3252,6 +4153,7 @@ impl LearningService {
                 title = title.unwrap_or_else(|| course_id.as_str().to_owned())
             ),
         )
+        .await
     }
 
     fn emit_graph_event(&self, course_id: &LearningCourseId, event: &str, mut fields: Value) {
@@ -3287,8 +4189,9 @@ impl LearningService {
 
     /// 登记表全名集合（canonical ∪ 别名，小写、未退役）。
     /// 登记表活跃条目（j04 复用通道的装配面）：canonical + 定义 + 活跃别名
-    /// （退役不占）。deprecated = 0 单源口径。
-    async fn registry_entries(
+    /// （退役不占）。deprecated = 0 单源口径。pub(super) 供服务侧投影测试
+    /// （m11：deprecated 排除是扩邻匹配域的前置机械保证）。
+    pub(super) async fn registry_entries(
         &self,
     ) -> Result<Vec<crate::learning_graph::defnear::RegistryEntry>, AppError> {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
@@ -3376,7 +4279,7 @@ impl LearningService {
     }
 
     /// 已教概念账文本（canonical@最高档）。
-    async fn render_taught_summary(&self) -> Result<String, AppError> {
+    pub(super) async fn render_taught_summary(&self) -> Result<String, AppError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT reg.canonical, lc.tier FROM learning_lesson_concepts lc \
              JOIN learning_concept_registry reg ON reg.concept_id = lc.concept_id \
@@ -3393,12 +4296,41 @@ impl LearningService {
             })
             .collect();
         items.sort();
-        Ok(items
+        let mut text = items
             .into_iter()
             // 档位词表用英文（t7：已教账是模型照抄中文档位的根因源头）。
             .map(|(canonical, tier)| format!("{canonical}@{}", tier.as_str()))
             .collect::<Vec<_>>()
-            .join("、"))
+            .join("、");
+        // 已会声明并网（m2）：声明概念进教练已教账面（同源已知集）——无档
+        // 位，单列一段钉「视为已掌握，不要再为其安排教学」。
+        let declared_canonicals: Vec<String> = sqlx::query(
+            "SELECT DISTINCT reg.canonical FROM learning_basis_declarations d, \
+             json_each(d.concept_ids_json) je \
+             JOIN learning_concept_registry reg ON reg.concept_id = json_extract(je.value) \
+             JOIN learning_courses c ON c.course_id = d.course_id AND c.deleted_at IS NULL \
+             WHERE reg.deprecated = 0 ORDER BY reg.canonical",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .filter_map(|row| {
+            row.try_get::<String, _>("canonical")
+                .map_err(internal)
+                .ok()
+        })
+        .collect();
+        if !declared_canonicals.is_empty() {
+            if !text.is_empty() {
+                text.push('、');
+            }
+            text.push_str(&format!(
+                "{}（尾部无 @ 档位者为学习者已会声明：视为已掌握，等同已知，不要再为其安排教学）",
+                declared_canonicals.join("、")
+            ));
+        }
+        Ok(text)
     }
 
     /// 登记表切片（canonical（别名）一行一个，截断到上限）。
@@ -3446,6 +4378,667 @@ impl LearningService {
             text.push_str(&pool_lines.join("\n"));
         }
         Ok(text)
+    }
+
+    // ── 已会声明（Declared Known，m2 / ADR-0032 移植）───────────────────────
+    //
+    // 勾选即已会：系统按声明铸概念（走既有铸名纪律），只铸概念不落节点
+    // ——不排课、不计 XP、不建任何学习行为。已知集 = 已教 ∪ 已会声明
+    // （`taught_ledger` / 生长语义门 coverage / 教练已教账三面同源并网）。
+    // 撤销 = 删锚行；概念留池，「声明可撤、概念不灭」。
+
+    /// 声明锚行（course_id 维度；声明是本课事实）。pub(super)：已知概念
+    /// （Known Names，n3）的声明半边经它读锚（service/lesson.rs 消费）。
+    pub(super) async fn declared_anchor_rows_for_course(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<Vec<(String, String, String)>, AppError> {
+        sqlx::query_as(
+            "SELECT doors_json, blocks_json, concept_ids_json FROM learning_basis_declarations \
+             WHERE course_id = ? ORDER BY declared_at, id",
+        )
+        .bind(course_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)
+    }
+
+    /// 全部**存活课程**的声明锚行（已知集并网取全局口径——与 taught_ledger
+    /// 的跨课程存活面一致）。
+    async fn declared_anchor_rows_live(&self) -> Result<Vec<(String, String, String)>, AppError> {
+        sqlx::query_as(
+            "SELECT d.doors_json, d.blocks_json, d.concept_ids_json FROM learning_basis_declarations d \
+             JOIN learning_courses c ON c.course_id = d.course_id AND c.deleted_at IS NULL \
+             ORDER BY d.declared_at, d.id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)
+    }
+
+    /// 解析锚行 JSON 清单（doors, blocks, concept_ids）；坏档如实上抛
+    /// （Broken 语义——锚行是本管线的唯一写面，坏档不该被静默吞）。
+    fn parse_anchor_row(
+        doors_json: &str,
+        blocks_json: &str,
+        concept_ids_json: &str,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<String>), AppError> {
+        let parse = |raw: &str, label: &str| -> Result<Vec<String>, AppError> {
+            serde_json::from_str::<Vec<String>>(raw)
+                .map_err(|error| AppError::Internal(format!("declaration {label} corrupted: {error}")))
+        };
+        Ok((
+            parse(doors_json, "doors")?,
+            parse(blocks_json, "blocks")?,
+            parse(concept_ids_json, "concepts")?,
+        ))
+    }
+
+    /// 全局已声明 concept_id 并集（存活课程；已知集投影的声明面）。
+    pub(super) async fn declared_concept_ids(&self) -> Result<Vec<String>, AppError> {
+        let mut ids = Vec::new();
+        for (doors_json, blocks_json, concept_ids_json) in
+            self.declared_anchor_rows_live().await?
+        {
+            let (_, _, concepts) =
+                Self::parse_anchor_row(&doors_json, &blocks_json, &concept_ids_json)?;
+            for concept_id in concepts {
+                if !ids.contains(&concept_id) {
+                    ids.push(concept_id);
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// 运行一次已会声明（learnhub basis_declaration/facade 同构）：
+    /// 勾选校验 → 幂等增量 → AND 命中块 → 一次结构化 LLM 调用 → 既有命名门
+    /// → 单事务写锚行。零 learning_nodes / learning_lessons / growth 写入。
+    pub async fn declare_basis(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+        request: crate::models::DeclareBasisRequest,
+    ) -> Result<crate::models::DeclarationResultView, AppError> {
+        use crate::learning_graph::basis_declaration as basis;
+        // 开关：off = 端点 409 如实拒绝（机制无静默降级）。
+        if !basis::basis_declaration_enabled() {
+            return Err(AppError::Conflict(format!(
+                "已会声明通道已关闭（{}=off）",
+                basis::BASIS_DECLARATION_SWITCH_ENV
+            )));
+        }
+        if request.provider_id.is_some() != request.model.is_some() {
+            return Err(AppError::BadRequest(
+                "provider_id and model must be provided together".into(),
+            ));
+        }
+        // 勾选归一（learnhub 同律：空编号拒绝、BTreeSet 去重保序）。
+        let mut checked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for door in &request.doors {
+            let door = door.trim();
+            if door.is_empty() {
+                return Err(AppError::BadRequest("门口编号不能为空".into()));
+            }
+            checked.insert(door.to_owned());
+        }
+        if checked.is_empty() {
+            return Err(AppError::BadRequest(
+                "未勾选任何门口：请先在过门自检里勾选已具备的判据".into(),
+            ));
+        }
+        self.require_live_graph_course(course_id).await?;
+        // 每课程一把 slot 锁：并发重复声明快速冲突（幂等增量本身兜底，锁防
+        // 的是 LLM 双烧）。
+        let slot_key = format!("basis-declare-{}", course_id.as_str());
+        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+
+        // 快照行读（goal + 结构 + 地形）。
+        let row: (String, Option<String>) = sqlx::query_as(
+            "SELECT learning_goal, structure_json FROM learning_courses WHERE course_id = ?",
+        )
+        .bind(course_id.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        let goal: String = row.0;
+        let envelope: Option<serde_json::Value> = row
+            .1
+            .as_deref()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .transpose()
+            .map_err(internal)?;
+        let Some(envelope) = envelope else {
+            return Err(AppError::BadRequest(
+                "课程还没有结构快照：已会声明是结构生成之后的课后动作".into(),
+            ));
+        };
+        let structure = envelope.get("structure").cloned().unwrap_or(serde_json::Value::Null);
+        let terrain = envelope.get("terrain").cloned().unwrap_or(serde_json::Value::Null);
+        let structure_view = crate::learning_graph::structure_view::build_structure(&structure);
+        let terrain_view = crate::learning_graph::structure_view::build_terrain(
+            &terrain,
+            &structure_view.blocks,
+        );
+
+        // 勾选 ⊆ 课程门口（与过门自检同一门口清单：terrain.doors，缺席回退
+        // 结构 domain.prerequisite_doors——较早快照只有后者）。
+        let mut course_doors: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        if let Some(terrain_view) = terrain_view.as_ref() {
+            for door in &terrain_view.doors {
+                course_doors.insert(door.id.clone());
+            }
+        }
+        if course_doors.is_empty() {
+            for door in &structure_view.domain.prerequisite_doors {
+                course_doors.insert(door.clone());
+            }
+        }
+        let unknown: Vec<String> = checked.difference(&course_doors).cloned().collect();
+        if !unknown.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "勾选的门口不在课程门口清单（{}）：{}",
+                course_doors.into_iter().collect::<Vec<_>>().join("、"),
+                unknown.join("、")
+            )));
+        }
+
+        // 幂等增量：已声明门口剔除；全部已声明 = noop（零 LLM 零写）。
+        let mut declared = std::collections::BTreeSet::new();
+        for (doors_json, blocks_json, concept_ids_json) in
+            self.declared_anchor_rows_for_course(course_id).await?
+        {
+            let (doors, _, _) = Self::parse_anchor_row(&doors_json, &blocks_json, &concept_ids_json)?;
+            declared.extend(doors);
+        }
+        let pending: Vec<String> = checked.difference(&declared).cloned().collect();
+        if pending.is_empty() {
+            tracing::info!(
+                course = course_id.as_str(),
+                doors = ?checked,
+                "已会声明幂等空跑：勾选门口全部已声明，零 LLM 零写"
+            );
+            return Ok(crate::models::DeclarationResultView {
+                course_id: course_id.clone(),
+                doors: Vec::new(),
+                blocks: Vec::new(),
+                concepts: Vec::new(),
+                minted: 0,
+                reused: 0,
+                noop: true,
+                warnings: Vec::new(),
+            });
+        }
+
+        // 命中块（AND 口径，m1 door_refs 读侧同源）：door_refs 全落勾选集。
+        let target_rows = basis::target_rows(&structure_view.blocks, &checked);
+        if target_rows.is_empty() {
+            return Err(AppError::BadRequest(
+                "勾选的门口没有命中任何带门位标签的知识块：较早生成的课程无 door_refs 标注，无法按声明铸概念".into(),
+            ));
+        }
+        let block_names: Vec<String> = target_rows.iter().map(|row| row.name.clone()).collect();
+        let block_slugs: Vec<String> = target_rows.iter().map(|row| row.slug.clone()).collect();
+        tracing::info!(
+            course = course_id.as_str(),
+            doors = ?pending,
+            blocks = block_names.len(),
+            "已会声明开始（只铸概念，不落节点——ADR-0032）"
+        );
+
+        // 一次结构化 LLM 调用（概念清单；最小可教单元条款住模板）。
+        let completer = self.course_completer()?;
+        let model_override = request
+            .provider_id
+            .as_ref()
+            .zip(request.model.as_deref());
+        let proficiency = structure_view.scalars.proficiency_statement.trim();
+        let proficiency_line = if proficiency.is_empty() { "未声明" } else { proficiency };
+        let terrain_reference = match terrain_view.as_ref() {
+            Some(terrain_view) if !terrain_view.doors.is_empty() => {
+                let mut text = String::from(
+                    "> 参考：本课门口判据与前置地形（假设已会的基线声明），仅供教学视野，不是判定面。\n",
+                );
+                if !terrain_view.learner_basis_assumed.trim().is_empty() {
+                    text.push_str(&format!(
+                        "> 基线声明：{}\n",
+                        terrain_view.learner_basis_assumed.trim()
+                    ));
+                }
+                for door in &terrain_view.doors {
+                    text.push_str(&format!(
+                        "- [{}]（{}）{}\n",
+                        door.id,
+                        if door.kind == "hard" { "硬前置" } else { "可自检" },
+                        door.criterion
+                    ));
+                }
+                text
+            }
+            _ => "（本课无前置地形）".to_owned(),
+        };
+        let prompt = crate::learning_graph::structure_prompts::assemble(
+            &basis::BASIS_DECLARATION,
+            &[
+                ("goal", goal.as_str()),
+                ("proficiency_statement", proficiency_line),
+                ("target_blocks", basis::target_lines(&target_rows).as_str()),
+                ("terrain", terrain_reference.as_str()),
+            ],
+        )
+        .map_err(|error| AppError::Internal(format!("declaration prompt assembly failed: {error}")))?;
+        let raw = crate::generation::complete_json_coach(
+            completer.as_ref(),
+            model_override,
+            basis::DECLARATION_SYSTEM,
+            prompt.text.as_str(),
+            crate::generation::STRUCTURE_MAX_TOKENS,
+            Some(basis::BASIS_DECLARATION.temperature),
+        )
+        .await?;
+        let batch: basis::DeclarationBatch = crate::generation::parse_json_object(&raw)
+            .map_err(|error| {
+                AppError::Internal(format!("声明产物形态不合契约（缺 concepts 四字段）:{error}"))
+            })?;
+        if batch.concepts.is_empty() {
+            return Err(AppError::Conflict(
+                "模型未产出任何概念：已具备块的内容无法入册，后续内容将无基线可挂".into(),
+            ));
+        }
+        let (nominations, mut warnings) = basis::normalize_nominations(batch.concepts);
+        if nominations.is_empty() {
+            return Err(AppError::Conflict(
+                "模型产出的概念清单全为空名/空定义：无法入册".into(),
+            ));
+        }
+
+        // 既有命名门（不得绕过登记单点）：
+        // 1) 名字精确占用 → 机械复用宿主（与生长门 auto_reusals 同口径）；
+        // 2) 定义归一化直定宿主 → 机械复用（defnear 直定不送裁）；
+        // 3) 其余近邻候选非空 → j04 复用裁决通道（一次评审调用，缺席 = 新铸）；
+        //    候选为空 → 干净新铸。
+        let registry = self.registry_entries().await?;
+        let mut resolutions: Vec<(String, std::result::Result<String, ()>)> = Vec::new();
+        let mut ambiguous: Vec<(
+            &basis::DeclarationNomination,
+            Vec<crate::learning_graph::defnear::NeighborCandidate>,
+        )> = Vec::new();
+        for nomination in &nominations {
+            let nominate = crate::learning_graph::defnear::Nomination {
+                name: nomination.name.clone(),
+                definition: nomination.definition.clone(),
+            };
+            // 1) 名字精确占用（活跃名全库查重，大小写折叠）。
+            let exact = registry.iter().find(|entry| {
+                let names: Vec<&str> = std::iter::once(entry.canonical.as_str())
+                    .chain(entry.active_aliases.iter().map(String::as_str))
+                    .collect();
+                names
+                    .iter()
+                    .any(|name| {
+                        crate::learning_graph::defnear::normalize(name)
+                            == crate::learning_graph::defnear::normalize(&nominate.name)
+                    })
+            });
+            // 2) 定义归一化直定宿主。
+            let direct = crate::learning_graph::defnear::definition_exact_host(&nominate, &registry);
+            if let Some(host) = exact.or(direct) {
+                resolutions.push((nominate.name.clone(), Ok(host.concept_id.clone())));
+                continue;
+            }
+            // 3) 近邻候选（剥掉词面补位——那是评审保底可见面，不是复用信号）。
+            let strong: Vec<_> = crate::learning_graph::defnear::assemble_neighbors(
+                &nominate,
+                &registry,
+            )
+            .into_iter()
+            .filter(|candidate| !candidate.reason.starts_with("词面补位"))
+            .collect();
+            if strong.is_empty() {
+                resolutions.push((nominate.name.clone(), Err(())));
+            } else {
+                ambiguous.push((nomination, strong));
+            }
+        }
+        // j04 复用裁决（歧义多候选走评审 reuse 通道；缺席 = 新铸；裁决宿主
+        // 必须在该提名的候选集内——编造即违约，如实失败）。
+        if !ambiguous.is_empty() {
+            let mut user = String::from("【待裁决提名】\n");
+            for (nomination, candidates) in &ambiguous {
+                user.push_str(&format!(
+                    "\n- 提名「{}」：{}\n  候选：\n",
+                    nomination.name, nomination.definition
+                ));
+                for candidate in candidates {
+                    user.push_str(&format!(
+                        "  - {}（{}）— {}\n",
+                        candidate.canonical, candidate.concept_id, candidate.reason
+                    ));
+                }
+            }
+            let raw = crate::generation::complete_json_coach(
+                completer.as_ref(),
+                model_override,
+                basis::REUSE_RULING_SYSTEM,
+                user.as_str(),
+                crate::generation::CONCEPT_REVIEW_MAX_TOKENS,
+                Some(0.0),
+            )
+            .await?;
+            #[derive(serde::Deserialize)]
+            struct Ruling {
+                name: String,
+                verdict: String,
+                #[serde(default)]
+                concept_id: String,
+            }
+            #[derive(serde::Deserialize)]
+            struct Rulings {
+                #[serde(default)]
+                rulings: Vec<Ruling>,
+            }
+            let parsed: Rulings = crate::generation::parse_json_object(&raw).map_err(|error| {
+                AppError::Internal(format!("复用裁决产物形态不合契约:{error}"))
+            })?;
+            for (nomination, candidates) in &ambiguous {
+                let ruling = parsed.rulings.iter().find(|ruling| {
+                    ruling.name.trim() == nomination.name.as_str()
+                });
+                let Some(ruling) = ruling else {
+                    // 缺席 = 新铸（j04：缺省新铸——复用必须显式）。
+                    resolutions.push((nomination.name.clone(), Err(())));
+                    continue;
+                };
+                if ruling.verdict == "reuse" {
+                    let concept_id = ruling.concept_id.trim();
+                    if !candidates.iter().any(|candidate| candidate.concept_id == concept_id) {
+                        return Err(AppError::Internal(format!(
+                            "复用裁决引用了候选之外的 concept_id（{concept_id}）——编造即违约，声明如实失败"
+                        )));
+                    }
+                    resolutions.push((nomination.name.clone(), Ok(concept_id.to_owned())));
+                } else {
+                    resolutions.push((nomination.name.clone(), Err(())));
+                }
+            }
+        }
+
+        // 单事务落库：铸名/落池 → 锚行。零 learning_nodes / learning_lessons
+        // / growth_batches 写入（锚表即铸造出处）。
+        let now = now_ms();
+        let mut transaction = self.pool.begin().await.map_err(internal)?;
+        let mut concepts: Vec<crate::learning_graph::basis_declaration::DeclaredConceptView> =
+            Vec::new();
+        let mut minted = 0u32;
+        let mut reused = 0u32;
+        for nomination in &nominations {
+            let resolution = resolutions
+                .iter()
+                .find(|(name, _)| name == &nomination.name)
+                .map(|(_, resolution)| resolution.clone())
+                .unwrap_or(Err(()));
+            let minted_this = resolution.is_err();
+            let concept_id = match resolution {
+                Ok(host) => {
+                    // 复用即落池（登记单点幂等：宿主已含活跃同名 = Skipped）。
+                    let spec = crate::learning_graph::alias_records::AliasSpec::projection(
+                        &nomination.name,
+                        Some(&nomination.definition),
+                        Some(&nomination.source),
+                    );
+                    crate::learning_graph::alias_records::register_alias_tx(
+                        &mut transaction,
+                        &host,
+                        &spec,
+                    )
+                    .await?;
+                    reused += 1;
+                    host
+                }
+                Err(()) => {
+                    // 事务内幂等重查防并发（与生长落库同律）：并发铸名撞池
+                    // = 复用既有概念（警告留痕）。
+                    let key = nomination.name.trim().to_lowercase();
+                    let existing: Option<String> = sqlx::query_scalar(
+                        "SELECT concept_id FROM learning_concept_registry \
+                         WHERE (lower(canonical) = ? \
+                         OR EXISTS (SELECT 1 FROM json_each(aliases_json) je \
+                                    WHERE lower(COALESCE(json_extract(je.value, '$.name'), je.value)) = ? \
+                                      AND COALESCE(json_extract(je.value, '$.status'), 'active') = 'active')) \
+                           AND deprecated = 0",
+                    )
+                    .bind(&key)
+                    .bind(&key)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .map_err(internal)?;
+                    match existing {
+                        Some(concept_id) => {
+                            warnings.push(format!(
+                                "概念「{}」在铸名落库时撞登记表现有名，已改为复用",
+                                nomination.name
+                            ));
+                            let spec =
+                                crate::learning_graph::alias_records::AliasSpec::projection(
+                                    &nomination.name,
+                                    Some(&nomination.definition),
+                                    Some(&nomination.source),
+                                );
+                            crate::learning_graph::alias_records::register_alias_tx(
+                                &mut transaction,
+                                &concept_id,
+                                &spec,
+                            )
+                            .await?;
+                            reused += 1;
+                            concept_id
+                        }
+                        None => {
+                            let concept_id = LearningConceptId::new().into_string();
+                            sqlx::query(
+                                "INSERT INTO learning_concept_registry \
+                                 (concept_id, canonical, aliases_json, definition, source, created_at, updated_at) \
+                                 VALUES (?, ?, '[]', ?, ?, ?, ?)",
+                            )
+                            .bind(&concept_id)
+                            .bind(nomination.name.trim())
+                            .bind(nomination.definition.trim())
+                            // 来源标记（m2 定案：恒 'basis-declaration'——
+                            // 概念行来源徽标与「来自哪次声明」反查的锚点）。
+                            .bind(crate::learning_graph::basis_declaration::DECLARATION_SOURCE)
+                            .bind(now)
+                            .bind(now)
+                            .execute(&mut *transaction)
+                            .await
+                            .map_err(internal)?;
+                            minted += 1;
+                            concept_id
+                        }
+                    }
+                }
+            };
+            if !concepts
+                .iter()
+                .any(|declared| declared.concept_id == concept_id)
+            {
+                concepts.push(
+                    crate::learning_graph::basis_declaration::DeclaredConceptView {
+                        concept_id,
+                        name: nomination.name.clone(),
+                        minted: minted_this,
+                    },
+                );
+            }
+        }
+        let concept_ids: Vec<String> = concepts
+            .iter()
+            .map(|declared| declared.concept_id.clone())
+            .collect();
+        let doors_json = serde_json::to_string(&pending).map_err(internal)?;
+        let blocks_json = serde_json::to_string(&block_slugs).map_err(internal)?;
+        let concept_ids_json = serde_json::to_string(&concept_ids).map_err(internal)?;
+        sqlx::query(
+            "INSERT INTO learning_basis_declarations \
+             (course_id, doors_json, blocks_json, concept_ids_json, declared_at, note) \
+             VALUES (?, ?, ?, ?, ?, '')",
+        )
+        .bind(course_id.as_str())
+        .bind(&doors_json)
+        .bind(&blocks_json)
+        .bind(&concept_ids_json)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(internal)?;
+        transaction.commit().await.map_err(internal)?;
+
+        tracing::info!(
+            course = course_id.as_str(),
+            doors = ?pending,
+            blocks = block_names.len(),
+            minted,
+            reused,
+            "已会声明收尾：已具备块内容已铸为概念并写锚行（零学习节点）"
+        );
+        // WS 复用既有 course-generation 流（零新事件面）：概念表订阅方据此重拉。
+        self.emit_graph_event(
+            course_id,
+            "basis_declared",
+            serde_json::json!({
+                "phase": "basis_declared",
+                "text": "已会声明完成：已按声明铸出概念（不生成节点、不排课、不计 XP）",
+                "doors": pending,
+                "blocks": block_slugs,
+            }),
+        );
+        Ok(crate::models::DeclarationResultView {
+            course_id: course_id.clone(),
+            doors: pending,
+            blocks: block_names,
+            concepts,
+            minted,
+            reused,
+            noop: false,
+            warnings,
+        })
+    }
+
+    /// 已会声明读数（GET basis）：累计已声明 doors/blocks/concepts + Broken
+    /// 如实降级计数（锚行里解析不了的概念 id）。开关 off 时照常可读、如实
+    /// 标注 enabled = false。
+    pub async fn basis_view(
+        &self,
+        course_id: &LearningCourseId,
+    ) -> Result<crate::models::BasisView, AppError> {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT course_id FROM learning_courses WHERE course_id = ? AND deleted_at IS NULL",
+        )
+        .bind(course_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        if exists.is_none() {
+            return Err(AppError::NotFound(format!("course {course_id}")));
+        }
+        let mut doors: Vec<String> = Vec::new();
+        let mut blocks: Vec<String> = Vec::new();
+        let mut declaration_counts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        let mut declarations = 0u32;
+        for (doors_json, blocks_json, concept_ids_json) in
+            self.declared_anchor_rows_for_course(course_id).await?
+        {
+            let (row_doors, row_blocks, row_concepts) =
+                Self::parse_anchor_row(&doors_json, &blocks_json, &concept_ids_json)?;
+            declarations += 1;
+            for door in row_doors {
+                if !doors.contains(&door) {
+                    doors.push(door);
+                }
+            }
+            for block in row_blocks {
+                if !blocks.contains(&block) {
+                    blocks.push(block);
+                }
+            }
+            for concept_id in row_concepts {
+                *declaration_counts.entry(concept_id).or_insert(0) += 1;
+            }
+        }
+        // 概念回显 + Broken 降级（解析不了的概念 id 不炸、只披露）。
+        let mut concepts = Vec::new();
+        let mut unresolved = Vec::new();
+        for (concept_id, count) in &declaration_counts {
+            let canonical: Option<(String, Option<String>)> = sqlx::query_as(
+                "SELECT canonical, source FROM learning_concept_registry WHERE concept_id = ?",
+            )
+            .bind(concept_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(internal)?;
+            match canonical {
+                Some((canonical, source)) => concepts.push(crate::models::BasisConceptView {
+                    concept_id: concept_id.clone(),
+                    canonical,
+                    source,
+                    declaration_count: *count,
+                }),
+                None => unresolved.push(concept_id.clone()),
+            }
+        }
+        concepts.sort_by(|left, right| left.canonical.cmp(&right.canonical));
+        Ok(crate::models::BasisView {
+            course_id: course_id.clone(),
+            doors,
+            blocks,
+            concepts,
+            unresolved_concept_ids: unresolved,
+            declarations,
+            enabled: crate::learning_graph::basis_declaration::basis_declaration_enabled(),
+        })
+    }
+
+    /// 撤销本课全部已会声明（删锚行）：概念留池——登记表全局有效，来源标
+    /// 记保留不抹；已知投影收缩随锚行删除自然生效。返回删除的声明数。
+    pub async fn revoke_basis(
+        &self,
+        user_id: &UserId,
+        course_id: &LearningCourseId,
+    ) -> Result<u32, AppError> {
+        use crate::learning_graph::basis_declaration as basis;
+        // 开关：通道整体关闭时撤销同样 409（机制无静默降级）。
+        if !basis::basis_declaration_enabled() {
+            return Err(AppError::Conflict(format!(
+                "已会声明通道已关闭（{}=off）",
+                basis::BASIS_DECLARATION_SWITCH_ENV
+            )));
+        }
+        self.require_live_graph_course(course_id).await?;
+        let slot_key = format!("basis-declare-{}", course_id.as_str());
+        let _slot = self.acquire_generation_slot(user_id, slot_key)?;
+        let result = sqlx::query("DELETE FROM learning_basis_declarations WHERE course_id = ?")
+            .bind(course_id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        let revoked = result.rows_affected() as u32;
+        if revoked > 0 {
+            tracing::info!(
+                course = course_id.as_str(),
+                revoked,
+                "已会声明撤销：锚行已删，概念留池（声明可撤、概念不灭）"
+            );
+            self.emit_graph_event(
+                course_id,
+                "basis_revoked",
+                serde_json::json!({
+                    "phase": "basis_revoked",
+                    "text": "已会声明已撤销：本课已知投影收缩，铸出的概念保留",
+                    "revoked": revoked,
+                }),
+            );
+        }
+        Ok(revoked)
     }
 }
 

@@ -458,6 +458,21 @@ fn brief_user_text(brief: &OutlineBrief) -> String {
     if let Some(domain) = brief.domain.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
         text.push_str(&format!("领域标签：{domain}\n"));
     }
+    // t2 结构发现计划：权威章节骨架——章节顺序与覆盖以此为准，大纲 agent 只
+    // 在章节内决定课时粒度与措辞，不得重排/合并/漏章（合并/拆分必须经引擎
+    // 复核 source_chapters 映射，本期不开放）。
+    if let Some(plan) = &brief.source_plan {
+        text.push_str(&format!(
+            "来源结构计划（证据驱动的权威章节骨架，不得重排/漏章；你在章节内决定课时粒度）：\n{}\n",
+            plan.brief_line()
+        ));
+        if !plan.warnings.is_empty() {
+            text.push_str(&format!(
+                "计划注意事项（覆盖缺口/顺序修复等，设计时知悉）：{}\n",
+                plan.warnings.join("；")
+            ));
+        }
+    }
     text
 }
 
@@ -792,6 +807,7 @@ mod tests {
             goal: None,
             knowledge_bases: Vec::new(),
             sampling: None,
+            source_plan: None,
         }
     }
 
@@ -804,6 +820,7 @@ mod tests {
             goal: None,
             knowledge_bases: Vec::new(),
             sampling: None,
+            source_plan: None,
         }
     }
 
@@ -842,6 +859,46 @@ mod tests {
         let fallback = brief_user_text(&brief);
         assert!(fallback.contains("已按默认顺序采样 7/12 个文件"), "{fallback}");
         assert!(!fallback.contains("已按目标采样"), "{fallback}");
+    }
+
+    /// t2：结构发现计划进简报——章节清单与权威骨架约束披露，警告可见；
+    /// 无计划时简报与旧路径逐字一致。
+    #[test]
+    fn brief_user_text_discloses_the_source_plan_skeleton() {
+        let mut brief = kb_brief();
+        let legacy = brief_user_text(&brief);
+        assert!(!legacy.contains("权威章节骨架"), "{legacy}");
+
+        brief.source_plan = Some(nomifun_learning::SourcePlan {
+            goal: "零基础学期权".into(),
+            chapters: vec![
+                nomifun_learning::PlannedChapter {
+                    title: "合约基础".into(),
+                    summary: String::new(),
+                    learning_objectives: Vec::new(),
+                    covers: vec!["c1".into()],
+                    prerequisites: Vec::new(),
+                    source_anchors: Vec::new(),
+                    content_type: nomifun_learning::ChapterContentType::Concept,
+                },
+                nomifun_learning::PlannedChapter {
+                    title: "期权策略".into(),
+                    summary: String::new(),
+                    learning_objectives: Vec::new(),
+                    covers: vec!["c2".into()],
+                    prerequisites: vec!["合约基础".into()],
+                    source_anchors: Vec::new(),
+                    content_type: nomifun_learning::ChapterContentType::Concept,
+                },
+            ],
+            warnings: vec!["章节依赖存在环,已丢弃置信度最低的边".into()],
+            ..nomifun_learning::SourcePlan::default()
+        });
+        let text = brief_user_text(&brief);
+        assert!(text.contains("权威章节骨架"), "{text}");
+        assert!(text.contains("合约基础 → 期权策略"), "{text}");
+        assert!(text.contains("不得重排/漏章"), "{text}");
+        assert!(text.contains("已丢弃置信度最低的边"), "{text}");
     }
 
     fn engine(service: Arc<LearningService>) -> LiveCourseOutlineAgentEngine {

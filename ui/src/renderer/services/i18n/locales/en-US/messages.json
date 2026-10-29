@@ -171,7 +171,9 @@
   "skillLoad": {
     "loaded": "Loaded {{name}}",
     "details": "View loaded instructions",
-    "version": "Version {{version}}"
+    "version": "Version {{version}}",
+    "auto": "Auto",
+    "pin": "Pin for session"
   },
   "responseSentSuccessfully": "Response sent successfully",
   "confirmation": {

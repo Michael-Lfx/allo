@@ -13505,6 +13505,7 @@ async fn send_message_allows_load_only_catalog_skills_and_persists_the_snapshot_
             source: "user".to_owned(),
             version_hash: "a".repeat(64),
             content: "# PDF workflow\n\nUse the PDF tools.".to_owned(),
+            location: None,
         },
     ));
     let service = ConversationService::new(
@@ -13577,6 +13578,7 @@ async fn send_message_allows_large_explicit_skill_snapshot() {
             source: "user".to_owned(),
             version_hash: "a".repeat(64),
             content: snapshot_content.clone(),
+            location: None,
         },
     ));
     let service = ConversationService::new(
@@ -13632,6 +13634,7 @@ async fn first_turn_loads_source_qualified_preset_skills_without_filtering_the_l
             source: "builtin".to_owned(),
             version_hash: "b".repeat(64),
             content: "# PDF workflow\n\nUse the PDF tools.".to_owned(),
+            location: None,
         },
     ));
     let service = ConversationService::new(
@@ -13684,6 +13687,7 @@ async fn invalid_explicit_skill_snapshot_blocks_send_before_durable_turn_admissi
             source: "user".to_owned(),
             version_hash: "a".repeat(64),
             content: String::new(),
+            location: None,
         },
     ));
     let service = ConversationService::new(

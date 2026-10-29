@@ -26,10 +26,11 @@ use nomifun_db::{
     SqliteCompanionTokenRepository, SqliteConversationRepository, SqliteMcpServerRepository,
     SqliteOAuthClientRegistrationRepository, SqliteOAuthTokenRepository,
     SqliteProviderModelRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteTerminalRepository, SqliteUserRepository,
+    SqliteSettingsRepository, SqliteSkillDiscoveryRepository, SqliteTerminalRepository,
+    SqliteUserRepository,
 };
 use nomifun_db::{IClientPreferenceRepository, SqliteClientPreferenceRepository};
-use nomifun_realtime::{BroadcastEventBus, WebSocketManager};
+use nomifun_realtime::{BroadcastEventBus, EventBroadcaster, WebSocketManager};
 use nomifun_terminal::{TerminalEventEmitter, TerminalLifecycleServer, TerminalService};
 
 use crate::config::{AppConfig, load_or_create_data_encryption_key};
@@ -1135,6 +1136,8 @@ pub struct AppServices {
     pub(crate) _managed_model_server: Option<nomifun_system::ManagedModelServer>,
     /// Keeps the immediate + periodic managed catalog refresh loop alive.
     pub(crate) _managed_model_refresh_task: Option<nomifun_system::ManagedModelRefreshTask>,
+    /// Holds the local Herdsman status pipe and projects its running models.
+    pub(crate) _herdsman_connection: nomifun_system::HerdsmanConnection,
     /// Authoritative per-model catalog rows (capability profiles + health;
     /// the multimodal model hub reads/writes these).
     pub provider_model_repo: Arc<dyn IProviderModelRepository>,
@@ -2327,6 +2330,12 @@ impl AppServices {
             elapsed_ms = boot.elapsed().as_millis(),
             "startup: AppServices retired-model cleanup done"
         );
+        nomi_config::register_dep_gate_hooks();
+        let mut warmup = vec![nomi_config::RuntimeDep::Ripgrep];
+        if cfg!(windows) {
+            warmup.push(nomi_config::RuntimeDep::Pwsh);
+        }
+        nomi_config::spawn_background_install(warmup);
         // Security hard-cut: older builds persisted live loopback root tokens in
         // this beacon. Scoped child capabilities make discovery without an
         // authoritative session impossible, so remove both the final and
@@ -2885,6 +2894,20 @@ impl AppServices {
             knowledge_service.clone(),
             learning_completer,
         );
+        // 铸名门外部通行名证据（m11，ADR-0030 门内增强）：接线 DDG 无 key
+        // 搜索提供方；`NOMI_LEARNING_MINT_RESEARCH=off` = 零搜索零证据 =
+        // 现行为。接线失败 = 零搜索（fail-open 同律），只留结构化日志。
+        match flowy_web::provider::DuckDuckGoSearchProvider::try_new() {
+            Ok(provider) => {
+                learning_service.set_mint_search_provider(std::sync::Arc::new(provider));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "mint research search provider unavailable; zero searches (fail-open)"
+                );
+            }
+        }
         // 学习图生长不再走 agent 循环（ADR-0009）：教练单次调用 + 结构门
         // + AI 概念评审都在 nomifun-learning 内部完成，注入点已删除。
         // Course outline agent engine: the two-loop tool-driven pipeline
@@ -2918,6 +2941,8 @@ impl AppServices {
                     workspace: data_dir.clone(),
                 },
                 round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+                // 生产无首轮观测（冒烟存档专用）。
+                prompt_observer: None,
             },
         ));
         // Best-effort WebSocket progress for course/lesson generation —
@@ -3556,6 +3581,9 @@ impl AppServices {
             search_provider,
             extract_coordinator,
             skill_manager: AcpSkillManager::new(skill_paths.clone()),
+            skill_discovery: Some(Arc::new(SqliteSkillDiscoveryRepository::new(
+                database.pool().clone(),
+            ))),
             remote_agent_repo,
             provider_repo,
             provider_model_repo: provider_model_repo.clone(),
@@ -3780,6 +3808,20 @@ impl AppServices {
             "startup: AppServices cloud service ready (catalog sync deferred)"
         );
 
+        let catalog_bus = event_bus.clone();
+        let on_herdsman_catalog_changed: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            catalog_bus.broadcast(nomifun_api_types::WebSocketMessage::new(
+                "provider.catalog-changed",
+                serde_json::json!({ "source": "herdsman" }),
+            ));
+        });
+        let herdsman_connection = nomifun_system::start_herdsman_connection(
+            provider_repo_for_services.clone(),
+            provider_model_repo.clone(),
+            encryption_key,
+            on_herdsman_catalog_changed,
+        );
+
         let services = Self {
             database,
             _boot_reconciliation_authority: None,
@@ -3793,6 +3835,7 @@ impl AppServices {
             managed_model_service,
             _managed_model_server: managed_model_server,
             _managed_model_refresh_task: managed_model_refresh_task,
+            _herdsman_connection: herdsman_connection,
             provider_model_repo: provider_model_repo.clone(),
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),

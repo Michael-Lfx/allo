@@ -18,12 +18,12 @@ const LEGACY_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/052_learning_review_log.sql"),
     include_str!("../migrations/053_learning_section_degraded.sql"),
 ];
-const M066: &str = include_str!("../migrations/066_retire_graph_dag_and_concepts.sql");
-const M067: &str = include_str!("../migrations/067_concept_web_growth.sql");
-const M068: &str = include_str!("../migrations/068_growth_batch_status.sql");
-const M069: &str = include_str!("../migrations/069_learning_course_soft_delete.sql");
-const M070: &str = include_str!("../migrations/070_learning_lesson_difficulty.sql");
-const M071: &str = include_str!("../migrations/071_retire_endpoints_compass_structure_snapshot.sql");
+const M066: &str = include_str!("../migrations/069_retire_graph_dag_and_concepts.sql");
+const M067: &str = include_str!("../migrations/070_concept_web_growth.sql");
+const M068: &str = include_str!("../migrations/071_growth_batch_status.sql");
+const M069: &str = include_str!("../migrations/072_learning_course_soft_delete.sql");
+const M070: &str = include_str!("../migrations/073_learning_lesson_difficulty.sql");
+const M071: &str = include_str!("../migrations/074_retire_endpoints_compass_structure_snapshot.sql");
 
 const GRAPH_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678901";
 const TRAD_COURSE: &str = "0190f5fe-7c00-7a00-8abc-012345678902";
@@ -200,7 +200,7 @@ async fn setup_legacy_world() -> SqlitePool {
 }
 
 #[tokio::test]
-async fn migration_066_removes_graph_world_and_concept_tables() {
+async fn migration_069_removes_graph_world_and_concept_tables() {
     let pool = setup_legacy_world().await;
     sqlx::query(M066).execute(&pool).await.unwrap();
 
@@ -281,7 +281,7 @@ async fn migration_066_removes_graph_world_and_concept_tables() {
 }
 
 #[tokio::test]
-async fn migration_067_creates_concept_web_tables() {
+async fn migration_070_creates_concept_web_tables() {
     let pool = setup_legacy_world().await;
     sqlx::query(M066).execute(&pool).await.unwrap();
     sqlx::query(M067).execute(&pool).await.unwrap();
@@ -357,7 +357,7 @@ async fn migration_067_creates_concept_web_tables() {
 /// 表 DROP、compass 列 DROP；structure_json 快照列落地（NULL = 未生成，
 /// CHECK 只收 JSON 对象）。
 #[tokio::test]
-async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() {
+async fn migration_074_retires_endpoints_compass_and_lands_structure_snapshot() {
     let pool = setup_legacy_world().await;
     // 066–070 先导到 067 世界（终点表存在），存量数据就位后再跑 071。
     for migration in [M066, M067, M068, M069, M070] {
@@ -469,7 +469,7 @@ async fn migration_071_retires_endpoints_compass_and_lands_structure_snapshot() 
 }
 
 #[tokio::test]
-async fn migration_068_adds_batch_status_lifecycle() {
+async fn migration_071_adds_batch_status_lifecycle() {
     let pool = setup_legacy_world().await;
     sqlx::query(M066).execute(&pool).await.unwrap();
     sqlx::query(M067).execute(&pool).await.unwrap();

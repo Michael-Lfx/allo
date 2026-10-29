@@ -99,6 +99,11 @@ pub struct OutlineBrief {
     /// 无目标路径（字母序回退）为 `None`。
     #[serde(default)]
     pub sampling: Option<crate::generation::SampleDisclosure>,
+    /// 证据驱动的权威章节骨架（t2 结构发现）：`concept_graph + chapters` +
+    /// 覆盖对账。大纲 agent 只在章节内决定 lesson 粒度/措辞，不得重排/漏章。
+    /// 描述流/旧客户端/结构发现失败回退时为 `None`（走现行采样路径）。
+    #[serde(default)]
+    pub source_plan: Option<crate::generation::SourcePlan>,
 }
 
 impl OutlineBrief {

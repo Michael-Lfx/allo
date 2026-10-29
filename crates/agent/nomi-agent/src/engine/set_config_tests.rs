@@ -980,6 +980,7 @@ fn make_engine(model: &str) -> super::AgentEngine {
         process_supervisor: None,
         editable_turn: None,
         observation: None,
+        tool_image_annotator: None,
         horizon: Default::default(),
         plan_exit_latch: None,
     }
@@ -1289,6 +1290,112 @@ async fn provider_error_preserves_completed_tool_pair_but_strips_its_image() {
     assert!(content.contains("provider error recovery"));
 }
 
+struct ToolThenFailProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for ToolThenFailProvider {
+    async fn stream(
+        &self,
+        _: &LlmRequest,
+    ) -> Result<tokio::sync::mpsc::Receiver<LlmEvent>, ProviderError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call > 0 {
+            return Err(ProviderError::Connection("gateway dropped the stream".into()));
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let _ = tx
+            .send(LlmEvent::ToolUse {
+                id: "probe-0".to_string(),
+                name: "probe".to_string(),
+                input: serde_json::json!({}),
+                extra: None,
+            })
+            .await;
+        let _ = tx
+            .send(LlmEvent::Done {
+                stop_reason: nomi_types::message::StopReason::ToolUse,
+                usage: Default::default(),
+            })
+            .await;
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn failure_after_tool_results_leaves_an_assistant_marker_with_the_error() {
+    let mut engine = make_engine("interrupt-model");
+    engine.provider = Arc::new(ToolThenFailProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    engine.tools.register(Box::new(ConstantResultTool {
+        name: "probe",
+        polling: false,
+        category: ToolCategory::Info,
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        steer_on_call: None,
+    }));
+
+    engine
+        .execute_turn("check progress", "msg-interrupted")
+        .await
+        .expect_err("the second provider pass fails");
+
+    let tail = engine.messages.last().expect("marker");
+    assert_eq!(tail.role, Role::Assistant);
+    let ContentBlock::Text { text } = &tail.content[0] else {
+        panic!("marker must be plain text");
+    };
+    assert!(text.starts_with("[Turn interrupted before a final reply:"), "{text}");
+    assert!(text.contains("gateway dropped the stream"), "{text}");
+    let before_marker = &engine.messages[engine.messages.len() - 2];
+    assert_eq!(before_marker.role, Role::User);
+    assert!(before_marker
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { .. })));
+}
+
+#[test]
+fn interrupted_turn_marker_is_skipped_without_committed_progress() {
+    let mut engine = make_engine("interrupt-model");
+    engine.messages = vec![
+        nomi_types::message::Message::new(
+            Role::User,
+            vec![ContentBlock::Text { text: "go".into() }],
+        ),
+        nomi_types::message::Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "probe".into(),
+                input: serde_json::json!({}),
+                extra: None,
+            }],
+        ),
+        nomi_types::message::Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "ok".into(),
+                is_error: false,
+                images: Vec::new(),
+            }],
+        ),
+    ];
+    let error = super::AgentError::ApiError("boom".into());
+
+    engine.close_interrupted_turn(3, &error);
+    assert_eq!(engine.messages.len(), 3, "no progress inside this turn");
+
+    engine.close_interrupted_turn(1, &error);
+    assert_eq!(engine.messages.len(), 4);
+
+    engine.close_interrupted_turn(1, &error);
+    assert_eq!(engine.messages.len(), 4, "an assistant tail needs no marker");
+}
+
 #[test]
 fn advertised_tools_ref_borrows_the_frozen_table_instead_of_cloning_it() {
     let mut engine = make_engine("tools-model");
@@ -1470,6 +1577,39 @@ async fn second_autocompact_summarizer_sees_prior_briefing() {
     assert!(
         transcript.contains("不要改支付接口"),
         "short user constraint was deleted before summarization"
+    );
+}
+
+#[tokio::test]
+async fn autocompact_drops_the_file_cache_so_a_reread_returns_content() {
+    let file = std::env::temp_dir().join(format!("nomi-autocompact-cache-{}.txt", std::process::id()));
+    std::fs::write(&file, "alpha\n").expect("write fixture");
+    let cache = Arc::new(std::sync::RwLock::new(nomi_tools::file_cache::FileStateCache::new(
+        &nomi_config::file_cache::FileCacheConfig {
+            max_entries: 100,
+            max_size_bytes: 1024 * 1024,
+            enabled: true,
+        },
+    )));
+    nomi_tools::file_cache::update_cache_after_write(&cache, &file, "alpha\n");
+    assert_eq!(cache.read().unwrap().len(), 1);
+
+    let provider = Arc::new(RecordingProvider::successful());
+    let mut engine = make_engine("autocompact-cache");
+    engine.provider = Arc::clone(&provider) as Arc<dyn LlmProvider>;
+    engine.set_file_cache(Some(Arc::clone(&cache)));
+    engine.messages = transcript_with_prior_briefing();
+    engine.compact_state.last_input_tokens = 170_000;
+
+    engine
+        .execute_turn("continue the task", "msg-autocompact-cache")
+        .await
+        .expect("turn should finish after the summary call");
+
+    let _ = std::fs::remove_file(&file);
+    assert!(
+        cache.read().unwrap().is_empty(),
+        "folded transcript no longer holds the Read output the dedup stub points at"
     );
 }
 
@@ -1669,6 +1809,50 @@ fn bash_history_with_image() -> Vec<nomi_types::message::Message> {
             }],
         ),
     ]
+}
+
+#[test]
+fn microcompact_forgets_working_set_coverage_of_cleared_reads() {
+    use nomi_types::message::Message;
+    let read_pair = |id: &str, path: &str| {
+        [
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "Read".into(),
+                    input: serde_json::json!({ "file_path": path }),
+                    extra: None,
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: id.into(),
+                    content: format!("contents of {path}"),
+                    is_error: false,
+                    images: Vec::new(),
+                }],
+            ),
+        ]
+    };
+    let mut engine = make_engine("working-set-micro");
+    engine.compact_config.micro_keep_recent = 1;
+    engine.messages = vec![Message::new(
+        Role::User,
+        vec![ContentBlock::Text { text: "read both".into() }],
+    )];
+    engine.messages.extend(read_pair("r-old", "C:/ws/old.md"));
+    engine.messages.extend(read_pair("r-new", "C:/ws/new.md"));
+    let working_set = &mut engine.harness_runtime.office_working_set;
+    working_set.record_read("C:/ws/old.md", 0, 500, 500, None);
+    working_set.record_read("C:/ws/new.md", 0, 500, 500, None);
+
+    engine.apply_microcompact();
+
+    let index = engine.harness_runtime.office_working_set.index_block();
+    assert!(!index.contains("old.md"), "cleared read must not count as in context: {index}");
+    assert!(index.contains("new.md"), "{index}");
 }
 
 fn request_blob(request: &LlmRequest) -> String {

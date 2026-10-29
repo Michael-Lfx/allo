@@ -8,7 +8,7 @@ description: >-
   Stacks with 短剧导演. Use for 场面调度, blocking, extras, or when shots feel
   posed, empty, or spatially unreadable.
 category: drama
-version: "1.0.0"
+version: "1.0.1"
 tags: [drama, directing, blocking, performance, continuity, extras]
 director:
   pack-policy: dense
@@ -18,9 +18,11 @@ requirement-overlay: |
   NORTH STAR: one purpose per scene. Do not restage the same beat as a new story.
   SPACE FIRST: lock shared geography (who stands where, faces whom, what the
   room allows) before camera detail. No readable spatial relation → no coverage.
-  PERFORMANCE CHAIN: for each acted or spoken beat write stimulus → first
-  visible adjust (eyes / breath / hands) → action or line → leftover state the
-  next clip inherits. Goals are "make them …", never mood adjectives.
+  PERFORMANCE CHAIN: for each emotional reaction (something that changes a
+  person) write stimulus → one visible adjust (eyes / breath / hands, about
+  1 second) → action or line → leftover state the next clip inherits. Neutral
+  action and routine dialogue skip the adjust; a reaction beat never holds a
+  frame. Goals are "make them …", never mood adjectives.
   IN-FRAME LIFE: every visible person has their own task, attention, and offset
   reaction. Background activity serves the main focus — no idle statues and no
   competing circus.
@@ -46,7 +48,7 @@ requirement-overlay: |
 ## 场面
 1. 先写这一场为什么存在（一个北极星），再写站位
 2. 共享空间可读之后才细化机位
-3. 刺激 → 微调整 → 动作/台词 → 留给下一镜的出口状态
+3. 情绪反应：刺激 → 一次可见微调整（约1秒）→ 动作/台词 → 留给下一镜的出口状态；平淡动作不加这一拍
 4. 画面里每个人有自己的事，且不抢主戏
 5. 机位和光为必须被看见的事实服务
 

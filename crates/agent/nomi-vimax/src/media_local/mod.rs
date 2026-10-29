@@ -11,13 +11,12 @@ use std::sync::Arc;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, Rgba, RgbaImage};
-use nomi_process_runtime::hidden_command;
-use tokio::process::Command;
+use nomi_process_runtime::{HiddenCommand, hidden_command};
 
 use crate::error::{VimaxError, VimaxResult};
 
 /// Spawn ffmpeg/ffprobe without flashing a console on Windows GUI hosts.
-fn ffmpeg_command(bin: impl AsRef<Path>) -> Command {
+fn ffmpeg_command(bin: impl AsRef<Path>) -> HiddenCommand {
     hidden_command(bin.as_ref())
 }
 
@@ -1181,19 +1180,34 @@ pub const CONCAT_AUDIO_EDGE_FADE_SECS: f64 = 0.5;
 /// hide the encoder discontinuity (~2 audio frames).
 pub const CONCAT_AUDIO_SEAM_FADE_SECS: f64 = 0.06;
 
-/// Seconds trimmed from the head of a clip that continues its predecessor.
+/// Seconds trimmed from the head of a clip explicitly marked [`SpliceSeam::SameTake`].
 ///
-/// I2V clips are generated from the previous clip's last frame, so they open by
-/// re-staging a moment the audience just saw and only then accelerate into the
-/// new action. Played back-to-back that reads as a freeze at every splice.
-/// Cutting the re-acceleration ramp is the edit-room fix ("cut on action");
-/// planning reserves [`crate::planning::SHOT_SPLICE_TAIL_PADDING_SECS`] per shot
-/// so the film still lands near its advertised length.
+/// The short-drama renderer no longer feeds the previous clip's last frame into
+/// the next shot, so [`SpliceSeam::within_scene`] does not emit `SameTake`.
+/// This trim remains for a caller that still constructs that seam.
 pub const SPLICE_HEAD_TRIM_SECS: f64 = 0.25;
 
 /// Below this a clip is too short to survive a head trim without hurting the
 /// beat, so the overlap is kept rather than gutting the shot.
 const MIN_TRIMMABLE_CLIP_SECS: f64 = 1.5;
+
+/// A held final frame shorter than this is not dead screen time, so it stays.
+/// Also the freeze detector's minimum duration: a shorter hold is never reported.
+pub const STATIC_TAIL_MIN_HOLD_SECS: f64 = 1.0;
+
+/// Seconds of the held pose kept after the motion stops. The cut lands on a
+/// settled frame instead of mid-motion, and the next shot's first frame matches it.
+pub const STATIC_TAIL_KEEP_SECS: f64 = 0.5;
+
+/// Frames closer than this (dB) count as the same still picture. Generated I2V
+/// holds carry encoder noise, so the threshold sits above it and below any motion.
+const STATIC_TAIL_NOISE_DB: &str = "-50dB";
+
+/// A remnant shorter than this is not a shot: a tail trim never leaves less.
+const MIN_STATIC_TAIL_KEEP_SECS: f64 = 2.0;
+
+/// A freeze that ends within this of the clip's end is a hold running to the last frame.
+const FREEZE_EDGE_TOLERANCE_SECS: f64 = 0.2;
 
 /// How a clip meets the clip before it on the timeline.
 ///
@@ -1204,7 +1218,7 @@ const MIN_TRIMMABLE_CLIP_SECS: f64 = 1.5;
 /// |-------------|------------------|-----------------------|
 /// | `Cut`       | no               | no                    |
 /// | `MatchCut`  | no               | yes                   |
-/// | `SameTake`  | yes              | yes                   |
+/// | `SameTake`  | yes (legacy)     | yes                   |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpliceSeam {
     /// Unrelated material: the film opening, or a jump to a scene with its own
@@ -1215,25 +1229,21 @@ pub enum SpliceSeam {
     /// underscore does not, and the prompt forbids replaying the previous beat
     /// — so there is nothing to trim, only a click to hide.
     MatchCut,
-    /// The same camera continuing, generated from the predecessor's last frame,
-    /// so the head re-stages a beat the audience already saw.
+    /// Legacy: the same camera generated from the predecessor's last frame, so
+    /// the head re-stages a beat the audience already saw. The short-drama
+    /// pipeline does not emit this seam.
     SameTake,
 }
 
 impl SpliceSeam {
     /// Seam between two adjacent shots of one continuously rendered scene.
     ///
-    /// The renderer always feeds shot N's last frame to shot N+1, but the
-    /// prompt asks for two different things: keep rolling on the same setup, or
-    /// cut to a new angle with the action already in progress. Only the former
-    /// replays footage. See `script2video::shot_seam`, which writes the prompt
-    /// half of this contract from the same `cam_idx` comparison.
-    pub fn within_scene(prev_cam: i32, cam: i32) -> Self {
-        if prev_cam == cam {
-            Self::SameTake
-        } else {
-            Self::MatchCut
-        }
+    /// Each shot is generated from its own blocking text plus cast, empty-set,
+    /// and prop references. The previous clip's last frame is not an input, so
+    /// the picture does not replay and the head is not trimmed. The scene
+    /// underscore still runs across the join. Camera indices are ignored.
+    pub fn within_scene(_prev_cam: i32, _cam: i32) -> Self {
+        Self::MatchCut
     }
 
     /// Does the head of this clip re-stage its predecessor's ending?
@@ -1252,11 +1262,24 @@ impl SpliceSeam {
 pub struct ConcatClip<'a> {
     pub path: &'a Path,
     pub seam: SpliceSeam,
+    /// Cut a held final frame off this clip. Only for a clip with no spoken line:
+    /// a frozen picture is dead time, while speech must finish on its own.
+    pub static_tail_trim: bool,
 }
 
 impl<'a> ConcatClip<'a> {
     pub fn new(path: &'a Path, seam: SpliceSeam) -> Self {
-        Self { path, seam }
+        Self {
+            path,
+            seam,
+            static_tail_trim: false,
+        }
+    }
+
+    /// Opt this clip into trimming its held final frame (see [`Self::static_tail_trim`]).
+    pub fn with_static_tail_trim(mut self) -> Self {
+        self.static_tail_trim = true;
+        self
     }
 
     /// A clip that shares nothing with its predecessor.
@@ -1266,11 +1289,10 @@ impl<'a> ConcatClip<'a> {
 
     /// Shots of one continuously rendered scene, in timeline order.
     ///
-    /// `opening` is how the scene itself joins the film: a later scene
-    /// match-cuts from the previous scene's tail frame, so its first shot must
-    /// not be faded up as if the film were starting. `cam_idxs` is parallel to
-    /// `paths`; a shot with no recorded camera is treated as a cut, which is
-    /// the safe direction (no trim).
+    /// `opening` is how the scene itself joins the film. Later scenes are hard
+    /// cuts: they are not generated from the previous scene's tail frame.
+    /// `cam_idxs` is parallel to `paths`; a missing camera is still a match-cut
+    /// inside the scene (shared underscore, no head trim).
     pub fn scene(paths: &[&'a Path], cam_idxs: &[i32], opening: SpliceSeam) -> Vec<Self> {
         Self::scene_exits(paths, cam_idxs, cam_idxs, opening)
     }
@@ -1301,21 +1323,12 @@ impl<'a> ConcatClip<'a> {
 
     /// Scene finals of one film, in timeline order.
     ///
-    /// Each scene after the first is written as a match-cut from the previous
-    /// scene's tail frame, and its head trim (if any) was already applied when
-    /// its own shots were joined.
+    /// Each scene after the first is a hard cut. Shot-level joins already
+    /// happened inside each scene file.
     pub fn film(paths: &[&'a Path]) -> Vec<Self> {
         paths
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let seam = if i == 0 {
-                    SpliceSeam::Cut
-                } else {
-                    SpliceSeam::MatchCut
-                };
-                Self::new(p, seam)
-            })
+            .map(|p| Self::new(p, SpliceSeam::Cut))
             .collect()
     }
 }
@@ -1327,6 +1340,8 @@ struct ClipEdit {
     head_trim: f64,
     fade_in: f64,
     fade_out: f64,
+    /// Whether a held final frame may be cut (decided per clip by the caller).
+    static_tail_trim: bool,
 }
 
 impl ClipEdit {
@@ -1336,6 +1351,7 @@ impl ClipEdit {
         head_trim: 0.0,
         fade_in: CONCAT_AUDIO_EDGE_FADE_SECS,
         fade_out: CONCAT_AUDIO_EDGE_FADE_SECS,
+        static_tail_trim: false,
     };
 
     /// Derive each clip's edit from the seams around it.
@@ -1363,6 +1379,7 @@ impl ClipEdit {
                     },
                     fade_in: fade(clip.seam),
                     fade_out: fade(next_seam),
+                    static_tail_trim: clip.static_tail_trim,
                 }
             })
             .collect()
@@ -1376,6 +1393,65 @@ impl ClipEdit {
             self.head_trim
         }
     }
+}
+
+/// Seconds of a clip to keep when its last moments are a held still frame, or
+/// `None` when the clip ends in motion, the hold is too short to be dead time,
+/// or trimming would leave a remnant too short to be a shot.
+async fn static_tail_keep_secs(ffmpeg: &Path, input: &Path, source_dur: f64) -> Option<f64> {
+    if source_dur < MIN_STATIC_TAIL_KEEP_SECS + STATIC_TAIL_MIN_HOLD_SECS {
+        return None;
+    }
+    let args: Vec<String> = [
+        "-hide_banner",
+        "-nostats",
+        "-i",
+        input.to_str()?,
+        "-map",
+        "0:v:0",
+        "-vf",
+        &format!("freezedetect=n={STATIC_TAIL_NOISE_DB}:d={STATIC_TAIL_MIN_HOLD_SECS}"),
+        "-f",
+        "null",
+        "-",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    let (_, stderr) = run_ffmpeg_owned_capture(ffmpeg, &args).await.ok()?;
+    let hold_start = trailing_freeze_start(&stderr, source_dur)?;
+    let keep = (hold_start + STATIC_TAIL_KEEP_SECS).min(source_dur);
+    let worth_cutting = source_dur - keep >= STATIC_TAIL_KEEP_SECS;
+    (worth_cutting && keep >= MIN_STATIC_TAIL_KEEP_SECS).then_some(keep)
+}
+
+/// Start time of a freeze that runs to the end of the clip, from `freezedetect`
+/// log lines. A hold is open until `freeze_end`; a hold with no end, or one whose
+/// end falls on the last frame, is the tail.
+fn trailing_freeze_start(log: &str, source_dur: f64) -> Option<f64> {
+    let mut start: Option<f64> = None;
+    let mut end: Option<f64> = None;
+    for line in log.lines() {
+        if let Some(t) = freezedetect_time(line, "freeze_start") {
+            start = Some(t);
+            end = None;
+        } else if let Some(t) = freezedetect_time(line, "freeze_end") {
+            end = Some(t);
+        }
+    }
+    let start = start?;
+    match end {
+        None => Some(start),
+        Some(t) if t >= source_dur - FREEZE_EDGE_TOLERANCE_SECS => Some(start),
+        Some(_) => None,
+    }
+}
+
+/// `lavfi.freezedetect.<key>: <seconds>` → seconds.
+fn freezedetect_time(line: &str, key: &str) -> Option<f64> {
+    let marker = format!("lavfi.freezedetect.{key}: ");
+    let rest = line.split(&marker).nth(1)?;
+    rest.split_whitespace().next()?.parse().ok()
 }
 
 /// Build the per-clip audio filter used before concat.
@@ -1432,7 +1508,21 @@ async fn normalize_clip_for_concat(
     }
     let source_dur = probe_duration_secs(ffmpeg, input).await.unwrap_or(0.0);
     let head_trim = edit.affordable_head_trim(source_dur);
-    let dur = (source_dur - head_trim).max(0.0);
+    let keep_secs = if edit.static_tail_trim {
+        static_tail_keep_secs(ffmpeg, input, source_dur).await
+    } else {
+        None
+    };
+    let tail_trim = keep_secs.map_or(0.0, |keep| (source_dur - keep).max(0.0));
+    if tail_trim > 0.0 {
+        tracing::debug!(
+            clip = %input.display(),
+            tail_trim,
+            source_dur,
+            "trimming held final frame from clip tail"
+        );
+    }
+    let dur = (source_dur - head_trim - tail_trim).max(0.0);
     if head_trim > 0.0 {
         tracing::debug!(
             clip = %input.display(),
@@ -2493,8 +2583,8 @@ mod tests {
         );
     }
 
-    /// Shots that keep rolling on one setup must drop their duplicated head, so
-    /// the join is shorter than the raw sum by one trim per seam.
+    /// An explicit SameTake still drops its duplicated head. Scene joins built
+    /// with [`ConcatClip::scene`] are match-cuts and are not trimmed.
     #[tokio::test]
     async fn concat_trims_the_replayed_head_of_same_take_clips() {
         let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
@@ -2539,7 +2629,11 @@ mod tests {
         let refs: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
 
         let out = dir.path().join("chained.mp4");
-        let clips = ConcatClip::scene(&refs, &[4, 4, 4], SpliceSeam::Cut);
+        let clips = vec![
+            ConcatClip::new(refs[0], SpliceSeam::Cut),
+            ConcatClip::new(refs[1], SpliceSeam::SameTake),
+            ConcatClip::new(refs[2], SpliceSeam::SameTake),
+        ];
         concat_videos(&clips, &out)
             .await
             .expect("concat one continuous take");
@@ -2579,11 +2673,11 @@ mod tests {
         assert_eq!(edits[0].fade_in, CONCAT_AUDIO_EDGE_FADE_SECS);
         assert_eq!(edits[0].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
 
-        assert_eq!(edits[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[1].head_trim, 0.0, "same camera no longer replays a tail frame");
         assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
         assert_eq!(edits[1].fade_out, CONCAT_AUDIO_SEAM_FADE_SECS);
 
-        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[2].head_trim, 0.0);
         assert_eq!(edits[2].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
         assert_eq!(
             edits[2].fade_out, CONCAT_AUDIO_EDGE_FADE_SECS,
@@ -2597,15 +2691,175 @@ mod tests {
             head_trim: SPLICE_HEAD_TRIM_SECS,
             fade_in: CONCAT_AUDIO_SEAM_FADE_SECS,
             fade_out: CONCAT_AUDIO_SEAM_FADE_SECS,
+            static_tail_trim: false,
         };
         assert_eq!(edit.affordable_head_trim(5.0), SPLICE_HEAD_TRIM_SECS);
         assert_eq!(edit.affordable_head_trim(1.0), 0.0);
         assert_eq!(ClipEdit::CUT.affordable_head_trim(5.0), 0.0);
     }
 
-    /// A camera change is a real cut: the prompt tells the model not to replay
-    /// the previous beat, so trimming its head would eat live action. The
-    /// soundtrack still runs through, so the fade stays short either way.
+    fn freeze_line(key: &str, t: f64) -> String {
+        format!("[freezedetect @ 0x55d0] lavfi.freezedetect.{key}: {t}\n")
+    }
+
+    #[test]
+    fn a_hold_still_open_at_the_end_is_the_tail() {
+        let log = freeze_line("freeze_start", 2.04);
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(2.04));
+    }
+
+    #[test]
+    fn a_hold_ending_on_the_last_frame_is_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 3.0),
+            freeze_line("freeze_end", 4.98),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(3.0));
+    }
+
+    #[test]
+    fn a_hold_that_motion_resumes_from_is_not_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 1.0),
+            freeze_line("freeze_end", 2.5),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), None);
+    }
+
+    #[test]
+    fn only_the_last_unresumed_hold_counts_as_the_tail() {
+        let log = [
+            freeze_line("freeze_start", 1.0),
+            freeze_line("freeze_end", 2.0),
+            freeze_line("freeze_start", 3.5),
+        ]
+        .concat();
+        assert_eq!(trailing_freeze_start(&log, 5.0), Some(3.5));
+    }
+
+    #[test]
+    fn a_clip_without_any_hold_has_no_tail() {
+        assert_eq!(trailing_freeze_start("", 5.0), None);
+    }
+
+    /// Changing picture for `motion_secs`, then one still frame for `hold_secs`
+    /// (none when zero): the shape of a silent I2V shot whose model held its pose.
+    async fn motion_then_hold(ffmpeg: &Path, path: &Path, motion_secs: f64, hold_secs: f64) {
+        let motion = format!("testsrc2=size=320x240:rate=24:duration={motion_secs}");
+        let hold = format!("color=c=gray:s=320x240:r=24:d={hold_secs}");
+        let out = path.to_str().unwrap();
+        let status = if hold_secs > 0.0 {
+            run_ffmpeg(
+                ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    motion.as_str(),
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    hold.as_str(),
+                    "-filter_complex",
+                    "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                    "-map",
+                    "[v]",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    out,
+                ],
+            )
+            .await
+        } else {
+            run_ffmpeg(
+                ffmpeg,
+                &[
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    motion.as_str(),
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    out,
+                ],
+            )
+            .await
+        };
+        assert!(status.unwrap().success(), "test clip generation failed");
+    }
+
+    #[tokio::test]
+    async fn a_held_final_frame_is_found_and_cut_to_a_short_keep() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("held.mp4");
+        motion_then_hold(&ffmpeg, &clip, 2.0, 3.0).await;
+
+        let keep = static_tail_keep_secs(&ffmpeg, &clip, 5.0)
+            .await
+            .expect("a 3s still frame is dead time");
+        // Motion stops at 2s; the cut keeps STATIC_TAIL_KEEP_SECS of the pose.
+        assert!(
+            (keep - (2.0 + STATIC_TAIL_KEEP_SECS)).abs() < 0.3,
+            "kept {keep}s"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clip_still_in_motion_keeps_its_full_length() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let clip = dir.path().join("moving.mp4");
+        motion_then_hold(&ffmpeg, &clip, 4.0, 0.0).await;
+
+        assert_eq!(static_tail_keep_secs(&ffmpeg, &clip, 4.0).await, None);
+    }
+
+    /// The seam a silent shot ends on: concat cuts its held frame, so the film
+    /// runs on from the pose instead of standing still for the rest of the clip.
+    #[tokio::test]
+    async fn concat_cuts_the_held_tail_of_a_marked_silent_clip() {
+        let Some(ffmpeg) = nomi_config::resolve_ffmpeg_executable() else {
+            eprintln!("skip: ffmpeg not available");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.mp4");
+        let held = dir.path().join("held.mp4");
+        let out = dir.path().join("film.mp4");
+        motion_then_hold(&ffmpeg, &first, 3.0, 0.0).await;
+        motion_then_hold(&ffmpeg, &held, 2.0, 3.0).await;
+
+        let seq = [
+            ConcatClip::cut(&first),
+            ConcatClip::cut(&held).with_static_tail_trim(),
+        ];
+        concat_videos(&seq, &out).await.unwrap();
+
+        let secs = probe_media_duration_secs(&out).await.unwrap();
+        // 3s + (2s of motion + the kept hold), not 3s + the full 5s clip.
+        assert!(
+            (secs - (3.0 + 2.0 + STATIC_TAIL_KEEP_SECS)).abs() < 0.4,
+            "film is {secs}s"
+        );
+    }
+
+    /// Inside one scene every join is a match-cut: shared underscore, no head
+    /// trim, whether or not the camera index changed.
     #[test]
     fn a_camera_change_inside_a_scene_is_not_trimmed() {
         let paths: Vec<PathBuf> = ["a.mp4", "b.mp4", "c.mp4"]
@@ -2617,17 +2871,16 @@ mod tests {
 
         assert_eq!(
             clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
-            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::SameTake]
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::MatchCut]
         );
         let edits = ClipEdit::plan(&clips);
         assert_eq!(edits[1].head_trim, 0.0, "cam 1→2 is a cut, nothing replays");
         assert_eq!(edits[1].fade_in, CONCAT_AUDIO_SEAM_FADE_SECS);
-        assert_eq!(edits[2].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(edits[2].head_trim, 0.0, "same camera does not replay a tail frame");
     }
 
-    /// A packed native multi-shot exits on a later camera; the next clip that
-    /// reuses that camera is a continued take, not a match-cut from the pack's
-    /// opening camera.
+    /// A packed native multi-shot still joins the next file as a match-cut.
+    /// Exit camera is recorded, but it no longer turns the join into a replay.
     #[test]
     fn a_packed_clip_seam_uses_its_exit_camera() {
         let paths: Vec<PathBuf> = ["pack.mp4", "next.mp4"].iter().map(PathBuf::from).collect();
@@ -2635,9 +2888,9 @@ mod tests {
         let clips = ConcatClip::scene_exits(&refs, &[0, 1], &[1, 1], SpliceSeam::Cut);
         assert_eq!(
             clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
-            vec![SpliceSeam::Cut, SpliceSeam::SameTake]
+            vec![SpliceSeam::Cut, SpliceSeam::MatchCut]
         );
-        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, SPLICE_HEAD_TRIM_SECS);
+        assert_eq!(ClipEdit::plan(&clips)[1].head_trim, 0.0);
     }
 
     /// A scene rendered after another one opens mid-soundtrack, so baking a
@@ -2656,10 +2909,10 @@ mod tests {
         assert_eq!(later[0].head_trim, 0.0, "the scene's own head was not replayed");
     }
 
-    /// Scene finals were already trimmed shot-by-shot; the film join must not
-    /// trim them a second time.
+    /// Scene finals join as hard cuts. They are not generated from a tail frame,
+    /// and the film join must not trim them.
     #[test]
-    fn film_level_scenes_are_match_cuts_never_same_takes() {
+    fn film_level_scenes_are_hard_cuts() {
         let paths: Vec<PathBuf> = ["s0.mp4", "s1.mp4", "s2.mp4"]
             .iter()
             .map(PathBuf::from)
@@ -2669,9 +2922,10 @@ mod tests {
 
         assert_eq!(
             clips.iter().map(|c| c.seam).collect::<Vec<_>>(),
-            vec![SpliceSeam::Cut, SpliceSeam::MatchCut, SpliceSeam::MatchCut]
+            vec![SpliceSeam::Cut, SpliceSeam::Cut, SpliceSeam::Cut]
         );
         assert!(ClipEdit::plan(&clips).iter().all(|e| e.head_trim == 0.0));
+        assert!(ClipEdit::plan(&clips).iter().skip(1).all(|e| e.fade_in == CONCAT_AUDIO_EDGE_FADE_SECS));
     }
 
     #[test]

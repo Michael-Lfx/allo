@@ -8,6 +8,7 @@ import { batchSourceRestriction, buildBatchConnectionCreateRequest, hasBatchConn
 import { canvasConnectionError } from "@oc/lib/canvas/canvas-connection-policy";
 import { formatCanvasUserError } from "@oc/lib/canvas/canvas-user-error";
 import { connectedNodeCenterFromEdgeDrop } from "@oc/lib/canvas/canvas-connected-node-placement";
+import { retargetCollapsedDeckNodeId } from "@oc/lib/canvas/canvas-image-stack";
 import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor, isHiddenBatchChild, normalizeConnection, storyboardHandleAtY, storyboardPromptTemplateMetadata, storyboardRowFromHandle } from "@oc/lib/canvas/canvas-project-domain";
 import { createCanvasDrawingFromImage } from "@oc/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@oc/lib/canvas/canvas-drawing-engine";
@@ -149,8 +150,11 @@ export function useCanvasConnectionController({
     }, [config, connectionsRef, message, nodesRef, setConnections, setContextMenu, setNodes]);
 
     const connectNodes = useCallback((current: ConnectionHandle, targetNodeId: string, targetHandleId?: string, targetAnchorRatio?: number) => {
-        if (current.nodeId === targetNodeId) return;
-        const connection = normalizeConnection(current.nodeId, targetNodeId, nodesRef.current, current.handleType);
+        const fannedDeckRootId = useCanvasInteractionStore.getState().fannedDeckRootId;
+        const sourceNodeId = retargetCollapsedDeckNodeId(current.nodeId, nodesRef.current, fannedDeckRootId);
+        const resolvedTargetId = retargetCollapsedDeckNodeId(targetNodeId, nodesRef.current, fannedDeckRootId);
+        if (sourceNodeId === resolvedTargetId) return;
+        const connection = normalizeConnection(sourceNodeId, resolvedTargetId, nodesRef.current, current.handleType);
         if (!connection) {
             message.warning("配置节点之间不能连接");
             return;
@@ -161,10 +165,10 @@ export function useCanvasConnectionController({
             return;
         }
         const { fromNodeId, toNodeId } = connection;
-        const fromHandleId = fromNodeId === current.nodeId ? current.handleId : targetHandleId;
-        const toHandleId = toNodeId === current.nodeId ? current.handleId : targetHandleId;
-        const fromAnchorRatio = fromNodeId === current.nodeId ? current.anchorRatio : targetAnchorRatio;
-        const toAnchorRatio = toNodeId === current.nodeId ? current.anchorRatio : targetAnchorRatio;
+        const fromHandleId = fromNodeId === sourceNodeId ? current.handleId : targetHandleId;
+        const toHandleId = toNodeId === sourceNodeId ? current.handleId : targetHandleId;
+        const fromAnchorRatio = fromNodeId === sourceNodeId ? current.anchorRatio : targetAnchorRatio;
+        const toAnchorRatio = toNodeId === sourceNodeId ? current.anchorRatio : targetAnchorRatio;
         const exists = connectionsRef.current.find((item) => item.fromNodeId === fromNodeId && item.toNodeId === toNodeId && item.fromHandleId === fromHandleId && item.toHandleId === toHandleId);
         if (exists) {
             setConnections((currentConnections) => currentConnections.map((item) => item.id === exists.id ? { ...item, fromAnchorRatio, toAnchorRatio } : item));
@@ -342,6 +346,8 @@ export function useCanvasConnectionController({
                     bestPriority = priority;
                 }
             });
+        const fannedDeckRootId = useCanvasInteractionStore.getState().fannedDeckRootId;
+        if (bestNodeId) bestNodeId = retargetCollapsedDeckNodeId(bestNodeId, nodesRef.current, fannedDeckRootId);
         return { nodeId: bestNodeId, handleId: bestHandleId, anchorRatio: bestAnchorRatio, isNearNode };
     }, [nodesRef, screenToCanvas, scriptScrollTopById, viewportRef]);
 
@@ -387,6 +393,8 @@ export function useCanvasConnectionController({
                     bestPriority = priority;
                 }
             });
+        const fannedDeckRootId = useCanvasInteractionStore.getState().fannedDeckRootId;
+        if (bestNodeId) bestNodeId = retargetCollapsedDeckNodeId(bestNodeId, nodesRef.current, fannedDeckRootId);
         return { nodeId: bestNodeId, handleId: bestHandleId, anchorRatio: bestAnchorRatio, isNearNode };
     }, [nodesRef, screenToCanvas, scriptScrollTopById, viewportRef]);
 
@@ -488,11 +496,12 @@ export function useCanvasConnectionController({
         connectingPointerIdRef.current = event.pointerId;
         connectingPointerStartRef.current = { x: event.clientX, y: event.clientY };
         setMouseWorld(screenToCanvas(event.clientX, event.clientY));
-        setConnecting({ nodeId, handleType, handleId, anchorRatio });
+        const fannedDeckRootId = useCanvasInteractionStore.getState().fannedDeckRootId;
+        setConnecting({ nodeId: retargetCollapsedDeckNodeId(nodeId, nodesRef.current, fannedDeckRootId), handleType, handleId, anchorRatio });
         setConnectionTargetNodeId(null);
         setConnectionTargetAnchorRatio(undefined);
         setSelectedConnectionId(null);
-    }, [clearBatchConnection, commitBatchConnection, screenToCanvas, setConnecting, setConnectionTargetAnchorRatio, setConnectionTargetNodeId, setMouseWorld, setSelectedConnectionId]);
+    }, [clearBatchConnection, commitBatchConnection, nodesRef, screenToCanvas, setConnecting, setConnectionTargetAnchorRatio, setConnectionTargetNodeId, setMouseWorld, setSelectedConnectionId]);
 
     useEffect(() => {
         const handlePointerMove = (event: PointerEvent) => {

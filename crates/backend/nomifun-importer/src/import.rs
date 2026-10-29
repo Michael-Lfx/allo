@@ -22,7 +22,7 @@ use crate::compat;
 use crate::dependency::{CatalogIndex, DependencyProblem, check_dependencies};
 use crate::digest::tree_digest;
 use crate::frontmatter::{parse_agent, parse_skill, AgentDoc};
-use crate::manifest::{PluginManifest, validate_relative_path};
+use crate::manifest::{DisplayFields, PluginManifest, validate_relative_path};
 use crate::models::{
     Component, CompatTriple, SourceKind, component_id, sanitize_slug,
 };
@@ -57,12 +57,44 @@ pub struct ImportRequest {
     /// snapshot instead of becoming a new version. `None` = keep the historical
     /// behaviour (use the manifest's own version).
     pub declared_version: Option<String>,
+    /// Display metadata from the **market index row** (`50` §3.3): the only
+    /// display source for skill / connector entries, which ship no
+    /// `plugin.json`. Merged with the author's own declaration and stamped into
+    /// every skill / connector / team component payload so the installed
+    /// catalogs show what the store shows. `None` = the entry (or its market)
+    /// declares nothing.
+    pub index_display: Option<DisplayFields>,
+    /// The icon the **marketplace** declares for this entry (`icons/<base>.<ext>`)
+    /// as an **absolute path** (doc `51` §3.2).
+    ///
+    /// Only the marketplace layer knows the market root and the entry's
+    /// basename, so the resolution happens there (the same division of labour as
+    /// [`Self::index_display`], `50` §3.3): the importer never infers market
+    /// layout, it only places this one file where that entity kind expects it.
+    ///
+    /// `None` = the entry (or its market) ships no icon, or the entry is a
+    /// multi-component bundle — one market icon cannot be attributed to N
+    /// components, so nothing is placed (doc `51` INV-3).
+    pub market_icon: Option<PathBuf>,
 }
 
 impl ImportRequest {
     /// Override the version this import is stored under (`36` D2).
     pub fn with_declared_version(mut self, version: Option<String>) -> Self {
         self.declared_version = version;
+        self
+    }
+
+    /// Carry the market index row's display metadata into the snapshot
+    /// (`50` §3.3).
+    pub fn with_index_display(mut self, display: Option<DisplayFields>) -> Self {
+        self.index_display = display;
+        self
+    }
+
+    /// Carry the marketplace-declared icon into the snapshot (doc `51` §3.2).
+    pub fn with_market_icon(mut self, icon: Option<PathBuf>) -> Self {
+        self.market_icon = icon;
         self
     }
 
@@ -75,6 +107,8 @@ impl ImportRequest {
             entry_name: None,
             source_revision: None,
             declared_version: None,
+            index_display: None,
+            market_icon: None,
         }
     }
 
@@ -92,6 +126,8 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: None,
             declared_version: None,
+            index_display: None,
+            market_icon: None,
         }
     }
 
@@ -110,6 +146,8 @@ impl ImportRequest {
             entry_name: Some(entry_name),
             source_revision: Some(source_revision),
             declared_version: None,
+            index_display: None,
+            market_icon: None,
         }
     }
 }
@@ -226,7 +264,7 @@ impl ImporterService {
         std::fs::create_dir_all(&materialized).map_err(|error| {
             ImportError::Internal(format!("create snapshot dir: {error}"))
         })?;
-        let files = match copy_tree(&source, &materialized) {
+        let mut files = match copy_tree(&source, &materialized) {
             Ok(files) => files,
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&materialized);
@@ -237,6 +275,31 @@ impl ImporterService {
                 ));
             }
         };
+        // Place the marketplace icon (doc `51` §3.2). It lives **beside** the
+        // entry directory (`<market_root>/icons/`), so `copy_tree` above cannot
+        // carry it, and it has to land *before* `tree_digest` so the snapshot's
+        // digest covers it (doc `51` D4). A refusal is a warning, never a
+        // failed import: an icon is display data (INV-6).
+        let icon_placement = crate::icon::icon_placement(&parsed, request.source_kind);
+        let mut icon_warning: Option<String> = None;
+        let mut icon_relative: Option<String> = None;
+        if let Some(placement) = icon_placement {
+            match crate::icon::place_market_icon(
+                request.market_icon.as_deref(),
+                &materialized,
+                placement,
+            ) {
+                crate::icon::IconOutcome::Placed(placed) => {
+                    files.push(crate::walk::CopiedFile {
+                        relative: placed.relative.clone(),
+                        digest_hex: placed.digest_hex,
+                    });
+                    icon_relative = Some(placed.relative);
+                }
+                crate::icon::IconOutcome::Refused(reason) => icon_warning = Some(reason),
+                crate::icon::IconOutcome::Absent => {}
+            }
+        }
         let content_digest = tree_digest(&files);
 
         // 5–7. component standardization (steps 6–8)
@@ -261,7 +324,11 @@ impl ImporterService {
             source_kind: request.source_kind,
             source_uri: source.display().to_string(), // internal only
         };
-        let mut builder = ComponentBuilder::new(declared_version);
+        let mut builder = ComponentBuilder::new(declared_version)
+            // The market index row's display metadata (`50` §3.3): the only
+            // bilingual source for skill/connector entries, and a fallback for
+            // teams. Author declarations win per locale (`DisplayFields::merge`).
+            .with_index_display(request.index_display.clone().unwrap_or_default());
         let mut agents: Vec<(String, AgentDoc)> = Vec::new();
         // `dependencies` are consumed by the component builder, which only
         // *registers* them; keep a copy for the optional decision below.
@@ -300,6 +367,23 @@ impl ImporterService {
             // versa — parse_manifest dispatches by source kind.
             _ => {}
         }
+        // The placed icon becomes a payload key of the components that own it
+        // (doc `51` §3.2.2). This is how the export face finds it again without
+        // a second query: `team_skills` / `team_connectors` read `payload.avatar`
+        // straight off the component row (`51` §3.3.2).
+        if let (Some(placement), Some(relative)) = (icon_placement, &icon_relative) {
+            builder.stamp_avatar(relative, placement.stamp_kinds());
+        }
+        if let Some(warning) = icon_warning {
+            builder.warn(warning);
+        }
+        // A Skill's icon may already live **inside its own directory**
+        // (`assets/icon.<ext>`, the `SKILL_ICON_CANDIDATES` convention built-in
+        // skills use). That file travels on the skill file face regardless; what
+        // nothing recorded so far is *which* file it is, so the export face had
+        // no way to name it (doc `51` P2). Stamp it now — the payload key is the
+        // same one the marketplace placement uses, so a consumer needs one rule.
+        builder.stamp_skill_directory_icons(&materialized);
         // Path-safety violations anywhere block the whole snapshot (02 §11.1).
         if !builder.blocking_errors.is_empty() {
             let _ = std::fs::remove_dir_all(&materialized);
@@ -459,6 +543,12 @@ impl ImporterService {
 
 struct ComponentBuilder {
     version: String,
+    /// Display metadata the market index row declares (`50` §3.3): stamped into
+    /// every skill / connector / team component payload, so an installed
+    /// entity's catalog face shows the same text the store item does. Empty =
+    /// the entry's market declares nothing (or this import has no marketplace
+    /// provenance).
+    index_display: DisplayFields,
     components: Vec<Component>,
     /// snapshot-relative paths already claimed (component id uniqueness)
     claimed: HashSet<String>,
@@ -472,12 +562,29 @@ impl ComponentBuilder {
     fn new(version: String) -> Self {
         Self {
             version,
+            index_display: DisplayFields::default(),
             components: Vec::new(),
             claimed: HashSet::new(),
             warnings: Vec::new(),
             errors: Vec::new(),
             blocking_errors: Vec::new(),
         }
+    }
+
+    /// Set the index-row display metadata for this import (`50` §3.3). Called
+    /// once, before the component builders run.
+    fn with_index_display(mut self, display: DisplayFields) -> Self {
+        self.index_display = display;
+        self
+    }
+
+    /// The display fields to stamp into one component payload (`50` §3.3): the
+    /// author's own declaration (when the entity has a manifest) merged with the
+    /// index row, author first. Merging happens here, once, at the write face
+    /// (`50` INV-5).
+    fn display_for(&self, manifest: Option<&PluginManifest>) -> DisplayFields {
+        let author = manifest.map(author_display).unwrap_or_default();
+        DisplayFields::merge(author, self.index_display.clone())
     }
 
     fn push(&mut self, component: Component) {
@@ -513,6 +620,63 @@ impl ComponentBuilder {
         }
         self.claimed.insert(component.component_id.clone());
         self.components.push(component);
+    }
+
+    /// Stamp a placed marketplace icon into the payloads of one or more kinds
+    /// (doc `51` §3.2.2).
+    ///
+    /// `avatar` is the key every read face already understands (`asset_url`,
+    /// `declared_avatar`), so a placed icon needs no new payload vocabulary. An
+    /// existing key is **never** replaced: `plugin.json.avatar` (or the author's
+    /// own skill icon) is the declaration that wins (INV-4).
+    fn stamp_avatar(&mut self, relative: &str, kinds: &[&str]) {
+        for component in &mut self.components {
+            if !kinds.contains(&component.kind.as_str()) {
+                continue;
+            }
+            let Some(object) = component.payload.as_object_mut() else {
+                continue;
+            };
+            if object.contains_key("avatar") {
+                continue;
+            }
+            object.insert("avatar".to_owned(), serde_json::json!(relative));
+        }
+    }
+
+    /// Stamp `assets/icon.<ext>` into every Skill component whose **own
+    /// directory** ships one (doc `51` §3.1/§3.2.2).
+    ///
+    /// The path stamped is **skill-directory relative** — the coordinate system
+    /// `skill/files` and `skill/file` use — so a consumer reads the bytes with
+    /// the same call that reads `SKILL.md`. This covers both shapes: a package's
+    /// `skills/<slug>/assets/icon.png`, and a single-skill entry, whose snapshot
+    /// root *is* the skill directory.
+    fn stamp_skill_directory_icons(&mut self, snapshot_dir: &Path) {
+        for component in &mut self.components {
+            if component.kind != crate::models::KIND_SKILL {
+                continue;
+            }
+            let Some(dir) = component
+                .relative_path
+                .as_deref()
+                .and_then(|relative| relative.rsplit_once('/'))
+                .map(|(dir, _)| dir)
+            else {
+                continue;
+            };
+            let relative = crate::icon::skill_icon_in_snapshot(snapshot_dir, dir);
+            let Some(relative) = relative else {
+                continue;
+            };
+            let Some(object) = component.payload.as_object_mut() else {
+                continue;
+            };
+            if object.contains_key("avatar") {
+                continue;
+            }
+            object.insert("avatar".to_owned(), serde_json::json!(relative));
+        }
     }
 
     fn warn(&mut self, message: String) {
@@ -561,6 +725,41 @@ fn attach_plugin_display(payload: &mut serde_json::Value, manifest: &PluginManif
     }
     if let Some(category_id) = &manifest.category_id {
         payload["category_id"] = json!(category_id);
+    }
+}
+
+/// The author's own display metadata, in the shape the payload writer wants
+/// (`50` §3.3). `displayDescription` and its `description_{zh,en}` sibling-key
+/// flavour are merged per locale by
+/// [`PluginManifest::localized_display_description`].
+fn author_display(manifest: &PluginManifest) -> DisplayFields {
+    DisplayFields {
+        name: manifest.display_name.clone().filter(|text| !text.is_empty()),
+        description: manifest.localized_display_description(),
+        prompts: manifest.quick_prompts.clone(),
+        tags: manifest.tags.clone(),
+    }
+}
+
+/// Write the display fields into a component payload (`50` §3.2).
+///
+/// The key names are the wire field names, the same ones
+/// [`attach_plugin_display`] has always written for agents — the three other
+/// kinds simply did not use them. Nothing is written for a field that declared
+/// nothing, so an absent field stays absent on the wire instead of becoming an
+/// empty string or an empty array (`50` INV-3).
+fn attach_display_fields(payload: &mut serde_json::Value, display: &DisplayFields) {
+    if let Some(name) = display.name.as_ref() {
+        payload["display_name"] = serde_json::to_value(name).unwrap_or_default();
+    }
+    if let Some(description) = display.description.as_ref() {
+        payload["display_description"] = serde_json::to_value(description).unwrap_or_default();
+    }
+    if !display.prompts.is_empty() {
+        payload["quick_prompts"] = serde_json::to_value(&display.prompts).unwrap_or_default();
+    }
+    if !display.tags.is_empty() {
+        payload["tags"] = serde_json::to_value(&display.tags).unwrap_or_default();
     }
 }
 
@@ -847,30 +1046,46 @@ fn build_plugin_components(
             builder.warn(format!("Team 成员文件缺失/不可解析：{name}（02 §6 step 3）"));
         }
         let id = component_id(&meta.plugin_id, "team");
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": meta.name,
+            "description": manifest.description,
+            "source": meta.source_kind.as_str(),
+            "lead_agent_id": lead_id,
+            "member_agent_ids": member_ids,
+            "planner_policy": "planned",
+            "adaptation_policy": "fixed",
+            "plan_gate": "automatic",
+            "coordination_policy": "leader_planned",
+            "workflow_limits": { "max_parallel": 4 },
+            "team_runtime_capabilities": [
+                "fixed_members", "planning_context", "planned_dag", "local_parallel",
+                "retry", "replan", "events", "artifacts",
+            ],
+        });
+        // Display face (`50` §3.1 / D9): author declaration, index row fills the
+        // gaps. The team payload carried neither `tags` nor `category_id`
+        // before, so `team/list` read two fields that were always empty.
+        attach_display_fields(&mut payload, &builder.display_for(Some(manifest)));
+        if let Some(category_id) = &manifest.category_id {
+            payload["category_id"] = json!(category_id);
+        }
+        // The package avatar belongs to the **team row** as well (doc `38` D8):
+        // a team pack's `pack.avatar` reads this payload, while the member packs
+        // deliberately carry none (D7). Without this line a team package that
+        // declares a `plugin.json.avatar` exported no avatar at all — surfaced
+        // while wiring doc `51` §3.2.2.
+        if let Some(avatar) = &manifest.avatar {
+            payload["avatar"] = json!(avatar);
+        }
         builder.push(Component::new(
             crate::models::KIND_TEAM,
             id.clone(),
             meta.name.clone(),
             None,
             compat::team(all_resolved),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": meta.name,
-                "description": manifest.description,
-                "source": meta.source_kind.as_str(),
-                "lead_agent_id": lead_id,
-                "member_agent_ids": member_ids,
-                "planner_policy": "planned",
-                "adaptation_policy": "fixed",
-                "plan_gate": "automatic",
-                "coordination_policy": "leader_planned",
-                "workflow_limits": { "max_parallel": 4 },
-                "team_runtime_capabilities": [
-                    "fixed_members", "planning_context", "planned_dag", "local_parallel",
-                    "retry", "replan", "events", "artifacts",
-                ],
-            }),
+            payload,
         ));
     }
 }
@@ -914,24 +1129,29 @@ fn build_skill_market_components(
                 Ok(doc) => {
                     let slug = entry.file_name().to_string_lossy().to_string();
                     let id = component_id(&meta.plugin_id, &slug);
+                    let mut payload = json!({
+                        "id": id,
+                        "version": builder.version,
+                        "name": doc.name,
+                        "slug": slug,
+                        "description": doc.description,
+                        "mode": "store-agent",
+                        "invocation_policy": "model-auto",
+                        "instructions_ref": rel,
+                        "relative_path": rel,
+                        "has_arguments_note": doc.has_arguments_note,
+                    });
+                    // Display face (`50` §3.1): the market index row is the only
+                    // bilingual source a skill has — `SKILL.md` declares one
+                    // language only.
+                    attach_display_fields(&mut payload, &builder.display_for(None));
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
                         doc.name.clone(),
                         Some(rel.clone()),
                         compat::skill(),
-                        json!({
-                            "id": id,
-                            "version": builder.version,
-                            "name": doc.name,
-                            "slug": slug,
-                            "description": doc.description,
-                            "mode": "store-agent",
-                            "invocation_policy": "model-auto",
-                            "instructions_ref": rel,
-                            "relative_path": rel,
-                            "has_arguments_note": doc.has_arguments_note,
-                        }),
+                        payload,
                     ));
                 }
                 Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
@@ -962,24 +1182,29 @@ fn build_single_skill_components(
             let id = component_id(&meta.plugin_id, &slug);
             match parse_skill(&text, &rel) {
                 Ok(doc) => {
+                    let mut payload = json!({
+                        "id": id,
+                        "version": builder.version,
+                        "name": doc.name,
+                        "slug": slug,
+                        "description": doc.description,
+                        "mode": "store-agent",
+                        "invocation_policy": "model-auto",
+                        "instructions_ref": rel,
+                        "relative_path": rel,
+                        "has_arguments_note": doc.has_arguments_note,
+                    });
+                    // Display face (`50` §3.1): the market index row is the only
+                    // bilingual source a skill has — `SKILL.md` declares one
+                    // language only.
+                    attach_display_fields(&mut payload, &builder.display_for(None));
                     builder.push(Component::new(
                         crate::models::KIND_SKILL,
                         id.clone(),
                         doc.name.clone(),
                         Some(rel.clone()),
                         compat::skill(),
-                        json!({
-                            "id": id,
-                            "version": builder.version,
-                            "name": doc.name,
-                            "slug": slug,
-                            "description": doc.description,
-                            "mode": "store-agent",
-                            "invocation_policy": "model-auto",
-                            "instructions_ref": rel,
-                            "relative_path": rel,
-                            "has_arguments_note": doc.has_arguments_note,
-                        }),
+                        payload,
                     ));
                 }
                 Err(error) => builder.error(format!("技能文件解析失败 {rel}: {error}")),
@@ -1037,21 +1262,23 @@ fn build_connector_market_components(
             .and_then(|value| value.as_str())
             .unwrap_or("none")
             .to_owned();
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "kind": kind,
+            "transport_summary": transport,
+            "auth_mode": auth_mode,
+            "tool_filter": format!("connector__{slug}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             None,
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "kind": kind,
-                "transport_summary": transport,
-                "auth_mode": auth_mode,
-                "tool_filter": format!("connector__{slug}__<tool>"),
-            }),
+            payload,
         ));
     }
 }
@@ -1096,36 +1323,38 @@ fn build_cli_connector_components(
     } else {
         "cli-auth".to_owned()
     };
+    let mut payload = json!({
+        "id": id,
+        "version": builder.version,
+        "name": directory_name,
+        "kind": "cli",
+        "runtime": {
+            "type": runtime_type,
+            "version": runtime_version,
+        },
+        "transport_summary": if init_summary.is_empty() {
+            format!("cli:{}", directory_name)
+        } else {
+            init_summary.clone()
+        },
+        "auth_mode": auth_mode,
+        "auth": {
+            "init": init_summary,
+            "status": status_summary,
+            "status_match": cli.status_match.clone(),
+            "domain": auth_domain,
+        },
+        "version_check": version_check,
+        "tool_filter": format!("connector__{directory_name}__<tool>"),
+    });
+    attach_display_fields(&mut payload, &builder.display_for(None));
     builder.push(Component::new(
         crate::models::KIND_CONNECTOR,
         id.clone(),
         directory_name.to_owned(),
         None,
         compat::connector(),
-        json!({
-            "id": id,
-            "version": builder.version,
-            "name": directory_name,
-            "kind": "cli",
-            "runtime": {
-                "type": runtime_type,
-                "version": runtime_version,
-            },
-            "transport_summary": if init_summary.is_empty() {
-                format!("cli:{}", directory_name)
-            } else {
-                init_summary.clone()
-            },
-            "auth_mode": auth_mode,
-            "auth": {
-                "init": init_summary,
-                "status": status_summary,
-                "status_match": cli.status_match.clone(),
-                "domain": auth_domain,
-            },
-            "version_check": version_check,
-            "tool_filter": format!("connector__{directory_name}__<tool>"),
-        }),
+        payload,
     ));
 
     // skills/ scan (one SKILL.md per subdirectory; shallow, mirrors the
@@ -1237,6 +1466,7 @@ fn build_mcp_connector_components(
             config.get("env").and_then(|value| value.as_object()),
             &bindings,
             builder,
+            "mcp.json",
         );
         let transport = match (&url, &command) {
             (Some(url), _) => {
@@ -1281,23 +1511,25 @@ fn build_mcp_connector_components(
             (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
         };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "connector_id": directory_name,
+            "kind": kind,
+            "transport": transport,
+            "transport_summary": transport_summary,
+            "auth_mode": auth_mode,
+            "tool_filter": format!("connector__{name}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             Some("mcp.json".to_owned()),
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "connector_id": directory_name,
-                "kind": kind,
-                "transport": transport,
-                "transport_summary": transport_summary,
-                "auth_mode": auth_mode,
-                "tool_filter": format!("connector__{name}__<tool>"),
-            }),
+            payload,
         ));
     }
 
@@ -1336,6 +1568,15 @@ fn build_mcp_connector_components(
     }
 }
 
+/// Build `connector` components for the **plugin-level** MCP declaration: the
+/// `mcpServers` object of a plugin/expert `plugin.json`, or a sibling
+/// `.mcp.json` (02 §5).
+///
+/// The transport is persisted **structured**, exactly like the marketplace
+/// `mcp.json` path: the human-readable summary alone drops a remote server's
+/// headers and a stdio server's argv/env, and registration — which prefers the
+/// structured field — would then create a server that can never authenticate
+/// (a headerless URL) or never start (`node` with no script).
 fn build_connector_components(
     value: serde_json::Value,
     source_rel: &str,
@@ -1350,6 +1591,11 @@ fn build_connector_components(
         builder.error("MCP 配置格式无法识别（缺少 mcpServers 对象）".into());
         return;
     };
+    // No `token-schema.json` here, so nothing is declared: a `${NAME}` in a
+    // header is still rewritten to `${secret:NAME}` (with a warning) rather than
+    // sent literally, and an undeclared credential-shaped env value becomes a
+    // reference instead of landing in the snapshot (17 §6).
+    let bindings = Bindings::from_declaration(None);
     for (name, config) in servers {
         let url = config
             .get("url")
@@ -1363,22 +1609,61 @@ fn build_connector_components(
         let transport_summary = url
             .clone()
             .unwrap_or_else(|| command.clone().unwrap_or_else(|| name.clone()));
+        let args: Vec<String> = config
+            .get("args")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env = rewrite_secret_env(
+            config.get("env").and_then(|value| value.as_object()),
+            &bindings,
+            builder,
+            source_rel,
+        );
+        let mut headers = merged_headers(config);
+        for (_name, value) in headers.iter_mut() {
+            if let Some(text) = value.as_str() {
+                *value = serde_json::Value::String(bindings.rewrite(text, builder));
+            }
+        }
+        let transport = match (&url, &command) {
+            (Some(url), _) => json!({
+                "type": declared_url_transport_type(config),
+                "url": bindings.rewrite(url, builder),
+                "headers": headers,
+            }),
+            (None, Some(command)) => json!({
+                "type": "stdio",
+                "command": command,
+                "args": args,
+                "env": env,
+            }),
+            (None, None) => json!({ "type": "stdio", "command": "", "args": [] }),
+        };
         let id = component_id(&meta.plugin_id, &format!("mcp-{}", sanitize_slug(name)));
+        let mut payload = json!({
+            "id": id,
+            "version": builder.version,
+            "name": name,
+            "kind": kind,
+            "transport": transport,
+            "transport_summary": transport_summary,
+            "auth_mode": "oauth",
+            "tool_filter": format!("connector__{name}__<tool>"),
+        });
+        attach_display_fields(&mut payload, &builder.display_for(None));
         builder.push(Component::new(
             crate::models::KIND_CONNECTOR,
             id.clone(),
             name.clone(),
             Some(source_rel.to_owned()),
             compat::connector(),
-            json!({
-                "id": id,
-                "version": builder.version,
-                "name": name,
-                "kind": kind,
-                "transport_summary": transport_summary,
-                "auth_mode": "oauth",
-                "tool_filter": format!("connector__{name}__<tool>"),
-            }),
+            payload,
         ));
     }
 }
@@ -1866,6 +2151,10 @@ fn rewrite_secret_env(
     env: Option<&serde_json::Map<String, serde_json::Value>>,
     bindings: &Bindings,
     builder: &mut ComponentBuilder,
+    // Where the env came from, for the warning text: `mcp.json` for a
+    // marketplace connector, the plugin manifest path for a plugin-level
+    // `mcpServers` declaration.
+    source_rel: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
     let Some(env) = env else {
@@ -1887,12 +2176,12 @@ fn rewrite_secret_env(
                 } else if bindings.secret.contains(key) {
                     if text.trim().is_empty() {
                         builder.warn(format!(
-                            "mcp.json env[{key}] 未提供值（空字符串），改为 {reference} 引用，\
+                            "{source_rel} env[{key}] 未提供值（空字符串），改为 {reference} 引用，\
                              由用户填写（34 §5.4）"
                         ));
                     } else if !text.contains("${") {
                         builder.warn(format!(
-                            "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                            "{source_rel} env[{key}] 的值未导入（改为 {reference} 引用），\
                              由用户经安全存储提供（17 §6）"
                         ));
                     }
@@ -1905,7 +2194,7 @@ fn rewrite_secret_env(
                     serde_json::Value::String(bindings.rewrite(text, builder))
                 } else if looks_sensitive_key(key) && !text.trim().is_empty() {
                     builder.warn(format!(
-                        "mcp.json env[{key}] 的值未导入（改为 {reference} 引用），\
+                        "{source_rel} env[{key}] 的值未导入（改为 {reference} 引用），\
                          由用户经安全存储提供（17 §6）"
                     ));
                     serde_json::Value::String(reference)
@@ -2113,6 +2402,7 @@ pub fn component_to_public(component: &Component) -> AppServerImportComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::LocalizedText;
 
     #[test]
     fn sensitive_field_detection_never_leaks_values() {
@@ -2132,6 +2422,66 @@ mod tests {
             "wb-software-company-software-team-lead"
         );
         assert_eq!(component_id("my plugin", "hello world"), "wb-my-plugin-hello-world");
+    }
+
+    // -----------------------------------------------------------------------
+    // Display fields (`50` §3.2/§3.3)
+    // -----------------------------------------------------------------------
+
+    /// TC-9: the author's declaration wins per locale, the index row fills the
+    /// gaps — and the stamped payload carries the wire field names verbatim.
+    #[test]
+    fn the_author_declaration_wins_and_the_index_fills_the_missing_locale() {
+        let manifest: PluginManifest = serde_json::from_value(json!({
+            "name": "demo-team",
+            "displayName": { "zh": "股价分析团" },
+            "quickPrompts": [{ "zh": "帮我看看今天的盘面", "en": "How is the market today?" }],
+        }))
+        .expect("manifest");
+
+        let builder = ComponentBuilder::new("1.0.0".into()).with_index_display(DisplayFields {
+            name: Some(LocalizedText { zh: Some("索引行名字".into()), en: Some("Index name".into()) }),
+            description: Some(LocalizedText {
+                zh: Some("索引行简介".into()),
+                en: Some("Index description".into()),
+            }),
+            prompts: vec![LocalizedText { zh: Some("索引行示例".into()), en: None }],
+            tags: vec![LocalizedText { zh: Some("数据智能".into()), en: None }],
+        });
+
+        let merged = builder.display_for(Some(&manifest));
+        // Author's zh survives; the index's en fills the side the author omitted.
+        assert_eq!(merged.name.as_ref().and_then(|text| text.zh.as_deref()), Some("股价分析团"));
+        assert_eq!(merged.name.as_ref().and_then(|text| text.en.as_deref()), Some("Index name"));
+        // No author description at all → the index row answers both sides.
+        assert_eq!(
+            merged.description.as_ref().and_then(|text| text.zh.as_deref()),
+            Some("索引行简介")
+        );
+        // A position-paired list is taken whole from whichever side declared it.
+        assert_eq!(merged.prompts.len(), 1);
+        assert_eq!(merged.prompts[0].zh.as_deref(), Some("帮我看看今天的盘面"));
+        assert_eq!(merged.tags.len(), 1);
+
+        let mut payload = json!({});
+        attach_display_fields(&mut payload, &merged);
+        assert_eq!(payload["display_name"]["zh"], "股价分析团");
+        assert_eq!(payload["display_name"]["en"], "Index name");
+        assert_eq!(payload["display_description"]["en"], "Index description");
+        assert_eq!(payload["quick_prompts"][0]["en"], "How is the market today?");
+        assert_eq!(payload["tags"][0]["zh"], "数据智能");
+    }
+
+    /// TC-7 / INV-3: nothing declared → no key at all (not an empty object, not
+    /// a copy of the single-language `name`).
+    #[test]
+    fn nothing_declared_writes_no_display_keys() {
+        let builder = ComponentBuilder::new("1.0.0".into());
+        let merged = builder.display_for(None);
+        assert!(merged.is_empty());
+        let mut payload = json!({ "name": "fenbi_mcp" });
+        attach_display_fields(&mut payload, &merged);
+        assert_eq!(payload, json!({ "name": "fenbi_mcp" }));
     }
 
     // -----------------------------------------------------------------------
@@ -2244,5 +2594,88 @@ mod tests {
         assert_eq!(rewrite("${}").0, "${}");
         assert_eq!(rewrite("${secret:}").0, "${secret:}");
         assert_eq!(rewrite("${unterminated").0, "${unterminated");
+    }
+
+    /// A plugin/expert `plugin.json` declaring `mcpServers` used to register the
+    /// server from the display summary alone, which dropped a remote server's
+    /// headers and a stdio server's argv/env: the row came out as a headerless
+    /// URL or a bare `node`, so it could never authenticate or start.
+    #[test]
+    fn plugin_level_mcp_declaration_keeps_the_structured_transport() {
+        let mut builder = ComponentBuilder::new("1.0.0".into());
+        let meta = crate::models::SnapshotMeta {
+            plugin_id: "wb-team".into(),
+            name: "team".into(),
+            declared_version: "1.0.0".into(),
+            resolved_revision: None,
+            source_kind: SourceKind::CodeBuddyPlugin,
+            source_uri: "internal".into(),
+        };
+        build_connector_components(
+            json!({
+                "mcpServers": {
+                    "remote": {
+                        "type": "sse",
+                        "url": "https://mcp.example.com/sse",
+                        "headers": { "Authorization": "Bearer ${PAT}", "X-Client": "allo" },
+                    },
+                    "local": {
+                        "command": "node",
+                        "args": ["server.js", "--flag", "two words"],
+                        "env": { "API_KEY": "literal-value", "NODE_ENV": "production" },
+                    },
+                }
+            }),
+            "plugin.json",
+            &meta,
+            &mut builder,
+        );
+
+        let by_name = |name: &str| {
+            builder
+                .components
+                .iter()
+                .find(|component| component.name == name)
+                .unwrap_or_else(|| panic!("{name} must produce a connector component"))
+                .payload
+                .clone()
+        };
+
+        let remote = by_name("remote");
+        assert_eq!(remote["transport"]["type"], "sse");
+        assert_eq!(remote["transport"]["url"], "https://mcp.example.com/sse");
+        assert_eq!(
+            remote["transport"]["headers"]["Authorization"],
+            "Bearer ${secret:PAT}",
+            "an undeclared placeholder must not be sent literally"
+        );
+        assert_eq!(
+            remote["transport"]["headers"]["X-Client"], "allo",
+            "a constant header is part of the request and must survive"
+        );
+
+        let local = by_name("local");
+        assert_eq!(local["transport"]["command"], "node");
+        assert_eq!(
+            local["transport"]["args"],
+            json!(["server.js", "--flag", "two words"]),
+            "argv is what makes a stdio server start"
+        );
+        assert_eq!(
+            local["transport"]["env"]["API_KEY"], "secret:API_KEY",
+            "a literal credential value must never reach the snapshot (17 §6)"
+        );
+        assert_eq!(
+            local["transport"]["env"]["NODE_ENV"], "production",
+            "an ordinary env value is the connector's own setting and stays"
+        );
+        assert!(
+            builder
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("plugin.json") && warning.contains("API_KEY")),
+            "the redaction must say where it came from: {:?}",
+            builder.warnings
+        );
     }
 }

@@ -6,9 +6,9 @@ Date: 2026-10-13
 
 ## Context
 
-多知识库建课（t4）在迁移 073 给 `learning_courses` 加了 `source_kb_ids`
+多知识库建课（t4）在迁移 068（学习域合并基线）的 source_kb_ids 段给 `learning_courses` 加了 `source_kb_ids`
 （JSON 数组，**首个元素 = 主来源**），同时**保留**了迁移 015 的单列
-`source_kb_id` 及其 SetNull 契约与索引。课时侧同理（迁移 075 的
+`source_kb_id` 及其 SetNull 契约与索引。课时侧同理（迁移 068 的 source_paths 段：
 `learning_lessons.source_paths_json` 配迁移 015 的
 `source_path`/`source_start`/`source_end` 三列）。于是读侧出现一个必须显式
 决策的形态：**两列都在，读谁、写谁、谁退役**。
@@ -21,7 +21,7 @@ Date: 2026-10-13
 2. 老行（描述流课程、t4 之前的课程）只有单列/三列——任何读侧口径都不能让
    它们失效或读出不同的课程。
 3. 列表是**新增能力**的载体：多库建课的采样命名空间、逐库披露、课时多引用
-   都靠它承载，读侧还必须把已删库的 id 过滤掉（迁移 073 的裁决：库里可以
+   都靠它承载，读侧还必须把已删库的 id 过滤掉（迁移 068 的 source_kb_ids 段裁决：库里可以
    残留悬空 id，但**不外泄**）。
 
 ## Decision
@@ -40,8 +40,8 @@ Date: 2026-10-13
 - **已删库的归属**：不过滤就外泄悬空 id（契约纪律），过滤后必须保证"绝不把
   未知前缀的路径认给幸存库"——解析不到存活库 = 无实时来源，走快照兜底
   （t4 评审修复；`service/lesson.rs` 的 `assemble_lesson_grounding`）。
-- **列表列参与逻辑引用契约**：迁移 073 的列表在 `id_schema_contract.rs` 里
-  按 `cs_agents.knowledge_base_ids` 先例登记（迁移 074 补具名索引），
+- **列表列参与逻辑引用契约**：迁移 068 的 source_kb_ids 段列表在 `id_schema_contract.rs` 里
+  按 `cs_agents.knowledge_base_ids` 先例登记（迁移 068 的具名索引段），
   口径 `KeepHistory` + `AllowMissingHistoricalParent`——已删库 id 允许留在
   历史行里、由读侧过滤；单列的 SetNull 登记保持不动（两列各按自己的语义
   被审计与修复）。

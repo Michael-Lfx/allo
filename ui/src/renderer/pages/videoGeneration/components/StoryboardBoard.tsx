@@ -574,6 +574,7 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           ref={inspectorRef}
           sessionId={sessionId}
           scene={activeScene}
+          seedPacket={activePacket ?? null}
           artifacts={artifacts}
           generating={shotGenerating}
           planning={planning}
@@ -587,27 +588,17 @@ const StoryboardBoard: React.FC<StoryboardBoardProps> = ({
           posterPath={mainIsVideo ? activeScene.imagePath : mainPath}
           videoStatus={activeVideoStatus}
           preview={
-            <>
-              {activeScene.beatCount != null && activeScene.beatCount > 1 ? (
-                <span className={styles.shotGraphMediaChip}>
-                  {t('videoGeneration.studio.storyboard.packedBeatsShort', {
-                    count: activeScene.beatCount,
-                    defaultValue: '{{count}} 切',
-                  })}
-                </span>
-              ) : null}
-              {activePacket?.run_state === 'script_stale' || activePacket?.run_state === 'continuity_stale' ? (
-                <span className={styles.shotStaleBanner}>
-                  {activePacket.run_state === 'script_stale'
-                    ? t('videoGeneration.studio.storyboard.scriptStaleHint', {
-                        defaultValue: '脚本已改，画面仍是旧版',
-                      })
-                    : t('videoGeneration.studio.storyboard.continuityStaleHint', {
-                        defaultValue: '上一镜已换 take，连续性参考已过期',
-                      })}
-                </span>
-              ) : null}
-            </>
+            activePacket?.run_state === 'script_stale' || activePacket?.run_state === 'continuity_stale' ? (
+              <span className={styles.shotStaleBanner}>
+                {activePacket.run_state === 'script_stale'
+                  ? t('videoGeneration.studio.storyboard.scriptStaleHint', {
+                      defaultValue: '脚本已改，画面仍是旧版',
+                    })
+                  : t('videoGeneration.studio.storyboard.continuityStaleHint', {
+                      defaultValue: '上一镜已换 take，连续性参考已过期',
+                    })}
+              </span>
+            ) : null
           }
         />
         {pendingReview ? (

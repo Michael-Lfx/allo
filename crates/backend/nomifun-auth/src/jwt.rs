@@ -21,6 +21,24 @@ const JWT_ISSUER: &str = "nomifun";
 /// JWT audience claim value.
 const JWT_AUDIENCE: &str = "nomifun-webui";
 
+/// Audience for a paired Flowy Link device. Desktop cookies never use this.
+const JWT_LINK_AUDIENCE: &str = "nomifun-link";
+
+/// Access tokens for a phone are short. Refresh tokens are rotated separately.
+const LINK_TOKEN_EXPIRY: Duration = Duration::from_secs(15 * 60);
+
+/// JWT payload for a paired phone. `device_id` is the `linked_devices` business id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkTokenPayload {
+    pub user_id: UserId,
+    pub device_id: String,
+    pub username: String,
+    pub iat: u64,
+    pub exp: u64,
+    pub iss: String,
+    pub aud: String,
+}
+
 /// JWT payload (claims embedded in the token).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenPayload {
@@ -46,6 +64,9 @@ pub struct JwtService {
     secret: RwLock<String>,
     /// Blacklisted token hashes -> expiry timestamps.
     blacklist: DashMap<String, u64>,
+    /// Paired phones whose refresh row has been revoked. Access tokens for
+    /// these device ids fail even before their 15-minute expiry.
+    revoked_link_devices: DashMap<String, ()>,
 }
 
 impl JwtService {
@@ -56,6 +77,14 @@ impl JwtService {
         Self {
             secret: RwLock::new(secret),
             blacklist: DashMap::new(),
+            revoked_link_devices: DashMap::new(),
+        }
+    }
+
+    /// Remember a paired phone that must not use an already issued access token.
+    pub fn revoke_link_device(&self, device_id: &str) {
+        if !device_id.is_empty() {
+            self.revoked_link_devices.insert(device_id.to_owned(), ());
         }
     }
 
@@ -119,6 +148,62 @@ impl JwtService {
                 _ => AuthError::TokenInvalid(format!("JWT verification failed: {e}")),
             })?;
 
+        Ok(token_data.claims)
+    }
+
+    /// Sign a 15-minute access token for one paired device.
+    pub fn sign_link(&self, user_id: &str, username: &str, device_id: &str) -> Result<String, AuthError> {
+        if device_id.is_empty() {
+            return Err(AuthError::TokenInvalid("link token requires a device id".into()));
+        }
+        let now = now_secs()?;
+        let user_id = UserId::parse(user_id)
+            .map_err(|error| AuthError::TokenInvalid(format!("invalid user id: {error}")))?;
+        let claims = LinkTokenPayload {
+            user_id,
+            device_id: device_id.to_owned(),
+            username: username.to_owned(),
+            iat: now,
+            exp: now + LINK_TOKEN_EXPIRY.as_secs(),
+            iss: JWT_ISSUER.to_owned(),
+            aud: JWT_LINK_AUDIENCE.to_owned(),
+        };
+        let secret = self
+            .secret
+            .read()
+            .map_err(|e| AuthError::TokenInvalid(format!("Secret lock poisoned: {e}")))?;
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .map_err(|e| AuthError::TokenInvalid(format!("JWT encoding failed: {e}")))
+    }
+
+    /// Verify a Link access token. WebUI cookies fail this check on audience.
+    pub fn verify_link(&self, token: &str) -> Result<LinkTokenPayload, AuthError> {
+        let hash = token_hash(token);
+        if self.blacklist.contains_key(&hash) {
+            return Err(AuthError::TokenBlacklisted);
+        }
+        let secret = self
+            .secret
+            .read()
+            .map_err(|e| AuthError::TokenInvalid(format!("Secret lock poisoned: {e}")))?;
+        let mut validation = Validation::default();
+        validation.set_issuer(&[JWT_ISSUER]);
+        validation.set_audience(&[JWT_LINK_AUDIENCE]);
+        let token_data = decode::<LinkTokenPayload>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
+            .map_err(|e| match e.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::TokenExpired,
+                _ => AuthError::TokenInvalid(format!("JWT verification failed: {e}")),
+            })?;
+        if token_data.claims.device_id.is_empty() {
+            return Err(AuthError::TokenInvalid("link token missing device id".into()));
+        }
+        if self.revoked_link_devices.contains_key(&token_data.claims.device_id) {
+            return Err(AuthError::TokenBlacklisted);
+        }
         Ok(token_data.claims)
     }
 

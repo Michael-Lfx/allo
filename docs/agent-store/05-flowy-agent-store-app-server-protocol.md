@@ -1,6 +1,6 @@
 # allo App Server Protocol 核心架构与公共契约方案（App Server Protocol Specification）
 
-> 状态：现行规范（统一协议 v1，指纹 `fp-14`，55 WS 核心方法 / 82 双端路由端点）  
+> 状态：现行规范（统一协议 v1，指纹 `fp-19`，56 WS 核心方法 / 83 双端路由端点）  \
 > 适用范围：TypeScript SDK、Python SDK、CLI、WebUI、Flowy 宿主及所有外部智能体集成面  
 > 关联设计：[`00-architecture-decision.md`](file:///c:/workspace/allo/docs/agent-store/00-architecture-decision.md)、[`01-domain-model.md`](file:///c:/workspace/allo/docs/agent-store/01-domain-model.md)、[`04-flowy-agent-store-runtime-adapter.md`](file:///c:/workspace/allo/docs/agent-store/04-flowy-agent-store-runtime-adapter.md)、[`07-typescript-sdk.md`](file:///c:/workspace/allo/docs/agent-store/07-typescript-sdk.md)、[`10-public-contracts.md`](file:///c:/workspace/allo/docs/agent-store/10-public-contracts.md)  
 > 核心原则：**App Server Protocol 是唯一的公共契约层；抹除一切内部数据库物理主键与私有凭据；所有上层消费端必须通过标准握手、不透明 ID 与单调游标事件流与内核解耦交互。**
@@ -16,7 +16,7 @@ App Server Protocol 确立为系统的**唯一公共对外接口面**：
 1. **彻底物理隔离**：外部消费端禁止直连数据库、禁止依赖内部私有 UUIDv7 或数据库行，统一面向**不透明公共 ID（Opaque Public IDs）**与标准化 RPC 信封。
 2. **双模契约同构（Dual-Transport Parity）**：WebSocket 负责长连接双向交互、流式通知与审批推送；HTTP 辅助通道负责单次幂等导入、文件上传及离线请求。双端共用同一套底层 Rust 分发器，杜绝两套行为。
 3. **零凭据过线防御（Zero Credential Leakage）**：API Key、OAuth 访问令牌、物理文件路径严格留在宿主内部；连接器调用走宿主受控代理（`connector/call`），凭据模板按 `${secret:NAME}` 声明式解析。
-4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-14`）守卫协议两端，消解冗余复杂的迁移开销。
+4. **严格指纹约束而非虚幻多版本**：正式发版前统一确立为协议 v1，采用契约指纹（`fp-<n>`，当前 `fp-19`）守卫协议两端，消解冗余复杂的迁移开销。
 
 ---
 
@@ -183,7 +183,46 @@ flowchart TD
 # allo App Server Protocol 规格
 
 > 状态：**现行正文（未正式发版，可改；改动同步更新）**——协议在发版前只有一个版本，统一称 v1，不设 v1/v1.1/v2 之分（`16-sdk-webui-site-priority-plan.zh.md` §7 决策 4）。单 Agent 模式已实现并通过聚焦验证（Workspace Resolver、持久化幂等、WebSocket 实时事件推送）；Skill/Connector 目录能力（skill/*、connector/*、OAuth 状态透传）已启用并接入 agent/run 运行时接线；**Team 能力已启用**（`team/run` 走 Leader Conversation + `nomi_delegate(strategy=planned)`，见 §5.2 与 `16` §7 决策 3）；跨进程崩溃的严格 exactly-once 与端到端联调待发布前验证
-> 指纹：**`fp-14`**（2026-10-12）给**专家包补上插件级资产**（doc `38`）：新增两个
+> 指纹：**`fp-19`**（2026-10-26）给**导出面补上逐实体的图标引用**（doc `51`）：
+> `AppServerExpertSkillRef` 增 `icon`（**技能目录相对路径**，如 `assets/icon.png`，字节走
+> `skill/file`），`AppServerExpertConnectorRef` 增 `icon`（**快照相对路径**，如
+> `avatars/connectors/github.svg`，必须出现在本 pack 的 `assets` 里，字节走 `import/asset`）。
+> 两者都可选、缺席即省略键，`AppServerExpertPack` 的 `pack_format 3 → 4`。字节的来路是
+> **安装期固化**：市场 `icons/<base>.<ext>` 与 entry 目录是兄弟关系，`copy_tree` 带不到它，
+> 所以导入时把它按实体类型落进快照（插件/团 → `avatars/`，单技能 → `assets/icon.<ext>`，
+> 单连接器 → `avatars/connectors/`），并把路径写进组件 payload 的 `avatar`（作者声明优先）。
+> 导出面因此不需要新方法：技能图标随 `skill/files` 走、连接器图标随 `pack.assets` 走。
+> **无方法增删**，计数仍 `56 / 83`。
+> 上一值 **`fp-18`**（2026-10-22）让**四类实体共享同一组展示字段**（doc `50`）：
+> `AppServerAgentSummary` / `AppServerTeamSummary` / `AppServerSkillSummary` /
+> `AppServerConnectorSummary` 各带 `display_name` / `display_description` / `tags` /
+> `quick_prompts` 四个**同名同型**字段（`{zh?, en?}`）。`display_description` 与
+> `quick_prompts` 从 `AppServerAgentDetail` **上移**到 summary（detail 经 `flatten`
+> 照旧携带，序列化结果不变）；连接器首次拥有这四个字段，`name` 仍是运行期标识
+> （工具命名空间 `connector__<name>__<tool>` 依赖它，不可替换）。取值在**导入期**按
+> 「作者声明 → 市场索引行 → 缺席」**逐语种**合并后固化进组件 payload，读面只做反序列化、
+> 不回查市场。**无方法增删**，计数仍 `56 / 83`。
+> 上一值 **`fp-17`**（2026-10-15）把连接器摘要里那个**名不副实**的字段改回原名（doc `47`）：
+> `AppServerConnectorSummary.auth_mode` 更名 `auth_transport`——该字段由 transport 推导，
+> 从来不是「认证方式」；「调用方要为这个连接器做什么」由 `credential.mode` 与 `status`
+> 回答（`34` §6.1，配套修复见 doc `46`）。**无方法增删**，计数仍 `56 / 83`。
+> 指纹：**`fp-16`**（2026-10-13）补齐**分类与标签的最后三个面**（doc `44`）：
+> `AppServerTeamSummary` 增 `tags` / `category_id`（包级展示元数据，`team/list` 与
+> `team/get` 直接读到），`AppServerSkillSummary` 增 `tags`（技能无 `plugin.json`，
+> 唯一来源是市场索引行——导入时按位配对后固化进组件 payload，投影期不回查市场活树，
+> 与技能内容本身的不可变语义一致）；`AppServerExpertPack` 增同名两字段并把
+> `pack_format 2 → 3`（**独立于指纹演进**：产物契约带上了市场的组织结构，成员包各带
+> 自己的声明，与 snapshot 作用域的 `assets` 相反）。**无方法增删**，计数仍 `56 / 83`。
+> 上一值 **`fp-15`**（2026-10-13）把**市场分类与标签**透出到协议面（doc `43`）：新增一个
+> **有 HTTP 路由**的方法 `store/categories`（`GET /api/app-server/store/categories`）——聚合
+> 所有启用市场的分类字典（experts manifest 顶层 `categories`）与市场级 tags 全集
+> （`tags_zh`/`tags_en` 按位配对）；`AppServerStoreItem` 增 `category_id` / `category`
+> （宿主侧 join 字典，未命中只给裸 id）；`AppServerAgentSummary` 增 `tags` / `category_id`——
+> **从 detail 上移**（`#[serde(flatten)]` 不能带两个同键），`AppServerAgentDetail` 相应失去
+> 这两个字段。技能/连接器条目没有 plugin.json，marketplace.json 行内 `tags_zh`/`tags_en`
+> 经索引读取层进入条目（manifest 优先回退 index，`legacy_tags_*` 按 zh 值去重并入）。
+> 计数 `55 / 82` → **`56 / 83`**。
+> 上一值 **`fp-14`**（2026-10-12）给**专家包补上插件级资产**（doc `38`）：新增两个
 > **WebSocket-only** 方法 `import/assets`（列一个不可变快照的 `avatars/` `bin/` `scripts/`
 > 清单，按 `path` 排序、带 sha256）与 `import/asset`（base64 单文件字节，与 `skill/file`
 > 同形），并给 `AppServerExpertPack` 加 `assets` / `avatar`（`pack_format 1 → 2`）——导出
@@ -516,12 +555,17 @@ agent/export { agent_id } → AppServerExpertPack   (kind = "agent")
 persona 正文的面**——上面的 `agent/get` 刻意没有承载它的字段，也不得增加（方案 `32` §2）。
 
 ```text
-pack_format                       // fp-8 起 = 1，fp-14 起 = 2；**独立于 fp-n**：产物契约的版本
+pack_format                       // fp-8 起 = 1，fp-14 起 = 2，fp-16 起 = 3，fp-19 起 = 4；**独立于 fp-n**：产物契约的版本
 kind / id / version / name / display_name / description
+tags[] / category_id?             // fp-16：包级展示元数据（doc 44）。成员包各带自己的声明
 persona { instructions, memory?, background? }   // instructions = Agent Markdown 正文，逐字
 model   { declared?, resolved?{provider_id?, model}, effort?, max_turns? }
-skills  [ { name, id } ]          // **按引用**：正文走 skill/files
+skills  [ { name, id, icon? } ]   // **按引用**：正文走 skill/files
+                                  // fp-19（doc 51）：icon = **技能目录相对路径**
+                                  // （`assets/icon.png`），字节走 skill/file
 connectors []                     // agent 恒空（该格式没有 Agent 级连接器声明，02 §5.1）
+                                  // team 面：{ id, name, enabled, icon? }，icon 是快照相对
+                                  // 路径（`avatars/connectors/x.svg`）且必须在 assets 里
 assets  [ { path, kind, size, digest } ]   // fp-14：插件级 avatars/ bin/ scripts/，按引用（38 §4.4.1）
 avatar?                           // fp-14：包级头像的快照相对路径，仅当它在 assets 里（38 D8）
 tool_policy { tools[], disallowed_tools[] }      // 声明，不是权限边界
@@ -552,6 +596,10 @@ team {
 ```
 
 - **成员顺序与去重与 `team/run` 逐字一致**：团长在前，其后按声明顺序，同名成员只占一个位置。
+- **展示元数据是逐包自己的**（`fp-16`，doc `44` D3）：顶层包带团队行的 `tags` / `category_id`，
+  每个成员包带**该成员自己的**声明——与 snapshot 作用域的 `assets`（成员恒空）恰好相反，
+  因为分类是成员自身的属性而不是包级资源。包只带裸 `category_id`，解析分类名需要消费方
+  自己持有等价字典（本仓的字典在 `store/categories`，跨宿主不通用）。
 - **要么全给、要么明确失败**：任一成员未安装 / 已停用 / 被 `deny` ⇒ 整包失败并**指名**该成员，
   不产出残缺名单（与 `team/run` 创建前硬失败同码同义）。
 - `team_version` 给了且与包的 `version` 不同 ⇒ `version_mismatch`（与 `team/run` 同）。
@@ -580,6 +628,7 @@ routing_constraints
 workflow_limits
 compatibility_status
 team_runtime_capabilities
+tags[] / category_id                  # fp-16 起（doc 44）：包级展示元数据，与 store 条目同源
 ```
 
 V1 Team Runtime 能力（模式 A）：
@@ -621,6 +670,39 @@ connector/status
 ```
 
 Connector 返回工具摘要、认证状态和策略摘要，不返回 Token/API Key。工具名必须为命名空间后的公开名称。
+
+**技能标签（`fp-16` 起，doc `44`）**：`AppServerSkillSummary` 增 `tags`（本地化数组）。
+技能没有 `plugin.json`，其标签的唯一来源是市场索引行（`.codebuddy-skill/marketplace.json`
+的 `tags_zh`/`tags_en`，按位配对、`legacy_tags_*` 按 zh 值去重）——导入时固化进技能组件
+payload，`skill/list` / `skill/get` 经与头像同一条 provenance 链（运行时目录 →
+`agent-store/<snapshot_id>/<slug>`）读回。**投影期不回查市场活树**：快照不可变，所以
+已完成安装的技能的标签与其安装时的市场声明一致，市场随后改标签要走一次升级
+（`store/update-entry`）才生效——与技能内容本身同一语义。内置技能与用户技能没有标签源，
+该字段缺席。技能市场只有扁平标签、没有分类字典，因此**技能面没有 `category_id`**。
+
+**四类实体的展示字段（`fp-18` 起，doc `50`）**：`agent` / `team` / `skill` / `connector`
+四类实体的 summary（因而 list 与 get 两面）各带四个**同名同型**字段：
+
+```text
+display_name?         { zh?, en? }          # 展示名，缺席时客户端回落到 name
+display_description?  { zh?, en? }          # 展示简介
+tags[]                { zh?, en? }[]        # 展示标签（位置配对）
+quick_prompts[]       { zh?, en? }[]        # 提示词示例
+```
+
+四条规矩：
+
+1. **缺席就是缺席**：四个字段都允许整体缺席（`display_*` 省略、数组为空）。宿主**绝不**把
+   单语的 `name` / `description` 复制进 `display_*`——连接器索引行的顶层 `description`
+   有 210/283 条是英文（doc `50` P4），拿它兜底等于把「中文界面显示英文」固化进契约。
+2. **逐语种合并**：`display_name.zh` 与 `display_name.en` 各自独立回落（作者声明 →
+   市场索引行 → 缺席），一侧有值不代表另一侧有值。
+3. **导入期归一，读面只搬运**：合并发生在 importer（`DisplayFields::merge`），结果写进组件
+   payload 的四个同名键；`agent|team|skill|connector` 四条读面只做反序列化，不新增任何
+   市场索引读取或 DB 查询。老快照没有这些键 → 字段缺席，要拿到就 `store/update-entry`。
+4. **连接器的 `name` 不是展示名**：它是工具命名空间的一段（`connector__<name>__<tool>`，
+   `connector/call` 依赖它），所以展示名单独用 `display_name`，两者不可互换。
+
 
 #### 4.3.1 技能文件读面（`skill/files` · `skill/file`，2026-09-20 加入）
 
@@ -1259,6 +1341,7 @@ PluginSnapshot 对用户不可见。
 
 ```text
 GET  /api/app-server/store                                      # store/list（聚合目录）
+GET  /api/app-server/store/categories                           # store/categories（分类字典 + 市场级 tags，fp-15）
 POST /api/app-server/store/{marketplace_id}/entries/{entry}/install  # store/install-entry（一键安装）
 POST /api/app-server/store/{marketplace_id}/entries/{entry}/update   # store/update-entry（升级，fp-12）
 GET  /api/app-server/store/{marketplace_id}/entries/{entry}/assets/{*path}  # 条目展示资产（头像等）
@@ -1274,7 +1357,9 @@ items[] {
   kind,                                # "agent" | "team" | "skill" | "connector"
   name,                                # displayName 本地化值，否则条目名
   display_name / profession / display_description,   # LocalizedText（plugin.json 保真）
-  tags[] / quick_prompts[],            # LocalizedText 数组（plugin.json 保真）
+  tags[] / quick_prompts[],            # LocalizedText 数组（plugin.json 保真；skill/connector 回退索引行 tags）
+  category_id,                         # plugin.json 的裸分类引用（如 04-DataAI，fp-15）
+  category,                            # 宿主 join 字典后的完整分类；未命中省略（fp-15）
   description,
   avatar_url,                          # store 资产端点相对 URL
   version, source_kind,
@@ -1297,6 +1382,15 @@ items[] {
   jpeg/webp/gif）；
 - `installed` 由 `marketplace_id + entry_name` provenance 查快照，再查组件
   `installed=1`；`update_available` = 快照版本 ≠ 条目版本；
+- **分类与标签（`fp-15`，doc `43`）**：`tags` 的回退链是 plugin.json manifest.tags →
+  marketplace.json 行内 tags（skill/connector 无 plugin.json，这是唯一来源）→ 空数组；
+  行内 `tags_zh`/`tags_en` 按下标配对，`legacy_tags_*` 以 zh 值去重后并入。
+  `category_id` 原样透传；`category` 是宿主用同一市场的字典 join 出的结果——
+  **未命中只给 `category_id`，绝不猜**。字典端点 `store/categories` 聚合启用市场的
+  experts manifest 顶层 `categories` 与市场级 `tags_zh/tags_en` 全集；experts 缓存
+  缺失或解析失败时 `items` 为空数组而非错误（分类缺失不是故障）。`agent/list` 的
+  摘要自此携带 `tags` / `category_id`（自 `agent/get` 的 detail 上移，detail 字段删除——
+  `flatten` 不能带两个同键）；
 - `published_at` 是**市场自己声明的**发布日期（`18` §4.2）：服务端只接受严格
   `YYYY-MM-DD` 且月/日真实存在，其余一律丢弃且**不阻断条目**；**绝不派生**
   （不用导入时间 / 快照 `added_at` / 市场刷新时间顶上）。缺席 = 这个市场没有

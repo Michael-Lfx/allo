@@ -151,7 +151,7 @@ export const CanvasResourceMentionTextarea = forwardRef<HTMLTextAreaElement, Pro
 
     const syncMention = (nextValue: string, cursor: number) => {
         const prefix = nextValue.slice(0, cursor);
-        const match = /@([^\s@,.;:!?，。；：！？、)\]}】）]*)$/.exec(prefix);
+        const match = /[@＠]([^\s@＠,.;:!?，。；：！？、)\]}】）]*)$/.exec(prefix);
         if (!match || !references.some((item) => item.active)) {
             closeMention();
             return;
@@ -448,7 +448,7 @@ function MentionMenu({ anchor, references, activeIndex, theme, preferredWidth, o
     return createPortal(
         <div
             data-canvas-resource-mention-menu="true"
-            className="canvas-overlay fixed z-[var(--z-tooltip)] max-h-56 overflow-y-auto p-1"
+            className="canvas-overlay pointer-events-auto fixed z-[var(--z-max)] max-h-56 overflow-y-auto p-1"
             style={{ ...canvasOverlayStyle(theme), left, top, width: menuWidth }}
             onPointerDown={stopCanvasInteraction}
             onMouseDown={stopCanvasInteraction}

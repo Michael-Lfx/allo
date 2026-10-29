@@ -9,7 +9,7 @@ use std::sync::Arc;
 use nomifun_api_types::{
     AddExecutionStepsRequest, AdjustAgentExecutionRequest, ConfigureExecutionStepRequest,
     ConversationResponse, CreateAgentExecutionRequest, CreateExecutionFromTemplateRequest,
-    ExecutionModelPool, ExecutionModelRef, ExecutionStepProfile, PlannedExecutionStep,
+    ExecutionModelPool, ExecutionModelRef, PlannedExecutionStep,
     ReassignExecutionStepRequest,
     RenameAgentExecutionRequest, ReplanAgentExecutionRequest, ResolvedPresetSnapshot,
     RetryExecutionStepRequest, SteerExecutionStepRequest, UpdateExecutionStepRequest,
@@ -19,7 +19,7 @@ use nomifun_common::{
     AdaptationPolicy, AgentDelegationTask, AgentExecutionActor, AgentExecutionActorType,
     AgentExecutionEventKind, AgentExecutionId, AgentExecutionReceipt, AgentExecutionStatus,
     AgentStepMode, AgentToolPolicy, DecisionPolicy, DelegationPolicy, ExecutionStepKind, PlanGate,
-    StepFailurePolicy,
+    StepFailurePolicy, plan_gate_for_lead_session_mode,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -586,7 +586,13 @@ async fn create_context(
         model_pool,
         lead_model,
         delegation_policy,
-        plan_gate: PlanGate::Automatic,
+        // The plan gate is the only approval surface a user can actually
+        // answer once work is delegated: Attempts run in their own YOLO
+        // sessions and the execution transcript is read-only, so a per-tool
+        // card raised inside one only ever times out. A lead that chose
+        // Default or Auto-Accept Edits asked to review work before it runs, so
+        // park the plan once instead of silently escalating the children.
+        plan_gate: plan_gate_for_lead_session_mode(ctx.session_mode.as_deref()),
         adaptation_policy: AdaptationPolicy::Fixed,
         decision_policy,
         inherited_work_dir,
@@ -692,29 +698,33 @@ fn explicit_plan(
     }
     let mut planned: Vec<PlannedExecutionStep> = steps
         .into_iter()
-        .map(|step| PlannedExecutionStep {
-            title: step.name,
-            spec: step.prompt,
-            profile: Some(ExecutionStepProfile {
-                kind: "general".to_owned(),
-                needs_vision: false,
-                needs_long_context: false,
-                needs_high_reasoning: false,
-                bulk: true,
-            }),
-            kind: ExecutionStepKind::Agent,
-            agent_mode: Some(AgentStepMode::Normal),
-            depends_on: Vec::new(),
-            // Explicit fan-out describes work, not a participant cardinality.
-            // The router assigns every node inside the inherited model/preset
-            // authority, including plans with more steps than participants.
-            participant_index: None,
-            assignment_rationale: Some("explicit parallel delegation".to_owned()),
-            role: step.role,
-            tool_policy: step.tool_policy,
-            fanout_group: Some("explicit".to_owned()),
-            control_policy: None,
-            failure_policy: StepFailurePolicy::FailExecution,
+        .map(|step| {
+            let assignment_rationale = match step.model_reason.as_deref() {
+                Some(reason) => format!("explicit parallel delegation: {reason}"),
+                None => "explicit parallel delegation".to_owned(),
+            };
+            // No profile: an omitted model inherits the lead participant instead
+            // of being scored toward an economy model. A named model is bound
+            // to that pool participant when the plan is materialized.
+            PlannedExecutionStep {
+                title: step.name,
+                spec: step.prompt,
+                profile: None,
+                kind: ExecutionStepKind::Agent,
+                agent_mode: Some(AgentStepMode::Normal),
+                depends_on: Vec::new(),
+                participant_index: None,
+                requested_model: step.model.map(|model| ExecutionModelRef {
+                    provider_id: model.provider_id,
+                    model: model.model,
+                }),
+                assignment_rationale: Some(assignment_rationale),
+                role: step.role,
+                tool_policy: step.tool_policy,
+                fanout_group: Some("explicit".to_owned()),
+                control_policy: None,
+                failure_policy: StepFailurePolicy::FailExecution,
+            }
         })
         .collect();
     if synthesize {
@@ -727,6 +737,7 @@ fn explicit_plan(
             agent_mode: Some(AgentStepMode::Synthesis),
             depends_on: (0..planned.len()).collect(),
             participant_index: None,
+            requested_model: None,
             assignment_rationale: Some("synthesis".to_owned()),
             // Role is prompt/routing/display context; tool authority is the
             // separate typed policy below.
@@ -863,7 +874,11 @@ async fn delegate(deps: Arc<GatewayDeps>, ctx: CallerCtx, params: DelegateParams
         work_dir: work_dir.or(defaults.inherited_work_dir),
         model_pool: defaults.model_pool.clone(),
         delegation_policy: defaults.delegation_policy,
-        plan_gate: plan_gate.map(Into::into).unwrap_or(defaults.plan_gate),
+        // The host floor is the user's session mode; `nomi_delegate` may tighten
+        // it but can never argue it back down to automatic.
+        plan_gate: plan_gate.map_or(defaults.plan_gate, |requested| {
+            nomifun_common::strictest_plan_gate(defaults.plan_gate, requested.into())
+        }),
         adaptation_policy: adaptation_policy
             .map(Into::into)
             .unwrap_or(defaults.adaptation_policy),
@@ -920,7 +935,15 @@ async fn delegate(deps: Arc<GatewayDeps>, ctx: CallerCtx, params: DelegateParams
         Ok(execution) => ok(delegate_receipt(
             execution.execution_id,
             execution.status,
-            "Delegated work was accepted. It will continue in the collaboration panel; inspect it only when progress is needed.",
+            if execution.plan_gate == PlanGate::RequireApproval {
+                // The user reviews the plan, so the lead must not report the
+                // work as started: nothing runs until the plan is approved.
+                "Delegated work was accepted and the plan needs the user's approval \
+                 before any sub-Agent starts. End this turn and tell the user to \
+                 approve the plan; do not claim the work has started."
+            } else {
+                "Delegated work was accepted. It will continue in the collaboration panel; inspect it only when progress is needed."
+            },
         )),
         Err(error) => json!({"error":error.to_string()}),
     }
@@ -1356,7 +1379,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
         CapabilityMeta::new(
             "nomi_delegate",
             "agent_execution",
-            "Delegate work into one Agent Execution. Choose exactly one native-JSON shape. planned: strategy='planned' plus goal and optional work_dir/model_pool(object)/plan_gate/adaptation_policy/max_parallel(integer); never send tasks or synthesize. parallel: strategy='parallel' plus tasks(array of 1-16 objects) and optional synthesize(boolean); never send planned aggregate settings. At a top-level Conversation this creates an execution; inside an active Attempt it atomically appends Steps and returns immediately, so end the turn without polling. Returns the canonical execution receipt.",
+            "Delegate work into one Agent Execution. Choose exactly one native-JSON shape. planned: strategy='planned' plus goal and optional work_dir/model_pool(object)/plan_gate/adaptation_policy/max_parallel(integer); never send tasks or synthesize. parallel: strategy='parallel' plus tasks(array of 1-16 objects) and optional synthesize(boolean); never send planned aggregate settings. A task may set model {provider_id, model} only when that pair is already in the execution pool, plus model_reason; omit model to inherit the lead model. A model outside the pool is rejected and no execution is created. At a top-level Conversation this creates an execution; inside an active Attempt it atomically appends Steps and returns immediately, so end the turn without polling. Returns the canonical execution receipt.",
             DangerTier::Write,
         ),
         |deps, ctx, params| delegate(deps, ctx, params),
@@ -1384,6 +1407,7 @@ pub(crate) fn register(out: &mut Vec<Capability>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomifun_common::AgentDelegationModel;
     use crate::registry::Registry;
 
     const ATTEMPT_ID: &str = "0190f5fe-7c00-7a00-8000-000000000003";
@@ -1480,7 +1504,12 @@ mod tests {
                 "strategy": "parallel",
                 "tasks": [
                     {"name": "planner", "prompt": "make a plan"},
-                    {"name": "reviewer", "prompt": "review the result"}
+                    {
+                        "name": "reviewer",
+                        "prompt": "review the result",
+                        "model": {"provider_id": "provider-a", "model": "cheap"},
+                        "model_reason": "批量检索"
+                    }
                 ],
                 "synthesize": true
             }),
@@ -1511,12 +1540,16 @@ mod tests {
                     prompt: "a".to_owned(),
                     role: None,
                     tool_policy: AgentToolPolicy::Full,
+                    model: None,
+                    model_reason: None,
                 },
                 AgentDelegationTask {
                     name: "B".to_owned(),
                     prompt: "b".to_owned(),
                     role: None,
                     tool_policy: AgentToolPolicy::ReadOnly,
+                    model: None,
+                    model_reason: None,
                 },
             ],
             true,
@@ -1529,6 +1562,35 @@ mod tests {
         assert_eq!(steps[1].tool_policy, AgentToolPolicy::ReadOnly);
         assert_eq!(steps[2].tool_policy, AgentToolPolicy::ReadOnly);
         assert!(steps.iter().all(|step| step.participant_index.is_none()));
+        assert!(steps.iter().all(|step| step.profile.is_none()));
+        assert!(steps.iter().all(|step| step.requested_model.is_none()));
+    }
+
+    #[test]
+    fn explicit_parallel_plan_pins_a_named_pool_model_and_keeps_the_reason() {
+        let steps = explicit_plan(
+            vec![AgentDelegationTask {
+                name: "scan".to_owned(),
+                prompt: "list files".to_owned(),
+                role: None,
+                tool_policy: AgentToolPolicy::ReadOnly,
+                model: Some(AgentDelegationModel {
+                    provider_id: "provider-a".to_owned(),
+                    model: "cheap".to_owned(),
+                }),
+                model_reason: Some("批量检索".to_owned()),
+            }],
+            false,
+        )
+        .unwrap();
+        let requested = steps[0].requested_model.as_ref().expect("named model");
+        assert_eq!(requested.provider_id, "provider-a");
+        assert_eq!(requested.model, "cheap");
+        assert!(steps[0].profile.is_none());
+        assert_eq!(
+            steps[0].assignment_rationale.as_deref(),
+            Some("explicit parallel delegation: 批量检索")
+        );
     }
 
     #[test]
@@ -1539,18 +1601,24 @@ mod tests {
                 prompt: "inspect".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
             AgentDelegationTask {
                 name: "A".to_owned(),
                 prompt: "\n".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
             AgentDelegationTask {
                 name: "A".to_owned(),
                 prompt: "inspect".to_owned(),
                 role: Some("\t".to_owned()),
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             },
         ] {
             assert!(explicit_plan(vec![task], false).is_err());
@@ -1624,12 +1692,16 @@ mod tests {
                     prompt: "implement".to_owned(),
                     role: Some("builder".to_owned()),
                     tool_policy: AgentToolPolicy::Full,
+                    model: None,
+                    model_reason: None,
                 },
                 AgentDelegationTask {
                     name: "domain".to_owned(),
                     prompt: "review".to_owned(),
                     role: Some("领域专家".to_owned()),
                     tool_policy: AgentToolPolicy::ReadOnly,
+                    model: None,
+                    model_reason: None,
                 },
             ],
             false,
@@ -1678,6 +1750,45 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewing_lead_session_parks_the_delegated_plan_instead_of_escalating() {
+        // A delegated Attempt runs in its own YOLO session and its transcript
+        // is read-only, so the only approval a user can answer is the plan
+        // gate. Default / Auto-Accept Edits leads must therefore review the
+        // plan rather than have the children silently write as YOLO.
+        for mode in [Some("default"), Some("auto_edit")] {
+            assert_eq!(
+                plan_gate_for_lead_session_mode(mode),
+                PlanGate::RequireApproval,
+                "{mode:?}"
+            );
+        }
+        // YOLO asked not to be asked, and an absent mode means no host recorded
+        // a preference (Remote companion, tests), where the runtime default is
+        // YOLO as well.
+        for mode in [Some("yolo"), None] {
+            assert_eq!(plan_gate_for_lead_session_mode(mode), PlanGate::Automatic, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn delegate_arguments_cannot_loosen_the_session_planning_floor() {
+        // The session mode is the host's floor. A `plan_gate: automatic`
+        // argument from the model would otherwise undo the review the user
+        // asked for by choosing Default / Auto-Accept Edits.
+        let floor = plan_gate_for_lead_session_mode(Some("default"));
+        assert_eq!(floor, PlanGate::RequireApproval);
+        assert_eq!(
+            nomifun_common::strictest_plan_gate(floor, PlanGate::Automatic),
+            PlanGate::RequireApproval
+        );
+        assert_eq!(
+            nomifun_common::strictest_plan_gate(PlanGate::Automatic, PlanGate::RequireApproval),
+            PlanGate::RequireApproval,
+            "tightening is always allowed"
+        );
+    }
+
+    #[test]
     fn attempt_actor_cannot_bypass_delegate_with_generic_graph_commands() {
         let actor = AgentExecutionActor::agent(CONVERSATION_ID, Some(ATTEMPT_ID.to_owned()));
         let add = ExecutionUpdateParams::Add {
@@ -1688,6 +1799,8 @@ mod tests {
                 prompt: "must be rejected".to_owned(),
                 role: None,
                 tool_policy: AgentToolPolicy::Full,
+                model: None,
+                model_reason: None,
             }],
             synthesize: false,
         };

@@ -50,6 +50,9 @@ pub struct SendMessageData {
     /// for this turn. They are plain instruction text, never executable hooks.
     #[serde(default)]
     pub loaded_skill_snapshots: Vec<LoadedSkillSnapshot>,
+    /// Host-ranked catalog hint for this user turn (L1 assist, not full bodies).
+    #[serde(default)]
+    pub catalog_discovery: Option<CatalogDiscoveryHint>,
     /// Turn origin marker (companion/cron/autowork/idmm). `None`/empty = a human
     /// owner is speaking. Same semantics as the collector's `payload_origin`
     /// red line: non-empty origins are NOT human intent and must not be
@@ -65,7 +68,32 @@ pub struct LoadedSkillSnapshot {
     pub source: String,
     pub version_hash: String,
     pub content: String,
+    /// Absolute SKILL.md path when known. Injection points the model at this
+    /// file instead of dumping the full body into the user turn.
+    #[serde(default)]
+    pub location: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CatalogDiscoveryHint {
+    pub ranked_ids: Vec<String>,
+    pub listing_truncated: bool,
+    pub method: String,
+    pub entries: Vec<CatalogDiscoveryEntry>,
+    #[serde(default)]
+    pub applied_to_l1: bool,
+    #[serde(default)]
+    pub latency_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CatalogDiscoveryEntry {
+    pub skill_id: String,
+    pub name: String,
+    pub description: String,
+}
+
+const SKILL_POINTER_BODY_LIMIT: usize = 400;
 
 pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapshot]) -> String {
     if skills.is_empty() {
@@ -73,26 +101,154 @@ pub fn inject_loaded_skill_context(content: String, skills: &[LoadedSkillSnapsho
     }
     let sections = skills
         .iter()
-        .map(|skill| {
-            format!(
-                "[Loaded Skill: {}]\nSource: {}\nVersion: {}\n\n{}\n[/Loaded Skill]",
-                skill.name, skill.source, skill.version_hash, skill.content
-            )
-        })
+        .map(render_skill_pointer)
         .collect::<Vec<_>>()
         .join("\n\n");
     format!(
         "[Loaded Skills]\n\
-         The user explicitly selected these Skills. Their instructions are already active for this turn.\n\
-         Apply them directly. Do not call the Skill tool to load or invoke a selected Skill by name;\n\
-         that tool only exposes the runtime-native Skill catalog and may not contain this selection.\n\
+         The user explicitly selected these Skills (force). Follow the pointer below; do not assume the excerpt is the full procedure.\n\
+         Do not call the Skill tool to reload a skill listed here — it is already selected.\n\
+         Other catalog skills that were not selected may still be loaded with the Skill tool when they match the task.\n\
          If a selected Skill refers to a slash command or another Skill, perform the described workflow directly\n\
-         instead of using the Skill tool to load that reference.\n\n\
+         instead of using the Skill tool to load that reference.\n\
+         Host tools named by a Skill (for example briefing_create) remain available even if they are not in this excerpt.\n\
+         Prefer those tools over reconstructing the workflow with web_search or nomi_delegate.\n\
+         If a selected Skill does not match the user request, say so and use the matching host tool instead.\n\n\
          {sections}\n\
          [/Loaded Skills]\n\n\
          [Current User Request]\n\
          {content}"
     )
+}
+
+pub fn inject_catalog_discovery_context(
+    content: String,
+    hint: Option<&CatalogDiscoveryHint>,
+) -> String {
+    let Some(hint) = hint else {
+        return content;
+    };
+    if !hint.applied_to_l1 || hint.entries.is_empty() {
+        return content;
+    }
+    let mut lines = vec![
+        "[Catalog Skills this turn]".to_owned(),
+        "These catalog skills are the best matches for the current user request.".to_owned(),
+        "If one matches, call the Skill tool with its catalog id before acting.".to_owned(),
+        "Skip any skill already listed under [Loaded Skills].".to_owned(),
+    ];
+    if hint.listing_truncated {
+        lines.push(
+            "The system listing is truncated; prefer this ranked subset, or SkillSearch if available."
+                .to_owned(),
+        );
+    }
+    for entry in &hint.entries {
+        lines.push(format!(
+            "- {} (`{}`): {}",
+            entry.name, entry.skill_id, entry.description
+        ));
+    }
+    if lines.iter().all(|line| !line.starts_with("- ")) {
+        for id in &hint.ranked_ids {
+            lines.push(format!("- `{id}`"));
+        }
+    }
+    lines.push("[/Catalog Skills this turn]".to_owned());
+    format!("{}\n\n{content}", lines.join("\n"))
+}
+
+fn render_skill_pointer(skill: &LoadedSkillSnapshot) -> String {
+    let (frontmatter, body) = split_skill_frontmatter(&skill.content);
+    let description = frontmatter_field(&frontmatter, "description")
+        .or_else(|| frontmatter_field(&frontmatter, "when_to_use"))
+        .unwrap_or_default();
+    let location = skill
+        .location
+        .as_deref()
+        .or_else(|| frontmatter_field(&frontmatter, "location"))
+        .unwrap_or("");
+    let mut lines = vec![
+        format!("[Loaded Skill: {}]", skill.name),
+        format!("Source: {}", skill.source),
+        format!("Version: {}", skill.version_hash),
+    ];
+    if !description.is_empty() {
+        lines.push(format!("Description: {description}"));
+    }
+    if !location.is_empty() {
+        lines.push(format!("Path: {location}"));
+        lines.push(format!(
+            "Read `{location}` (SKILL.md) when you need the full procedure. Do not invent a substitute workflow."
+        ));
+    } else if !frontmatter.is_empty() {
+        lines.push(
+            "Full instructions live in this Skill's SKILL.md. Read that file if you need the procedure."
+                .to_owned(),
+        );
+    } else {
+        let excerpt = compact_skill_excerpt(body);
+        if !excerpt.is_empty() {
+            lines.push(String::new());
+            lines.push(excerpt);
+        }
+    }
+    lines.push("[/Loaded Skill]".to_owned());
+    lines.join("\n")
+}
+
+fn split_skill_frontmatter(content: &str) -> (&str, &str) {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return ("", content);
+    }
+    let after_open = &trimmed[3..];
+    let after_open = after_open
+        .strip_prefix('\n')
+        .or_else(|| after_open.strip_prefix("\r\n"))
+        .unwrap_or(after_open);
+    let Some(end) = after_open.find("\n---") else {
+        return ("", content);
+    };
+    let frontmatter = &after_open[..end];
+    let rest = &after_open[end + 4..];
+    let body = rest
+        .strip_prefix('\n')
+        .or_else(|| rest.strip_prefix("\r\n"))
+        .unwrap_or(rest);
+    (frontmatter, body)
+}
+
+fn frontmatter_field<'a>(frontmatter: &'a str, key: &str) -> Option<&'a str> {
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        let Some((found_key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if found_key.trim() == key {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn compact_skill_excerpt(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.chars().count() <= SKILL_POINTER_BODY_LIMIT {
+        return trimmed.to_owned();
+    }
+    let mut excerpt = trimmed
+        .chars()
+        .take(SKILL_POINTER_BODY_LIMIT)
+        .collect::<String>();
+    excerpt.push('…');
+    excerpt
 }
 
 /// Attach the immutable conversation preset to the first prompt understood by
@@ -446,15 +602,85 @@ mod tests {
                 source: "user".to_owned(),
                 version_hash: "abc123".to_owned(),
                 content: "Inspect the PDF before answering.".to_owned(),
+                location: None,
             }],
         );
 
         assert!(content.contains("[Loaded Skills]"));
-        assert!(content.contains("instructions are already active for this turn"));
-        assert!(content.contains("Do not call the Skill tool to load or invoke a selected Skill"));
+        assert!(content.contains("Do not call the Skill tool to reload a skill listed here"));
+        assert!(content.contains("Other catalog skills that were not selected may still be loaded"));
         assert!(content.contains("perform the described workflow directly"));
         assert!(content.contains("Inspect the PDF before answering."));
+        assert!(content.contains("Prefer those tools over reconstructing the workflow"));
         assert!(content.ends_with("Summarize the document"));
+    }
+
+    #[test]
+    fn loaded_skill_injection_uses_frontmatter_pointer_not_the_full_body() {
+        let body = "x".repeat(2000);
+        let content = inject_loaded_skill_context(
+            "做个当日新闻口播".to_owned(),
+            &[LoadedSkillSnapshot {
+                skill_id: "builtin:art-motion".to_owned(),
+                name: "art-motion".to_owned(),
+                source: "builtin".to_owned(),
+                version_hash: "def456".to_owned(),
+                content: format!(
+                    "---\nname: art-motion\ndescription: Motion graphics from narration\n---\n{body}"
+                ),
+                location: Some("C:/data/builtin-skills/art-motion/SKILL.md".to_owned()),
+            }],
+        );
+        assert!(content.contains("Description: Motion graphics from narration"));
+        assert!(content.contains("Path: C:/data/builtin-skills/art-motion/SKILL.md"));
+        assert!(content.contains("Read `C:/data/builtin-skills/art-motion/SKILL.md`"));
+        assert!(
+            !content.contains(&body),
+            "full SKILL.md body must not occupy the user turn"
+        );
+        assert!(content.contains("briefing_create"));
+    }
+
+    #[test]
+    fn catalog_discovery_is_omitted_while_shadowing() {
+        let hint = CatalogDiscoveryHint {
+            ranked_ids: vec!["builtin:officecli".to_owned()],
+            listing_truncated: true,
+            method: "weighted_lexical_v1".to_owned(),
+            entries: vec![CatalogDiscoveryEntry {
+                skill_id: "builtin:officecli".to_owned(),
+                name: "officecli".to_owned(),
+                description: "Office documents".to_owned(),
+            }],
+            applied_to_l1: false,
+            latency_ms: 2,
+        };
+        assert_eq!(
+            inject_catalog_discovery_context("Write a workbook".to_owned(), Some(&hint)),
+            "Write a workbook"
+        );
+    }
+
+    #[test]
+    fn catalog_discovery_lists_ranked_ids_when_applied() {
+        let hint = CatalogDiscoveryHint {
+            ranked_ids: vec!["builtin:officecli".to_owned()],
+            listing_truncated: true,
+            method: "weighted_lexical_v1".to_owned(),
+            entries: vec![CatalogDiscoveryEntry {
+                skill_id: "builtin:officecli".to_owned(),
+                name: "officecli".to_owned(),
+                description: "Office documents".to_owned(),
+            }],
+            applied_to_l1: true,
+            latency_ms: 3,
+        };
+        let content =
+            inject_catalog_discovery_context("Write a workbook".to_owned(), Some(&hint));
+        assert!(content.contains("[Catalog Skills this turn]"));
+        assert!(content.contains("builtin:officecli"));
+        assert!(content.contains("call the Skill tool"));
+        assert!(content.ends_with("Write a workbook"));
     }
 
     #[test]
@@ -480,6 +706,7 @@ mod tests {
             files: vec!["/tmp/a.txt".into()],
             inject_skills: vec!["review".into()],
             loaded_skill_snapshots: vec![],
+            catalog_discovery: None,
             origin: None,
         };
         let json = serde_json::to_value(&data).unwrap();
@@ -504,6 +731,7 @@ mod tests {
         assert!(data.loaded_skill_snapshots.is_empty());
         assert!(data.origin.is_none());
         assert!(data.source_message_id.is_none());
+        assert!(data.catalog_discovery.is_none());
     }
 
     #[test]

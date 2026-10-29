@@ -44,6 +44,7 @@
     "retry": "重试",
     "filterEmpty": "没有匹配的任务",
     "untitled": "未命名任务",
+    "briefingKind": "资讯口播",
     "importProject": "导入工程",
     "importDesktopOnly": "导入工程仅桌面端可用。",
     "importOk": "工程已导入",
@@ -839,7 +840,7 @@
       "refCustom": "参考",
       "refEmpty": "空槽",
       "refOpeningEmpty": "开场镜，无上一镜",
-      "refContinuityPending": "上一镜完成后自动填入",
+      "refContinuityPending": "不会自动填入，需要时再手动添加",
       "refUpload": "替换",
       "refLibrary": "从库选用",
       "refUnbind": "移除",
@@ -875,7 +876,7 @@
       "maxAudioRefs": "每镜最多 3 路音色",
       "cascadeRetake": "顺延",
       "cascadeTitle": "顺延重渲后续镜头？",
-      "cascadeBody": "后续镜的尾帧参考已过期。确认后将按顺序重渲本场后续镜头并消耗积分。",
+      "cascadeBody": "后续镜头按各自的站位描述生成，不再使用上一镜尾帧。确认后将按顺序重渲本场后续镜头并消耗积分。",
       "microflow": {
         "script": "脚本",
         "refs": "参考装配",
@@ -1196,7 +1197,9 @@
       "rendering": "渲染中",
       "finalizing": "完成中"
     },
-    "progress": "进度: {{percent}}%"
+    "progress": "进度: {{percent}}%",
+    "fullscreen": "最大化",
+    "exitFullscreen": "退出最大化"
   },
   "briefing": {
     "format": "时长",

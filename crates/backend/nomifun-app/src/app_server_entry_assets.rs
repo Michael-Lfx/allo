@@ -82,6 +82,34 @@ impl AppServerEntryAssets {
         self.avatar_for_snapshot(&row.snapshot_id).await
     }
 
+    /// The display metadata one installed product's component payload carries
+    /// (`50` §3.5).
+    ///
+    /// Walks the same provenance chain as the avatar resolution — runtime
+    /// product → snapshot → skill component payload — and reads the four keys
+    /// the importer stamped in (`display_name`, `display_description`,
+    /// `quick_prompts`, `tags`). `None` = not a market product, or a snapshot
+    /// predating `50` (whose fields the client fills from `name` /
+    /// `description`).
+    pub async fn display_for_skill(
+        &self,
+        snapshot_id: &str,
+        slug: Option<&str>,
+    ) -> Option<nomifun_importer::DisplayFields> {
+        let components = self.snapshots.get_components(snapshot_id).await.ok()?;
+        // The payload that owns this skill: prefer the component whose
+        // relative path carries the runtime slug, else the first skill row.
+        let row = components
+            .iter()
+            .filter(|component| component.kind == "skill")
+            .find(|component| {
+                slug.is_none_or(|name| component.relative_path.as_deref().is_some_and(|rel| rel.contains(name)))
+            })?;
+        let payload: serde_json::Value = serde_json::from_str(&row.payload_json).ok()?;
+        let display = crate::app_server_display::display_from_payload(&payload);
+        (!display.is_empty()).then_some(display)
+    }
+
     /// Drop the memo (market refresh / re-install may change an entry icon).
     pub async fn invalidate(&self) {
         self.cache.lock().await.clear();

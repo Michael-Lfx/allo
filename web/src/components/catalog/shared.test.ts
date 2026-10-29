@@ -36,7 +36,7 @@ describe("connectorNeedsAuth", () => {
 
   it("never offers OAuth to a connector that authenticates with a key", () => {
     // The decisive case for `34` §6.1: a `token` connector is url-shaped, so the
-    // transport-derived `auth_mode` said `oauth` and the row was handed an
+    // transport-derived `auth_transport` said `oauth` and the row was handed an
     // authorization entry point it cannot use. The mode is the only field that
     // separates it from a real OAuth connector, since the status strings agree.
     expect(connectorNeedsAuth({ credential: credential("token"), status: "authorization_required" })).toBe(false);

@@ -1,4 +1,4 @@
-//! 迁移 075（`learning_lessons.source_paths_json`）的契约：多引用（t4 评审
+//! 迁移 078（`learning_lessons.source_paths_json`）的契约：多引用（t4 评审
 //! 补齐）的课时来源列表是 `source_path`/`source_start`/`source_end` 三列的
 //! 伴随列（首个 = 主来源 = 三列的兼容位），老行由三列回填成单元素数组；
 //! 三列保留不动（读侧对空列表回退三列）。

@@ -17,7 +17,7 @@ import type { ServerWebSocket } from "bun";
 import { decodeHistoryCursor } from "../src/lib/history-cursor";
 
 const PORT = Number(process.argv[2] ?? 17860);
-const PROTOCOL_VERSION = "fp-14";
+const PROTOCOL_VERSION = "fp-19";
 const AGENT_ID = "0190f5fe-7c00-7a00-8000-000000000004";
 
 interface MockRun {
@@ -150,7 +150,15 @@ interface MockConnector {
   description: string | null;
   kind: string;
   transport_summary: string;
-  auth_mode: "none" | "oauth";
+  /** Transport shape only; the auth affordance comes from `credential_mode`. */
+  auth_transport: "none" | "oauth";
+  /**
+   * What the connector actually needs (`34` §6.1). Drives `status` and
+   * `auth_status`, exactly like the host's `credential.mode`: a url-shaped
+   * connector declaring `none` (platform-held credentials) must not offer an
+   * authorization entry point.
+   */
+  credential_mode: "none" | "oauth" | "token";
   enabled: boolean;
   tools: Array<{ name: string; description: string | null; input_schema?: unknown }>;
   /** Last probe outcome; `false` must never surface as `connected`. */
@@ -203,6 +211,7 @@ const CONNECTOR_IDS = {
   playwright: "0190f5fe-7c00-7a00-8000-000000000101",
   github: "0190f5fe-7c00-7a00-8000-000000000102",
   failing: "0190f5fe-7c00-7a00-8000-000000000103",
+  netdisk: "0190f5fe-7c00-7a00-8000-000000000104",
 };
 
 const catalogConnectors: MockConnector[] = [
@@ -212,7 +221,8 @@ const catalogConnectors: MockConnector[] = [
     description: "浏览器测试自动化（本地 stdio）。",
     kind: "stdio-mcp",
     transport_summary: "npx @playwright/mcp",
-    auth_mode: "none",
+    auth_transport: "none",
+    credential_mode: "none",
     enabled: true,
     tools: [
       { name: "browser_navigate", description: "打开页面", input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
@@ -227,7 +237,8 @@ const catalogConnectors: MockConnector[] = [
     description: "GitHub API（远程 MCP + OAuth）。",
     kind: "remote-mcp",
     transport_summary: "https://api.githubcopilot.com/mcp/",
-    auth_mode: "oauth",
+    auth_transport: "oauth",
+    credential_mode: "oauth",
     enabled: true,
     tools: [
       { name: "github_list_repos", description: "列出仓库" },
@@ -241,10 +252,25 @@ const catalogConnectors: MockConnector[] = [
     description: "持续探测失败的连接器示例。",
     kind: "stdio-mcp",
     transport_summary: "npx flaky-bridge",
-    auth_mode: "none",
+    auth_transport: "none",
+    credential_mode: "none",
     enabled: true,
     tools: [],
     probe_success: false,
+  },
+  {
+    id: CONNECTOR_IDS.netdisk,
+    name: "baidu-netdisk",
+    description: "百度网盘（平台服务端持凭据，客户端零配置）。",
+    kind: "remote-mcp",
+    transport_summary: "https://mcp-pan.baidu.com/sse",
+    // url 型 → 形状是 oauth；声明是 server-side → 归一化成 none。
+    // 这条夹具专门钉住「形状不得推翻声明」：不得出现授权入口。
+    auth_transport: "oauth",
+    credential_mode: "none",
+    enabled: true,
+    tools: [{ name: "netdisk_list", description: "列出网盘文件" }],
+    probe_success: true,
   },
 ];
 
@@ -263,16 +289,30 @@ function connectorSummary(connector: MockConnector) {
     description: connector.description,
     kind: connector.kind,
     transport_summary: connector.transport_summary,
-    auth_mode: connector.auth_mode,
+    auth_transport: connector.auth_transport,
     enabled: connector.enabled,
+    credential: {
+      connector_id: connector.id,
+      mode: connector.credential_mode,
+      status: mockCredentialStatus(connector),
+      missing: [],
+    },
     status: mockConnectorStatus(connector),
   };
+}
+
+function mockCredentialStatus(connector: MockConnector): string {
+  if (connector.credential_mode === "none") return "not_required";
+  if (connector.credential_mode === "token") return "requires_input";
+  return connectorAuth.get(connector.id) ? "configured" : "requires_input";
 }
 
 function mockConnectorStatus(connector: MockConnector): string {
   if (!connector.enabled) return "installed";
   if (!connector.probe_success) return "error";
-  if (connector.auth_mode === "oauth" && !connectorAuth.get(connector.id)) return "authorization_required";
+  if (connector.credential_mode === "oauth" && !connectorAuth.get(connector.id)) {
+    return "authorization_required";
+  }
   return "connected";
 }
 
@@ -282,7 +322,7 @@ function connectorDetail(connector: MockConnector) {
     tool_filter: `connector__${connector.name}__<tool>`,
     tools: connector.tools,
     tools_truncated: false,
-    auth_status: connector.auth_mode === "oauth"
+    auth_status: connector.credential_mode === "oauth"
       ? { state: connectorAuth.get(connector.id) ? "authenticated" : "not_authenticated", error: null }
       : null,
     source: "system",
@@ -294,7 +334,7 @@ function connectorStatusView(connector: MockConnector) {
   return {
     connector_id: connector.id,
     status: mockConnectorStatus(connector),
-    auth_status: connector.auth_mode === "oauth"
+    auth_status: connector.credential_mode === "oauth"
       ? { state: connectorAuth.get(connector.id) ? "authenticated" : "not_authenticated", error: null }
       : null,
     last_error: connector.probe_success ? null : "last connection test failed",
@@ -931,7 +971,7 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
         reject(socket, id, "not_found", "connector not found");
         return;
       }
-      if (connector.auth_mode !== "oauth") {
+      if (connector.credential_mode !== "oauth") {
         reject(socket, id, "invalid_request", "OAuth is not supported for this connector");
         return;
       }
@@ -949,7 +989,7 @@ function handleWsMessage(socket: ServerWebSocket, raw: string) {
         return;
       }
       respond(socket, id, {
-        state: connector.auth_mode === "oauth" && connectorAuth.get(connector.id)
+        state: connector.credential_mode === "oauth" && connectorAuth.get(connector.id)
           ? "authenticated"
           : "not_authenticated",
         error: null,

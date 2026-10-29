@@ -1,7 +1,7 @@
 //! Cloud presence heartbeat and startup device telemetry.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nomi_config::ServerConfig;
@@ -112,8 +112,29 @@ async fn send_presence_heartbeat(service: &CloudService) {
         )
         .await
     {
-        Ok(()) => debug!("presence heartbeat sent"),
+        Ok(revoked) => {
+            debug!("presence heartbeat sent");
+            if !revoked.is_empty() {
+                dispatch_link_revocations(revoked);
+            }
+        }
         Err(err) => warn!(error = %err, "presence heartbeat failed"),
+    }
+}
+
+/// Called by the PC when a heartbeat lists devices the cloud has revoked.
+pub type LinkRevocationHook = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
+static LINK_REVOCATION_HOOK: Mutex<Option<LinkRevocationHook>> = Mutex::new(None);
+
+pub fn set_link_revocation_hook(hook: LinkRevocationHook) {
+    *LINK_REVOCATION_HOOK.lock().expect("link revocation hook") = Some(hook);
+}
+
+fn dispatch_link_revocations(device_ids: Vec<String>) {
+    let hook = LINK_REVOCATION_HOOK.lock().expect("link revocation hook").clone();
+    if let Some(hook) = hook {
+        hook(device_ids);
     }
 }
 

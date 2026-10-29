@@ -213,6 +213,10 @@ pub enum AgentKillReason {
     /// The agent process must be torn down so it stops emitting stream events
     /// for a conversation row that no longer exists.
     ConversationDeleted,
+    /// An Agent Execution attempt conversation is being retired after the
+    /// attempt settled (completed, failed, or skipped). This is infrastructure
+    /// cleanup, not a user stop, and must not be logged as `UserCancelled`.
+    AttemptSettled,
 }
 
 /// Preview content type for document preview history.

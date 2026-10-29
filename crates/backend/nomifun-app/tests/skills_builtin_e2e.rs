@@ -94,6 +94,7 @@ async fn fixture_embedded() -> Fixture {
             services.database.pool().clone(),
         )),
         builtin_skill_tags: std::sync::Arc::new(std::collections::HashMap::new()),
+        skill_discovery: None,
     };
 
     let mut app = create_router_with_states(&services, states);

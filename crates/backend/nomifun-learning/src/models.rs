@@ -125,6 +125,23 @@ pub struct LearningGraphGenerationStatus {
     pub running: bool,
     pub topic: Option<String>,
     pub elapsed_secs: Option<u64>,
+    /// 排队任务数（m7 资源闸排队可见；off 臂恒 0）。
+    pub queued: usize,
+}
+
+/// 任务资源闸读数（m7，smoke 对照卡数据源）：闸状态 + 在跑/排队的当前值与
+/// 峰值。判据形态：on 臂 `running_peak <= limit` 恒成立；off 臂 `queued` 恒
+/// 0、`running_peak` 可超 limit（直跑形态读数）。
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningTaskGateReadout {
+    /// 闸是否在场（`NOMI_LEARNING_TASK_GATE` 未关）。
+    pub enabled: bool,
+    /// 在跑上限（常量 5）。
+    pub limit: usize,
+    pub running: usize,
+    pub running_peak: usize,
+    pub queued: usize,
+    pub queued_peak: usize,
 }
 
 impl GenerateCourseRequest {
@@ -1412,6 +1429,10 @@ pub struct CourseSummary {
     pub learning_goal: Option<String>,
     /// 目标感知采样的披露（t2）：无目标路径/旧课程为 `None`。
     pub sampling: Option<CourseSamplingView>,
+    /// 来源计划快照的摘要（t4）：列上 NULL（旧课程/描述流/未走新管线）
+    /// 为 `None`——字段不出现;未知版本/坏形状 → `available=false` 降级,
+    /// 不报错、不伪造。DTO 细化归 t5,这里只读计数。
+    pub source_plan: Option<CourseSourcePlanView>,
 }
 
 /// 采样披露的对外视图（t2）：计数 + 低分未采样的少量示例。完整文件树只
@@ -1442,6 +1463,181 @@ pub struct CourseSamplingBaseView {
     pub sampled_files: usize,
     /// 该库目标零命中：采样退回默认顺序（逐库如实披露，不冒充按目标采样）。
     pub goal_fallback: bool,
+}
+
+/// 来源计划快照的对外视图（t4 落地、t5 细化分面）：snapshot（版本/可用）+
+/// triage（七角色计数/degraded/warnings）+ plan（章/概念/边/gaps + 章节
+/// 来源映射摘要）+ coverage（topic 四态/前置练习去向/fallback）+ duplicates
+/// （计数 + ≤20 示例）。完整快照只在库里（诊断按 `rel_path` 回 KB 读原文），
+/// 列表/详情响应不背全量信封；`available=false` = 未知版本/坏形状（读侧
+/// 降级，不崩溃不伪造）；列上 NULL 时本视图整体不出现。详情端的诊断明细
+/// （全量 excluded/duplicates，限长）见 [`CourseSourcePlanDetailView`]。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanView {
+    pub snapshot: CourseSourcePlanSnapshotView,
+    pub triage: CourseSourcePlanTriageView,
+    pub plan: CourseSourcePlanPlanView,
+    pub coverage: CourseSourcePlanCoverageView,
+    pub duplicates: CourseSourcePlanDuplicatesView,
+}
+
+/// 快照信封的版本面：未知版本（读不出 version 的坏 JSON 同此）与 v1 形状
+/// 损坏都降级 `available=false`，读侧不报错不伪造。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanSnapshotView {
+    pub version: Option<u64>,
+    pub available: bool,
+}
+
+/// 快照里 t1 分诊的摘要面：七角色计数（总数守恒：各角色之和 =
+/// `total_files`）+ degraded（规则分诊，未做 LLM 判定）+ 警告（限长）。
+/// h1 新增补判/仍缺读数（可选序列化：零值不出现，旧读侧无感知）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanTriageView {
+    pub total_files: usize,
+    pub core: usize,
+    pub prerequisite: usize,
+    pub practice: usize,
+    pub mixed: usize,
+    pub noise: usize,
+    pub duplicate: usize,
+    pub uncertain: usize,
+    pub degraded: bool,
+    /// 批补判次数（拆半/缺条目子集的重发 LLM 调用次数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_repair_count: Option<usize>,
+    /// 仍缺条目数（穷尽补判后保守 uncertain 的文件数）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_missing_count: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// h1 披露读数的零值抑制口径（单一实现，两处视图组装共用）：
+/// `batch_repair_count`/`still_missing_count` 为 0 时字段不序列化
+/// （`Option::is_none`，旧读侧无感知），非零才携带数值。
+pub(crate) fn disclosed(count: usize) -> Option<usize> {
+    (count > 0).then_some(count)
+}
+
+/// t2 计划的一章的来源映射摘要（章 → 概念数/课时数/来源文件数；零课时章
+/// 显式 skipped + reason——「为什么没进课程」在章节级也要能回答）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanChapterSummaryView {
+    pub title: String,
+    /// 该章覆盖的概念数（`PlannedChapter::covers`）。
+    pub concepts: usize,
+    /// 该章产出的课时数（来自 t3 覆盖报告的章 → 课时对账）。
+    pub lessons: usize,
+    pub skipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
+    /// 该章的去重来源文件数（`source_anchors` 的 rel_path 去重）。
+    pub source_files: usize,
+}
+
+/// 快照里 t2 计划的摘要面：章/概念/边计数 + 证据 gaps + 章节来源映射
+/// 摘要（限长）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanPlanView {
+    pub chapters: usize,
+    pub concepts: usize,
+    pub edges: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<String>,
+    pub chapter_summaries: Vec<CourseSourcePlanChapterSummaryView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// 一个被显式跳过的 topic（label + 理由）——覆盖缺口的可见示例。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanSkippedTopicView {
+    pub label: String,
+    pub reason: Option<String>,
+}
+
+/// 快照里 t3 展开覆盖的摘要面：topic 四态计数（covered/skipped/uncertain）
+/// + 前置/练习角色的 topic 去向 + anchor_uncertain 计数 + 跳过示例（≤20）+
+/// 兜底课时数。文件级 role 只作诊断（详情端的明细视图），覆盖以 topic 为主。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanCoverageView {
+    pub topics_covered: usize,
+    pub topics_skipped: usize,
+    /// 前置角色文件上的 topic 进入课时的数量（「前置内容去了哪」）。
+    pub prerequisite_topics: usize,
+    /// 练习角色文件上的 topic 进入课时的数量（「练习内容去了哪」）。
+    pub practice_topics: usize,
+    /// 锚点无法精确定位的 topic 数（path 级兜底/标题对不上原文）。
+    pub anchor_uncertain_topics: usize,
+    /// 状态 uncertain 的 topic label（限长 ≤20）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub uncertain: Vec<String>,
+    /// 被显式跳过的 topic 示例（限长 ≤20；详情可看全量）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_examples: Vec<CourseSourcePlanSkippedTopicView>,
+    /// H1/文件名兜底课的数量（不伪装成正常设计，醒目披露）。
+    pub fallback_lessons: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// 一条重复/翻译副本的示例（path + 指向的 canonical + canonical 的入选
+/// 理由）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDuplicateExampleView {
+    pub path: String,
+    pub duplicate_of: String,
+    pub canonical_reason: String,
+}
+
+/// 快照里 t1 分诊的重复面：计数（全量）+ 示例（≤20）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDuplicatesView {
+    pub count: usize,
+    pub examples: Vec<CourseSourcePlanDuplicateExampleView>,
+}
+
+/// 详情端点的来源计划诊断明细（t5）：全量 `excluded`（path + role +
+/// reason）与全量 `duplicates`，均限长（≤200）——列表摘要只给计数/示例，
+/// 详情页看完整「为什么没进课程」。role 是 t1 的 snake_case 角色名
+/// （`noise`/`duplicate`/…）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanDetailView {
+    pub excluded: Vec<CourseSourcePlanExcludedView>,
+    pub duplicates: Vec<CourseSourcePlanDuplicateExampleView>,
+}
+
+/// 一条被排除出候选集的文件（`noise`/`duplicate`），必须能回答
+/// 「为什么没进课程」。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseSourcePlanExcludedView {
+    pub path: String,
+    pub role: String,
+    pub reason: String,
+}
+
+/// t5 成本门确认阈值（票面定案,后端单源）:超过任一阈值,建课前必须展示
+/// 估算并让用户确认;低于阈值自动跑。
+pub const COURSE_ESTIMATE_CONFIRM_FILES: usize = 40;
+pub const COURSE_ESTIMATE_CONFIRM_CALLS: usize = 20;
+
+/// t5 成本门估算视图:提交建课前的一次**规则分诊**读数（零 LLM、
+/// `triage.degraded=true`——「规则分诊,未做 LLM 判定」在估算里就如实标出）。
+/// `needs_confirm` 由后端按 [`COURSE_ESTIMATE_CONFIRM_FILES`]/
+/// [`COURSE_ESTIMATE_CONFIRM_CALLS`] 判定;描述流全零、不确认。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CourseGenerationEstimateView {
+    pub total_files: usize,
+    pub estimated_batches: usize,
+    pub estimated_llm_calls: usize,
+    /// 粗估耗时（秒,按调用数 × 经验常数;仅供确认弹窗展示,不是承诺）。
+    pub estimated_seconds: u64,
+    pub needs_confirm: bool,
+    pub triage: CourseSourcePlanTriageView,
+    /// 规则判定的跳过摘要（噪声/重复,path + role + reason,限长 ≤10）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_examples: Vec<CourseSourcePlanExcludedView>,
 }
 
 /// R 软闸的一条建议（ADR-0009 Amendment 1）：结构就绪但供给节点已遗忘
@@ -1531,7 +1727,9 @@ pub struct SpineView {
 }
 
 /// 块视图行：`layer` = assumes 前置链深度（L0 起算，层号不是排期）；
-/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）。
+/// `no_prereq` = 本块不做任何 assumes 边之源（learnhub 读侧同款布尔）；
+/// `door_refs` = 门位标签（m1，learnhub #165 v2.14：覆盖本块主题的门口
+/// 编号，语义 =「能满足判据必已会本块」；旧快照无键 = 空数组）。
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockView {
     pub name: String,
@@ -1541,6 +1739,8 @@ pub struct BlockView {
     pub note: String,
     pub layer: usize,
     pub no_prereq: bool,
+    #[serde(default)]
+    pub door_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1599,6 +1799,10 @@ pub struct TerrainDoorView {
     pub id: String,
     pub criterion: String,
     pub kind: String,
+    /// 块覆盖统计（m1）：本块结构中被该门口 door_refs 标注覆盖的块数
+    /// （过门自检读侧的机械读数；无标注 = 0）。
+    #[serde(default)]
+    pub covered_blocks: usize,
 }
 
 /// 学习图课程的图视图（挂在 `CourseDetail.graph` 下）：就绪集推荐与水位
@@ -1663,6 +1867,14 @@ pub struct GraphConceptRowView {
     pub refs: Vec<GraphConceptRefView>,
     /// 其他还在教该概念的课程标题（跨课程就绪的来源可见性）。
     pub other_courses: Vec<String>,
+    /// 铸造出处（attestation 簿记，068：可空；`basis-declaration` =
+    /// 已会声明铸入——前端据此出「已会声明」来源徽标）。
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 本课已会声明覆盖该概念（声明锚反查；无节点也入表——声明概念的
+    /// 表内位置）。
+    #[serde(default)]
+    pub declared: bool,
 }
 
 /// 一条活跃别名（j04）：名字 + 该名字的意义（投影角度定义，缺席 = 与概念
@@ -1689,6 +1901,107 @@ pub struct GraphConceptRefView {
     pub status: LessonStatus,
 }
 
+// ── 已会声明（Declared Known，m2 / ADR-0032 移植）────────────────────────
+
+/// 一次声明请求：勾选的地形门口编号（幂等增量——已声明门口自动剔除）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeclareBasisRequest {
+    pub doors: Vec<String>,
+    /// 可选 provider/model 覆盖（与建课/生长同款成对约束）。
+    #[serde(default)]
+    pub provider_id: Option<ProviderId>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// 一次声明的返回面（幂等空跑 noop = true、全空清单）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DeclarationResultView {
+    pub course_id: LearningCourseId,
+    /// 本次实际声明的门口（差集；noop = 空）。
+    pub doors: Vec<String>,
+    /// 本次命中的目标块显示名（AND 口径；透明面）。
+    pub blocks: Vec<String>,
+    /// 本次铸出或复用的概念。
+    pub concepts: Vec<crate::learning_graph::basis_declaration::DeclaredConceptView>,
+    pub minted: u32,
+    pub reused: u32,
+    /// 幂等空跑（勾选全部已声明）：零 LLM 零写。
+    pub noop: bool,
+    /// 铸造软提示（人面，如清单截断）。
+    pub warnings: Vec<String>,
+}
+
+/// 已会声明读数（GET basis）：本课已声明什么、命中了什么、概念表反查。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisView {
+    pub course_id: LearningCourseId,
+    /// 累计已声明门口（全部锚行并集）。
+    pub doors: Vec<String>,
+    /// 累计命中块 slug（全部锚行并集）。
+    pub blocks: Vec<String>,
+    /// 已声明概念（正名 + 铸造出处；声明可撤、概念不灭的回显面）。
+    pub concepts: Vec<BasisConceptView>,
+    /// 锚行里已无法在登记表解析的概念 id（概念被移除后的 Broken 如实降级
+    /// 计数——不炸、只披露）。
+    pub unresolved_concept_ids: Vec<String>,
+    /// 累计声明次数（锚行数）。
+    pub declarations: u32,
+    /// 机制开关状态（off 时端点 409，读数面照常可读——如实标注）。
+    pub enabled: bool,
+}
+
+/// 已声明概念的一行回显。
+#[derive(Debug, Clone, Serialize)]
+pub struct BasisConceptView {
+    pub concept_id: String,
+    pub canonical: String,
+    /// 声明来源标记（恒 `basis-declaration`；来源保留不抹）。
+    pub source: Option<String>,
+    /// 该概念出现在几次声明里。
+    pub declaration_count: u32,
+}
+
+/// 定义审计条目（m9 只读报告）：概念 + 机械点名片段。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditEntry {
+    pub concept_id: String,
+    pub canonical: String,
+    pub definition: String,
+    /// 未被已知词汇覆盖的片段（宁滥勿缺，含切词噪声；课程豁免过滤后）。
+    pub fragments: Vec<String>,
+}
+
+/// 定义审计自指条目：定义含自身正名（ISO 704 禁止）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditSelfRef {
+    pub concept_id: String,
+    pub name: String,
+}
+
+/// 定义审计互指对（循环定义的最短形态 A↔B）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditCycle {
+    pub a_concept_id: String,
+    pub a_name: String,
+    pub b_concept_id: String,
+    pub b_name: String,
+}
+
+/// 定义审计报告（m9 只读，零 LLM 零写入）：登记表全量 × 用语表三层
+/// （登记表活跃名 ∪ 仓库 base ∪ 课程增词/豁免）的机械读数。
+#[derive(Debug, Clone, Serialize)]
+pub struct ConceptAuditReport {
+    /// 审计的概念总数（登记表全量、非废弃）。
+    pub concept_count: u32,
+    /// 有缺口的概念条目（零片段的概念不占行；按片段数降序）。
+    pub flagged: Vec<ConceptAuditEntry>,
+    /// 自指概念（定义含自身正名）。
+    pub self_refs: Vec<ConceptAuditSelfRef>,
+    /// 两两互指（按 (a, b) 字典序）。
+    pub mutual_cycles: Vec<ConceptAuditCycle>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CourseDetail {
     pub course: CourseSummary,
@@ -1698,6 +2011,11 @@ pub struct CourseDetail {
     pub due_review_count: i64,
     /// 仅 `learning_graph` 课程携带：就绪集推荐与水位读数（结构投影走独立接口）。
     pub graph: Option<LearningGraphView>,
+    /// 来源计划诊断明细（t5）：全量 excluded/duplicates（限长）。只挂在
+    /// 详情端点——列表摘要（`course.source_plan`）只给计数/示例；列上
+    /// NULL（旧课程/描述流）时本字段不出现。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_plan_detail: Option<CourseSourcePlanDetailView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1800,6 +2118,12 @@ pub struct AttemptResult {
     pub score: f64,
     pub passed: bool,
     pub feedback: String,
+    /// 评审判错时点名的缺失要点（n4 D3：`score ≥ 及格 ⇔ missing 必空` 的
+    /// 连续分互斥适配；判对恒空，旧对照臂恒空）。API 层承载不落库（零迁
+    /// 移；EvidenceTier 同批豁免 n4 D5）；`serde(default)` = 反序列化面
+    /// 容缺（旧档位回放），对旧客户端是纯增量字段。
+    #[serde(default)]
+    pub missing_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2184,6 +2508,80 @@ pub struct StructureRepairSummary {
     pub mounts_stale: bool,
     pub noop: bool,
     pub skipped: bool,
+}
+
+/// 维护需求的纯读判定（k02，learnhub ADR-0028 `maintenance_needs` 同构）：
+/// 零 LLM——只回答「这一课要不要修补/挂载」。归档/软删/非图课程/无结构 =
+/// `eligible = false`（不在扫描面）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceNeedsView {
+    pub eligible: bool,
+    /// 未消费 findings 条数（水位之后的留痕）。
+    pub unconsumed_findings: i64,
+    /// 待挂节点数（未评估 ∪ 失效 slug；stale 时 = 全部现存节点）。
+    pub pending_mounts: usize,
+    /// 结构 hash 与挂载行不一致（无挂载行 = stale）。
+    pub mounts_stale: bool,
+    pub needs_repair: bool,
+    pub needs_mount: bool,
+}
+
+impl MaintenanceNeedsView {
+    /// 无需求（零工作）——调度器据此跳过该课，零任务零 LLM。
+    pub fn is_idle(&self) -> bool {
+        !self.needs_repair && !self.needs_mount
+    }
+}
+
+/// 一课在一个维护回合里的结果（k02）。
+#[derive(Debug, Clone, Serialize)]
+pub struct MaintenanceCourseOutcome {
+    pub course_id: String,
+    /// 回合前判定（修补后重新判定一次，见 `recheck`）。
+    pub needs: MaintenanceNeedsView,
+    /// 修补回合终态（applied/noop/skipped）；未跑 = None。
+    pub repair: Option<String>,
+    /// 挂载回合终态（mounted/skipped）；未跑 = None。
+    pub mount: Option<String>,
+    /// 修补改了结构 → 本回合内重判定后补挂。
+    pub recheck: Option<MaintenanceNeedsView>,
+    /// 因生成槽在途/失败跳过该课（含挂载）。
+    pub skipped_busy: bool,
+    /// 失败如实记（不吞）。
+    pub error: Option<String>,
+}
+
+/// 一次自动维护回合的报告（k02）：零工作 = courses 空。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MaintenanceTickReport {
+    /// 扫描的合格课程数（enabled + 未删 + 图课程 + 有结构）。
+    pub scanned: usize,
+    /// 无需求被跳过的课程数（零工作）。
+    pub idle: usize,
+    pub courses: Vec<MaintenanceCourseOutcome>,
+}
+
+/// 维护设置（k02）：缺省开、间隔 360 分钟；越界/坏值读侧回退缺省。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MaintenanceSettings {
+    pub enabled: bool,
+    pub interval_minutes: i64,
+}
+
+/// 自动补批判定读数（m10 触发②端点）：`verdict` ∈ due | below_threshold |
+/// disabled（[`crate::learning_graph::AutoRefillVerdict`] 的机器名）；纯读
+/// 零副作用，Disabled 臂与停摆臂都如实随行——前端据此决定是否自动补批。
+#[derive(Debug, Clone, Serialize)]
+pub struct GrowthVerdictView {
+    pub verdict: String,
+    /// 就绪存量（水位口径，裁决输入原样回显）。
+    pub ready_count: usize,
+    /// 触发水位（READY_TRIGGER，与门同源的唯一数字）。
+    pub trigger: usize,
+    /// 开关合力（环境闸 ∧ 设置开关）。
+    pub enabled: bool,
+    /// 停摆臂（空图）：自动触发不进入（ADR-0010 只留空图臂）。
+    pub stalled: bool,
 }
 
 /// Memory-health dashboard: one snapshot over the active card pool and the

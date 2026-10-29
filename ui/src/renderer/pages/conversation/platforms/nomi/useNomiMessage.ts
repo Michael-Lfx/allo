@@ -291,6 +291,7 @@ export const useNomiMessage = (
         conversation_type: 'nomi',
         cold_start: coldStart,
         session_id: conversation_id,
+        session_kind: 'session_dialogue',
       });
       if (!coldStart) {
         confirmFirstValue({ source: 'follow_up', conversation_type: 'nomi' });

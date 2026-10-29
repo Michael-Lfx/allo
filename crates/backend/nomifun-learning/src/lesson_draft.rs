@@ -28,6 +28,104 @@ use crate::course_outline::{SEV_DANGER, SEV_WARNING};
 /// it ever blocks).
 const MAX_ACTIVITIES: usize = 10;
 
+/// 图课时「时长预算」行与超容自报的运维开关（k03，learnhub #154）：
+/// 置 off/0/false 时不注入预算行、计划工具的自报键按缺席处理（=旧行为）。
+/// 与 `NOMI_LEARNING_SOURCE_PLAN` 同款进程内运维开关，不进 UI/用户配置面。
+pub const EST_BUDGET_SWITCH_ENV: &str = "NOMI_LEARNING_EST_BUDGET";
+
+/// 开关取值判定（off/0/false；大小写与首尾空白宽容）。
+pub fn is_est_budget_disabled_value(value: &str) -> bool {
+    crate::is_off_switch_value(value)
+}
+
+/// 时长预算机制是否开启（未设/其它值 = 开启）。
+pub fn est_budget_enabled() -> bool {
+    std::env::var(EST_BUDGET_SWITCH_ENV)
+        .map(|value| !is_est_budget_disabled_value(&value))
+        .unwrap_or(true)
+}
+
+/// 图课时用户提示的「时长预算」行（k03）：est 是结构阶段给节点的尺寸锚，
+/// 规划节容量与写作两阶段都对照它。行格式逐字固定——真机冒烟对观测存档
+/// 机械 grep 这一串。
+pub fn render_est_budget_line(est_minutes: i64) -> String {
+    format!("- 时长预算：{est_minutes} 分钟（节点尺寸锚——规划与写作两阶段对照此预算）\n")
+}
+
+/// 「课程已知概念」行（Known Names，learnhub #177 输入面，域中立移植）：
+/// 工作词边界的指称面——构件词边界与取材池条款的名单行。行格式逐字固定
+/// （真机冒烟对观测存档机械 grep 这一串）；空名单整行省略（`None`，受众行
+/// 省行先例同形）。
+pub fn render_known_names_line(names: &[String]) -> Option<String> {
+    (!names.is_empty()).then(|| {
+        format!(
+            "课程已知概念（本课已教 ∪ 已会声明；工作词只能取自这里 ∪ 本节点 teaches，名单外的领域名词不引入）：{}\n",
+            names.join("、")
+        )
+    })
+}
+
+/// teaches 档位行（D4，意图画像四角的深度角）：此前写作纪律「档位决定
+/// 内容形态」引用的是模型读不到的值——本行让档位进输入面。空 teaches 整行
+/// 省略；行格式逐字固定（冒烟机械 grep 面）。
+pub fn render_teaches_tier_line(tiers: &[(String, String)]) -> Option<String> {
+    (!tiers.is_empty()).then(|| {
+        let rows = tiers
+            .iter()
+            .map(|(concept, tier)| format!("{concept}（{tier}）"))
+            .collect::<Vec<_>>()
+            .join("、");
+        format!("节点档位（teaches 概念的深度锚——内容形态与练习形态按档位定）：{rows}\n")
+    })
+}
+
+/// 先例（Precedent，learnhub #180 域中立移植）：本点涉及（teaches ∪
+/// assumes）的非首现概念，先前已由祖先闭包内某学习点教出的对应关系——
+/// 概念 + 教学节点显示名 + 该节点已生成节的标题。首现概念不入（本点自己
+/// 教）、声明-only 概念不入（零节点）、跨课程不入（前置路径已承载跨课程
+/// 视角）；正文全文回看（工具轮）是雾区，不在先例语义内。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LessonPrecedent {
+    /// 该节点教出的本点涉及概念正名（多概念「、」连接；一条先例一个节点）。
+    pub concept: String,
+    /// 教学节点显示名。
+    pub node_name: String,
+    /// 该节点已生成节的标题（节位置序；零正文 = 空 → 行内落「（正文未生成）」）。
+    pub sections: Vec<String>,
+}
+
+/// 先例摘要块（#180 输入面）：已建立语境（记号/句式/方法）的生成侧视野。
+/// 空先例整块省略（`None`）；块格式逐字固定（冒烟机械 grep 面）。
+pub fn render_precedent_block(precedents: &[LessonPrecedent]) -> Option<String> {
+    if precedents.is_empty() {
+        return None;
+    }
+    let mut text = String::from(
+        "已建立先例（本点涉及的非首现概念先前已由下列节点教出——沿用其已建立的语境与叫法，不重新讲授）：\n",
+    );
+    for precedent in precedents {
+        let sections = if precedent.sections.is_empty() {
+            "（正文未生成）".to_owned()
+        } else {
+            format!("（{}）", precedent.sections.join("；"))
+        };
+        text.push_str(&format!(
+            "- 概念「{}」← 节点「{}」{}\n",
+            precedent.concept, precedent.node_name, sections
+        ));
+    }
+    Some(text)
+}
+
+/// 超容自报归一（k03）：出现时按非空字符串收下（trim 后原样保留语义），
+/// 空白串按缺席裁成 `None`——形状条款只查非空，**永不退稿**（learnhub
+/// `extract_capacity_note` 同款；自报是自愿留痕，不是数量门）。
+pub fn normalize_capacity_note(note: Option<&str>) -> Option<String> {
+    note.map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(str::to_owned)
+}
+
 /// Grounding 片段的角色（t3 锚定纪律）：`Primary` = 大纲引用的主 source
 /// （全文；检索命中**永不替换它**），`Supplement` = 检索命中扩读的相关文件
 /// 片段。旧构造点（快照兜底/描述流）只有 primary。
@@ -126,6 +224,22 @@ pub struct GraphLessonContext {
     /// 数据。`None` = 本节点无概念挂接（teaches/assumes 双空），概念面段
     /// 整体缺席。
     pub concept_faces: Option<GraphConceptFaces>,
+    /// 节点尺寸锚（k03，learnhub #154）：结构阶段给本节点估的课时时长
+    /// （分钟）。提示词「时长预算」行的唯一数据源——规划节容量与写作时
+    /// 对照它；`None` = 无 est（allo 图节点列 NOT NULL DEFAULT，恒 Some）。
+    pub est_minutes: Option<i64>,
+    /// 课程已知概念（Known Names，learnhub #177 输入面，n3 D1 口径）：本
+    /// 课程图全部节点 teaches ∪ 本课程已会声明（m2 锚表）的显示名并集，
+    /// 升序稳定——内容工作词边界的指称面（构件词边界/取材池条款消费它）。
+    /// `None` = 名单为空（整行省略，受众行省行先例同形）。
+    pub known_names: Option<Vec<String>>,
+    /// 本节点 teaches 概念的档位（D4，意图画像四角的深度角）：(概念正名,
+    /// 中文档位) 有序对——此前写作纪律「档位决定内容形态」引用模型读不到
+    /// 的值，本字段补上输入面。空 = 本节点零 teaches 挂接（行省略）。
+    pub teaches_tiers: Vec<(String, String)>,
+    /// 先例摘要（Precedent，learnhub #180）：按节点 id 升序稳定；空 =
+    /// 无先例（块省略）。
+    pub precedents: Vec<LessonPrecedent>,
 }
 
 /// 概念面读侧投影（二轮 g2 / j07）：首现判定（祖先闭包不动点，零新存储）
@@ -283,6 +397,9 @@ pub struct LessonDraft {
     pub section_manifest: Option<Vec<SectionPack>>,
     /// section_key → (正文, 计划)。正文经节级质检后才入表。
     pub section_bodies: HashMap<String, (String, Option<SectionPack>)>,
+    /// 超容自报（k03）：规划阶段模型对照时长预算写下的如实留痕；`None`
+    /// = 未自报（缺席合法）。只进报告面与观察条，不参与任何 gate。
+    pub capacity_note: Option<String>,
     /// Bumps once per accepted op — the repair loop's "did the model touch
     /// anything" signal.
     pub revision: usize,
@@ -301,6 +418,11 @@ pub enum LessonOp {
     /// 规划分节清单（整组替换；重规划时已写正文按 section_key 保留）。
     SetSectionManifest {
         sections: Vec<SectionPack>,
+        /// 节点意图超载信号（k03/#178 换血）：先砍雄心再砍内容仍收敛不住
+        /// 「时长预算」时必写、指名超载原因（上游 est 复议的信号）；预算内
+        /// 收敛整键省略（缺席合法，形状面照旧只查非空）。
+        #[serde(default)]
+        capacity_note: Option<String>,
     },
     /// 写入一节正文；该节已存在时整体替换。
     SetSectionBody {
@@ -371,6 +493,9 @@ pub struct LessonInspectView {
     /// The document's `## ` heading lines in order.
     pub document_sections: Vec<String>,
     pub estimated_minutes: i64,
+    /// 超容自报（k03）：规划时对照时长预算的自报留痕；缺席 = 未自报。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_note: Option<String>,
     pub activities: Vec<LessonActivitySummary>,
     pub findings: Vec<LessonFinding>,
 }
@@ -394,13 +519,29 @@ pub struct LessonPatchReport {
 
 impl LessonDraft {
     pub fn new(context: LessonGenerationContext) -> Self {
+        // est 铸值（k03/#178）：图节点带 est 时草稿 estimated_minutes 直接
+        // 以节点尺寸锚开盘（learnhub frontmatter est_minutes 铸值同源）——
+        // 模型仍可用 set_estimated_minutes 复议；传统课时维持旧默认 10。
+        // 开关 off 臂回退旧默认（时长预算面整体回退）。
+        let estimated_minutes = if est_budget_enabled() {
+            context
+                .graph
+                .as_ref()
+                .and_then(|graph| graph.est_minutes)
+                // 草稿键值域 1-240（set_estimated_minutes 同款）；越界 est 不铸。
+                .filter(|est| (1..=240).contains(est))
+                .unwrap_or(10)
+        } else {
+            10
+        };
         let mut draft = Self {
             context,
             document: None,
-            estimated_minutes: 10,
+            estimated_minutes,
             activities: Vec::new(),
             section_manifest: None,
             section_bodies: HashMap::new(),
+            capacity_note: None,
             revision: 0,
             findings: Vec::new(),
         };
@@ -469,7 +610,10 @@ impl LessonDraft {
                 self.document = Some(trimmed);
                 Ok(format!("document replaced ({chars} non-whitespace characters)"))
             }
-            LessonOp::SetSectionManifest { sections } => {
+            LessonOp::SetSectionManifest {
+                sections,
+                capacity_note,
+            } => {
                 if sections.is_empty() {
                     return Err("section manifest must not be empty".into());
                 }
@@ -521,6 +665,13 @@ impl LessonDraft {
                     );
                 }
                 self.section_manifest = Some(sections);
+                // 超容自报（k03）：只收下非空自报；开关 off 时按缺席处理
+                // （旧行为）——形状条款零内容拦截，恶劣值裁 None 不退稿。
+                self.capacity_note = if est_budget_enabled() {
+                    normalize_capacity_note(capacity_note.as_deref())
+                } else {
+                    None
+                };
                 Ok("section manifest planned (write each body with set_section_body)".into())
             }
             LessonOp::SetSectionBody { section_key, body } => {
@@ -615,6 +766,7 @@ impl LessonDraft {
         let activities = self.activities.clone();
         let section_manifest = self.section_manifest.clone();
         let section_bodies = self.section_bodies.clone();
+        let capacity_note = self.capacity_note.clone();
         self.findings = audit_findings(
             &self.context,
             document.as_deref(),
@@ -622,6 +774,7 @@ impl LessonDraft {
             &activities,
             section_manifest.as_deref(),
             &section_bodies,
+            capacity_note.as_deref(),
         );
     }
 
@@ -685,6 +838,7 @@ impl LessonDraft {
             document_chars: document.chars().filter(|c| !c.is_whitespace()).count(),
             document_sections,
             estimated_minutes: self.estimated_minutes,
+            capacity_note: self.capacity_note.clone(),
             activities: self
                 .activities
                 .iter()
@@ -751,6 +905,7 @@ impl LessonDraft {
             activities: self.activities.clone(),
             sections,
             degraded_keys: Vec::new(),
+            capacity_note: self.capacity_note.clone(),
         }
     }
 }
@@ -765,6 +920,7 @@ fn audit_findings(
     activities: &[ActivityPack],
     section_manifest: Option<&[SectionPack]>,
     section_bodies: &HashMap<String, (String, Option<SectionPack>)>,
+    capacity_note: Option<&str>,
 ) -> Vec<LessonFinding> {
     let mut findings = Vec::new();
     let danger = |kind: &str, message: String| LessonFinding {
@@ -929,8 +1085,23 @@ fn audit_findings(
         ));
     }
 
+    // ── 节点意图超载观察条（k03/#178，观察面非阻断）：规划面收敛不住
+    // 「时长预算」（保 teaches 覆盖就必超）时的 capacity_note 点名留痕——
+    // 它是上游 est 复议的信号，不是可写可不写的自报；让修复轮与发布前
+    // 自查看得见。观察键沿用 over_capacity（telemetry 稳定键，语义已换血）。
+    if let Some(note) = capacity_note {
+        findings.push(warning(
+            "over_capacity",
+            format!(
+                "节点意图超载（{estimated_minutes} 分钟预算收敛不住）：{note}——\
+                 先砍雄心再砍内容（减题/并节/降示例密度，teaches 覆盖不可砍）；\
+                 本条是上游 est 复议的信号"
+            ),
+        ));
+    }
+
     // ── Per-activity rules (shape), position-aware ──
-    let mut seen_prompts: HashSet<String> = HashSet::new();
+    let mut seen_prompts: Vec<String> = Vec::new();
     for (position, activity) in activities.iter().enumerate() {
         let at = format!("activity at position {position}");
         if activity.prompt.trim().is_empty() {
@@ -941,13 +1112,34 @@ fn audit_findings(
         if let Err(error) = activity.validate_shape((3, 5), true) {
             findings.push(danger("activity_shape_invalid", format!("{at}: {error}")));
         }
-        // Duplicate prompts (normalized) are redundant retrieval work.
-        let normalized = activity.prompt.trim().to_lowercase();
-        if !normalized.is_empty() && !seen_prompts.insert(normalized) {
-            findings.push(warning(
-                "activity_prompt_duplicate",
-                format!("{at}: duplicates an earlier activity's prompt"),
-            ));
+        // 重复题面（k04 升级）：三口径相似度 ≥0.7 命中即点名命中对与
+        // 分值；开关 off 臂退回规范化精确相等（旧观察口径）。
+        let prompt = activity.prompt.trim().to_owned();
+        if !prompt.is_empty() {
+            let hit = if crate::generation::qb_similarity_enabled() {
+                crate::generation::similarity_hit(&prompt, &seen_prompts)
+                    .map(|(previous, score)| (previous.to_owned(), Some(score)))
+            } else {
+                let normalized = crate::generation::normalize_prompt(&prompt);
+                seen_prompts
+                    .iter()
+                    .find(|previous| crate::generation::normalize_prompt(previous) == normalized)
+                    .map(|previous| (previous.clone(), None))
+            };
+            if let Some((previous, score)) = hit {
+                let detail = match score {
+                    Some(score) => format!(
+                        "（相似度 {score:.2}，对照「{}」）",
+                        previous.chars().take(40).collect::<String>()
+                    ),
+                    None => String::new(),
+                };
+                findings.push(warning(
+                    "activity_prompt_duplicate",
+                    format!("{at}: duplicates an earlier activity's prompt{detail}"),
+                ));
+            }
+            seen_prompts.push(prompt);
         }
     }
 
@@ -1143,6 +1335,10 @@ mod tests {
                 ref_names: vec![("Delta".into(), "德尔塔".into())],
                 aliases: vec![],
             }),
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
         });
         let mut draft = LessonDraft::new(ctx);
         // 正文同时出现引用名与正名（混用）+ 首现名在场 + R9 自称。
@@ -1196,6 +1392,10 @@ mod tests {
                 ref_names: vec![("Delta".into(), "德尔塔".into())],
                 aliases: vec![],
             }),
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
         });
         let mut draft = LessonDraft::new(ctx);
         let body = "这是一个用于测试的完整段落，覆盖课时要求的知识点并且足够长。".repeat(10);
@@ -1354,6 +1554,7 @@ mod tests {
                     manifest_pack("s2", SectionKind::Example, "无"),
                     manifest_pack("s3", SectionKind::Practice, "无"),
                 ],
+                capacity_note: None,
             }])
             .accepted
             .into_iter()
@@ -1375,6 +1576,7 @@ mod tests {
                     manifest_pack("s2", SectionKind::Example, "公式"),
                     manifest_pack("s3", SectionKind::Practice, "无"),
                 ],
+                capacity_note: None,
             }])
             .accepted
             .into_iter()
@@ -1384,5 +1586,244 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.kind == "visual_none_heavy"));
+    }
+
+    /// ── k03：est 时长预算行 + 超容自报 capacity_note ──
+
+    /// 预算行装配：est 值逐字在场；开关取值判定只认 off/0/false。
+    #[test]
+    fn est_budget_line_embeds_est_and_switch_values_are_strict() {
+        let line = render_est_budget_line(20);
+        assert!(line.contains("时长预算：20 分钟"), "{line}");
+        assert!(line.contains("节点尺寸锚"), "{line}");
+        for value in ["off", "OFF", "0", "false", " False "] {
+            assert!(is_est_budget_disabled_value(value), "{value:?} 关");
+        }
+        for value in ["on", "1", "true", "", "disable"] {
+            assert!(!is_est_budget_disabled_value(value), "{value:?} 不关");
+        }
+    }
+
+    /// ── n3：Known Names 行 / teaches 档位行 / 先例块（渲染面）──
+
+    /// Known Names 行：名单逐字在场 + 边界措辞；空名单整行省略（None）。
+    #[test]
+    fn known_names_line_renders_the_boundary_and_omits_empty() {
+        assert_eq!(render_known_names_line(&[]), None, "空名单整行省略");
+        let line = render_known_names_line(&["对数收益率".into(), "历史波动率".into()])
+            .expect("非空名单有行");
+        assert!(line.contains("课程已知概念"), "{line}");
+        assert!(line.contains("对数收益率、历史波动率"), "{line}");
+        assert!(line.contains("本课已教 ∪ 已会声明"), "{line}");
+        assert!(line.contains("名单外的领域名词不引入"), "{line}");
+    }
+
+    /// teaches 档位行：深度角（概念（档位））逐字在场；空 teaches 省行。
+    #[test]
+    fn teaches_tier_line_renders_the_depth_anchor_and_omits_empty() {
+        assert_eq!(render_teaches_tier_line(&[]), None, "空 teaches 省行");
+        let line = render_teaches_tier_line(&[("历史波动率".into(), "知道".into())])
+            .expect("非空档位有行");
+        assert!(line.contains("节点档位"), "{line}");
+        assert!(line.contains("历史波动率（知道）"), "{line}");
+        assert!(line.contains("内容形态与练习形态按档位定"), "{line}");
+    }
+
+    /// 先例块：概念 ← 节点 + 先行节标题；零正文 = 「（正文未生成）」仍入行；
+    /// 空先例整块省略。
+    #[test]
+    fn precedent_block_renders_teachers_and_omits_empty() {
+        assert_eq!(render_precedent_block(&[]), None, "空先例整块省略");
+        let block = render_precedent_block(&[
+            LessonPrecedent {
+                concept: "对数收益率".into(),
+                node_name: "收益率与对数收益率".into(),
+                sections: vec!["概念：对数收益".into(), "例题：换算".into()],
+            },
+            LessonPrecedent {
+                concept: "历史波动率".into(),
+                node_name: "未生成节点".into(),
+                sections: Vec::new(),
+            },
+        ])
+        .expect("非空先例有块");
+        assert!(block.contains("已建立先例"), "{block}");
+        assert!(block.contains("概念「对数收益率」← 节点「收益率与对数收益率」"), "{block}");
+        assert!(block.contains("概念：对数收益；例题：换算"), "{block}");
+        assert!(
+            block.contains("概念「历史波动率」← 节点「未生成节点」（正文未生成）"),
+            "{block}"
+        );
+    }
+
+    /// est 铸值（k03/#178）：图节点带 est 时草稿 estimated_minutes 以节点
+    /// 尺寸锚开盘（模型仍可 set_estimated_minutes 复议）；传统课时维持旧
+    /// 默认 10；越界 est（>240）不铸回旧默认。
+    #[test]
+    fn draft_seeds_estimated_minutes_from_the_node_est() {
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(20),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+        });
+        assert_eq!(LessonDraft::new(ctx).estimated_minutes, 20, "节点 est 铸值");
+
+        // 传统课时（graph None）：旧默认。
+        assert_eq!(LessonDraft::new(context()).estimated_minutes, 10);
+
+        // 越界 est 不铸（草稿键值域 1-240）。
+        let mut ctx = context();
+        ctx.graph = Some(GraphLessonContext {
+            goal: "g".into(),
+            degree_statement: "d".into(),
+            prerequisite_path: String::new(),
+            upcoming_nodes: String::new(),
+            concept_faces: None,
+            est_minutes: Some(500),
+            known_names: None,
+            teaches_tiers: Vec::new(),
+            precedents: Vec::new(),
+        });
+        assert_eq!(LessonDraft::new(ctx).estimated_minutes, 10, "越界 est 回默认");
+    }
+
+    /// 开关生效：off 时 est_budget_enabled() 为 false（默认开）。
+    #[test]
+    #[serial_test::serial]
+    fn est_budget_switch_toggles_the_env_gate() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
+                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
+                }
+            }
+        }
+        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
+        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
+        let _restore = Restore(previous);
+        assert!(!est_budget_enabled(), "off 臂关闭预算行与自报");
+
+        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "on") };
+        assert!(est_budget_enabled(), "on 臂开启");
+    }
+
+    /// capacity_note 形状三态：缺席合法 / 非空通过（trim 保留）/ 空白串
+    /// 按空裁成 None——恶劣值永不退稿。
+    #[test]
+    #[serial_test::serial]
+    fn capacity_note_shape_is_non_empty_string_or_absent() {
+        assert_eq!(normalize_capacity_note(None), None, "缺席合法");
+        assert_eq!(
+            normalize_capacity_note(Some("  节 s2 明显超容，约多 8 分钟  ")),
+            Some("节 s2 明显超容，约多 8 分钟".into()),
+            "非空自报 trim 保留"
+        );
+        assert_eq!(normalize_capacity_note(Some("   \n\t ")), None, "空白按缺席");
+
+        // 计划 op 三态走通：只收非空自报，不产生 danger。
+        let mut draft = LessonDraft::new(context());
+        let report = draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                manifest_pack("s1", SectionKind::Concept, "表格"),
+                manifest_pack("s2", SectionKind::Practice, "无"),
+            ],
+            capacity_note: Some("  s1 规划偏长，预计超 6 分钟 ".into()),
+        }]);
+        assert_eq!(report.accepted.len(), 1);
+        assert_eq!(
+            draft.capacity_note.as_deref(),
+            Some("s1 规划偏长，预计超 6 分钟")
+        );
+        assert!(!draft
+            .findings
+            .iter()
+            .any(|f| f.severity == SEV_DANGER && f.kind == "over_capacity"));
+        // 观察条点名（warning 非阻断）。
+        assert!(
+            draft
+                .findings
+                .iter()
+                .any(|f| f.severity == SEV_WARNING && f.kind == "over_capacity"),
+            "自报进观察条: {:?}",
+            draft.findings
+        );
+
+        // 空白自报 → 缺席（重规划覆盖）。
+        draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                manifest_pack("s1", SectionKind::Concept, "表格"),
+                manifest_pack("s2", SectionKind::Practice, "无"),
+            ],
+            capacity_note: Some("   ".into()),
+        }]);
+        assert_eq!(draft.capacity_note, None);
+        assert!(!draft.findings.iter().any(|f| f.kind == "over_capacity"));
+    }
+
+    /// 开关 off 臂：计划工具的自报键按缺席处理（=旧行为）。
+    #[test]
+    #[serial_test::serial]
+    fn capacity_note_is_ignored_when_the_switch_is_off() {
+        struct Restore(Option<String>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, value) },
+                    None => unsafe { std::env::remove_var(EST_BUDGET_SWITCH_ENV) },
+                }
+            }
+        }
+        let previous = std::env::var(EST_BUDGET_SWITCH_ENV).ok();
+        unsafe { std::env::set_var(EST_BUDGET_SWITCH_ENV, "off") };
+        let _restore = Restore(previous);
+
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                manifest_pack("s1", SectionKind::Concept, "表格"),
+                manifest_pack("s2", SectionKind::Practice, "无"),
+            ],
+            capacity_note: Some("超容 10 分钟".into()),
+        }]);
+        assert_eq!(draft.capacity_note, None, "off 臂忽略自报键");
+    }
+
+    /// 透传：inspect 投影与 to_output 报告面都带自报；旧课时包（无键）
+    /// 反序列化兼容为 None。
+    #[test]
+    #[serial_test::serial]
+    fn capacity_note_projects_to_inspect_and_output_and_old_packages_still_parse() {
+        let mut draft = LessonDraft::new(context());
+        draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                manifest_pack("s1", SectionKind::Concept, "表格"),
+                manifest_pack("s2", SectionKind::Practice, "无"),
+            ],
+            capacity_note: Some("s1 偏长".into()),
+        }]);
+        assert_eq!(draft.inspect().capacity_note.as_deref(), Some("s1 偏长"));
+        assert_eq!(draft.to_output().capacity_note.as_deref(), Some("s1 偏长"));
+
+        // 旧包（无 capacity_note 键）→ None，不报错。
+        let legacy: LessonOutput = serde_json::from_value(serde_json::json!({
+            "summary": "## 描述\n旧正文\n",
+            "estimated_minutes": 15,
+            "activities": [],
+            "sections": [],
+            "degraded_keys": []
+        }))
+        .expect("旧课时包可反序列化");
+        assert_eq!(legacy.capacity_note, None);
+        // 未自报的草稿同样缺席。
+        assert_eq!(LessonDraft::new(context()).to_output().capacity_note, None);
     }
 }

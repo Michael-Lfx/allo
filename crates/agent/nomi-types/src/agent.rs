@@ -211,6 +211,14 @@ pub struct AgentExecutionStepResult {
     pub text: String,
     pub turns: usize,
     pub usage: TokenUsage,
+    /// Tool calls the delegated engine refused. Non-zero means the task could
+    /// not complete its requested effects, even if the model returned text.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub denied_tool_calls: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl From<&AgentInvocationOutput> for AgentExecutionStepResult {
@@ -225,6 +233,7 @@ impl From<&AgentInvocationOutput> for AgentExecutionStepResult {
             text: output.text.clone(),
             turns: output.turns,
             usage: output.usage.clone(),
+            denied_tool_calls: output.denied_tool_calls,
         }
     }
 }
@@ -294,6 +303,10 @@ impl ParallelDelegationRequest {
 pub enum AgentToolPolicy {
     #[default]
     Full,
+    /// File tools plus shell: Read/Write/Edit/ApplyPatch/Grep/Glob/DirTree/Bash
+    /// and managed web search. Host pipelines (`briefing_create`, Browser,
+    /// `nomi_delegate`) stay unavailable.
+    FilesShell,
     ReadOnly,
     ReadShell,
 }
@@ -302,6 +315,7 @@ impl AgentToolPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",
+            Self::FilesShell => "files_shell",
             Self::ReadOnly => "read_only",
             Self::ReadShell => "read_shell",
         }
@@ -320,6 +334,7 @@ impl std::str::FromStr for AgentToolPolicy {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "full" => Ok(Self::Full),
+            "files_shell" => Ok(Self::FilesShell),
             "read_only" => Ok(Self::ReadOnly),
             "read_shell" => Ok(Self::ReadShell),
             _ => Err(format!("unknown Agent tool policy '{value}'")),
@@ -327,12 +342,25 @@ impl std::str::FromStr for AgentToolPolicy {
     }
 }
 
+/// One model inside an execution's already-resolved pool.
+///
+/// This does not widen authority. Hosts reject a pair that is not an active
+/// participant of the execution being created or extended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentDelegationModel {
+    pub provider_id: String,
+    pub model: String,
+}
+
 /// One task in the shared `strategy=parallel` request vocabulary.
 ///
 /// Both embedded and platform hosts deserialize this exact DTO. `role` is
 /// intentionally free-form; `tool_policy` is the only field that narrows
 /// tools. When present, `role` is injected as explicit invocation context by
-/// both deployments.
+/// both deployments. `model` selects a participant already in the execution
+/// pool; omitting it inherits the lead model. `model_reason` is display and
+/// audit text only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDelegationTask {
@@ -347,6 +375,13 @@ pub struct AgentDelegationTask {
     /// Explicit narrowing of inherited tool authority.
     #[serde(default)]
     pub tool_policy: AgentToolPolicy,
+    /// Optional participant model. Absent inherits the lead / session model.
+    #[serde(default)]
+    pub model: Option<AgentDelegationModel>,
+    /// Why this task asked for `model`. Never grants tools or a model outside
+    /// the pool.
+    #[serde(default)]
+    pub model_reason: Option<String>,
 }
 
 /// Apply the one shared execution meaning of a delegation role.
@@ -378,6 +413,25 @@ impl AgentDelegationTask {
         }
         if self.role.as_ref().is_some_and(|role| role.trim().is_empty()) {
             return Err("Agent delegation task role must not be blank when provided".to_owned());
+        }
+        if let Some(model) = &self.model {
+            if model.provider_id.trim().is_empty() || model.provider_id.trim() != model.provider_id {
+                return Err(
+                    "Agent delegation task model.provider_id must not be blank".to_owned(),
+                );
+            }
+            if model.model.trim().is_empty() || model.model.trim() != model.model {
+                return Err("Agent delegation task model.model must not be blank".to_owned());
+            }
+        }
+        if self
+            .model_reason
+            .as_ref()
+            .is_some_and(|reason| reason.trim().is_empty())
+        {
+            return Err(
+                "Agent delegation task model_reason must not be blank when provided".to_owned(),
+            );
         }
         Ok(())
     }
@@ -411,6 +465,9 @@ pub struct AgentInvocationOutput {
     pub usage: TokenUsage,
     pub turns: usize,
     pub is_error: bool,
+    /// Tool calls the confined child engine refused. A non-zero count means
+    /// the delegate never obtained the effects it asked for.
+    pub denied_tool_calls: usize,
 }
 
 /// Executes one Agent invocation.
@@ -428,7 +485,7 @@ mod tests {
     use super::{
         AgentDelegationTask, AgentExecutionReceipt, AgentExecutionStatus,
         AgentExecutionStepResult, AgentExecutionStepResultStatus, AgentExecutionSummary,
-        AgentToolPolicy, ParallelDelegationRequest, apply_agent_role_context,
+        AgentToolPolicy, AgentInvocationOutput, ParallelDelegationRequest, apply_agent_role_context,
     };
     use crate::message::TokenUsage;
 
@@ -459,11 +516,49 @@ mod tests {
             prompt: prompt.to_owned(),
             role: role.map(str::to_owned),
             tool_policy: AgentToolPolicy::Full,
+            model: None,
+            model_reason: None,
         };
         assert!(task("name", "prompt", Some("任意角色")).validate().is_ok());
         assert!(task(" ", "prompt", None).validate().is_err());
         assert!(task("name", "\n", None).validate().is_err());
         assert!(task("name", "prompt", Some("\t")).validate().is_err());
+    }
+
+    #[test]
+    fn shared_task_model_is_optional_and_must_be_concrete() {
+        let mut task = AgentDelegationTask {
+            name: "scan".to_owned(),
+            prompt: "inspect".to_owned(),
+            role: None,
+            tool_policy: AgentToolPolicy::ReadOnly,
+            model: None,
+            model_reason: None,
+        };
+        assert!(task.validate().is_ok());
+
+        let parsed: AgentDelegationTask = serde_json::from_value(serde_json::json!({
+            "name": "scan",
+            "prompt": "inspect",
+            "model": {"provider_id": "provider-a", "model": "cheap"},
+            "model_reason": "批量检索"
+        }))
+        .unwrap();
+        assert_eq!(parsed.model.as_ref().map(|model| model.model.as_str()), Some("cheap"));
+        assert_eq!(parsed.model_reason.as_deref(), Some("批量检索"));
+        assert!(parsed.validate().is_ok());
+
+        task.model = Some(super::AgentDelegationModel {
+            provider_id: " ".to_owned(),
+            model: "cheap".to_owned(),
+        });
+        assert!(task.validate().is_err());
+        task.model = Some(super::AgentDelegationModel {
+            provider_id: "provider-a".to_owned(),
+            model: "cheap".to_owned(),
+        });
+        task.model_reason = Some("  ".to_owned());
+        assert!(task.validate().is_err());
     }
 
     #[test]
@@ -515,6 +610,40 @@ mod tests {
     }
 
     #[test]
+    fn denied_tool_calls_survive_the_step_projection() {
+        let denied = AgentInvocationOutput {
+            name: "writer".to_owned(),
+            text: "done".to_owned(),
+            usage: TokenUsage::default(),
+            turns: 2,
+            is_error: true,
+            denied_tool_calls: 1,
+        };
+        let step = AgentExecutionStepResult::from(&denied);
+        assert_eq!(step.status, AgentExecutionStepResultStatus::Failed);
+        assert_eq!(step.denied_tool_calls, 1);
+        let value = serde_json::to_value(&step).unwrap();
+        assert_eq!(value["denied_tool_calls"], 1);
+
+        let clean = AgentInvocationOutput {
+            name: "writer".to_owned(),
+            text: "done".to_owned(),
+            usage: TokenUsage::default(),
+            turns: 2,
+            is_error: false,
+            denied_tool_calls: 0,
+        };
+        let clean_step = AgentExecutionStepResult::from(&clean);
+        assert!(
+            serde_json::to_value(clean_step)
+                .unwrap()
+                .get("denied_tool_calls")
+                .is_none(),
+            "a zero count must not widen the wire payload"
+        );
+    }
+
+    #[test]
     fn receipt_terminal_projection_and_step_ids_are_typed_extensions() {
         let result = AgentExecutionStepResult {
             name: "scan".to_owned(),
@@ -522,6 +651,7 @@ mod tests {
             text: "done".to_owned(),
             turns: 1,
             usage: TokenUsage::default(),
+            denied_tool_calls: 0,
         };
         let receipt = AgentExecutionReceipt::new(
             "exec_test",

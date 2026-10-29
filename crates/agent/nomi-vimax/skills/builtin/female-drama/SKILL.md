@@ -6,7 +6,7 @@ description: >-
   reversals, and a cliffhanger that begs the next episode. Use for 女频、甜宠、
   虐恋、重生误会, or any romance where the plot serves the relationship engine.
 category: drama
-version: "1.2.0"
+version: "1.2.1"
 tags: [drama, short-drama, romance, female, sweet, resentful]
 director:
   pack-policy: dense
@@ -18,8 +18,9 @@ requirement-overlay: |
   payoff is a cut scene.
   HOOK: open on a relationship charge (reunion, contract, public slight,
   secret glance) — never on a pretty empty street.
-  FORK: if the brief is 甜宠, land a visible sugar beat every 10–15s
-  (distance closing, teasing line, protective gesture). If it is 虐恋 /
+  FORK: if the brief is 甜宠, put a visible sugar beat (distance closing,
+  teasing line, protective gesture) in the clip that holds the moment; a
+  beat is never added just to fill a time window. If it is 虐恋 /
   重生, hurt must be specific and the refund (or deeper wound) must be
   on camera in the same episode window.
   CHARM: each lead gets one readable charm beat (competence, humor, or

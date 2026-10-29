@@ -40,10 +40,14 @@ interface UseSlashCommandsOptions {
   /** When provided, changes to this value trigger a re-fetch. Used by ACP to
    *  re-fetch commands after the agent becomes active. */
   agentStatus?: string | null;
+  /** Skip the network fetch until the composer actually needs slash commands
+   *  (the user typed `/`). Defaults to true so ACP keeps its existing eager
+   *  list. */
+  enabled?: boolean;
 }
 
 export function useSlashCommands(conversation_id: ConversationId, options: UseSlashCommandsOptions = {}) {
-  const { conversation_type, agentStatus } = options;
+  const { conversation_type, agentStatus, enabled = true } = options;
   const canUseCachedCommands = isSlashCommandListEnabled({ conversation_type });
   const requestIdRef = useRef(0);
   const [commands, setCommands] = useState<SlashCommandItem[]>(() => {
@@ -69,6 +73,10 @@ export function useSlashCommands(conversation_id: ConversationId, options: UseSl
 
     // Skip fetch until agent is ready (agentStatus becomes non-null)
     if (agentStatus === null || agentStatus === undefined) {
+      return;
+    }
+
+    if (!enabled) {
       return;
     }
 
@@ -108,7 +116,7 @@ export function useSlashCommands(conversation_id: ConversationId, options: UseSl
     return () => {
       isCancelled = true;
     };
-  }, [conversation_id, canUseCachedCommands, conversation_type, agentStatus]);
+  }, [conversation_id, canUseCachedCommands, conversation_type, agentStatus, enabled]);
 
   return commands;
 }

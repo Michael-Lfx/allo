@@ -118,6 +118,9 @@ export interface Transport {
 - `agents.export(id)` / `teams.export(id)`：返回便携式 `ExpertPack`。这是**唯一携带 Persona 正文的通道**（`get` 方法刻意省略 Persona 正文以减轻网络开销）。
 - 导出的只是静态配置定义，不含底层运行时执行语义；外部运行时必须自行实现调度。
 - `fp-14`（`pack_format 2`，doc `38`）起包内多两类**按引用**内容：`assets`（插件级 `avatars/` `bin/` `scripts/` 清单，字节走 `client.readImportAsset(snapshotId, path)`）与 `avatar`（包级头像的快照相对路径，仅当它列在 `assets` 里）；SDK 的 `exportAgent` / `exportTeam` / `materializePack` 会把资产一并落盘（`ExportResult.writtenAssets`），物化目录因此是完整的插件根布局。资产面受能力位 `snapshot_assets` 门禁；成员 pack 的 `assets` 恒为空表（快照作用域，读顶层）。
+- `fp-16`（`pack_format 3`，doc `44`）起包内多出市场的**展示元数据**：`tags`（本地化数组）与 `category_id`（裸分类引用）。作用域与 `assets` **相反**——分类是逐包自己的声明，**成员 pack 各带自己的值**；包只带 id，解析成双语名需要消费方持有等价字典（本仓为 `store.categories()`，跨宿主不通用）。同一批字段也上了目录面：`teams.list()` / `skills.list()` 分别带包级声明与市场索引行标签（技能标签在导入时固化，市场其后改动需走一次 `store.update()`）。
+- `fp-17`（doc `47`）起 `ConnectorSummary` 的 `auth_mode` 更名 **`auth_transport`**：该字段由 transport 推导、只描述形状，与「连接器需要什么认证」无关——后者由 `credential.mode` 与 `status` 表达（`34` §6.1，行为修复见 doc `46`）。无方法增删，方法计数不变。
+- `fp-19`（`pack_format 4`，doc `51`）起包内多出**逐实体的图标引用**：`skills[].icon` 是**技能目录相对**路径（如 `assets/icon.png`，用 `skills.readFile(skillId, icon)` 取字节），`connectors[].icon` 是**快照相对**路径（如 `avatars/connectors/github.svg`，用 `client.readImportAsset(snapshotId, icon)`），后者与 `avatar` 受同一条不变量约束——**必须出现在 `assets` 清单里**，否则整个键缺席（不是 `null`）。图标字节的来路是**安装期固化**：市场 `icons/<base>.<ext>` 与 entry 目录是兄弟关系、`copy_tree` 带不到，所以宿主在导入时把它落进快照并写进组件 payload 的 `avatar`（作者声明优先、永不覆盖）。`materializePack` 因此**不需要新代码**：技能图标随 `skill/files` 落进 `skills/<name>/assets/icon.*`，连接器图标随 `pack.assets` 落进 `avatars/connectors/…`。**连接器图标有一处可达性边界**（doc `51` §3.3.5）：只有「单连接器 entry」会产生它，团包里由 `mcpServers` 声明的连接器没有自己的图标来源，`icon` 恒缺席——消费方应把缺席当常态并回落默认图，不要把包图标当连接器图标。
 
 #### 2. 连接器动态凭据与免市场注册 (`register()`)
 - `credentials(id)` / `setCredentials(id, values)`：填入用户专属 API Key / Token。响应中敏感字段一律脱敏，永不返回明文 Secret。
@@ -633,15 +636,27 @@ installStoreEntry(marketplaceId: string, entryName: string): Promise<StoreInstal
 
 ```ts
 client.store.list(): Promise<StoreItem[]>
+client.store.listStatus(): Promise<{ items: StoreItem[]; marketsPending: boolean }>
 client.store.search(query, { kind? }): Promise<StoreItem[]>
+client.store.searchWithHits(query, { kind?, items?, installedOnly?, lang? }): Promise<StoreMatch[]>
+client.store.searchInstalled(query, { kind?, items?, lang? }): Promise<StoreItem[]>
 client.store.installed(): Promise<StoreItem[]>
 client.store.findByConnector(connectorId): Promise<StoreItem | null>
 client.store.checkUpdates(): Promise<StoreItem[]>        // installed && update_available
-client.store.updateHint(item): "none" | "uninstall_reinstall" | "unknown"
+client.store.updateHint(item): "none" | "update" | "unknown"
 client.store.install(item, { waitForReady?, timeoutMs?, signal? }): Promise<StoreOperationOutcome>
 client.store.uninstall(item, { componentIds? }): Promise<StoreOperationOutcome>
 client.store.setEnabled(item, enabled, { componentIds? }): Promise<StoreOperationOutcome>
 ```
+
+检索口径与高亮（doc `49`）：`search` 按空白切 term，**全部 term 都在某字段中出现**即命中（AND，
+不要求同字段），大小写无关、不做分词；结果按三档相关性排序（名称 > 标签/分类/职业 > 描述），
+同档保持目录原序。`searchWithHits` 返回每条命中的 `{ field, lang?, ranges }`，`ranges` 是
+**原文**上的 `[start, end)`，可直接切片渲染高亮；`offLanguage: true` 表示命中的是另一个语种的文案
+（当前渲染语言里找不到该词）。`listStatus().marketsPending` 是宿主说「内置市场仍在注册、目录可能
+不全」——应用启动后立刻搜索时必须读它，否则「没有这个条目」与「还没加载完」无法区分。
+`items` 入参是**预取**：传入 `listStatus()` 拿到的数组后，调用为**零 I/O**（不要在 `input`
+事件里裸调 `search()`，那会每次击键打一次全量 `store/list`）。
 
 `findByConnector` 是**反向**那一跳：目录条目里没有任何字段承载它装出来的连接器
 名（真实例子：条目 `fenbi-baokao-decision` / 显示名「粉笔」装出来的 server 叫

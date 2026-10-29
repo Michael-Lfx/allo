@@ -272,7 +272,9 @@ pub fn build_system_prompt_with(
                 String::new()
             } else {
                 format!(
-                    "<system-reminder>\nThe following skills are available for use with the Skill tool:\n\n{listing}\n</system-reminder>"
+                    "<system-reminder>\nThe following skills are available for use with the Skill tool. \
+When a listed skill matches the current task, call Skill with its catalog id (or unique name) \
+and follow the returned SKILL.md before acting. Do not skip a matching skill.\n\n{listing}\n</system-reminder>"
                 )
             }
         });
@@ -384,6 +386,9 @@ mod tests {
             content: String::new(),
             content_length: 0,
             skill_root: None,
+            catalog_id: None,
+            invocation_policy: Default::default(),
+            requires_confirmation: false,
         }
     }
 
@@ -426,7 +431,7 @@ mod tests {
             "result should contain <system-reminder>"
         );
         assert!(
-            result.contains("The following skills are available for use with the Skill tool:"),
+            result.contains("The following skills are available for use with the Skill tool."),
             "result should contain skills header"
         );
         assert!(
@@ -503,7 +508,7 @@ mod tests {
             "custom prompt should appear"
         );
         assert!(
-            result.contains("The following skills are available for use with the Skill tool:"),
+            result.contains("The following skills are available for use with the Skill tool."),
             "skills reminder should also appear"
         );
     }

@@ -110,7 +110,8 @@ pub use app_server::{
     AppServerSkillDeleteResult, AppServerSkillDetail, AppServerSkillFile, AppServerSkillFileList,
     AppServerSkillSummary,
     AppServerStoreInstallResult,
-    AppServerStoreItem, AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
+    AppServerStoreCategoriesResponse, AppServerStoreCategoryItem, AppServerStoreItem,
+    AppServerStoreList, AppServerTeamDetail, AppServerTeamSummary,
 };
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, MoaSettings, MoaSlotSetting, NomiBuildExtra, NomiGoalSpec,
@@ -125,7 +126,8 @@ pub use agent_error::{
     AgentErrorResolutionTarget, AgentStreamErrorData,
 };
 pub use agent_execution::{
-    AddExecutionStepsRequest, AdoptExecutionStepOutputRequest, AdjustAgentExecutionRequest, AgentExecution,
+    ActiveSubagent, AddExecutionStepsRequest, AdoptExecutionStepOutputRequest,
+    AdjustAgentExecutionRequest, AgentExecution,
     AgentExecutionChangedEvent, AgentExecutionDetail, AgentExecutionEvent,
     AgentExecutionEventsQuery, AnswerExecutionDecisionRequest, ConfigureExecutionStepRequest,
     CreateAgentExecutionRequest, ExecutionAttempt,

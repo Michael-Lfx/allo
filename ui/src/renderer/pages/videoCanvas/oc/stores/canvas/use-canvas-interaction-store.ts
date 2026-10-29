@@ -61,6 +61,7 @@ type CanvasInteractionStore = {
     connectingParams: ConnectionHandle | null;
     connectionTargetNodeId: string | null;
     connectionTargetAnchorRatio: number | undefined;
+    fannedDeckRootId: string | null;
     setHoveredNodeId: (id: SetStateAction<string | null>) => void;
     setToolbarNodeId: (id: SetStateAction<string | null>) => void;
     setDragPreview: (preview: SetStateAction<CanvasDragPreview | null>) => void;
@@ -72,6 +73,7 @@ type CanvasInteractionStore = {
     setConnectingParams: (params: SetStateAction<ConnectionHandle | null>) => void;
     setConnectionTargetNodeId: (id: SetStateAction<string | null>) => void;
     setConnectionTargetAnchorRatio: (ratio: SetStateAction<number | undefined>) => void;
+    setFannedDeckRootId: (id: string | null) => void;
     resetInteraction: () => void;
 };
 
@@ -87,6 +89,7 @@ const initialState = {
     connectingParams: null as ConnectionHandle | null,
     connectionTargetNodeId: null as string | null,
     connectionTargetAnchorRatio: undefined as number | undefined,
+    fannedDeckRootId: null as string | null,
 };
 
 export const useCanvasInteractionStore = create<CanvasInteractionStore>((set) => ({
@@ -131,5 +134,6 @@ export const useCanvasInteractionStore = create<CanvasInteractionStore>((set) =>
         const connectionTargetAnchorRatio = resolveAction(ratio, state.connectionTargetAnchorRatio);
         return connectionTargetAnchorRatio === state.connectionTargetAnchorRatio ? state : { connectionTargetAnchorRatio };
     }),
+    setFannedDeckRootId: (fannedDeckRootId) => set((state) => (state.fannedDeckRootId === fannedDeckRootId ? state : { fannedDeckRootId })),
     resetInteraction: () => set(initialState),
 }));

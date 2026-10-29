@@ -1,9 +1,9 @@
 ---
 contract: learning-structure-artifacts
-version: "1.2"
-date: 2026-10-15
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）
-sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.10]
+version: "1.6"
+date: 2026-10-26
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）
+sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
 ---
 
 # 学习结构产物契约 v1.0
@@ -81,7 +81,8 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
   ],
   "blocks": [
     { "name": "<块名>", "slug": "<英文标识>", "spine": "<主干名>",
-      "stage": "入门 | 进阶 | 高级", "note": "<一句话主题描述>" }
+      "stage": "入门 | 进阶 | 高级", "note": "<一句话主题描述>",
+      "door_refs": ["G1"] }
   ],
   "edges": [
     { "source": "<块名>", "target": "<块名>", "type": "assumes | composes | contrasts",
@@ -93,10 +94,16 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 ```
 
 **块 = 原子教学主题单元**（能独立解释一个现象或完成一个操作）。字段只有身份与
-结构位（五键纪律）——定义/操作/实例/易错/source 等判据形字段一律不进块；块不是
-概念，`note` 明令非判据、永不进登记表。**一物一名**：名字禁并列连词与并列分隔符
-（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词不是连词，词中
-位才计并列——learnhub #53 留痕的机械读法放宽）。薄干声明随主干给
+结构位（五键纪律）加**唯一可选键 `door_refs`**（v1.6，learnhub #165 契约
+v2.14 门位标签）——定义/操作/实例/易错/source 等其余判据形字段一律不进块；
+块不是概念，`note` 明令非判据、永不进登记表。**door_refs 语义** =「学习者能
+满足这些门口判据，就必然已会本块」：入门档各块被某条门口判据**整体覆盖**才标
+（编号逐字取自 `domain.prerequisite_doors`，一块可引多条），**宁缺勿滥**——
+错标比漏标严重；进阶/高级（正式内容段）不标；旧快照无键合法（键可选）。消费
+面 = 过门自检读侧（TerrainView 覆盖统计 + 结构 Tab 门口→覆盖块映射 + 块详情
+door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一名**：名字禁并列连词
+与并列分隔符（官方术语自身含并列形的以「」包裹豁免；「和」在词首/词尾位是名词
+不是连词，词中位才计并列——learnhub #53 留痕的机械读法放宽）。薄干声明随主干给
 （`thin_spine: true` + 非空 `reason` 豁免每干配额）。
 
 **边方向语义**（learnhub #42 定案）：`assumes` 的**源 = 需求方、目标 = 前置**，
@@ -118,7 +125,8 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 | gd.spines.count | spines 条数 ∈ 6..=12 |
 | gd.spines.required | 每条 name/definition/instance 非空、key_points ≥1；键 ⊆ {name, definition, key_points, instance, thin_spine, reason}；name 在产物内唯一 |
 | gd.blocks.count | 条数 < 40 红、> 100 红；80 < n ≤ 100 记「越档」**警告**（不拒收） |
-| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note}（判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
+| gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
+| gd.blocks.door_refs | `door_refs` 逐条形态 `G<数字>` 且块内不重复；跨产物解析（引用 ⊆ 地形门口产出 **且** ⊆ 本课声明课程门）归 §4 对账面（悬挂/越出 = 红，learnhub `check_door_references` 同款） |
 | gd.blocks.one_name | 块名不含并列标记（与/和/及/、/,/，/斜杠），「…」段内豁免、词边「和」豁免 |
 | gd.blocks.slug | slug 匹配 `^[a-z0-9-]+$`；name 唯一、slug 唯一 |
 | gd.blocks.spine_ref | 每块 spine ∈ spines 名集 |
@@ -166,16 +174,29 @@ sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/ma
 从门口贴地起排，门口与入门档之间不留无主地带。地形由此收缩为**地板以下与临门自检**
 两类判据（`hard` / `self_check`），由生长循环自己教出来的部分照旧归生长。
 
+**门口梯队口径（v1.6 注记，learnhub #165 契约 v2.14 措辞域中立化）**：门口不是
+单条起步线，而是一支**入门段梯队**——首门贴真实起步地板，其余各门沿入门段内容带
+向上立，每条判据覆盖一段**可整体自检**的内容带；带分不清或判据写不实就不硬凑门
+（宁缺勿滥；allo 量级档维持 4–8 条）。梯队各门是**自检参考**，不是进入闸门、不是
+免学承诺——带内内容照常进知识结构、由课程教出。door_refs 标注面 =「入门档各块被
+哪条梯队判据**整体**覆盖才标」（§2.1）。
+
 ## 4 门口对账
 
 structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors 定义里解析，
 悬挂 = 红（违规代码仍记 `gd.domain.doors`，消息携带已知门口清单）。对账失败 =
 两份产物一起重生成（生成侧机械对账，堵引用悬空——g2 裁决）。
 
+**叉积核验（v1.6，learnhub `check_door_references` 同款）**：块级 `door_refs`
+门位标签逐条过双臂——①引用 ⊆ 地形 doors 产出（悬空 = 红，`gd.blocks.door_refs`，
+消息指名块与编号 + 已知门口清单）；②引用 ⊆ 本课声明课程门
+（`prerequisite_doors`，越出 = 永不满足的死标签，红）。两臂都走既有「逐条款
+报告进反馈重试」回路，零新机制。对账同样进修补回合的 `st.ops.apply` 全量重过。
+
 ## 5 存储与快照信封
 
 - 落点：`learning_courses.structure_json`（TEXT NULL，CHECK 只收 JSON 对象；
-  迁移 071 引入）。**NULL = 结构未生成**（词汇表 Missing：合法空状态，读侧
+  迁移 068 引入）。**NULL = 结构未生成**（词汇表 Missing：合法空状态，读侧
   200 恒答，不走错误路径；生成中状态由 WS structure_* 事件表达）。
 - 信封（快照 = 一个 JSON 对象，两产物 + 元数据，单 UPDATE 原子写入）：
 
@@ -226,6 +247,53 @@ est 命名统一（二轮 g1 第 6 项）同批落地：`ng.nodes.minutes` → `
 `ProposedNode.est`、DTO/前端镜像键 `est`；**DB 列 `learning_lessons.estimated_minutes`
 保留旧名**（SQLite 无列注释机制，语义注记住本条与本批 DTO 文档注释：列语义 =
 est，1 est 分钟 = 1 分钟专注学习）。
+
+### 8.1 课时输入面随批注记（v1.3，k03）
+
+四轮吸收 k03（learnhub #154）把 est 接进课时生成输入面——**只读不改结构契约**：
+
+- **时长预算行**（图节点课时提示词的图语义段）：`- 时长预算：{est} 分钟（节点尺寸
+  锚——规划与写作两阶段对照此预算）`。数据源 = 挂载/生成时落库的
+  `learning_lessons.estimated_minutes`（NOT NULL DEFAULT 10，恒注入；learnhub 的
+  `est = None → 整行省略`分支在 allo 不适用）。属 §0 豁免注记的「回执标量读侧」口径。
+- **超容自报 `capacity_note`**（计划工具 `ls_set_section_manifest` 的可选键 →
+  `LessonOutput.capacity_note` → 审计观察条 `over_capacity` + 日志行）：出现时只查
+  非空字符串、空白串按缺席裁 `None`，**零内容拦截、永不退稿**；不超容不写（缺席
+  合法）。传统课时管线不消费该键（其机械预算已足够）。
+- 运维开关 `NOMI_LEARNING_EST_BUDGET=off` 关闭预算行与自报键（旧行为臂）。
+
+### 8.2 结构提示词随批注记（v1.4，k06）
+
+四轮吸收 k06（learnhub #149 提交 50c734a + a39d36a）的写作面条款（**零机械
+条款改动**，validator 不变）：
+
+- **assumes 逻辑前提判别**（`goal-decomposition.md`）：assumes 的判据 = 抽掉该
+  前置后继块的定义/推导在数学上无法进行；练习载体与讲解通道不配 assumes（走
+  contrasts 或不连）。与既有 `st.edge` 端点点名/方向语义同层，属写作品质措辞。
+- **块链连续性自检**（同资产）：逐主干沿 assumes 链走一遍，块表无承接的中间
+  环节补块或写进 `gaps`——`gaps` 的「补全方向」是既有契约键，不新增。
+- **门语义**（`prerequisite-terrain.md`）：硬前置 = 不可自检豁免，**不是进入
+  闸门**；判据措辞不得写成「须在进入课程前具备」类进门前提。
+- **档位深度本位自省**（`COACH_SYSTEM` 档位段，非本契约文件）：档位看教学深度
+  本身，不对照动词字面；操作训练节点全标 know = 低估（至少 apply），首教形式化
+  的「写」只是认识步时 know 如实。`ng.review.*`/`ng.nodes.est` 契约键不变。
+
+金样随批重生成（`LEARNING_UPDATE_GOLDEN=1`），围栏 FENCE_DEV_FACE 与条款覆盖
+短语断言同批更新。
+
+### 8.3 内容纪律 R10–R13（v1.5，k05）
+
+learnhub ldata1 战役的四条同族写作纪律落两管线写作面（**零机械门**，发现面 =
+写作面条款 + 真机对照卡）：
+
+- **R10 具象替身先**、**R11 受众语域**、**R12 表述工具在场**、**R13 断言-例子
+  一致**：传统管线 = `CONTENT_DISCIPLINE_BLOCK` 追加块；图管线 = agent 系统
+  提示词成色段同义条款；节大纲加情境取向句。
+- allo 无课程宪章 audience 字段（B 组产品裁决），R11 措辞锚定既有输入面（课程
+  声明非低龄受众时情境取该受众生活域），不加新向导字段、不改 DB。
+- 运维开关 `NOMI_LEARNING_CONTENT_DISCIPLINE_V2=off` 退回 j07 后提示词。
+- R12 观察读数（记号样 token 计数）为可选增强，本批未建（机械检测面与
+  R12/R13 同留雾区）。
 
 ## 9 挂载事实层（st.mount.*，j08 三轮 g1「结构转活文档·上」）
 
