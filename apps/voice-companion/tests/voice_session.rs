@@ -757,3 +757,99 @@ async fn notification_is_not_played_until_the_sink_drains_and_an_exact_retry_onl
     let mut changed=payload;changed.text="same identity, changed content".into();
     assert_eq!(app.oneshot(request(&changed)).await.unwrap().status(),http::StatusCode::CONFLICT);
 }
+
+
+struct CountedWakeStt {
+    calls: std::sync::atomic::AtomicUsize,
+    texts: std::sync::Mutex<std::collections::VecDeque<String>>,
+}
+#[async_trait::async_trait]
+impl nomifun_audio::recorder::SttCallback for CountedWakeStt {
+    async fn transcribe(&self, _:nomifun_audio::AudioChannel, _:Vec<f32>, _:u32)->Option<String> {
+        let text = self.texts.lock().unwrap().pop_front();
+        self.calls.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+        text
+    }
+}
+
+async fn replay_phrase(producer:&nomifun_audio::SpscProducer, stt:&CountedWakeStt, expected:usize) {
+    for _ in 0..25 {
+        let pcm:Vec<f32>=(0..320).map(|n|0.04*(n as f32*std::f32::consts::TAU*200.0/16000.0).sin()).collect();
+        producer.push(&pcm);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(stt.calls.load(std::sync::atomic::Ordering::SeqCst),expected-1,"no final ASR before speech end");
+    tokio::time::timeout(Duration::from_secs(4),async {
+        while stt.calls.load(std::sync::atomic::Ordering::SeqCst)<expected {
+            producer.push(&[0.0;320]);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("real worker must reach final ASR after silence");
+}
+
+#[tokio::test]
+async fn worker_cascade_routes_same_sentence_and_continues_after_standalone_wake() {
+    for inline in [true,false] {
+        let root=tempdir().unwrap();
+        let(capture,producer)=VoiceCapturePipeline::new(PipelineConfig::default());
+        let stt=Arc::new(CountedWakeStt {
+            calls:0.into(),
+            texts:std::sync::Mutex::new(if inline { vec!["Hey Flowie, -la".to_string()] }
+                else {vec!["Hey Floor.".to_string(),"Open browser".to_string()]}.into()),
+        });
+        let router=Arc::new(StubVoiceRouter::chat("done"));
+        let(runtime,_audio)=VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),stt.clone(),router.clone());
+        runtime.update_feedback(serde_json::from_value(serde_json::json!({"mode":"off","volume":0,"speak_replies":false})).unwrap()).unwrap();
+        let runtime=Arc::new(runtime);
+        let worker=runtime.start_worker();
+        // Abort even when an assertion unwinds, preventing a leaked test worker.
+        struct Cleanup(tokio::task::JoinHandle<()>);
+        impl Drop for Cleanup {fn drop(&mut self){self.0.abort();}}
+        let _cleanup=Cleanup(worker);
+        replay_phrase(&producer,&stt,1).await;
+        if !inline {
+            tokio::time::timeout(Duration::from_secs(2),async {
+                while runtime.snapshot().listening_deadline_ms.is_none(){tokio::time::sleep(Duration::from_millis(10)).await;}
+            }).await.expect("standalone Group B must actually wake");
+            assert!(runtime.snapshot().session_id.is_some());
+            assert!(runtime.snapshot().conversation.is_empty(),"wake alone must not create empty messages");
+            assert_eq!(router.call_count(),0);
+            replay_phrase(&producer,&stt,2).await;
+        }
+        tokio::time::timeout(Duration::from_secs(3),async {
+            while runtime.snapshot().assistant_text.as_deref()!=Some("done") {tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.expect("wake command must reach the ordinary router and conversation");
+        assert_eq!(runtime.snapshot().user_text.as_deref(),Some(if inline {"-la"}else{"Open browser"}));
+        assert_eq!(runtime.snapshot().conversation.len(),1,"one command produces one conversation turn");
+        assert_eq!(router.call_count(),1,"exactly one routed command");
+        assert_eq!(stt.calls.load(std::sync::atomic::Ordering::SeqCst),if inline {1}else{2},"inline text must not be transcribed twice");
+    }
+}
+
+#[tokio::test]
+async fn worker_cascade_rejects_final_negatives_and_revoked_admission_after_actual_asr() {
+    for (text,allowed,expired) in [("Hey Floor is wet.",true,false),("Hey friend.",true,false),("Hey Floor.",false,false),("Hey Floor.",true,true)] {
+        let root=tempdir().unwrap();
+        let(capture,producer)=VoiceCapturePipeline::new(PipelineConfig::default());
+        let stt=Arc::new(CountedWakeStt { calls:0.into(),texts:std::sync::Mutex::new(vec![text.into()].into()) });
+        let router=Arc::new(StubVoiceRouter::chat("unused"));
+        let(runtime,_audio)=VoiceCompanionRuntime::from_capture(
+            Arc::new(ModelManager::new(root.path())),Arc::new(OobeManager::new_bypassed()),
+            Arc::new(Mutex::new(capture)),stt.clone(),router.clone());
+        runtime.set_wake_admission(allowed,if expired {nomifun_common::now_ms()-1}else if allowed {nomifun_common::now_ms()+60_000}else{0});
+        let runtime=Arc::new(runtime);
+        let worker=runtime.start_worker();
+        struct Cleanup(tokio::task::JoinHandle<()>);
+        impl Drop for Cleanup {fn drop(&mut self){self.0.abort();}}
+        let _cleanup=Cleanup(worker);
+        replay_phrase(&producer,&stt,1).await;
+        // Feed further silence so the worker finishes handling this actual ASR result.
+        for _ in 0..10 {producer.push(&[0.0;320]);tokio::time::sleep(Duration::from_millis(20)).await;}
+        assert_eq!(stt.calls.load(std::sync::atomic::Ordering::SeqCst),1);
+        assert!(runtime.snapshot().session_id.is_none(),"must not wake: {text}, allowed={allowed}");
+        assert!(runtime.snapshot().conversation.is_empty());
+        assert_eq!(router.call_count(),0);
+    }
+}
