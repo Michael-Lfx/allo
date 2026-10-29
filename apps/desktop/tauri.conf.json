@@ -6,7 +6,7 @@
     "frontendDist": "../../ui/dist",
     "devUrl": "http://127.0.0.1:5173",
     "beforeDevCommand": "bun run --filter=./ui dev",
-    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun run --filter=./ui build"
+    "beforeBuildCommand": "bun scripts/prune-build.mjs --pre && bun scripts/ensure-bundled-rg.mjs && bun scripts/prepare-voice-companion.mjs && bun run --filter=./ui build"
   },
   "app": {
     "windows": [],

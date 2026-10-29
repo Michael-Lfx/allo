@@ -22,7 +22,8 @@ use nomifun_api_types::{
     CloneConversationRequest, ConfirmRequest, CreateConversationRequest, ListConversationsQuery,
     ExecutionModelPool, ExecutionModelRef, ListMessagesQuery, ModelPreference,
     PresetKnowledgePolicy, PresetTarget, ResolvedPresetSnapshot, SearchMessagesQuery,
-    SendMessageRequest, SetModelRequest, UpdateConversationRequest, WebSocketMessage,
+    SendMessageRequest, SetModelRequest, UpdateConversationRequest, VoiceBoundMessageRequest,
+    WebSocketMessage,
 };
 use nomifun_common::{
     AdaptationPolicy, AgentExecutionEventKind, AgentExecutionStatus, AgentKillReason,
@@ -3586,6 +3587,96 @@ async fn make_sqlite_projection_service() -> (
 }
 
 const PROJECTION_OWNER: &str = SQLITE_TEST_OWNER;
+
+#[tokio::test]
+async fn voice_creation_stamps_an_immutable_workspace_and_reuses_the_creation_identity() {
+    let (service, _, repository, database) = make_sqlite_projection_service().await;
+    nomifun_db::sqlx::query("INSERT INTO providers (provider_id, platform, name, base_url, api_key_encrypted, enabled, created_at, updated_at) VALUES (?, 'openai', 'voice test', 'https://example.invalid', 'test-only', 1, 1, 1)")
+        .bind(PROVIDER_ID_1).execute(database.pool()).await.unwrap();
+    nomifun_db::sqlx::query("INSERT INTO provider_models (provider_id, model, enabled, sort_order, tasks, traits, params, source, created_at, updated_at) VALUES (?, 'configured', 1, 0, '[\"chat\"]', '[]', '{}', 'inferred', 1, 1)")
+        .bind(PROVIDER_ID_1).execute(database.pool()).await.unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let request = || {
+        serde_json::from_value::<CreateConversationRequest>(json!({
+            "type": "nomi",
+            "model": {"provider_id": PROVIDER_ID_1, "model": "configured"},
+            "delegation_policy": "automatic",
+            "extra": {"workspace": workspace.path(), "session_mode": "yolo"}
+        }))
+        .unwrap()
+    };
+    let first = service
+        .create_voice_idempotent(PROJECTION_OWNER, request(), "voice-create:test-command", workspace.path().to_str().unwrap(), None)
+        .await
+        .unwrap();
+    let replay = service
+        .create_voice_idempotent(PROJECTION_OWNER, request(), "voice-create:test-command", workspace.path().to_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(first.conversation_id, replay.conversation_id);
+    assert_eq!(first.delegation_policy, DelegationPolicy::Disabled);
+    let row = repository.get(&first.conversation_id).await.unwrap().unwrap();
+    let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+    assert_eq!(extra["voice_task_workspace"], nomifun_common::paths::canonicalize_simplified(workspace.path()).unwrap().to_string_lossy().as_ref());
+    assert_eq!(extra["session_mode"], "yolo");
+    let options = service.build_runtime_options(&row).unwrap();
+    assert_eq!(options.extra["voice_task_workspace"], extra["voice_task_workspace"]);
+    assert_eq!(options.extra["session_mode"], "yolo");
+    for (mode, expected) in [
+        ("default", "default"),
+        ("auto_edit", "auto_edit"),
+    ] {
+        let mut candidate = request();
+        candidate.extra["session_mode"] = json!(mode);
+        let created = service
+            .create_voice_idempotent(
+                PROJECTION_OWNER,
+                candidate,
+                &format!("voice-create:mode:{mode}"),
+                workspace.path().to_str().unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.delegation_policy, DelegationPolicy::Disabled);
+        let row = repository.get(&created.conversation_id).await.unwrap().unwrap();
+        let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap();
+        assert_eq!(extra["session_mode"], expected, "mode: {mode}");
+    }
+    let mut forged = request();
+    forged.extra["session_mode"] = json!("unsupported-mode");
+    assert!(matches!(service.create_voice_idempotent(PROJECTION_OWNER, forged, "voice-create:invalid-mode", workspace.path().to_str().unwrap(), None).await, Err(AppError::BadRequest(_))));
+    let mut implicit = request();
+    implicit.extra.as_object_mut().unwrap().remove("session_mode");
+    let created = service.create_voice_idempotent(PROJECTION_OWNER, implicit, "voice-create:yolo-default", workspace.path().to_str().unwrap(), None).await.unwrap();
+    assert_eq!(created.extra["session_mode"], "yolo");
+    let mut forged = request();
+    forged.extra["voice_task_workspace"] = json!(workspace.path());
+    assert!(matches!(service.create(PROJECTION_OWNER, forged).await, Err(AppError::BadRequest(_))));
+    let patch: UpdateConversationRequest = serde_json::from_value(json!({"extra": {"voice_task_workspace": null}})).unwrap();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    assert!(matches!(service.update(PROJECTION_OWNER, &first.conversation_id, patch, &runtime_registry).await, Err(AppError::BadRequest(_))));
+}
+
+#[tokio::test]
+async fn voice_mode_uses_explicit_then_saved_preference_then_yolo() {
+    let (service, _, _, _) = make_service();
+    assert_eq!(service.resolve_voice_session_mode(None).await.unwrap(), "yolo");
+    service.with_failover_deps(Arc::new(StubProviderRepo::new(vec![])), Arc::new(StubProviderModelRepo::new(vec![])), Arc::new(FixedClientPrefRepo {
+        preferences: vec![ClientPreference { id: 1, key: "nomi.config".into(),
+            value: json!({"preferredMode":"auto_edit"}).to_string(), updated_at: 1 }],
+    }));
+    assert_eq!(service.resolve_voice_session_mode(None).await.unwrap(), "auto_edit");
+    assert_eq!(service.resolve_voice_session_mode(Some("default")).await.unwrap(), "default");
+    assert_eq!(service.resolve_voice_session_mode(Some("yolo")).await.unwrap(), "yolo");
+    assert!(service.resolve_voice_session_mode(Some("invalid")).await.is_err());
+
+    service.with_failover_deps(Arc::new(StubProviderRepo::new(vec![])), Arc::new(StubProviderModelRepo::new(vec![])), Arc::new(FixedClientPrefRepo {
+        preferences: vec![ClientPreference { id: 1, key: "nomi.config".into(),
+            value: json!({"preferredMode": 123}).to_string(), updated_at: 1 }],
+    }));
+    assert!(service.resolve_voice_session_mode(None).await.is_err());
+}
 
 #[tokio::test]
 async fn assistant_projection_is_one_durable_row_and_rebroadcasts_stable_final_content() {
@@ -7440,6 +7531,661 @@ async fn send_message_broadcasts_user_created_event() {
     assert!(user_created.data["channel_platform"].is_null());
 }
 
+#[tokio::test]
+async fn voice_replays_wait_for_projection_gate_and_reject_a_cleared_epoch() {
+    let (svc,broadcaster,repo,_database)=make_sqlite_projection_service().await;
+    let conv=svc.create(SQLITE_TEST_OWNER,make_create_req()).await.unwrap();
+    let epoch=repo.get_turn_admission_state(SQLITE_TEST_OWNER,&conv.conversation_id).await.unwrap().epoch;
+    let message=MessageId::new().into_string();
+    svc.append_voice_message_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,&message,"original","projection-command",Some(epoch)).await.unwrap();
+    svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch),None).await.unwrap();
+    broadcaster.take_events();
+    let token=CancellationToken::new();
+    let gate=svc.runtime_state().acquire_preparation_gate(&conv.conversation_id,&token).await.unwrap();
+    let mut user=Box::pin(svc.append_voice_message_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,&message,"original","projection-command",Some(epoch)));
+    let mut assistant=Box::pin(svc.project_assistant_message_idempotent_with_epoch(SQLITE_TEST_OWNER,&conv.conversation_id,"projection-result","reply","voice",Some(epoch),None));
+    assert!(tokio::time::timeout(Duration::from_millis(20),&mut user).await.is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(20),&mut assistant).await.is_err());
+    repo.clear_terminal_conversation_messages(SQLITE_TEST_OWNER,&conv.conversation_id,now_ms()).await.unwrap();
+    drop(gate);
+    assert!(matches!(user.await,Err(AppError::Conflict(_))));
+    assert!(matches!(assistant.await,Err(AppError::Conflict(_))));
+    assert!(broadcaster.take_events().is_empty(),"old bubbles must not be resurrected after clear");
+    assert_eq!(repo.get_messages(&conv.conversation_id,1,20,SortOrder::Asc).await.unwrap().total,0);
+}
+
+#[tokio::test]
+async fn append_and_bind_voice_message_reuses_single_public_bubble() {
+    let (svc, broadcaster, repo, _runtime_registry) = make_service();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+
+    let conv = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    let workspace = std::env::temp_dir();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            extra: Some(json!({ "voice": true, "workspace": workspace, "voice_task_workspace": workspace }).to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let epoch = repo.get_turn_admission_state(TEST_USER_1, &conv.conversation_id).await.unwrap().epoch;
+
+    let message_id = MessageId::new().into_string();
+    svc.append_voice_message(
+        TEST_USER_1,
+        &conv.conversation_id,
+        &message_id,
+        "Voice hello",
+        "command-voice-1",
+    )
+    .await
+    .unwrap();
+    broadcaster.take_events();
+
+    let bound: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-voice-1",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "voice_context_digest": "digest-1",
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    svc.send_voice_bound_message(
+        TEST_USER_1,
+        &conv.conversation_id,
+        "voice-bound-single-bubble",
+        bound,
+        &runtime_registry,
+    )
+    .await
+    .unwrap();
+
+    let messages = repo
+        .get_messages(&conv.conversation_id, 1, 20, SortOrder::Asc)
+        .await
+        .unwrap()
+        .items;
+    let user_messages: Vec<_> = messages
+        .iter()
+        .filter(|message| message.position.as_deref() == Some("right") && message.r#type == "text")
+        .collect();
+    assert_eq!(user_messages.len(), 1, "bound send must reuse the projected message");
+    let content: serde_json::Value = serde_json::from_str(&user_messages[0].content).unwrap();
+    assert_eq!(content["content"], "Voice hello");
+
+    let events = broadcaster.take_events();
+    assert!(
+        events.iter().all(|event| event.name != "message.userCreated"),
+        "binding must not broadcast a second user bubble"
+    );
+}
+
+#[tokio::test]
+async fn voice_bound_message_rejects_rebinding_and_text_changes() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+
+    let conv = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    let workspace = std::env::temp_dir();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            extra: Some(json!({ "voice": true, "workspace": workspace, "voice_task_workspace": workspace }).to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let epoch = repo.get_turn_admission_state(TEST_USER_1, &conv.conversation_id).await.unwrap().epoch;
+    let message_id = MessageId::new().into_string();
+    svc.append_voice_message(
+        TEST_USER_1,
+        &conv.conversation_id,
+        &message_id,
+        "Voice hello",
+        "command-voice-2",
+    )
+    .await
+    .unwrap();
+
+    let first: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-voice-2",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    svc.send_voice_bound_message(
+        TEST_USER_1,
+        &conv.conversation_id,
+        "voice-bound-first",
+        first,
+        &runtime_registry,
+    )
+    .await
+    .unwrap();
+
+    let second: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-voice-2",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "different hidden model context"
+    }))
+    .unwrap();
+    let error = svc
+        .send_voice_bound_message(
+            TEST_USER_1,
+            &conv.conversation_id,
+            "voice-bound-second",
+            second,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)), "unexpected error: {error:?}");
+
+    let current_epoch = repo.get_turn_admission_state(TEST_USER_1, &conv.conversation_id).await.unwrap().epoch;
+    let tampered: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Tampered text",
+        "command_id": "command-voice-2",
+        "expected_admission_epoch": current_epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let error = svc
+        .send_voice_bound_message(
+            TEST_USER_1,
+            &conv.conversation_id,
+            "voice-bound-tampered",
+            tampered,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(message) if message == "voice_bound_message_text_changed"));
+}
+
+#[tokio::test]
+async fn voice_binding_requires_frozen_task_workspace() {
+    let (svc, _broadcaster, repo, _runtime_registry) = make_service();
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let conv = svc.create(TEST_USER_1, make_create_req()).await.unwrap();
+    let workspace = std::env::temp_dir();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            extra: Some(json!({ "voice": true, "workspace": workspace }).to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let epoch = repo
+        .get_turn_admission_state(TEST_USER_1, &conv.conversation_id)
+        .await
+        .unwrap()
+        .epoch;
+    let message_id = MessageId::new().into_string();
+    svc.append_voice_message(
+        TEST_USER_1,
+        &conv.conversation_id,
+        &message_id,
+        "Voice hello",
+        "command-plain-workspace",
+    )
+    .await
+    .unwrap();
+    let bound: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-plain-workspace",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let error = svc
+        .send_voice_bound_message(
+            TEST_USER_1,
+            &conv.conversation_id,
+            "voice-plain-workspace",
+            bound,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, AppError::Forbidden(message) if message == "voice_bound_message_requires_voice_task_policy"),
+        "unexpected error: {error:?}"
+    );
+}
+#[tokio::test]
+async fn sqlite_voice_binding_keeps_projected_identity_and_rejects_stale_scope() {
+    let (service, broadcaster, repo, _database) = make_sqlite_projection_service().await;
+    let conv = service
+        .create(SQLITE_TEST_OWNER, make_create_req())
+        .await
+        .unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let workspace = workspace.path().to_string_lossy().to_string();
+    repo.update(
+        &conv.conversation_id,
+        &ConversationRowUpdate {
+            extra: Some(
+                json!({
+                    "voice": true,
+                    "workspace": workspace,
+                    "voice_task_workspace": workspace
+                })
+                .to_string(),
+            ),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let epoch = repo
+        .get_turn_admission_state(SQLITE_TEST_OWNER, &conv.conversation_id)
+        .await
+        .unwrap()
+        .epoch;
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(MockAgentRuntimeRegistry::new());
+
+    let message_id = MessageId::new().into_string();
+    service
+        .append_voice_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            &message_id,
+            "Voice hello",
+            "command-real-1",
+        )
+        .await
+        .unwrap();
+    broadcaster.take_events();
+
+    let bound: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-real-1",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let delivery = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-bound",
+            bound,
+            &runtime_registry,
+        )
+    .await
+    .unwrap();
+    assert_eq!(delivery.message_id, message_id);
+    let operation_id = format!(
+        "public-turn:v1:{SQLITE_TEST_OWNER}:{}:voice-real-bound",
+        conv.conversation_id
+    );
+    let receipt = repo
+        .get_delivery_receipt(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            &operation_id,
+        )
+        .await
+        .unwrap()
+        .expect("bound send must persist its delivery receipt");
+    assert_eq!(receipt.message_id, message_id);
+
+    let replay: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-real-1",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let replayed = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-bound",
+            replay,
+            &runtime_registry,
+        )
+        .await
+        .unwrap();
+    assert!(replayed.replayed);
+    assert_eq!(replayed.message_id, message_id);
+
+    let messages = repo
+        .get_messages(&conv.conversation_id, 1, 20, SortOrder::Asc)
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.position.as_deref() == Some("right") && message.r#type == "text")
+            .count(),
+        1,
+        "binding must keep exactly one public user message"
+    );
+
+    let current_epoch = repo
+        .get_turn_admission_state(SQLITE_TEST_OWNER, &conv.conversation_id)
+        .await
+        .unwrap()
+        .epoch;
+    let rebind: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": message_id,
+        "display_text": "Voice hello",
+        "command_id": "command-real-1",
+        "expected_admission_epoch": current_epoch,
+        "expected_workspace": workspace,
+        "content": "another hidden model context"
+    }))
+    .unwrap();
+    let error = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-rebind",
+            rebind,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AppError::Conflict(_)), "unexpected error: {error:?}");
+
+    broadcaster.take_events();
+    service
+        .append_voice_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            &message_id,
+            "Voice hello",
+            "command-real-1",
+        )
+        .await
+        .unwrap();
+    assert!(
+        broadcaster
+            .take_events()
+            .iter()
+            .any(|event| event.name == "message.userCreated"),
+        "an idempotent append retry must replay the public projection event"
+    );
+
+    let current_epoch = repo
+        .get_turn_admission_state(SQLITE_TEST_OWNER, &conv.conversation_id)
+        .await
+        .unwrap()
+        .epoch;
+    let second_id = MessageId::new().into_string();
+    service
+        .append_voice_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            &second_id,
+            "Second voice",
+            "command-real-2",
+        )
+        .await
+        .unwrap();
+
+    let foreign_workspace = tempfile::tempdir().unwrap();
+    let foreign: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": second_id,
+        "display_text": "Second voice",
+        "command_id": "command-real-2",
+        "expected_admission_epoch": current_epoch,
+        "expected_workspace": foreign_workspace.path(),
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let error = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-foreign",
+            foreign,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, AppError::Conflict(message) if message == "voice_bound_message_workspace_changed")
+    );
+
+    let stale: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": second_id,
+        "display_text": "Second voice",
+        "command_id": "command-real-2",
+        "expected_admission_epoch": epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let error = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-stale",
+            stale,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, AppError::Conflict(message) if message == "voice_bound_message_epoch_changed")
+    );
+
+    let tampered: VoiceBoundMessageRequest = serde_json::from_value(json!({
+        "message_id": second_id,
+        "display_text": "Second voice",
+        "command_id": "command-real-other",
+        "expected_admission_epoch": current_epoch,
+        "expected_workspace": workspace,
+        "content": "hidden model context"
+    }))
+    .unwrap();
+    let error = service
+        .send_voice_bound_message(
+            SQLITE_TEST_OWNER,
+            &conv.conversation_id,
+            "voice-real-tampered",
+            tampered,
+            &runtime_registry,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, AppError::Conflict(message) if message == "voice_bound_message_text_changed")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sqlite_voice_binding_has_one_owner_across_independent_pools() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let test_root = std::env::temp_dir().join(format!(
+        "nomifun-voice-binding-{}-{nonce}",
+        std::process::id()
+    ));
+    let db_path = test_root.join("shared.sqlite3");
+    let database_a = nomifun_db::init_database(&db_path).await.unwrap();
+    let user_id = nomifun_db::installation_owner_id(database_a.pool())
+        .await
+        .unwrap();
+    let database_b = nomifun_db::init_database(&db_path).await.unwrap();
+    let repo_a = Arc::new(SqliteConversationRepository::new(
+        database_a.pool().clone(),
+    ));
+    let repo_b = Arc::new(SqliteConversationRepository::new(
+        database_b.pool().clone(),
+    ));
+    let broadcaster = Arc::new(MockBroadcaster::new());
+    let runtime_registry: Arc<dyn AgentRuntimeRegistry> =
+        Arc::new(MockAgentRuntimeRegistry::new());
+    let svc_a = ConversationService::new(
+        Arc::<str>::from(user_id.clone()),
+        test_root.clone(),
+        broadcaster.clone(),
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo_a.clone(),
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let conversation = svc_a
+        .create(&user_id, make_create_req())
+        .await
+        .unwrap();
+    let workspace = test_root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let workspace = workspace.to_string_lossy().to_string();
+    repo_a
+        .update(
+            &conversation.conversation_id,
+            &ConversationRowUpdate {
+                extra: Some(
+                    json!({
+                        "voice": true,
+                        "workspace": workspace,
+                        "voice_task_workspace": workspace
+                    })
+                    .to_string(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let svc_b = ConversationService::new(
+        Arc::<str>::from(user_id.clone()),
+        test_root.clone(),
+        broadcaster,
+        Arc::new(FixedSkillResolver { names: vec![] }),
+        runtime_registry.clone(),
+        repo_b,
+        Arc::new(StubAgentMetadataRepo),
+        Arc::new(StubAcpSessionRepo::default()),
+        Arc::new(crate::NoExecutionConversationBoundary),
+    );
+    let epoch = repo_a
+        .get_turn_admission_state(&user_id, &conversation.conversation_id)
+        .await
+        .unwrap()
+        .epoch;
+    let message_id = MessageId::new().into_string();
+    svc_a
+        .append_voice_message(
+            &user_id,
+            &conversation.conversation_id,
+            &message_id,
+            "Voice race",
+            "command-race",
+        )
+        .await
+        .unwrap();
+
+    let start = Arc::new(tokio::sync::Barrier::new(3));
+    let first = {
+        let svc = svc_a.clone();
+        let runtime_registry = runtime_registry.clone();
+        let start = start.clone();
+        let user_id = user_id.clone();
+        let conversation_id = conversation.conversation_id.clone();
+        let message_id = message_id.clone();
+        let workspace = workspace.clone();
+        tokio::spawn(async move {
+            start.wait().await;
+            let bound: VoiceBoundMessageRequest = serde_json::from_value(json!({
+                "message_id": message_id,
+                "display_text": "Voice race",
+                "command_id": "command-race",
+                "expected_admission_epoch": epoch,
+                "expected_workspace": workspace,
+                "content": "hidden model context"
+            }))
+            .unwrap();
+            svc.send_voice_bound_message(
+                &user_id,
+                &conversation_id,
+                "voice-race-first",
+                bound,
+                &runtime_registry,
+            )
+            .await
+        })
+    };
+    let second = {
+        let svc = svc_b;
+        let runtime_registry = runtime_registry.clone();
+        let start = start.clone();
+        let user_id = user_id.clone();
+        let conversation_id = conversation.conversation_id.clone();
+        let message_id = message_id.clone();
+        let workspace = workspace.clone();
+        tokio::spawn(async move {
+            start.wait().await;
+            let bound: VoiceBoundMessageRequest = serde_json::from_value(json!({
+                "message_id": message_id,
+                "display_text": "Voice race",
+                "command_id": "command-race",
+                "expected_admission_epoch": epoch,
+                "expected_workspace": workspace,
+                "content": "hidden model context"
+            }))
+            .unwrap();
+            svc.send_voice_bound_message(
+                &user_id,
+                &conversation_id,
+                "voice-race-second",
+                bound,
+                &runtime_registry,
+            )
+            .await
+        })
+    };
+    start.wait().await;
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+    assert!(
+        first.is_ok() ^ second.is_ok(),
+        "exactly one independent pool may bind the voice message"
+    );
+    let delivery = first.or(second).unwrap();
+    assert_eq!(delivery.message_id, message_id);
+
+    let user_messages = repo_a
+        .get_messages(&conversation.conversation_id, 1, 20, SortOrder::Asc)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|message| message.position.as_deref() == Some("right") && message.r#type == "text")
+        .count();
+    assert_eq!(user_messages, 1);
+}
 #[tokio::test]
 async fn send_message_broadcasts_turn_started_with_processing_runtime() {
     let (svc, broadcaster, _repo, _runtime_registry) = make_service();
@@ -13620,6 +14366,35 @@ async fn send_message_allows_large_explicit_skill_snapshot() {
         .unwrap();
     assert_eq!(snapshots.len(), 1);
     assert_eq!(snapshots[0].content.len(), snapshot_content.len());
+}
+
+#[tokio::test]
+async fn skill_load_write_failure_returns_and_settles_the_exact_admission() {
+    let database = init_database_memory().await.unwrap();
+    let repo = Arc::new(SqliteConversationRepository::new(database.pool().clone()));
+    let registry: Arc<dyn AgentRuntimeRegistry> = Arc::new(MockAgentRuntimeRegistry::new());
+    let resolver = Arc::new(CatalogSkillResolver::with_snapshot(ResolvedSkillSnapshot {
+        skill_id: "user:pdf".into(), name: "pdf".into(), source: "user".into(),
+        version_hash: "a".repeat(64), content: "# PDF workflow".into(), location: None,
+    }));
+    let service = ConversationService::new(Arc::<str>::from(SQLITE_TEST_OWNER), std::env::temp_dir(), Arc::new(MockBroadcaster::new()),
+        resolver, registry.clone(), repo.clone(), Arc::new(StubAgentMetadataRepo), Arc::new(StubAcpSessionRepo::default()), Arc::new(crate::NoExecutionConversationBoundary));
+    let conversation = service.create(SQLITE_TEST_OWNER, make_create_req()).await.unwrap();
+    nomifun_db::sqlx::query("CREATE TRIGGER reject_test_skill_load BEFORE INSERT ON conversation_skill_loads BEGIN SELECT RAISE(ABORT, 'injected skill ledger write failure'); END")
+        .execute(database.pool()).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(2), send_message_with_test_key(
+        &service, SQLITE_TEST_OWNER, &conversation.conversation_id, "skill-write-failure",
+        serde_json::from_value(json!({"content":"", "inject_skills":["user:pdf"]})).unwrap(), &registry,
+    )).await.expect("a failed persistence operation must not reacquire its own preparation gate");
+    assert!(result.is_err());
+    assert!(!service.runtime_state().has_active_turn(&conversation.conversation_id));
+    let row = repo.get(&conversation.conversation_id).await.unwrap().unwrap();
+    assert_eq!(row.status.as_deref(), Some("finished"));
+    assert!(repo.get_messages(&conversation.conversation_id, 1, 10, SortOrder::Asc).await.unwrap().items.is_empty());
+    assert!(repo.get_skill_loads(&conversation.conversation_id).await.unwrap().is_empty());
+    let receipt = service.latest_completed_turn_receipt(SQLITE_TEST_OWNER, &conversation.conversation_id).await.unwrap().unwrap();
+    assert_eq!(receipt.result_ok, Some(false));
+    assert!(receipt.result_error.unwrap().contains("injected skill ledger write failure"));
 }
 
 #[tokio::test]

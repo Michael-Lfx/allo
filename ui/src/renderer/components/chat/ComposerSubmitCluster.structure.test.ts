@@ -94,4 +94,26 @@ describe('ComposerSubmitCluster', () => {
     expect(sendBoxCss.includes('.composer-submit-cluster__primary')).toBe(true);
     expect(sendBoxCss.includes('max-height: var(--chat-action-slot-size)')).toBe(true);
   });
+
+  test('voice conversation renders phone call action, hides dictation mic, and gates send to draft presence', () => {
+    const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
+
+    expect(source.includes('isVoiceConversation')).toBe(true);
+    expect(source.includes('PhoneCall')).toBe(true);
+    expect(source.includes('PhoneOff')).toBe(true);
+    expect(source.includes('const hideSpeech = isVoiceConversation || speechHidden || !ready || !available')).toBe(true);
+    expect(source.includes('!isVoiceConnecting && !isVoiceStartUncertain : showSendButton')).toBe(true);
+    expect(source.includes('(!hasDraft || isVoiceConnecting || isVoiceStartUncertain)')).toBe(true);
+    expect(source.includes("status='danger'")).toBe(true);
+    expect(source.includes('sendbox-phone-call-button')).toBe(true);
+    expect(source.includes('sendbox-phone-hangup-button')).toBe(true);
+  });
+
+  test('cross-conversation phone button isolation guarantees B cannot hang up A (R04)', () => {
+    const sendBoxSource = readSource(new URL('../../pages/conversation/platforms/nomi/NomiSendBox.tsx', import.meta.url));
+
+    expect(sendBoxSource.includes('activeVoiceConversationId === conversation_id')).toBe(true);
+    expect(sendBoxSource.includes('isVoiceActiveElsewhere')).toBe(true);
+    expect(sendBoxSource.includes('if (voiceSnapshot.binding?.conversation_id !== conversation_id)')).toBe(true);
+  });
 });

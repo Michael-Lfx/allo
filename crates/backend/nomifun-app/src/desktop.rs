@@ -1002,20 +1002,36 @@ impl DesktopServer {
     fn spawn_loopback(self: &Arc<Self>, listener: TcpListener) {
         let server = Arc::clone(self);
         let router = self.router.clone();
-        let mut shutdown_rx = self.loopback_shutdown.subscribe();
+        let shutdown_rx = self.loopback_shutdown.subscribe();
         let termination = self.listener_lifecycle.loopback_termination.clone();
         self.runtime.spawn(async move {
+            let mut graceful_rx = shutdown_rx.clone();
             let shutdown = async move {
-                while shutdown_rx.changed().await.is_ok() {
-                    if *shutdown_rx.borrow() {
+                while graceful_rx.changed().await.is_ok() {
+                    if *graceful_rx.borrow() {
                         break;
                     }
                 }
             };
-            let result = axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown)
-                .await
-                .map_err(|error| error.to_string());
+            let serve = axum::serve(listener, router).with_graceful_shutdown(shutdown);
+            let result = async {
+                let mut force_rx = shutdown_rx.clone();
+                tokio::select! {
+                    res = serve => res.map_err(|error| error.to_string()),
+                    _ = async {
+                        while force_rx.changed().await.is_ok() {
+                            if *force_rx.borrow() {
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    } => {
+                        tracing::info!("loopback listener graceful drain period elapsed; terminating remaining connections");
+                        Ok(())
+                    }
+                }
+            }
+            .await;
             // Publish the immutable terminal result before fatal cleanup. The
             // cleanup path waits for every listener and must never wait for
             // this supervisor itself.
@@ -1212,6 +1228,26 @@ impl DesktopServer {
         // sockets when the listener closes.
         if let Some(robot) = &self.robot {
             robot.shutdown();
+        }
+
+        // Stop the voice companion daemon (ai-mate) if running under Flowy whole-tree supervision
+        if let Some(companion) = crate::voice_companion_manager::VoiceCompanionProcessManager::global() {
+            let companion_result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                companion.stop(),
+            )
+            .await;
+            match companion_result {
+                Ok(Ok(())) => {
+                    tracing::info!("voice companion daemon stopped cleanly during desktop shutdown");
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "voice companion daemon stop returned error during shutdown");
+                }
+                Err(_) => {
+                    tracing::warn!("voice companion daemon stop timed out after 3 seconds");
+                }
+            }
         }
 
         // Pause video-generation jobs so restart does not show a false "running" state.
@@ -1488,7 +1524,7 @@ impl DesktopServer {
             Err(e) => return self.fail_start(format!("无法绑定局域网端口: {e}")),
         };
 
-        let (sd_tx, mut sd_rx) = watch::channel(false);
+        let (sd_tx, sd_rx) = watch::channel(false);
         let termination = ListenerTermination::new();
         let make = app.into_make_service_with_connect_info::<SocketAddr>();
         let server = Arc::clone(self);
@@ -1502,17 +1538,33 @@ impl DesktopServer {
             port,
         });
         self.runtime.spawn(async move {
+            let mut graceful_rx = sd_rx.clone();
             let shutdown = async move {
-                while sd_rx.changed().await.is_ok() {
-                    if *sd_rx.borrow() {
+                while graceful_rx.changed().await.is_ok() {
+                    if *graceful_rx.borrow() {
                         break;
                     }
                 }
             };
-            let result = axum::serve(listener, make)
-                .with_graceful_shutdown(shutdown)
-                .await
-                .map_err(|error| error.to_string());
+            let serve = axum::serve(listener, make).with_graceful_shutdown(shutdown);
+            let result = async {
+                let mut force_rx = sd_rx.clone();
+                tokio::select! {
+                    res = serve => res.map_err(|error| error.to_string()),
+                    _ = async {
+                        while force_rx.changed().await.is_ok() {
+                            if *force_rx.borrow() {
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    } => {
+                        tracing::info!("LAN listener graceful drain period elapsed; terminating remaining connections");
+                        Ok(())
+                    }
+                }
+            }
+            .await;
             // Publish the immutable terminal result before invoking fatal
             // cleanup so cleanup never waits for the supervisor performing it.
             if let ListenerCompletion::UnexpectedExit(error) =
@@ -2363,5 +2415,72 @@ mod tests {
                 "stored value {stored:?} must not auto-expose the LAN listener"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_listener_drain_timeout_forces_requested_stop() {
+        let termination = ListenerTermination::new();
+        let (sd_tx, sd_rx) = watch::channel(false);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                "done"
+            }),
+        );
+
+        let task_termination = termination.clone();
+        tokio::spawn(async move {
+            let mut graceful_rx = sd_rx.clone();
+            let shutdown = async move {
+                while graceful_rx.changed().await.is_ok() {
+                    if *graceful_rx.borrow() {
+                        break;
+                    }
+                }
+            };
+            let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown);
+            let result = async {
+                let mut force_rx = sd_rx.clone();
+                tokio::select! {
+                    res = serve => res.map_err(|error| error.to_string()),
+                    _ = async {
+                        while force_rx.changed().await.is_ok() {
+                            if *force_rx.borrow() {
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    } => {
+                        Ok(())
+                    }
+                }
+            }
+            .await;
+            task_termination.complete(result);
+        });
+
+        let client = reqwest::Client::new();
+        let client_fut = tokio::spawn(async move {
+            let _ = client.get(format!("http://{addr}/slow")).send().await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        termination.request_stop();
+        sd_tx.send_replace(true);
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(800),
+            DesktopServer::wait_for_listener_completion(termination.subscribe(), "test"),
+        )
+        .await
+        .expect("listener must terminate well before 800ms");
+
+        assert_eq!(outcome.unwrap(), ListenerCompletion::RequestedStop);
+        client_fut.abort();
     }
 }

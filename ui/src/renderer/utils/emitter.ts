@@ -71,7 +71,7 @@ interface EventTypes {
   'conversation.messages.refresh': [
     {
       conversationId: ConversationId;
-      reason: 'edit-resubmit-reconcile' | 'edit-resubmit-failed' | 'coding-rollback';
+      reason: 'edit-resubmit-reconcile' | 'edit-resubmit-failed' | 'coding-rollback' | 'reset';
     },
   ];
   // Guid→会话页转场揭示信号：目标页首条用户气泡已提交（或无需首条消息的入口

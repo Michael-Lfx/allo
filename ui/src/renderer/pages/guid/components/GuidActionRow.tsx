@@ -9,6 +9,7 @@ import type { AvailableAgent } from '../types';
 import type { Preset } from '@/common/types/agent/presetTypes';
 import PresetAgentTag, { type AgentSwitcherItem } from './PresetAgentTag';
 import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitCluster';
+import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Checkbox, Dropdown, Menu } from '@arco-design/web-react';
 import { Aiming, CloseSmall, Plus, Shield, Tool } from '@icon-park/react';
@@ -58,8 +59,13 @@ type GuidActionRowProps = {
   // Send button
   loading: boolean;
   hasDraft: boolean;
+  onStartVoiceCall?: () => void;
+  isVoiceConnecting?: boolean;
+  isVoiceActive?: boolean;
+  voiceCallLabel?: string;
   speechLocale?: string;
   onSpeechTranscript: (text: string) => void;
+  dictationActivation?: DictationActivationRequest;
   autoWorkDraft?: AutoWorkDraftValue;
   onSend: () => void;
   /** Arms the first message as a `/goal` objective. */
@@ -95,8 +101,13 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
   hidePresetTag = false,
   loading,
   hasDraft,
+  isVoiceActive = false,
+  onStartVoiceCall,
+  isVoiceConnecting = false,
+  voiceCallLabel,
   speechLocale,
   onSpeechTranscript,
+  dictationActivation,
   autoWorkDraft,
   onSend,
   goalMode = false,
@@ -258,6 +269,11 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
         )}
 
         <ComposerSubmitCluster
+          isVoiceConversation={Boolean(onStartVoiceCall) && !autoWorkMode}
+          isVoiceConnecting={isVoiceConnecting}
+          isVoiceActiveElsewhere={isVoiceActive}
+          voiceCallLabel={voiceCallLabel}
+          onStartVoiceCall={onStartVoiceCall}
           hasDraft={hasDraft}
           loading={loading}
           autoWorkMode={autoWorkMode}
@@ -265,6 +281,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
           speechLocale={speechLocale}
           onSend={onSend}
           onSpeechTranscript={onSpeechTranscript}
+          dictationActivation={dictationActivation}
           sendTestId='guid-send-btn'
         />
       </div>

@@ -1,5 +1,5 @@
 
-import { parseConfirmationCorrelationId, type IMessagePermission } from '@/common/chat/chatLib';
+import { confirmationSubmissionScope, type IMessagePermission } from '@/common/chat/chatLib';
 import { optionalDisplayText, toDisplayText } from '@/common/chat/displayText';
 import { ipcBridge } from '@/common';
 import { useConversationContextSafe } from '@/renderer/hooks/context/ConversationContext';
@@ -69,13 +69,10 @@ const MessagePermission: React.FC<MessagePermissionProps> = React.memo(({ messag
 
     setIsResponding(true);
     try {
-      const always_allow = selected === 'proceed_always';
       await ipcBridge.conversation.confirmation.confirm.invoke({
         conversation_id: message.conversation_id,
         call_id,
-        msg_id: message.msg_id ?? parseConfirmationCorrelationId(message.content.id),
-        data: { value: selected },
-        always_allow,
+        ...confirmationSubmissionScope(message.content.id, message.msg_id, selected),
       });
       setHasResponded(true);
     } catch (error) {

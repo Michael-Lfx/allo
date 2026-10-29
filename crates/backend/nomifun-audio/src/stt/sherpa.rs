@@ -51,20 +51,20 @@ impl SherpaSttCallback {
         })
     }
 
-    fn recognize_sync(&self, pcm: &[f32], sample_rate: u32) -> Option<String> {
+    fn recognize_sync(&self, pcm: &[f32], sample_rate: u32) -> Result<Option<String>, String> {
         if pcm.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let recognizer = self.inner.recognizer.lock().ok()?;
+        let recognizer = self.inner.recognizer.lock().map_err(|_| "asr_engine_failed".to_owned())?;
         let stream = recognizer.create_stream();
         stream.accept_waveform(sample_rate as i32, pcm);
         recognizer.decode(&stream);
-        let text = stream.get_result()?.text;
+        let text = stream.get_result().ok_or_else(|| "asr_engine_failed".to_owned())?.text;
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(trimmed.to_string())
+            Ok(Some(trimmed.to_string()))
         }
     }
 }
@@ -73,24 +73,46 @@ impl SherpaSttCallback {
 impl SttCallback for SherpaSttCallback {
     async fn transcribe(
         &self,
-        _channel: AudioChannel,
+        channel: AudioChannel,
         pcm: Vec<f32>,
         sample_rate: u32,
     ) -> Option<String> {
+        self.transcribe_checked(channel, pcm, sample_rate).await.ok().flatten()
+    }
+
+    async fn transcribe_checked(
+        &self,
+        _channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<Option<String>, String> {
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
             let cb = SherpaSttCallback { inner };
             cb.recognize_sync(&pcm, sample_rate)
         })
         .await
-        .ok()
-        .flatten()
+        .map_err(|_| "asr_engine_failed".to_owned())?
     }
+}
+
+static REGISTERED_MODEL_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Registers the active model directory configured by the runtime application.
+pub fn register_active_model_dir(dir: PathBuf) {
+    if let Ok(mut lock) = REGISTERED_MODEL_DIR.write() {
+        *lock = Some(dir);
+    }
+}
+
+/// Retrieves the active model directory if registered.
+pub fn active_model_dir() -> Option<PathBuf> {
+    REGISTERED_MODEL_DIR.read().ok().and_then(|l| l.clone())
 }
 
 /// Resolve model dir and load sherpa, or `Ok(None)` when unset / missing.
 ///
-/// Order: `model_dir` argument → env `NOMI_SHERPA_ASR_MODEL_DIR`.
+/// Order: `model_dir` argument → registered active dir → env `NOMI_SHERPA_ASR_MODEL_DIR`.
 /// Returns `Err` only when a directory was provided but is invalid / unloadable.
 pub fn try_load_sherpa(model_dir: Option<&Path>) -> Result<Option<SherpaSttCallback>, SherpaSttError> {
     let Some(dir) = resolve_model_dir(model_dir) else {
@@ -110,9 +132,95 @@ pub fn try_load_sherpa(model_dir: Option<&Path>) -> Result<Option<SherpaSttCallb
 
 fn resolve_model_dir(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
-        return Some(p.to_path_buf());
+        let asr_sub = p.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(p) {
+            return Some(p.to_path_buf());
+        }
+        return None;
     }
-    std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).map(PathBuf::from)
+    if let Some(reg) = active_model_dir() {
+        let asr_sub = reg.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(&reg) {
+            return Some(reg);
+        }
+    }
+    if let Some(p) = std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).map(PathBuf::from) {
+        let asr_sub = p.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(&p) {
+            return Some(p);
+        }
+    }
+    if let Some(ai_mate) = std::env::var_os("AI_MATE_MODEL_DIR").map(PathBuf::from) {
+        let asr_sub = ai_mate.join("asr");
+        if is_valid_asr_dir(&asr_sub) {
+            return Some(asr_sub);
+        }
+        if is_valid_asr_dir(&ai_mate) {
+            return Some(ai_mate);
+        }
+    }
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("Flowy").join("Nomi").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("Nomi-dev").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("AI-Mate").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("models").join("asr"));
+        candidates.push(local_app_data.join("Flowy").join("models").join("voice").join("asr"));
+        candidates.push(local_app_data.join("flowy").join("models").join("voice").join("asr"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let local_path = PathBuf::from(local);
+            candidates.push(local_path.join("Flowy").join("Nomi").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("Nomi-dev").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("AI-Mate").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("models").join("asr"));
+            candidates.push(local_path.join("Flowy").join("models").join("voice").join("asr"));
+            candidates.push(local_path.join("flowy").join("models").join("voice").join("asr"));
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join(".flowy").join("models").join("voice").join("asr"));
+        candidates.push(home.join(".flowy").join("models").join("asr"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("/var/lib/ai-mate/models/asr"));
+        candidates.push(PathBuf::from("/etc/ai-mate/models/asr"));
+    }
+
+    for c in candidates {
+        if is_valid_asr_dir(&c) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Checks whether a candidate directory has tokens.txt and a non-empty SenseVoice model file.
+fn is_valid_asr_dir(dir: &Path) -> bool {
+    if !dir.is_dir() || !dir.join("tokens.txt").is_file() {
+        return false;
+    }
+    ["model.int8.onnx", "model.onnx"].iter().any(|name| {
+        let p = dir.join(name);
+        std::fs::metadata(&p).map(|m| m.len() >= 1_000_000).unwrap_or(false)
+    })
 }
 
 /// Expected layout (SenseVoice):
@@ -140,6 +248,15 @@ fn sense_voice_config(dir: &Path) -> Result<OfflineRecognizerConfig, SherpaSttEr
                 dir.display()
             ))
         })?;
+
+    let model_len = std::fs::metadata(&model).map(|m| m.len()).unwrap_or(0);
+    if model_len < 1_000_000 {
+        return Err(SherpaSttError(format!(
+            "SenseVoice 模型文件 '{}' 异常 (仅 {} 字节，完整模型约 238MB)。请在【设置 - 语音伴侣】中重新下载安装语音模型套件。",
+            model.display(),
+            model_len
+        )));
+    }
 
     let mut config = OfflineRecognizerConfig::default();
     config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
@@ -174,10 +291,12 @@ mod tests {
 
     #[test]
     fn try_load_none_when_unset() {
-        // Ensure we don't accidentally pick up a real env in CI: only test
-        // the explicit-None path when env is unset, else skip assert on Ok(None).
-        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() {
+        // Ensure we don't accidentally pick up a real env or installed model in test:
+        // if no env and no installed model, assert Ok(None); if models exist locally, assert Ok(_).
+        if std::env::var_os(SHERPA_ASR_MODEL_DIR_ENV).is_none() && resolve_model_dir(None).is_none() {
             assert!(matches!(try_load_sherpa(None), Ok(None)));
+        } else {
+            assert!(try_load_sherpa(None).is_ok());
         }
     }
 
@@ -185,7 +304,9 @@ mod tests {
     fn sense_voice_config_detects_files() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("tokens.txt"), "a\n").unwrap();
-        fs::write(dir.path().join("model.int8.onnx"), b"fake").unwrap();
+        // Write >= 1MB to pass model integrity size validation
+        let dummy_model = vec![0u8; 1_000_001];
+        fs::write(dir.path().join("model.int8.onnx"), dummy_model).unwrap();
         let cfg = sense_voice_config(dir.path()).unwrap();
         assert!(cfg.model_config.tokens.unwrap().ends_with("tokens.txt"));
         assert!(
@@ -195,5 +316,14 @@ mod tests {
                 .unwrap()
                 .ends_with("model.int8.onnx")
         );
+    }
+
+    #[test]
+    fn small_model_file_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("tokens.txt"), "a\n").unwrap();
+        fs::write(dir.path().join("model.int8.onnx"), b"tiny-stub-48-bytes").unwrap();
+        let err = sense_voice_config(dir.path()).unwrap_err();
+        assert!(err.0.contains("异常") || err.0.contains("238MB"));
     }
 }

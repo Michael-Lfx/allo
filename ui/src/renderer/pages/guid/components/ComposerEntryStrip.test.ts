@@ -32,4 +32,13 @@ describe('Guid composer entry strip', () => {
     expect(styles.includes('min-height: 32px')).toBe(true);
     expect(styles.includes('height: 28px')).toBe(true);
   });
+
+  test('moves voice entry to the shared primary action instead of a duplicate pill', () => {
+    const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
+    const actions = readSource(new URL('./GuidActionRow.tsx', import.meta.url));
+    expect(source.includes('onStartVoiceCall')).toBe(false);
+    expect(actions.includes('onStartVoiceCall={onStartVoiceCall}')).toBe(true);
+    expect(actions.includes('isVoiceConnecting={isVoiceConnecting}')).toBe(true);
+    expect(actions.includes('voiceCallLabel={voiceCallLabel}')).toBe(true);
+  });
 });

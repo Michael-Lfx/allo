@@ -1,0 +1,5 @@
+[models]
+models_dir = "/opt/ai-mate/models"
+auto_download = true
+probe_timeout_ms = 2000
+prefer_mirror = "github"

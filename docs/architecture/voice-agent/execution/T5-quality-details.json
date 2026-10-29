@@ -1,0 +1,57 @@
+[
+  {
+    "gate": "check:motion",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-motion.log"
+  },
+  {
+    "gate": "check:error-surface-contract",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-error-surface-contract.log"
+  },
+  {
+    "gate": "check:support-surface-contract",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-support-surface-contract.log"
+  },
+  {
+    "gate": "check:button-layout-contract",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-button-layout-contract.log"
+  },
+  {
+    "gate": "check:icons",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-icons.log"
+  },
+  {
+    "gate": "check:css-scope",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-css-scope.log"
+  },
+  {
+    "gate": "check:dead-css",
+    "exit_code": 1,
+    "log": "docs/architecture/voice-agent/execution/T5-check-dead-css.log"
+  },
+  {
+    "gate": "check:codemirror-runtime",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-codemirror-runtime.log"
+  },
+  {
+    "gate": "check:process-runtime-boundary",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-process-runtime-boundary.log"
+  },
+  {
+    "gate": "check:browser-platform-boundary",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-browser-platform-boundary.log"
+  },
+  {
+    "gate": "check:windows-console-hide",
+    "exit_code": 0,
+    "log": "docs/architecture/voice-agent/execution/T5-check-windows-console-hide.log"
+  }
+]

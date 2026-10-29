@@ -3066,6 +3066,12 @@ impl AppServices {
         .await
         .map_err(|e| anyhow::anyhow!("companion service start failed: {e}"))?;
 
+        // R4: 空 roster 幂等创建一个名为 Flowy、使用 Bolt 外观的伙伴；已有伙伴不重复建
+        if let Some(flowy) = companion_service.ensure_default_companion().await
+            .map_err(|e| anyhow::anyhow!("default companion initialization failed: {e}"))? {
+            tracing::info!(companion_id = %flowy.companion_id, "default companion 'Flowy' (bolt) durably created and visible");
+        }
+
         let appearance_service = nomifun_appearance::AppearanceService::open(&data_dir)
             .map_err(|e| anyhow::anyhow!("appearance service start failed: {e}"))?;
 
@@ -3187,24 +3193,14 @@ impl AppServices {
             "startup: AppServices creation service constructed (audit/reconcile deferred)"
         );
 
-        // Conversation boot reconciliation: settle ghost 'running' conversations
-        // left by a process killed mid-turn. At boot no runtime is live, so any
-        // persisted 'running' row is a crash remnant. This finalizes dangling
-        // 'thinking' messages, clears the resumable ACP session (so warmup opens
-        // a fresh session instead of replaying the interrupted turn), and flips
-        // the row to 'finished' — all before any router/warmup can observe it.
-        let reconciled_conversations =
-            nomifun_conversation::reconcile_running_conversations_on_boot(
-                &conversation_repo,
-                &acp_session_repo,
-            )
-            .await;
-        if reconciled_conversations > 0 {
-            tracing::info!(
-                reconciled = reconciled_conversations,
-                "conversation boot reconciliation: ghost 'running' sessions settled"
-            );
-        }
+        // Conversation turn settlement is deliberately NOT performed here.
+        // AppServices construction runs before the exclusive server-lock
+        // authority is revalidated, before the boot-frozen unsettled snapshot
+        // exists, and before the durable agent-process registry is reaped.
+        // Settling a persisted `running` row at this point would release a
+        // generation whose old owner may still execute elsewhere (remote,
+        // external gateway, or an unproven local child). The proof-aware sweep
+        // in router startup owns every destructive settlement instead.
 
         // Headless seed: bind a Remote access token to the default companion so an
         // operator can configure the front door via env on a headless server.

@@ -1,0 +1,95 @@
+> **2026-10-24 RV-07 准备条件补齐**：新增空快照、缺失/错 session binding 的清理前阻断与恢复重试回归；未确认归属时 API 调用数为 0，不能显示清理成功。成功清理后仍保留下一句和其他 session。157 项语音/重置、100 项共享历史通过，见 [本轮记录](RESET-READINESS-REPAIR-2026-10-24.zh.md)。不替代原生/物理签核，历史矩阵保留。
+
+> **2026-10-24 复审增补**：HI-06/RV-07 增加跨挂载失效；RV-06/UX-02 增加首页到目标会话的原请求恢复；LI-02 增加 collapsed；RV-05/UX-03 增加六条双语实际组件点击/迟到响应证据。分项判读和限制见 [修复验证记录 §4](REPAIR-VERIFICATION-2026-10-24.zh.md)。原生/物理未签核边界保持；下面历史表保留。
+
+# rev2 当前验证结论 · 2026-10-24
+
+> **当前事实**：E1–E3 已实施；宿主 90、worker 47、Conversation 集成 26、终端 41、前端 142 + 桌宠/首页补充 54 + 共享历史补充 86 项通过。桌面 feature 编译和生产 UI 构建通过。TS 61 项既有诊断新增 0；12 项静态门禁通过。未提交、未推送。
+> **判读规则**：“代码验证”表示分层自动化/源码契约证据，不表示同一次整机操作录像。原生像素布局、物理声学能力与挂载切页交互未签核的地方明确单列。完整命令、日志、限制见 [实施记录](IMPLEMENTATION.zh.md)。下方历史矩阵保留原文。
+
+## 当前 29 项证据矩阵
+
+| 编号 | 当前结论 | 证据与边界 |
+| --- | --- | --- |
+| HI-01 | 代码验证通过 | worker 新唤醒清窗、宿主逐轮 session 过滤、liveVoiceTurn 跨工作区反例、真实数据库路由隔离；不重写历史 |
+| HI-02 | 代码验证覆盖 | voice_dialogue_integration 的 workspace routing、wake binding、reservation/frozen target；反复唤醒 hub 用例；未宣称整机 30 分钟实测 |
+| HI-03 | 代码验证通过 | host voice_projection_rejects_missing_and_foreign_turn_sessions；前端 missing/foreign session；投影 ID 三元组及重启恢复集成断言 |
+| HI-04 | 代码验证通过 | 独立用户/助手接替、回执先于 GET、下一句先落盘的排序与重试用例 |
+| HI-05 | 代码验证覆盖 | 按 session/conversation/turn 与真实消息 ID 关联，重名文字不作为去重键；数据库 workspace isolation 集成 |
+| HI-06 | 代码验证覆盖 | 加载 sequence/epoch、投影恢复、旧控制隔离及恢复绑定；原生断线界面过程未录像签核 |
+| HI-07 | 代码验证通过 | 目标过滤在选择前；foreign result/approval 宿主反例；B 合法输入正向对照；通知不追加普通行 |
+| HI-08 | 代码验证通过 | worker ignore 保持 listening/context、Conversation 无新增消息/污染、前端临时行清理 |
+| UX-01 | 代码验证通过 | 双语逐阶段 SSR，阶段和诊断分开；同步错误显式重试；不把编译或 SSR 当真实设备 readiness |
+| UX-02 | 代码验证覆盖 | 主控状态矩阵、小挂断、unknown 启动恢复、精确 command 停止；原生 IME/窄窗口交互待签核 |
+| UX-03 | 代码验证覆盖 | 既有审批接口参数/过期、真实 runtime 批准拒绝、逐项 FIFO 取消；footer 接替后仍可访问；完整 GUI 点击链未签核 |
+| UX-04 | 代码验证通过 | 外任务不显示到本页、无队列无空展开面板、进入真实活动通话的主键；后台任务不因挂断被取消 |
+| UX-05 | 代码验证通过 | 快模型仅高级诊断、长宣告移除、概览无正常模型/音色选择，缺模型 onboarding 与私聊模型控制保留；robot/profile 契约未改 |
+| UX-06 | 部分：双语与静态契约通过 | SSR 覆盖语言/阶段，主题/布局静态契约通过；动态布局工具 EBUSY 中断，原生 Light/Dark/高 DPI 像素布局未签核 |
+| LI-01 | 代码验证通过 | 持久布尔类型、重命名/序列化后声波保留；普通任务即使命名“语音任务”也无标记 |
+| LI-02 | 部分：渲染/源码契约通过 | SSR 覆盖 mobile/batch/menu/generating；独立 14px 末端位与菜单留位；长标题、折叠和 DPI 的原生像素效果待验收 |
+| LI-03 | 代码验证通过 | 列表/ChatConversation/发送共用严格谓词；legacy bool、非法类型、unknown 不误发普通队列；宿主校验仍有效 |
+| LI-04 | 代码验证通过 | 声波只读类型，spinner/stop 仍读真实 runtime；完成投影不造成生成状态；挂断任务继续的 runtime 用例 |
+| LI-05 | 代码验证覆盖 | 语音文件/显式技能入口受控，分发拒绝附件保留草稿，普通分发与 PasteService/首页技能回归通过 |
+| LI-06 | 代码核查与分层验证 | live 只合并展示，持久缓存/导出来源未变；原 reset/分页/历史链路复核；真实 GUI 导出/删除/编辑完整旅程未签核 |
+| RV-01 | 代码验证通过 | 目标候选不饥饿/不 claim 外任务、host foreign notice 短路、B 自己问答不被 A 全局状态过滤 |
+| RV-02 | 代码验证通过 | confirmation 保持原 session、合成提示不改真实问答、host 外会话不口头审批、真实删除/拒绝/确认 worker 闭环 |
+| RV-03 | 代码验证通过 | 旧 GET 不退休，用户/助手独立接替；失败保留文字；重试只读历史；作用域保护已实现 |
+| RV-04 | 代码验证通过 | 有界退休、RMS 不复活、页外不回尾部、重挂载先核对已完成轮次；同视图已显示内容等待 GET 时不闪空 |
+| RV-05 | 代码保护与接口用例通过 | 取消/确认/同步回调加入 Conversation/instance/command/approval 与视图代次；unknown 保留状态查询；真实挂载切页点击链未签核 |
+| RV-06 | 代码验证通过 | adapter 丢响应/202/重试同 request_id，跨目标阻断；host 旧停止/未绑定结束/回执恢复；不提供空身份挂断 |
+| RV-07 | 分层验证覆盖 | 当前视图 reset epoch 拦迟到 live；服务 projection/admission epoch 防旧记录回写；原生删除/上下文清理全过程未签核 |
+| RV-08 | 部分：既有门禁回归通过 | companionChromeLayout/Presence/windowGeometry 与首页回归；透明首帧/profile/资源就绪流程保留；真实 Bolt/DPI/首帧像素效果未签核 |
+| RV-09 | 代码验证通过 | 类型严格布尔、旧默认标记及 unknown；voice/ordinary 分发、附件拒绝/粘贴/技能入口回归 |
+
+## 尚未全绿的检查
+
+- TypeScript 全仓 61 项既有错误，与基线诊断集合逐条对照新增 0、减少 0；未触碰无关错误文件。
+- dead-css 报告为本轮未修改文件的既有基线；未改基线表取绿。
+- 动态按钮布局检查清理 Edge 临时目录时 EBUSY，已停止扩展运行；该 profile 最终不存在、所属 Edge 进程为 0。未把静态门禁和 SSR 作为动态布局通过。
+- 原生 Tauri 窗口透明度/高 DPI、真实声学设备与 AEC 能力保持未签核。
+
+## 附录：开工矩阵与 E0 原文（历史状态）
+
+# 语音交互优化 rev2 验证结果与 29 项证据
+
+> **基准**: HEAD `7de276e61e93836365c5a1c7e006c557ce3e3c6d`
+> **状态**: 🟡 E0 完成，进入 E1
+
+## 1. 29 项验收判据对照表
+
+| 编号 | 验收项 | 状态 | 自动化/交互验证证据 |
+| --- | --- | --- | --- |
+| HI-01 | A 默认工作区聊完，在 B 项目开启通话：首帧和后续每帧无 A 的 live 轮次，B 历史和新回复正确 | 通过 (E1) | `liveVoiceTurn.test.ts`、`voice_events.rs` 清空轮次与 session_id 隔离 |
+| HI-02 | A → B → A，同一 worker 进程，多次唤醒：30 分钟复用各自 Conversation，历史不丢不重排 | 通过 (E1) | `voice_dialogue` 集成及 session 复用规则测试通过 |
+| HI-03 | 混合旧 A 与当前 B 轮次快照：宿主不为 A 补 B 身份；前端拒绝 foreign/missing session live 行 | 通过 (E1) | 迁移反例由 RED 转为 GREEN (`liveVoiceTurn.test.ts` 第 5 项) |
+| HI-04 | 用户行先落盘，助手仍流式输出，然后全部落盘：用户不重复、助手不中断显示，真实 ID 接替；离开窗口不回尾部 | 通过 (E1) | `liveVoiceTurn.test.ts` RV-03 / RV-04 测试通过 |
+| HI-05 | 两个工作区说相同文字：按身份区分，不按文本去重；各自数据库行、journal、页面一致 | 通过 (E1) | `voice_dialogue` record_pair 按 scoped request 存储校验通过 |
+| HI-06 | 切页时迟到历史 GET/SSE、分页、断线重连、宿主恢复：不串页；未绑定保留文本不被新绑定认领 | 通过 (E1) | `voice_companion_manager` 与 `liveVoiceTurn` scoped 栅栏通过 |
+| HI-07 | A 任务未完，B 通话收到 A 的迟到结果/审批：结果、权限、队列和取消继续属于 A；不注入 B 的消息或上下文 | 通过 (E1) | 迁移反例由 RED 转为 GREEN (`liveVoiceTurn.test.ts` 第 6 项) |
+| HI-08 | ignore / 噪音 / 无效输入后继续有效提问：不写调试 JSON、不退出通话，无效 live 行被清理，下一句正常接续 | 通过 (E1) | `ignored_input_is_removed_without_ending_or_erasing_valid_context` 通过 |
+| UX-01 | 全部阶段及 starting/offline/readiness 异常：中英文映射完整；合成/播放/可继续说不混淆，异常不被遮盖 | 待验证 (E2) | |
+| UX-02 | 空白、有草稿/附件、IME、执行中、连接中、通话中：一个主操作，优先级正确；所有活动通话可挂断；精确停止不清其他 FIFO | 待验证 (E2) | |
+| UX-03 | 真实工具审批和队列逐项取消：精简后仍可完成批准/拒绝/取消；接口身份正确、失败提示可见，不自动放权 | 待验证 (E2) | |
+| UX-04 | 非活动会话页面、无队列、通话结束：无跨页状态噪音和空面板；必要时有进入真实活动通话的入口 | 待验证 (E2) | |
+| UX-05 | 普通设置、伙伴概览、私聊、机器人回归：无 UUID/长容错宣告/音色选择；快模型仍自动可用，私聊选模和既有音色调用不破坏 | 待验证 (E3) | |
+| UX-06 | zh-CN/en-US，Light/Dark，窄窗口/高 DPI，键盘：状态和按钮不遮挡重叠；tooltip/aria 可理解，红色挂断明确 | 待验证 (E3) | |
+| LI-01 | 新建项目语音会话后重命名、置顶、刷新、重启：同一 Conversation 的最右侧波纹保持；普通会话即使叫“语音任务”也无该标记 | 待验证 (E2) | |
+| LI-02 | 长标题、年龄/未读、运行 spinner、hover/菜单、batch、移动/折叠：标记不被遮挡，标题宽度稳定，菜单/复选可操作 | 待验证 (E2) | |
+| LI-03 | 列表 → 聊天内容 → composer → 文字发送，含缓存未就绪和旧默认标记：类型判断一致；unknown 不误发普通队列；旧标记不绕过校验 | 待验证 (E2) | |
+| LI-04 | 通话已结束但后台任务仍运行、快聊完成文本投影：波纹仍表示类型；只有真实 runtime 显示生成/停止，不把播报和任务状态混淆 | 待验证 (E2) | |
+| LI-05 | 普通/语音附件、显式技能、草稿失败恢复：普通功能不回退；语音未支持入口受控且失败保留输入，不删除已配置技能/工具 | 待验证 (E2) | |
+| LI-06 | 普通/语音重新打开、导出、编辑重发、上下文清理、删除：使用同一持久历史，不导出重复临时行；类型/epoch/回执不串用 | 待验证 (E2) | |
+| RV-01 | A 结果待播、B 通话：A 不被派发/claim、不进 B 上下文或 live；B 自己的结果仍可播；切回合法 A 后只按既有回执规则处理 A | 通过 (E1) | `voice_tasks` pending_result_for_conversation 隔离、`notify_task_result` 校验通过 |
+| RV-02 | 同会话审批保持合法 binding；跨会话不派发口头确认、不改成拒绝/同意；真实工具审批、到期与 GUI 确认仍可完成 | 通过 (E1) | `ConfirmationPrompted` 保留 session_id、`notify_confirmation` binding 检查通过 |
+| RV-03 | 先回执后 GET、用户先于助手落盘、刷新失败重试：未接替内容不闪空，最终一条消息一次显示，不重发模型/任务 | 通过 (E1) | `liveVoiceTurn.test.ts` RV-03 自动化验证通过 |
+| RV-04 | 已接替后分页、latest page 成功但旧行窗口外、重新挂载：旧文字不复活到尾部；无音量事件刷新风暴 | 通过 (E1) | `liveVoiceTurn.test.ts` RV-04 自动化验证通过 |
+| RV-05 | A 页点击取消/确认后切 B，同一 instance 迟到响应不影响 B；unknown 仍可核对状态，不静默当失败或重发 | 待验证 (E2) | |
+| RV-06 | starting/超时/回执丢失/明确拒绝/未绑定结束：保留既有 request_id 恢复合同，无双启动，无空身份挂断或错误解锁 | 待验证 (E2) | |
+| RV-07 | live 尚在时清上下文/删除/epoch 更新再迟到投影：不复活旧内容、不误重放已执行 command；保留正确历史 | 通过 (E1) | `liveVoiceTurn.test.ts` RV-07 自动化验证通过 |
+| RV-08 | 桌宠 profile 延迟/首次 Bolt/保存位置/资源失败、首页 zh/en：已有透明首帧门禁与错误重试不回退，入口只保留一处，非主窗不夺焦 | 待验证 (E3) | |
+| RV-09 | 严格布尔/旧默认标记/unknown、普通和语音附件与技能入口：列表、消息、主键和真实分发一致，普通功能不受影响 | 待验证 (E2) | |
+
+## 2. 基线实跑记录 (E0)
+- **前端基线测试 (6 文件)**: 32 pass / 0 fail / 155 assertions (3.04s)
+- **TypeScript 诊断基线**: 全仓 61 个 pre-existing 错误（分布于 videoCanvas、Credits、Wallpaper、MessageText 等旧文件），语音相关文件 0 错误
+- **隔离反例测试 (迁移前)**: 2 fail / 0 pass (cross-workspace.test.ts, notice-isolation.test.ts)

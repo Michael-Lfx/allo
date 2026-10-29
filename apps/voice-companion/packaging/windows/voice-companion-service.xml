@@ -1,0 +1,10 @@
+<service>
+  <id>FlowyVoiceCompanion</id>
+  <name>Flowy Voice Companion Service</name>
+  <description>Flowy headless voice companion daemon</description>
+  <executable>%BASE%\voice-companion.exe</executable>
+  <arguments>--config "%ProgramData%\Flowy\voice-companion\config.toml"</arguments>
+  <logmode>rotate</logmode>
+  <startmode>Automatic</startmode>
+  <onfailure action="restart" delay="5 sec"/>
+</service>

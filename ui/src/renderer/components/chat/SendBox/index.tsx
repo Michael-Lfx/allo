@@ -245,6 +245,7 @@ const SendBox: React.FC<{
   skillChips?: ComposerSkillChip[];
   onSkillChipsChange?: (skills: ComposerSkillChip[]) => void;
   onStop?: () => Promise<void>;
+  stopPending?: boolean;
   /** When provided AND a turn is running AND there is a draft, a secondary
    *  "steer now" action is offered alongside the (enqueue) send button. */
   onSteer?: (message: string) => Promise<void>;
@@ -292,8 +293,16 @@ const SendBox: React.FC<{
   selectedWorkspaceItems?: FileSelectionItem[];
   onSelectedWorkspaceItemsChange?: (items: FileSelectionItem[]) => void;
   bottomHint?: React.ReactNode;
+  footer?: React.ReactNode;
   /** Conversation-only: render the compact plan strip inside the input panel status row. */
   showPinnedPlan?: boolean;
+  isVoiceConversation?: boolean;
+  isVoiceActive?: boolean;
+  isVoiceActiveElsewhere?: boolean;
+  isVoiceConnecting?: boolean;
+  isVoiceStartUncertain?: boolean;
+  onStartVoiceCall?: () => void;
+  onStopVoiceCall?: () => void;
   /**
    * Mobile-only: open a parent-supplied action sheet via the `+` button.
    * When provided, mobile renders a single `+` button (left) and send/stop button (right);
@@ -306,6 +315,7 @@ const SendBox: React.FC<{
   skillChips = [],
   onSkillChipsChange,
   onStop,
+  stopPending = false,
   onSteer,
   steerAvailable,
   onEditResubmit,
@@ -339,7 +349,15 @@ const SendBox: React.FC<{
   selectedWorkspaceItems,
   onSelectedWorkspaceItemsChange,
   bottomHint,
+  footer,
   showPinnedPlan = false,
+  isVoiceConversation = false,
+  isVoiceActive = false,
+  isVoiceActiveElsewhere = false,
+  isVoiceConnecting = false,
+  isVoiceStartUncertain = false,
+  onStartVoiceCall,
+  onStopVoiceCall,
   onMobilePlusClick,
 }) => {
   const layout = useLayoutContext();
@@ -811,7 +829,7 @@ const SendBox: React.FC<{
 
   // 使用拖拽 hook
   const { isFileDragging, dragHandlers } = useDragUpload({
-    onFilesAdded,
+    onFilesAdded: isVoiceConversation ? undefined : onFilesAdded,
     containerRef: dropzoneRef,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
@@ -840,11 +858,11 @@ const SendBox: React.FC<{
     conversationContext?.type === 'nomi'
   );
   const activeAtFileQuery = useMemo(() => {
-    if (!conversationContext?.workspace) {
+    if (isVoiceConversation || !conversationContext?.workspace) {
       return null;
     }
     return getActiveAtFileQuery(input, caretPosition);
-  }, [caretPosition, conversationContext?.workspace, input]);
+  }, [caretPosition, conversationContext?.workspace, input, isVoiceConversation]);
   const activeAtFileTokenKey = useMemo(() => {
     if (!activeAtFileQuery) {
       return null;
@@ -921,7 +939,7 @@ const SendBox: React.FC<{
     return commands;
   }, [conversationContext?.conversation_id, enableBtw, onClearContext, onSlashBuiltinCommand, t]);
 
-  const canPickSkills = Boolean(onSendWithSkills && onSkillChipsChange);
+  const canPickSkills = !isVoiceConversation && Boolean(onSendWithSkills && onSkillChipsChange);
   const { skills: catalogSkills, loading: catalogSkillsLoading, error: catalogSkillsError } = useSkillCatalog(canPickSkills);
   const handleToggleCatalogSkill = useCallback(
     (skillId: string) => {
@@ -1548,7 +1566,7 @@ const SendBox: React.FC<{
   // 使用共享的PasteService集成
   const { onPaste, onFocus: handlePasteFocus } = usePasteService({
     supportedExts,
-    onFilesAdded,
+    onFilesAdded: isVoiceConversation ? undefined : onFilesAdded,
     conversation_id:
       conversationContext?.conversation_id != null ? conversationContext.conversation_id : undefined,
   });
@@ -2186,6 +2204,7 @@ const SendBox: React.FC<{
     if (
       !onStop ||
       isStoppingRef.current ||
+      stopPending ||
       stopHandoffGateRef.current.shouldIgnoreStop(clickDetail)
     ) return;
     isStoppingRef.current = true;
@@ -2244,13 +2263,21 @@ const SendBox: React.FC<{
         onSpeechTranscript={handleSpeechTranscript}
         showStop={isProcessing}
         onStop={stopHandler}
-        stopPending={isStopping}
+        stopPending={isStopping || stopPending}
         showSteer={Boolean(onSteer) && allowSendWhileLoading && isProcessing && !showStopOnly}
         steerAvailable={steerAvailable}
         onSteer={steerMessageHandler}
-        speechHidden={isMobileCompact}
+        speechHidden={isVoiceConversation || isMobileCompact}
+        isVoiceConversation={isVoiceConversation}
+        isVoiceActive={isVoiceActive}
+        isVoiceActiveElsewhere={isVoiceActiveElsewhere}
+        isVoiceConnecting={isVoiceConnecting}
+        isVoiceStartUncertain={isVoiceStartUncertain}
+        onStartVoiceCall={onStartVoiceCall}
+        onStopVoiceCall={onStopVoiceCall}
         sendTestId='sendbox-send-btn'
         stopTestId='sendbox-stop-btn'
+        phoneCallTestId='sendbox-phone-btn'
       />
     </div>
   );
@@ -2391,7 +2418,7 @@ const SendBox: React.FC<{
       )}
         {hasInternalStatusRow && (
           <div
-            className='sendbox-internal-status-row mb-8px flex w-full flex-wrap items-start gap-8px'
+            className='sendbox-internal-status-row mb-8px flex w-full flex-wrap items-center justify-between gap-8px'
             data-testid='sendbox-internal-status-row'
           >
             {topRightTools && (
@@ -2535,7 +2562,7 @@ const SendBox: React.FC<{
                     (bottomHint as string | undefined) ??
                     t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
                   : placeholder
-                    ? `${placeholder}  ${bottomHint ?? t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' })}`
+                    ? isVoiceConversation ? placeholder : `${placeholder}  ${bottomHint ?? t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' })}`
                     : ((bottomHint as string | undefined) ??
                       t('conversation.sendbox.hint', { defaultValue: 'Type / for commands, @ to reference files' }))
               }
@@ -2611,6 +2638,7 @@ const SendBox: React.FC<{
             </div>
           </div>
         )}
+        {footer&&<div className='mt-8px w-full' data-testid='sendbox-footer'>{footer}</div>}
     </ComposerSurface>
     {canPickSkills ? (
       <PresetPickerDrawer

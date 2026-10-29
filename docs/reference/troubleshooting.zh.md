@@ -313,6 +313,16 @@ docker compose up -d --build
 Dockerfile 已为 apt 与 Cargo 启用重试，并使用更小的 Rust slim 基础镜像；
 上述参数仍应指向部署者信任且实际可达的镜像。
 
+#### 本地开发首次编译停滞在 `sherpa-...`（进度长久不增加）
+
+若在包含本地语音能力的分支上运行 `bun run dev` 或 `cargo build` 时，界面卡在 `Building [====> ] ...: sherpa-...`：
+这是因为 `sherpa-onnx-sys` 正在后台下载约 88.7 MB 的原生 C++ 预编译库压缩包。由于 Cargo 默认在编译脚本执行期间静默输出，界面会表现为静止。
+
+排查与处理：
+- 检查 `build.noindex/sherpa-onnx-prebuilt/` 目录中的 `.part` 文件大小是否在增长；若在增长则属正常下载中，耐心等待其完成（只需下载一次，后续编译永久缓存）。
+- 若网络受限极慢，可使用环境变量加速：配置 `SHERPA_ONNX_BASE_URL` 指向国内镜像，或将下载好的压缩包放入 `SHERPA_ONNX_ARCHIVE_DIR` 指定目录。详情参见 [语音伴侣实战避坑与经验总结](../architecture/voice-agent/execution/voice-agent-pitfalls-and-lessons.zh.md)。
+- 如需校验预编译归档，设置 `SHERPA_ONNX_ARCHIVE_SHA256=<sha256>`；未设置时按镜像信任边界处理。
+
 ## 日志
 
 后端**同时**写入 stdout 与 `<log-dir>/nomicore.log` 上的按日滚动文件

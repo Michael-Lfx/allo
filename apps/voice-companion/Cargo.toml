@@ -1,0 +1,46 @@
+[package]
+name = "voice-companion"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# Explicit replay fixtures; never enabled by the production binary's defaults.
+voice-skeleton = ["nomifun-voice-terminal/voice-skeleton"]
+native-fault-injection = ["dep:async-trait", "voice-skeleton"]
+
+[[bin]]
+name = "voice-companion"
+path = "src/main.rs"
+
+[dependencies]
+nomifun-common.workspace = true
+nomifun-api-types.workspace = true
+nomifun-voice-models.workspace = true
+nomifun-audio = { workspace = true, features = ["local-stt"] }
+nomifun-voice-terminal = { workspace = true, features = ["local-tts"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true }
+futures-util.workspace = true
+thiserror.workspace = true
+axum = { workspace = true }
+tower-http = { workspace = true }
+rand.workspace = true
+chrono.workspace = true
+async-trait = { workspace = true, optional = true }
+sysinfo.workspace = true
+
+[dev-dependencies]
+nomifun-voice-terminal = { workspace = true, features = ["voice-skeleton"] }
+async-trait.workspace = true
+tempfile.workspace = true
+tower = { workspace = true }
+http-body-util = { workspace = true }
+http = { workspace = true }

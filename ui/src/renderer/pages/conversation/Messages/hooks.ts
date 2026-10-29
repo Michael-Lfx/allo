@@ -1085,6 +1085,8 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
   const setLoadedId = useUpdateMessageListLoadedId();
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [latestPage, setLatestPage] = useState<{conversationId: ConversationId; epoch: number; sequence: number} | null>(null);
+  const [historyEpoch, setHistoryEpoch] = useState(() => getEpoch(key));
   // Oldest message currently loaded (drives the next "load older" cursor); ref
   // mirrors so the event-driven callbacks read the latest without re-binding.
   const oldestCursorRef = useRef<string | null>(null);
@@ -1149,6 +1151,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     // captured epoch no longer matches and the (pre-truncate) snapshot is
     // discarded wholesale instead of merged.
     const capturedEpoch = getEpoch(key);
+    setHistoryEpoch(capturedEpoch);
     const result = await ipcBridge.database.getConversationMessages.invoke(
       windowed
         ? { conversation_id: key, cursor: '', page_size: HISTORY_WINDOW_SIZE, content_mode: 'compact' }
@@ -1176,6 +1179,7 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
       // Same batch as the list swap: consumers keying restores off list
       // ownership see the id flip in the same commit as the new messages.
       setLoadedId(key);
+      setLatestPage({conversationId: key, epoch: capturedEpoch, sequence: loadSequence});
       if (!snapshot.purge) return messages;
       return (await waitForReconciliationCommit(appliedEpoch)) ? messages : null;
     }
@@ -1359,7 +1363,8 @@ export const useMessageLstCache = (key: ConversationId, opts?: { windowed?: bool
     };
   }, [key, loadMessages]);
 
-  return { loadOlder, hasMore, loadingOlder };
+  return { loadOlder, hasMore, loadingOlder, latestPage, refresh: loadMessages,
+    currentSequence: () => newestLoadSequenceRef.current, epoch: historyEpoch };
 };
 
 export {

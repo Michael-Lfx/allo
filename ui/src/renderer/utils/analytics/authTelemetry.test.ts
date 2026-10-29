@@ -5,20 +5,20 @@
  */
 
 import * as bunTest from 'bun:test';
+import * as updater from '@/common/adapter/tauriUpdater';
 import {
   listQueuedTelemetryEventsForTests,
   resetTelemetryOutboxForTests,
 } from './telemetryOutbox';
 import { resetFunnelForTests } from './productFunnel';
 
-const { beforeEach, describe, expect, mock, test } = bunTest as typeof bunTest & {
-  mock: { module: (specifier: string, factory: () => unknown) => void };
+const { beforeEach, afterEach, describe, expect, spyOn, test } = bunTest as typeof bunTest & {
+  spyOn: (module: typeof updater, method: 'tauriUpdateCurrentVersion') => {
+    mockResolvedValue(value: string): void;
+    mockRestore(): void;
+  };
 };
-
-mock.module('@/common/adapter/tauriUpdater', () => ({
-  tauriUpdateCurrentVersion: async () => '1.5.8',
-  tauriUpdateCheck: async () => null,
-}));
+let versionSpy: ReturnType<typeof spyOn>;
 
 const {
   trackOtpSendFailed,
@@ -27,11 +27,19 @@ const {
 } = await import('./authTelemetry');
 
 beforeEach(() => {
+  versionSpy = spyOn(updater, 'tauriUpdateCurrentVersion');
+  versionSpy.mockResolvedValue('1.5.8');
   resetFunnelForTests();
   resetTelemetryOutboxForTests();
 });
 
+afterEach(() => versionSpy.mockRestore());
+
 describe('auth OTP send telemetry', () => {
+  test('preserves the updater exports needed by other auth entry points', () => {
+    expect(typeof updater.tauriUpdatePackageSnapshot).toBe('function');
+    expect(typeof updater.tauriUpdateCheck).toBe('function');
+  });
   test('emits started / succeeded / failed with app_version for dashboards', async () => {
     await trackOtpSendStarted();
     await trackOtpSendSucceeded();

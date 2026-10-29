@@ -75,6 +75,27 @@ describe('joinPath compatibility export', () => {
   });
 });
 
+describe('voice transcript stream layout', () => {
+  test('a finalized voice user projection keeps the right side before and after the assistant reply', () => {
+    const user = transformMessage(baseWire({
+      type: 'content', data: { content: '今天星期几？' },
+      position: 'right', replace: true, stream_complete: true,
+    }));
+    const assistant = transformMessage(baseWire({
+      type: 'content', msg_id: SECOND_MESSAGE_ID, data: { content: '我来确认日期。' },
+      position: 'left', turn_id: MESSAGE_ID, replace: true, stream_complete: true,
+    }));
+    expect(user?.position).toBe('right');
+    expect(assistant?.position).toBe('left');
+    expect(assistant?.turn_id).toBe(MESSAGE_ID);
+  });
+
+  test('ordinary assistant streams and legacy user_content retain their established sides', () => {
+    expect(transformMessage(baseWire({ type: 'content', data: 'answer' }))?.position).toBe('left');
+    expect(transformMessage(baseWire({ type: 'user_content', data: 'question' }))?.position).toBe('right');
+  });
+});
+
 describe('knowledge writeback attempt ordering', () => {
   test('does not let a delayed older attempt overwrite a newer manual retry', () => {
     const merged = mergeTextMessageContent(

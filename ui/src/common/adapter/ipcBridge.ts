@@ -3883,6 +3883,8 @@ export type IWorkspaceFlatFile = {
 export interface IResponseMessage {
   type: string;
   data: unknown;
+  /** Persisted projections preserve the sender's side, including voice user rows. */
+  position?: 'left' | 'right' | 'center' | 'pop';
   status?: 'finish' | 'pending' | 'error' | 'work';
   /** Stable backend message UUIDv7. */
   msg_id: MessageId;

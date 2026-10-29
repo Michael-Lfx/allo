@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Added local voice calling with model installation checks, conversation transcripts, queued tasks and one-time tool confirmations. Cancelling a task, interrupting speech and ending a call remain separate controls.
+- Voice task results now distinguish execution ending from goal completion, keep the original result text, and use the call language for result announcements. The home call entry opens setup when prerequisites are missing and prepares an expired readiness check before starting.
 - Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
 - Delegating from a Default or Auto-Accept Edits session now asks the user to approve the execution plan before any sub-Agent starts, instead of silently running the sub-Agents as YOLO. YOLO sessions, and hosts that never recorded a session mode (App Server, cron, IM channels, tests), keep starting immediately.
 - Fixed a read-only execution step being reported as failed for a missing artifact it was explicitly forbidden to create. A negated action list ("do not create/read/write any files") no longer counts as a promise to deliver those files.

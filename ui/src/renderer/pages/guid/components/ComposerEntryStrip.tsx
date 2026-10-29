@@ -69,6 +69,7 @@ const ComposerEntryStrip: React.FC<ComposerEntryStripProps> = ({
     </button>
   ) : null;
 
+
   if (hidePreset) {
     if (!skillButton) return null;
     return (

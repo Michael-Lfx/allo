@@ -12,6 +12,12 @@ import {
   type TExecutionModelRef,
 } from '@/common/types/agentExecution/agentExecutionTypes';
 import { resolveLocaleKey } from '@/common/utils';
+import { abandonPendingVoiceCallIntent, discardPendingVoiceCallIntent, getVoiceCapabilities, getVoiceCompanionStatus, prepareVoiceSession, retryAbandonedVoiceCallIntent, startVoiceCallIntent, voiceStartNeedsPrepare, reportVoiceCandidate, type VoiceCallTarget } from '@/common/adapter/voiceCompanion';
+import { useVoiceSnapshot } from '@/renderer/pages/voiceSession/useVoiceSnapshot';
+import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
+import type { DictationActivationResult, DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
+import { consumeDictationIntent, revokeDictationIntent, subscribeDictationIntent, type DictationIntent } from './dictationIntent';
+import { GUID_DRAFT_KEY, useComposerDraftStore } from '@/renderer/stores/composerDraftStore';
 
 import { useInputFocusRing } from '@/renderer/hooks/chat/useInputFocusRing';
 import { isSubmitGesture } from '@/renderer/hooks/chat/useCompositionInput';
@@ -150,7 +156,33 @@ const GuidPage: React.FC = () => {
 
   // Explicit Skill selections are scoped to this draft. Preset bindings are
   // resolved separately by the backend when the conversation is created.
-  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>([]);
+  const [homeSkillChips, setHomeSkillChips] = useState<ComposerSkillChip[]>(() => {
+    const raw = useComposerDraftStore.getState().drafts[GUID_DRAFT_KEY]?.skillChips;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((s): s is { skillId: string; name: string; source?: string; avatar?: string } =>
+        Boolean(s && typeof s.skillId === 'string' && typeof s.name === 'string')
+      )
+      .map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source || '',
+        ...(s.avatar ? { avatar: s.avatar } : {}),
+      }));
+  });
+
+  const homeSkillChipsRef = useRef(homeSkillChips);
+  useEffect(() => {
+    homeSkillChipsRef.current = homeSkillChips;
+    useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+      skillChips: homeSkillChips.map((s) => ({
+        skillId: s.skillId,
+        name: s.name,
+        source: s.source,
+        avatar: s.avatar,
+      })),
+    });
+  }, [homeSkillChips]);
   const homeTokenInputRef = useRef<ComposerSkillTokenInputHandle>(null);
   const [homeTokenInputState, setHomeTokenInputState] = useState<ComposerTokenInputState>({
     projection: '',
@@ -257,6 +289,251 @@ const GuidPage: React.FC = () => {
     locationState: location.state as { workspace?: string } | null,
     containerRef: guidInputCardRef,
   });
+  useEffect(() => {
+    const report = () => { void reportVoiceCandidate(null, guidInput.dir?.trim() || null).catch(() => {}); };
+    report();
+    window.addEventListener('focus', report);
+    return () => window.removeEventListener('focus', report);
+  }, [guidInput.dir]);
+
+  // --- Voice Call entry state & handler ---
+  const { snapshot: voiceSnapshot } = useVoiceSnapshot();
+  const asrAvailability = useClawAsrAvailable();
+  const allowedDictationIntentId = (location.state as { dictationIntentId?: string } | null)?.dictationIntentId;
+  const [dictationIntent, setDictationIntent] = useState<DictationIntent | null>(null);
+  const dictationIntentRef = useRef<DictationIntent | null>(null);
+  const claimDictationIntent = useCallback((id: string) => {
+    const claimed = consumeDictationIntent('/', id);
+    if (claimed && dictationIntentRef.current?.id === id) {
+      dictationIntentRef.current = null;
+      setDictationIntent(null);
+    }
+    return claimed;
+  }, []);
+  const finishDictationIntent = useCallback((id: string, result: DictationActivationResult) => {
+    consumeDictationIntent('/', id);
+    dictationIntentRef.current = null;
+    setDictationIntent(null);
+    if (result === 'unavailable') {
+      Message.warning(t('voice.capabilities.textReplyUnavailable'));
+    } else if (result === 'stale') {
+      Message.warning(t('voice.capabilities.textReplyExpired'));
+    } else if (result === 'already-recording') {
+      Message.info(t('voice.capabilities.textReplyAlreadyRecording'));
+    }
+  }, [t]);
+  useEffect(() => {
+    const unsubscribe = subscribeDictationIntent((intent) => {
+      const next = intent?.route === '/' && intent.id === allowedDictationIntentId ? intent : null;
+      dictationIntentRef.current = next;
+      setDictationIntent(next);
+    });
+    return () => {
+      unsubscribe();
+      const pending = dictationIntentRef.current;
+      if (pending) revokeDictationIntent(pending.id);
+      dictationIntentRef.current = null;
+    };
+  }, [allowedDictationIntentId]);
+  useEffect(() => {
+    const pending = dictationIntentRef.current;
+    if (pending && asrAvailability.ready && !asrAvailability.available) {
+      finishDictationIntent(pending.id, 'unavailable');
+    }
+  }, [asrAvailability.available, asrAvailability.ready, finishDictationIntent]);
+  const dictationActivation = useMemo<DictationActivationRequest | undefined>(
+    () => dictationIntent
+      ? { id: dictationIntent.id, claim: () => claimDictationIntent(dictationIntent.id), onResult: (result) => finishDictationIntent(dictationIntent.id, result) }
+      : undefined,
+    [dictationIntent, claimDictationIntent, finishDictationIntent],
+  );
+  const isVoiceActive =
+    Boolean(voiceSnapshot?.session_id) && !voiceSnapshot?.ended_reason && voiceSnapshot?.phase !== 'idle';
+  const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
+  const [voicePrerequisite, setVoicePrerequisite] = useState<'loading' | 'ready' | 'setup' | 'failed' | 'unavailable'>('loading');
+  const [voiceFailureReason, setVoiceFailureReason] = useState<string | null>(null);
+  const inFlightVoiceCallRef = useRef(false);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (inFlightVoiceCallRef.current) void abandonPendingVoiceCallIntent();
+    };
+  }, []);
+  const refreshVoicePrerequisite = useCallback(async () => {
+    try {
+      const [status, report] = await Promise.all([getVoiceCompanionStatus(), getVoiceCapabilities()]);
+      setVoiceFailureReason(report?.reason_code ?? null);
+      if (!status.models_ready || !status.autostart) {
+        setVoicePrerequisite('unavailable');
+      } else if (report?.can_start_full_call) {
+        setVoicePrerequisite('ready');
+      } else if (!report || report.reason_code === 'self_check_required') {
+        setVoicePrerequisite('setup');
+      } else {
+        setVoicePrerequisite('failed');
+      }
+    } catch {
+      setVoicePrerequisite('unavailable');
+    }
+  }, []);
+  useEffect(() => {
+    void refreshVoicePrerequisite();
+    const onFocus = () => { void refreshVoicePrerequisite(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshVoicePrerequisite]);
+
+  const handleStartVoiceCall = useCallback(async () => {
+    if (inFlightVoiceCallRef.current) return;
+    if (isVoiceConnecting) return;
+    if (isVoiceActive && voiceSnapshot?.binding?.conversation_id) {
+      await navigate(`/conversation/${encodeURIComponent(voiceSnapshot.binding.conversation_id)}`);
+      return;
+    }
+
+    // Own the whole async preparation/start lifecycle, not only the final fetch.
+    inFlightVoiceCallRef.current = true;
+    setIsVoiceConnecting(true);
+    const releaseGate = () => {
+      inFlightVoiceCallRef.current = false;
+      if (isMountedRef.current) setIsVoiceConnecting(false);
+    };
+
+    if (voicePrerequisite === 'loading') {
+      Message.info(t('voice.entry.checking'));
+      releaseGate();
+      return;
+    }
+    if (voicePrerequisite === 'unavailable') {
+      Message.warning(t('voice.entry.setupRequired'));
+      releaseGate();
+      await navigate('/settings/voice');
+      return;
+    }
+    if (voicePrerequisite === 'failed') {
+      const reason = voiceFailureReason ? t(`voice.capabilities.reason.${voiceFailureReason}`, { defaultValue: voiceFailureReason }) : '';
+      Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      releaseGate();
+      await navigate('/settings/voice');
+      return;
+    }
+    let prerequisiteReady = voicePrerequisite === 'ready';
+    if (!prerequisiteReady) {
+      try {
+        const report = await prepareVoiceSession(true, localeKey, 'preparing');
+        if (!isMountedRef.current) {
+          releaseGate();
+          return;
+        }
+        prerequisiteReady = report.can_start_full_call;
+        setVoiceFailureReason(report.reason_code ?? null);
+        setVoicePrerequisite(prerequisiteReady ? 'ready' : 'failed');
+      } catch (error) {
+        if (!isMountedRef.current) {
+          releaseGate();
+          return;
+        }
+        const failure = error as { code?: string };
+        Message.warning(
+          failure.code === 'models_not_installed'
+            ? t('voice.errors.modelMissing')
+            : t('voice.capabilities.notReady'),
+        );
+        releaseGate();
+        await navigate('/settings/voice');
+        return;
+      }
+      if (!prerequisiteReady) {
+        releaseGate();
+        await navigate('/settings/voice');
+        return;
+      }
+    }
+
+    const target: VoiceCallTarget = {
+      kind: 'new_voice_conversation',
+      workspace: guidInput.dir?.trim() || null,
+      model: isNomiAgent ? mainModelRef : undefined,
+      preset_id: isNomiAgent && agentSelection.is_presetAgent ? agentSelection.selectedAgentInfo?.preset_id : undefined,
+    };
+    const sessionMode = isNomiAgent
+      ? (agentSelection.selectedMode as 'default' | 'auto_edit' | 'yolo')
+      : undefined;
+    try {
+      const currentSkills = homeSkillChipsRef.current;
+      useComposerDraftStore.getState().setDraft(GUID_DRAFT_KEY, {
+        text: guidInput.input,
+        files: guidInput.files,
+        dir: guidInput.dir,
+        skillChips: currentSkills.map((s) => ({
+          skillId: s.skillId,
+          name: s.name,
+          source: s.source,
+          avatar: s.avatar,
+        })),
+      });
+
+      const res = await startVoiceCallIntent(target, sessionMode, localeKey);
+      if (!isMountedRef.current) return;
+      await navigate(`/conversation/${encodeURIComponent(res.conversation_id)}`);
+    } catch (err: unknown) {
+      if (!isMountedRef.current) return;
+      const errorObj = err as { status?: number; code?: string; active_conversation_id?: string; reason_code?: string; requires_check?: boolean; degraded_text_only?: boolean; call_request_id?: string } | undefined;
+      if (errorObj?.code === 'voice_call_superseded') return;
+      if (errorObj?.code === 'voice_call_cancel_unknown') {
+        const recovered = await retryAbandonedVoiceCallIntent();
+        if (!isMountedRef.current) return;
+        Message.warning(t(recovered ? 'voice.entry.cancelRecovered' : 'voice.entry.cancelUnknown'));
+        return;
+      }
+      const needsPrepare = voiceStartNeedsPrepare(errorObj);
+      if (errorObj?.code === 'voice_call_conflict' && errorObj?.active_conversation_id) {
+        Message.info(t('voice.entry.callConflictActive', { defaultValue: '当前已有正在进行的语音通话，已为您切换' }));
+        if (!isMountedRef.current) return;
+        await navigate(`/conversation/${encodeURIComponent(errorObj.active_conversation_id)}`);
+      } else if (needsPrepare) {
+        try {
+          const report = await prepareVoiceSession(true, localeKey, 'preparing');
+          if (!isMountedRef.current) return;
+          if (!report.can_start_full_call) {
+            discardPendingVoiceCallIntent(errorObj?.call_request_id);
+            const reason = report.reason_code
+              ? t(`voice.capabilities.reason.${report.reason_code}`, { defaultValue: errorObj?.reason_code || report.reason_code })
+              : (errorObj?.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '');
+            Message.warning(
+              `${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}${report.degraded_text_only ? ` ${t('voice.capabilities.textOnly')}` : ''}`
+            );
+            return;
+          }
+          const retry = await startVoiceCallIntent(target, sessionMode, localeKey);
+          if (!isMountedRef.current) return;
+          await navigate(`/conversation/${encodeURIComponent(retry.conversation_id)}`);
+        } catch (prepareError) {
+          if (!isMountedRef.current) return;
+          const failure = prepareError as { code?: string; message?: string };
+          if (failure.code === 'voice_call_superseded') return;
+          discardPendingVoiceCallIntent(errorObj?.call_request_id);
+          Message.error(
+            failure.code === 'models_not_installed'
+              ? t('voice.errors.modelMissing')
+              : failure.message || t('voice.capabilities.checkFailed'),
+          );
+        }
+      } else if (errorObj?.code === 'voice_suite_not_ready') {
+        const reason = errorObj.reason_code ? t(`voice.capabilities.reason.${errorObj.reason_code}`, { defaultValue: errorObj.reason_code }) : '';
+        Message.warning(`${t('voice.capabilities.notReady')}${reason ? `: ${reason}` : ''}`);
+      } else {
+        Message.error(t('voice.session.startFailed', { defaultValue: '启动语音通话失败' }));
+      }
+    } finally {
+      inFlightVoiceCallRef.current = false;
+      if (isMountedRef.current) {
+        setIsVoiceConnecting(false);
+      }
+    }
+  }, [isVoiceConnecting, isVoiceActive, voiceSnapshot, voicePrerequisite, voiceFailureReason, guidInput.input, guidInput.files, guidInput.dir, homeSkillChips, isNomiAgent, mainModelRef, agentSelection.is_presetAgent, agentSelection.selectedAgentInfo?.preset_id, agentSelection.selectedMode, navigate, t, localeKey]);
   const { openFileSelector: openHomeFileSelector } = useOpenFileSelector({
     onFilesSelected: guidInput.handleFilesUploaded,
   });
@@ -1073,9 +1350,21 @@ const GuidPage: React.FC = () => {
   // When AutoWork is enabled (with a tag) the primary button becomes a
   // "Start AutoWork" action: clickable without typed input, and it creates the
   // session + starts AutoWork without sending a first message (see planGuidEntry).
-  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds);
+  const hasDraft = hasGuidInitialPayload(guidInput.input, homeInitialSkillIds) || guidInput.files.length > 0;
   const actionRowNode = (
     <GuidActionRow
+      onStartVoiceCall={isNomiAgent ? handleStartVoiceCall : undefined}
+      isVoiceConnecting={isVoiceConnecting || (!isVoiceActive && voicePrerequisite === 'loading')}
+      isVoiceActive={isVoiceActive}
+      voiceCallLabel={t(
+        isVoiceActive
+          ? 'voice.entry.openActive'
+          : voicePrerequisite === 'loading'
+            ? 'voice.entry.checking'
+            : (voicePrerequisite === 'ready' || voicePrerequisite === 'setup')
+              ? 'voice.entry.start'
+              : 'voice.entry.setup'
+      )}
       onOpenAddMenu={handleOpenHomeAddMenu}
       modelSelectorNode={modelSelectorNode}
       modelSelectorIsChat={isGeminiMode}
@@ -1111,6 +1400,7 @@ const GuidPage: React.FC = () => {
       onSpeechTranscript={(transcript) => {
         guidInput.setInput((current) => appendSpeechTranscript(current, transcript));
       }}
+      dictationActivation={dictationActivation}
       onSend={handleComposerSend}
     />
   );

@@ -7,6 +7,8 @@
 mod admin;
 mod bind;
 mod boot_log;
+#[cfg(test)]
+mod boot_recovery_tests;
 mod builtin_skills;
 mod data_root;
 mod environment;

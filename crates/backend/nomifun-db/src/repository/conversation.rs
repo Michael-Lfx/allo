@@ -68,6 +68,18 @@ pub struct ConversationMessageProjection {
     pub message: MessageRow,
 }
 
+/// Result of atomically projecting a dialogue pair (user message and assistant message)
+/// into a Conversation under a stable operation identity.
+#[derive(Debug, Clone)]
+pub struct ConversationPairProjection {
+    /// `true` only for the transaction which inserted the durable messages.
+    pub inserted: bool,
+    /// The canonical persisted user message row if provided.
+    pub user_message: Option<MessageRow>,
+    /// The canonical persisted assistant message row.
+    pub assistant_message: MessageRow,
+}
+
 /// One immutable Skill snapshot together with the `skill_load` message that
 /// projects it into the visible transcript.
 ///
@@ -351,6 +363,44 @@ pub trait IConversationRepository: Send + Sync {
         );
         Err(DbError::Init(
             "Conversation repository does not implement exact cancelled-turn finalization"
+                .to_owned(),
+        ))
+    }
+
+    /// Atomically finalizes the exact cancelled generation and settles its
+    /// transcript/ACP cleanup artifacts in the same database transaction.
+    ///
+    /// This is the restart-orphan healing seam. A cleanup failure (or a crash
+    /// before commit) must roll the lifecycle settlement back too, so the
+    /// durable `running` generation remains enumerable and a later boot can
+    /// retry. Implementations without one atomic transaction fail closed.
+    async fn finalize_exact_cancelled_turn_generation_with_artifact_cleanup(
+        &self,
+        user_id: &str,
+        conversation_id: &str,
+        expected_admission_epoch: i64,
+        expected_active_operation_id: Option<&str>,
+        reason: &str,
+        result_error_code: Option<&str>,
+        result_error_retryable: Option<bool>,
+        completed_at: TimestampMs,
+        message_updates: &[(String, MessageRowUpdate)],
+        clear_acp_session: bool,
+    ) -> Result<TurnLifecycleTransition, DbError> {
+        let _ = (
+            user_id,
+            conversation_id,
+            expected_admission_epoch,
+            expected_active_operation_id,
+            reason,
+            result_error_code,
+            result_error_retryable,
+            completed_at,
+            message_updates,
+            clear_acp_session,
+        );
+        Err(DbError::Init(
+            "Conversation repository does not implement atomic restart-orphan artifact cleanup"
                 .to_owned(),
         ))
     }
@@ -827,6 +877,7 @@ pub trait IConversationRepository: Send + Sync {
     /// and request payload returns the original persisted message with
     /// `inserted = false`; reusing the operation identity for any other input
     /// is a conflict.
+    #[allow(clippy::too_many_arguments)]
     async fn project_assistant_message_with_receipt(
         &self,
         _user_id: &str,
@@ -836,9 +887,45 @@ pub trait IConversationRepository: Send + Sync {
         _request_payload: &str,
         _message: &MessageRow,
         _now: i64,
+        _expected_admission_epoch: Option<i64>,
     ) -> Result<ConversationMessageProjection, DbError> {
         Err(DbError::Init(
             "atomic Conversation message projection is not supported".to_owned(),
+        ))
+    }
+
+    async fn insert_message_with_epoch(
+        &self,
+        message: &MessageRow,
+        user_id: &str,
+        expected_admission_epoch: Option<i64>,
+    ) -> Result<(), DbError> {
+        let _ = user_id;
+        if expected_admission_epoch.is_some() {
+            return Err(DbError::Init(
+                "atomic admission epoch check is not supported by this repository implementation".to_owned(),
+            ));
+        }
+        self.insert_message(message).await
+    }
+
+    /// Atomically inserts a dialogue pair (user speech and assistant reply) and completes
+    /// its idempotency receipt in a single transaction.
+    #[allow(clippy::too_many_arguments)]
+    async fn project_dialogue_pair_idempotent(
+        &self,
+        _user_id: &str,
+        _conversation_id: &str,
+        _operation_id: &str,
+        _kind: &str,
+        _request_payload: &str,
+        _user_message: Option<&MessageRow>,
+        _assistant_message: &MessageRow,
+        _now: i64,
+        _expected_admission_epoch: i64,
+    ) -> Result<ConversationPairProjection, DbError> {
+        Err(DbError::Init(
+            "atomic Conversation dialogue pair projection is not supported".to_owned(),
         ))
     }
 
@@ -848,6 +935,19 @@ pub trait IConversationRepository: Send + Sync {
         conversation_id: &str,
         updates: &ConversationRowUpdate,
     ) -> Result<(), DbError>;
+
+    /// Keep lifecycle changes in the same SQLite writer boundary as message admission.
+    async fn retain_voice_placeholder(&self, _user_id: &str, _conversation_id: &str) -> Result<bool, DbError> {
+        Err(DbError::Init("voice placeholder persistence unsupported".into()))
+    }
+
+    async fn finish_voice_placeholder(&self, _user_id: &str, _conversation_id: &str, _discard: bool) -> Result<bool, DbError> {
+        Err(DbError::Init("voice placeholder persistence unsupported".into()))
+    }
+
+    async fn ended_voice_placeholders(&self, _user_id: &str) -> Result<Vec<String>, DbError> {
+        Ok(Vec::new())
+    }
 
     /// Atomically claims a conversation for its one auto-title attempt.
     ///

@@ -1,8 +1,12 @@
 import React, { Suspense, useEffect, useLayoutEffect } from 'react';
+import {useVoiceContext} from '@renderer/hooks/useVoiceContext';
 import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import AppLoader from '@renderer/components/layout/AppLoader';
+import {AppMessage as Message} from '@renderer/components/notifications';
+import {useTranslation} from 'react-i18next';
 import RouteContentFallback from '@renderer/components/layout/RouteContentFallback';
 import RouteErrorBoundary from '@renderer/components/layout/RouteErrorBoundary';
+import { DictationIntentRouteGuard } from '@renderer/components/layout/DictationIntentRouteGuard';
 import SettingsContentLoading from '@renderer/components/layout/SettingsContentLoading';
 import { useSettingsNavigationTransition } from '@renderer/components/layout/SettingsNavigationTransition';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
@@ -69,6 +73,7 @@ const CloudLoginSettings = React.lazy(() => import('@renderer/pages/settings/Clo
 const OpenCapabilitiesPage = React.lazy(() => import('@renderer/pages/openCapabilities'));
 const LinkPhonePage = React.lazy(() => import('@renderer/pages/link'));
 const OpenCapabilitiesSettings = React.lazy(() => import('@renderer/pages/settings/OpenCapabilitiesSettings'));
+const VoiceSettings = React.lazy(() => import('@renderer/pages/settings/VoiceSettings'));
 const BillingPage = React.lazy(() => import('@renderer/pages/billing'));
 const CommercialSlicePage = React.lazy(() => import('@renderer/pages/commercialSlice'));
 const BeautifulUiPreviewPage = React.lazy(() => import('@renderer/pages/beautifulUiPreview'));
@@ -128,6 +133,7 @@ const withRouteFallback = (
 ) => <RouteFallback Component={Component} fullscreen={options?.fullscreen} />;
 
 const SessionShellRoute: React.FC = () => {
+  useVoiceContext();
   const location = useLocation();
   const resetKey = `${location.pathname}${location.search}${location.hash}`;
 
@@ -236,6 +242,15 @@ const TrayLabelsMount: React.FC = () => {
 // Inert outside the Tauri desktop shell.
 const CompanionNavigateListener: React.FC = () => {
   const navigate = useNavigate();
+  const {t}=useTranslation();
+  useEffect(()=>{
+    if(!isTauriRuntime())return;
+    let disposed=false;let off:(()=>void)|undefined;
+    void import('@tauri-apps/api/event').then(({listen})=>listen('companion-boot-error',()=>{
+      Message.error(t('voice.presentation.petBootFailed'));
+    })).then(stop=>{if(disposed)stop();else off=stop;}).catch(()=>{});
+    return()=>{disposed=true;off?.();};
+  },[t]);
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
@@ -306,6 +321,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
 
   return (
     <HashRouter>
+      <DictationIntentRouteGuard />
       <Routes>
         <Route
           path='/login'
@@ -376,6 +392,7 @@ const PanelRoute: React.FC<{ layout: React.ReactElement }> = ({ layout }) => {
           <Route path='/settings/moa' element={withRouteFallback(MoaSettings)} />
           <Route path='/settings/media' element={withRouteFallback(MediaSettings)} />
           <Route path='/settings/open-capabilities' element={withRouteFallback(OpenCapabilitiesSettings)} />
+          <Route path='/settings/voice' element={withRouteFallback(VoiceSettings)} />
           <Route path='/settings/cloud-login' element={withRouteFallback(CloudLoginSettings)} />
           <Route path='/settings/about' element={withRouteFallback(SystemSettings)} />
           {/* Feature pages embedded inside Settings */}

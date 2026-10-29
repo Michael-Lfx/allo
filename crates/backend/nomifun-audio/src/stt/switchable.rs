@@ -17,7 +17,7 @@ use super::try_load_sherpa;
 ///
 /// - **LocalSherpa**: local only (missing models → `None`)
 /// - **CloudModelInvoke**: cloud only (unwired → `None`)
-/// - **Auto**: local first when available; fall back to cloud on `None`
+/// - **Auto**: local first when available; fall back to cloud only on `Ok(None)`
 pub struct SwitchableSttCallback {
     choice: SttBackendChoice,
     local: Option<Arc<dyn SttCallback>>,
@@ -58,27 +58,34 @@ impl SttCallback for SwitchableSttCallback {
         pcm: Vec<f32>,
         sample_rate: u32,
     ) -> Option<String> {
+        self.transcribe_checked(channel, pcm, sample_rate).await.ok().flatten()
+    }
+
+    async fn transcribe_checked(
+        &self,
+        channel: AudioChannel,
+        pcm: Vec<f32>,
+        sample_rate: u32,
+    ) -> Result<Option<String>, String> {
         match self.choice {
             SttBackendChoice::LocalSherpa => match &self.local {
-                Some(local) => local.transcribe(channel, pcm, sample_rate).await,
-                None => None,
+                Some(local) => local.transcribe_checked(channel, pcm, sample_rate).await,
+                None => Ok(None),
             },
             SttBackendChoice::CloudModelInvoke => match &self.cloud {
-                Some(cloud) => cloud.transcribe(channel, pcm, sample_rate).await,
-                None => None,
+                Some(cloud) => cloud.transcribe_checked(channel, pcm, sample_rate).await,
+                None => Ok(None),
             },
             SttBackendChoice::Auto => {
                 if let Some(local) = &self.local {
-                    if let Some(text) = local
-                        .transcribe(channel, pcm.clone(), sample_rate)
-                        .await
-                    {
-                        return Some(text);
+                    match local.transcribe_checked(channel, pcm.clone(), sample_rate).await? {
+                        Some(text) => return Ok(Some(text)),
+                        None => {}
                     }
                 }
                 match &self.cloud {
-                    Some(cloud) => cloud.transcribe(channel, pcm, sample_rate).await,
-                    None => None,
+                    Some(cloud) => cloud.transcribe_checked(channel, pcm, sample_rate).await,
+                    None => Ok(None),
                 }
             }
         }
@@ -122,6 +129,26 @@ pub fn build_switchable_stt(
 mod tests {
     use super::*;
     use crate::stt::FakeSttCallback;
+
+    #[tokio::test]
+    async fn checked_auto_preserves_local_engine_failure_without_cloud_fallback() {
+        struct FailingStt;
+        #[async_trait]
+        impl SttCallback for FailingStt {
+            async fn transcribe(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Option<String> {
+                None
+            }
+
+            async fn transcribe_checked(&self, _: AudioChannel, _: Vec<f32>, _: u32) -> Result<Option<String>, String> {
+                Err("controlled_local_failure".into())
+            }
+        }
+
+        let cloud: Arc<dyn SttCallback> = Arc::new(FakeSttCallback::always("cloud"));
+        let sw = SwitchableSttCallback::new(SttBackendChoice::Auto, Some(Arc::new(FailingStt)), Some(cloud));
+        let result = sw.transcribe_checked(AudioChannel::Mic, vec![0.1; 100], 16_000).await;
+        assert_eq!(result.unwrap_err(), "controlled_local_failure");
+    }
 
     #[tokio::test]
     async fn auto_prefers_local_when_present() {

@@ -143,6 +143,31 @@ pub struct SendMessageRequest {
     pub channel_platform: Option<String>,
 }
 
+/// Host-only request that admits a runtime turn on an already projected voice
+/// user message. The visible text and the model input are intentionally
+/// separate; callers must never be able to bind an arbitrary message id.
+#[derive(Debug, Deserialize)]
+pub struct VoiceBoundMessageRequest {
+    pub message_id: String,
+    pub display_text: String,
+    pub command_id: String,
+    pub expected_admission_epoch: i64,
+    pub expected_workspace: String,
+    #[serde(default)]
+    pub voice_context_digest: Option<String>,
+    pub content: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub inject_skills: Vec<String>,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub channel_platform: Option<String>,
+}
+
 const fn default_replayed_without_authority() -> bool {
     // A legacy/malformed response cannot prove first-delivery ownership.
     // Treat it as reconciliation-only instead of manufacturing a fresh turn.

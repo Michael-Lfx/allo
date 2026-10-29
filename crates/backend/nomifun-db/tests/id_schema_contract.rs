@@ -133,7 +133,11 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
     // 学习侧:048 学习图:+learning_graph_prerequisites;050 课时分节:
     // +learning_lesson_sections;052 复习日志:+learning_review_log。
     // Agent Store 侧:`058` / `059` / `061` 共 4 张。
-    assert_eq!(tables.len(), 117);
+    // Skill 选择:067（6750a8fad8）新增 skill_selection_event、
+    // conversation_skill_pins、skill_invocation_overrides 共 3 张。
+    // Flowy Link:068（5f90aecf4）新增 linked_devices 1 张。
+    // 4 张均已在 PRODUCT_TABLES / 业务 ID / 逻辑引用契约中登记。
+    assert_eq!(tables.len(), 121);
     for table in tables {
         let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
             .fetch_all(pool)
@@ -164,6 +168,224 @@ async fn every_product_table_has_one_integer_autoincrement_row_primary_key() {
             "{table}.id must be declared AUTOINCREMENT, not merely inferred as INTEGER PRIMARY KEY"
         );
     }
+}
+
+#[tokio::test]
+async fn skill_selection_and_link_tables_enforce_their_declared_constraints() {
+    let database = init_database_memory().await.expect("database");
+    let pool = database.pool();
+    let owner: String = sqlx::query_scalar("SELECT user_id FROM users ORDER BY id LIMIT 1")
+        .fetch_one(pool)
+        .await
+        .expect("installation owner");
+    let conversation_id = ConversationId::new();
+    sqlx::query(
+        "INSERT INTO conversations \
+         (conversation_id, user_id, name, type, created_at, updated_at) \
+         VALUES (?, ?, 'skill/link contract fixture', 'nomi', 1, 1)",
+    )
+    .bind(conversation_id.as_str())
+    .bind(&owner)
+    .execute(pool)
+    .await
+    .expect("conversation fixture");
+
+    // 067 / 068 additions keep the same technical-key shape as every product
+    // table: exactly one INTEGER AUTOINCREMENT primary key named `id`.
+    for table in [
+        "skill_selection_event",
+        "conversation_skill_pins",
+        "skill_invocation_overrides",
+        "linked_devices",
+    ] {
+        let columns = sqlx::query(&format!("PRAGMA table_info(\"{table}\")"))
+            .fetch_all(pool)
+            .await
+            .expect("table info");
+        let primary_keys: Vec<_> = columns
+            .iter()
+            .filter(|row| row.get::<i64, _>("pk") > 0)
+            .collect();
+        assert_eq!(primary_keys.len(), 1, "{table} must have one primary key");
+        assert_eq!(primary_keys[0].get::<String, _>("name"), "id", "{table}");
+        assert_eq!(
+            primary_keys[0]
+                .get::<String, _>("type")
+                .to_ascii_uppercase(),
+            "INTEGER",
+            "{table}.id"
+        );
+        let create_sql: String = sqlx::query_scalar(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await
+        .expect("table SQL");
+        assert!(
+            create_sql
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_ascii_lowercase()
+                .contains("id integer primary key autoincrement"),
+            "{table}.id must be declared AUTOINCREMENT"
+        );
+    }
+
+    // linked_devices: canonical UUIDv7 business ID and logical owner reference.
+    let device_id = nomifun_common::generate_id();
+    sqlx::query(
+        "INSERT INTO linked_devices \
+         (linked_device_id, user_id, display_name, platform, public_key_fingerprint, \
+          refresh_token_hash, created_at_ms, last_seen_at_ms) \
+         VALUES (?, ?, 'phone', 'ios', 'fingerprint-valid', 'token-hash', 1, 1)",
+    )
+    .bind(&device_id)
+    .bind(&owner)
+    .execute(pool)
+    .await
+    .expect("valid linked device");
+    // Two explicit counterexamples, each binding the invalid value to the
+    // column it names: an invalid device id with a valid owner, and a valid
+    // device id with a non-UUIDv7 owner.
+    let valid_second_device = nomifun_common::generate_id();
+    for (label, device_value, owner_value) in [
+        (
+            "non-UUIDv7 linked_device_id",
+            "not-a-uuid",
+            owner.as_str(),
+        ),
+        (
+            "non-UUIDv7 linked device owner",
+            valid_second_device.as_str(),
+            "550e8400-e29b-41d4-a716-446655440000",
+        ),
+    ] {
+        assert!(
+            sqlx::query(
+                "INSERT INTO linked_devices \
+                 (linked_device_id, user_id, display_name, platform, public_key_fingerprint, \
+                  refresh_token_hash, created_at_ms, last_seen_at_ms) \
+                 VALUES (?, ?, 'phone', 'ios', 'fingerprint-counterexample', 'token-hash', 1, 1)",
+            )
+            .bind(device_value)
+            .bind(owner_value)
+            .execute(pool)
+            .await
+            .is_err(),
+            "{label} must be rejected"
+        );
+    }
+    assert!(
+        sqlx::query(
+            "INSERT INTO linked_devices \
+             (linked_device_id, user_id, display_name, platform, public_key_fingerprint, \
+              refresh_token_hash, created_at_ms, last_seen_at_ms) \
+             VALUES (?, ?, 'phone', 'ios', 'fingerprint-duplicate', 'token-hash', 1, 1)",
+        )
+        .bind(&device_id)
+        .bind(&owner)
+        .execute(pool)
+        .await
+        .is_err(),
+        "duplicate linked_device_id must be rejected"
+    );
+
+    let valid_hash = "a".repeat(64);
+    sqlx::query(
+        "INSERT INTO skill_selection_event \
+         (conversation_id, query_hash, candidate_ids, method, created_at) \
+         VALUES (?, ?, '[\"skill-a\"]', 'test', 1)",
+    )
+    .bind(conversation_id.as_str())
+    .bind(&valid_hash)
+    .execute(pool)
+    .await
+    .expect("valid skill selection event");
+    assert!(
+        sqlx::query(
+            "INSERT INTO skill_selection_event \
+             (conversation_id, query_hash, candidate_ids, method, created_at) \
+             VALUES ('not-a-uuid', ?, '[]', 'test', 1)",
+        )
+        .bind(&valid_hash)
+        .execute(pool)
+        .await
+        .is_err(),
+        "skill_selection_event.conversation_id must be UUIDv7"
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO skill_selection_event \
+             (conversation_id, query_hash, candidate_ids, method, created_at) \
+             VALUES (?, 'short-hash', '[]', 'test', 1)",
+        )
+        .bind(conversation_id.as_str())
+        .execute(pool)
+        .await
+        .is_err(),
+        "skill_selection_event.query_hash must be 64 lowercase hex characters"
+    );
+
+    sqlx::query(
+        "INSERT INTO conversation_skill_pins (conversation_id, skill_id, pinned_at) \
+         VALUES (?, 'builtin:officecli', 1)",
+    )
+    .bind(conversation_id.as_str())
+    .execute(pool)
+    .await
+    .expect("valid skill pin");
+    assert!(
+        sqlx::query(
+            "INSERT INTO conversation_skill_pins (conversation_id, skill_id, pinned_at) \
+             VALUES (?, 'builtin:officecli', 2)",
+        )
+        .bind(conversation_id.as_str())
+        .execute(pool)
+        .await
+        .is_err(),
+        "conversation_skill_pins (conversation_id, skill_id) must be unique"
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO conversation_skill_pins (conversation_id, skill_id, pinned_at) \
+             VALUES (?, '   ', 1)",
+        )
+        .bind(conversation_id.as_str())
+        .execute(pool)
+        .await
+        .is_err(),
+        "conversation_skill_pins.skill_id must be non-empty"
+    );
+
+    sqlx::query(
+        "INSERT INTO skill_invocation_overrides (skill_id, allow_model_auto, updated_at) \
+         VALUES ('builtin:officecli', 1, 1)",
+    )
+    .execute(pool)
+    .await
+    .expect("valid skill invocation override");
+    assert!(
+        sqlx::query(
+            "INSERT INTO skill_invocation_overrides (skill_id, allow_model_auto, updated_at) \
+             VALUES ('builtin:officecli', 0, 2)",
+        )
+        .execute(pool)
+        .await
+        .is_err(),
+        "skill_invocation_overrides.skill_id must be unique"
+    );
+    assert!(
+        sqlx::query(
+            "INSERT INTO skill_invocation_overrides (skill_id, allow_model_auto, updated_at) \
+             VALUES ('builtin:other', 2, 1)",
+        )
+        .execute(pool)
+        .await
+        .is_err(),
+        "skill_invocation_overrides.allow_model_auto must be 0 or 1"
+    );
 }
 
 #[tokio::test]
