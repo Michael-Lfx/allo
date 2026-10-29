@@ -3852,14 +3852,21 @@ async fn run_grade(
     }
 
     // —— 判据②（真误区判错 + 缺失要点非空）：与判底相悖的作答 → 判错 +
-    //      missing_points 点名缺失（n4 D3 互斥的另一侧）。
+    //      missing_points 点名缺失（n4 D3 互斥的另一侧）。缺失要点是评审链
+    //      新契约字段——off 臂走旧 {score, feedback} 链，结构性无此字段，
+    //      只断判错与低分。
+    let judge_arm = nomifun_learning::open_judge_enabled();
     for (label, activity, answer) in [
         ("②开放题真误区", &open, open_flawed),
         ("②reflection空泛", &reflection, reflection_flawed),
     ] {
         match submit(activity, answer).await {
             Ok(result) => {
-                let ok = !result.passed && !result.missing_points.is_empty();
+                let ok = if judge_arm {
+                    !result.passed && !result.missing_points.is_empty()
+                } else {
+                    !result.passed && result.score < 0.6
+                };
                 println!(
                     "[{label}] {} passed={} score={:.2} 缺失要点={}条 点评前40字={}",
                     if ok { "PASS" } else { "FAIL" },
