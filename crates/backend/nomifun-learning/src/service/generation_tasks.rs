@@ -155,7 +155,8 @@ impl Drop for GatePermit {
 /// 一次长任务的注册句柄：`token()` 供任务体接检查点；显式 `finish_*` 收尾
 /// （终态首写即定）；未收尾即 drop（任务被 abort/panic）按 failed 留痕。
 /// 过闸任务的许可住守卫内（RAII）：任何退出路径（含 panic 展开）都归还
-/// 许可，容量不随异常退出泄漏。
+/// 许可，容量不随异常退出泄漏。`usage()` 是相位耗时读数的上报面（e1）：
+/// 任务体的计数包装往里加增量，finish 行聚合落档。
 pub(crate) struct GenerationTaskGuard {
     registry: Arc<GenerationTaskRegistry>,
     key: String,
@@ -163,6 +164,9 @@ pub(crate) struct GenerationTaskGuard {
     /// 在跑占用（过闸 = 真许可，off 臂 = 仅读数；drop 即归还，任何退出路径
     /// 含 panic 展开都不泄漏）。
     permit: GatePermit,
+    /// LLM 用量累计（e1 相位耗时读数）：begin 铸造，任务体经计数包装上报，
+    /// 显式 finish 与 drop 兜底两条收尾路径都进 finish 行。
+    usage: crate::completer::LlmUsageMeter,
 }
 
 impl GenerationTaskGuard {
@@ -173,6 +177,12 @@ impl GenerationTaskGuard {
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// LLM 用量累计句柄（e1 相位耗时读数）：计数包装（结构/生长 =
+    /// [`CountingCompleter`]，课时 = agent 侧 CountingProvider）上报增量。
+    pub fn usage(&self) -> crate::completer::LlmUsageMeter {
+        self.usage.clone()
     }
 
     /// 进度叙事（step 机器面 / detail 人面，后端单源）：快照与事件共用。
@@ -193,7 +203,9 @@ impl GenerationTaskGuard {
     }
 
     fn finish(mut self, state: &'static str, detail: impl Into<String>) {
-        self.registry.finish(&self.key, state, detail.into());
+        let usage = self.usage.snapshot();
+        self.registry
+            .finish(&self.key, state, detail.into(), usage);
         // 阻止 Drop 再标 failed（finish 已消费语义，这里只是双保险）。
         self.key.clear();
     }
@@ -202,8 +214,13 @@ impl GenerationTaskGuard {
 impl Drop for GenerationTaskGuard {
     fn drop(&mut self) {
         if !self.key.is_empty() {
-            self.registry
-                .finish(&self.key.clone(), STATE_FAILED, "任务中断（未收尾即退出）".into());
+            let usage = self.usage.snapshot();
+            self.registry.finish(
+                &self.key.clone(),
+                STATE_FAILED,
+                "任务中断（未收尾即退出）".into(),
+                usage,
+            );
         }
         // 许可（若过闸）在此归还——panic/abort 展开也走这里，容量不泄漏。
         let _ = &self.permit;
@@ -416,6 +433,7 @@ impl GenerationTaskRegistry {
             key,
             token,
             permit,
+            usage: crate::completer::LlmUsageMeter::new(),
         })
     }
 
@@ -431,8 +449,16 @@ impl GenerationTaskRegistry {
     }
 
     /// 终态收尾（首写即定；对已终态记录的收尾是无操作）。观测旁路发
-    /// finish 行。
-    fn finish(&self, key: &str, state: &'static str, detail: String) {
+    /// finish 行——携带相位耗时读数（e1）：`elapsed_ms` = 准入到收尾的墙钟
+    /// （排队期不计），`llm_calls`/`input_chars`/`output_chars` = 任务体计数
+    /// 包装的累计（缺席计数包装的任务三项为 0）。
+    fn finish(
+        &self,
+        key: &str,
+        state: &'static str,
+        detail: String,
+        usage: crate::completer::LlmUsageDelta,
+    ) {
         let line = {
             let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
             let Some(record) = tasks.get_mut(key) else {
@@ -450,6 +476,10 @@ impl GenerationTaskRegistry {
                 "kind": record.kind,
                 "state": state,
                 "at": now_ms(),
+                "elapsed_ms": record.started_at.elapsed().as_millis() as u64,
+                "llm_calls": usage.llm_calls,
+                "input_chars": usage.input_chars,
+                "output_chars": usage.output_chars,
             })
             .to_string()
         };
@@ -1229,6 +1259,124 @@ mod tests {
         assert!(result.is_err_and(|error| error.to_string().contains(CANCELLED_MESSAGE)));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1, "inner ran exactly once");
     }
+
+    /// e1 相位耗时读数：finish 行携带 `elapsed_ms` + 用量三项；显式 finish
+    /// 与 drop 兜底两条收尾路径都带数；begin 行不带（读数只在收尾结算）。
+    #[tokio::test]
+    async fn finish_line_carries_phase_readings() {
+        let registry = gated_registry();
+        let lines: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        registry.set_observer(Arc::new(move |line: &str| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                sink.lock().unwrap().push(value);
+            }
+        }));
+
+        let task = registry.begin(KIND_STRUCTURE, "c", None, "t").await.unwrap();
+        // 任务体上报两笔增量（如两次 LLM 调用）。
+        task.usage().add(crate::completer::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars: 100,
+            output_chars: 30,
+        });
+        task.usage().add(crate::completer::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars: 60,
+            output_chars: 20,
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        task.finish_done("ok");
+
+        let begin = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "begin")
+            .expect("begin line captured")
+            .clone();
+        assert!(begin.get("elapsed_ms").is_none(), "begin 行不带读数");
+        let finish = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "finish")
+            .expect("finish line captured")
+            .clone();
+        assert_eq!(finish["llm_calls"], 2, "两笔增量聚合");
+        assert_eq!(finish["input_chars"], 160);
+        assert_eq!(finish["output_chars"], 50);
+        assert!(
+            finish["elapsed_ms"].as_u64().is_some_and(|ms| ms < 60_000),
+            "elapsed_ms 在场且量级 sane: {finish}"
+        );
+    }
+
+    /// e1 相位耗时读数（drop 兜底臂）：未收尾即 drop = failed 留痕，finish
+    /// 行照带已上报的用量——中断任务的耗时读数不缺口。
+    #[tokio::test]
+    async fn dropped_guard_finish_line_still_carries_reported_usage() {
+        let registry = gated_registry();
+        let lines: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        registry.set_observer(Arc::new(move |line: &str| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                sink.lock().unwrap().push(value);
+            }
+        }));
+        {
+            let task = registry.begin(KIND_LESSON, "c", Some("l"), "t").await.unwrap();
+            task.usage().add(crate::completer::LlmUsageDelta {
+                llm_calls: 3,
+                input_chars: 900,
+                output_chars: 120,
+            });
+        }
+        let finish = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "finish")
+            .expect("drop leaves the failed finish line")
+            .clone();
+        assert_eq!(finish["state"], STATE_FAILED);
+        assert_eq!(finish["llm_calls"], 3);
+        assert_eq!(finish["output_chars"], 120);
+    }
+
+    /// CountingCompleter：Ok 调用计调用数 + 双向字符量；Err 调用只计调用
+    /// 数（失败调用也是花掉的延迟，但没有产出可计）。
+    #[tokio::test]
+    async fn counting_completer_reports_ok_volume_and_err_calls() {
+        struct Stub;
+        #[async_trait::async_trait]
+        impl LearningCompleter for Stub {
+            async fn complete(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                system: &str,
+                user: &str,
+                _max_tokens: u32,
+            ) -> Result<String, AppError> {
+                if user == "boom" {
+                    return Err(AppError::BadGateway("down".into()));
+                }
+                Ok(format!("{system}{user}reply"))
+            }
+        }
+        let meter = crate::completer::LlmUsageMeter::new();
+        let counting = CountingCompleter::new(&Stub, &meter);
+        counting.complete(None, "sys", "usr", 8).await.unwrap();
+        counting.complete(None, "sys", "boom", 8).await.unwrap_err();
+        let usage = meter.snapshot();
+        assert_eq!(usage.llm_calls, 2, "失败调用也计入调用数");
+        // Ok 调用：input = system+user 字符；output = 回包字符。Err 调用
+        // 不计字符。
+        assert_eq!(usage.input_chars, ("sysusr".chars().count()) as u64);
+        assert_eq!(usage.output_chars, ("sysusrreply".chars().count()) as u64);
+    }
 }
 
 /// 取消包装 completer（三轮 t2 真中断）：每个 LLM 调用与取消令牌
@@ -1314,5 +1462,106 @@ impl LearningCompleter for CancellationCompleter<'_> {
                 .complete_json_with_thinking(model_override, system, user, max_tokens, temperature),
         )
         .await
+    }
+}
+
+/// 用量计数包装 completer（e1 相位耗时读数，与 [`CancellationCompleter`]
+/// 同层）：委托内层并在每次调用后上报增量——调用数恒 +1（失败调用也是
+/// 花掉的延迟），输入/输出字符量只在 Ok 时计（`chars().count()` 全字符，
+/// 含空白）。与取消包装的组装次序（两条循环一致）：取消包在外、计数包在
+/// 内——被取消竞速丢弃的调用不上报，观测面如实反映「活着走完的调用」。
+pub(crate) struct CountingCompleter<'a> {
+    inner: &'a dyn LearningCompleter,
+    usage: &'a crate::completer::LlmUsageMeter,
+}
+
+impl<'a> CountingCompleter<'a> {
+    pub(crate) fn new(
+        inner: &'a dyn LearningCompleter,
+        usage: &'a crate::completer::LlmUsageMeter,
+    ) -> Self {
+        Self { inner, usage }
+    }
+
+    async fn count(
+        &self,
+        input_chars: usize,
+        result: Result<String, AppError>,
+    ) -> Result<String, AppError> {
+        match &result {
+            Ok(reply) => self.usage.add(crate::completer::LlmUsageDelta {
+                llm_calls: 1,
+                input_chars: input_chars as u64,
+                output_chars: reply.chars().count() as u64,
+            }),
+            Err(_) => self.usage.add(crate::completer::LlmUsageDelta {
+                llm_calls: 1,
+                input_chars: 0,
+                output_chars: 0,
+            }),
+        }
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl LearningCompleter for CountingCompleter<'_> {
+    async fn complete(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self.inner.complete(model_override, system, user, max_tokens).await;
+        self.count(input, result).await
+    }
+
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_with_thinking(model_override, system, user, max_tokens)
+            .await;
+        self.count(input, result).await
+    }
+
+    async fn complete_json(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_json(model_override, system, user, max_tokens, temperature)
+            .await;
+        self.count(input, result).await
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
+            .await;
+        self.count(input, result).await
     }
 }

@@ -91,6 +91,87 @@ impl LlmProvider for CancellableProvider {
     }
 }
 
+/// 请求侧的字符量（e1 相位耗时读数口径）：system + 全部消息的文本面
+/// （文本块逐块 + 工具调用参数序列化 + 工具结果正文）。体量代理，不是
+/// token 计量。
+fn request_char_volume(request: &LlmRequest) -> u64 {
+    let mut chars = request.system.chars().count() as u64;
+    for message in &request.messages {
+        for block in &message.content {
+            chars += match block {
+                nomi_types::message::ContentBlock::Text { text } => text.chars().count() as u64,
+                nomi_types::message::ContentBlock::ToolUse { input, .. } => {
+                    input.to_string().chars().count() as u64
+                }
+                nomi_types::message::ContentBlock::ToolResult { content, .. } => {
+                    content.chars().count() as u64
+                }
+                _ => 0,
+            };
+        }
+    }
+    chars
+}
+
+/// 流事件的输出字符量（e1 口径）：文本增量 + 完整工具调用参数的序列化长
+/// 度。中途 Error/截断事件不计——没走完的输出不算产出。
+fn event_output_chars(event: &LlmEvent) -> u64 {
+    match event {
+        LlmEvent::TextDelta(text) => text.chars().count() as u64,
+        LlmEvent::ToolUse { input, .. } => input.to_string().chars().count() as u64,
+        _ => 0,
+    }
+}
+
+/// 用量计数 provider 包装（e1 相位耗时读数，课时引擎专用；与学习侧
+/// [`crate::service::CountingCompleter`] 同职能）：每次 `stream()` 计一次
+/// LLM 调用，输入 = 请求字符量，输出 = 流内文本/工具参数字符量。观测面
+/// 零语义——上报闭包（任务注册表的 [`nomifun_learning::LlmUsageMeter`]）
+/// 缺席时不装配本包装。取消语义不在此层（课时循环未接取消令牌，见
+/// ADR-0004 显式差异）；并发安全（e4 段写并行的前置）由原子累计承担。
+pub(crate) struct CountingProvider {
+    pub(crate) inner: Arc<dyn LlmProvider>,
+    pub(crate) usage: nomifun_learning::LlmUsageMeter,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for CountingProvider {
+    fn input_tokens_include_cache(&self) -> bool {
+        self.inner.input_tokens_include_cache()
+    }
+
+    async fn stream(
+        &self,
+        request: &LlmRequest,
+    ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        let input_chars = request_char_volume(request);
+        let mut rx = self.inner.stream(request).await?;
+        let usage = self.usage.clone();
+        usage.add(nomifun_learning::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars,
+            output_chars: 0,
+        });
+        let (tx, out) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let output_chars = event_output_chars(&event);
+                if output_chars > 0 {
+                    usage.add(nomifun_learning::LlmUsageDelta {
+                        llm_calls: 0,
+                        input_chars: 0,
+                        output_chars,
+                    });
+                }
+                if tx.send(event).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(out)
+    }
+}
+
 /// 每流显式预算表（ADR-0004）：轮次、token、时长都在各自流里逐字声明，
 /// 不再共享继承——学习图 100/32768/1800 与大纲、课时的 50/8192/600 之间
 /// 的差异读一张表即见，`loop_core` 的共享常量只作为大纲/课时的取值来源。
