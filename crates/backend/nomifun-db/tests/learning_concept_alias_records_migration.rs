@@ -30,7 +30,7 @@ async fn migration_backfills_string_aliases_into_records() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 76).await;
+    migrate_range(&pool, 0, 79).await;
     sqlx::query(
         "INSERT INTO learning_concept_registry \
          (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
@@ -39,7 +39,7 @@ async fn migration_backfills_string_aliases_into_records() {
     .execute(&pool)
     .await
     .unwrap();
-    migrate_range(&pool, 76, 77).await;
+    migrate_range(&pool, 79, 80).await;
     let aliases_json: String =
         sqlx::query_scalar("SELECT aliases_json FROM learning_concept_registry WHERE canonical = '极限'")
             .fetch_one(&pool)

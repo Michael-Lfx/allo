@@ -52,9 +52,9 @@ async fn existing_rows_default_to_enabled() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    migrate_range(&pool, 0, 75).await;
+    migrate_range(&pool, 0, 78).await;
     insert_course(&pool).await;
-    migrate_range(&pool, 75, 76).await;
+    migrate_range(&pool, 78, 79).await;
     let enabled: i64 = sqlx::query_scalar("SELECT enabled FROM learning_courses WHERE course_id = ?")
         .bind(COURSE_ID)
         .fetch_one(&pool)
