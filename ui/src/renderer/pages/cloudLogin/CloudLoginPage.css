@@ -264,3 +264,33 @@
     animation: none;
   }
 }
+
+/* Login page locks body scroll. Keep a single scrollport on the document itself
+   so the dialog mask and the other agreement do not share its position. */
+.arco-modal-wrapper:has(.flowy-legal-modal) {
+  overflow: hidden;
+}
+
+.flowy-legal-modal.nomifun-modal {
+  height: auto;
+}
+
+.flowy-legal-modal .nomifun-modal-wrapper {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+}
+
+.flowy-legal-modal .nomifun-modal-body-content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.flowy-legal-document {
+  max-height: calc(100vh - 148px);
+  padding: 0 24px 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
