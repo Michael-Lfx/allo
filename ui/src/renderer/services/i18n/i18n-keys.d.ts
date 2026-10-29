@@ -2061,7 +2061,6 @@ export type I18nKey =
   | 'conversation.skill_generator.type_skill'
   | 'conversation.skills.autoLoaded'
   | 'conversation.skills.loaded'
-  | 'conversation.skills.modeBar'
   | 'conversation.skills.pin'
   | 'conversation.skills.remove'
   | 'conversation.skills.selected'

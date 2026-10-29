@@ -17,7 +17,6 @@ import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Me
 import HOC from '@renderer/utils/ui/HOC';
 import LocalImageView from '@renderer/components/media/LocalImageView';
 import React, { Suspense, useEffect } from 'react';
-import SessionSkillModeBar from '@/renderer/pages/conversation/components/SessionSkillModeBar';
 import AcpSendBox from './AcpSendBox';
 import { useAcpInitialMessage } from './useAcpInitialMessage';
 import { useAcpMessage } from './useAcpMessage';
@@ -107,8 +106,6 @@ const AcpChat: React.FC<{
             </Suspense>
           )}
           {!readOnly && !hideSendBox && (
-            <>
-            <SessionSkillModeBar />
             <AcpSendBox
               conversation_id={conversation_id}
               backend={backend}
@@ -118,7 +115,6 @@ const AcpChat: React.FC<{
               workspacePath={workspace}
               messageState={messageState}
             ></AcpSendBox>
-            </>
           )}
         </div>
       </ConversationArtifactProvider>

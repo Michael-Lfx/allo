@@ -23,7 +23,6 @@ import { usePendingConfirmationsRecovery } from '@renderer/pages/conversation/Me
 import HOC from '@renderer/utils/ui/HOC';
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import LocalImageView from '@renderer/components/media/LocalImageView';
-import SessionSkillModeBar from '@/renderer/pages/conversation/components/SessionSkillModeBar';
 import NomiSendBox from './NomiSendBox';
 import {useVoiceSnapshot} from '@renderer/pages/voiceSession/useVoiceSnapshot';
 import {mergeVoiceTranscript, createLiveVoiceHistory, reconcileLiveVoiceHistory} from '@renderer/pages/voiceSession/liveVoiceTurn';
@@ -178,7 +177,6 @@ const NomiChat: React.FC<{
                   elapsedMs: turnActivity.tokenUsage?.elapsed_ms,
                 }}
               />
-              <SessionSkillModeBar />
               <NomiSendBox
                 key={conversation_id}
                 voiceKind={isVoiceConversation ? 'voice' : 'ordinary'}
