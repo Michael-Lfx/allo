@@ -1127,8 +1127,24 @@ async fn run_structure(
     let spines = structure["spines"].as_array().map(Vec::len).unwrap_or(0);
     let edges = structure["edges"].as_array().map(Vec::len).unwrap_or(0);
     let doors = terrain["doors"].as_array().map(Vec::len).unwrap_or(0);
+    // 门位标签读数（e2）：带非空 door_refs 的块数——零标注 warn 在生成门面落
+    // 日志，这里随 OK 行并排透出（对照 learnhub 3/21 低标注基线的读数面）。
+    let labeled = structure["blocks"]
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .get("door_refs")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|refs| !refs.is_empty())
+                })
+                .count()
+        })
+        .unwrap_or(0);
     println!(
-        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}",
+        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}",
         course_id.as_str()
     );
     Ok(ExitCode::SUCCESS)

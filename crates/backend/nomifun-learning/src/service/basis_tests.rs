@@ -397,6 +397,12 @@ async fn basis_declaration_and_block_semantics() {
         error.to_string().contains("没有命中任何带门位标签"),
         "AND 口径无目标块：{error}"
     );
+    // 零命中拒绝带出路（e2，learnhub「请改用逐个跳过」域中立化）：文案必须
+    // 指向学习图逐节点跳过的既有 UI 面——死路拒绝不留出路 = 旅程 BLOCKER。
+    assert!(
+        error.to_string().contains("请改用逐节点跳过"),
+        "零命中拒绝必须带出路：{error}"
+    );
     assert_eq!(completer2.call_count(), 0, "命中判据在 LLM 之前，零调用");
 }
 

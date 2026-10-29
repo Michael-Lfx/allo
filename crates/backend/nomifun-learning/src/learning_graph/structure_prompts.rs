@@ -74,11 +74,13 @@ static FENCE_DEV_FACE: &[&str] = &[
     "ADR-",
 ];
 
-/// 知识结构 prompt 资产（任务名 = 归档面标识）。
+/// 知识结构 prompt 资产（任务名 = 归档面标识）。判定输入通道（e2，learnhub
+/// #161 域中立移植）：前置地形先行产出，门口清单（编号+判据）注入本资产——
+/// prerequisite_doors 逐字全收与 door_refs 门位标签的判定源。
 pub static GOAL_DECOMPOSITION: PromptSpec = PromptSpec {
     id: "goal-decomposition",
     template: include_str!("../../prompts/structure/goal-decomposition.md"),
-    placeholders: &["goal", "proficiency_statement", "retry_feedback"],
+    placeholders: &["goal", "proficiency_statement", "door_list", "retry_feedback"],
     task: "goal-decomposition",
     temperature: 0.2,
     fence_words: FENCE_DEV_FACE,
@@ -289,16 +291,27 @@ mod tests {
             &[
                 ("goal", "能独立求解"),
                 ("proficiency_statement", "达成后能独立解题"),
+                ("door_list", "- [G1]（硬前置）能用配方法解形如 x²=p 的方程"),
                 ("retry_feedback", "(无:首次)"),
             ],
         )
         .expect("golden sample values assemble");
         assert!(!prompt.text.contains("{{"));
         assert!(prompt.text.contains("能独立求解"));
+        assert!(prompt.text.contains("能用配方法解形如 x²=p 的方程"));
 
         // 未知值名。
-        let error = assemble(spec, &[("bogus", "x"), ("goal", "g"), ("proficiency_statement", "p"), ("retry_feedback", "r")])
-            .unwrap_err();
+        let error = assemble(
+            spec,
+            &[
+                ("bogus", "x"),
+                ("goal", "g"),
+                ("proficiency_statement", "p"),
+                ("door_list", "- [G1]（硬前置）d"),
+                ("retry_feedback", "r"),
+            ],
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("未在注册表声明"), "{error}");
 
         // 缺值。
@@ -309,7 +322,8 @@ mod tests {
         let values: Vec<(&'static str, &str)> = vec![
             ("goal", "a"),
             ("proficiency_statement", "b"),
-            ("retry_feedback", "c"),
+            ("door_list", "c"),
+            ("retry_feedback", "d"),
         ];
         assert!(assemble(spec, &values).is_ok());
     }
@@ -419,6 +433,11 @@ mod tests {
             "整体覆盖",
             "宁缺勿滥",
             "必然已会本块",
+            // e2（learnhub #161 判定输入通道域中立移植）：门口清单输入——
+            // prerequisite_doors 逐字全收 + 判据原文出处。
+            "门口清单",
+            "逐字全收",
+            "判据原文见输入门口清单",
         ] {
             assert!(goal_body.contains(phrase), "goal prompt missing「{phrase}」");
         }
@@ -512,6 +531,10 @@ mod tests {
             (
                 "proficiency_statement",
                 "达成后能独立解任意一元二次方程并讲解每一步依据",
+            ),
+            (
+                "door_list",
+                "- [G1]（硬前置）能用配方法解形如 x²=p 的方程\n- [G2]（可自检）可辨认等式两边同乘同除的合法性",
             ),
             ("retry_feedback", "(无:首次)"),
         ];
