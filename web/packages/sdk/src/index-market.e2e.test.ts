@@ -68,11 +68,12 @@ const SKILLS_URL =
       // The SDK resolves the absolute icon without needing the host base URL.
       expect(harness.store.avatarUrl(target)).toBe(target.icon_url);
 
-      // The archive is fetched at install time; readiness (runtime probes) is
-      // orthogonal to this contract, so it is not awaited here.
-      const installed = await harness.store.install(target, { waitForReady: false });
+      // Readiness is host-local (`agents.get` / `skills.list`), so the
+      // headless SDK host can assert it — no desktop shell required.
+      const installed = await harness.store.install(target);
       expect(installed.snapshotId).not.toBeNull();
       expect(installed.ok, installed.errors.join("; ")).toBe(true);
+      expect(installed.ready, installed.readyIssue).toBe(true);
       expect(existsSync(harness.server.dataDir)).toBe(true);
 
       const after = await harness.store.list();
@@ -111,9 +112,10 @@ const SKILLS_URL =
       // the integrity anchor, and `member` names the entry inside it.
       expect(target.sha256 ?? null).toBeNull();
 
-      const installed = await harness.store.install(target, { waitForReady: false });
+      const installed = await harness.store.install(target);
       expect(installed.snapshotId).not.toBeNull();
       expect(installed.ok, installed.errors.join("; ")).toBe(true);
+      expect(installed.ready, installed.readyIssue).toBe(true);
 
       const after = await harness.store.list();
       const refreshed = after.find(
