@@ -483,25 +483,31 @@ fn has_facing(text: &str) -> bool {
         || lower.contains("back to the camera")
 }
 
-/// Angle-bracket names in picture text. A bracket closed by 道具 is a prop, not a body.
+/// Angle-bracket names in picture text. ASCII `<>` and fullwidth `〈〉` both
+/// count. A bracket closed by 道具 is a prop, not a body.
 pub(crate) fn bracket_names(text: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
-    let bytes = text.as_bytes();
-    while i < bytes.len() {
-        if bytes[i] != b'<' {
-            i += 1;
-            continue;
-        }
+    while i < chars.len() {
+        let close = match chars[i] {
+            '<' => '>',
+            '〈' => '〉',
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
         let start = i + 1;
-        let Some(rel) = text[start..].find('>') else {
+        let Some(rel) = chars[start..].iter().position(|c| *c == close) else {
             break;
         };
-        let name = text[start..start + rel].trim();
+        let name: String = chars[start..start + rel].iter().collect();
+        let name = name.trim();
         let after = start + rel + 1;
-        let tail: String = text[after..].chars().take(6).collect();
+        let tail: String = chars.get(after..).unwrap_or(&[]).iter().take(6).collect();
         if name.chars().count() >= 2
-            && !name.chars().any(|c| matches!(c, '\n' | '<' | '>'))
+            && !name.chars().any(|c| matches!(c, '\n' | '<' | '>' | '〈' | '〉'))
             && !tail.contains("道具")
             && !out.iter().any(|n| n == name)
         {
@@ -532,7 +538,7 @@ pub(crate) fn name_has_own_screen_side(text: &str, name: &str) -> bool {
 }
 
 fn places_name_forward(after: &str) -> bool {
-    let s = after.trim_start_matches(['>', '》', ' ', '\t', '\n', '　']);
+    let s = after.trim_start_matches(['>', '》', '〉', ' ', '\t', '\n', '　']);
     let s = s.trim_start();
     let s = s.strip_prefix("位于").unwrap_or(s).trim_start();
     let s = s.strip_prefix("在").unwrap_or(s).trim_start();
@@ -579,7 +585,7 @@ fn screen_side_names_person(before: &str) -> bool {
 fn strip_side_connectors(clause: &str) -> &str {
     let mut t = clause.trim();
     loop {
-        let trimmed = t.trim_end_matches([' ', '\t', '<', '的', '是', '有', '　']);
+        let trimmed = t.trim_end_matches([' ', '\t', '<', '〈', '〉', '的', '是', '有', '　']);
         let next = ["坐着", "站着", "趴着", "跪着", "走着", "坐", "站"]
             .iter()
             .find_map(|suf| trimmed.strip_suffix(suf))
@@ -682,7 +688,141 @@ pub fn lint_storyboard_blocking(rows: &[ShotBriefDescription]) -> Vec<String> {
             }
         }
     }
+    issues.extend(lint_roster_hold(rows));
+    issues.extend(lint_carried_prop_state(rows));
     issues
+}
+
+/// "同一机位、左右不变" after the people changed tells the model to keep a
+/// blocking that is no longer true.
+fn lint_roster_hold(rows: &[ShotBriefDescription]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for pair in rows.windows(2) {
+        let prev = bracket_names(&pair[0].visual_desc);
+        let next = bracket_names(&pair[1].visual_desc);
+        if prev.is_empty() || next.is_empty() || same_names(&prev, &next) {
+            continue;
+        }
+        let text = pair[1].visual_desc.as_str();
+        if text.contains("同一机位") || text.contains("左右不变") {
+            issues.push(format!(
+                "shot {}: 入画的人已经变了，不能再写同一机位或左右不变。按这一行的人重写画面左右、朝向和姿势: {}",
+                pair[1].idx,
+                clip_for_report(text)
+            ));
+        }
+    }
+    issues
+}
+
+fn same_names(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|name| b.iter().any(|other| other == name))
+}
+
+const CARRIED_PROP_STATES: &[&str] = &[
+    "头顶", "后脑", "头上", "太阳穴", "手里", "手中", "口袋",
+];
+
+/// A prop that leaves on a body has to be in the next row's opening, unless
+/// that row says it was put down or the person left.
+fn lint_carried_prop_state(rows: &[ShotBriefDescription]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for pair in rows.windows(2) {
+        if crate::domain::location_changed(&pair[0].location_id, &pair[1].location_id) {
+            continue;
+        }
+        let next = pair[1].visual_desc.as_str();
+        if next.trim().is_empty() {
+            continue;
+        }
+        for (prop, state) in carried_prop_states(&pair[0].visual_desc) {
+            if next.contains(&state) || prop_was_released(next, &prop) {
+                continue;
+            }
+            issues.push(format!(
+                "shot {}: 上一行结束时{prop}在{state}，这一行开场要写上这个状态，或写明它放下了、扔掉了、人离开了: {}",
+                pair[1].idx,
+                clip_for_report(next)
+            ));
+        }
+    }
+    issues
+}
+
+fn carried_prop_states(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for state in CARRIED_PROP_STATES {
+        let mut from = 0;
+        while let Some(rel) = text[from..].find(state) {
+            let at = from + rel;
+            if let Some(prop) = prop_noun_near(text, at, state.len()) {
+                if !out.iter().any(|(have, s)| have == &prop && s == *state) {
+                    out.push((prop, (*state).to_string()));
+                }
+            }
+            from = at + state.len();
+        }
+    }
+    out
+}
+
+fn prop_noun_near(text: &str, state_at: usize, state_len: usize) -> Option<String> {
+    let after = &text[state_at + state_len..];
+    if let Some(rest) = after.strip_prefix('的') {
+        if let Some(noun) = leading_han_noun(rest) {
+            return Some(noun);
+        }
+    }
+    trailing_han_noun(&text[..state_at])
+}
+
+fn trailing_han_noun(before: &str) -> Option<String> {
+    const SKIP: &[char] = &['在', '到', '了', '着', '的', '把', '将', '被', '给', '向', '往', '上'];
+    let chars: Vec<char> = before.chars().collect();
+    let mut end = chars.len();
+    while end > 0 && !is_han(chars[end - 1]) {
+        end -= 1;
+    }
+    while end > 0 && SKIP.contains(&chars[end - 1]) {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && is_han(chars[start - 1]) && end - start < 4 {
+        start -= 1;
+    }
+    clean_prop_noun(&chars[start..end].iter().collect::<String>())
+}
+
+fn leading_han_noun(after: &str) -> Option<String> {
+    let mut noun = String::new();
+    for ch in after.chars() {
+        if is_han(ch) && noun.chars().count() < 4 {
+            noun.push(ch);
+        } else {
+            break;
+        }
+    }
+    clean_prop_noun(&noun)
+}
+
+fn clean_prop_noun(noun: &str) -> Option<String> {
+    const SKIP: &[&str] = &[
+        "他", "她", "它", "我", "你", "自己", "一个", "这个", "那个", "手里", "手中", "头顶",
+    ];
+    let noun = noun.trim();
+    if noun.chars().count() < 2 || SKIP.iter().any(|s| *s == noun) {
+        return None;
+    }
+    Some(noun.to_string())
+}
+
+fn is_han(ch: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&ch)
+}
+
+fn prop_was_released(text: &str, _prop: &str) -> bool {
+    const RELEASE: &[&str] = &["放下", "扔掉", "丢掉", "收起", "离开", "离场", "不见", "拿开"];
+    RELEASE.iter().any(|word| text.contains(word))
 }
 
 /// Beat text is checked against that beat's lines. A single-beat row uses the
@@ -1437,6 +1577,11 @@ mod tests {
             "<高二林> 在画面中央、桌面上，面向下，趴着。<刘华强> 在画面右侧、高二林身后，面向左，俯身。",
             "刘华强"
         ));
+        assert!(name_has_own_screen_side(
+            "〈封彪〉在画面左侧、门内一步，面向右，站着。",
+            "封彪"
+        ));
+        assert!(bracket_names("〈封彪〉在画面左侧。<韩跃平>在画面右侧。").contains(&"封彪".to_string()));
         assert!(!name_has_own_screen_side(
             "<刘华强> 在画面右侧、高二林身后，面向左，俯身。转头问大海。",
             "高二林"

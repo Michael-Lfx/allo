@@ -1,4 +1,5 @@
 {frame} vacant location plate. Completely unoccupied.
+SCENE START: dress the room as it is at the START of the scene. Do not show the aftermath of later action (no knocked-over chair, spilled food, broken glass, or a prop left on a head) unless the location description already says the scene opens that way. Furniture stands where the scene begins.
 HARD: zero people, zero humans, zero faces, zero silhouettes, zero hands, zero body parts, zero mannequins. Empty architecture only.
 Theme: {theme}
 Location: {slugline}

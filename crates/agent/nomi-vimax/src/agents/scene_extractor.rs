@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::backends::VimaxChat;
+use crate::clip_bounds::ClipBounds;
 use crate::domain::{Event, Scene};
 use crate::error::VimaxResult;
 use crate::json_util::complete_and_parse_llm_json;
@@ -9,11 +10,12 @@ use super::formats::SCENE;
 
 pub struct SceneExtractor {
     chat: Arc<dyn VimaxChat>,
+    clip: ClipBounds,
 }
 
 impl SceneExtractor {
-    pub fn new(chat: Arc<dyn VimaxChat>) -> Self {
-        Self { chat }
+    pub fn new(chat: Arc<dyn VimaxChat>, clip: ClipBounds) -> Self {
+        Self { chat, clip }
     }
 
     pub async fn extract_all_for_event(
@@ -60,7 +62,9 @@ impl SceneExtractor {
         let system = include_str!(
             "../../prompts/scene_extractor__system_prompt_template_get_next_scene.txt"
         )
-        .replace("{format_instructions}", SCENE);
+        .replace("{format_instructions}", SCENE)
+        .replace("{clip_min_secs}", &self.clip.min_secs().to_string())
+        .replace("{clip_max_secs}", &self.clip.max_secs().to_string());
         let user = include_str!(
             "../../prompts/scene_extractor__human_prompt_template_get_next_scene.txt"
         )
