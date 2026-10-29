@@ -265,10 +265,39 @@ impl LearningService {
                     .and_then(|doors| doors.as_array())
                     .map(Vec::len)
                     .unwrap_or(0);
+                // 零标注读数（e2，learnhub check_door_references 同款 warn-only，
+                // 刻意不加机械门）：门口对账已过、地形门口在场，却零块带门位
+                // 标签——过门自检与已会声明将无命中（静默失活）。读数不拒收
+                // 不回炉；标注块数随 info 行透出（smoke structure 档对照面）。
+                let labeled = artifacts
+                    .structure
+                    .get("blocks")
+                    .and_then(|blocks| blocks.as_array())
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| {
+                                block
+                                    .get("door_refs")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|refs| !refs.is_empty())
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                if doors > 0 && labeled == 0 {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        terrain_doors = doors,
+                        labeled_blocks = labeled,
+                        "结构门口对账通过但零块门位标签——door_refs 静默失活（过门自检与已会声明将无命中）"
+                    );
+                }
                 tracing::info!(
                     course = course_id.as_str(),
                     blocks,
                     doors,
+                    labeled,
                     "knowledge structure snapshot stored"
                 );
                 task.finish_done(format!("双产物落列（{blocks} 块 / {doors} 门）"));
@@ -4573,8 +4602,11 @@ impl LearningService {
         // 命中块（AND 口径，m1 door_refs 读侧同源）：door_refs 全落勾选集。
         let target_rows = basis::target_rows(&structure_view.blocks, &checked);
         if target_rows.is_empty() {
+            // 零命中拒绝带出路（e2，learnhub 同款文案域中立化）：较早生成的课
+            // 程无 door_refs 标注时声明走不通，出路 = 学习图逐节点跳过（既有
+            // UI 面：节点跳过满足前置、不种复习项）。
             return Err(AppError::BadRequest(
-                "勾选的门口没有命中任何带门位标签的知识块：较早生成的课程无 door_refs 标注，无法按声明铸概念".into(),
+                "勾选的门口没有命中任何带门位标签的知识块：较早生成的课程无 door_refs 标注，请改用逐节点跳过".into(),
             ));
         }
         let block_names: Vec<String> = target_rows.iter().map(|row| row.name.clone()).collect();
