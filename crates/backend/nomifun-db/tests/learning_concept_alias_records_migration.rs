@@ -19,14 +19,7 @@ async fn setup() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
-    pool
-}
-
-/// 别名记录形状：结构化记录原样读回，json_extract 路径按名字命中活跃别名。
-#[tokio::test]
-async fn registry_aliases_are_record_shaped() {
-    let pool = setup().await;
+    migrate_range(&pool, 0, 79).await;
     sqlx::query(
         "INSERT INTO learning_concept_registry \
          (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
@@ -37,7 +30,7 @@ async fn registry_aliases_are_record_shaped() {
     .execute(&pool)
     .await
     .unwrap();
-
+    migrate_range(&pool, 79, 80).await;
     let aliases_json: String =
         sqlx::query_scalar("SELECT aliases_json FROM learning_concept_registry WHERE canonical = '极限'")
             .fetch_one(&pool)

@@ -52,10 +52,9 @@ async fn existing_rows_default_to_enabled() {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    // 067 是学习域合并基线之前的最后一个版本；068 一次性落 enabled 列与回填。
-    migrate_range(&pool, 0, 67).await;
+    migrate_range(&pool, 0, 78).await;
     insert_course(&pool).await;
-    migrate_range(&pool, 67, i64::MAX).await;
+    migrate_range(&pool, 78, 79).await;
     let enabled: i64 = sqlx::query_scalar("SELECT enabled FROM learning_courses WHERE course_id = ?")
         .bind(COURSE_ID)
         .fetch_one(&pool)
