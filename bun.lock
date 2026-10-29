@@ -11,7 +11,7 @@
     },
     "ui": {
       "name": "@nomifun-tauri/ui",
-      "version": "1.6.8",
+      "version": "1.6.9",
       "dependencies": {
         "@airwallex/components-sdk": "1.28.3",
         "@arco-design/web-react": "^2.66.1",
