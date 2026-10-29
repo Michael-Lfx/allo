@@ -1,5 +1,3 @@
-
-
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { IMcpServer } from '@/common/config/storage';

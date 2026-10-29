@@ -1,5 +1,3 @@
-
-
 import { useCallback, useEffect, useState } from 'react';
 import { hasFunnelEvent } from '@renderer/utils/analytics/productFunnel';
 

@@ -1,5 +1,3 @@
-
-
 import { describe, expect, test } from 'bun:test';
 import { resetFunnelForTests, trackFunnelEvent } from '../analytics/productFunnel';
 import {
