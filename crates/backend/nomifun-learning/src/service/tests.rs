@@ -319,6 +319,199 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// e5 存量行容错：config_json 缺 difficulty 键 / 显式 null（旧行两形态）
+    /// 读侧 serde 缺省为 None；铸值行 1-3 原样读回——quiz tier 取数面对
+    /// 两类行都不炸。
+    #[test]
+    fn stored_activity_config_tolerates_legacy_rows_without_difficulty() {
+        let legacy: StoredActivityConfig =
+            serde_json::from_str(r#"{"options":[],"answer":null,"explanation":""}"#).unwrap();
+        assert_eq!(legacy.difficulty, None);
+        let nulled: StoredActivityConfig = serde_json::from_str(
+            r#"{"options":[],"answer":null,"explanation":"","difficulty":null}"#,
+        )
+        .unwrap();
+        assert_eq!(nulled.difficulty, None);
+        let cast: StoredActivityConfig = serde_json::from_str(
+            r#"{"options":[],"answer":null,"explanation":"","difficulty":2}"#,
+        )
+        .unwrap();
+        assert_eq!(cast.difficulty, Some(2));
+    }
+
+    /// e5 difficulty 消解（装配面注入）：课时带 teaches 档位行（apply）时，
+    /// 生成落库的全体活动继承铸值难度 Some(2)——注入值压过引擎自报值；
+    /// `config_json.difficulty` 即 quiz tier 取数面，值域保持 1-3。
+    #[tokio::test]
+    async fn lesson_persist_casts_activity_difficulty_from_teaches_tier() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+
+        let lesson_pack = |title: &str| LessonPack {
+            title: title.into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "铸值课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: "单课时".into(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson_pack("唯一课")],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "铸值课程".into(),
+            description: "单课时".into(),
+            domain: "math".into(),
+            version: 1,
+            modules: vec![crate::generation::BlueprintModule {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![crate::generation::BlueprintLesson {
+                    title: "唯一课".into(),
+                    purpose: "目标".into(),
+                    source: None,
+                    sources: Vec::new(),
+                    anchor: None,
+                }],
+            }],
+        };
+        let detail = service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".into(),
+                    learning_goal: String::new(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    course_source_plan_json: None,
+                },
+            )
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+
+        // teaches 档位行（apply）：铸值数据源（登记表行 + 挂接行）。
+        let concept_id = nomifun_common::LearningConceptId::new().into_string();
+        let now = nomifun_common::now_ms();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, '向量', '[]', '有大小有方向的量', ?, ?)",
+        )
+        .bind(&concept_id)
+        .bind(now)
+        .bind(now)
+        .execute(database.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier) \
+             VALUES (?, ?, 'teaches', 'apply')",
+        )
+        .bind(lesson_id.as_str())
+        .bind(&concept_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+        // 脚本引擎：出两道活动（objective + AI 批改），自报 difficulty=3
+        // ——装配面注入值（apply→2）必须压过自报值。
+        struct CastingEngine;
+
+        #[async_trait::async_trait]
+        impl LessonContentAgentEngine for CastingEngine {
+            async fn generate(
+                &self,
+                _user_id: &UserId,
+                _context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, nomifun_common::AppError> {
+                Ok(LessonOutput {
+                    summary: "## 概念：向量\n占位正文，长度满足审计下限即可。".into(),
+                    estimated_minutes: 10,
+                    activities: vec![
+                        ActivityPack {
+                            difficulty: Some(3),
+                            kind: ActivityKind::TrueFalse,
+                            prompt: "向量既有大小又有方向。".into(),
+                            options: Vec::new(),
+                            answer: Value::Bool(true),
+                            explanation: "几何定义：有大小有方向的量。".into(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: Some("「有大小有方向的量」".into()),
+                        },
+                        ActivityPack {
+                            difficulty: Some(3),
+                            kind: ActivityKind::Reflection,
+                            prompt: "举一个生活中的向量并说明理由。".into(),
+                            options: Vec::new(),
+                            answer: Value::Null,
+                            explanation: "评卷要点：量与方向并举，例子自洽。".into(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: None,
+                        },
+                    ],
+                    sections: Vec::new(),
+                    degraded_keys: Vec::new(),
+                    capacity_note: None,
+                })
+            }
+
+            async fn resume(
+                &self,
+                _user_id: &UserId,
+                _draft_id: &str,
+                context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, nomifun_common::AppError> {
+                self.generate(_user_id, context, _model_override).await
+            }
+        }
+        service.set_lesson_engine(Arc::new(CastingEngine));
+        service
+            .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+            .await
+            .unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT config_json FROM learning_activities WHERE lesson_id = ? ORDER BY position",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        for (config_json,) in rows {
+            let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+            assert_eq!(
+                config.difficulty,
+                Some(2),
+                "apply tier must cast difficulty 2 (injected wins over declared): {config_json}"
+            );
+        }
+    }
+
     #[test]
     fn pack_validation_rejects_missing_title_and_empty_modules() {
         let mut pack = valid_pack();

@@ -955,7 +955,9 @@ pub struct ActivityPack {
     /// 来源节的 section_key（如 s2）。None = 跨节综合题（通用）。
     #[serde(default)]
     pub section_key: Option<String>,
-    /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱），出题阶段声明。
+    /// 难度分档 1-3（1 概念辨析 / 2 应用 / 3 综合陷阱）。e5 消解案后**不
+    /// 由模型声明**（输出契约已撤）：装配面从节点 teaches 档位铸值覆盖；
+    /// 字段保留为存量 agent 输出/课程导入的兼容位，validate 仍咬 1-3。
     #[serde(default)]
     pub difficulty: Option<u8>,
     /// 题干证据回引（t2）：objective 题从来源节正文/引用摘录里逐字摘的
@@ -1072,6 +1074,17 @@ impl ActivityPack {
                 if !self.answer.is_null() {
                     return Err(format!(
                         "{} \"{}\" answer must be null",
+                        self.kind.as_str(),
+                        self.prompt
+                    ));
+                }
+                // e5 explanation 三保险之一（机械校验面）：AI 批改题的解析是
+                // 判分反馈里唯一的讲解载体（grade 随分下发），空解析 = 学习者
+                // 只见对错不见为什么。装配（整课批校验 + 单节加题）与 agent
+                // 草稿审计共用本闸；存量空解析行读侧容错不变（serde 缺省）。
+                if self.explanation.trim().is_empty() {
+                    return Err(format!(
+                        "{} \"{}\" must carry a non-empty \"explanation\" — the AI-grade feedback shows it beneath the score; state why a good answer earns it",
                         self.kind.as_str(),
                         self.prompt
                     ));
@@ -1249,7 +1262,9 @@ impl ActivityPack {
         if self.prompt.trim().is_empty() {
             return Err("activity prompt is empty".into());
         }
-        // 难度分档 1-3(出题模板的难度递进:概念辨析→应用→综合陷阱)。
+        // 难度分档 1-3（e5 消解案：输出契约已撤——模型不再声明 difficulty，
+        // 值由装配面从节点 teaches 档位铸值注入；此处保留为注入后/存量
+        // 自报值的值域闸，越界仍打回）。
         if let Some(difficulty) = self.difficulty {
             if !(1..=3).contains(&difficulty) {
                 return Err(format!(
@@ -2342,6 +2357,11 @@ pub struct QuizRoundQuestionView {
     /// 题目所属学习节点（quiz 跨节点会话逐题携带）。
     pub node_id: LearningLessonId,
     pub node_name: String,
+    /// 难度档 1-3（e5 消解案：装配面从节点 teaches 档位铸值，随
+    /// `config_json.difficulty` 下发）。None = 存量行/变式题未铸值（读侧
+    /// 容错，serde 缺省）。
+    #[serde(default)]
+    pub difficulty: Option<u8>,
 }
 
 /// quiz 回合视图（q2 start 出参：情境快照 + 脱敏题单）。
@@ -2851,7 +2871,8 @@ pub(crate) struct StoredActivityConfig {
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub matches: Vec<String>,
-    /// Difficulty tier 1-3 declared at quiz time (概念辨析/应用/综合陷阱).
+    /// 难度档 1-3（e5 消解案：装配面从节点 teaches 档位铸值注入，quiz tier
+    /// 取数面；无 teaches 行的传统课/旧行 = None，serde 缺省容错）。
     /// Old rows lack it, so it defaults on read.
     #[serde(default)]
     pub difficulty: Option<u8>,
