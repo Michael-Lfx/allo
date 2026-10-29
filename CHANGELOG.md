@@ -5,6 +5,8 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+## v1.6.9 - 2026-10-29
+
 - Added local voice calling with model installation checks, conversation transcripts, queued tasks and one-time tool confirmations. Cancelling a task, interrupting speech and ending a call remain separate controls.
 - Voice task results now distinguish execution ending from goal completion, keep the original result text, and use the call language for result announcements. The home call entry opens setup when prerequisites are missing and prepares an expired readiness check before starting.
 - Fixed delegated Agents in non-YOLO sessions failing repeatedly on write tools. A task that needs a write tool but has no approval channel now fails before the child Agent starts instead of advertising the tool and retrying denied calls. Denied steps are reported as failed, and the denial message names the remedy (`[tools].allow_list`, auto-approve/YOLO, or running the write in the parent Agent).
