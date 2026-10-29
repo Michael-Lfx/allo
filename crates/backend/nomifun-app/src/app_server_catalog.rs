@@ -532,7 +532,7 @@ impl ConnectorCatalogProvider for AppServerConnectorCatalog {
     async fn status(
         &self,
         id: &str,
-        _principal: Option<&str>,
+        principal: Option<&str>,
     ) -> Result<AppServerConnectorStatusView, AppError> {
         let server = self.get_server(id).await?;
         let connector_id = server.mcp_server_id.as_str().to_owned();
