@@ -188,6 +188,8 @@ jobs:
             --config apps/desktop/tauri.channel.windows.conf.json `
             --config apps/desktop/tauri.ci-skip-ui.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run verify:voice-package -- --platform windows --arch ${{ matrix.arch }} --dist dist/desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run make:latest --host modelscope --channel windows --collect
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -435,6 +437,7 @@ jobs:
           if [[ -f "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg" ]]; then
             [[ "$(lipo -archs "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app/Contents/Resources/bin/rg")" == "${{ matrix.macho_arch }}" ]]
           fi
+          bun run verify:voice-package -- --platform macos --arch ${{ matrix.macho_arch }} --dist dist/desktop
           ditto -c -k --keepParent \
             "target/${{ matrix.rust_target }}/release/bundle/macos/Flowy.app" \
             flowy-app.zip
@@ -491,6 +494,8 @@ jobs:
             --arm64 staging/arm64 \
             --intel staging/intel \
             --version "${{ needs.release-context.outputs.version }}"
+          bun run verify:voice-package -- --platform macos --arch universal \
+            --artifact target/universal-apple-darwin/release/bundle/macos/Flowy.app
           bun run make:latest --host modelscope --channel macos --collect
 
       - uses: actions/upload-artifact@v7
@@ -695,6 +700,8 @@ jobs:
             libclang-dev \
             librsvg2-dev \
             libasound2-dev \
+            squashfs-tools \
+            7zip \
             xdg-utils
 
       - name: Install dependencies
@@ -719,6 +726,7 @@ jobs:
             --config apps/desktop/tauri.updater.conf.json \
             --config apps/desktop/tauri.channel.linux.conf.json \
             --config apps/desktop/tauri.ci-skip-ui.conf.json
+          bun run verify:voice-package -- --platform linux --arch ${{ matrix.arch }} --dist dist/desktop
           bun run make:latest --host modelscope --channel linux --collect
 
       - uses: actions/upload-artifact@v7

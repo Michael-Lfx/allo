@@ -53,6 +53,10 @@
       "group": "check",
       "desc": "Verify the release version is locked across the four npm manifests and the docs site, and that the documented route-table split matches the site guide."
     },
+    "check:release-voice-preparation": {
+      "group": "check",
+      "desc": "Verify every release build hook still prepares the production voice daemon and never rebuilds the UI."
+    },
     "release:check": {
       "group": "check",
       "desc": "Agent Store release gate: repo gates + web typecheck/tests + App Server protocol tests (docs/agent-store/25)."
@@ -110,6 +114,7 @@
     "upload:modelscope": { "group": "build", "desc": "上传 dist/desktop/ 签名更新产物 + latest.json 到 ModelScope（需 MODELSCOPE_TOKEN）" },
     "rollback:modelscope": { "group": "maint", "desc": "回滚 ModelScope 上的桌面发布指针（需 MODELSCOPE_TOKEN）" },
     "verify:modelscope": { "group": "maint", "desc": "校验 ModelScope 桌面发布清单与制品（需 MODELSCOPE_TOKEN）" },
+    "verify:voice-package": { "group": "maint", "desc": "Verify final release installers contain the voice daemon, target architecture, licenses, and bundled rg." },
     "release:mac":   { "group": "build", "desc": "一键 macOS 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },
     "release:win":   { "group": "build", "desc": "一键 Windows 发版：自动判定追加/首发；指纹可用时自动 Authenticode；-Signed/-NoSigned；-DryRun 只预检" },
     "release:linux": { "group": "build", "desc": "一键 Linux 发版：自动判定追加/首发；首发用 -Version 打版本号 + -NotesFile/-Notes 建 Release；-DryRun 只预检" },

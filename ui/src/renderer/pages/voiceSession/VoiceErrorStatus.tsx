@@ -2,9 +2,9 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { VoiceSnapshot } from '@common/adapter/voiceCompanion';
 
-export function voiceErrorKey(code: string) {
-  const keys = {
+const VOICE_ERROR_KEYS = {
     voice_turn_failed: 'voice.audio.turnFailed',
+    voice_companion_missing: 'voice.errors.componentMissing',
     task_not_found:'voice.task.noActive',task_status_unavailable:'voice.task.controlUnknown',task_receipt_unavailable:'voice.progress.unverified',
     confirmation_audio_or_timeout: 'voice.task.confirmationFailed', task_approval_failed: 'voice.task.confirmationFailed', task_approval_changed:'voice.task.scopeChanged',
     task_approval_detail_required:'voice.task.confirmationDetailRequired',
@@ -27,8 +27,15 @@ export function voiceErrorKey(code: string) {
     model_timeout:'voice.audio.modelTimeout', binding_invalid:'voice.audio.bindingInvalid', binding_busy:'voice.audio.bindingBusy',
     voice_record_conflict:'voice.audio.recordConflict', voice_record_write_failed:'voice.audio.recordFailed', voice_projection_write_failed:'voice.audio.projectionFailed', voice_generation_unknown:'voice.audio.generationUnknown',
     tts_failed: 'voice.audio.ttsFailed', tts_rate_limited: 'voice.audio.ttsRateLimited', tts_empty_audio: 'voice.audio.ttsEmpty', speaker_failed: 'voice.audio.speakerFailed', runtime_unavailable: 'voice.audio.taskMissing',
-  } as const;
-  return keys[code as keyof typeof keys] ?? 'voice.session.unavailable';
+} as const;
+
+export function voiceErrorKey(code: string) {
+  return VOICE_ERROR_KEYS[code as keyof typeof VOICE_ERROR_KEYS] ?? 'voice.session.unavailable';
+}
+
+/** Translation key for a known backend error code, or null so callers can keep raw diagnostics. */
+export function voiceErrorTranslationKey(code: string): string | null {
+  return VOICE_ERROR_KEYS[code as keyof typeof VOICE_ERROR_KEYS] ?? null;
 }
 
 export default function VoiceErrorStatus({ error, endedReason }: { error: VoiceSnapshot['error']; endedReason?: VoiceSnapshot['ended_reason'] }) {

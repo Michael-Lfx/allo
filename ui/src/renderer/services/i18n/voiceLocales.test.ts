@@ -103,6 +103,7 @@ describe('voice companion locale bundle (C6 / T0-06)', () => {
       'errors.networkTimeout',
       'errors.pairingCodeInvalid',
       'errors.pairingCodeLocked',
+      'errors.componentMissing',
     ];
     for (const key of errorKeys) {
       expect(typeof getLocaleValue(enVoice, key)).toBe('string');

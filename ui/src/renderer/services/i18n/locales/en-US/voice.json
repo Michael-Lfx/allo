@@ -334,6 +334,7 @@
     "pairingCodeLocked": "Too many failed attempts. Locked, please retry in {{remaining}}",
     "unknownError": "An unknown error occurred",
     "modelMissing": "The voice model suite is not installed. Download and verify it in Voice settings first.",
+    "componentMissing": "This installation is missing the voice service component. Repair or upgrade Flowy with the latest installer, then enable voice again.",
     "operationFailed": "The voice suite operation failed. The installed state below is unchanged.",
     "suiteInUse": "A voice call, task or approval is using the models. Finish it before downloading or deleting.",
     "resourceBusy": "Another model write is in progress for this directory. Wait for it to finish.",

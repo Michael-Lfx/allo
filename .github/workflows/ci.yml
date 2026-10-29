@@ -151,6 +151,11 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - name: Install Linux tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools 7zip
+
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
 
@@ -168,6 +173,8 @@ jobs:
           bun run check:market
           bun run check:fingerprint
           bun run check:release-sync
+          bun run check:release-voice-preparation
+          bun test scripts/verify-voice-release-package.test.mjs
           bun run help --check
 
       # Full `ui/` typecheck is still red on main (see README). Auth login is the
