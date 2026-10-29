@@ -2475,10 +2475,18 @@ async fn run_content(
             failed.push(format!("判据2红：system 归档缺条款「{term}」——二进制可能是旧档"));
         }
     }
-    // 判据③（铸值半边）：est 铸值 == 节点 est（20；草稿以节点尺寸锚开盘）。
-    if view.est != 20 {
+    // 判据③（铸值半边）：on 臂 est 铸值 == 节点 est（20；草稿以节点尺寸锚
+    // 开盘）；off 臂按设计回落默认 10、由模型复议——只做健全性区间。
+    if nomifun_learning::est_budget_enabled() {
+        if view.est != 20 {
+            failed.push(format!(
+                "判据3红：est={}，应为节点 est 20（铸值面）",
+                view.est
+            ));
+        }
+    } else if !(1..=240).contains(&view.est) {
         failed.push(format!(
-            "判据3红：est={}，应为节点 est 20（铸值面）",
+            "判据3红：off 臂 est={} 越出 1-240 健全区间（模型复议值）",
             view.est
         ));
     }
