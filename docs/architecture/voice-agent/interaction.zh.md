@@ -9,6 +9,32 @@
 
 ## 1. 背景与核心痛点 (Background & Pain Points)
 
+### 当前桌面实现补充（2026-10-29）
+
+以下描述当前桌面源码合同；后文无屏硬件架构与性能指标仍是设计基线，不能据此宣称
+桌面已完成硬件、真实声学或跨平台验收。当前入口为 `apps/voice-companion`；
+发布物料要求见[Windows 语音伴侣打包](../../contributing/building-and-packaging.zh.md#windows-语音伴侣打包)。
+
+- 单一 `WAKE_CANDIDATES` 声明生成流式 KWS buffer 与 ASR 匹配/剥离规则。
+  流式 KWS 固定为 Hey Flowy、Hey Flow、Hey Flo、Hey Floy、Hey Floey、Hey Fly、
+  Hey Flory、Hey Flurry；编码按匹配模型校验并去重，保持 score 2.2 / threshold 0.08。
+- ASR 的 Hey 前缀组 A 允许句首接命令，尾词为 flowy、flowey、floey、flowie、floy、
+  flo、flow、floe、fly、flory、flurry。组 B 只允许最终 ASR 整句匹配，尾词为
+  floor、flora、flower、follow、furry、foley、folly、floyd、flu、flew、flue、low、lo、
+  louie、louis、f、eff、l、ell、hell。组 B 唤醒后继续听下一句，不提交空消息。
+- 标点和大小写兼容，但英语词间必须有边界：`hey.flo` 可匹配，`heyflowy`、
+  `hey friend` 不匹配。Hi Flowy / Hello Flowy 保留句首命令支持，裸 Flowy 只接受整句；
+  已有中文别名继续支持。匹配边界与命令剥离共用结果，保留 `-la`、引号等回归覆盖的命令符号。
+- 级联 ASR 的同句命令经过现有会话/turn 路由，只提交一次，不二次识别；
+  停止、换会话或 generation 改变后不得将旧命令提交到新会话。
+- 整句限制是 ASR 文本路径的合同，不是所有音频“绝不误唤醒”的保证。
+  流式 KWS 与 ASR 是不同路径，近音词和短词仍需用正负音频测召回、延迟和误唤醒。
+
+本次源码验证采用定向测试、实际 worker 受控回放和生产配置编译检查；
+替身识别器与路由证明事件调度，不证明真模型或真人效果。2026-10-29 最后源码修复后
+按用户要求未再打包安装包，旧候选的启动反馈与物料门禁不能迁移为最新提交的安装验收。
+其他系统尚未实测，本轮 Windows 交付范围不构成跨平台通过结论。
+
 ### 1.1 业务定位与目标产品：AI Mate (无屏幕伴侣主机)
 Flowy / NomiFun 是一套生产级本地优先自动化与 AI Agent 协作平台。本方案旨在定义并交付其独立硬件化形态——**AI Mate (无头语音伴侣主机)**：
 1. **硬件形态与物理定位**：

@@ -245,6 +245,10 @@ git push origin v1.0.6
   Intel 切片不链接 Silero/ort，robot VAD 回退 energy。
 - Linux：当前 CI 只打 `linux-x86_64`。
 
+语音伴侣与 Windows VC++ 运行库也必须由 skip-UI 构建准备并纳入安装包，
+不能因已下载模型就认为安装包包含 daemon。分享/上传前的包门禁命令及验证边界见
+[Windows 语音伴侣打包](docs/contributing/building-and-packaging.zh.md#windows-语音伴侣打包)。
+
 Secrets：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（可选）、
 `MODELSCOPE_TOKEN`（推荐放在 `modelscope-alpha` environment）。
 
