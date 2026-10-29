@@ -2,7 +2,7 @@
 id: n5
 title: "开放题判分重写实施——judge 评审执行器 + explanation 判底 + 重试环/超时/脱敏 + smoke grade 档"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: [n4]
 part_of: ../map.md
@@ -88,3 +88,21 @@ n4 Resolution）——本票即定案配置，可直接开工。**
 - quiz 线判分（客观题规则面不动）、复习线判分（客观 only 不动）。
 - 迁移（推荐配置零迁移；missing_points 走 API 层不落新列——若 n4 裁决要求
   落库，迁移从 073 起回 map 对账）。
+
+## Resolution（2026-10-29 关票）
+
+- 实施 = `28bfbabd1`（judge 执行器 + explanation 判底 + 重试环/超时/thinking
+  16384 + 脱敏归档 + smoke grade 档）+ `0e8a5c26d`（AttemptResult
+  .missing_points 前端承载 + i18n 双语），learning 644；评审修复批内 thinking
+  降级收窄（仅 Conflict「structured output unavailable」信号、超时/BadGateway
+  不降级、一次定臂粘滞——三单测钉住）。波次经 e08e65d60 并入 feat/learn0928。
+- 实现中裁决（如实记录）：①互斥校验取双向（判错分必须点名缺失——按票面
+  「⇔」字面，learnhub 原版单向）；②thinking 预算 16384（真机未跑前的取值按
+  learnhub 实证算术，双跑校准点见对照卡）；③判底槽经 build_open_grading_prompt
+  统一装配，旧臂 (None,None) 逐字节保形保证对照臂纯净；④脱敏注册走
+  ArchivingCompleter::register_redaction（生产不挂零开销）。
+- **双臂真机全绿**（详见 [assets/verification-cards.md](../assets/verification-cards.md)）：
+  grade on/off EXIT=0；on 臂病历判对 0.88（explanation 判底生效）、真误区
+  判错 0.10+缺失 5 条、离题 0.00、断 LLM 链路 WARN 全序列实证（降级→回灌重试
+  →JudgeExhausted fail-loud）、脱敏回读零泄漏；off 臂旧链方向全同向。
+  真机暴露布景 position 撞 UNIQUE（02e502309）与判据②臂盲（8335d719c）已修。
