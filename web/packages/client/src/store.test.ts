@@ -775,3 +775,22 @@ describe("StoreClient · search semantics", () => {
     expect(match.offLanguage).toBe(false);
   });
 });
+
+describe("StoreClient.avatarUrl", () => {
+  it("prefers the absolute index icon and resolves relative routes against the host base", () => {
+    const { host } = fakeHost();
+    const client = new StoreClient(host);
+    expect(
+      client.avatarUrl({ icon_url: "https://cdn.example/icons/a.webp", avatar_url: null }),
+    ).toBe("https://cdn.example/icons/a.webp");
+
+    const relative = "/api/app-server/store/m/entries/e/assets/icons/a.webp";
+    expect(client.avatarUrl({ icon_url: null, avatar_url: relative })).toBeNull();
+
+    const withBase = new StoreClient({ ...host, baseUrl: "http://127.0.0.1:54211/" });
+    expect(withBase.avatarUrl({ icon_url: null, avatar_url: relative })).toBe(
+      `http://127.0.0.1:54211${relative}`,
+    );
+    expect(withBase.avatarUrl({ icon_url: null, avatar_url: null })).toBeNull();
+  });
+});

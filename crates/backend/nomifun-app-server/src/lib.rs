@@ -64,7 +64,7 @@ use axum::{
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Redirect},
     routing::{delete, get, post},
 };
 pub use nomifun_agent_execution::AgentRuntimeAdapter;
@@ -258,7 +258,7 @@ use tokio::sync::mpsc;
 /// consumer's JSON is unchanged; no method is added or removed, so the documented
 /// split stays `56 / 83`. The artifact contract moves with it
 /// (`pack_format 3 → 4`).
-pub const PROTOCOL_VERSION: &str = "fp-19";
+pub const PROTOCOL_VERSION: &str = "fp-20";
 const CONNECTION_HEADER: &str = "x-app-server-connection-id";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3329,7 +3329,7 @@ async fn snapshot_asset_route(
 async fn store_asset_route(
     State(state): State<AppServerRouterState>,
     Path((marketplace_id, entry_name, asset_path)): Path<(String, String, String)>,
-) -> Result<impl IntoResponse, AppServerError> {
+) -> Result<axum::response::Response, AppServerError> {
     // Assets are public display content (avatars / icons) referenced by
     // plain `<img>` tags, which cannot carry the app-server connection
     // header. Only the auth middleware (`Extension<CurrentUser>`) guards
@@ -3385,7 +3385,32 @@ async fn store_asset_route(
         let bytes = tokio::fs::read(&canonical_target).await.map_err(|_| {
             AppServerError::new("not_found", "asset not found", StatusCode::NOT_FOUND, false)
         })?;
-        return Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes));
+        return Ok(([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response());
+    }
+    // Doc 30 §6.1: an index market's entry payload is not mirrored locally, so
+    // its icon lives at the absolute `icon_url` in the index. An older client
+    // that still requests the relative asset route is redirected there; when
+    // the index has no icon for the entry, fall through to the normal 404.
+    if let Ok(market) = provider.market_dir(&marketplace_id).await {
+        if let Ok(text) = std::fs::read_to_string(market.join("index.json")) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                let icon = value
+                    .get("entries")
+                    .and_then(|entries| entries.as_array())
+                    .and_then(|entries| {
+                        entries.iter().find(|entry| {
+                            entry.get("name").and_then(|name| name.as_str())
+                                == Some(entry_name.as_str())
+                        })
+                    })
+                    .and_then(|entry| entry.get("icon_url"))
+                    .and_then(|icon| icon.as_str())
+                    .filter(|icon| icon.starts_with("https://"));
+                if let Some(icon) = icon {
+                    return Ok(Redirect::temporary(icon).into_response());
+                }
+            }
+        }
     }
     Err(AppServerError::new(
         "not_found",

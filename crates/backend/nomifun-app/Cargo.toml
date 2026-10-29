@@ -366,6 +366,11 @@ nomi-types = { workspace = true, optional = true }
 # dependency of this crate.
 zip.workspace = true
 hex.workspace = true
+# `index` source kind (doc 30 §6.1): entry payloads are `tar.gz`, streamed
+# through flate2 and checked entry-by-entry with tar (absolute / `..` / links
+# rejected) before the importer sees them.
+flate2.workspace = true
+tar.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

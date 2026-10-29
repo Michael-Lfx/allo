@@ -1248,6 +1248,15 @@ pub enum AppServerMarketplaceSourceKind {
     /// mirrors one by one, versus a single 289 MiB archive here.
     #[serde(rename = "zip")]
     Zip,
+    /// HTTP(S) `index.json` — index/content separated, entries downloaded on
+    /// demand (doc 30 §6.1).
+    ///
+    /// The fetched market root holds only `index.json` (+ `categories.json`);
+    /// each entry carries an absolute `download` URL plus its `sha256`/`size`,
+    /// so a refresh is one small request and installing an entry downloads only
+    /// that entry's `tar.gz`.
+    #[serde(rename = "index")]
+    Index,
 }
 
 impl AppServerMarketplaceSourceKind {
@@ -1258,6 +1267,7 @@ impl AppServerMarketplaceSourceKind {
             Self::Git => "git",
             Self::Url => "url",
             Self::Zip => "zip",
+            Self::Index => "index",
         }
     }
 
@@ -1275,6 +1285,7 @@ impl AppServerMarketplaceSourceKind {
             "git" => Some(Self::Git),
             "url" => Some(Self::Url),
             "zip" => Some(Self::Zip),
+            "index" => Some(Self::Index),
             _ => None,
         }
     }
@@ -1517,6 +1528,13 @@ pub struct AppServerMcpSourceView {
     pub source: Option<String>,
 }
 
+/// Default for [`AppServerStoreItem::available`]: every source without an
+/// availability concept lists installable items, so an absent field must not
+/// read as "unavailable".
+fn default_available() -> bool {
+    true
+}
+
 /// local installation state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppServerStoreItem {
@@ -1542,6 +1560,10 @@ pub struct AppServerStoreItem {
     pub tags: Vec<AppServerLocalizedText>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quick_prompts: Vec<AppServerLocalizedText>,
+    /// The entry's opening prompt (`plugin.json` `default_init_prompt`, or an
+    /// `index` market row's `default_init_prompt`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_init_prompt: Option<AppServerLocalizedText>,
     /// Raw category reference from the source manifest (`plugin.json`
     /// `category_id`, e.g. `04-DataAI`). `43` §3.3: absent when the entry's
     /// source declares none.
@@ -1565,6 +1587,29 @@ pub struct AppServerStoreItem {
     /// Public avatar URL (store asset endpoint); relative to the API host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Absolute icon URL declared by an `index` market (`icon_url`). Kept
+    /// separate from `avatar_url` so a client can tell "market-hosted absolute
+    /// URL" from "host asset route"; `avatar_url` already carries the resolved
+    /// display URL, this is the raw declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
+    /// Compressed entry size in bytes, when the market declares one (`index`
+    /// sources: the entry's `tar.gz` size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_size: Option<i64>,
+    /// Lowercase hex sha256 of the entry archive, when declared (`index`
+    /// sources). Used as the integrity check before extraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// `false` when the market explicitly marks the entry unavailable. Absent
+    /// (defaulting to `true`) for every source that has no such concept, so an
+    /// older host keeps every listed item installable.
+    #[serde(default = "default_available")]
+    pub available: bool,
+    /// Why the market marked the entry unavailable (`index` sources). Present
+    /// only alongside `available = false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     /// Available version from the marketplace entry / plugin manifest.
     pub version: String,
     /// Entry source kind (`directory` / `external` …).

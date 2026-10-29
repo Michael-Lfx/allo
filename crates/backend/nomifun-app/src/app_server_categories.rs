@@ -143,6 +143,7 @@ impl CategoryDictionary {
             // The manifest sits at the market root (the real archive layout),
             // or one level above the entry directories in some local trees —
             // both spellings are tried, source order first.
+            let mut found = false;
             for candidate in [
                 Some(root.join("manifest.json")),
                 root.parent().map(|p| p.join("manifest.json")),
@@ -154,7 +155,16 @@ impl CategoryDictionary {
                     continue;
                 }
                 declared.extend(self.categories_at(&candidate));
+                found = true;
                 break;
+            }
+            // Doc 30 §6.1: an `index` market ships `categories.json` at the
+            // market root (taxonomy shape), not a `manifest.json`.
+            if !found {
+                let categories = root.join("categories.json");
+                if categories.is_file() {
+                    declared.extend(self.categories_at(&categories));
+                }
             }
         }
         if declared.is_empty() {
@@ -195,7 +205,11 @@ impl CategoryDictionary {
                 return memo.value.clone();
             }
         }
-        let parsed = read_categories(path);
+        let parsed = if path.file_name().is_some_and(|name| name == "categories.json") {
+            read_taxonomy(path)
+        } else {
+            read_categories(path)
+        };
         self.categories
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -237,8 +251,7 @@ fn read_categories(manifest: &Path) -> Vec<AppServerStoreCategoryItem> {
 }
 
 /// Parse the `categories` array out of a manifest's text.
-fn parse_categories(text: &str) -> Vec<AppServerStoreCategoryItem> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+fn parse_categories(text: &str) -> Vec<AppServerStoreCategoryItem> {    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
     let Ok(categories) = serde_json::from_value::<Vec<SourceCategory>>(
@@ -252,6 +265,52 @@ fn parse_categories(text: &str) -> Vec<AppServerStoreCategoryItem> {
             id: category.id,
             name: category.name.to_public(),
             description: category.description.map(|text| text.to_public()),
+        })
+        .collect()
+}
+
+/// Read one `categories.json` (index market taxonomy shape).
+fn read_taxonomy(path: &Path) -> Vec<AppServerStoreCategoryItem> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse_taxonomy(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Parse an `index` market's `categories.json` (`taxonomy[]` of
+/// `{id, zh, en, description_zh, description_en}`). Any failure is empty.
+fn parse_taxonomy(text: &str) -> Vec<AppServerStoreCategoryItem> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(items) = value.get("taxonomy").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    let string = |item: &serde_json::Value, key: &str| -> Option<String> {
+        item.get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let id = string(item, "id")?;
+            let name = AppServerLocalizedText {
+                zh: string(item, "zh"),
+                en: string(item, "en"),
+            };
+            let description = AppServerLocalizedText {
+                zh: string(item, "description_zh"),
+                en: string(item, "description_en"),
+            };
+            Some(AppServerStoreCategoryItem {
+                id,
+                name,
+                description: (description.zh.is_some() || description.en.is_some())
+                    .then_some(description),
+            })
         })
         .collect()
 }

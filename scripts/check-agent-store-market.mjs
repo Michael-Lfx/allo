@@ -39,6 +39,17 @@ export const DISCOVERY = [
   { rel: ".codebuddy-plugin/marketplace.json", kind: "plugin-market", schema: "marketplace.schema.json" },
   { rel: ".codebuddy-plugin/plugin.json", kind: "plugin-root", schema: "plugin.schema.json" },
   { rel: "cli.json", kind: "cli-connector", schema: "marketplace.schema.json", ref: "#/$defs/entry" },
+  // Doc 30 §6.1: index/content separation. The market root is only
+  // `index.json` (+ optional `categories.json`); each entry names an absolute
+  // `download` URL plus the archive's `sha256`/`size` instead of a relative
+  // `source` path.
+  {
+    rel: "index.json",
+    kind: "index-market",
+    schema: "index-market.schema.json",
+    entryKeys: ["entries"],
+    absoluteDownload: true,
+  },
 ];
 
 /** 文档 18 §6。 */
@@ -122,6 +133,15 @@ export function validateSchema(schema, value, pointer, findings, root = schema) 
     findings.push({ rule: "schema.type", pointer, message: `expected ${schema.type}, got ${Array.isArray(value) ? "array" : value === null ? "null" : typeof value}` });
     return;
   }
+  if (schema.const !== undefined && value !== schema.const) {
+    findings.push({ rule: "schema.const", pointer, message: `must equal ${JSON.stringify(schema.const)}` });
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.includes(value)) {
+    findings.push({ rule: "schema.enum", pointer, message: `must be one of ${schema.enum.map((item) => JSON.stringify(item)).join(", ")}` });
+  }
+  if (typeof value === "number" && schema.minimum != null && value < schema.minimum) {
+    findings.push({ rule: "schema.minimum", pointer, message: `must be >= ${schema.minimum}` });
+  }
   if (typeof value === "string") {
     if (schema.minLength != null && value.length < schema.minLength) {
       findings.push({ rule: "schema.minLength", pointer, message: `must be at least ${schema.minLength} character(s)` });
@@ -129,6 +149,9 @@ export function validateSchema(schema, value, pointer, findings, root = schema) 
     if (schema.pattern && !new RegExp(schema.pattern).test(value)) {
       findings.push({ rule: "schema.pattern", pointer, message: `"${value}" violates ${schema.pattern}` });
     }
+  }
+  if (Array.isArray(value) && schema.minItems != null && value.length < schema.minItems) {
+    findings.push({ rule: "schema.minItems", pointer, message: `must contain at least ${schema.minItems} item(s)` });
   }
   if (Array.isArray(value) && schema.items) {
     value.forEach((item, index) => validateSchema(schema.items, item, `${pointer}/${index}`, findings, root));
@@ -220,9 +243,10 @@ export function validateMarketTree({ name, dir }) {
   // manifest-only，条目源保持为外部引用。
   const mirrorsTree = existsSync(path.join(dir, LISTING));
 
-  // 3. 条目（文档 18 §4）
+  // 3. 条目（文档 18 §4 / 30 §6.1）
+  const entryKeys = hit.entryKeys ?? ENTRY_KEYS;
   const seen = new Map();
-  for (const key of ENTRY_KEYS) {
+  for (const key of entryKeys) {
     const entries = manifest[key];
     if (!Array.isArray(entries)) continue;
     entries.forEach((entry, index) => {
@@ -237,7 +261,20 @@ export function validateMarketTree({ name, dir }) {
           seen.set(identity, pointer);
         }
       }
-      if (typeof entry.source === "string") {
+      if (hit.absoluteDownload) {
+        // Index entries are fetched from an absolute URL; a relative path here
+        // is a contract violation, and the digest/size are the only integrity
+        // checks the host has before extraction (doc 30 §6.1).
+        if (typeof entry.download !== "string" || !/^https:\/\/\S+$/.test(entry.download)) {
+          add("error", "entry.download.not-absolute", hit.rel, `${pointer}/download`, `"${entry.download}" must be an absolute https URL`);
+        }
+        if (typeof entry.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(entry.sha256)) {
+          add("error", "entry.sha256.invalid", hit.rel, `${pointer}/sha256`, "sha256 must be 64 lowercase hex characters");
+        }
+        if (!Number.isInteger(entry.size) || entry.size <= 0) {
+          add("error", "entry.size.invalid", hit.rel, `${pointer}/size`, "size must be a positive integer");
+        }
+      } else if (typeof entry.source === "string") {
         const violation = relativePathViolation(entry.source);
         if (violation) {
           add("error", "entry.source.not-relative", hit.rel, `${pointer}/source`, `"${entry.source}" (${violation}) — entry sources must stay inside the market tree`);
@@ -313,6 +350,9 @@ export const KNOWN_MANIFEST_FIELDS = new Set([
   "plugins", "connectors", "owner", "source", "source_kind", "keywords", "category",
   "marketplace_id", "auto_update", "enabled", "entry_count", "added_at",
   "tags_zh", "tags_en", "auth_injection_rules", "teamInfo",
+  // 文档 30 §6.1（index 市场）
+  "schema_version", "market", "market_kind", "source_revision", "generated_at",
+  "categories_url", "categories_sha256", "entries", "payload",
 ]);
 
 export const KNOWN_ENTRY_FIELDS = new Set([
@@ -322,6 +362,11 @@ export const KNOWN_ENTRY_FIELDS = new Set([
   "keywords", "category", "id", "tags_zh", "tags_en",
   // 文档 18 §4.2 —— 条目自身的发布日期（`YYYY-MM-DD`）
   "publishedAt",
+  // 文档 30 §6.1（index 条目）
+  "display", "kind", "download", "member", "sha256", "size", "files", "updated_at",
+  "category_id", "category_zh", "category_en", "examples_zh", "examples_en",
+  "default_init_prompt", "quick_prompts", "icon_url", "available", "unavailable_reason",
+  "source_marketplace", "embedded_in", "auth_mode",
 ]);
 
 function noteTypes(bucket, value, pointer, sample) {
@@ -370,7 +415,7 @@ export function censusMarketTree({ name, dir }) {
     for (const [key, value] of Object.entries(manifest)) {
       noteTypes(manifestFields, value, key, rel);
     }
-    for (const key of ENTRY_KEYS) {
+    for (const key of hit.entryKeys ?? ENTRY_KEYS) {
       const entries = manifest[key];
       if (!Array.isArray(entries)) continue;
       entries.forEach((entry, index) => {
@@ -447,6 +492,28 @@ export function selfTestCases() {
     write(dir, ".codebuddy-skill/marketplace.json", { name: "skills", skills: [{ name: "s", source: "./s" }] });
     write(dir, "s/SKILL.md", "# s\n");
   });
+  market("valid-index", (dir) => {
+    write(dir, "index.json", {
+      schema_version: 2,
+      market: "experts",
+      market_kind: "plugin",
+      source_revision: "a".repeat(64),
+      generated_at: "2026-10-29T00:00:00+00:00",
+      categories_url: "https://example.com/categories.json",
+      categories_sha256: "b".repeat(64),
+      entries: [
+        {
+          name: "a",
+          kind: "agent",
+          download: "https://example.com/entries/a/1.tar.gz",
+          sha256: "c".repeat(64),
+          size: 10,
+          files: 2,
+          available: true,
+        },
+      ],
+    });
+  });
 
   const invalid = {
     "invalid-no-manifest": (dir) => write(dir, "README.md", "not a market\n"),
@@ -487,6 +554,27 @@ export function selfTestCases() {
       write(dir, "a/b.txt", "x");
       write(dir, "_files.txt", "");
     },
+    "invalid-index-relative-download": (dir) => write(dir, "index.json", {
+      schema_version: 2, market: "experts", entries: [{ name: "a", download: "entries/a/1.tar.gz", sha256: "a".repeat(64), size: 1 }],
+    }),
+    "invalid-index-bad-sha": (dir) => write(dir, "index.json", {
+      schema_version: 2, market: "experts", entries: [{ name: "a", download: "https://e/a.tar.gz", sha256: "XYZ", size: 1 }],
+    }),
+    "invalid-index-zero-size": (dir) => write(dir, "index.json", {
+      schema_version: 2, market: "experts", entries: [{ name: "a", download: "https://e/a.tar.gz", sha256: "a".repeat(64), size: 0 }],
+    }),
+    "invalid-index-duplicate": (dir) => write(dir, "index.json", {
+      schema_version: 2, market: "experts", entries: [
+        { name: "a", download: "https://e/a.tar.gz", sha256: "a".repeat(64), size: 1 },
+        { name: "a", download: "https://e/b.tar.gz", sha256: "b".repeat(64), size: 1 },
+      ],
+    }),
+    "invalid-index-schema-version": (dir) => write(dir, "index.json", {
+      schema_version: 1, market: "experts", entries: [{ name: "a", download: "https://e/a.tar.gz", sha256: "a".repeat(64), size: 1 }],
+    }),
+    "invalid-index-empty-entries": (dir) => write(dir, "index.json", {
+      schema_version: 2, market: "experts", entries: [],
+    }),
     "invalid-manifest-json": (dir) => write(dir, ".codebuddy-plugin/marketplace.json", "{ not json"),
   };
   for (const [name, build] of Object.entries(invalid)) market(name, build);

@@ -1,6 +1,7 @@
 # 市场 Zip 单包托管（ModelScope）· 技术方案
 
-> **状态**：✅ **已实施落地**（2026-09-17，协议指纹 `fp-7`）  
+> **状态**：✅ **已实施落地**（2026-09-17，协议指纹 `fp-7`；2026-10-29 起新增 `index` 源，`fp-20`，见 §6.1）
+>
 > **核心原则**：单包高内聚与高效短路 —— **以 Zip 单归档替代万级散文件镜像**，**HEAD 获取内容 SHA256 实现零字节新鲜度探测**，**解压原子晋升保证损坏隔离**。
 
 ---
@@ -165,6 +166,26 @@ source = "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/mast
 | **S3** | **SHA256 完整性检验** | 模拟归档文件传输篡改，客户端检测到本地 SHA256 与 `X-Linked-Etag` 不匹配，主动拒绝并安全回滚。 |
 | **S4** | **超限解压与结构验证** | 面对 611MB 大解压包，解压预算顺利放行不报 OOM，解压后正确识别 `.codebuddy-plugin/marketplace.json`。 |
 | **S5** | **站点构建文件数** | 站点流水线执行 `pack:market` 后，产物文件总数严格小于 1,000（实测约 742），部署状态常绿。 |
+
+### 6.1 演进：`index` 源与按需下载（`fp-20`）
+
+`zip` 解决了「万级散文件」，但仍是**整包更新**：任何一条专家变化都要重下 289 MiB。2026-10-29 起新增 `index` 源（`AppServerMarketplaceSourceKind::Index`，wire `"index"`），把「索引」与「内容」分离：
+
+- 市场根只放 `index.json`（+ 可选 `categories.json`）；条目 `download` 是绝对 https 地址，附 `sha256` 与 `size`；
+- `market/refresh` 只拉约 1 MiB 索引；`revision` = `index.json` 内容 sha256，未变即 `Unchanged`，last-good 保留；
+- `store/list` 直接读 `index.json` 的 `display` / `description` / `tags` / `examples` / `quick_prompts` / `default_init_prompt` / `icon_url` / `category_id` / `available`，卡片不再依赖已下载的条目目录；
+- `store/install` / `market/entry-import` 才下载该条目 `tar.gz`，按索引 `sha256` / `size` 校验后安全解包（拒绝绝对路径、`..`、链接/设备文件）；归档若带顶层 `<plugin-name>/` 自动下钻一层；
+- `StoreItem` 增加 `icon_url`（绝对）、`download_size`、`sha256`、`available`、`unavailable_reason`；`avatar_url` 优先绝对 `icon_url`，否则回退相对 asset 路由；`store_asset_route` 对远程图标 302；
+- `categories.json` 采用 `taxonomy[]`（`id/zh/en/description_zh/description_en`），`app_server_categories` 优先读它，缺失再回退 `manifest.json` / 内置词表；
+- 官方 `experts` 已切到 `wb-market/experts/index.json`；`skills` / `connectors` 暂时保留 zip，待各自索引发布；旧 `experts.zip` 冻结保留两个发布版本。
+
+发布侧由 `workbuddy-market-collect` 的 `pipeline plan/ingest/transform/package/publish/verify` 生成并上传；索引 URL 统一用 ModelScope 公开文件口 `…/api/v1/models/{repo}/repo?Revision=master&FilePath=…`（`resolve/master` 对个别文件会返回 421）。
+
+落地补充：
+
+- **数据库**：`plugin_marketplaces.source_kind` 的 CHECK 由迁移 `069_marketplace_index_source_kind.sql` 重建以接受 `index`（与 `065` 的 `zip` 同一手法，SQLite 不能原地放宽 CHECK）；
+- **校验工具**：`scripts/check-agent-store-market.mjs` 已识别 `index.json`，schema 见 `docs/agent-store/schemas/index-market.schema.json`；
+- **端到端**：`web/packages/sdk/src/index-market.e2e.test.ts`（gated）在真实宿主上跑通「添加线上 experts index（421 条）→ `store.list` → 按需下载并安装 `accessibility-auditor` → 校验 `installed`」，命令为 `AGENT_STORE_E2E_BIN=<agent-store.exe> bun run test -- index-market`。
 
 ---
 

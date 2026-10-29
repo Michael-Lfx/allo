@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use nomifun_common::{AppError, collect_localized_variants};
 use nomifun_db::{IMarketplaceRepository, MarketplaceEntry};
+use serde_json::Value;
 
 use crate::market_source;
 
@@ -188,6 +189,57 @@ pub async fn fetch_remote(
             }
             (local_digest, false, None)
         }
+        // Doc 30 §6.1: index/content separation. The market root is just
+        // `index.json` (+ optional `categories.json`); entry payloads are
+        // fetched on demand by `import_entry`, never here.
+        "index" => {
+            let text = market_source::fetch_text(&normalized)
+                .await
+                .map_err(AppError::Internal)?;
+            validate_index_json(&text)?;
+            let revision = market_source::sha256_hex_bytes(text.as_bytes());
+            if current_revision == Some(revision.as_str()) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Ok(RemoteFetchOutcome::Unchanged { revision });
+            }
+            let value: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|error| AppError::Internal(format!("parse index: {error}")))?;
+            // The categories dictionary is optional but, when declared, its
+            // digest is mandatory to verify if the index carries one: the two
+            // files must be the same batch the index was built from.
+            let categories = match value.get("categories_url").and_then(as_str) {
+                Some(url) => {
+                    if !(url.starts_with("https://") || url.starts_with("http://")) {
+                        return Err(AppError::BadRequest(format!(
+                            "index categories_url must be an absolute http(s) URL, got `{url}`"
+                        )));
+                    }
+                    let bytes = market_source::fetch_bytes(url)
+                        .await
+                        .map_err(AppError::Internal)?;
+                    if let Some(expected) = value.get("categories_sha256").and_then(as_str) {
+                        let actual = market_source::sha256_hex_bytes(&bytes);
+                        if actual != expected {
+                            return Err(AppError::Internal(format!(
+                                "categories digest mismatch for {url}: index declares {expected}, \
+                                 downloaded bytes hash to {actual}"
+                            )));
+                        }
+                    }
+                    Some(bytes)
+                }
+                None => None,
+            };
+            std::fs::create_dir_all(&staging)
+                .map_err(|error| AppError::Internal(format!("create staging: {error}")))?;
+            std::fs::write(staging.join("index.json"), &text)
+                .map_err(|error| AppError::Internal(format!("write index.json: {error}")))?;
+            if let Some(bytes) = categories {
+                std::fs::write(staging.join("categories.json"), bytes)
+                    .map_err(|error| AppError::Internal(format!("write categories.json: {error}")))?;
+            }
+            (revision, false, None)
+        }
         other => {
             return Err(AppError::BadRequest(format!(
                 "unsupported remote source kind `{other}`"
@@ -197,7 +249,9 @@ pub async fn fetch_remote(
     // Probe the staged content (URL markets have only marketplace.json; their
     // entries are inlined relative paths and must resolve inside the same
     // fetch — CodeBuddy document semantics).
-    let entries = if manifest_only {
+    let entries = if source_kind == "index" {
+        probe_index_entries(&staging)?
+    } else if manifest_only {
         probe_url_entries(&staging)?
     } else {
         let (kind, scanned) = crate::app_server_marketplace::probe_directory(&staging)?;
@@ -398,6 +452,165 @@ fn probe_url_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, 
     Ok(entries)
 }
 
+/// Validate one `index.json` body (doc 30 §6.1 / schema_version 2).
+///
+/// Structural, not best-effort: an index that names an un-downloadable or
+/// unverifiable entry is refused wholesale, because every consumer treats the
+/// index as the market's complete truth.
+pub(crate) fn validate_index_json(text: &str) -> Result<(), AppError> {
+    fn bad(message: impl Into<String>) -> AppError {
+        AppError::BadRequest(message.into())
+    }
+    fn is_lower_hex64(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|error| bad(format!("index.json is not valid JSON: {error}")))?;
+    if value.get("schema_version").and_then(Value::as_i64) != Some(2) {
+        return Err(bad("index.json schema_version must be 2"));
+    }
+    if value
+        .get("market")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|market| !market.is_empty())
+        .is_none()
+    {
+        return Err(bad("index.json market must be a non-empty string"));
+    }
+    let entries = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .filter(|entries| !entries.is_empty())
+        .ok_or_else(|| bad("index.json entries must be a non-empty array"))?;
+    let mut seen = std::collections::HashSet::new();
+    for (index, item) in entries.iter().enumerate() {
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if name.is_empty() {
+            return Err(bad(format!("index.json entries[{index}].name is empty")));
+        }
+        if !seen.insert(name) {
+            return Err(bad(format!("index.json has a duplicate entry name `{name}`")));
+        }
+        let download = item.get("download").and_then(Value::as_str).unwrap_or("");
+        if !download.starts_with("https://") {
+            return Err(bad(format!(
+                "index.json entry `{name}` download must be an absolute https URL, got `{download}`"
+            )));
+        }
+        let sha256 = item.get("sha256").and_then(Value::as_str).unwrap_or("");
+        if !is_lower_hex64(sha256) {
+            return Err(bad(format!(
+                "index.json entry `{name}` sha256 must be 64 lowercase hex characters"
+            )));
+        }
+        if item.get("size").and_then(Value::as_u64).unwrap_or(0) == 0 {
+            return Err(bad(format!(
+                "index.json entry `{name}` size must be a positive integer"
+            )));
+        }
+        if let Some(available) = item.get("available") {
+            if !available.is_boolean() {
+                return Err(bad(format!(
+                    "index.json entry `{name}` available must be a boolean"
+                )));
+            }
+        }
+    }
+    if let Some(categories_sha256) = value.get("categories_sha256").and_then(Value::as_str) {
+        if !is_lower_hex64(categories_sha256) {
+            return Err(bad(
+                "index.json categories_sha256 must be 64 lowercase hex characters",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Map an index's `entries[]` to probe rows. Entry payloads stay remote: the
+/// `source_uri` is the absolute `download` URL and `source_kind = "remote"`, the
+/// marker `import_entry` uses to fetch + verify the archive on demand.
+fn probe_index_entries(staging: &Path) -> Result<Vec<(MarketplaceEntry, String)>, AppError> {
+    let text = std::fs::read_to_string(staging.join("index.json"))
+        .map_err(|error| AppError::Internal(format!("read index.json: {error}")))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| AppError::Internal(format!("parse index.json: {error}")))?;
+    let items = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::Internal("index.json has no entries array".into()))?;
+    let localized = |item: &serde_json::Value, key: &str| -> Option<String> {
+        let value = item.get(key)?;
+        ["zh", "en"]
+            .into_iter()
+            .filter_map(|lang| value.get(lang).and_then(Value::as_str))
+            .map(str::trim)
+            .find(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let strings = |item: &serde_json::Value, key: &str| -> Vec<String> {
+        item.get(key)
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut entries = Vec::new();
+    for item in items {
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
+        let download = item.get("download").and_then(Value::as_str).unwrap_or("").to_owned();
+        let available = item.get("available").and_then(Value::as_bool).unwrap_or(true);
+        let blocked_reason = (!available).then(|| {
+            item.get("unavailable_reason")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| "市场标记该条目不可用".to_owned())
+        });
+        let mut keywords = strings(item, "tags_zh");
+        if keywords.is_empty() {
+            keywords = strings(item, "tags_en");
+        }
+        let category = item
+            .get("category_zh")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .or_else(|| item.get("category_en").and_then(Value::as_str).filter(|text| !text.is_empty()))
+            .or_else(|| item.get("category_id").and_then(Value::as_str).filter(|text| !text.is_empty()))
+            .map(str::to_owned);
+        entries.push((
+            MarketplaceEntry {
+                name,
+                source_kind: "remote".into(),
+                source_uri: download,
+                version: item.get("version").and_then(Value::as_str).map(str::to_owned),
+                description: localized(item, "description"),
+                keywords,
+                category,
+                published_at: None,
+                localized: std::collections::BTreeMap::new(),
+                strict: false,
+                blocked_reason,
+            },
+            String::new(),
+        ));
+    }
+    Ok(entries)
+}
+
 fn as_str(value: &serde_json::Value) -> Option<&str> {
     value.as_str()
 }
@@ -537,4 +750,280 @@ pub async fn register_remote(
             .map_err(AppError::from)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, download: &str, sha256: &str, size: i64) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "kind": "agent",
+            "download": download,
+            "sha256": sha256,
+            "size": size,
+            "available": true
+        })
+    }
+
+    fn document(entries: serde_json::Value) -> String {
+        serde_json::json!({
+            "schema_version": 2,
+            "market": "experts",
+            "market_kind": "plugin",
+            "entries": entries
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn index_validation_accepts_a_well_formed_document() {
+        let ok = document(serde_json::json!([
+            entry("a", "https://h/e/a.tar.gz", &"a".repeat(64), 10)
+        ]));
+        assert!(validate_index_json(&ok).is_ok());
+    }
+
+    #[test]
+    fn index_validation_rejects_a_bad_sha_relative_download_and_duplicates() {
+        let bad_sha = document(serde_json::json!([
+            entry("a", "https://h/e/a.tar.gz", "XYZ", 10)
+        ]));
+        assert!(validate_index_json(&bad_sha).is_err(), "a non-hex sha must be refused");
+
+        let upper = document(serde_json::json!([
+            entry("a", "https://h/e/a.tar.gz", &"A".repeat(64), 10)
+        ]));
+        assert!(validate_index_json(&upper).is_err(), "uppercase hex must be refused");
+
+        let relative = document(serde_json::json!([
+            entry("a", "entries/a/1.tar.gz", &"a".repeat(64), 10)
+        ]));
+        assert!(validate_index_json(&relative).is_err(), "a relative download must be refused");
+
+        let duplicate = document(serde_json::json!([
+            entry("a", "https://h/e/a.tar.gz", &"a".repeat(64), 10),
+            entry("a", "https://h/e/a2.tar.gz", &"b".repeat(64), 10)
+        ]));
+        assert!(validate_index_json(&duplicate).is_err(), "duplicate names must be refused");
+
+        let zero = document(serde_json::json!([
+            entry("a", "https://h/e/a.tar.gz", &"a".repeat(64), 0)
+        ]));
+        assert!(validate_index_json(&zero).is_err(), "size 0 must be refused");
+    }
+
+    #[test]
+    fn index_validation_rejects_the_wrong_schema_and_empty_entries() {
+        let wrong = serde_json::json!({"schema_version": 1, "market": "x", "entries": []}).to_string();
+        assert!(validate_index_json(&wrong).is_err());
+        let empty = document(serde_json::json!([]));
+        assert!(validate_index_json(&empty).is_err());
+        let no_market = serde_json::json!({"schema_version": 2, "market": " ", "entries": [
+            entry("a", "https://h/e/a.tar.gz", &"a".repeat(64), 10)
+        ]}).to_string();
+        assert!(validate_index_json(&no_market).is_err());
+    }
+}
+
+#[cfg(test)]
+mod index_fetch_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn entry(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "kind": "agent",
+            "download": format!("https://cdn.example/{name}.tar.gz"),
+            "sha256": "a".repeat(64),
+            "size": 10,
+            "available": true,
+        })
+    }
+
+    #[tokio::test]
+    async fn index_fetch_stages_index_and_categories_then_short_circuits() {
+        let mock = MockServer::start().await;
+        let categories = br#"{"schema_version":1,"market":"experts","taxonomy":[],"assignments":{},"counts":{}}"#;
+        let categories_sha = market_source::sha256_hex_bytes(categories);
+        let index = serde_json::json!({
+            "schema_version": 2,
+            "market": "experts",
+            "market_kind": "plugin",
+            "categories_url": format!("{}/categories.json", mock.uri()),
+            "categories_sha256": categories_sha,
+            "entries": [entry("a")],
+        })
+        .to_string();
+
+        Mock::given(method("GET"))
+            .and(path("/index.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(index))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/categories.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(categories.to_vec()))
+            .mount(&mock)
+            .await;
+
+        let root = tempfile::tempdir().unwrap();
+        let source = format!("{}/index.json", mock.uri());
+        let first = fetch_remote("index", &source, root.path().to_path_buf(), None, None)
+            .await
+            .expect("first index fetch");
+        let (revision, entries) = match first {
+            RemoteFetchOutcome::Fresh(fetched) => (fetched.revision, fetched.entries),
+            RemoteFetchOutcome::Unchanged { .. } => panic!("first fetch must be fresh"),
+        };
+        assert_eq!(revision.len(), 64);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0.source_kind, "remote");
+        assert_eq!(entries[0].0.source_uri, "https://cdn.example/a.tar.gz");
+        let live = root.path().join("live");
+        assert!(live.join("index.json").is_file());
+        assert_eq!(std::fs::read(live.join("categories.json")).unwrap(), categories);
+
+        let second = fetch_remote(
+            "index",
+            &source,
+            root.path().to_path_buf(),
+            Some(revision.as_str()),
+            None,
+        )
+        .await
+        .expect("second index fetch");
+        match second {
+            RemoteFetchOutcome::Unchanged { revision: same } => assert_eq!(same, revision),
+            RemoteFetchOutcome::Fresh(_) => panic!("same index content must be Unchanged"),
+        }
+        assert!(live.join("index.json").is_file(), "last-good stays");
+    }
+
+    #[tokio::test]
+    async fn index_fetch_rejects_a_bad_categories_digest() {
+        let mock = MockServer::start().await;
+        let categories = b"{}";
+        let index = serde_json::json!({
+            "schema_version": 2,
+            "market": "experts",
+            "categories_url": format!("{}/categories.json", mock.uri()),
+            "categories_sha256": "b".repeat(64),
+            "entries": [entry("a")],
+        })
+        .to_string();
+        Mock::given(method("GET"))
+            .and(path("/index.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(index))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/categories.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(categories.to_vec()))
+            .mount(&mock)
+            .await;
+        let root = tempfile::tempdir().unwrap();
+        let result = fetch_remote(
+            "index",
+            &format!("{}/index.json", mock.uri()),
+            root.path().to_path_buf(),
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "a mismatched categories digest must fail the fetch");
+        assert!(!root.path().join("live").exists(), "failed fetch must not promote");
+    }
+
+    /// Manual live smoke: the real published experts index must fetch, validate
+    /// and promote. Ignored by default (network); run with
+    /// `cargo test -p nomifun-app --no-default-features --lib live_published -- --ignored`.
+    #[tokio::test]
+    #[ignore = "network: fetch the published experts index.json from ModelScope"]
+    async fn live_published_experts_index_fetches_and_promotes() {
+        let url = std::env::var("WB_MARKET_INDEX_URL").unwrap_or_else(|_| {
+            "https://www.modelscope.cn/models/me9rez/flowy-marketplace/resolve/master/wb-market/experts/index.json"
+                .to_owned()
+        });
+        let root = tempfile::tempdir().unwrap();
+        let outcome = fetch_remote("index", &url, root.path().to_path_buf(), None, None)
+            .await
+            .expect("published index must fetch");
+        match outcome {
+            RemoteFetchOutcome::Fresh(set) => {
+                assert!(set.entries.len() >= 400, "entries: {}", set.entries.len());
+                assert!(set.live_root.join("index.json").is_file());
+                assert!(set.live_root.join("categories.json").is_file());
+                assert!(
+                    set.entries.iter().all(|(entry, _)| entry.source_kind == "remote"),
+                    "index entries are remote downloads"
+                );
+                // End-to-end: pick the first entry from the promoted index,
+                // download its archive, verify the declared digest/size and
+                // extract it exactly like `import_entry` does.
+                let text = std::fs::read_to_string(set.live_root.join("index.json")).unwrap();
+                let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let row = &doc["entries"][0];
+                let name = row["name"].as_str().unwrap();
+                let url = row["download"].as_str().unwrap();
+                let sha = row["sha256"].as_str().unwrap();
+                let size = row["size"].as_u64().unwrap();
+                let archive = root.path().join("entry.tar.gz");
+                let (digest, server) =
+                    market_source::download_archive(url, &archive).await.expect("entry download");
+                assert_eq!(digest, sha, "downloaded digest matches the index");
+                if let Some(server) = server {
+                    assert_eq!(server, sha);
+                }
+                assert_eq!(std::fs::metadata(&archive).unwrap().len(), size);
+                let extracted = root.path().join("entry");
+                market_source::extract_tar_gz_market(&archive, &extracted).expect("safe extract");
+                let nested = extracted.join(name).join(".codebuddy-plugin/plugin.json");
+                assert!(
+                    nested.is_file() || extracted.join(".codebuddy-plugin/plugin.json").is_file(),
+                    "entry payload must carry plugin.json"
+                );
+            }
+            RemoteFetchOutcome::Unchanged { .. } => panic!("first fetch cannot be Unchanged"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod small_file_tests {
+    use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn small_file_download_enforces_the_icon_cap() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/ok.webp"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"small".to_vec()))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/big.webp"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 64]))
+            .mount(&mock)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("ok.webp");
+        market_source::download_small_file(&format!("{}/ok.webp", mock.uri()), &ok, 16)
+            .await
+            .expect("small asset");
+        assert_eq!(std::fs::read(&ok).unwrap(), b"small");
+
+        let big = dir.path().join("big.webp");
+        assert!(
+            market_source::download_small_file(&format!("{}/big.webp", mock.uri()), &big, 16)
+                .await
+                .is_err()
+        );
+        assert!(!big.exists(), "an over-cap asset must not be written");
+    }
 }

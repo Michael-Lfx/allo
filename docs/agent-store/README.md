@@ -1,7 +1,9 @@
 # Agent Store 体系全景与工程文档导航总览（Master Documentation Portal）
 
-> 状态：导航总览（全目录 44 份核心方案已全面完成标准化重构）  
-> 当前版本：`0.1.0-beta.11` | 协议契约指纹：`fp-16` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点  
+> 状态：导航总览（全目录 44 份核心方案已全面完成标准化重构）
+>
+> 当前版本：`0.1.0-beta.12` | 协议契约指纹：`fp-20` | 核心方法计数：56 WebSocket 专属方法 / 83 双端映射端点
+>
 > 核心原则：**系统唯一的执行底盘为 Allo；所有对外接口收敛至 App Server Protocol v1；运行时严格保证版本不可变冻结与零凭据泄漏；所有技术方案均配备清晰架构图、决策矩阵与历史底稿归档。**
 
 ---
@@ -307,6 +309,15 @@ flowchart TD
 4. **规划文档重叠**：✅ 已定（2026-09-11）——`开发计划.md`/`技术方案.md`/`roadmap` 均保留为历史追溯、正文不再更新，现行内容以 `16` §6／§7、`13`、`15` 为准（各文件头部已有指针/合并标注）。
 5. **TC 正文归属**：✅ 已收敛（2026-09-11）——`TC-*` 逐条正文归各归属文档（`02` §13、`13` §10、`05` §14、`06` §11、`19` §9），`agent-store-v1-test-cases.md` 精简为「§1/§2 公共口径 + §3 归属总表」；`13` §11 的环境与等级口径收敛为指向 §1/§2 的指针（消除重复副本）。
 6. **「冻结」措辞收尾**：✅ 已收敛（2026-09-11）——除语义性「快照冻结」（TC-RT-002 / ResolvedPresetSnapshot 等）外，`00` §10、`10`、`12`、`13` 及 `16` 任务表的「公共契约冻结／冻结文档／v1 冻结」统一改为「基线／现行正文」；`开发计划.md`／`技术方案.md`／`roadmap` 为历史文档，原文保留（头部已标注）。
+
+## 本轮（2026-10-29 实施 `index` 市场源：`fp-19 → fp-20`，尚未发版）
+
+1. **wire**：`AppServerMarketplaceSourceKind` 增 `Index`（wire `"index"`）；`AppServerStoreItem` 增 `icon_url` / `download_size` / `sha256` / `available` / `unavailable_reason` / `default_init_prompt`。方法计数不变（56 / 83），无方法增删。
+2. **官方 experts 切 index**：`builtin_default_marketplaces` 的 `experts` 改为 `.../wb-market/experts/index.json`，`skills` / `connectors` 暂留 zip。
+3. **索引先行**：`fetch_remote` 的 `index` 分支只拉 `index.json`（+ 校验并落地 `categories.json`），`revision = index.json` 内容 sha256；条目 `tar.gz` 在 `import_entry` 按索引 `sha256` / `size` 校验后下载、安全解包（拒绝绝对路径 / `..` / 链接 / 设备文件），并自动下钻 experts 归档的顶层 `<plugin-name>/` 目录。
+4. **展示面**：`MarketIndex` 读 `root/index.json`（按 name），`store/list` 头像优先绝对 `icon_url`，类别字典新增 `root/categories.json`（taxonomy 形状）；`default_init_prompt` / `quick_prompts` / 双语 `description` 从 index 行进入卡片，`store.avatarUrl(item)` 与 `Harness.serverRootUrl` 已加入 SDK。
+5. **门禁**：`check:fingerprint` 已覆盖本仓 7 文件 10 处 + 站点 2 处，随本次升级到 `fp-20`；`check:market` 已识别 index（24/24 自测）。
+6. **真实 e2e**：`AGENT_STORE_E2E_BIN=target/debug/agent-store.exe bun run test -- index-market` ✅ 25.4s——真实宿主添加已发布 index（421 条）、列表、按需下载并安装 `accessibility-auditor`，校验 icon_url / sha256 / download_size / available / 卡片提示词 / 安装后 installed 状态。
 
 ## 本轮（2026-10-26 实施 `51`：导出面图标补齐，尚未发版）
 
