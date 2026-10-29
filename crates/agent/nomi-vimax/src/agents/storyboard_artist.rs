@@ -94,7 +94,10 @@ and closing line already in <SCRIPT>. You MAY add rows so those events are filme
 If more uniquely named people speak than voice-ref slots allow, add another row — \
 keep EVERY script line (never drop or paraphrase dialogue). \
 Do NOT invent episodes, characters, or punchlines that are not in SCRIPT. \
-Do NOT pad filler holds. Pack related beats into the same row when speakers and speech still fit.",
+Do NOT pad filler holds. One row is one video of one place and may hold several cameras \
+as 镜头1 / 镜头2 / 镜头3, up to 4. The room is written once. A glance stays inside the \
+camera it answers. A line that does not \
+fit the model window is split at a dialogue boundary.",
                 serde_json::to_string_pretty(&rows).unwrap_or_default(),
                 coverage.join("\n- ")
             );
@@ -110,6 +113,66 @@ Do NOT pad filler holds. Pack related beats into the same row when speakers and 
                 crate::drama::ensure_script_promise_lines(script, &mut repaired_rows);
             }
             rows = repaired_rows;
+        }
+
+        let needs: Vec<u32> = rows
+            .iter()
+            .map(|row| {
+                crate::planning::estimate_shot_need_secs(
+                    self.clip,
+                    row.audio_desc.as_deref(),
+                    &row.visual_desc,
+                    "small",
+                )
+            })
+            .collect();
+        if crate::planning::shots_are_fragmented(self.clip, &needs) {
+            tracing::info!(
+                rows = rows.len(),
+                max_secs = self.clip.max_secs(),
+                "storyboard rows are short for the model window; asking for one semantic regroup"
+            );
+            let repair_user = format!(
+                "{user}\n\n[LINT_FEEDBACK]\nYour previous storyboard was:\n{}\n\n\
+It splits one scene into {} rows whose spoken payload is mostly far below the selected model's maximum of {}s. \
+Rewrite the COMPLETE board. Put one exchange, decision, or reveal into ONE row whose natural play approaches {}s, and put its wide, close-up, and reverse inside that row as 镜头1 / 镜头2 / 镜头3 (at most 4, no timestamps). \
+State the room once before 镜头1. Later cameras do not repeat it. A reverse says 反打 and restates only the people in that frame. \
+A glance, a gasp, or a one-line answer stays in the camera it answers. The next row starts when the place changes, the row already has 4 cameras, or the speech will not fit, and that row restates blocking once. \
+Do not pad with empty holds, slow looks, or repeated geography. Do not drop, paraphrase, or repeat any script line. \
+If a speech cannot be said clearly inside {}s, split at a dialogue boundary. Keep every location the script already shows.",
+                serde_json::to_string_pretty(&rows).unwrap_or_default(),
+                rows.len(),
+                self.clip.max_secs(),
+                self.clip.max_secs(),
+                self.clip.max_secs(),
+            );
+            match complete_and_parse_llm_json::<Resp>(self.chat.as_ref(), &system, &repair_user)
+                .await
+            {
+                Ok(repaired)
+                    if !repaired.storyboard.is_empty()
+                        && repaired.storyboard.len() <= rows.len() =>
+                {
+                    let mut next = repaired.storyboard;
+                    let missing = crate::drama::lint_script_promise_coverage(script, &next);
+                    if !missing.is_empty() {
+                        tracing::warn!(
+                            remaining = missing.len(),
+                            "storyboard regroup dropped spoken lines; stitching them back"
+                        );
+                        crate::drama::ensure_script_promise_lines(script, &mut next);
+                    }
+                    rows = next;
+                }
+                Ok(_) => {
+                    tracing::warn!(
+                        "storyboard regroup did not shorten the board; keeping the draft"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "storyboard regroup failed; keeping the draft");
+                }
+            }
         }
 
         let mut issues = crate::drama::lint_storyboard_performance(&rows);
@@ -242,9 +305,9 @@ previous pose and do NOT copy that shot's spoken line. The action is already in 
             visual_desc: brief.visual_desc.clone(),
             variation_type: d.variation_type,
             variation_reason: d.variation_reason,
-            ff_desc: d.ff_desc,
+            ff_desc: d.ff_desc.clone(),
             ff_vis_char_idxs: d.ff_vis_char_idxs,
-            lf_desc: d.lf_desc,
+            lf_desc: crate::planning::with_distinct_exit(&d.ff_desc, &d.lf_desc, &d.motion_desc),
             lf_vis_char_idxs: d.lf_vis_char_idxs,
             motion_desc: d.motion_desc,
             audio_desc: brief.audio_desc.clone(),
@@ -288,7 +351,7 @@ fn packed_beats_block(brief: &ShotBriefDescription) -> String {
         .windows(2)
         .any(|pair| pair[0].cam_idx != pair[1].cam_idx);
     let cut_rule = if cuts {
-        "This is a native multi-shot: at a cam_idx change, CUT TO the new angle with the action already in progress — do not morph or dissolve. first_frame is beat 0; last_frame is the final beat after the last cut."
+        "These beats are already one camera each. first_frame is beat 0 and last_frame is the final beat. Do not invent another camera or a timeline inside the clip."
     } else {
         "This is ONE continuous take: camera and framing never change. Play every beat in order."
     };

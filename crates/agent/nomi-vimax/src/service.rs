@@ -1198,10 +1198,12 @@ impl VimaxService {
         let scene_dir = self.resolve_scene_dir(id, scene_root)?;
         let record = self.index.get(id)?;
         let max_audio = crate::video_quality::max_reference_audio(&record.video_model);
+        let clip = crate::video_quality::clip_bounds_for_model(&record.video_model);
         let mut packet = crate::pipelines::refresh_shot_packet_from_disk(
             &scene_dir,
             shot_idx,
             max_audio,
+            clip,
         )
         .await?;
         crate::shot_packet::attach_media_urls(id, &mut packet);
@@ -1253,7 +1255,8 @@ impl VimaxService {
         }
         let record = self.index.get(id)?;
         let max_audio = crate::video_quality::max_reference_audio(&record.video_model);
-        crate::pipelines::refresh_shot_packet_from_disk(scene_dir, shot_idx, max_audio).await
+        let clip = crate::video_quality::clip_bounds_for_model(&record.video_model);
+        crate::pipelines::refresh_shot_packet_from_disk(scene_dir, shot_idx, max_audio, clip).await
     }
 
     pub async fn put_shot_packet(

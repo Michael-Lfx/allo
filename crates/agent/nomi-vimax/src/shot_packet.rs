@@ -495,6 +495,7 @@ pub async fn seed_packets_from_shots(
     scene_dir: &Path,
     session_root: &Path,
     shots: &[ShotDescription],
+    clip: crate::clip_bounds::ClipBounds,
 ) -> VimaxResult<()> {
     let scene_root = scene_root_rel(session_root, scene_dir);
     for shot in shots {
@@ -510,6 +511,8 @@ pub async fn seed_packets_from_shots(
             }
         }
         let mut packet = packet_from_shot(&scene_root, shot);
+        packet.duration_secs =
+            Some(crate::pipelines::clip_beats::clip_need_secs(clip, shot));
         refresh_run_state_from_disk(scene_dir, &mut packet);
         save_packet(scene_dir, &packet).await?;
     }
@@ -1632,7 +1635,7 @@ mod tests {
         save_packet(&scene, &packet).await.unwrap();
         let mut fresh = shot.clone();
         fresh.visual_desc = "planner rewrite".into();
-        seed_packets_from_shots(&scene, tmp.path(), &[fresh])
+        seed_packets_from_shots(&scene, tmp.path(), &[fresh], crate::clip_bounds::ClipBounds::new(2, 30))
             .await
             .unwrap();
         let loaded = load_packet(&scene, 1).await.unwrap().unwrap();
