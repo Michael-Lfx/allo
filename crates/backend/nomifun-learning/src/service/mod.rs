@@ -558,9 +558,10 @@ pub use xp::CompanionXpSink;
 pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
 
 pub(crate) use generation_tasks::{
-    CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
-    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
-    KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
+    CANCELLED_MESSAGE, CountingCompleter, CancellationCompleter, GenerationTaskGuard,
+    GenerationTaskRegistry, GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE,
+    KIND_STRUCTURE, KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST,
+    STATE_RUNNING,
 };
 
 #[cfg(test)]
