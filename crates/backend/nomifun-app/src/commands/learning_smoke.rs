@@ -2250,7 +2250,8 @@ async fn run_quiz(
 /// 的管线半边「管线走通并发布」承接（见下方 `generate_lesson_content` 调
 /// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
 /// 属豁免项，不在本波判据清单。读数
-/// （软）：字数/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
+/// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
+/// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
 #[allow(clippy::too_many_arguments)]
 async fn run_content(
@@ -2522,12 +2523,22 @@ async fn run_content(
         );
     }
 
-    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。
+    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。密度基线
+    // （e5）：节均字符量 + 例题节数——learnhub 定调「语义纪律不是机械门」，
+    // 不立字数下限，只立对照基线（薄不薄看画像是否吃到 est×档位，回查
+    // est_budget / boundary 读数行）。
     let body_chars: usize = view
         .sections
         .iter()
         .map(|section| section.body_md.chars().filter(|c| !c.is_whitespace()).count())
         .sum();
+    let section_count = view.sections.len();
+    let sec_avg_chars = if section_count == 0 { 0 } else { body_chars / section_count };
+    let example_sections = view
+        .sections
+        .iter()
+        .filter(|section| section.kind == nomifun_learning::SectionKind::Example)
+        .count();
     let joined: String = view
         .sections
         .iter()
@@ -2535,7 +2546,8 @@ async fn run_content(
         .collect::<Vec<_>>()
         .join("\n");
     println!(
-        "content read-out: sections={} activities={} body_chars={body_chars} est={}",
+        "content read-out: sections={} activities={} body_chars={body_chars} \
+         sec_avg_chars={sec_avg_chars} example_sections={example_sections} est={}",
         view.sections.len(),
         view.activities.len(),
         view.est,

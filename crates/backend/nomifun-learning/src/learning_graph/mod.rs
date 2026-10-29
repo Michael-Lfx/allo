@@ -136,6 +136,18 @@ impl ConceptTier {
             _ => None,
         }
     }
+
+    /// 题面难度铸值（e5 difficulty 消解案）：档位依序映射 1-3（知道 = 概念
+    /// 辨析 / 会用 = 应用 / 能教 = 综合）。出题模型不再输出 difficulty（5/5
+    /// 缺写、缺省合法导致 quiz 难度分层静默退化）——难度由装配面从节点
+    /// teaches 档位铸值后写进 `config_json.difficulty`，值域保持 1-3。
+    pub const fn difficulty_value(self) -> u8 {
+        match self {
+            Self::Know => 1,
+            Self::Apply => 2,
+            Self::Teach => 3,
+        }
+    }
 }
 
 // ── Proposed batch (raw coach output) ──────────────────────────────────────
@@ -1845,6 +1857,15 @@ mod tests {
         assert!(ConceptTier::Apply < ConceptTier::Teach);
         assert_eq!(ConceptTier::try_from_str("apply"), Some(ConceptTier::Apply));
         assert_eq!(ConceptTier::try_from_str("nope"), None);
+    }
+
+    /// e5 difficulty 消解：档位 → 题面难度铸值依序 1-3，与 quiz tier 取数
+    /// 的值域契约互钉。
+    #[test]
+    fn tier_difficulty_value_maps_know_apply_teach_to_one_two_three() {
+        assert_eq!(ConceptTier::Know.difficulty_value(), 1);
+        assert_eq!(ConceptTier::Apply.difficulty_value(), 2);
+        assert_eq!(ConceptTier::Teach.difficulty_value(), 3);
     }
 
     #[test]
