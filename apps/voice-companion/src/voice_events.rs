@@ -268,25 +268,27 @@ impl VoiceEventHub {
                 state.follow_up_deadline_ms = None;
             }
             VoiceCompanionEvent::Transcribing => {
-                state.ended_reason = None;
-                state.listening_deadline_ms = None;
-                state.error = None;
-                state.phase = Phase::Transcribing;
-                state.turn_id = Some(nomifun_common::generate_id());
-                let turn_id = state.turn_id.clone().unwrap();
-                let session_id = state.session_id.clone();
-                state.conversation.push(VoiceConversationTurn {
-                    turn_id,
-                    session_id,
-                    ..Default::default()
-                });
-                if state.conversation.len() > 3 {
-                    state.conversation.remove(0);
+                if state.ended_reason.is_none() {
+                    state.ended_reason = None;
+                    state.listening_deadline_ms = None;
+                    state.error = None;
+                    state.phase = Phase::Transcribing;
+                    state.turn_id = Some(nomifun_common::generate_id());
+                    let turn_id = state.turn_id.clone().unwrap();
+                    let session_id = state.session_id.clone();
+                    state.conversation.push(VoiceConversationTurn {
+                        turn_id,
+                        session_id,
+                        ..Default::default()
+                    });
+                    if state.conversation.len() > 3 {
+                        state.conversation.remove(0);
+                    }
+                    state.follow_up_deadline_ms = None;
+                    state.user_text = None;
+                    state.understood_request = None;
+                    state.assistant_text = None;
                 }
-                state.follow_up_deadline_ms = None;
-                state.user_text = None;
-                state.understood_request = None;
-                state.assistant_text = None;
             }
             VoiceCompanionEvent::SpeechRecognized { text } => {
                 state.user_text = Some(text.clone());
