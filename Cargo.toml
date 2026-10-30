@@ -246,7 +246,7 @@ portable-pty = "0.8"
 # aws-lc-sys native toolchain burden (NASM on Windows x86, clang-cl on ARM64).
 # Pinned exactly: russh's Handler API churns fast (8 releases in July 2026), so
 # the `flowy-ssh` adapter crate isolates it and an upgrade touches one place.
-russh = { version = "=0.63.2", default-features = false, features = ["ring", "flate2"] }
+russh = { version = "=0.64.1", default-features = false, features = ["ring", "flate2"] }
 russh-sftp = "2.4.0"
 zeroize = { version = "1.8", features = ["derive"] }
 # `shellexecute-on-windows`: launch via real ShellExecuteExW on Windows instead
@@ -301,7 +301,7 @@ nostr = { version = "0.37", default-features = false, features = ["std", "nip04"
 htmd = "0.5"
 libc = "0.2"
 windows-sys = "0.61.2"
-lru = "0.18"
+lru = "0.19"
 url = "2"
 unicode-width = "0.2.2"
 unicode-normalization = "0.1"
