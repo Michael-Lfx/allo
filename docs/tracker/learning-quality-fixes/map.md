@@ -40,3 +40,19 @@
 | f1 | 评审挂号表支持批外合法概念锚定（声明/历史批概念） | **高** |
 | f2 | 结构生成模型面打磨（door_list 输出示例 / one_name 报全与自检 / 块数下限弹性） | 高 |
 | f3 | 课时可视化块机械 lint | 中 |
+
+## 裁决记档（2026-10-30 grilling，八问全按推荐；真机结果可复议各裁决）
+
+- **f1**：放行域=本批复用命中集（撞池机械复用 ∪ 直定宿主 ∪ reuse[] 核验通过）；
+  短路 belt 作废改死因指引（重试环 attempt 预算与碎片面 m9 共享，不可砍）；
+  learnhub 核实=结构性回避（禁重教 declared+撞池 refuse），allo 首创缝补成立；
+  行 schema 零变更（ref 对照域已放行）。
+- **f2**：③ 落定 25 硬+25–39 warn+smoke `warnings={n}` 读数；② 校验器已一次
+  报全（打地鼠真因=模型全量重生成新冒名），收窄为自检句+出路指引；落点勘误=
+  gd.* 全在 structure_contract.rs（非 growth_contract.rs）。
+- **f3**：打回并入各线既有通道（弃「恰一次」）；剔除=修复轮前置+系统剔块+降
+  visual 声明（degraded 豁免承诺门+demo 硬门；文字下限实核不撞——prose 剥围栏
+  计算）；lint=块级括号配平（引号段豁免）+flowchart/graph 节点定义查（`---`
+  查砍）；learnhub 有 svg 规格闸先例（cc.svg.spec），首创仅 mermaid 语法闸。
+- **实施编排**：单分支 `feat/learning-quality-fixes`（基 feat/learn0928 尖端）
+  三票顺序、每票一提交；施工图三份（blueprints/，可并发领票）。
