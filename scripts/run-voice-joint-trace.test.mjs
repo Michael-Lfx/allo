@@ -7,6 +7,7 @@ import {
   resolveBunBinary,
   verifyTraceArtifact,
   executeJointTraceRun,
+  spawnProcessInJob,
   repoRoot,
 } from './run-voice-joint-trace.mjs';
 
@@ -72,7 +73,6 @@ test('verifyTraceArtifact negative cases: missing, empty, invalid JSON, structur
 });
 
 test('executeJointTraceRun failure cleanup contract: temp directory is deleted even on failure without bypassing finally', () => {
-  // Pass an invalid cargo binary to force step 1 failure
   const fakeCargo = path.join(repoRoot, 'non-existent-cargo-bin.exe');
   const result = executeJointTraceRun({
     cargoBin: fakeCargo,
@@ -83,3 +83,66 @@ test('executeJointTraceRun failure cleanup contract: temp directory is deleted e
   expect(result.tempDirCleaned).toBe(true);
   expect(result.error).toBeTruthy();
 });
+
+test('spawnProcessInJob bounded timeout terminates entire child process tree', async () => {
+  const tempDir = fs.mkdtempSync(path.join(repoRoot, 'build.noindex', 'test-tree-timeout-'));
+  const leafPath = path.join(tempDir, 'leaf.txt');
+  const exitedPath = path.join(tempDir, 'leaf-self-exited.txt');
+
+  try {
+    const parentReviewHelper = path.join(
+      repoRoot,
+      'build.noindex',
+      'voice-runtime-improvements-parent-review-round2-20261030',
+      'timeout-tree-helper.exe'
+    );
+
+    if (fs.existsSync(parentReviewHelper)) {
+      const result = executeJointTraceRun({
+        cargoBin: parentReviewHelper,
+        env: { ...process.env, VOICE_TIMEOUT_PROBE_DIR: tempDir },
+        buildNoindex: tempDir,
+        timeoutRust: 2500,
+        silent: true,
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.tempDirCleaned).toBe(true);
+
+      // Give enough time for a leaked 6s process to write self-exited if it was not killed
+      await new Promise((r) => setTimeout(r, 4500));
+
+      // The leaf MUST NOT have survived to write self-exited
+      expect(fs.existsSync(exitedPath)).toBe(false);
+    } else {
+      // Fallback cross-platform self-contained tree probe
+      const bunBin = resolveBunBinary();
+      const treeScript = path.join(tempDir, 'tree_spawner.mjs');
+      fs.writeFileSync(
+        treeScript,
+        `import { spawn } from 'child_process';
+import fs from 'fs';
+if (process.argv[2] === 'leaf') {
+  fs.writeFileSync(${JSON.stringify(leafPath)}, 'alive');
+  setTimeout(() => {
+    fs.writeFileSync(${JSON.stringify(exitedPath)}, 'leaked');
+  }, 4000);
+} else {
+  spawn(process.execPath, [${JSON.stringify(treeScript)}, 'leaf'], { detached: false });
+  setTimeout(() => {}, 20000);
+}`
+      );
+
+      const spawnRes = spawnProcessInJob(bunBin, [treeScript], {
+        timeout: 1500,
+        silent: true,
+      });
+
+      expect(spawnRes.status).toBe(124);
+      await new Promise((r) => setTimeout(r, 4000));
+      expect(fs.existsSync(exitedPath)).toBe(false);
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}, 15000);

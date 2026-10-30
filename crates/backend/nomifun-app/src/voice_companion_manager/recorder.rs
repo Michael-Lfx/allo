@@ -335,37 +335,6 @@ impl ConversationVoiceDialogueRecorder {
         let home = self.conversation_service.ensure_default_voice_conversation_with_mode(&self.user_id,memory_owner.as_deref(),session_mode).await.map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
         Ok((home, source_id))
     }
-
-    pub fn project_snapshot(
-        &self,
-        mut snapshot: nomifun_api_types::voice::VoiceSessionSnapshot,
-        binding: &nomifun_api_types::voice::VoiceBindingSnapshot,
-    ) -> nomifun_api_types::voice::VoiceSessionSnapshot {
-        snapshot.binding = Some(binding.clone());
-        snapshot.projected_turn_ids.clear();
-        for turn in &mut snapshot.conversation {
-            if self.is_projected(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
-                snapshot.projected_turn_ids.push(turn.turn_id.clone());
-            }
-            if let Some((user, assistant)) = self.projected_message_ids(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
-                turn.user_message_id = user;
-                turn.assistant_message_id = Some(assistant);
-            }
-            if turn.error.is_none() {
-                if let Some(error) = self.turn_error(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
-                    turn.error = Some(error);
-                }
-            }
-        }
-        if snapshot.error.is_none() {
-            if let Some(curr_turn) = snapshot.turn_id.as_deref() {
-                if let Some(error) = self.turn_error(&binding.session_id, &binding.conversation_id, curr_turn) {
-                    snapshot.error = Some(error);
-                }
-            }
-        }
-        snapshot
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1130,7 +1099,19 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 Err(nomifun_common::AppError::Conflict(_)) => {
                     // Conversation became busy between check and acquire, fallback to busy append below
                 }
-                Err(e) => return Err(VoiceDialogueRecorderError::WriteFailed(e.to_string())),
+                Err(e) => {
+                    if let (Some(session), Some(turn)) = (&request.session_id, &request.turn_id) {
+                        let key = (session.clone(), conversation_id.to_owned(), turn.clone());
+                        self.turn_errors.write().unwrap_or_else(|err| err.into_inner()).insert(
+                            key,
+                            VoiceSessionError {
+                                stage: "history".into(),
+                                code: "voice_projection_write_failed".into(),
+                            },
+                        );
+                    }
+                    return Err(VoiceDialogueRecorderError::WriteFailed(e.to_string()));
+                }
             }
         }
 

@@ -2667,6 +2667,18 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     rt.handle_wake().await.unwrap();
     let worker = rt.start_worker();
 
+    let host_manager = Arc::new(nomifun_app::voice_companion_manager::VoiceCompanionProcessManager::new(
+        Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+        dir.path(),
+    ).with_recorder(recorder.clone()));
+    let snap_wake = rt.snapshot();
+    let real_session_id = snap_wake.session_id.clone().expect("real session_id must exist at wake");
+    host_manager.project_with_binding_for_test(snap_wake, 0).await;
+    assert!(host_manager.snapshot().binding.is_some(), "Authoritative binding must be frozen by host manager at wake");
+    let authoritative_binding = host_manager.snapshot().binding.unwrap();
+    assert_eq!(authoritative_binding.session_id, real_session_id);
+    assert_eq!(authoritative_binding.conversation_id, conv_id);
+
     // 1. Feed Input A (Task)
     for i in 0..80 {
         producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
@@ -2756,15 +2768,9 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert!(s_after_b_err.ended_reason.is_none(), "Session must not exit upon projection write failure");
     assert!(s_after_b_err.user_text.as_deref().is_some_and(|t| t.contains("今天天气怎么样")), "User text must be preserved");
 
-    let real_session_id = s_after_b_err.session_id.clone().unwrap_or_else(|| conv_id.clone());
-    let real_binding = nomifun_api_types::voice::VoiceBindingSnapshot {
-        session_id: real_session_id.clone(),
-        binding_id: format!("voice-binding-{real_session_id}"),
-        conversation_id: conv_id.clone(),
-        workspace: Some(dir.path().to_string_lossy().to_string()),
-        memory_owner_companion_id: None,
-    };
-    let snapshot_at_b_failure = recorder.project_snapshot(s_after_b_err.clone(), &real_binding);
+    host_manager.project_snapshot_for_test(s_after_b_err.clone(), 0);
+    let snapshot_at_b_failure = host_manager.snapshot();
+    assert!(snapshot_at_b_failure.binding.is_some(), "Authoritative binding must be preserved in failure snapshot");
 
     // Recover B from journal: original output and message ID are reused without calling the model again!
     let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
@@ -2791,7 +2797,9 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert_eq!(extra_submits, 0, "Recovery must not make additional task submits");
 
     let s_after_b_rec = rt.snapshot();
-    let snapshot_after_b_recovery = recorder.project_snapshot(s_after_b_rec, &real_binding);
+    host_manager.project_snapshot_for_test(s_after_b_rec.clone(), 0);
+    let snapshot_after_b_recovery = host_manager.snapshot();
+    assert!(snapshot_after_b_recovery.projected_turn_ids.len() >= 2, "Turn B must be projected after recovery");
 
     let records_after: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
     let b_entry_after = records_after.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
@@ -2908,15 +2916,18 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
     assert_eq!(snap.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop), "Session ended cleanly with UserStop");
 
-    let real_session_id = snap.session_id.clone().unwrap_or_else(|| conv_id.clone());
-    let real_instance_id = snap.instance_id.clone();
-    let snapshot_final = recorder.project_snapshot(snap.clone(), &real_binding);
+    let real_session_id = snap.session_id.clone().expect("real session_id must exist at finish");
+    host_manager.project_snapshot_for_test(snap.clone(), 0);
+    let snapshot_final = host_manager.snapshot();
+    let binding = snapshot_final.binding.clone().expect("authoritative binding must be present in snapshot");
+    assert_eq!(binding.conversation_id, conv_id);
+    assert_eq!(binding.session_id, real_session_id);
 
     let trace_payload = serde_json::json!({
         "conversation_id": conv_id,
         "session_id": real_session_id,
-        "instance_id": real_instance_id,
-        "binding": real_binding,
+        "instance_id": snapshot_final.instance_id.clone(),
+        "binding": binding,
         "snapshots": {
             "at_b_failure": snapshot_at_b_failure,
             "after_b_recovery": snapshot_after_b_recovery,
@@ -2945,14 +2956,9 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     if let Ok(out_path) = std::env::var("VOICE_JOINT_TRACE_OUT_PATH") {
         let path = std::path::Path::new(&out_path);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent).expect("Failed to create parent directory for VOICE_JOINT_TRACE_OUT_PATH");
         }
-        nomifun_common::dir_config::write_atomic_replace(path, &trace_bytes).unwrap();
-    }
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
-    let final_fix_dir = repo_root.join("build.noindex/voice-runtime-improvements-final-fix-20261030");
-    if final_fix_dir.exists() {
-        nomifun_common::dir_config::write_atomic_replace(&final_fix_dir.join("joint-trace.json"), &trace_bytes).unwrap();
+        nomifun_common::dir_config::write_atomic_replace(path, &trace_bytes).expect("Failed to write VOICE_JOINT_TRACE_OUT_PATH");
     }
 
     worker.abort();

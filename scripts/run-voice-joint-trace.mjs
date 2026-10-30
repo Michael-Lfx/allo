@@ -72,6 +72,61 @@ export function resolveBunBinary(env = process.env) {
   return process.execPath; // Fallback to current runtime
 }
 
+export function spawnProcessInJob(executable, args = [], options = {}) {
+  if (process.platform === 'win32') {
+    const psScript = path.join(repoRoot, 'scripts', 'run-process-tree.ps1');
+    const argsBase64 = Buffer.from(JSON.stringify(args || []), 'utf8').toString('base64');
+    const envBase64 = options.env ? Buffer.from(JSON.stringify(options.env), 'utf8').toString('base64') : null;
+
+    const psArgs = [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      psScript,
+      '-Executable',
+      executable,
+      '-ArgsJsonBase64',
+      argsBase64,
+    ];
+    if (options.cwd) {
+      psArgs.push('-WorkingDirectory', options.cwd);
+    }
+    if (envBase64) {
+      psArgs.push('-EnvJsonBase64', envBase64);
+    }
+    if (options.timeout) {
+      psArgs.push('-TimeoutMs', String(options.timeout));
+    }
+
+    const extraGrace = 5000;
+    const totalTimeout = options.timeout ? options.timeout + extraGrace : undefined;
+
+    const res = spawnSync('powershell.exe', psArgs, {
+      cwd: options.cwd || repoRoot,
+      stdio: options.stdio || (options.silent ? 'pipe' : 'inherit'),
+      timeout: totalTimeout,
+      windowsHide: true,
+    });
+
+    if (res.status === 124 || res.error?.code === 'ETIMEDOUT') {
+      const err = new Error(`Command timed out after ${options.timeout}ms: ${executable}`);
+      err.code = 'ETIMEDOUT';
+      return { status: 124, error: err, stdout: res.stdout, stderr: res.stderr };
+    }
+    return res;
+  } else {
+    return spawnSync(executable, args, {
+      cwd: options.cwd || repoRoot,
+      env: options.env,
+      stdio: options.stdio || (options.silent ? 'pipe' : 'inherit'),
+      timeout: options.timeout,
+      killSignal: 'SIGKILL',
+    });
+  }
+}
+
 export function verifyTraceArtifact(tracePath, expectedSha = null) {
   if (!fs.existsSync(tracePath)) {
     throw new Error(`Trace artifact not found at ${tracePath}`);
@@ -131,19 +186,19 @@ export function executeJointTraceRun(options = {}) {
       CARGO_BUILD_JOBS: '2',
     };
 
-    const rustResult = spawnSync(
+    const rustResult = spawnProcessInJob(
       cargoBin,
       ['test', '--locked', '-p', 'nomifun-app', '--test', 'voice_dialogue_integration', 'test_voice_companion_joint', '--', '--nocapture'],
       {
         cwd: repoRoot,
         env: rustEnv,
-        stdio: options.silent ? 'pipe' : 'inherit',
+        silent: options.silent,
         timeout: options.timeoutRust || 180000,
-        killSignal: 'SIGKILL',
       }
     );
 
     if (rustResult.error) {
+      exitCode = rustResult.status || 1;
       throw new Error(`Rust test process error: ${rustResult.error.message}`);
     }
     if (rustResult.status !== 0) {
@@ -170,19 +225,19 @@ export function executeJointTraceRun(options = {}) {
       VOICE_JOINT_TRACE_EXPECTED_SHA: verified.sha256,
     };
 
-    const bunResult = spawnSync(
+    const bunResult = spawnProcessInJob(
       bunBin,
       ['test', 'src/renderer/pages/voiceSession/jointTraceReplay.test.ts'],
       {
         cwd: path.join(repoRoot, 'ui'),
         env: bunEnv,
-        stdio: options.silent ? 'pipe' : 'inherit',
+        silent: options.silent,
         timeout: options.timeoutBun || 45000,
-        killSignal: 'SIGKILL',
       }
     );
 
     if (bunResult.error) {
+      exitCode = bunResult.status || 1;
       throw new Error(`Bun test process error: ${bunResult.error.message}`);
     }
     if (bunResult.status !== 0) {
@@ -201,7 +256,7 @@ export function executeJointTraceRun(options = {}) {
     }
   } finally {
     try {
-      if (fs.existsSync(tempDir)) {
+      if (tempDir && fs.existsSync(tempDir)) {
         fs.rmSync(tempDir, { recursive: true, force: true });
         if (!options.silent) {
           console.log(`[INFO] Cleaned up temporary directory: ${tempDir}`);

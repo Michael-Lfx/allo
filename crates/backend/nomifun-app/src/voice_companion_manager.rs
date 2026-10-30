@@ -1380,7 +1380,7 @@ impl VoiceCompanionProcessManager {
         self
     }
 
-    pub(crate) fn with_recorder(mut self, recorder: Arc<dyn VoiceDialogueRecorder>) -> Self {
+    pub fn with_recorder(mut self, recorder: Arc<dyn VoiceDialogueRecorder>) -> Self {
         self.dialogue_recorder = Some(recorder);
         self
     }
@@ -2059,8 +2059,16 @@ impl VoiceCompanionProcessManager {
     pub(crate) fn replay_task_projection(&self, task: VoiceTaskSnapshot) {self.project_task(task);}
 
     #[doc(hidden)]
-    pub fn project_snapshot_for_test(&self, source_snapshot: VoiceSessionSnapshot, generation: u64) {
-        self.project(source_snapshot, generation);
+    pub fn project_snapshot_for_test(&self, source_snapshot: VoiceSessionSnapshot, generation: u64) -> VoiceSessionSnapshot {
+        if generation != self.generation.load(Ordering::Acquire) {
+            return self.snapshot();
+        }
+        self.apply_host_projection(source_snapshot)
+    }
+
+    #[doc(hidden)]
+    pub async fn project_with_binding_for_test(&self, source_snapshot: VoiceSessionSnapshot, generation: u64) {
+        self.project_with_binding(source_snapshot, generation).await;
     }
 
     #[doc(hidden)]
@@ -2068,23 +2076,7 @@ impl VoiceCompanionProcessManager {
         self.project_task(task);
     }
 
-    fn project(&self, mut source_snapshot: VoiceSessionSnapshot, generation: u64) {
-        if generation != self.generation.load(Ordering::Acquire) {
-            return;
-        }
-        let mut source = self.source.write().unwrap_or_else(|err| err.into_inner());
-        if source.as_ref().is_some_and(|(id, seq)| {
-            *id == source_snapshot.instance_id
-                && (*seq > source_snapshot.seq
-                    || (*seq == source_snapshot.seq
-                        && self.snapshot().connection == VoiceConnectionState::Connected))
-        }) {
-            return;
-        }
-        *source = Some((source_snapshot.instance_id.clone(), source_snapshot.seq));
-        if source_snapshot.ended_reason.is_some() {
-            self.mark_active_request_stopped(source_snapshot.session_id.as_deref(), source_snapshot.call_request_id.as_deref());
-        }
+    fn apply_host_projection(&self, mut source_snapshot: VoiceSessionSnapshot) -> VoiceSessionSnapshot {
         let mut snapshot = self.snapshot.write().unwrap_or_else(|err| err.into_inner());
         source_snapshot.instance_id = snapshot.instance_id.clone();
         source_snapshot.seq = snapshot.seq + 1;
@@ -2125,8 +2117,29 @@ impl VoiceCompanionProcessManager {
             source_snapshot.understood_request=snapshot.understood_request.clone();
             source_snapshot.assistant_text=snapshot.assistant_text.clone();
         }
-        *snapshot = source_snapshot;
+        *snapshot = source_snapshot.clone();
         let _ = self.events.send(snapshot.clone());
+        source_snapshot
+    }
+
+    fn project(&self, source_snapshot: VoiceSessionSnapshot, generation: u64) {
+        if generation != self.generation.load(Ordering::Acquire) {
+            return;
+        }
+        let mut source = self.source.write().unwrap_or_else(|err| err.into_inner());
+        if source.as_ref().is_some_and(|(id, seq)| {
+            *id == source_snapshot.instance_id
+                && (*seq > source_snapshot.seq
+                    || (*seq == source_snapshot.seq
+                        && self.snapshot().connection == VoiceConnectionState::Connected))
+        }) {
+            return;
+        }
+        *source = Some((source_snapshot.instance_id.clone(), source_snapshot.seq));
+        if source_snapshot.ended_reason.is_some() {
+            self.mark_active_request_stopped(source_snapshot.session_id.as_deref(), source_snapshot.call_request_id.as_deref());
+        }
+        self.apply_host_projection(source_snapshot);
     }
 
     fn disconnected(&self) {
