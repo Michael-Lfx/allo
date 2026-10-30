@@ -2,7 +2,7 @@
 id: f3
 title: "课时可视化块机械 lint——坏 mermaid 不再过闸"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
