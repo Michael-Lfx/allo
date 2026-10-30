@@ -2,7 +2,7 @@
 id: f1
 title: "评审挂号表支持批外合法概念锚定——声明/历史批概念不再打死挂号表"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
