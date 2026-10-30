@@ -8102,6 +8102,7 @@ export interface IExpertSummary {
   downloadCount?: number;
   zipSizeBytes?: number;
   avatarPath?: string;
+  avatarUrl?: string;
   hasDetail?: boolean;
   sort?: number;
 }

@@ -4,9 +4,11 @@
 //! under `https://server.<domain>/claw` (it returns HTTP 200 with an empty
 //! body). The live route is `/experts`.
 //!
-//! Each summon still records one download with
-//! `POST /api/v1/experts/:id/download`. `:id` is the list row id, the body is
-//! empty, and the call carries the cloud `Authorization: Bearer` token.
+//! Each summon still records one download with `POST /experts/:id/download`.
+//! `:id` is the list row id, the body is empty, and the call carries the cloud
+//! `Authorization: Bearer` token. The claw host mounts this catalog at
+//! `/experts`. `POST /api/v1/experts/:id/download` on that host returns an empty
+//! HTTP 200 and does not increment the count.
 
 use nomifun_api_types::{ExpertDetail, ExpertListResponse};
 
@@ -17,7 +19,6 @@ use crate::session::ServerSession;
 use super::{form_urlencode, FlowyApiClient};
 
 const EXPERTS_PATH: &str = "/experts";
-const EXPERT_DOWNLOAD_PATH: &str = "/api/v1/experts";
 const MAX_PAGE_SIZE: i32 = 100;
 const MAX_KEYWORD_CHARS: usize = 200;
 const MAX_CATEGORY_CHARS: usize = 128;
@@ -126,7 +127,7 @@ pub(crate) fn prepare_expert_id(id: &str) -> Result<String, &'static str> {
 }
 
 pub(crate) fn expert_download_path(id: &str) -> String {
-    format!("{EXPERT_DOWNLOAD_PATH}/{}/download", form_urlencode(id))
+    format!("{EXPERTS_PATH}/{}/download", form_urlencode(id))
 }
 
 pub(crate) fn interpret_download_count(status: u16, body: &str) -> Result<(), ServerClientError> {
@@ -238,7 +239,7 @@ impl FlowyApiClient {
         self.get_data(&expert_detail_path(slug), Some(session)).await
     }
 
-    /// `POST /api/v1/experts/:id/download` with no body. The session supplies
+    /// `POST /experts/:id/download` with no body. The session supplies
     /// `Authorization: Bearer`.
     pub(crate) async fn record_expert_download(
         &self,
@@ -327,7 +328,7 @@ mod tests {
     fn download_path_uses_the_list_id() {
         assert_eq!(
             expert_download_path(&prepare_expert_id(" 8801 ").expect("id")),
-            "/api/v1/experts/8801/download"
+            "/experts/8801/download"
         );
         assert_eq!(prepare_expert_id(""), Err("expert id is missing"));
         assert!(prepare_expert_id("../secret").is_err());
@@ -339,6 +340,11 @@ mod tests {
         assert!(interpret_download_count(200, "").is_ok());
         assert!(interpret_download_count(204, "").is_ok());
         assert!(interpret_download_count(200, r#"{"code":200,"msg":"ok"}"#).is_ok());
+        assert!(interpret_download_count(
+            200,
+            r#"{"code":200,"msg":"ok","data":{"id":8801,"downloadCount":2}}"#,
+        )
+        .is_ok());
         let missing = interpret_download_count(
             404,
             r#"{"error_key":"error.expert_not_found"}"#,

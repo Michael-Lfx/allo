@@ -146,6 +146,19 @@ export const readExpertPeople = (
   return { lead, members };
 };
 
+/** HTTPS or HTTP catalog image. Package-relative `avatarPath` is not a display URL. */
+export const displayableExpertAvatar = (value: string | null | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return undefined;
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+};
+
 export const expertListErrorKind = (error: unknown): ExpertListErrorKind => {
   if (!isBackendHttpError(error)) return 'failed';
   if (error.status === 401 || error.status === 403 || error.code === 'UNAUTHORIZED') return 'login';

@@ -1,4 +1,5 @@
 import React, { useLayoutEffect, useRef, useState } from 'react';
+import { displayableExpertAvatar } from './expertCatalogModel';
 
 export const EXPERT_CARD_GRID_COLS = 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))';
 const MAX_VISIBLE_TAGS = 3;
@@ -6,9 +7,37 @@ const TAG_GAP_PX = 6;
 const TAG_CLASS = 'max-w-[160px] shrink-0 truncate rounded-6px bg-fill-2 px-10px py-4px text-12px leading-18px text-t-secondary';
 const BADGE_CLASS = 'shrink-0 px-4px text-12px leading-18px text-t-tertiary';
 
+export const ExpertMark: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
+  name,
+  avatarUrl,
+  size,
+}) => <ExpertMarkFace key={avatarUrl?.trim() || 'letter'} name={name} avatarUrl={avatarUrl} size={size} />;
+
+const ExpertMarkFace: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
+  name,
+  avatarUrl,
+  size,
+}) => {
+  const [failed, setFailed] = useState(false);
+  const src = displayableExpertAvatar(avatarUrl);
+  const box = size === 64 ? 'size-64px rounded-16px text-24px' : 'size-44px rounded-12px text-16px';
+  return (
+    <span
+      className={`flex shrink-0 items-center justify-center overflow-hidden bg-fill-2 font-semibold text-t-primary ${box}`}
+    >
+      {src && !failed ? (
+        <img src={src} alt='' className='size-full object-cover' onError={() => setFailed(true)} />
+      ) : (
+        name.trim().charAt(0) || '?'
+      )}
+    </span>
+  );
+};
+
 export type ExpertTileProps = {
   testId: string;
   name: string;
+  avatarUrl?: string;
   summary: string;
   tags: string[];
   actionLabel?: string;
@@ -29,6 +58,7 @@ const textButtonClass = 'm-0 min-w-0 cursor-pointer border-none bg-transparent p
 const ExpertTile: React.FC<ExpertTileProps> = ({
   testId,
   name,
+  avatarUrl,
   summary,
   tags,
   actionLabel,
@@ -97,9 +127,7 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
       className='group flex cursor-pointer flex-col gap-12px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--bg-base)] p-16px text-left transition-[background-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-[1px] hover:bg-[var(--color-fill-1)] hover:shadow-[0_10px_24px_-18px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]'
     >
       <div className='flex min-w-0 items-start gap-12px'>
-        <span className='flex size-44px shrink-0 items-center justify-center rounded-12px bg-fill-2 text-16px font-semibold text-t-primary'>
-          {name.trim().charAt(0) || '?'}
-        </span>
+        <ExpertMark name={name} avatarUrl={avatarUrl} size={44} />
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-8px'>
             {splitActions ? (

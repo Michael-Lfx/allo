@@ -8,6 +8,7 @@ import {
   expertListErrorKind,
   expertTypeParam,
   formatZipSize,
+  displayableExpertAvatar,
   loadAllExperts,
   localizedPair,
   localizedTags,
@@ -28,6 +29,16 @@ describe('expert catalog model', () => {
     expect(localizedTags('zh-CN', [{ zh: '后端', en: 'Backend' }, { zh: '后端', en: 'Backend' }])).toEqual([
       '后端',
     ]);
+  });
+
+  test('keeps only an http(s) catalog avatar url', () => {
+    expect(displayableExpertAvatar(' https://cdn.example.com/a.png ')).toBe('https://cdn.example.com/a.png');
+    expect(displayableExpertAvatar('http://download.flowyaipc.cn/hardware/experts/a.png')).toBe(
+      'http://download.flowyaipc.cn/hardware/experts/a.png'
+    );
+    expect(displayableExpertAvatar('avatars/team.png')).toBeUndefined();
+    expect(displayableExpertAvatar('javascript:alert(1)')).toBeUndefined();
+    expect(displayableExpertAvatar('')).toBeUndefined();
   });
 
   test('maps the type filter onto the catalog query', () => {
