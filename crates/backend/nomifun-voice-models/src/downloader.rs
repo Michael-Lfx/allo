@@ -129,7 +129,7 @@ impl MirrorConfig {
                     .to_string(),
             ),
             is_modelscope: true,
-            is_fallback_cdn: !is_cn,
+            is_fallback_cdn: false,
         };
 
         let hf_mirror = Self {
@@ -160,10 +160,10 @@ impl MirrorConfig {
             mirrors.push(hf_mirror);
             mirrors.push(hf_official);
         } else {
-            // Global environment: huggingface official -> hf-mirror -> ModelScope
+            // Global environment: ModelScope (primary authorized upstream) -> huggingface official -> hf-mirror
+            mirrors.push(modelscope);
             mirrors.push(hf_official);
             mirrors.push(hf_mirror);
-            mirrors.push(modelscope);
         }
 
         mirrors
@@ -255,6 +255,9 @@ pub enum DownloaderError {
     #[error("Download interrupted: {0}")]
     Interrupted(String),
 
+    #[error("Protocol violation: {0}")]
+    ProtocolViolation(String),
+
     #[error("Server returned unexpected status: {0}")]
     UnexpectedStatus(StatusCode),
 
@@ -264,6 +267,28 @@ pub enum DownloaderError {
         threshold_bps: u64,
         mirror_id: String,
     },
+}
+
+impl DownloaderError {
+    /// Determines whether the error is transient and safe to retry with Range resumption on the same mirror.
+    pub fn is_transient_retryable(&self) -> bool {
+        match self {
+            DownloaderError::Http(err) => {
+                err.is_timeout() || err.is_connect() || err.is_body()
+            }
+            DownloaderError::Interrupted(_) => true,
+            DownloaderError::UnexpectedStatus(status) => {
+                status.is_server_error()
+                    || *status == StatusCode::REQUEST_TIMEOUT
+                    || *status == StatusCode::TOO_MANY_REQUESTS
+            }
+            // Deterministic protocol errors, 404, 401, 403, 416, local IO error, SpeedTooLow, AllMirrorsFailed should NEVER be blindly retried
+            DownloaderError::ProtocolViolation(_)
+            | DownloaderError::Io(_)
+            | DownloaderError::SpeedTooLow { .. }
+            | DownloaderError::AllMirrorsFailed => false,
+        }
+    }
 }
 
 /// Parses `Content-Range: bytes <start>-<end>/<total|*>`.
@@ -310,23 +335,33 @@ impl ModelDownloader {
     pub fn new(mirrors: Vec<MirrorConfig>) -> Self {
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Flowy/1.6.1")
-            .connect_timeout(Duration::from_millis(3000))
-            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_millis(5000))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
         let min_speed_bps = std::env::var("VOICE_MODEL_MIN_SPEED_BPS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300 * 1024); // default 300 KB/s
+            .unwrap_or(80 * 1024); // default 80 KB/s
+
+        let initial_delay_secs = std::env::var("VOICE_MODEL_SPEED_GATE_INITIAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(12);
+
+        let max_delay_secs = std::env::var("VOICE_MODEL_SPEED_GATE_MAX_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30)
+            .max(initial_delay_secs);
 
         Self {
             mirrors,
             client,
             probe_timeout: Duration::from_millis(3000),
             min_speed_bps,
-            speed_gate_initial_delay: Duration::from_secs(5),
-            speed_gate_max_delay: Duration::from_secs(20),
+            speed_gate_initial_delay: Duration::from_secs(initial_delay_secs),
+            speed_gate_max_delay: Duration::from_secs(max_delay_secs),
         }
     }
 
@@ -339,7 +374,7 @@ impl ModelDownloader {
     ) -> Self {
         self.min_speed_bps = min_speed_bps;
         self.speed_gate_initial_delay = initial_delay;
-        self.speed_gate_max_delay = max_delay;
+        self.speed_gate_max_delay = max_delay.max(initial_delay);
         self
     }
 
@@ -471,19 +506,19 @@ impl ModelDownloader {
                     .and_then(|value| value.to_str().ok())
                     .and_then(parse_content_range)
                     .ok_or_else(|| {
-                        DownloaderError::Interrupted(
+                        DownloaderError::ProtocolViolation(
                             "206 response is missing a valid Content-Range".into(),
                         )
                     })?;
                 if range_start != requested_start {
                     remove_if_exists(&part_path).await;
-                    return Err(DownloaderError::Interrupted(format!(
+                    return Err(DownloaderError::ProtocolViolation(format!(
                         "Content-Range start mismatch: requested {requested_start}, server returned {range_start}"
                     )));
                 }
                 if range_end < range_start {
                     remove_if_exists(&part_path).await;
-                    return Err(DownloaderError::Interrupted(format!(
+                    return Err(DownloaderError::ProtocolViolation(format!(
                         "Content-Range is inverted: {range_start}-{range_end}"
                     )));
                 }
@@ -494,7 +529,7 @@ impl ModelDownloader {
                     Some(length) => length,
                     None => {
                         remove_if_exists(&part_path).await;
-                        return Err(DownloaderError::Interrupted(
+                        return Err(DownloaderError::ProtocolViolation(
                             "Content-Range length overflows u64".into(),
                         ));
                     }
@@ -505,7 +540,7 @@ impl ModelDownloader {
                         .is_none_or(|end| total < end)
                 }) {
                     remove_if_exists(&part_path).await;
-                    return Err(DownloaderError::Interrupted(
+                    return Err(DownloaderError::ProtocolViolation(
                         "Content-Range total is smaller than its own end offset".into(),
                     ));
                 }
@@ -517,7 +552,7 @@ impl ModelDownloader {
                 {
                     if declared != expected_body {
                         remove_if_exists(&part_path).await;
-                        return Err(DownloaderError::Interrupted(format!(
+                        return Err(DownloaderError::ProtocolViolation(format!(
                             "206 Content-Length {declared} does not match Content-Range length {expected_body}"
                         )));
                     }
@@ -561,19 +596,30 @@ impl ModelDownloader {
         let stream_start = Instant::now();
         let mut stream_bytes_received: u64 = 0;
 
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result?;
-            file.write_all(&chunk).await?;
-            let chunk_len = chunk.len() as u64;
+        // Bounded per-chunk stall protection: abort if no bytes arrive for 20 seconds
+        const CHUNK_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+
+        loop {
+            let chunk_opt = match tokio::time::timeout(CHUNK_STALL_TIMEOUT, stream.next()).await {
+                Ok(Some(item)) => item?,
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(DownloaderError::Interrupted(
+                        "Stream stalled: no bytes received within timeout".into(),
+                    ));
+                }
+            };
+            file.write_all(&chunk_opt).await?;
+            let chunk_len = chunk_opt.len() as u64;
             stream_bytes_received = stream_bytes_received.saturating_add(chunk_len);
             body_bytes = body_bytes.checked_add(chunk_len).ok_or_else(|| {
-                DownloaderError::Interrupted("Response body length overflows u64".into())
+                DownloaderError::ProtocolViolation("Response body length overflows u64".into())
             })?;
             downloaded_bytes = downloaded_bytes.checked_add(chunk_len).ok_or_else(|| {
-                DownloaderError::Interrupted("Downloaded length overflows u64".into())
+                DownloaderError::ProtocolViolation("Downloaded length overflows u64".into())
             })?;
 
-            // Speed gate inspection: during observation window (e.g. 5s~20s), if throughput is below threshold
+            // Speed gate inspection: during observation window (e.g. 12s~30s), if throughput is below threshold
             // and this is not the last fallback mirror, abort to allow faster failover.
             let elapsed = stream_start.elapsed();
             if !is_last_fallback
@@ -603,7 +649,7 @@ impl ModelDownloader {
             if body_bytes != expected {
                 if body_bytes > expected {
                     remove_if_exists(&part_path).await;
-                    return Err(DownloaderError::Interrupted(format!(
+                    return Err(DownloaderError::ProtocolViolation(format!(
                         "206 body exceeded the declared range: got {body_bytes} bytes, expected {expected}"
                     )));
                 }
@@ -617,7 +663,7 @@ impl ModelDownloader {
             if downloaded_bytes != expected {
                 if downloaded_bytes > expected {
                     remove_if_exists(&part_path).await;
-                    return Err(DownloaderError::Interrupted(format!(
+                    return Err(DownloaderError::ProtocolViolation(format!(
                         "Stream exceeded the declared size: got {downloaded_bytes} bytes, expected {expected}"
                     )));
                 }
@@ -667,31 +713,50 @@ impl ModelDownloader {
                 is_last_fallback,
                 "Attempting model download"
             );
-            match self
-                .download_file_with_resume_internal(mirror, rel_path, target_path, is_last_fallback)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(DownloaderError::SpeedTooLow {
-                    actual_bps,
-                    threshold_bps,
-                    mirror_id,
-                }) => {
-                    warn!(
-                        mirror_id = %mirror_id,
-                        actual_bps,
-                        threshold_bps,
-                        "Throughput below speed gate threshold, failing over to next mirror"
-                    );
-                    last_error = Some(DownloaderError::SpeedTooLow {
+            // For transient network drops, allow 1 retry on the ModelScope primary mirror with Range resumption
+            // before failing over to the next candidate. SpeedTooLow aborts immediately to the next mirror.
+            let max_attempts = if mirror.is_modelscope { 2 } else { 1 };
+            let mut attempts = 0;
+            while attempts < max_attempts {
+                attempts += 1;
+                match self
+                    .download_file_with_resume_internal(mirror, rel_path, target_path, is_last_fallback)
+                    .await
+                {
+                    Ok(_) => return Ok(()),
+                    Err(DownloaderError::SpeedTooLow {
                         actual_bps,
                         threshold_bps,
                         mirror_id,
-                    });
-                }
-                Err(e) => {
-                    warn!(mirror_id = %mirror.id, error = %e, "Mirror download failed, failing over");
-                    last_error = Some(e);
+                    }) => {
+                        warn!(
+                            mirror_id = %mirror_id,
+                            actual_bps,
+                            threshold_bps,
+                            "Throughput below speed gate threshold, failing over to next mirror"
+                        );
+                        last_error = Some(DownloaderError::SpeedTooLow {
+                            actual_bps,
+                            threshold_bps,
+                            mirror_id,
+                        });
+                        break;
+                    }
+                    Err(e) if attempts < max_attempts && e.is_transient_retryable() => {
+                        warn!(
+                            mirror_id = %mirror.id,
+                            error = %e,
+                            attempt = attempts,
+                            "Mirror download encountered transient error, retrying with range resumption"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(mirror_id = %mirror.id, error = %e, "Mirror download failed, failing over");
+                        last_error = Some(e);
+                        break;
+                    }
                 }
             }
         }
