@@ -16,11 +16,13 @@ import type {
   GenerateLessonRequest,
   GraphConceptRowView,
   GraphHistoryView,
+  LearningGenerationTaskView,
   LearningStructureView,
   MemoryHealthStats,
   GeneratedLessonActivity,
   LearningGraphGenerationStatus,
   Lesson,
+  LessonGenerationAccepted,
   LessonStatus,
   QuestionEntry,
   ReviewAnswerResult,
@@ -171,8 +173,19 @@ export const learningApi = {
     httpRequest<Lesson>('GET', `${BASE}/lessons/${encodeURIComponent(id)}`),
   updateLessonProgress: (id: string, status: LessonStatus) =>
     httpRequest<void>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/progress`, { status }),
+  // 按需生成课时内容（e4 双模化默认异步）：返回 202 面（任务键 + 轮询
+  // 提示），生成在后台任务执行——断开连接不中断；调用方以 generationTasks
+  // 轮询终态（或听 learning.lesson-generation WS 流）后拉课时详情。
+  // `?wait=true` 同步臂只保留给脚本/冒烟，前端一律走异步。
   generateLesson: (id: string, request: GenerateLessonRequest = {}) =>
-    httpRequest<Lesson>('POST', `${BASE}/lessons/${encodeURIComponent(id)}/generate`, request),
+    httpRequest<LessonGenerationAccepted>(
+      'POST',
+      `${BASE}/lessons/${encodeURIComponent(id)}/generate`,
+      request
+    ),
+  // 长任务快照（课时异步生成的轮询面；响应体 `poll` 字段同指此处）
+  generationTasks: () =>
+    httpRequest<LearningGenerationTaskView[]>('GET', `${BASE}/generation-tasks`),
   // 单节重写（ADR-0003）：确定性单节管线，返回重写后的最新课时详情
   //（其余节与题目不动）；旧课时（无节清单）返回 400。feedback 为可选
   // 学习建议（ADR-0007），为空即同分布重生成。

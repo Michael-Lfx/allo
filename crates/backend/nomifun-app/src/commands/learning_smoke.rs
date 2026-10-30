@@ -146,6 +146,9 @@ struct SmokeWiring {
     /// jsonl 的同时留一份内存序——各档读数行从这里取数，`--db` 复用时不受
     /// 历史行污染。
     task_finishes: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// 课时引擎的瞬断注入计数（e4 content 档判据面）：>0 时每次课时 LLM
+    /// 开流注入一次瞬断并扣减，归零后透传。恒 0 = 纯透传（其余档零影响）。
+    lesson_flaky_remaining: Arc<std::sync::atomic::AtomicUsize>,
     /// 保持临时目录存活到命令结束（缺省从零临时库时非空）。
     _temp: Option<tempfile::TempDir>,
 }
@@ -254,6 +257,10 @@ async fn wire(
     // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
     // 自行解析 provider（OneShotDeps），不经管线 completer。首轮观测钩子把
     // system/user 追加进本次运行的 calls.jsonl（k03/k05 双臂读数面）。
+    // e4：provider 装饰钩子挂共享瞬断计数——计数 >0 时每次课时 LLM 开流
+    // 掐断一次（content 档瞬断臂的注入面），归零透传（其余档零影响）。
+    let lesson_flaky_remaining = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let flaky_counter = Arc::clone(&lesson_flaky_remaining);
     let lesson_observer = archiving.as_ref().map(|archiving| {
         let path = archiving.run_dir().join("calls.jsonl");
         Arc::new(move |record: serde_json::Value| {
@@ -279,6 +286,12 @@ async fn wire(
             },
             round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             prompt_observer: lesson_observer,
+            provider_decorator: Some(Arc::new(move |provider| {
+                nomifun_ai_agent::flaky_provider::FlakyStreamProvider::new(
+                    provider,
+                    Arc::clone(&flaky_counter),
+                )
+            })),
         },
     ));
     // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录；finish
@@ -313,6 +326,7 @@ async fn wire(
             pool,
             owner: UserId::parse(&owner_id)?,
             task_finishes,
+            lesson_flaky_remaining,
             _temp,
         },
         archiving,
@@ -2317,7 +2331,9 @@ async fn run_quiz(
 /// 断档记档（评审裁定，判据面不重构）：④（落位面）不单列——由 ③ 契约面
 /// 的管线半边「管线走通并发布」承接（见下方 `generate_lesson_content` 调
 /// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
-/// 属豁免项，不在本波判据清单。读数
+/// 属豁免项，不在本波判据清单。e4 追加⑦：瞬断注入臂——生成前掐断两次
+/// 开流再恢复（provider 层单次重试吸收第一断、门面重试环吸收第二断），
+/// 生成仍成功且重试读数 attempts_used=2/success。读数
 /// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
 /// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
@@ -2490,6 +2506,12 @@ async fn run_content(
         feedback: None,
     };
     let lesson_b_id = nomifun_common::LearningLessonId::parse(&lesson_b)?;
+    // 瞬断注入臂（e4）：生成前注入两次开流瞬断再恢复——第一断被 loop_core
+    // 的 provider 层开流单重试吸收，第二断由门面重试环吸收（retry_feedback
+    // 回灌 + 段级幂等续跑，已落库的节不重写），生成仍成功。E2E 实录形态
+    // （第二次瞬断即 BAD_GATEWAY 裸抛）在此必红。
+    wiring.lesson_flaky_remaining.store(2, std::sync::atomic::Ordering::SeqCst);
+    println!("  (transient injection: 2 stream-open cuts queued before the run)");
     // 硬判据③（契约面，管线半边）= 管线真实走通并发布：生成失败如实非零
     // 退出（无凭据临时库走到这里即报 no enabled provider——structure 冒烟
     // 同纪律）。
@@ -2506,6 +2528,33 @@ async fn run_content(
 
     println!("[2/2] hard criteria (D7: input face / clauses / contract / precedents)…");
     let mut failed: Vec<String> = Vec::new();
+    // 判据⑦（e4 瞬断注入臂）：两次注入全部被吸收（计数归零）+ 门面重试环
+    // 读数 attempts_used=2 / stop_reason=success——瞬断自愈不是靠运气，是
+    // 重试环真实跑了两试。
+    {
+        let injected_left = wiring
+            .lesson_flaky_remaining
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let stats = service.lesson_run_stats();
+        let attempts = stats.as_ref().map(|stats| stats.attempts_used).unwrap_or(0);
+        let stop_reason = stats
+            .as_ref()
+            .map(|stats| stats.stop_reason.as_str())
+            .unwrap_or("missing");
+        println!(
+            "transient read-out: injected_remaining={injected_left} attempts_used={attempts} stop_reason={stop_reason}"
+        );
+        if injected_left != 0 {
+            failed.push(format!(
+                "判据7红：瞬断注入未被全部吸收（剩余 {injected_left} 次未消费）——注入面失灵"
+            ));
+        }
+        if attempts != 2 || stop_reason != "success" {
+            failed.push(format!(
+                "判据7红：门面重试环读数异常（attempts_used={attempts}, stop_reason={stop_reason}，应为 2/success）——第二断应由重试环吸收"
+            ));
+        }
+    }
     // 观测存档行：user 字段 = 输入面（两面装配事实），system 字段 = 条款面。
     let archive = archiving.as_ref().expect("content smoke wires archiving");
     let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))

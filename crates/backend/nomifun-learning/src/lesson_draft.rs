@@ -355,6 +355,11 @@ pub struct LessonGenerationContext {
     /// 注册表在 finish 行聚合落 `learning-tasks.jsonl`。`None` = 无读数
     /// （测试/旧构造点缺省；观测面缺席零语义）。
     pub usage: Option<crate::completer::LlmUsageMeter>,
+    /// 门面重试环的反馈槽（e4，learnhub contentgen facade 的 retry_feedback
+    /// 同职能）：上次尝试因瞬断中断时，重试环在这里写下「第几次尝试、为何
+    /// 中断、已写好的节不要重写」；续跑开场（[`crate::lesson_draft`] 渲染面）
+    /// 把它注入用户轮。首试恒 `None`。
+    pub retry_feedback: Option<String>,
 }
 
 impl LessonGenerationContext {
@@ -1322,6 +1327,7 @@ mod tests {
             goal: None,
             forbidden_concepts: String::new(),
             usage: None,
+            retry_feedback: None,
         }
     }
 

@@ -2943,6 +2943,8 @@ impl AppServices {
                 round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
                 // 生产无首轮观测（冒烟存档专用）。
                 prompt_observer: None,
+                // 生产无 provider 装饰（e4 冒烟瞬断注入专用接缝）。
+                provider_decorator: None,
             },
         ));
         // Best-effort WebSocket progress for course/lesson generation —
