@@ -178,6 +178,14 @@ pub struct LiveLessonContentAgentEngine {
     /// `{method:"lesson_agent_publish", capacity_note, estimated_minutes}`。
     /// 生产接线恒 None（引擎自带 provider，不经 ArchivingCompleter）。
     pub prompt_observer: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    /// 可选 provider 装饰钩子（e4 冒烟瞬断注入面）：引擎解析出真实 provider
+    /// 后经它包装再进计数层（`None` = 直通，生产接线恒 None）。smoke content
+    /// 档注入「先掐断两次再放行」的 flaky 包装，钉「provider 层单次重试吸收
+    /// 第一断、门面重试环吸收第二断，生成仍成功」的判据——与 prompt_observer
+    /// 同一先例：测试接缝住结构体、生产零装配。
+    pub provider_decorator: Option<
+        Arc<dyn Fn(Arc<dyn LlmProvider>) -> Arc<dyn LlmProvider> + Send + Sync>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -240,6 +248,12 @@ impl LiveLessonContentAgentEngine {
         )
         .await?;
         let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
+        // 冒烟瞬断注入面（e4）：装饰钩子先包（flaky 故障在计数层的内圈——
+        // 被掐断的调用也如实计入调用数，与 CountingCompleter 的 Err 口径一致）。
+        let provider: Arc<dyn LlmProvider> = match self.provider_decorator.as_ref() {
+            Some(decorator) => decorator(provider),
+            None => provider,
+        };
         // 相位耗时读数（e1）：上下文携带任务注册表的用量句柄时，经计数包装
         // 上报每次 LLM 调用（调用数 + 输入/输出字符量），finish 行聚合落档。
         let provider: Arc<dyn LlmProvider> = match context.usage.as_ref() {
@@ -374,7 +388,11 @@ impl LiveLessonContentAgentEngine {
                     "ok": false,
                     "error": "timeout",
                 }));
-                Err(AppError::Internal(message))
+                // 显式超时 = 可重试失败（e4 错误两桶：judge 90s 形态的移植）。
+                // tokio 超时在 await 点丢弃管线 future——在途流连接随之断开，
+                // 「线程分离不可撤销，只弃其果」的 async 原生等价物；草稿与
+                // 轮次日志已留档，门面重试环把本错误归可重试桶接续。
+                Err(AppError::Timeout(message))
             }
         }
     }
@@ -748,6 +766,11 @@ fn compose_resume_user_text(
         previous_rounds.len(),
         draft_state_json
     ));
+    // 门面重试环的反馈槽（e4）：上次尝试因瞬断中断时重试环写入——模型先
+    // 知道发生了什么、该从哪继续，而不是对着无声的进度猜。
+    if let Some(feedback) = context.retry_feedback.as_deref().filter(|f| !f.trim().is_empty()) {
+        text.push_str(&format!("\n【重试反馈】{feedback}\n"));
+    }
     for line in previous_rounds {
         text.push_str("\n- ");
         text.push_str(line);
@@ -1199,6 +1222,7 @@ mod tests {
             goal: None,
             forbidden_concepts: String::new(),
             usage: None,
+            retry_feedback: None,
         }
     }
 
@@ -1506,6 +1530,7 @@ mod tests {
             deps: test_deps(),
             round_logs: Arc::new(Mutex::new(HashMap::new())),
             prompt_observer: None,
+            provider_decorator: None,
         }
     }
 
@@ -2028,6 +2053,25 @@ mod tests {
         // 新会话（无日志）不出现该段。
         let fresh = lesson_user_text(&context);
         assert!(!fresh.contains("上次会话进度"), "{fresh}");
+    }
+
+    /// e4 门面重试环的反馈槽：resume 开场渲染【重试反馈】段（上次瞬断指纹
+    /// + 段级幂等提示——认知面与 e1 的工具面执法同源）；无反馈不出现该段。
+    #[test]
+    fn resume_opening_carries_the_retry_feedback_slot() {
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.retry_feedback = Some(
+            "第 1 次尝试因瞬断中断（瞬断：连接被重置）；已写好的节已在草稿里。".into(),
+        );
+        let text = compose_resume_user_text(&context, r#"{"revision":2}"#, &[]);
+        assert!(text.contains("【重试反馈】"), "{text}");
+        assert!(text.contains("瞬断：连接被重置"), "{text}");
+
+        let mut plain = lesson_context();
+        plain.clear_grounding();
+        let no_feedback = compose_resume_user_text(&plain, r#"{"revision":1}"#, &[]);
+        assert!(!no_feedback.contains("【重试反馈】"), "{no_feedback}");
     }
 
     /// 发布帧披露 visual 声明分布（ADR-0008）：整课「无」独占即可疑的

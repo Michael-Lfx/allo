@@ -42,15 +42,43 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
     [modelChoice]
   );
 
+  // e4 异步臂轮询：任务键 → 终态。生成已脱离请求生命周期（断开连接不中
+  // 断），前端轮询 generation-tasks 快照等 done；failed/cancelled 以任务
+  // detail（后端结构化原因）抛错。快照短暂缺行（登记与查询的竞速窗口）
+  // 继续等；总时长封顶（课时生成分钟级，20 分钟已数倍于 E2E 实录）。
+  const pollLessonTask = useCallback(
+    async (taskKey: string) => {
+      const deadline = Date.now() + 20 * 60_000;
+      while (Date.now() < deadline) {
+        const tasks = await learningApi.generationTasks();
+        const task = tasks.find((item) => item.key === taskKey);
+        if (task) {
+          if (task.state === 'done') return;
+          if (task.state === 'failed') {
+            throw new Error(task.detail || t('learning.lessonGenTaskFailed'));
+          }
+          if (task.state === 'cancelled') {
+            throw new Error(t('learning.lessonGenTaskCancelled'));
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      throw new Error(t('learning.lessonGenPollTimeout'));
+    },
+    [t]
+  );
+
   // 预生成下一课时：尽力而为，失败不影响学习流程（用户仍可手动点击生成）；
-  // 模型未就绪时直接跳过，绝不用后端默认模型发起隐式生成。
+  // 模型未就绪时直接跳过，绝不用后端默认模型发起隐式生成。e4：任务后台化
+  // ——提交即入队，轮询终态后再刷新（预生成脱离本页生命周期，断连不中断）。
   const prefetching = useRef(new Set<string>());
   const prefetchLesson = useCallback(
     async (id: string) => {
       if (!modelChoice || prefetching.current.has(id)) return;
       prefetching.current.add(id);
       try {
-        await learningApi.generateLesson(id, generateRequest());
+        const accepted = await learningApi.generateLesson(id, generateRequest());
+        await pollLessonTask(accepted.task_key);
         await load();
       } catch {
         // 预生成失败可忽略
@@ -58,11 +86,12 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
         prefetching.current.delete(id);
       }
     },
-    [generateRequest, load, modelChoice]
+    [generateRequest, load, modelChoice, pollLessonTask]
   );
 
-  // 按需生成单个课时：生成当前课时并刷新；随后尽力预生成紧随其后的未生成课时。
-  // 模型未就绪时阻止无模型请求，不用后端默认模型代替用户选择。
+  // 按需生成单个课时：提交后台任务 → 轮询终态 → 刷新；随后尽力预生成紧随
+  // 其后的未生成课时。模型未就绪时阻止无模型请求，不用后端默认模型代替用
+  // 户选择。
   const generateLesson = useCallback(
     async (lesson: Lesson, allLessons?: Lesson[]) => {
       if (!modelChoice) {
@@ -71,7 +100,8 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
       }
       setBusyId(lesson.id);
       try {
-        await learningApi.generateLesson(lesson.id, generateRequest());
+        const accepted = await learningApi.generateLesson(lesson.id, generateRequest());
+        await pollLessonTask(accepted.task_key);
         await load();
         if (allLessons) {
           const index = allLessons.findIndex((item) => item.id === lesson.id);
@@ -84,7 +114,7 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
         setBusyId(null);
       }
     },
-    [generateRequest, load, modelChoice, prefetchLesson, setBusyId, t]
+    [generateRequest, load, modelChoice, pollLessonTask, prefetchLesson, setBusyId, t]
   );
 
   const updateProgress = useCallback(

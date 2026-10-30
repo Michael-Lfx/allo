@@ -21,6 +21,10 @@ pub(crate) mod idle_scanner;
 pub(crate) mod shutdown_signal;
 pub mod auxiliary_provider;
 pub mod extraction_scanner;
+/// 冒烟瞬断注入 provider（e4）：smoke content 档模拟「代理掐流两次再恢复」
+/// 的注入面；计数器恒 0 = 纯透传，生产不装配（无 feature 门——smoke 命令
+/// 在无 test-support 的常规依赖面上取用）。
+pub mod flaky_provider;
 pub mod knowledge_completer;
 pub mod knowledge_retrieval;
 pub mod knowledge_writeback;
