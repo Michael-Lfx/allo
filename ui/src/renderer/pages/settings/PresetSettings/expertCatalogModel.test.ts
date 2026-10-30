@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { IExpertListResponse } from '@/common/adapter/ipcBridge';
 import {
   EXPERT_CATEGORIES,
+  EXPERT_PAGE_SIZE,
   expertCategoryParam,
   expertDetailErrorKind,
   expertListErrorKind,
@@ -63,17 +64,20 @@ describe('expert catalog model', () => {
       calls.push(pageNumber);
       if (pageNumber === 1) {
         return page(
-          Array.from({ length: 100 }, (_, index) => ({ slug: `expert-${index}`, name: `E${index}` })),
-          101
+          Array.from({ length: EXPERT_PAGE_SIZE }, (_, index) => ({ slug: `expert-${index}`, name: `E${index}` })),
+          EXPERT_PAGE_SIZE + 1
         );
       }
-      return page([{ slug: 'expert-100', name: 'Last' }, { slug: 'expert-0', name: 'Dup' }], 101);
+      return page(
+        [{ slug: `expert-${EXPERT_PAGE_SIZE}`, name: 'Last' }, { slug: 'expert-0', name: 'Dup' }],
+        EXPERT_PAGE_SIZE + 1
+      );
     });
     expect(calls).toEqual([1, 2]);
     expect(result.truncated).toBe(false);
-    expect(result.items).toHaveLength(101);
+    expect(result.items).toHaveLength(EXPERT_PAGE_SIZE + 1);
     expect(result.items[0]?.slug).toBe('expert-0');
-    expect(result.items.at(-1)?.slug).toBe('expert-100');
+    expect(result.items.at(-1)?.slug).toBe(`expert-${EXPERT_PAGE_SIZE}`);
   });
 
   test('stops when a page is short and reports a truncated catalog at the page cap', async () => {
@@ -83,11 +87,14 @@ describe('expert catalog model', () => {
 
     const truncated = await loadAllExperts(async (pageNumber) => {
       return page([{ slug: `page-${pageNumber}`, name: 'Row' }].concat(
-        Array.from({ length: 99 }, (_, index) => ({ slug: `page-${pageNumber}-${index}`, name: 'Row' }))
+        Array.from({ length: EXPERT_PAGE_SIZE - 1 }, (_, index) => ({
+          slug: `page-${pageNumber}-${index}`,
+          name: 'Row',
+        }))
       ));
     }, 2);
     expect(truncated.truncated).toBe(true);
-    expect(truncated.items).toHaveLength(200);
+    expect(truncated.items).toHaveLength(EXPERT_PAGE_SIZE * 2);
   });
 
   test('reads prompts and team members from the detail payload', () => {

@@ -2,7 +2,7 @@ import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import type { IExpertListResponse, IExpertSummary, IExpertText } from '@/common/adapter/ipcBridge';
 import type { I18nKey } from '@/renderer/services/i18n/i18n-keys';
 
-export const EXPERT_PAGE_SIZE = 100;
+export const EXPERT_PAGE_SIZE = 24;
 export const EXPERT_MAX_PAGES = 30;
 
 /** Catalog categories. Ids match Flowy `categoryId`; labels live in i18n. */
