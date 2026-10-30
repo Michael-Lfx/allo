@@ -9,8 +9,9 @@ import type { Preset, PresetReference } from '@/common/types/agent/presetTypes';
 import type { SkillCatalogEntry } from '@/renderer/hooks/skills/useSkillCatalog';
 import type { TagFilterState } from '@/renderer/pages/settings/PresetSettings/presetUtils';
 
-import { Drawer, Input } from '@arco-design/web-react';
-import { Close, Search } from '@icon-park/react';
+import { Drawer } from '@arco-design/web-react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -161,20 +162,18 @@ const PresetPickerDrawer: React.FC<PresetPickerDrawerProps> = ({
             onClick={onClose}
             aria-label={t('common.close', { defaultValue: 'Close' })}
           >
-            <Close theme='outline' size={16} strokeWidth={3} />
+            <FlowyIcon name='close' size={16} />
           </button>
         </div>
 
         <div className={styles.drawerSearchPanel}>
-          <Input
-            prefix={<Search theme='outline' size={15} />}
+          <FlowySearch
             placeholder={t(
               activeMode === 'preset' ? 'guid.drawer.searchPreset' : 'guid.drawer.searchSkill',
               { defaultValue: activeMode === 'preset' ? 'Search preset name or description...' : 'Search Skills...' },
             )}
             value={query}
             onChange={setQuery}
-            allowClear
             className={styles.drawerSearchInput}
           />
         </div>

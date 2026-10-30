@@ -13,7 +13,7 @@ describe('Guid composer entry strip', () => {
     expect(source.includes('ComposerSkill')).toBe(false);
     expect(source.includes('activeSkillCount')).toBe(true);
     expect(source.includes('onAdjustSkills')).toBe(true);
-    expect(source.includes('Puzzle')).toBe(true);
+    expect(source.includes("name='puzzle'")).toBe(true);
     expect(source.includes('TaskProfileSelector')).toBe(false);
     expect(source.includes('taskProfile')).toBe(false);
   });
@@ -21,7 +21,7 @@ describe('Guid composer entry strip', () => {
   test('uses an icon button to leave a preset without nesting buttons', () => {
     const source = readSource(new URL('./ComposerEntryStrip.tsx', import.meta.url));
 
-    expect(source.includes('CloseSmall')).toBe(true);
+    expect(source.includes("name='close'")).toBe(true);
     expect(source.includes('aria-label={t(\'guid.entry.backToFree\'')).toBe(true);
     expect(source.includes('entryDismiss}>')).toBe(false);
   });

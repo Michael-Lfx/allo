@@ -50,7 +50,7 @@ describe('ComposerSubmitCluster', () => {
     const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
 
     expect(source.includes('autoWorkMode')).toBe(true);
-    expect(source.includes('Robot')).toBe(true);
+    expect(source.includes("name='robot'")).toBe(true);
     expect(source.includes('composer-autowork-btn')).toBe(true);
   });
 
@@ -99,8 +99,8 @@ describe('ComposerSubmitCluster', () => {
     const source = readSource(new URL('./ComposerSubmitCluster.tsx', import.meta.url));
 
     expect(source.includes('isVoiceConversation')).toBe(true);
-    expect(source.includes('PhoneCall')).toBe(true);
-    expect(source.includes('PhoneOff')).toBe(true);
+    expect(source.includes("name='phone'")).toBe(true);
+    expect(source.includes("name='phoneOff'")).toBe(true);
     expect(source.includes('const hideSpeech = isVoiceConversation || speechHidden || !ready || !available')).toBe(true);
     expect(source.includes('!isVoiceConnecting && !isVoiceStartUncertain : showSendButton')).toBe(true);
     expect(source.includes('(!hasDraft || isVoiceConnecting || isVoiceStartUncertain)')).toBe(true);

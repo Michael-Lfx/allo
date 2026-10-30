@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { ArrowCircleLeft, SettingTwo } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { prefetchSettingsPages } from '@renderer/pages/settings/prefetch';
@@ -73,21 +73,9 @@ const SiderFooter: React.FC<SiderFooterProps> = ({
   }, [isSettings]);
 
   const settingsIcon = isSettings ? (
-    <ArrowCircleLeft
-      theme='outline'
-      size='16'
-      fill='currentColor'
-      className='block leading-none'
-      style={{ lineHeight: 0 }}
-    />
+    <FlowyIcon name='arrowCircleLeft' size={16} className='block leading-none' />
   ) : (
-    <SettingTwo
-      theme='outline'
-      size='16'
-      fill='currentColor'
-      className='block leading-none'
-      style={{ lineHeight: 0 }}
-    />
+    <FlowyIcon name='settings' size={16} className='block leading-none' />
   );
 
   const settingsControl = (

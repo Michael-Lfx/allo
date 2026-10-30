@@ -4,9 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback, useEffect } from 'react';
 import classNames from 'classnames';
-import { Close } from '@icon-park/react';
 import { useResizableSplit } from '@/renderer/hooks/ui/useResizableSplit';
 
 export interface ContentAsideProps {
@@ -99,7 +99,7 @@ const ContentAside: React.FC<ContentAsideProps> = ({
           }}
           className='shrink-0 flex items-center justify-center w-22px h-22px rd-6px text-t-tertiary hover:text-t-primary hover:bg-[var(--color-fill-2)] transition-colors cursor-pointer'
         >
-          <Close theme='outline' size='14' fill='currentColor' />
+          <FlowyIcon name='close' size={14} />
         </div>
       </div>
       <div className='flex-1 min-h-0 overflow-y-auto px-14px pb-14px'>{children}</div>

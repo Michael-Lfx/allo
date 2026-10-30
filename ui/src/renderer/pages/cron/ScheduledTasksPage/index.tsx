@@ -4,7 +4,8 @@ import classNames from 'classnames';
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Button, Switch, Empty, Pagination, Spin, Tooltip, Input } from '@arco-design/web-react';
+import { Button, Switch, Empty, Pagination, Spin, Tooltip } from '@arco-design/web-react';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useLayoutContext } from '@renderer/hooks/context/LayoutContext';
 import { useAllCronJobs } from '@renderer/pages/cron/useCronJobs';
@@ -211,12 +212,11 @@ const ScheduledTasksPage: React.FC = () => {
 
         {jobs.length > 0 && (
           <>
-            <Input.Search
-              allowClear
+            <FlowySearch
               value={searchQuery}
               onChange={handleSearchChange}
               placeholder={t('cron.page.searchPlaceholder', { defaultValue: '搜索任务名称、会话、指令或调度规则' })}
-              className='w-full [&_.arco-input-inner-wrapper]:!rounded-full [&_.arco-input-inner-wrapper]:!border [&_.arco-input-inner-wrapper]:!border-solid [&_.arco-input-inner-wrapper]:!border-[var(--color-border-2)] [&_.arco-input-inner-wrapper:hover]:!border-[var(--color-border-3)] [&_.arco-input-inner-wrapper-focus]:!border-[rgb(var(--primary-6))]'
+              className='w-full'
             />
             <div className='flex items-center gap-4px' aria-label={t('cron.page.statusFilter.label')}>
               {(['all', 'active', 'paused'] as const).map((status) => {

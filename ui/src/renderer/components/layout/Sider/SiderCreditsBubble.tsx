@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
-import { Attention, CloseSmall } from '@icon-park/react';
 import classNames from 'classnames';
 import { useCredits } from '@/renderer/hooks/context/CreditsContext';
 import { useCloudAuth } from '@/renderer/hooks/context/CloudAuthContext';
@@ -111,7 +111,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
               isExhausted ? 'text-[var(--danger)]' : 'text-[var(--flowy-attention)]'
             )}
           >
-            <Attention theme='filled' size='13' fill='currentColor' />
+            <FlowyIcon name='attention' size={13} weight='fill' />
           </span>
           <span className='text-12px font-600 leading-15px text-t-primary truncate'>{title}</span>
         </div>
@@ -121,7 +121,7 @@ const SiderCreditsBubble: React.FC<SiderCreditsBubbleProps> = ({ collapsed, isMo
           className='shrink-0 flex items-center justify-center size-16px rd-4px text-t-tertiary hover:text-t-primary hover:bg-fill-2 transition-colors border-none bg-transparent cursor-pointer p-0'
           onClick={handleDismiss}
         >
-          <CloseSmall theme='outline' size='13' fill='currentColor' />
+          <FlowyIcon name='close' size={13} />
         </button>
       </div>
 

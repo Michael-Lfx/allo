@@ -35,6 +35,11 @@ import './styles/canvas-utility-shield.css';
 import './styles/wallpaperScene.css';
 import '@/renderer/components/chat/SendBox/sendbox.css';
 import './styles/themes/index.css';
+import { hostOs } from './utils/platform';
+
+if (typeof document !== 'undefined') {
+  document.documentElement.classList.add(`platform-${hostOs()}`);
+}
 
 // Config service — kick off initialization before i18n / theme modules load,
 // so their startup paths (which await configService.whenReady()) observe the

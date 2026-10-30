@@ -1,16 +1,8 @@
 /* Arco Design custom overrides - non-theme related */
 
-/* Arco's arco.css puts 'Inter' first in font-family, which causes very thin
-   text on systems that have Inter installed. Override to use system fonts. */
-/* Notion-style font stack: system-native rendering with proper emoji + CJK fallback */
-html,
-body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, 'Apple Color Emoji', Arial, sans-serif,
-    'Segoe UI Emoji', 'Segoe UI Symbol', 'PingFang SC', 'Microsoft YaHei';
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+/* Arco's arco.css puts Inter first. The product face lives on
+   --flowy-font-sans in flowy-visual-system.css, which loads after this sheet.
+   Smoothing is platform-specific there: macOS antialiased, Windows ClearType. */
 
 /* Keep the shared Popover shell slightly softer than Arco's default while
    preserving component-specific popover treatments below. */
@@ -52,7 +44,7 @@ body.flowy-is-dragging-workpath * {
 button:not([role]):not([data-button-shape='pill']):not([data-button-shape='circle']):not(.arco-btn-shape-circle):not(.arco-btn-shape-round):not([class~='rd-full']),
 .arco-btn:not(.arco-btn-shape-circle):not(.arco-btn-shape-round),
 [role='button']:not([data-button-shape='pill']):not([data-button-shape='circle']):not([class~='rd-full']) {
-  border-radius: 6px !important;
+  border-radius: var(--flowy-radius-control, 6px) !important;
 }
 
 /* Icon-only actions explicitly declared as circular keep their round shape. */

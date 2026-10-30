@@ -4,10 +4,14 @@
  */
 
 :root {
-  /* Typography */
-  --flowy-font-sans: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
-  --flowy-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
-  --code-font: var(--flowy-font-mono, 'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, ui-monospace, monospace);
+  /* Typography — system faces only. Mac resolves SF, Windows resolves Segoe Text.
+     CJK falls through after the Latin system face. Do not set letter-spacing;
+     the system font does its own optical tracking. Do not bundle SF Pro. */
+  --flowy-font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --flowy-font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Cascadia Code', monospace;
+  --code-font: var(--flowy-font-mono, ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace);
   --code-token-text: #1f2328;
   --code-token-keyword: #cf222e;
   --code-token-function: #8250df;
@@ -19,12 +23,14 @@
   --code-token-variable: #953800;
   --code-token-punctuation: #57606a;
   --code-bg: #f6f8fa;
-  --flowy-text-display: 28px;
-  --flowy-text-title: 20px;
-  --flowy-text-heading: 16px;
-  --flowy-text-body: 14px;
-  --flowy-text-caption: 12px;
+  --flowy-text-display: 22px;
+  --flowy-text-title: 17px;
+  --flowy-text-heading: 17px;
+  --flowy-text-body: 15px;
+  --flowy-text-control: 13px;
+  --flowy-text-caption: 11px;
   --flowy-text-micro: 11px;
+  --flowy-leading-control: 18px;
   --flowy-leading-tight: 1.25;
   --flowy-leading-body: 1.5;
   --flowy-weight-regular: 400;
@@ -41,12 +47,22 @@
   --flowy-space-7: 40px;
   --flowy-space-8: 48px;
 
-  /* Radius */
-  --flowy-radius-sm: 6px;
-  --flowy-radius-md: 8px;
+  /* Radius — concentric: control 6 inside field 8 inside panel 12. */
+  --flowy-radius-control: 6px;
+  --flowy-radius-field: 8px;
+  --flowy-radius-sm: var(--flowy-radius-control);
+  --flowy-radius-md: var(--flowy-radius-field);
   --flowy-radius-lg: 12px;
   --flowy-radius-xl: 16px;
   --flowy-radius-pill: 999px;
+
+  /* Controls */
+  --flowy-control-height: 28px;
+  --flowy-search-height: 32px;
+  --flowy-search-height-compact: 28px;
+  --flowy-icon-size: 16px;
+  --flowy-quiet-hover: color-mix(in srgb, var(--flowy-text-primary, #1d1d1f) 6%, transparent);
+  --flowy-quiet-pressed: color-mix(in srgb, var(--flowy-text-primary, #1d1d1f) 10%, transparent);
 
   /* Borders */
   --flowy-border-hairline: 1px;
@@ -63,23 +79,25 @@
   --flowy-accent: #0f766e;
   --flowy-accent-fg: #ffffff;
   --flowy-accent-muted: color-mix(in srgb, var(--flowy-accent) 14%, transparent);
-  --flowy-ink: #0f172a;
+  --flowy-ink: #1d1d1f;
+  --flowy-ink-button: #1d1d1f;
+  --flowy-ink-button-fg: #f5f5f7;
   --flowy-success: #15803d;
   --flowy-warning: #b45309;
   --flowy-danger: #b91c1c;
   --flowy-info: #0369a1;
 
   /* Legacy Ink Studio surfaces — retained as fallbacks for external themes. */
-  --flowy-surface-0: #f8fafc;
+  --flowy-surface-0: #f5f5f7;
   --flowy-surface-1: #ffffff;
-  --flowy-surface-2: #f1f5f9;
-  --flowy-surface-3: #e2e8f0;
+  --flowy-surface-2: #ebebed;
+  --flowy-surface-3: #dcdcde;
   --flowy-border: color-mix(in srgb, var(--flowy-ink) 10%, transparent);
   --flowy-border-strong-color: color-mix(in srgb, var(--flowy-ink) 18%, transparent);
-  --flowy-text-1: #0f172a;
-  --flowy-text-2: #475569;
-  --flowy-text-3: #64748b;
-  --flowy-text-4: #94a3b8;
+  --flowy-text-1: #1d1d1f;
+  --flowy-text-2: #424245;
+  --flowy-text-3: #6e6e73;
+  --flowy-text-4: #8e8e93;
   --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 45%, transparent);
   --flowy-overlay-scrim: color-mix(in srgb, #020617 45%, transparent);
   --flowy-modal-radius: var(--flowy-radius-lg);
@@ -99,11 +117,7 @@
   --flowy-interactive: var(--bg-2, var(--flowy-surface-2));
   --flowy-interactive-hover: var(--bg-hover, var(--bg-3, var(--flowy-surface-3)));
   --flowy-interactive-pressed: var(--bg-active, var(--bg-3, var(--flowy-surface-3)));
-  --flowy-selected-bg: color-mix(
-    in srgb,
-    rgb(var(--primary-6, 15, 118, 110)) 14%,
-    var(--flowy-interactive)
-  );
+  --flowy-selected-bg: color-mix(in srgb, var(--flowy-accent) 8%, var(--flowy-interactive));
   --flowy-selected-fg: var(--text-primary, var(--flowy-text-1));
   --flowy-text-primary: var(--text-primary, var(--color-text-1, var(--flowy-text-1)));
   --flowy-text-secondary: var(--text-secondary, var(--color-text-2, var(--flowy-text-2)));
@@ -128,22 +142,24 @@ body[arco-theme='dark'] {
   --flowy-accent: #2dd4bf;
   --flowy-accent-fg: #042f2e;
   --flowy-accent-muted: color-mix(in srgb, var(--flowy-accent) 18%, transparent);
-  --flowy-ink: #e2e8f0;
+  --flowy-ink: #f5f5f7;
+  --flowy-ink-button: #f5f5f7;
+  --flowy-ink-button-fg: #1c1c1e;
   --flowy-success: #4ade80;
   --flowy-warning: #fbbf24;
   --flowy-danger: #f87171;
   --flowy-info: #38bdf8;
 
-  --flowy-surface-0: #0b1220;
-  --flowy-surface-1: #111827;
-  --flowy-surface-2: #1f2937;
-  --flowy-surface-3: #334155;
-  --flowy-border: color-mix(in srgb, #e2e8f0 12%, transparent);
-  --flowy-border-strong-color: color-mix(in srgb, #e2e8f0 22%, transparent);
-  --flowy-text-1: #f8fafc;
-  --flowy-text-2: #cbd5e1;
-  --flowy-text-3: #94a3b8;
-  --flowy-text-4: #64748b;
+  --flowy-surface-0: #1c1c1e;
+  --flowy-surface-1: #2c2c2e;
+  --flowy-surface-2: #3a3a3c;
+  --flowy-surface-3: #48484a;
+  --flowy-border: color-mix(in srgb, #f5f5f7 12%, transparent);
+  --flowy-border-strong-color: color-mix(in srgb, #f5f5f7 22%, transparent);
+  --flowy-text-1: #f5f5f7;
+  --flowy-text-2: #aeaeb2;
+  --flowy-text-3: #8e8e93;
+  --flowy-text-4: #636366;
   --flowy-focus-ring: color-mix(in srgb, var(--flowy-accent) 55%, transparent);
   --flowy-overlay-scrim: color-mix(in srgb, #000 62%, transparent);
   --flowy-modal-shadow:
@@ -161,6 +177,35 @@ body[arco-theme='dark'] {
   --code-token-variable: #ffa657;
   --code-token-punctuation: #8b949e;
   --code-bg: #0d1117;
+}
+
+html,
+body {
+  font-family: var(--flowy-font-sans);
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+html.platform-macos {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.flowy-type-control {
+  font-family: var(--flowy-font-sans);
+  font-size: var(--flowy-text-control);
+  line-height: var(--flowy-leading-control);
+  font-weight: var(--flowy-weight-medium);
+  color: var(--flowy-text-primary);
+}
+
+.flowy-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.flowy-icon {
+  display: block;
+  flex-shrink: 0;
 }
 
 .flowy-type-display {
@@ -211,12 +256,13 @@ body[arco-theme='dark'] {
 
 .flowy-interactive {
   transition:
-    transform var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
+    background-color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
+    color var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out),
     opacity var(--flowy-motion-fast, 120ms) var(--flowy-ease-move, ease-out);
 }
 
 .flowy-interactive:active {
-  transform: scale(0.985);
+  background-color: var(--flowy-quiet-pressed);
 }
 
 .flowy-interactive:focus-visible {
@@ -230,7 +276,7 @@ body[arco-theme='dark'] {
   }
 
   .flowy-interactive:active {
-    transform: none;
+    background-color: transparent;
   }
 }
 

@@ -1,6 +1,6 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback } from 'react';
 import classNames from 'classnames';
-import { Download } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
@@ -68,7 +68,7 @@ const TitlebarUpdateButton: React.FC<TitlebarUpdateButtonProps> = ({ iconSize, s
         aria-label={tooltip}
         data-tauri-no-drag
       >
-        <Download theme='outline' size={iconSize} fill='currentColor' strokeWidth={strokeWidth} />
+        <FlowyIcon name='download' size={iconSize} />
         <UpdateBadge ready={readyToInstall} />
       </button>
     </InstantHoverTooltip>

@@ -11,7 +11,7 @@
     },
     "ui": {
       "name": "@nomifun-tauri/ui",
-      "version": "1.6.9",
+      "version": "1.7.0",
       "dependencies": {
         "@airwallex/components-sdk": "1.28.3",
         "@arco-design/web-react": "^2.66.1",
@@ -36,6 +36,7 @@
         "@mediapipe/tasks-vision": "^1.0.1",
         "@monaco-editor/react": "^4.7.0",
         "@napi-rs/canvas": "^0.1.100",
+        "@phosphor-icons/react": "^2.1.10",
         "@react-three/drei": "^10.7.8",
         "@react-three/fiber": "^9.7.0",
         "@sentry/react": "^10.71.0",
@@ -602,6 +603,8 @@
     "@oxc-parser/binding-win32-x64-msvc": ["@oxc-parser/binding-win32-x64-msvc@0.131.0", "https://registry.npmmirror.com/@oxc-parser/binding-win32-x64-msvc/-/binding-win32-x64-msvc-0.131.0.tgz", { "os": "win32", "cpu": "x64" }, "sha512-o14Hk8dAyiEUMFEWEgmAwFZvBt1RzAYLM3xeQ+5315JXgVYhoemivgYcbYVRbsFkS71ShMGlAFE0kPnr460rww=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.131.0", "https://registry.npmmirror.com/@oxc-project/types/-/types-0.131.0.tgz", {}, "sha512-PgnWDfV0h+b16XNKbXU7Daib/BFSt/J2mEzfYIBu6JB/wNdlU+kVYXCkGA1A9fWkTbOgbjh4e6NhPeQOYvFhEA=="],
+
+    "@phosphor-icons/react": ["@phosphor-icons/react@2.1.10", "", { "peerDependencies": { "react": ">= 16.8", "react-dom": ">= 16.8" } }, "sha512-vt8Tvq8GLjheAZZYa+YG/pW7HDbov8El/MANW8pOAz4eGxrwhnbfrQZq0Cp4q8zBEu8NIhHdnr+r8thnfRSNYA=="],
 
     "@polka/url": ["@polka/url@1.0.0-next.29", "https://registry.npmmirror.com/@polka/url/-/url-1.0.0-next.29.tgz", {}, "sha512-wwQAWhWSuHaag8c4q/KN/vCoeOJYshAIvMQwD4GpSb3OiZklFfvAgmj0VCBBImRpuF/aFgIRzllXlVX93Jevww=="],
 

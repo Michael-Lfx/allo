@@ -1,10 +1,10 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Modal } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { CheckOne, EditTwo, Plus } from '@icon-park/react';
 import classNames from 'classnames';
 import { ThemeSwitcher } from '@renderer/components/settings/ThemeSwitcher';
 import FontSizeControl from '@renderer/components/settings/FontSizeControl';
@@ -120,14 +120,14 @@ const SiderThemePanel: React.FC<SiderThemePanelProps> = ({ className, onBeforeOp
                       {displayName}
                     </span>
                   </button>
-                  {active && <CheckOne theme='filled' size='14' fill='rgb(var(--primary-6))' className='shrink-0' />}
+                  {active && <FlowyIcon name='checkCircle' size={14} weight='fill' className='shrink-0' />}
                   <button
                     type='button'
                     onClick={() => openModal(theme)}
                     aria-label={t('settings.cssTheme.editTheme')}
                     className='shrink-0 opacity-0 group-hover:opacity-100 size-20px flex items-center justify-center rd-4px text-t-tertiary hover:text-primary-6 hover:bg-fill-3 cursor-pointer border-none bg-transparent transition-opacity'
                   >
-                    <EditTwo theme='outline' size='12' fill='currentColor' />
+                    <FlowyIcon name='edit' size={12} />
                   </button>
                 </div>
               );
@@ -139,7 +139,7 @@ const SiderThemePanel: React.FC<SiderThemePanelProps> = ({ className, onBeforeOp
               className='flex items-center gap-6px h-28px px-6px rd-6px text-12px text-t-secondary hover:text-primary-6 hover:bg-fill-2 cursor-pointer border-none bg-transparent transition-colors'
             >
               <span className='size-12px shrink-0 flex items-center justify-center'>
-                <Plus theme='outline' size='12' fill='currentColor' />
+                <FlowyIcon name='plus' size={12} />
               </span>
               <span className='flex-1 min-w-0 truncate text-left'>{t('settings.cssTheme.addManually')}</span>
             </button>

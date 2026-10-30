@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Lightning } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -32,13 +32,7 @@ const SiderMcpEntry: React.FC<SiderMcpEntryProps> = ({ isMobile, isActive, colla
           {...navRowProps(onClick, label)}
           onClick={onClick}
         >
-          <Lightning
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='lightning' size={20} className='block leading-none shrink-0' />
         </div>
       </Tooltip>
     );
@@ -56,13 +50,7 @@ const SiderMcpEntry: React.FC<SiderMcpEntryProps> = ({ isMobile, isActive, colla
           onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <Lightning
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='lightning' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>

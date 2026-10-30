@@ -8,7 +8,7 @@
   --conversation-search-surface-bg: rgba(247, 248, 250, 0.92);
   --conversation-search-input-bg: rgba(255, 255, 255, 0.94);
   --conversation-search-input-border: rgba(196, 201, 209, 0.78);
-  --conversation-search-input-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 14px rgba(15, 23, 42, 0.05);
+  --conversation-search-input-shadow: 0 1px 2px rgba(29, 29, 31, 0.05), 0 6px 14px rgba(29, 29, 31, 0.05);
   --conversation-search-divider: rgba(229, 230, 235, 0.72);
   --conversation-search-hover-bg: rgba(243, 244, 246, 0.74);
   --conversation-search-highlight-fg: rgb(var(--primary-6));
@@ -163,20 +163,24 @@ body[arco-theme='dark'] .conversation-search-modal {
 }
 
 .conversation-search-modal__searchbar {
-  height: 38px;
+  height: var(--flowy-search-height, 32px);
   display: flex;
   align-items: center;
   gap: 8px;
   background: var(--conversation-search-input-bg) !important;
-  border: 1px solid var(--conversation-search-input-border) !important;
+  border: 1px solid transparent !important;
   box-shadow: none !important;
-  border-radius: 10px;
+  border-radius: var(--flowy-radius-field, 8px);
   padding: 0 10px 0 12px;
 }
 
+.conversation-search-modal__searchbar:hover {
+  border-color: var(--color-border-3) !important;
+}
+
 .conversation-search-modal__searchbar:focus-within {
-  border-color: rgba(var(--primary-6), 0.58) !important;
-  box-shadow: 0 0 0 2px rgba(var(--primary-6), 0.12) !important;
+  border-color: var(--flowy-accent, #0f766e) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--flowy-accent, #0f766e) 16%, transparent) !important;
 }
 
 .conversation-search-modal__search-icon {
@@ -192,7 +196,8 @@ body[arco-theme='dark'] .conversation-search-modal {
   border: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--flowy-text-control, 13px);
+  font-weight: 400;
   outline: none;
 }
 

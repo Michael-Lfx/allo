@@ -1,10 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Config, Down, Right, Puzzle, Tool } from '@icon-park/react';
-import { GraduationCap } from 'lucide-react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
@@ -55,21 +54,21 @@ const SiderConfigGroup: React.FC<SiderConfigGroupProps> = ({
       label: t('settings.presetsHub.railTitle', { defaultValue: 'Experts' }),
       active: presetsActive,
       onClick: onPresets,
-      icon: <GraduationCap size={14} strokeWidth={2} className='block' />,
+      icon: <FlowyIcon name='graduationCap' size={14} className='block' />,
     },
     {
       id: 'skills',
       label: t('settings.skillsHub.railTitle', { defaultValue: 'Skills' }),
       active: skillsActive,
       onClick: onSkills,
-      icon: <Puzzle theme='outline' size='14' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />,
+      icon: <FlowyIcon name='puzzle' size={14} className='block leading-none' />,
     },
     {
       id: 'mcp',
       label: t('settings.mcpHub.railTitle', { defaultValue: 'MCP' }),
       active: mcpActive,
       onClick: onMcp,
-      icon: <Tool theme='outline' size='14' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />,
+      icon: <FlowyIcon name='tool' size={14} className='block leading-none' />,
     },
   ];
 
@@ -84,7 +83,7 @@ const SiderConfigGroup: React.FC<SiderConfigGroupProps> = ({
           onClick={onPresets}
           data-testid='sider-config-collapsed'
         >
-          <Config theme='outline' size='20' fill='currentColor' className='block leading-none shrink-0' style={{ lineHeight: 0 }} />
+          <FlowyIcon name='config' size={20} className='block leading-none shrink-0' />
         </div>
       </Tooltip>
     );
@@ -103,14 +102,14 @@ const SiderConfigGroup: React.FC<SiderConfigGroupProps> = ({
         aria-expanded={expanded}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <Config theme='outline' size='16' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />
+          <FlowyIcon name='config' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px flex-1 text-left'>{groupLabel}</span>
         <span className='size-16px flex items-center justify-center text-t-tertiary'>
           {expanded ? (
-            <Down theme='outline' size='12' fill='currentColor' />
+            <FlowyIcon name='down' size={12} />
           ) : (
-            <Right theme='outline' size='12' fill='currentColor' />
+            <FlowyIcon name='right' size={12} />
           )}
         </span>
       </button>

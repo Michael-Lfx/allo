@@ -1,3 +1,4 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { ipcBridge } from '@/common';
 import { configService } from '@/common/config/configService';
 import type { IMcpServer } from '@/common/config/storage';
@@ -77,7 +78,6 @@ import { markLaunchInteractive } from '@/renderer/utils/analytics/launchTelemetr
 import { resolveGuidReadiness } from './readiness/guidReadiness';
 import { ConfigProvider } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import { Aiming, Paperclip } from '@icon-park/react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -740,7 +740,7 @@ const GuidPage: React.FC = () => {
         key: 'files',
         label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
         section: t('common.add'),
-        icon: <Paperclip theme='outline' size='17' />,
+        icon: <FlowyIcon name='paperclip' size={17} />,
       },
       ...(supportsHomeGoalCommand
         ? [
@@ -748,7 +748,7 @@ const GuidPage: React.FC = () => {
               key: 'goal',
               label: t('conversation.goal.chip.label', { defaultValue: 'Goal' }),
               description: t('guid.goalMode.tooltip'),
-              icon: <Aiming theme='outline' size='17' />,
+              icon: <FlowyIcon name='aiming' size={17} />,
             },
           ]
         : []),

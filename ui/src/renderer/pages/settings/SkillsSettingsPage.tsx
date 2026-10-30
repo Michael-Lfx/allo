@@ -2,7 +2,7 @@
  * Skill store — a primary-rail destination.
  * The catalog is the default surface; `?view=installed` shows the local library.
  */
-import { Search } from '@icon-park/react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate } from 'react-router-dom';
@@ -88,9 +88,9 @@ const SkillsSettingsPage: React.FC = () => {
                 value={searchQuery}
                 onChange={setSearchQuery}
                 data-testid='capability-hub-search'
-                className='capability-hub-search w-full'
+                className='capability-hub-search flowy-search w-full'
                 placeholder={searchPlaceholder}
-                prefix={<Search size={16} fill='currentColor' />}
+                prefix={<FlowyIcon name='search' size={14} />}
               />
               <div className='shrink-0' data-testid='capability-hub-installed'>
                 <FilterPills

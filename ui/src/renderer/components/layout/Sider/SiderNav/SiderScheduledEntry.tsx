@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { AlarmClock } from '@icon-park/react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
@@ -68,16 +68,10 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
           aria-label={label}
           aria-current={isActive ? 'page' : undefined}
         >
-          <AlarmClock
-            theme='outline'
-            size='15'
-            fill='currentColor'
-            className={classNames(
+          <FlowyIcon name='alarm' size={15} className={classNames(
               'block leading-none shrink-0 transition-colors duration-180',
               isActive ? 'text-primary-6' : 'text-t-tertiary group-hover:text-t-primary'
-            )}
-            style={{ lineHeight: 0 }}
-          />
+            )} />
         </div>
       </InstantHoverTooltip>
     );
@@ -98,13 +92,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
           data-sider-nav-entry
           data-active={isActive ? 'true' : 'false'}
         >
-          <AlarmClock
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='alarm' size={20} className='block leading-none shrink-0' />
         </div>
       </Tooltip>
     );
@@ -126,13 +114,7 @@ const SiderScheduledEntry: React.FC<SiderScheduledEntryProps> = ({
         data-active={isActive ? 'true' : 'false'}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <AlarmClock
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='alarm' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>

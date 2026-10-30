@@ -46,6 +46,7 @@ const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({ presets, tagById, loc
         <Button
           type='secondary'
           size='small'
+          className='flowy-icon-text-btn'
           icon={<Plus size={14} fill='currentColor' />}
           onClick={onCreate}
           data-testid='btn-create-expert'

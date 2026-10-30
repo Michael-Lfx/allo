@@ -1,5 +1,6 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import type { IMcpServer } from '@/common/config/storage';
 import type { McpServerId } from '@/common/types/ids';
 import AgentModeSelector from '@/renderer/components/agent/AgentModeSelector';
@@ -12,7 +13,6 @@ import ComposerSubmitCluster from '@/renderer/components/chat/ComposerSubmitClus
 import type { DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Checkbox, Dropdown, Menu } from '@arco-design/web-react';
-import { Aiming, CloseSmall, Plus, Shield, Tool } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/renderer/components/chat/SendBox/sendbox.css';
@@ -176,7 +176,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               shape='circle'
               size='small'
               className='sendbox-composer-plus-btn flowy-button-icon'
-              icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+              icon={<FlowyIcon name='plus' size={16} />}
               onClick={onOpenAddMenu}
               data-testid='file-upload-btn'
               aria-label={t('common.add')}
@@ -189,7 +189,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
               type='text'
               shape='circle'
               size='small'
-              icon={<Tool theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+              icon={<FlowyIcon name='tool' size={16} />}
               title={mcpTriggerLabel}
               aria-label={mcpTriggerLabel}
               data-testid='guid-mcp-menu-btn'
@@ -202,7 +202,7 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             compact
             initialMode={selectedMode}
             onModeSelect={onModeSelect}
-            compactLeadingIcon={<Shield theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+            compactLeadingIcon={<FlowyIcon name='shield' size={16} />}
             modeLabelFormatter={getModeDisplayLabel}
           />
         )}
@@ -219,10 +219,10 @@ const GuidActionRow: React.FC<GuidActionRowProps> = ({
             <span className={`${styles.actionGoalButtonContent} flowy-button-inline-content`}>
               <span className={styles.actionGoalChipIcon} aria-hidden='true'>
                 <span className={styles.actionGoalChipMark}>
-                  <Aiming theme='outline' size='14' strokeWidth={3} fill='currentColor' />
+                  <FlowyIcon name='aiming' size={14} />
                 </span>
                 <span className={styles.actionGoalChipClose}>
-                  <CloseSmall theme='outline' size='12' strokeWidth={5} fill='currentColor' />
+                  <FlowyIcon name='close' size={12} />
                 </span>
               </span>
               <span className={styles.actionGoalChipLabel}>

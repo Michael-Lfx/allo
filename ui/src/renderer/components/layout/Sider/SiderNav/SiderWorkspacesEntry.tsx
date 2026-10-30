@@ -1,8 +1,8 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useCallback } from 'react';
 import { Tooltip } from '@arco-design/web-react';
-import { BookOpen } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
@@ -42,13 +42,7 @@ const SiderWorkspacesEntry: React.FC<SiderWorkspacesEntryProps> = ({
           aria-label={label}
           data-testid='sider-workspaces-entry'
         >
-          <BookOpen
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='bookOpen' size={20} className='block leading-none shrink-0' />
         </button>
       </Tooltip>
     );
@@ -68,13 +62,7 @@ const SiderWorkspacesEntry: React.FC<SiderWorkspacesEntryProps> = ({
         data-testid='sider-workspaces-entry'
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <BookOpen
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='bookOpen' size={16} className='block leading-none' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </button>

@@ -1,5 +1,5 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useState } from 'react';
-import { Minus, CloseSmall } from '@icon-park/react';
 import { ipcBridge } from '@/common';
 
 const WindowMaximizeIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
@@ -94,7 +94,7 @@ const WindowControls: React.FC = () => {
         data-tauri-no-drag
         data-tauri-drag-region='false'
       >
-        <Minus theme='outline' size='14' fill='currentColor' strokeWidth={4} />
+        <FlowyIcon name='minus' size={14} />
       </button>
       <button
         type='button'
@@ -116,7 +116,7 @@ const WindowControls: React.FC = () => {
         data-tauri-no-drag
         data-tauri-drag-region='false'
       >
-        <CloseSmall theme='outline' size='16' fill='currentColor' strokeWidth={3} />
+        <FlowyIcon name='close' size={16} />
       </button>
     </div>
   );

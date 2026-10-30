@@ -1,8 +1,8 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import classNames from 'classnames';
-import { Down, Right } from '@icon-park/react';
 
 interface SiderSectionHeaderProps {
   /** Already-translated section label (e.g. "工作"). */
@@ -83,9 +83,9 @@ const SiderSectionHeader: React.FC<SiderSectionHeaderProps> = ({
       {collapsible && (
         <span className='mr-4px flex items-center shrink-0 opacity-60 group-hover:opacity-100 transition-opacity'>
           {expanded ? (
-            <Down theme='outline' size='10' strokeWidth={4} fill='currentColor' />
+            <FlowyIcon name='down' size={10} />
           ) : (
-            <Right theme='outline' size='10' strokeWidth={4} fill='currentColor' />
+            <FlowyIcon name='right' size={10} />
           )}
         </span>
       )}
