@@ -113,6 +113,8 @@ pub use models::{
 };
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+/// 课时生成双模面（e4）：异步臂 202 响应体 + 门面重试环读数（smoke 判据）。
+pub use service::{LessonGenerationAccepted, LessonRunStats};
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档注册进 `ArchivingCompleter`
 /// 时引用同一常量——占位文本单源（判底/作答原文不进观测面）。
 pub use service::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};

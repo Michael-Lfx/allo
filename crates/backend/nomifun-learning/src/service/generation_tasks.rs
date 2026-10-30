@@ -27,7 +27,8 @@
 //! - **真取消**：每个任务一枚 token；任务体在检查点轮询 + 经
 //!   [`CancellationCompleter`] 在 LLM 调用内 `select!` 真中断（中断 = 断
 //!   HTTP；批事务原子落库 = 中断零落库）。课时内容循环尚未接 token
-//!   （ADR-0004 显式差异，断开请求即中断）——对它的取消请求如实拒绝
+//!   （ADR-0004 显式差异）——e4 起课时任务已后台化（脱离请求生命周期，
+//!   断连**不再**中断生成），远程取消仍未接线，对它的取消请求如实拒绝
 //!   （排队期课时任务取消安全：body 零执行，不涉及 token 接线）。
 //! - **观测旁路**：begin/finish 两型 JSONL 行经注入的 observer 旁路落盘
 //!   （非执法；observer 缺席或写失败都静默降级）。
@@ -325,6 +326,24 @@ impl GenerationTaskRegistry {
         node_id: Option<&str>,
         topic: &str,
     ) -> Result<GenerationTaskGuard, AppError> {
+        let key = self.pre_register(kind, course_id, node_id, topic)?;
+        self.begin_registered(key).await
+    }
+
+    /// 登记（快路径，不等待准入）：同步落 `queued` 记录（gate off = 直落
+    /// running，与 [`Self::begin`] 同临界区语义）+ 排队读数 + begin 观测行，
+    /// 立即返回任务键。准入等待与 body 执行由调用方经 [`Self::begin_registered`]
+    /// 在**任意任务生命周期**接续——e4 课时后台化即：HTTP 请求只登记（202
+    /// 秒回，满闸也不等），spawn 出的脱离任务再等准入、跑完 body（断连不
+    /// 取消）。同键已有 `queued|running` 记录 = Conflict（防双击双跑，与
+    /// begin 同面）。
+    pub(crate) fn pre_register(
+        &self,
+        kind: &'static str,
+        course_id: &str,
+        node_id: Option<&str>,
+        topic: &str,
+    ) -> Result<String, AppError> {
         let key = Self::key(kind, course_id, node_id);
         let token = CancellationToken::new();
         let gated = self.gate.is_some();
@@ -370,8 +389,28 @@ impl GenerationTaskRegistry {
             "at": now_ms(),
         })
         .to_string());
+        Ok(key)
+    }
 
-        // —— 过闸等待：许可到手后同锁复查终态（见方法注释第 3 步）。
+    /// 接续一个已登记任务（[`Self::pre_register`] 的下半程）：等闸准入 +
+    /// 同锁复查终态，返回任务 guard。排队期取消 = Err（取消冲突文案，body
+    /// 零执行，终态已由取消侧落账）。
+    pub(crate) async fn begin_registered(
+        self: &Arc<Self>,
+        key: String,
+    ) -> Result<GenerationTaskGuard, AppError> {
+        // 任务令牌在登记时已入册（cancel 触发的就是它）：guard 持同一枚，
+        // 两臂一致。
+        let token = {
+            let tasks = self.tasks.lock().expect("generation task registry poisoned");
+            tasks
+                .get(&key)
+                .map(|record| record.token.clone())
+                .ok_or_else(|| {
+                    AppError::Internal(format!("generation task record vanished: {key}"))
+                })?
+        };
+        // —— 过闸等待：许可到手后同锁复查终态（见 begin 注释第 3 步）。
         let permit = match self.gate.clone() {
             None => GatePermit::uncounted(self),
             Some(semaphore) => {
@@ -514,7 +553,7 @@ impl GenerationTaskRegistry {
         }
         if record.kind == KIND_LESSON {
             return Err(AppError::Conflict(
-                "课时内容生成暂不支持远程取消：请求断开即中断".into(),
+                "课时内容生成暂不支持远程取消：任务已后台运行（断连不中断），取消接线另议".into(),
             ));
         }
         record.state = STATE_CANCELLED;
@@ -1101,6 +1140,90 @@ mod tests {
                 .state,
             STATE_DONE
         );
+    }
+
+    /// e4 登记面拆分：`pre_register` 同步落 queued 记录（快照立即可见，满
+    /// 闸也不等待——HTTP 202 秒回的地基），`begin_registered` 在脱离任务里
+    /// 随后准入跑完 body。
+    #[tokio::test]
+    async fn pre_register_is_immediate_and_begin_registered_admits_later() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+
+        // 满闸：pre_register 不等准入，queued 记录同步可见。
+        let key = registry
+            .pre_register(KIND_LESSON, "c", Some("l"), "detached")
+            .expect("register must not wait for admission");
+        assert_eq!(key, "lesson:c:l");
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == key)
+            .expect("queued record visible immediately after pre_register");
+        assert_eq!(view.state, STATE_QUEUED);
+
+        // 同键二次登记拒绝（防双击双跑，与 begin 同面）。
+        assert!(registry
+            .pre_register(KIND_LESSON, "c", Some("l"), "dup")
+            .is_err());
+
+        // 脱离任务里接续：放行在跑占位 → 空位释放 → 准入迁移 running、跑完
+        // 收 done（排队等待发生在任务侧，不占提交方）。
+        let runner = {
+            let registry = Arc::clone(&registry);
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                let guard = registry.begin_registered(key).await?;
+                gate.arrive();
+                gate.wait_open(Duration::from_secs(10))
+                    .await
+                    .map_err(AppError::Conflict)?;
+                guard.finish_done("detached done");
+                Ok::<(), AppError>(())
+            })
+        };
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+        runner.await.unwrap().unwrap();
+        // 注册表内的终态（queued → running → done 可能快到 RUNNING 观察不
+        // 到——登记时点 queued 已在上面断过，这里只钉终态）。
+        let state = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == "lesson:c:l")
+            .unwrap()
+            .state;
+        assert_eq!(state, STATE_DONE);
+    }
+
+    /// e4 排队取消窗口在拆分面上同样闭合：登记后取消 → `begin_registered`
+    /// 返回取消冲突，body 零执行（取消侧先写终态再触发 token 的不变式由
+    /// pre_register/begin_registered 共享同一把锁承载）。
+    #[tokio::test]
+    async fn begin_registered_honors_a_queued_cancel() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+        let key = registry.pre_register(KIND_LESSON, "c", None, "t").unwrap();
+        assert_eq!(registry.cancel(&key).unwrap(), Some(STATE_CANCELLED));
+        let result = registry.begin_registered(key).await;
+        let error = match result {
+            Ok(_) => panic!("queued cancel must surface as the cancel conflict"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(CANCELLED_MESSAGE),
+            "queued cancel surfaces as the cancel conflict: {error}"
+        );
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
     }
 
     /// m7 键级互斥回归：排队态同样拒绝同键并发 begin（防双击双跑面扩大到

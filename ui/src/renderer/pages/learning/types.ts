@@ -79,6 +79,34 @@ export interface GenerateLessonRequest {
   feedback?: string;
 }
 
+/** 课时生成异步臂的 202 响应体（e4 双模化）：任务键 + 轮询提示。
+ * 生成在后台任务执行（断开连接不中断）；终态后拉课时详情。 */
+export interface LessonGenerationAccepted {
+  task_key: string;
+  lesson_id: string;
+  course_id: string;
+  /** 登记时点快照（queued | running）；此后以 generation-tasks 轮询为准 */
+  state: string;
+  /** 轮询面提示：任务快照端点路径 */
+  poll: string;
+}
+
+/** `GET /api/learning/generation-tasks` 快照行（轮询课时生成终态的读数面）。 */
+export interface LearningGenerationTaskView {
+  key: string;
+  kind: string;
+  course_id: string;
+  node_id: string | null;
+  topic: string;
+  /** queued | running | done | failed | cancelled */
+  state: string;
+  step: string | null;
+  detail: string | null;
+  elapsed_secs: number | null;
+  queued_at_ms: number | null;
+  queue_position: number | null;
+}
+
 /** 手动编辑节正文请求（ADR-0007）：仅覆盖 body_md */
 export interface UpdateSectionBodyRequest {
   body_md: string;
