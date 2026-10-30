@@ -1538,7 +1538,11 @@ impl VoiceCompanionRuntime {
             let playback = self.playback.clone();
             let generation = playback.generation_id();
             tokio::spawn(async move {
+                let mut d = driver.lock().await;
                 let snapshot = event_tx.snapshot();
+                if playback.generation_id() != generation || snapshot.ended_reason.is_some() {
+                    return;
+                }
                 let still_owned = snapshot.task.as_ref().is_some_and(|task| {
                     task.command_id == command_id
                         && task.session_id == session_id
@@ -1546,34 +1550,27 @@ impl VoiceCompanionRuntime {
                 })
                     && snapshot.session_id.as_ref().is_none_or(|value| value == &session_id)
                     && snapshot.turn_id.as_ref().is_none_or(|value| value == &turn_id);
-                if !still_owned || playback.generation_id() != generation {
-                    return;
-                }
-                if playback.generation_id() != generation
-                    || event_tx.snapshot().task.as_ref().is_none_or(|task| {
-                        task.command_id != command_id
-                            || task.session_id != session_id
-                            || task.acoustic_turn_id != turn_id
-                    })
-                {
+                if !still_owned {
                     return;
                 }
                 // When a task is interrupted or cancelled, clean up DispatchingTask so voice can recover
-                let is_failure = event_tx.snapshot().task.as_ref().is_some_and(|t| {
+                let is_failure = snapshot.task.as_ref().is_some_and(|t| {
                     t.status == nomifun_api_types::voice::VoiceTaskStatus::Failed
                         || t.error_code.is_some()
                 });
-                if is_failure {
-                    let mut d = driver.lock().await;
-                    if d.current_state() == AcousticState::DispatchingTask {
-                        let _ = d.handle_event(AcousticEvent::TaskAccepted);
-                        let _ = d.handle_event(AcousticEvent::PlaybackDone);
-                        if d.current_state() == AcousticState::Idle {
-                            let _ = d.handle_event(AcousticEvent::WakeHit);
-                            if d.begin_listening_window() {
-                                let _ = event_tx.send(VoiceCompanionEvent::Listening);
-                                let _ = event_tx.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
-                            }
+                if is_failure && d.current_state() == AcousticState::DispatchingTask {
+                    let _ = d.handle_event(AcousticEvent::TaskAccepted);
+                    let _ = d.handle_event(AcousticEvent::PlaybackDone);
+                    if d.current_state() == AcousticState::Idle {
+                        let _ = d.handle_event(AcousticEvent::WakeHit);
+                        if d.begin_listening_window() {
+                            let scope = VoiceSessionControlRequest {
+                                instance_id: snapshot.instance_id.clone(),
+                                session_id: Some(session_id.clone()),
+                                turn_id: Some(turn_id.clone()),
+                            };
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &scope);
                         }
                     }
                 }
@@ -3225,9 +3222,7 @@ impl VoiceCompanionRuntime {
                             match res {
                                 Ok(dec) => {
                                     router_result = Some(Ok(dec));
-                                    if sentence_rx_closed {
-                                        break;
-                                    }
+                                    break;
                                 }
                                 Err(err) => {
                                     if !matches!(err, nomifun_voice_terminal::driver::RouteError::Record { .. }) {
@@ -3889,7 +3884,17 @@ impl VoiceCompanionRuntime {
                 });
                 let _ = events.send(VoiceCompanionEvent::Idle);
             } else {
-                let next_to_start = {
+                let mut d = driver.lock().await;
+                let current_snap = events.snapshot();
+                if current_snap.ended_reason.is_some() || current_snap.session_id != session_id {
+                    let mut act = active_turn_clone.lock().unwrap_or_else(|e| e.into_inner());
+                    if input_generation.load(Ordering::SeqCst) == input_id {
+                        *act = None;
+                    }
+                    drop(d);
+                    return;
+                }
+                let next_item = {
                     let mut act = active_turn_clone.lock().unwrap_or_else(|e| e.into_inner());
                     let mut pending = pending_clone.lock().unwrap_or_else(|e| e.into_inner());
                     if input_generation.load(Ordering::SeqCst) == input_id
@@ -3901,78 +3906,65 @@ impl VoiceCompanionRuntime {
                         for item in pending.iter_mut() {
                             item.generation_id = next_generation;
                         }
-                        let next = pending.pop_front();
-                        if next.is_none() {
+                        if pending.front().is_some() {
+                            let can_decide = match d.current_state() {
+                                AcousticState::FollowUpListening => {
+                                    d.handle_event(AcousticEvent::FollowUpSpeech) == Ok(AcousticState::Deciding)
+                                }
+                                AcousticState::Listening => {
+                                    d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
+                                }
+                                AcousticState::Idle => {
+                                    d.handle_event(AcousticEvent::WakeHit).is_ok()
+                                        && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
+                                }
+                                AcousticState::DispatchingTask => {
+                                    let _ = d.handle_event(AcousticEvent::TaskAccepted);
+                                    let _ = d.handle_event(AcousticEvent::PlaybackDone);
+                                    d.handle_event(AcousticEvent::WakeHit).is_ok()
+                                        && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
+                                }
+                                AcousticState::Deciding => true,
+                                _ => false,
+                            };
+                            if can_decide {
+                                pending.pop_front()
+                            } else {
+                                None
+                            }
+                        } else {
                             *act = None;
+                            None
                         }
-                        next
                     } else {
-                        // If input_id expired (or session ended), this coroutine does not own active_turn.
-                        // Do not clear *act if it might belong to a newer turn.
                         None
                     }
                 };
-                if let Some(next_item) = next_to_start {
-                    let mut d = driver.lock().await;
-                    let current_snap = events.snapshot();
-                    if current_snap.ended_reason.is_some() || current_snap.session_id != next_item.session_id {
-                        drop(d);
-                        return;
-                    }
-                    let can_decide = match d.current_state() {
-                        AcousticState::FollowUpListening => {
-                            d.handle_event(AcousticEvent::FollowUpSpeech) == Ok(AcousticState::Deciding)
-                        }
-                        AcousticState::Listening => {
-                            d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
-                        }
-                        AcousticState::Idle => {
-                            d.handle_event(AcousticEvent::WakeHit).is_ok()
-                                && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
-                        }
-                        AcousticState::DispatchingTask => {
-                            let _ = d.handle_event(AcousticEvent::TaskAccepted);
-                            let _ = d.handle_event(AcousticEvent::PlaybackDone);
-                            d.handle_event(AcousticEvent::WakeHit).is_ok()
-                                && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
-                        }
-                        _ => false,
-                    };
-                    if can_decide {
-                        drop(d);
-                        let _ = events.send(VoiceCompanionEvent::Transcribing);
-                        let next_gen = playback.generation_id();
-                        Self::start_utterance(
-                            next_item.pcm,
-                            driver.clone(),
-                            router.clone(),
-                            transcriber.clone(),
-                            playback.clone(),
-                            events.clone(),
-                            tts.clone(),
-                            task_client.clone(),
-                            &active_turn_clone,
-                            input_generation.clone(),
-                            next_gen,
-                            pending_clone.clone(),
-                            next_item.session_id,
-                            native_busy.clone(),
-                            native_degraded.clone(),
-                            native_job_epoch.clone(),
-                            native_admission.clone(),
-                            None,
-                            None,
-                        );
-                    } else {
-                        let _ = events.send(VoiceCompanionEvent::Error {
-                            stage: "queue".into(),
-                            code: "pending_utterance_dropped".into(),
-                        });
-                        let mut act = active_turn_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        if input_generation.load(Ordering::SeqCst) == input_id {
-                            *act = None;
-                        }
-                    }
+                if let Some(next_item) = next_item {
+                    drop(d);
+                    let _ = events.send(VoiceCompanionEvent::Transcribing);
+                    let next_gen = playback.generation_id();
+                    Self::start_utterance(
+                        next_item.pcm,
+                        driver.clone(),
+                        router.clone(),
+                        transcriber.clone(),
+                        playback.clone(),
+                        events.clone(),
+                        tts.clone(),
+                        task_client.clone(),
+                        &active_turn_clone,
+                        input_generation.clone(),
+                        next_gen,
+                        pending_clone.clone(),
+                        next_item.session_id,
+                        native_busy.clone(),
+                        native_degraded.clone(),
+                        native_job_epoch.clone(),
+                        native_admission.clone(),
+                        None,
+                        None,
+                    );
                 }
             }
         }));
@@ -5145,6 +5137,7 @@ impl VoiceCompanionRuntime {
                                         d.handle_event(AcousticEvent::WakeHit).is_ok()
                                             && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
                                     }
+                                    AcousticState::Deciding => true,
                                     _ => false,
                                 };
                                 if can_decide {

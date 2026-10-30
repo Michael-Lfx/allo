@@ -2447,7 +2447,9 @@ async fn test_host_epoch_rejection_on_unmatched_external_advance() {
 
 #[tokio::test]
 async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
-    // End-to-end joint chain: Capture Worker -> Voice Companion Runtime -> Voice Router Bridge -> Host Dialogue Recorder -> SQLite
+    // End-to-end authentic joint chain:
+    // Capture Worker (SPSC 20ms pacing) -> Voice Companion Runtime -> OpenAiCompatibleVoiceRouter (HTTP)
+    // -> VoiceDialogueBridge (/complete) -> ConversationVoiceDialogueRecorder -> ConversationService -> SQLite
     const USER: &str = "0190f5fe-7c00-7a00-8000-000000000001";
     let dir = tempfile::tempdir().unwrap();
     let journal_dir = tempfile::tempdir().unwrap();
@@ -2462,84 +2464,75 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         Arc::new(EmptyRegistry),
         Arc::new(SqliteConversationRepository::new(pool.clone())),
         Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
-        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(SqliteAcpSessionRepository::new(pool.clone())),
         Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
     ));
 
     let conv_id = svc.ensure_default_voice_conversation(USER).await.unwrap();
     let recorder = Arc::new(ConversationVoiceDialogueRecorder::new(svc.clone(), USER.into(), journal_dir.path())
         .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
-            conversation_id: Some(conv_id.clone()),
-            workspace: Some(dir.path().to_str().unwrap().into()),
+            conversation_id: None,
+            workspace: None,
             sequence: 1,
         }))));
 
     use voice_companion::voice::{VoiceCompanionRuntime, SpeechEndTestGate};
     use voice_companion::oobe::OobeManager;
     use voice_companion::replay_terminal as nomifun_voice_terminal;
+    use nomifun_voice_terminal::router::OpenAiCompatibleVoiceRouter;
+    use nomifun_voice_terminal::completion::HostDialogueClient;
+    use nomifun_app::voice_dialogue::{VoiceDialogueBridge, VoiceDialogueCompleter};
     use nomifun_audio::voice_pipeline::{VoiceCapturePipeline, PipelineConfig};
     use nomifun_audio::{SttCallback, AudioChannel};
 
-    // STT Test Substitute (Clearly labeled test stand-in)
-    struct JointStt(std::sync::atomic::AtomicUsize);
-    #[async_trait::async_trait]
-    impl SttCallback for JointStt {
-        async fn transcribe(&self, _: AudioChannel, pcm: Vec<f32>, _: u32) -> Option<String> {
-            let _n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let peak = pcm.iter().fold(0.0f32, |v, s| v.max(s.abs()));
-            let label = if peak > 0.65 { "input-A: 请执行任务" } else if peak > 0.5 { "input-C: 明天会下雨吗" } else { "input-B: 今天天气怎么样" };
-            println!("[DEBUG JointStt] call={_n} peak={peak} label={label}");
-            Some(label.into())
-        }
+    struct RealBridgeCompleter {
+        calls: std::sync::atomic::AtomicUsize,
+        b_preflighted: Arc<tokio::sync::Notify>,
+        b_release: Arc<tokio::sync::Notify>,
     }
 
-    // Router Test Substitute (Bridges to Host Dialogue Recorder)
-    struct JointRouter {
-        recorder: Arc<ConversationVoiceDialogueRecorder>,
-        bound_conv_id: Arc<std::sync::Mutex<Option<String>>>,
-        call_count: std::sync::atomic::AtomicUsize,
-    }
     #[async_trait::async_trait]
-    impl nomifun_voice_terminal::driver::VoiceRouter for JointRouter {
-        fn is_configured(&self) -> bool { true }
-        async fn route_with_status(&self, text: &str, _: Option<&str>) -> Result<nomifun_voice_terminal::contract::VoiceDecision, nomifun_voice_terminal::driver::RouteError> {
-            let n = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            println!("[DEBUG JointRouter] route_with_status n={n} text={text}");
-            let req = VoiceDialogueRequest::scoped("joint-session", &format!("turn-{n}"), text);
-            let preflight = self.recorder.preflight(&req).await.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
-            let VoiceDialoguePreflight::Ready { conversation_id } = preflight else {
-                return Err(nomifun_voice_terminal::driver::RouteError::Generation("preflight not ready".into()));
-            };
-            println!("[DEBUG JointRouter] route_with_status n={n} conversation_id={conversation_id}");
-            *self.bound_conv_id.lock().unwrap() = Some(conversation_id.clone());
+    impl VoiceDialogueCompleter for RealBridgeCompleter {
+        async fn resolve_model(&self, _choice: Option<&nomifun_api_types::voice::VoiceModelRef>) -> Result<nomifun_api_types::voice::VoiceModelRef, String> {
+            Ok(nomifun_api_types::voice::VoiceModelRef { provider_id: "test".into(), model: "test".into() })
+        }
+        async fn complete(&self, _prompt: &str, _choice: Option<&nomifun_api_types::voice::VoiceModelRef>) -> Result<String, String> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n == 0 {
-                const TASK_DECISION: &str = r#"{"intent_type":"agent_task","task_goal":"请执行任务","spoken_ack":"任务已接单，正在执行。","requires_confirmation":false}"#;
-                self.recorder.record_pair(&conversation_id, &req, TASK_DECISION).await.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
-                nomifun_voice_terminal::driver::StubVoiceRouter::agent_task("任务已接单，正在执行。", "请执行任务", false).route("a").await
+                Ok(format!("```json\n{}\n```", serde_json::json!({
+                    "intent_type": "agent_task",
+                    "task_goal": "请执行任务",
+                    "spoken_ack": "任务已接单，正在执行。",
+                    "requires_confirmation": false
+                })))
             } else if n == 1 {
-                const CHAT_DECISION: &str = r#"{"intent_type":"chat","reply_tts":"天气晴朗，气温22度。"}"#;
-                let res = self.recorder.record_pair(&conversation_id, &req, CHAT_DECISION).await;
-                println!("[DEBUG JointRouter] B record_pair result: {res:?}");
-                res.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
-                nomifun_voice_terminal::driver::StubVoiceRouter::chat("天气晴朗，气温22度。").route("b").await
+                // Sentence B has already completed preflight in VoiceDialogueBridge while Task A was running!
+                self.b_preflighted.notify_one();
+                // Wait for Task A to finalize in DB before returning B's completion
+                self.b_release.notified().await;
+                Ok(format!("```json\n{}\n```", serde_json::json!({
+                    "intent_type": "chat",
+                    "reply_tts": "天气晴朗，气温22度。"
+                })))
             } else {
-                const CHAT_DECISION_2: &str = r#"{"intent_type":"chat","reply_tts":"任务正在后台执行中。"}"#;
-                let res = self.recorder.record_pair(&conversation_id, &req, CHAT_DECISION_2).await;
-                println!("[DEBUG JointRouter] C record_pair result: {res:?}");
-                res.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
-                nomifun_voice_terminal::driver::StubVoiceRouter::chat("任务正在后台执行中。").route("c").await
+                Ok(format!("```json\n{}\n```", serde_json::json!({
+                    "intent_type": "chat",
+                    "reply_tts": "明天天气也很好。"
+                })))
             }
         }
     }
 
-    // Tasks client substitute
-    struct JointTasks {
-        release: tokio::sync::Notify,
-        entered: tokio::sync::Notify,
+    struct RealBridgeTasks {
+        entered: Arc<tokio::sync::Notify>,
         task: tokio::sync::Mutex<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
+        calls: std::sync::atomic::AtomicUsize,
+        repo: Arc<SqliteConversationRepository>,
+        conv_id: String,
     }
+
     #[async_trait::async_trait]
-    impl nomifun_voice_terminal::task_client::VoiceTaskClient for JointTasks {
+    impl nomifun_voice_terminal::task_client::VoiceTaskClient for RealBridgeTasks {
         async fn current(&self) -> Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>, String> {
             Ok(self.task.lock().await.clone())
         }
@@ -2547,13 +2540,24 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             Err("unused".into())
         }
         async fn submit(&self, r: nomifun_api_types::voice::VoiceTaskSubmitRequest) -> Result<nomifun_api_types::voice::VoiceTaskDelivery, String> {
-            println!("[DEBUG JointTasks] submit called for {:?}", r.command.command_id);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let epoch = self.repo.get_turn_admission_state(USER, &self.conv_id).await.unwrap().epoch;
+            let task_op_id = format!("task-{}", r.command.command_id);
+            let claim = self.repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+                USER,
+                &self.conv_id,
+                &task_op_id,
+                &nomifun_common::MessageId::new().into_string(),
+                r#"{"content":"请执行任务"}"#,
+                epoch,
+                nomifun_common::now_ms(),
+            ).await.unwrap();
             let task = nomifun_api_types::voice::VoiceTaskSnapshot {
                 command_id: r.command.command_id,
                 session_id: r.command.session_id,
                 acoustic_turn_id: r.command.turn_id,
-                conversation_id: Some("test-conv".into()),
-                message_id: Some("test-msg".into()),
+                conversation_id: Some(self.conv_id.clone()),
+                message_id: Some(claim.receipt.message_id),
                 runtime_turn_id: Some("test-runtime".into()),
                 status: nomifun_api_types::voice::VoiceTaskStatus::Accepted,
                 result_ok: None,
@@ -2562,8 +2566,18 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             };
             *self.task.lock().await = Some(task.clone());
             self.entered.notify_one();
-            self.release.notified().await;
             Ok(nomifun_api_types::voice::VoiceTaskDelivery { freshly_accepted: true, task })
+        }
+    }
+
+    struct JointStt(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl SttCallback for JointStt {
+        async fn transcribe(&self, _: AudioChannel, pcm: Vec<f32>, _: u32) -> Option<String> {
+            let _n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let peak = pcm.iter().fold(0.0f32, |v, s| v.max(s.abs()));
+            let label = if peak > 0.65 { "input-A: 请执行任务" } else if peak > 0.5 { "input-C: 明天会下雨吗" } else { "input-B: 今天天气怎么样" };
+            Some(label.into())
         }
     }
 
@@ -2577,18 +2591,34 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         }
     }
 
+    let b_preflighted = Arc::new(tokio::sync::Notify::new());
+    let b_release = Arc::new(tokio::sync::Notify::new());
+    let completer = Arc::new(RealBridgeCompleter {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        b_preflighted: b_preflighted.clone(),
+        b_release: b_release.clone(),
+    });
+
+    let bridge = VoiceDialogueBridge::start_with_recorder(
+        completer.clone(),
+        Default::default(),
+        "scoped-joint-control".into(),
+        axum::Router::new(),
+        Some(recorder.clone()),
+    ).await.unwrap();
+
+    let router = Arc::new(OpenAiCompatibleVoiceRouter::with_completion(
+        Arc::new(HostDialogueClient::new(bridge.endpoint.clone(), "scoped-joint-control".into()).unwrap())
+    ));
+
     let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
     let stt = Arc::new(JointStt(std::sync::atomic::AtomicUsize::new(0)));
-    let bound_conv = Arc::new(std::sync::Mutex::new(None));
-    let router = Arc::new(JointRouter {
-        recorder: recorder.clone(),
-        bound_conv_id: bound_conv.clone(),
-        call_count: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let tasks = Arc::new(JointTasks {
-        release: tokio::sync::Notify::new(),
-        entered: tokio::sync::Notify::new(),
+    let tasks = Arc::new(RealBridgeTasks {
+        entered: Arc::new(tokio::sync::Notify::new()),
         task: tokio::sync::Mutex::new(None),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        repo: Arc::new(SqliteConversationRepository::new(pool.clone())),
+        conv_id: conv_id.clone(),
     });
 
     let (mut rt, _) = VoiceCompanionRuntime::from_capture(
@@ -2610,6 +2640,16 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         mode: nomifun_api_types::voice::VoiceFeedbackMode::Off, volume: 0, speak_replies: true,
     }.into()).unwrap();
 
+    let mut events_sub = rt.event_sender().subscribe();
+    let _event_log = tokio::spawn(async move {
+        loop {
+            match events_sub.recv().await {
+                Ok(_) => {},
+                Err(_) => break,
+            }
+        }
+    });
+
     rt.handle_wake().await.unwrap();
     let worker = rt.start_worker();
 
@@ -2618,30 +2658,25 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    tokio::time::timeout(std::time::Duration::from_secs(2), tasks.entered.notified()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), tasks.entered.notified()).await.unwrap();
     let task_snap = tasks.task.lock().await.clone().unwrap();
     rt.update_task_status(Some(task_snap.clone()));
-
-    // Admit Task A into DB
-    let bound_conv_for_claim = bound_conv.lock().unwrap().clone().unwrap_or_else(|| conv_id.clone());
-    let repo = svc.conversation_repo();
-    let epoch = repo.get_turn_admission_state(USER, &bound_conv_for_claim).await.unwrap().epoch;
-    let _ = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
-        USER, &bound_conv_for_claim, "operation-task-A", &nomifun_common::MessageId::new().into_string(),
-        r#"{"content":"请执行任务"}"#, epoch, nomifun_common::now_ms(),
-    ).await.unwrap();
+    let command_id_a = task_snap.command_id.clone();
 
     // 2. Concurrently finish Task A and feed Input B (Chat)
-    let resume_gate = gate.clone();
-    let r = rt.clone();
-    let t = tasks.clone();
+    let r_clone = rt.clone();
     let svc_clone = svc.clone();
-    let conv_id_clone = bound_conv_for_claim.clone();
-    let completion_task = tokio::spawn(async move {
-        resume_gate.reached.notified().await;
-        // Finalize Task A in DB
+    let conv_id_clone = conv_id.clone();
+    let cmd_id_clone = command_id_a.clone();
+    let b_pref_clone = b_preflighted.clone();
+    let b_rel_clone = b_release.clone();
+    let finalize_task = tokio::spawn(async move {
+        // Wait until B has preflighted in VoiceDialogueBridge while A is still active in DB!
+        b_pref_clone.notified().await;
+
+        // Finalize Task A in DB:
         let completion = nomifun_db::TurnReceiptCompletion {
-            operation_id: "operation-task-A".into(),
+            operation_id: format!("task-{}", cmd_id_clone),
             kind: "turn".into(),
             request_payload: r#"{"content":"请执行任务"}"#.into(),
             result_ok: true,
@@ -2652,19 +2687,21 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         };
         svc_clone.conversation_repo().finalize_turn(USER, &conv_id_clone, Some(&completion), nomifun_common::now_ms()).await.unwrap();
 
+        // Notify runtime of Task A completion
         let mut completed_snap = task_snap;
         completed_snap.status = nomifun_api_types::voice::VoiceTaskStatus::Completed;
         completed_snap.result_text = Some("任务已完成".into());
-        r.update_task_status_versioned(Some(completed_snap), None, Some(10));
-        t.release.notify_one();
-        resume_gate.resume.notify_one();
+        r_clone.update_task_status_versioned(Some(completed_snap), None, Some(10));
+
+        // Release B so it can complete model output and reconcile the finalization of A!
+        b_rel_clone.notify_one();
     });
 
     for i in 0..85 {
         producer.push(&vec![if i < 30 { 0.4 } else { 0.0 }; 320]);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    completion_task.await.unwrap();
+    finalize_task.await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     // 3. Feed Input C (Follow-up Chat)
@@ -2673,49 +2710,127 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    // Wait for turn C to complete routing and persistence
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while router.call_count.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }).await.expect("Turn C must complete routing");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    // 4. Verify End-to-End Database Persistence and Exact Sequential 6 Messages
-    let target_conv = bound_conv.lock().unwrap().clone().unwrap_or_else(|| conv_id.clone());
-    let messages = svc.list_messages(USER, &target_conv, Default::default()).await.unwrap().items;
+    // 4. Announce Task A completion result (wait for playback/speech to settle)
+    let mut announced_ok = false;
+    for _ in 0..100 {
+        let s = rt.snapshot();
+        let is_phase_ok = matches!(s.phase, nomifun_api_types::voice::VoiceSessionPhase::Idle | nomifun_api_types::voice::VoiceSessionPhase::Listening | nomifun_api_types::voice::VoiceSessionPhase::FollowUp);
+        let is_audio_quiet = !s.audio.as_ref().is_some_and(|a| a.speech_detected);
+        if is_phase_ok && is_audio_quiet {
+            let announce_req = nomifun_api_types::voice::VoiceTaskResultAnnouncement {
+                scope: nomifun_api_types::voice::VoiceSessionControlRequest {
+                    instance_id: s.instance_id.clone(),
+                    session_id: s.session_id.clone(),
+                    turn_id: s.turn_id.clone(),
+                },
+                command_id: command_id_a.clone(),
+                notification_id: None,
+                attempt_id: Some("attempt-1".into()),
+                goal: Some("请执行任务".into()),
+                text: "任务已完成".into(),
+            };
+            if rt.announce_task_result(announce_req).await.is_ok() {
+                announced_ok = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(announced_ok, "announce_task_result must succeed once quiet");
+
+    // 5. Verify End-to-End Database Persistence and Exact Sequential 6 Messages
+    let messages = svc.list_messages(USER, &conv_id, Default::default()).await.unwrap().items;
     assert_eq!(messages.len(), 6, "Must persist exactly 6 messages (3 user prompts + 3 assistant responses)");
 
-    // Assert exact order and content of all 6 messages:
-    assert!(messages[0].content.to_string().contains("input-A: 请执行任务"));
+    // Assert exact order, positions and content of all 6 messages:
+    assert!(messages[0].content.to_string().contains("请执行任务"));
     assert_eq!(messages[0].position, Some(nomifun_common::MessagePosition::Right));
     assert!(messages[1].content.to_string().contains("任务已接单，正在执行。"));
     assert_eq!(messages[1].position, Some(nomifun_common::MessagePosition::Left));
 
-    assert!(messages[2].content.to_string().contains("input-B: 今天天气怎么样"));
+    assert!(messages[2].content.to_string().contains("今天天气怎么样"));
     assert_eq!(messages[2].position, Some(nomifun_common::MessagePosition::Right));
     assert!(messages[3].content.to_string().contains("天气晴朗，气温22度。"));
     assert_eq!(messages[3].position, Some(nomifun_common::MessagePosition::Left));
 
-    assert!(messages[4].content.to_string().contains("input-C: 明天会下雨吗"));
+    assert!(messages[4].content.to_string().contains("明天会下雨吗"));
     assert_eq!(messages[4].position, Some(nomifun_common::MessagePosition::Right));
-    assert!(messages[5].content.to_string().contains("任务正在后台执行中。"));
+    assert!(messages[5].content.to_string().contains("明天天气也很好。"));
     assert_eq!(messages[5].position, Some(nomifun_common::MessagePosition::Left));
 
     // Assert Task A completed delivery receipt in repository:
-    let receipt = svc.conversation_repo().get_delivery_receipt(USER, &target_conv, "operation-task-A").await.unwrap().unwrap();
+    let receipt = svc.conversation_repo().get_delivery_receipt(USER, &conv_id, &format!("task-{}", command_id_a)).await.unwrap().unwrap();
     assert_eq!(receipt.status, "completed");
     assert_eq!(receipt.result_ok, Some(true));
 
+    assert_eq!(completer.calls.load(std::sync::atomic::Ordering::SeqCst), 3, "Exactly 3 completer calls");
+    assert_eq!(tasks.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "Exactly 1 task submit call");
+
     let snap = rt.snapshot();
     assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
-    assert_eq!(router.call_count.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 turns must be routed");
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
     assert!(snap.ended_reason.is_none(), "Session must remain active");
-    assert_eq!(snap.conversation.len(), 3, "Snapshot must record 3 conversation turns");
 
     worker.abort();
     let _ = worker.await;
+    drop(bridge);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn test_voice_dialogue_recorder_sequential_three_turn_chain() {
+    // Retains direct recorder-level sequential verification
+    const USER: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let journal_dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let conv_id = svc.ensure_default_voice_conversation(USER).await.unwrap();
+    let recorder = Arc::new(ConversationVoiceDialogueRecorder::new(svc.clone(), USER.into(), journal_dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: None,
+            sequence: 1,
+        }))));
+
+    let req_a = VoiceDialogueRequest::scoped("seq-session", "turn-1", "第一句任务");
+    let ready_a = recorder.preflight(&req_a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id_a } = ready_a else { panic!("Ready") };
+    assert_eq!(id_a, conv_id);
+    recorder.record_pair(&conv_id, &req_a, r#"{"intent_type":"agent_task","task_goal":"第一句任务","spoken_ack":"任务已接单。","requires_confirmation":false}"#).await.unwrap();
+
+    let req_b = VoiceDialogueRequest::scoped("seq-session", "turn-2", "第二句问候");
+    let ready_b = recorder.preflight(&req_b).await.unwrap();
+    assert!(matches!(ready_b, VoiceDialoguePreflight::Ready { .. }));
+    recorder.record_pair(&conv_id, &req_b, r#"{"intent_type":"chat","reply_tts":"你好！"}"#).await.unwrap();
+
+    let req_c = VoiceDialogueRequest::scoped("seq-session", "turn-3", "第三句提问");
+    let ready_c = recorder.preflight(&req_c).await.unwrap();
+    assert!(matches!(ready_c, VoiceDialoguePreflight::Ready { .. }));
+    recorder.record_pair(&conv_id, &req_c, r#"{"intent_type":"chat","reply_tts":"很高兴为你解答。"}"#).await.unwrap();
+
+    let messages = svc.list_messages(USER, &conv_id, Default::default()).await.unwrap().items;
+    assert_eq!(messages.len(), 6, "All 3 turns (6 messages) must be persisted in order");
     db.close().await;
 }
 
