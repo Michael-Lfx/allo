@@ -27,6 +27,24 @@ type ExpertCatalogProps = {
   highlightId?: string | null;
   onHighlightConsumed?: () => void;
   onInstalled?: () => void;
+  /** False while the catalog is kept mounted but hidden; it then ignores the shared search box. */
+  active?: boolean;
+};
+
+/**
+ * Last first-page result per filter, kept for the renderer's lifetime. Reopening
+ * the catalog shows it immediately while the request revalidates in the background.
+ */
+const FIRST_PAGE_CACHE_LIMIT = 8;
+const firstPageCache = new Map<string, IExpertSummary[]>();
+
+const rememberFirstPage = (key: string, items: IExpertSummary[]) => {
+  firstPageCache.delete(key);
+  firstPageCache.set(key, items);
+  if (firstPageCache.size > FIRST_PAGE_CACHE_LIMIT) {
+    const oldest = firstPageCache.keys().next().value;
+    if (oldest !== undefined) firstPageCache.delete(oldest);
+  }
 };
 
 const ExpertCard: React.FC<{
@@ -75,7 +93,12 @@ const ExpertCard: React.FC<{
   );
 };
 
-const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightConsumed, onInstalled }) => {
+const ExpertCatalog: React.FC<ExpertCatalogProps> = ({
+  highlightId,
+  onHighlightConsumed,
+  onInstalled,
+  active = true,
+}) => {
   const { t, i18n } = useTranslation();
   const { searchQuery } = useCapabilityHubSearch();
   const [message, messageContext] = useArcoMessage({ maxCount: 3 });
@@ -100,9 +123,10 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
   filterRef.current = { keyword, category };
 
   useEffect(() => {
+    if (!active) return;
     const timer = window.setTimeout(() => setKeyword(searchQuery.trim()), 300);
     return () => window.clearTimeout(timer);
-  }, [searchQuery]);
+  }, [active, searchQuery]);
 
   useEffect(() => {
     if (!highlightId) return;
@@ -171,13 +195,17 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
     if (mode === 'append' && inFlight.current) return;
     const seq = mode === 'replace' ? ++listSeq.current : listSeq.current;
     const filter = filterRef.current;
+    const firstPageKey = `${filter.category}\u0000${filter.keyword}`;
     inFlight.current = true;
     setLoading(true);
     if (mode === 'replace') {
+      // Seed from the last result for this filter so the grid is not blank
+      // while the request revalidates; the response below replaces it.
+      const seed = firstPageCache.get(firstPageKey) ?? [];
       pageRef.current = 1;
       setErrorKind(null);
-      setItems([]);
-      itemsRef.current = [];
+      setItems(seed);
+      itemsRef.current = seed;
       setHasMore(false);
       setTruncated(false);
     }
@@ -195,6 +223,7 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
         let loadedCount = 0;
         setItems((current) => {
           const merged = mergeExpertPage(mode === 'replace' ? [] : current, data.list);
+          if (mode === 'replace') rememberFirstPage(firstPageKey, merged);
           itemsRef.current = merged;
           loadedCount = merged.length;
           return merged;
@@ -229,10 +258,14 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
   useEffect(() => {
     const node = sentinelRef.current;
     if (!node || !hasMore || loading) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting) || inFlight.current) return;
-      fetchExpertPage(pageRef.current + 1, 'append');
-    });
+    // Prefetch the next page before the sentinel is on screen so scrolling never stalls.
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting) || inFlight.current) return;
+        fetchExpertPage(pageRef.current + 1, 'append');
+      },
+      { rootMargin: '400px 0px' }
+    );
     observer.observe(node);
     return () => observer.disconnect();
     // Re-arm only after the current page settles, so a visible sentinel cannot overlap the in-flight request.
@@ -268,7 +301,10 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
         </div>
       ) : null}
       {items.length > 0 ? (
-        <div className='grid gap-16px' style={{ gridTemplateColumns: EXPERT_CARD_GRID_COLS }}>
+        <div
+          className='grid gap-16px [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_200px]'
+          style={{ gridTemplateColumns: EXPERT_CARD_GRID_COLS }}
+        >
           {items.map((expert) => (
             <ExpertCard
               key={expert.slug}

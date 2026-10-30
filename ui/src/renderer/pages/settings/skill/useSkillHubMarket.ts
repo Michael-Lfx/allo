@@ -15,6 +15,7 @@ const MARKET_CACHE_VERSION = 'v8';
 const MARKET_CACHE_PREFIX = `nomifun.skillHubMarket.${MARKET_CACHE_VERSION}`;
 const MARKET_CATEGORIES_CACHE_KEY = `${MARKET_CACHE_PREFIX}.categories`;
 const DEFAULT_PAGE_SIZE = 20;
+const MARKET_CATEGORIES_TTL_MS = 6 * 60 * 60 * 1000;
 
 export type SkillHubMarketStatus = 'loading' | 'ready' | 'empty' | 'no-match' | 'error' | 'stale' | 'partial-error';
 export type SkillHubMarketInstallationStatus = 'idle' | 'installing' | 'installed';
@@ -263,6 +264,11 @@ export const useSkillHubMarket = ({
     setCategoriesError(null);
     const cached = readCategoriesCache();
     if (cached) setCategories(cached.response.items);
+    // Categories change rarely: a fresh cache is the answer, no request needed.
+    if (cached && Date.now() - cached.cached_at < MARKET_CATEGORIES_TTL_MS) {
+      setCategoriesLoading(false);
+      return;
+    }
     try {
       const response = await ipcBridge.fs.listSkillHubMarketCategories.invoke();
       if (isSkillHubCategoriesResponse(response)) {

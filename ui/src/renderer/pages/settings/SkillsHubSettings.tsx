@@ -36,6 +36,8 @@ import SkillScenarioBar from './skill/SkillScenarioBar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
+import useSWR from 'swr';
+import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
 
 /**
  * 卡片网格按「内容容器实际宽度」自动定列(auto-fill),而非视口断点 —— 设置内容
@@ -72,9 +74,21 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   const [highlightedSkill, setHighlightedSkill] = useState<string | null>(null);
   const skillRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
+  // Same SWR key as the skill store page, so the installed list is fetched once and shared.
+  const {
+    data: swrSkills,
+    error: swrError,
+    isValidating: loading,
+    mutate: mutateSkills,
+  } = useSWR(AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills, {
+    shouldRetryOnError: false,
+    onError: (error) => {
+      console.error('Failed to fetch skills:', error);
+      message.error(t('settings.skillsHub.fetchError', { defaultValue: 'Failed to fetch skills' }));
+    },
+  });
+  const loadError = Boolean(swrError);
+  const availableSkills = useMemo(() => (swrSkills ?? []) as SkillInfo[], [swrSkills]);
   const [skillPaths, setSkillPaths] = useState<{ user_skills_dir: string; builtin_skills_dir: string } | null>(null);
   const [builtinAutoSkills, setBuiltinAutoSkills] = useState<Array<{ name: string; description: string }>>([]);
 
@@ -98,30 +112,24 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   );
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
-    setLoadError(false);
-    try {
-      const [skills, paths, autoSkills] = await Promise.all([
-        ipcBridge.fs.listAvailableSkills.invoke(),
-        ipcBridge.fs.getSkillPaths.invoke(),
-        ipcBridge.fs.listBuiltinAutoSkills.invoke(),
-      ]);
-      setAvailableSkills(skills as SkillInfo[]);
-      setSkillPaths(paths);
-      setBuiltinAutoSkills(autoSkills);
-      setLoadError(false);
-    } catch (error) {
-      console.error('Failed to fetch skills:', error);
-      setLoadError(true);
-      message.error(t('settings.skillsHub.fetchError', { defaultValue: 'Failed to fetch skills' }));
-    } finally {
-      setLoading(false);
-    }
-  }, [t, message]);
+    await mutateSkills();
+  }, [mutateSkills]);
 
+  // Skill directories and built-in auto skills do not change with the installed
+  // list, so they are read once instead of on every refresh.
   useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
+    let cancelled = false;
+    void Promise.all([ipcBridge.fs.getSkillPaths.invoke(), ipcBridge.fs.listBuiltinAutoSkills.invoke()])
+      .then(([paths, autoSkills]) => {
+        if (cancelled) return;
+        setSkillPaths(paths);
+        setBuiltinAutoSkills(autoSkills);
+      })
+      .catch((error) => console.error('Failed to fetch skill metadata:', error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const refresh = () => {

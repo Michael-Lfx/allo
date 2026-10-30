@@ -17,7 +17,7 @@
  * still renders their skills panel so users can inspect what's bundled,
  * but every editing control (including Save) is disabled.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Button } from '@arco-design/web-react';
@@ -29,7 +29,6 @@ import CapabilityHubShell from '../capabilityHub/CapabilityHubShell';
 import { resolveAvatarImageSrc } from './presetUtils';
 import ExpertCatalog from './ExpertCatalog';
 import MyExpertCatalog from './MyExpertCatalog';
-import PresetEditDrawer from './PresetEditDrawer';
 import DeletePresetModal from './DeletePresetModal';
 import SkillConfirmModals from './SkillConfirmModals';
 
@@ -45,6 +44,11 @@ type PresetNavigationState = {
   };
 };
 const OPEN_PRESET_EDITOR_INTENT_KEY = 'guid.openPresetEditorIntent';
+
+// The edit drawer is the heaviest part of this page and is not needed until a
+// preset is opened, so it loads on demand and is warmed once the page is idle.
+const loadPresetEditDrawer = () => import('./PresetEditDrawer');
+const PresetEditDrawer = React.lazy(loadPresetEditDrawer);
 
 const PresetSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -79,9 +83,9 @@ const PresetSettings: React.FC = () => {
     localeKey,
   } = usePresetList();
 
-  const { refreshAgentDetection } = useDetectedAgents();
-
-  const tags = usePresetTags();
+  // This page only needs the refresh callback (editor saves re-scan agents);
+  // nothing here reads the detected list, so skip the fetch on page load.
+  const { refreshAgentDetection } = useDetectedAgents({ enabled: false });
 
   const editor = usePresetEditor({
     localeKey,
@@ -93,15 +97,40 @@ const PresetSettings: React.FC = () => {
     message,
   });
 
+  // Tags feed the "my experts" tiles and the edit drawer, not the catalog.
+  const tags = usePresetTags({ enabled: view === 'mine' || editor.editVisible });
+
+  const [drawerRequested, setDrawerRequested] = useState(false);
+  useEffect(() => {
+    if (editor.editVisible) setDrawerRequested(true);
+  }, [editor.editVisible]);
+
+  useEffect(() => {
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (idleWindow.requestIdleCallback) {
+      const handle = idleWindow.requestIdleCallback(() => void loadPresetEditDrawer(), { timeout: 3000 });
+      return () => idleWindow.cancelIdleCallback?.(handle);
+    }
+    const timer = window.setTimeout(() => void loadPresetEditDrawer(), 1500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const editAvatarImage = resolveAvatarImageSrc(editor.editAvatar, avatarImageMap);
   const hasConsumedNavigationIntentRef = useRef(false);
+  // `editor` is a new object every render; read it through a ref so the intent
+  // effect below only re-runs when the catalog or navigation state changes.
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
 
   useEffect(() => {
     if (hasConsumedNavigationIntentRef.current) return;
 
     if (navigationState?.createPresetDraft) {
       hasConsumedNavigationIntentRef.current = true;
-      void editor.handleCreate(navigationState.createPresetDraft);
+      void editorRef.current.handleCreate(navigationState.createPresetDraft);
       return;
     }
 
@@ -134,8 +163,8 @@ const PresetSettings: React.FC = () => {
     } catch (error) {
       console.error('[PresetManagement] Failed to clear preset open intent:', error);
     }
-    void editor.handleEdit(targetPreset);
-  }, [presets, editor, navigationState]);
+    void editorRef.current.handleEdit(targetPreset);
+  }, [presets, navigationState]);
 
   return (
     <CapabilityHubShell
@@ -166,33 +195,40 @@ const PresetSettings: React.FC = () => {
           onOpen={(preset) => void editor.handleEdit(preset)}
           onCreate={() => void editor.handleCreate()}
         />
-      ) : (
+      ) : null}
+      {/* Kept mounted while "my experts" is shown, so category, loaded pages and scroll survive the round trip. */}
+      <div hidden={view === 'mine'}>
         <ExpertCatalog
+          active={view !== 'mine'}
           highlightId={highlightId}
           onHighlightConsumed={handleHighlightConsumed}
           onInstalled={() => void loadPresets()}
         />
-      )}
+      </div>
 
-      <PresetEditDrawer
-        editor={editor}
-        editAvatarImage={editAvatarImage}
-        editScenarioTags={editor.editScenarioTags}
-        setEditScenarioTags={editor.setEditScenarioTags}
-        scenarioTags={tags.scenarioTags}
-        onCreateTag={tags.createTag}
-        readOnly={
-          editor.isCreating
-            ? false
-            : activePreset?.source === 'builtin' || isExtensionPreset(activePreset)
-        }
-        localeKey={localeKey}
-        activePreset={activePreset}
-        isExtensionPreset={isExtensionPreset}
-        onImportAgentSkills={editor.handleImportAgentSkills}
-        handleDeleteClick={editor.handleDeleteClick}
-        handleDuplicate={(preset) => void editor.handleDuplicate(preset)}
-      />
+      {drawerRequested ? (
+        <Suspense fallback={null}>
+          <PresetEditDrawer
+            editor={editor}
+            editAvatarImage={editAvatarImage}
+            editScenarioTags={editor.editScenarioTags}
+            setEditScenarioTags={editor.setEditScenarioTags}
+            scenarioTags={tags.scenarioTags}
+            onCreateTag={tags.createTag}
+            readOnly={
+              editor.isCreating
+                ? false
+                : activePreset?.source === 'builtin' || isExtensionPreset(activePreset)
+            }
+            localeKey={localeKey}
+            activePreset={activePreset}
+            isExtensionPreset={isExtensionPreset}
+            onImportAgentSkills={editor.handleImportAgentSkills}
+            handleDeleteClick={editor.handleDeleteClick}
+            handleDuplicate={(preset) => void editor.handleDuplicate(preset)}
+          />
+        </Suspense>
+      ) : null}
 
       <DeletePresetModal
         visible={editor.deleteConfirmVisible}

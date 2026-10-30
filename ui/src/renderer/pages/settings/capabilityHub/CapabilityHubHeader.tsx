@@ -4,6 +4,7 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import NomiInput from '@/renderer/components/base/NomiInput';
 import type { I18nKey } from '@/renderer/services/i18n';
+import { prefetchCapabilityHub } from '../prefetch';
 import { CAPABILITY_HUB_IDS, type CapabilityHubId, type CapabilityHubView } from './capabilityHub';
 import '../components/settings.css';
 
@@ -92,6 +93,8 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
                 data-testid={`capability-hub-tab-${id}`}
                 className={classNames('capability-hub-tab', { 'capability-hub-tab--active': selected })}
                 onClick={() => onHubChange(id)}
+                onPointerEnter={() => prefetchCapabilityHub(id)}
+                onFocus={() => prefetchCapabilityHub(id)}
               >
                 <CapabilityTabIcon id={id} />
                 <span>{t(TAB_LABEL_KEYS[id], { defaultValue: TAB_LABEL_DEFAULTS[id] })}</span>

@@ -107,6 +107,36 @@ describe('capability hub load contracts', () => {
     expect(skillHubPanel).not.toContain('{market.error && (');
   });
 
+  test('capability hubs share SWR caches and defer work the first view does not need', () => {
+    const presets = read('./PresetSettings/index.tsx');
+    const catalog = read('./PresetSettings/ExpertCatalog.tsx');
+    const skills = read('./SkillsHubSettings.tsx');
+    const tags = read('../../hooks/preset/usePresetTags.ts');
+    const tools = read('../../components/settings/SettingsModal/contents/ToolsModalContent.tsx');
+    const header = read('./capabilityHub/CapabilityHubHeader.tsx');
+    const prefetch = read('./prefetch.ts');
+    const hubMarket = read('./skill/useSkillHubMarket.ts');
+
+    // Edit drawer is a lazy chunk, mounted on first open; its own file stays Markdown-lazy.
+    expect(presets).toContain("React.lazy(loadPresetEditDrawer)");
+    expect(/import PresetEditDrawer from/.test(presets)).toBe(false);
+    expect(presets).toContain('useDetectedAgents({ enabled: false })');
+    expect(presets).toContain("usePresetTags({ enabled: view === 'mine' || editor.editVisible })");
+    // Catalog stays mounted (hidden) so category, pages and scroll survive "my experts".
+    expect(presets).toContain("<div hidden={view === 'mine'}>");
+    expect(catalog).toContain("rootMargin: '400px 0px'");
+    expect(catalog).toContain('firstPageCache');
+    // Installed skills reuse the skill store's SWR key instead of a second fetch.
+    expect(skills).toContain('AVAILABLE_SKILLS_SWR_KEY');
+    expect(skills).not.toContain('listAvailableSkills.invoke()');
+    expect(tags).toContain('PRESET_TAGS_SWR_KEY');
+    // OAuth status is re-checked only when URL-based servers change, not on every list rewrite.
+    expect(tools).toContain('oauthTargetsKey');
+    expect(header).toContain('prefetchCapabilityHub(id)');
+    expect(prefetch).toContain('preload(PRESET_CATALOG_SWR_KEY');
+    expect(hubMarket).toContain('MARKET_CATEGORIES_TTL_MS');
+  });
+
   test('retired plugin routes redirect and stay out of the capability model', () => {
     const header = read('./capabilityHub/CapabilityHubHeader.tsx');
     const capabilityHub = read('./capabilityHub/capabilityHub.ts');

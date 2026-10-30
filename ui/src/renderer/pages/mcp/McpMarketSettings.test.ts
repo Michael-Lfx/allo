@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { IMcpServer } from '@/common/config/storage';
-import { isMcpMarketItemInstalled } from './McpMarketSettings';
+import { buildMcpInstalledIndex, isMcpMarketItemInIndex, isMcpMarketItemInstalled } from './McpMarketSettings';
 import { attachMcpMarketOrigin, getMcpMarketOrigin } from '@/renderer/pages/settings/ToolsSettings/mcpImportUtils';
 
 const marketItem = {
@@ -29,6 +29,17 @@ describe('MCP market installed state', () => {
     expect(isMcpMarketItemInstalled(marketItem, [server('playwright', '{}')])).toBe(true);
     expect(isMcpMarketItemInstalled(marketItem, [server('another-server', '{}')])).toBe(false);
     expect(getMcpMarketOrigin(server('broken', '{'))).toBeNull();
+  });
+
+  test('indexes installed servers once so per-card checks stay set lookups', () => {
+    const marked = server('browser', attachMcpMarketOrigin('{}', marketItem.id));
+    const index = buildMcpInstalledIndex([marked, server('Another_Server', '{')]);
+
+    expect(isMcpMarketItemInIndex(marketItem, index)).toBe(true);
+    expect(isMcpMarketItemInIndex({ id: 'skillhub_mcp:other', name: 'Other' }, index)).toBe(false);
+    // Legacy name matching normalizes case and separators on both sides.
+    expect(isMcpMarketItemInIndex({ id: 'skillhub_mcp:x', name: 'another server' }, index)).toBe(true);
+    expect(marketSource).toContain('buildMcpInstalledIndex(mcpServers)');
   });
 
   test('uses an explicit import-review flow without generic install commands or auto-testing', () => {

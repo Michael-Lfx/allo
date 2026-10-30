@@ -69,11 +69,15 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
     market.setSearchQuery(searchQueryProp);
   }, [market.searchQuery, market.setSearchQuery, searchQueryProp]);
 
+  const installedMarketIdsFromSkills = useMemo(
+    () => new Set((skills ?? []).flatMap((skill) => (skill.market_id ? [skill.market_id] : []))),
+    [skills],
+  );
   const isAdded = useCallback(
     (item: ISkillMarketItem) => installedMarketIds.has(item.id)
-      || (skills ?? []).some((skill) => skill.market_id === item.id)
+      || installedMarketIdsFromSkills.has(item.id)
       || isSkillMarketItemInstalled(item, installedSkillNames),
-    [installedMarketIds, installedSkillNames, skills],
+    [installedMarketIds, installedMarketIdsFromSkills, installedSkillNames],
   );
 
   const handleAdd = useCallback(
