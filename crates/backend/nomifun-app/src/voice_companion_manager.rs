@@ -2097,14 +2097,24 @@ impl VoiceCompanionProcessManager {
                 if let Some(recorder) = &self.dialogue_recorder {
                     if recorder.is_projected(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
                         source_snapshot.projected_turn_ids.push(turn.turn_id.clone());
+                        turn.error = None;
+                    } else if turn.error.is_none() {
+                        if let Some(error) = recorder.turn_error(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
+                            turn.error = Some(error);
+                        }
                     }
                     if let Some((user, assistant)) = recorder.projected_message_ids(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
                         turn.user_message_id = user;
                         turn.assistant_message_id = Some(assistant);
                     }
-                    if turn.error.is_none()
-                        && let Some(error) = recorder.turn_error(&binding.session_id, &binding.conversation_id, &turn.turn_id) {
-                        turn.error = Some(error);
+                }
+            }
+            if let Some(recorder) = &self.dialogue_recorder {
+                if let Some(curr_turn) = source_snapshot.turn_id.as_deref() {
+                    if recorder.is_projected(&binding.session_id, &binding.conversation_id, curr_turn) {
+                        source_snapshot.error = None;
+                    } else if let Some(error) = recorder.turn_error(&binding.session_id, &binding.conversation_id, curr_turn) {
+                        source_snapshot.error = Some(error);
                     }
                 }
             }

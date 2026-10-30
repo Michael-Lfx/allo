@@ -12,6 +12,14 @@ import {
   repoRoot,
 } from './run-voice-joint-trace.mjs';
 
+function ensureBuildNoindex() {
+  const buildDir = path.join(repoRoot, 'build.noindex');
+  if (!fs.existsSync(buildDir)) {
+    fs.mkdirSync(buildDir, { recursive: true });
+  }
+  return buildDir;
+}
+
 function isPidAlive(pid) {
   if (!pid || pid <= 0) return false;
   try {
@@ -35,7 +43,8 @@ test('resolveBunBinary resolves valid bun binary from current execution context'
 });
 
 test('verifyTraceArtifact negative cases: missing, empty, invalid JSON, structure and SHA mismatch', () => {
-  const tempDir = fs.mkdtempSync(path.join(repoRoot, 'build.noindex', 'test-verify-'));
+  const buildDir = ensureBuildNoindex();
+  const tempDir = fs.mkdtempSync(path.join(buildDir, 'test-verify-'));
   try {
     const missingFile = path.join(tempDir, 'non-existent.json');
     expect(() => verifyTraceArtifact(missingFile)).toThrow('Trace artifact not found');
@@ -95,8 +104,36 @@ test('executeJointTraceRun failure cleanup contract: temp directory is deleted e
   expect(result.error).toBeTruthy();
 });
 
+test('C1 regression: spawnProcessInJob directly fails and reports error for non-existent executable', () => {
+  const bogusExe = path.join(repoRoot, 'deliberately-does-not-exist.exe');
+  const result = spawnProcessInJob(bogusExe, [], { silent: true });
+  expect(result.status).not.toBe(0);
+  expect(result.error).toBeTruthy();
+});
+
+test('C1 regression: executeJointTraceRun fails and reports error when bun executable is missing', () => {
+  const buildDir = ensureBuildNoindex();
+  const testDir = fs.mkdtempSync(path.join(buildDir, 'test-c1-bun-'));
+  const mockCargo = path.join(testDir, 'mock_cargo.bat');
+  const validJson = path.join(repoRoot, 'ui/src/renderer/pages/voiceSession/fixtures/jointTraceFixture.json');
+  fs.writeFileSync(mockCargo, `@echo off\r\ncopy /y "${validJson}" "%VOICE_JOINT_TRACE_OUT_PATH%" >nul\r\nexit /b 0\r\n`);
+
+  try {
+    const bogusBun = path.join(repoRoot, 'missing-bun.exe');
+    const result = executeJointTraceRun({
+      cargoBin: mockCargo,
+      bunBin: bogusBun,
+      silent: true,
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.error).toBeTruthy();
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+});
+
 test('R2-A & R2-B: self-contained helper with startup handshake proves child and grandchild are terminated upon Job timeout', async () => {
-  const buildDir = path.join(repoRoot, 'build.noindex');
+  const buildDir = ensureBuildNoindex();
   const testDir = fs.mkdtempSync(path.join(buildDir, 'test-job-r2-'));
   const nonce = crypto.randomBytes(6).toString('hex');
 
@@ -104,8 +141,9 @@ test('R2-A & R2-B: self-contained helper with startup handshake proves child and
   const leafReadyFile = path.join(testDir, `leaf-${nonce}.ready`);
   const leafExitedFile = path.join(testDir, `leaf-${nonce}.self-exited`);
 
-  // Build self-contained Rust helper into the test directory using rustc
-  const helperSrc = `
+  try {
+    // Build self-contained Rust helper into the test directory using rustc
+    const helperSrc = `
 use std::{env, fs, process::{Command, Stdio}, thread, time::{Duration, SystemTime, UNIX_EPOCH}};
 #[cfg(windows)] use std::os::windows::process::CommandExt;
 fn main() {
@@ -127,18 +165,17 @@ fn main() {
     thread::sleep(Duration::from_secs(20));
 }
 `;
-  const helperRs = path.join(testDir, 'helper.rs');
-  const helperExe = path.join(testDir, 'helper.exe');
-  fs.writeFileSync(helperRs, helperSrc);
+    const helperRs = path.join(testDir, 'helper.rs');
+    const helperExe = path.join(testDir, 'helper.exe');
+    fs.writeFileSync(helperRs, helperSrc);
 
-  const rustcRes = spawnSync('rustc', [helperRs, '-o', helperExe], {
-    cwd: testDir,
-    stdio: 'pipe',
-  });
-  expect(rustcRes.status).toBe(0);
-  expect(fs.existsSync(helperExe)).toBe(true);
+    const rustcRes = spawnSync('rustc', [helperRs, '-o', helperExe], {
+      cwd: testDir,
+      stdio: 'pipe',
+    });
+    expect(rustcRes.status).toBe(0);
+    expect(fs.existsSync(helperExe)).toBe(true);
 
-  try {
     // Run with 2500ms timeout
     const result = executeJointTraceRun({
       cargoBin: helperExe,
@@ -178,7 +215,8 @@ fn main() {
 }, 15000);
 
 test('anti-false-green negative test: non-existent binary must fail with start error and fail handshake check', () => {
-  const testDir = fs.mkdtempSync(path.join(repoRoot, 'build.noindex', 'test-false-green-'));
+  const buildDir = ensureBuildNoindex();
+  const testDir = fs.mkdtempSync(path.join(buildDir, 'test-false-green-'));
   const nonce = crypto.randomBytes(6).toString('hex');
   const parentReadyFile = path.join(testDir, `parent-${nonce}.ready`);
 

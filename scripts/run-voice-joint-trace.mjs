@@ -69,14 +69,13 @@ export function resolveBunBinary(env = process.env) {
       }
     }
   }
-  return process.execPath; // Fallback to current runtime
+  throw new Error('bun executable could not be resolved from environment or PATH');
 }
 
 export function spawnProcessInJob(executable, args = [], options = {}) {
   if (process.platform === 'win32') {
     const psScript = path.join(repoRoot, 'scripts', 'run-process-tree.ps1');
     const argsBase64 = Buffer.from(JSON.stringify(args || []), 'utf8').toString('base64');
-    const envBase64 = options.env ? Buffer.from(JSON.stringify(options.env), 'utf8').toString('base64') : null;
 
     const psArgs = [
       '-NoProfile',
@@ -93,9 +92,6 @@ export function spawnProcessInJob(executable, args = [], options = {}) {
     if (options.cwd) {
       psArgs.push('-WorkingDirectory', options.cwd);
     }
-    if (envBase64) {
-      psArgs.push('-EnvJsonBase64', envBase64);
-    }
     if (options.timeout) {
       psArgs.push('-TimeoutMs', String(options.timeout));
     }
@@ -105,6 +101,7 @@ export function spawnProcessInJob(executable, args = [], options = {}) {
 
     const res = spawnSync('powershell.exe', psArgs, {
       cwd: options.cwd || repoRoot,
+      env: options.env || process.env,
       stdio: options.stdio || (options.silent ? 'pipe' : 'inherit'),
       timeout: totalTimeout,
       windowsHide: true,

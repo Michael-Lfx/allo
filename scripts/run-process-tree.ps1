@@ -4,9 +4,10 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ArgsJsonBase64,
   [string]$WorkingDirectory = $null,
-  [string]$EnvJsonBase64 = $null,
   [int]$TimeoutMs = 0
 )
+
+$ErrorActionPreference = 'Stop'
 
 Add-Type @'
 using System;
@@ -116,7 +117,7 @@ public static class FlowyProcessTreeJob {
     public static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool CreateProcessW(
@@ -327,8 +328,8 @@ function ConvertTo-WindowsArgument {
   param([AllowEmptyString()][string]$Value)
   if ($Value.Length -eq 0) { return '""' }
   if ($Value -notmatch '[\s"]') { return $Value }
-  $escaped = $Value -replace '(\\+)"', '$1$1\"'
-  $escaped = $escaped -replace '(\\+)$', '$1$1'
+  $escaped = $Value -replace '(\*)"', '$1$1\"'
+  $escaped = $escaped -replace '(\+)$', '$1$1'
   return '"' + $escaped + '"'
 }
 
@@ -339,29 +340,26 @@ foreach ($argument in $parsedArguments) {
   $arguments += [string]$argument
 }
 
-# Apply environment overrides if provided
-if ($EnvJsonBase64) {
-  $envJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($EnvJsonBase64))
-  $envHash = $envJson | ConvertFrom-Json
-  foreach ($prop in $envHash.psobject.Properties) {
-    [Environment]::SetEnvironmentVariable($prop.Name, [string]$prop.Value, 'Process')
-  }
-}
-
 $commandLine = (ConvertTo-WindowsArgument $Executable) + ' ' + (($arguments | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' ')
 $stdout = ""
 $stderr = ""
 $timedOut = $false
+$exitCode = 1
 
-$exitCode = [FlowyProcessTreeJob]::RunProcessInJob(
-  $Executable,
-  $commandLine,
-  $WorkingDirectory,
-  $TimeoutMs,
-  [ref]$stdout,
-  [ref]$stderr,
-  [ref]$timedOut
-)
+try {
+  $exitCode = [FlowyProcessTreeJob]::RunProcessInJob(
+    $Executable,
+    $commandLine,
+    $WorkingDirectory,
+    $TimeoutMs,
+    [ref]$stdout,
+    [ref]$stderr,
+    [ref]$timedOut
+  )
+} catch {
+  $exitCode = 1
+  [Console]::Error.WriteLine("PROCESS_LAUNCH_ERROR: $($_.Exception.Message)")
+}
 
 if ($stdout.Length -gt 0) {
   [Console]::Out.Write($stdout)

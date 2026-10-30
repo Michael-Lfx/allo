@@ -90,11 +90,29 @@ test('joint trace payload contains authentic multi-stage snapshots, session ID a
   expect(trace.recovery.turn_b_recovered_from_journal).toBe(true);
   expect(trace.recovery.extra_model_calls_on_recovery).toBe(0);
 
+  // Assert binding exists and matches authoritative scope
+  expect(trace.binding).toBeTruthy();
+  expect(trace.binding!.session_id).toBe(trace.session_id);
+  expect(trace.binding!.conversation_id).toBe(trace.conversation_id);
+
   // Assert multi-stage snapshots exist from authentic Rust joint execution
   expect(trace.snapshots).toBeTruthy();
-  expect(trace.snapshots.at_b_failure).toBeTruthy();
-  expect(trace.snapshots.after_b_recovery).toBeTruthy();
-  expect(trace.snapshots.final).toBeTruthy();
+  const { at_b_failure, after_b_recovery, final: snapFinal } = trace.snapshots;
+  expect(at_b_failure).toBeTruthy();
+  expect(after_b_recovery).toBeTruthy();
+  expect(snapFinal).toBeTruthy();
+
+  // Assert cross-stage identity consistency
+  expect(at_b_failure.session_id).toBe(trace.session_id);
+  expect(after_b_recovery.session_id).toBe(trace.session_id);
+  expect(snapFinal.session_id).toBe(trace.session_id);
+
+  expect(at_b_failure.instance_id).toBe(trace.instance_id);
+  expect(after_b_recovery.instance_id).toBe(trace.instance_id);
+  expect(snapFinal.instance_id).toBe(trace.instance_id);
+
+  // Final snapshot must have user_stop ended_reason
+  expect(snapFinal.ended_reason).toBe('user_stop');
 });
 
 test('failure phase: authentic failure snapshot preserves user text and model response with localized error mapping', () => {
@@ -140,6 +158,11 @@ test('reconcileLiveVoiceHistory tracks Turn B in history and accurately retires 
   const turnB = snapAtFailure.conversation?.find((t) => t.user_text?.includes('今天天气怎么样'))!;
   expect(turnB).toBeTruthy();
   const turnBId = turnB.turn_id;
+
+  // Assert recovery snapshot has properly cleared projection errors
+  expect(snapAfterRecovery.error == null).toBe(true);
+  const recoveredTurnB = snapAfterRecovery.conversation?.find((t) => t.user_text?.includes('今天天气怎么样'))!;
+  expect(recoveredTurnB.error == null).toBe(true);
 
   // 1. Stage 1: In-flight / failure phase with only Task A durable in repository
   const durableARows: TMessage[] = [
@@ -285,6 +308,7 @@ test('formalized negative control: bypassing or discarding history state fails o
   const trace = loadTrace();
   const convId = parseConversationId(trace.conversation_id);
   const snapAtFailure = trace.snapshots.at_b_failure;
+  const snapAfterRecovery = trace.snapshots.after_b_recovery;
   const turnB = snapAtFailure.conversation?.find((t) => t.user_text?.includes('今天天气怎么样'))!;
   expect(turnB).toBeTruthy();
 
@@ -296,10 +320,45 @@ test('formalized negative control: bypassing or discarding history state fails o
   expect(discardedHistory.retiredIds.has(trace.messages[2].message_id)).toBe(false);
   expect(discardedHistory.retiredIds.has(trace.messages[3].message_id)).toBe(false);
 
-  // 2. If one attempts to use discarded history to check whether an unprojected turn is retired:
-  const liveWithoutDurable = liveVoiceTurn(snapAtFailure, convId, new Set(), discardedHistory);
-  // Without legitimate retirement state, Turn B remains unretired in live view
-  expect(liveWithoutDurable?.conversation.some((t) => t.turn_id === turnB.turn_id)).toBe(true);
+  // 2. Rerun the positive reconciliation scenario using discarded history instead of stage1.state:
+  const durableBRows: TMessage[] = [
+    {
+      id: 3,
+      message_id: trace.messages[2].message_id,
+      conversation_id: trace.conversation_id,
+      msg_id: trace.messages[2].message_id,
+      type: 'text',
+      content: trace.messages[2].content,
+      position: 'right',
+      status: 'finish',
+      hidden: false,
+      created_at: 1020,
+    },
+    {
+      id: 4,
+      message_id: trace.messages[3].message_id,
+      conversation_id: trace.conversation_id,
+      msg_id: trace.messages[3].message_id,
+      type: 'text',
+      content: trace.messages[3].content,
+      position: 'left',
+      status: 'finish',
+      hidden: false,
+      created_at: 1030,
+    },
+  ] as unknown as TMessage[];
+
+  const stageWithoutHistory = reconcileLiveVoiceHistory(discardedHistory, {
+    snapshot: snapAfterRecovery,
+    conversationId: convId,
+    epoch: 1,
+    visibleIds: new Set(durableBRows.map((r) => r.message_id)),
+    currentSequence: 2,
+    latestPage: { conversationId: convId, epoch: 1, sequence: 2 },
+  });
+
+  // Because history was discarded, it failed to track the turn from in-flight to retirement:
+  expect(discardedHistory.observedTurns.has(turnB.turn_id)).toBe(false);
 });
 
 test('durable trace rows assert strict six message sequential ordering and roles', () => {

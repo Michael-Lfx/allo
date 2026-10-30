@@ -2761,24 +2761,40 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     }
     competing_notif.await.unwrap();
     finalize_task.await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
+    // Bounded predicate: wait until journal contains Turn B with unprojected status
+    let b_entry = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(bytes) = std::fs::read(&journal_file) {
+                if let Ok(records_json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(arr) = records_json.as_array() {
+                        if let Some(entry) = arr.iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样") {
+                            if entry["output"].as_str().is_some() && entry["projected"] == false {
+                                return entry.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("Journal entry for Turn B must be present and unprojected within deadline");
 
     // Verify B's text is preserved and error is visible
     let s_after_b_err = rt.snapshot();
+    let turn_b_id = s_after_b_err.turn_id.clone().expect("Turn B turn_id must be present");
     assert!(s_after_b_err.ended_reason.is_none(), "Session must not exit upon projection write failure");
     assert!(s_after_b_err.user_text.as_deref().is_some_and(|t| t.contains("今天天气怎么样")), "User text must be preserved");
 
     host_manager.project_snapshot_for_test(s_after_b_err.clone(), 0);
     let snapshot_at_b_failure = host_manager.snapshot();
     assert!(snapshot_at_b_failure.binding.is_some(), "Authoritative binding must be preserved in failure snapshot");
+    assert!(!snapshot_at_b_failure.projected_turn_ids.contains(&turn_b_id), "Turn B must NOT be projected in failure snapshot");
+    assert_eq!(snapshot_at_b_failure.error.as_ref().map(|e| e.code.as_str()), Some("voice_projection_write_failed"), "Root snapshot must expose projection failure error");
 
-    // Recover B from journal: original output and message ID are reused without calling the model again!
-    let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
-    let records_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
-    let b_entry = records_json.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
     let b_req: VoiceDialogueRequest = serde_json::from_value(b_entry["request"].clone()).unwrap();
     let b_content = b_entry["output"].as_str().unwrap().to_string();
-    assert_eq!(b_entry["projected"], false, "B should not be projected yet due to simulated write failure");
 
     let model_calls_before_rec = completer.calls.load(std::sync::atomic::Ordering::SeqCst);
     let submits_before_rec = tasks.calls.load(std::sync::atomic::Ordering::SeqCst);
@@ -2799,7 +2815,12 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let s_after_b_rec = rt.snapshot();
     host_manager.project_snapshot_for_test(s_after_b_rec.clone(), 0);
     let snapshot_after_b_recovery = host_manager.snapshot();
-    assert!(snapshot_after_b_recovery.projected_turn_ids.len() >= 2, "Turn B must be projected after recovery");
+    assert!(snapshot_after_b_recovery.projected_turn_ids.contains(&turn_b_id), "Turn B exact ID must be in projected_turn_ids after recovery");
+    assert!(snapshot_after_b_recovery.error.is_none(), "Recovery snapshot must clear root error");
+    let recovered_turn_b = snapshot_after_b_recovery.conversation.iter().find(|t| t.turn_id == turn_b_id).expect("Turn B must exist in recovered snapshot conversation");
+    assert!(recovered_turn_b.error.is_none(), "Turn B error must be cleared in recovered snapshot");
+    assert!(recovered_turn_b.user_message_id.is_some(), "Turn B must have user_message_id assigned after recovery");
+    assert!(recovered_turn_b.assistant_message_id.is_some(), "Turn B must have assistant_message_id assigned after recovery");
 
     let records_after: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
     let b_entry_after = records_after.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
@@ -2854,12 +2875,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 || svc.list_messages(USER, &conv_id, Default::default()).await.map(|m| m.items.len()).unwrap_or(0) < 6 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }).await.expect("Turn C must complete routing");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }).await.expect("Turn C routing and 6 durable messages must complete within deadline");
 
     // Test late announcement after UserStop
     let s_end = rt.snapshot();
@@ -2912,6 +2932,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert_eq!(tasks.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "Exactly 1 task submit call");
 
     let snap = rt.snapshot();
+    let turn_c_id = snap.turn_id.clone().expect("Turn C turn_id must exist");
     assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
     assert_eq!(snap.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop), "Session ended cleanly with UserStop");
@@ -2922,6 +2943,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let binding = snapshot_final.binding.clone().expect("authoritative binding must be present in snapshot");
     assert_eq!(binding.conversation_id, conv_id);
     assert_eq!(binding.session_id, real_session_id);
+    assert!(snapshot_final.projected_turn_ids.contains(&turn_c_id), "Turn C must be in projected_turn_ids in final snapshot");
+    assert_eq!(snapshot_final.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop));
+    assert_eq!(snapshot_final.session_id, snapshot_at_b_failure.session_id);
+    assert_eq!(snapshot_final.instance_id, snapshot_at_b_failure.instance_id);
+    assert_eq!(snapshot_after_b_recovery.session_id, snapshot_at_b_failure.session_id);
 
     let trace_payload = serde_json::json!({
         "conversation_id": conv_id,
