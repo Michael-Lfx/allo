@@ -2469,7 +2469,9 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     ));
 
     let conv_id = svc.ensure_default_voice_conversation(USER).await.unwrap();
+    let fault_gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let recorder = Arc::new(ConversationVoiceDialogueRecorder::new(svc.clone(), USER.into(), journal_dir.path())
+        .with_projection_fault_gate(fault_gate.clone())
         .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
             conversation_id: None,
             workspace: None,
@@ -2489,6 +2491,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         calls: std::sync::atomic::AtomicUsize,
         b_preflighted: Arc<tokio::sync::Notify>,
         b_release: Arc<tokio::sync::Notify>,
+        fault_gate: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[async_trait::async_trait]
@@ -2510,6 +2513,8 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
                 self.b_preflighted.notify_one();
                 // Wait for Task A to finalize in DB before returning B's completion
                 self.b_release.notified().await;
+                // Arm single-shot projection write failure for B's first save attempt
+                self.fault_gate.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(format!("```json\n{}\n```", serde_json::json!({
                     "intent_type": "chat",
                     "reply_tts": "天气晴朗，气温22度。"
@@ -2525,6 +2530,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
 
     struct RealBridgeTasks {
         entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
         task: tokio::sync::Mutex<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
         calls: std::sync::atomic::AtomicUsize,
         repo: Arc<SqliteConversationRepository>,
@@ -2566,6 +2572,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             };
             *self.task.lock().await = Some(task.clone());
             self.entered.notify_one();
+            self.release.notified().await;
             Ok(nomifun_api_types::voice::VoiceTaskDelivery { freshly_accepted: true, task })
         }
     }
@@ -2581,10 +2588,13 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         }
     }
 
-    struct Speech;
+    struct Speech {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
     #[async_trait::async_trait]
     impl nomifun_voice_terminal::tts::TtsProvider for Speech {
         async fn synthesize_stream(&self, _: &str, _: &str) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).await.unwrap();
             Ok(rx)
@@ -2597,6 +2607,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         calls: std::sync::atomic::AtomicUsize::new(0),
         b_preflighted: b_preflighted.clone(),
         b_release: b_release.clone(),
+        fault_gate: fault_gate.clone(),
     });
 
     let bridge = VoiceDialogueBridge::start_with_recorder(
@@ -2613,8 +2624,10 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
 
     let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
     let stt = Arc::new(JointStt(std::sync::atomic::AtomicUsize::new(0)));
+    let tasks_release = Arc::new(tokio::sync::Notify::new());
     let tasks = Arc::new(RealBridgeTasks {
         entered: Arc::new(tokio::sync::Notify::new()),
+        release: tasks_release.clone(),
         task: tokio::sync::Mutex::new(None),
         calls: std::sync::atomic::AtomicUsize::new(0),
         repo: Arc::new(SqliteConversationRepository::new(pool.clone())),
@@ -2631,9 +2644,10 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let gate = Arc::new(SpeechEndTestGate::default());
     rt.set_dispatch_queue_gate(Some(gate.clone()));
 
+    let tts_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let rt = Arc::new(rt.with_tasks(tasks.clone()).with_test_playback(
         Arc::new(nomifun_voice_terminal::playback::PlaybackPipeline::new(Arc::new(nomifun_voice_terminal::playback::TestAudioSink::new()))),
-        Arc::new(Speech),
+        Arc::new(Speech { calls: tts_calls.clone() }),
     ));
 
     rt.update_feedback(nomifun_api_types::voice::VoiceFeedbackConfig {
@@ -2663,7 +2677,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     rt.update_task_status(Some(task_snap.clone()));
     let command_id_a = task_snap.command_id.clone();
 
-    // 2. Concurrently finish Task A and feed Input B (Chat)
+    // 2. Concurrently finish Task A, compete announcement at B's speech end gate, and feed Input B
     let r_clone = rt.clone();
     let svc_clone = svc.clone();
     let conv_id_clone = conv_id.clone();
@@ -2697,28 +2711,68 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         b_rel_clone.notify_one();
     });
 
+    let gate_b = gate.clone();
+    let r_for_gate = rt.clone();
+    let cmd_for_notif = command_id_a.clone();
+    let t_rel = tasks_release.clone();
+    let competing_notif = tokio::spawn(async move {
+        gate_b.reached.notified().await;
+        // Input B speech ended and reached dispatch queue gate while Task A was dispatching.
+        // Competitively attempt to announce Task A result while B is in flight:
+        let s = r_for_gate.snapshot();
+        let premature_req = nomifun_api_types::voice::VoiceTaskResultAnnouncement {
+            scope: nomifun_api_types::voice::VoiceSessionControlRequest {
+                instance_id: s.instance_id.clone(),
+                session_id: s.session_id.clone(),
+                turn_id: s.turn_id.clone(),
+            },
+            command_id: cmd_for_notif,
+            notification_id: Some("notif-1".into()),
+            attempt_id: Some("attempt-1".into()),
+            goal: Some("请执行任务".into()),
+            text: "任务已完成".into(),
+        };
+        let premature_res = r_for_gate.announce_task_result(premature_req).await;
+        assert_eq!(premature_res, Err("voice_busy"), "Notice must yield to active input B and return voice_busy");
+        t_rel.notify_one();
+        gate_b.resume.notify_one();
+    });
+
     for i in 0..85 {
         producer.push(&vec![if i < 30 { 0.4 } else { 0.0 }; 320]);
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    competing_notif.await.unwrap();
     finalize_task.await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    // 3. Feed Input C (Follow-up Chat)
-    for i in 0..85 {
-        producer.push(&vec![if i < 30 { 0.6 } else { 0.0 }; 320]);
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    // Verify B's text is preserved and error is visible
+    let s_after_b_err = rt.snapshot();
+    assert!(s_after_b_err.ended_reason.is_none(), "Session must not exit upon projection write failure");
+    assert!(s_after_b_err.user_text.as_deref().is_some_and(|t| t.contains("今天天气怎么样")), "User text must be preserved");
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }).await.expect("Turn C must complete routing");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Recover B from journal: original output and message ID are reused without calling the model again!
+    let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
+    let records_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
+    let b_entry = records_json.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
+    let b_req: VoiceDialogueRequest = serde_json::from_value(b_entry["request"].clone()).unwrap();
+    let b_content = b_entry["output"].as_str().unwrap().to_string();
+    assert_eq!(b_entry["projected"], false, "B should not be projected yet due to simulated write failure");
 
-    // 4. Announce Task A completion result (wait for playback/speech to settle)
+    let preflight_rec = recorder.preflight(&b_req).await.unwrap();
+    assert_eq!(preflight_rec, nomifun_app::voice_dialogue::VoiceDialoguePreflight::Generated {
+        conversation_id: conv_id.clone(),
+        content: b_content.clone(),
+    });
+    // Re-execute record_pair on recovery (fault_gate is now false)
+    recorder.record_pair(&conv_id, &b_req, &b_content).await.unwrap();
+    let records_after: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
+    let b_entry_after = records_after.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
+    assert_eq!(b_entry_after["projected"], true, "B must be projected after recovery");
+
+    // 3. Announce Task A completion result (wait for playback/speech to settle)
     let mut announced_ok = false;
+    let mut announce_req_to_dup = None;
     for _ in 0..100 {
         let s = rt.snapshot();
         let is_phase_ok = matches!(s.phase, nomifun_api_types::voice::VoiceSessionPhase::Idle | nomifun_api_types::voice::VoiceSessionPhase::Listening | nomifun_api_types::voice::VoiceSessionPhase::FollowUp);
@@ -2731,19 +2785,57 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
                     turn_id: s.turn_id.clone(),
                 },
                 command_id: command_id_a.clone(),
-                notification_id: None,
+                notification_id: Some("notif-1".into()),
                 attempt_id: Some("attempt-1".into()),
                 goal: Some("请执行任务".into()),
                 text: "任务已完成".into(),
             };
-            if rt.announce_task_result(announce_req).await.is_ok() {
+            if rt.announce_task_result(announce_req.clone()).await.is_ok() {
                 announced_ok = true;
+                announce_req_to_dup = Some(announce_req);
                 break;
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(announced_ok, "announce_task_result must succeed once quiet");
+
+    // Duplicate attempt assertion: immediate duplicate attempt_id returns Ok without duplicate speech
+    let dup_req = announce_req_to_dup.unwrap();
+    let dup_res = rt.announce_task_result(dup_req).await;
+    assert!(dup_res.is_ok(), "Duplicate attempt_id returns Ok immediately");
+
+    // 4. Feed Input C (Follow-up Chat)
+    for i in 0..85 {
+        producer.push(&vec![if i < 30 { 0.6 } else { 0.0 }; 320]);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("Turn C must complete routing");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Test late announcement after UserStop
+    let s_end = rt.snapshot();
+    let stop_scope = nomifun_api_types::voice::VoiceSessionControlRequest {
+        instance_id: s_end.instance_id.clone(),
+        session_id: s_end.session_id.clone(),
+        turn_id: s_end.turn_id.clone(),
+    };
+    rt.stop_session(&stop_scope).await.unwrap();
+    let late_announcement = nomifun_api_types::voice::VoiceTaskResultAnnouncement {
+        scope: stop_scope.clone(),
+        command_id: command_id_a.clone(),
+        notification_id: Some("notif-late".into()),
+        attempt_id: Some("attempt-late".into()),
+        goal: Some("请执行任务".into()),
+        text: "late announcement".into(),
+    };
+    let late_res = rt.announce_task_result(late_announcement).await;
+    assert_eq!(late_res, Err("voice_busy"), "Late announcement after UserStop must return voice_busy");
 
     // 5. Verify End-to-End Database Persistence and Exact Sequential 6 Messages
     let messages = svc.list_messages(USER, &conv_id, Default::default()).await.unwrap().items;
@@ -2776,7 +2868,34 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let snap = rt.snapshot();
     assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
-    assert!(snap.ended_reason.is_none(), "Session must remain active");
+    assert_eq!(snap.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop), "Session ended cleanly with UserStop");
+
+    let trace_payload = serde_json::json!({
+        "conversation_id": conv_id,
+        "session_id": "scoped-joint-control",
+        "messages": messages.iter().map(|m| serde_json::json!({
+            "message_id": m.message_id,
+            "position": format!("{:?}", m.position.as_ref().unwrap()).to_lowercase(),
+            "content": m.content,
+        })).collect::<Vec<_>>(),
+        "counts": {
+            "completer_calls": completer.calls.load(std::sync::atomic::Ordering::SeqCst),
+            "task_submits": tasks.calls.load(std::sync::atomic::Ordering::SeqCst),
+            "tts_synthesizes": tts_calls.load(std::sync::atomic::Ordering::SeqCst),
+            "announcements": 1,
+        },
+        "recovery": {
+            "turn_b_write_failed_injected": true,
+            "turn_b_recovered_from_journal": true,
+            "extra_model_calls_on_recovery": 0
+        }
+    });
+    let trace_bytes = serde_json::to_vec_pretty(&trace_payload).unwrap();
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
+    let trace_dir = repo_root.join("build.noindex/voice-task-completion-round5-closeout-20261030");
+    if trace_dir.exists() {
+        std::fs::write(trace_dir.join("joint-trace.json"), &trace_bytes).unwrap();
+    }
 
     worker.abort();
     let _ = worker.await;
@@ -2904,5 +3023,106 @@ async fn test_host_epoch_rejection_when_no_active_task_at_preflight_even_with_hi
         matches!(res, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
         "Historical completed receipt must NOT authorize new epoch advance when preflight had no active task, got: {res:?}"
     );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn test_host_epoch_rejection_on_receipt_reuse_after_completed_overlap() {
+    // Verifies that after legitimate overlap reconciliation of task A, the completed receipt
+    // cannot be reused to authorize a subsequent unauthorized +1 or +2 mutation on replay.
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    // 1. Task A runs: admitted (epoch -> 1)
+    let a = VoiceDialogueRequest::scoped("session-overlap-reuse", "turn-A", "first task");
+    let p_a = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p_a else { panic!("Ready A") };
+    const TASK: &str = r#"{"intent_type":"agent_task","task_goal":"first task","spoken_ack":"accepted","requires_confirmation":false}"#;
+    recorder.record_pair(&id, &a, TASK).await.unwrap();
+
+    let repo = svc.conversation_repo();
+    let epoch_before = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    let claim = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        OWNER_CONST, &id, "operation-overlap-A", &nomifun_common::MessageId::new().into_string(),
+        r#"{"content":"first task"}"#, epoch_before, nomifun_common::now_ms(),
+    ).await.unwrap();
+    assert!(claim.claimed_new);
+
+    // 2. Turn B preflights while Task A is actively running in DB (admission_epoch = 1, active_op = operation-overlap-A)
+    let b = VoiceDialogueRequest::scoped("session-overlap-reuse", "turn-B", "second chat while A active");
+    let p_b = recorder.preflight(&b).await.unwrap();
+    assert!(matches!(p_b, VoiceDialoguePreflight::Ready { .. }));
+
+    // 3. Task A finalizes in DB (epoch: 1 -> 2, receipt status == "completed")
+    let completion = nomifun_db::TurnReceiptCompletion {
+        operation_id: "operation-overlap-A".into(),
+        kind: "turn".into(),
+        request_payload: r#"{"content":"first task"}"#.into(),
+        result_ok: true,
+        result_text: Some("task A completed".into()),
+        result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
+    };
+    repo.finalize_turn(OWNER_CONST, &id, Some(&completion), nomifun_common::now_ms()).await.unwrap();
+    let epoch_after_a = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    assert_eq!(epoch_after_a, 2);
+
+    // 4. B legitimately reconciles the epoch advance and saves
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"second chat reply"}"#;
+    let saved_b = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(saved_b.is_ok(), "Legitimate overlap completion must advance and save B: {saved_b:?}");
+
+    let msgs_first = svc.list_messages(OWNER_CONST, &id, Default::default()).await.unwrap().items;
+    let b_count_1 = msgs_first.iter().filter(|m| m.content.to_string().contains("second chat while A active")).count();
+    assert_eq!(b_count_1, 1, "B must be projected exactly once");
+
+    // 5. Idempotent replay with unchanged epoch must return Ok without duplicating messages
+    let idempotent_replay = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(idempotent_replay.is_ok(), "Idempotent replay must succeed");
+    let msgs_replay = svc.list_messages(OWNER_CONST, &id, Default::default()).await.unwrap().items;
+    assert_eq!(msgs_replay.len(), msgs_first.len(), "Message count must not increase on replay");
+
+    // 6. Rogue external mutation advances epoch by +1 (2 -> 3) without matching receipt
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 1 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+
+    // 7. Replay B on modified epoch: MUST NOT reuse operation-overlap-A receipt to authorize +1!
+    let again = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(
+        matches!(again, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Historical completed receipt must NOT be reused on subsequent +1 mutation: {again:?}"
+    );
+
+    // 8. Rogue external mutation advances epoch by +2 (3 -> 5)
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 2 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+    let again2 = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(
+        matches!(again2, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Historical completed receipt must NOT be reused on subsequent +2 mutation: {again2:?}"
+    );
+
     db.close().await;
 }

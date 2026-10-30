@@ -348,3 +348,88 @@ async fn test_stop_fence_prevents_stale_speech_resurrection() {
     worker.abort();
     let _ = worker.await;
 }
+
+#[tokio::test]
+async fn test_stale_callback_waiting_for_driver_mutex_cannot_hijack_newer_task_b() {
+    let root = tempfile::tempdir().unwrap();
+    let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+    let stt = Arc::new(Stt(AtomicUsize::new(0)));
+    let router = Arc::new(Router(AtomicUsize::new(0)));
+    let tasks = Arc::new(Tasks { release: Notify::new(), entered: Notify::new(), task: Mutex::new(None) });
+
+    let (rt, _) = VoiceCompanionRuntime::from_capture(
+        Arc::new(nomifun_voice_models::ModelManager::new(root.path())),
+        Arc::new(OobeManager::new_bypassed()),
+        Arc::new(Mutex::new(capture)),
+        stt,
+        router,
+    );
+    let rt = Arc::new(rt.with_tasks(tasks.clone()).with_test_playback(
+        Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+        Arc::new(Speech),
+    ));
+    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true }.into()).unwrap();
+    rt.handle_wake().await.unwrap();
+    let worker = rt.start_worker();
+
+    // 1. Submit task A and wait until submitted
+    for i in 0..80 {
+        producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::timeout(Duration::from_secs(2), tasks.entered.notified()).await.unwrap();
+    worker.abort();
+    let _ = worker.await;
+
+    // 2. Task A accepted, driver in DispatchingTask
+    let mut failed = tasks.task.lock().await.clone().unwrap();
+    rt.update_task_status(Some(failed.clone()));
+    let driver = rt.driver();
+    let held = driver.lock().await;
+    assert_eq!(held.current_state(), nomifun_voice_terminal::contract::AcousticState::DispatchingTask);
+
+    // 3. Task A fails while driver mutex is held externally
+    failed.status = VoiceTaskStatus::Failed;
+    failed.error_code = Some("cancelled".into());
+    rt.update_task_status_versioned(Some(failed.clone()), None, Some(10));
+
+    // Yield so the terminal callback spawns and blocks on driver.lock()
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    // 4. Task B arrives and takes ownership of driver/session
+    let mut b = failed.clone();
+    b.command_id = "new-command-B".into();
+    b.acoustic_turn_id = "new-turn-B".into();
+    b.status = VoiceTaskStatus::Accepted;
+    b.error_code = None;
+    rt.update_task_status_versioned(Some(b.clone()), None, Some(11));
+
+    assert_eq!(rt.snapshot().task.as_ref().unwrap().command_id, "new-command-B");
+    assert_eq!(held.current_state(), nomifun_voice_terminal::contract::AcousticState::DispatchingTask);
+
+    // 5. Release driver mutex so A's callback resumes
+    drop(held);
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // 6. Assert Task B was NOT hijacked or reset to Listening by A's stale callback
+    let state = driver.lock().await.current_state();
+    let snap = rt.snapshot();
+    assert_eq!(
+        state,
+        nomifun_voice_terminal::contract::AcousticState::DispatchingTask,
+        "Stale callback A must not reset driver to Listening when task B is active"
+    );
+    assert_eq!(
+        snap.task.as_ref().unwrap().command_id,
+        "new-command-B",
+        "Snapshot task must remain owned by B"
+    );
+    assert_eq!(
+        snap.phase,
+        VoiceSessionPhase::Dispatching,
+        "Session phase must remain Dispatching"
+    );
+}

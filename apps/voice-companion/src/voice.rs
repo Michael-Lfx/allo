@@ -1606,9 +1606,11 @@ impl VoiceCompanionRuntime {
         let mut driver = self.driver.lock().await;
         let snapshot = self.snapshot();
         if !request.scope.matches(&snapshot) {return Err("task_scope_changed");}
+        let active_busy = self.active_turn.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|h| !h.is_finished());
         if snapshot.ended_reason==Some(VoiceSessionEndReason::UserStop)
             || snapshot.audio.as_ref().is_some_and(|audio|audio.speech_detected)
             || !self.pending_utterances.lock().unwrap_or_else(|e|e.into_inner()).is_empty()
+            || active_busy
             || !driver.yield_for_notification() {return Err("voice_busy");}
         driver.handle_event(AcousticEvent::TaskSummaryReady).map_err(|_| "voice_busy")?;
         let generation = self.playback.generation_id();

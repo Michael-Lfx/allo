@@ -241,6 +241,7 @@ pub struct ConversationVoiceDialogueRecorder {
     turn_errors: RwLock<std::collections::HashMap<(String, String, String), VoiceSessionError>>,
     execution_runtime:Option<Arc<dyn VoiceTaskRuntime>>,
     pending_call_reservation: RwLock<Option<crate::voice_dialogue::VoiceCallReservation>>,
+    projection_fault_gate: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ConversationVoiceDialogueRecorder {
@@ -302,6 +303,7 @@ impl ConversationVoiceDialogueRecorder {
             target_config: Arc::new(RwLock::new(VoiceTargetConfig::default())),
             active_window_candidate: Arc::new(RwLock::new(VoiceWindowContext::default())),
             user_id,
+            projection_fault_gate: None,
         }
     }
 
@@ -319,6 +321,11 @@ impl ConversationVoiceDialogueRecorder {
 
     pub fn with_active_window_candidate(mut self, candidate: Arc<RwLock<VoiceWindowContext>>) -> Self {
         self.active_window_candidate = candidate;
+        self
+    }
+
+    pub fn with_projection_fault_gate(mut self, gate: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.projection_fault_gate = Some(gate);
         self
     }
 
@@ -1264,6 +1271,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
 
         let is_busy = self.conversation_service.is_conversation_busy(&self.user_id, conversation_id).await.unwrap_or(false);
         let has_display = !display.trim().is_empty();
+        if let Some(gate) = &self.projection_fault_gate {
+            if gate.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                return Err(VoiceDialogueRecorderError::WriteFailed("simulated_storage_failure".into()));
+            }
+        }
         if !is_busy && has_display {
             let res = self.conversation_service.project_voice_dialogue_pair_with_user_msg_id(
                 &self.user_id,
