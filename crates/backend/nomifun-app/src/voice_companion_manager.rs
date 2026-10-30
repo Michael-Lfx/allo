@@ -591,6 +591,8 @@ struct DialogueRecord {
     voice_context_digest: Option<String>,
     #[serde(default)]
     control_error: Option<VoiceSessionError>,
+    #[serde(default)]
+    preflight_active_operation_id: Option<String>,
 }
 
 fn map_voice_projection_error(error: nomifun_common::AppError) -> VoiceDialogueRecorderError {
@@ -697,42 +699,53 @@ impl ConversationVoiceDialogueRecorder {
             .get_turn_admission_state(&self.user_id, conversation_id).await
             .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
 
-        // Bound revision advance: legitimate handoff within a turn lifecycle can advance epoch by at most 2 (claim + finalize)
+        let target_record = records.iter().find(|r| target_record_id.is_some() && r.request.voice_record_id.as_deref() == target_record_id)
+            .or_else(|| records.iter().rfind(|r| r.request.session_id.as_deref() == Some(session_id) && r.request.voice_record_id.is_some()));
+        let preflight_active_op = target_record.and_then(|r| r.preflight_active_operation_id.as_deref());
+
         let epoch_delta = current_epoch - recorded_epoch;
-        if epoch_delta < 1 || epoch_delta > 2 {
-            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
-        }
 
-        // Verify that the advance is associated with an active or completed task from the current session
-        let matches_session_operation = if let Some(ref active_op) = current_state.active_operation_id {
-            // Task is currently running: must belong to our session's recorded commands
-            records.iter().any(|r| {
-                r.request.session_id.as_deref() == Some(session_id)
-                    && (r.command_id.as_deref() == Some(active_op) || r.request.voice_record_id.as_deref() == Some(active_op))
-            })
+        let matches_session_operation = if let Some(expected_op) = preflight_active_op {
+            // Task was already running at preflight time:
+            // 1. Legitimate completion advances epoch by exactly 1
+            if epoch_delta != 1 {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+            // 2. The task must no longer be active in DB
+            if current_state.active_operation_id.as_deref() == Some(expected_op) {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+            // 3. Receipt for expected_op must exist and be completed (status == "completed")
+            let receipt = self.conversation_service.conversation_repo()
+                .get_delivery_receipt(&self.user_id, conversation_id, expected_op).await
+                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+            receipt.as_ref().is_some_and(|r| r.status == "completed")
         } else {
-            // Task has completed: check that latest receipt belongs to our session or there's a prior projected record
-            let receipt_matches = self.conversation_service.conversation_repo()
-                .latest_completed_turn_receipt(&self.user_id, conversation_id).await
-                .ok()
-                .flatten()
-                .is_some_and(|r| {
-                    r.status == "completed" && r.result_ok == Some(true)
-                        && records.iter().any(|rec| {
-                            rec.request.session_id.as_deref() == Some(session_id)
-                                && (rec.command_id.as_deref() == Some(&r.operation_id)
-                                    || rec.request.voice_record_id.as_deref() == Some(&r.operation_id))
-                        })
-                });
-
-            let has_prior_record = records.iter().any(|r| {
-                r.request.session_id.as_deref() == Some(session_id)
-                    && r.request.voice_record_id.is_some()
-                    && r.request.voice_record_id.as_deref() != target_record_id
-                    && r.projected
-            });
-
-            receipt_matches || has_prior_record
+            // No task was running at preflight time:
+            if epoch_delta < 1 || epoch_delta > 2 {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+            if let Some(ref active_op) = current_state.active_operation_id {
+                // Task is currently active: must belong to our session
+                records.iter().any(|r| {
+                    r.request.session_id.as_deref() == Some(session_id)
+                        && (r.command_id.as_deref() == Some(active_op) || r.request.voice_record_id.as_deref() == Some(active_op))
+                })
+            } else {
+                // Task has completed: must have matching receipt from our session
+                self.conversation_service.conversation_repo()
+                    .latest_completed_turn_receipt(&self.user_id, conversation_id).await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|r| {
+                        r.status == "completed"
+                            && records.iter().any(|rec| {
+                                rec.request.session_id.as_deref() == Some(session_id)
+                                    && (rec.command_id.as_deref() == Some(&r.operation_id)
+                                        || rec.request.voice_record_id.as_deref() == Some(&r.operation_id))
+                            })
+                    })
+            }
         };
 
         if !matches_session_operation {
@@ -848,7 +861,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 (config,_) => (config,None),
             };
             let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&id).await.map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
-            records.push(DialogueRecord {request:VoiceDialogueRequest {call_request_id:call_request_id.map(str::to_owned),session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,assistant_message_id:None,handoff_content:None,voice_context_digest:None,control_error:None});
+            records.push(DialogueRecord {request:VoiceDialogueRequest {call_request_id:call_request_id.map(str::to_owned),session_id:Some(session.into()),binding_id:Some(format!("voice-binding-{session}")),..Default::default()},conversation_id:id.clone(),admission_epoch:epoch,execution,frozen_preset,source_workspace,output:None,projected:false,command_id:None,requested_at:None,message_id:None,assistant_message_id:None,handoff_content:None,voice_context_digest:None,control_error:None,preflight_active_operation_id:None});
             // Persist and consume under the same identity lock; a newer start cannot be taken here.
             let mut pending = self.pending_call_reservation.write().unwrap_or_else(|e|e.into_inner());
             if pending.as_ref().map(|res|res.request_id.as_str()) != reservation_opt.as_ref().map(|res|res.request_id.as_str()) {
@@ -1078,8 +1091,11 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let frozen=records.iter().find(|r|r.request.session_id==request.session_id).cloned()
             .ok_or_else(||VoiceDialogueRecorderError::BindingInvalid("binding_missing".into()))?;
         let (conversation_id,execution,frozen_preset,source_workspace)=(frozen.conversation_id,frozen.execution,frozen.frozen_preset,frozen.source_workspace);
-        let epoch=self.conversation_service.conversation_repo().get_turn_admission_state(&self.user_id,&conversation_id).await
-            .map_err(|e|VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
+        let admission_state = self.conversation_service.conversation_repo()
+            .get_turn_admission_state(&self.user_id, &conversation_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        let epoch = admission_state.epoch;
+        let preflight_active_op = admission_state.active_operation_id;
         let has_unsettled = records.iter().any(|r| {
             r.request.session_id == request.session_id
                 && r.request.voice_record_id.is_some()
@@ -1123,6 +1139,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             handoff_content: None,
             voice_context_digest: None,
             control_error: None,
+            preflight_active_operation_id: preflight_active_op,
         });
         // The original ASR, frozen target/config and generation claim precede the model side effect.
         self.save_records(&records)?;
@@ -1436,6 +1453,7 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 handoff_content: None,
                 voice_context_digest: None,
                 control_error: None,
+                preflight_active_operation_id: None,
             });
             records.len() - 1
         };

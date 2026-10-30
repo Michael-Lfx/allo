@@ -1183,6 +1183,8 @@ pub struct VoiceCompanionRuntime {
     confirmation_speech_end_gate: Option<Arc<SpeechEndTestGate>>,
     #[cfg(any(test, feature = "voice-skeleton"))]
     pub ordinary_speech_end_gate: Option<Arc<SpeechEndTestGate>>,
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub dispatch_queue_gate: Option<Arc<SpeechEndTestGate>>,
     pending_confirmation:Arc<std::sync::Mutex<Option<PendingConfirmation>>>,
     announced_tasks: Mutex<std::collections::VecDeque<AnnouncementRecord>>,
     task_client: Option<Arc<dyn nomifun_voice_terminal::task_client::VoiceTaskClient>>,
@@ -1323,6 +1325,8 @@ impl VoiceCompanionRuntime {
             confirmation_speech_end_gate: None,
             #[cfg(any(test, feature = "voice-skeleton"))]
             ordinary_speech_end_gate: None,
+            #[cfg(any(test, feature = "voice-skeleton"))]
+            dispatch_queue_gate: None,
             pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
             announced_tasks: Mutex::new(std::collections::VecDeque::new()),
             task_client: std::env::var("AI_MATE_TASK_ENDPOINT").ok().and_then(|endpoint| {
@@ -1438,6 +1442,8 @@ impl VoiceCompanionRuntime {
                 confirmation_speech_end_gate: None,
                 #[cfg(any(test, feature = "voice-skeleton"))]
                 ordinary_speech_end_gate: None,
+                #[cfg(any(test, feature = "voice-skeleton"))]
+                dispatch_queue_gate: None,
                 pending_confirmation:Arc::new(std::sync::Mutex::new(None)),
                 announced_tasks: Mutex::new(std::collections::VecDeque::new()),
                 task_client: None,
@@ -3901,12 +3907,18 @@ impl VoiceCompanionRuntime {
                         }
                         next
                     } else {
-                        *act = None;
+                        // If input_id expired (or session ended), this coroutine does not own active_turn.
+                        // Do not clear *act if it might belong to a newer turn.
                         None
                     }
                 };
                 if let Some(next_item) = next_to_start {
                     let mut d = driver.lock().await;
+                    let current_snap = events.snapshot();
+                    if current_snap.ended_reason.is_some() || current_snap.session_id != next_item.session_id {
+                        drop(d);
+                        return;
+                    }
                     let can_decide = match d.current_state() {
                         AcousticState::FollowUpListening => {
                             d.handle_event(AcousticEvent::FollowUpSpeech) == Ok(AcousticState::Deciding)
@@ -3974,11 +3986,18 @@ impl VoiceCompanionRuntime {
         self.ordinary_speech_end_gate = gate;
     }
 
+    #[cfg(any(test, feature = "voice-skeleton"))]
+    pub fn set_dispatch_queue_gate(&mut self, gate: Option<Arc<SpeechEndTestGate>>) {
+        self.dispatch_queue_gate = gate;
+    }
+
     pub fn start_worker(&self) -> tokio::task::JoinHandle<()> {
         #[cfg(test)]
         let confirmation_speech_end_gate = self.confirmation_speech_end_gate.clone();
         #[cfg(any(test, feature = "voice-skeleton"))]
         let mut ordinary_speech_end_gate = self.ordinary_speech_end_gate.clone();
+        #[cfg(any(test, feature = "voice-skeleton"))]
+        let dispatch_queue_gate = self.dispatch_queue_gate.clone();
         let driver = Arc::clone(&self.driver);
         let capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
@@ -5018,32 +5037,44 @@ impl VoiceCompanionRuntime {
                         }
                         if speech_started && (!is_active || utterance_pcm.len() >= 16_000 * 30) {
                             #[cfg(any(test, feature = "voice-skeleton"))]
-                            if let Some(gate) = PARENT_DISPATCH_QUEUE_GATE.get() {
+                            if let Some(gate) = dispatch_queue_gate.as_ref().or_else(|| PARENT_DISPATCH_QUEUE_GATE.get()) {
                                 gate.reached.notify_one();
                                 gate.resume.notified().await;
                             }
                             speech_started = false;
                             let pcm = std::mem::take(&mut utterance_pcm);
 
+                            // Check whether session has ended before queuing or starting
+                            let current_snap = event_tx.snapshot();
+                            if current_snap.ended_reason.is_some() || current_snap.session_id.is_none() || current_snap.session_id.as_deref() != session.as_deref() {
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                                continue;
+                            }
+
                             // Atomic boundary: lock active_turn then pending_utterances in a pure synchronous scope
                             let (should_alert, next_to_start) = {
                                 let act = active_turn.lock().unwrap_or_else(|e| e.into_inner());
                                 let mut queue = pending_utterances.lock().unwrap_or_else(|e| e.into_inner());
-                                let is_busy = act.as_ref().is_some_and(|h| !h.is_finished());
-                                if queue.len() < 2 {
-                                    queue.push_back(PendingUtterance {
-                                        pcm,
-                                        session_id: session.clone(),
-                                        generation_id: playback.generation_id(),
-                                    });
-                                    let next = if !is_busy {
-                                        queue.pop_front()
-                                    } else {
-                                        None
-                                    };
-                                    (false, next)
+                                let snap = event_tx.snapshot();
+                                if snap.ended_reason.is_some() || snap.session_id.as_deref() != session.as_deref() {
+                                    (false, None)
                                 } else {
-                                    (true, None)
+                                    let is_busy = act.as_ref().is_some_and(|h| !h.is_finished());
+                                    if queue.len() < 2 {
+                                        queue.push_back(PendingUtterance {
+                                            pcm,
+                                            session_id: session.clone(),
+                                            generation_id: playback.generation_id(),
+                                        });
+                                        let next = if !is_busy {
+                                            queue.pop_front()
+                                        } else {
+                                            None
+                                        };
+                                        (false, next)
+                                    } else {
+                                        (true, None)
+                                    }
                                 }
                             };
 
@@ -5055,16 +5086,18 @@ impl VoiceCompanionRuntime {
 
                             if let Some(next_item) = next_to_start {
                                 let mut d = driver.lock().await;
+                                let snap = event_tx.snapshot();
+                                if snap.ended_reason.is_some() || snap.session_id != next_item.session_id {
+                                    drop(d);
+                                    native_worker_call!("vad_reset", vad.reset().await, ());
+                                    continue;
+                                }
                                 let can_decide = match d.current_state() {
                                     AcousticState::FollowUpListening => {
                                         d.handle_event(AcousticEvent::FollowUpSpeech) == Ok(AcousticState::Deciding)
                                     }
                                     AcousticState::Listening => {
                                         d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
-                                    }
-                                    AcousticState::Idle => {
-                                        d.handle_event(AcousticEvent::WakeHit).is_ok()
-                                            && d.handle_event(AcousticEvent::SpeechEnd) == Ok(AcousticState::Deciding)
                                     }
                                     AcousticState::DispatchingTask => {
                                         let _ = d.handle_event(AcousticEvent::TaskAccepted);

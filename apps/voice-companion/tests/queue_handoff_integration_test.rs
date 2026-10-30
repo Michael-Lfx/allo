@@ -278,3 +278,73 @@ async fn test_task_cancellation_cleans_up_dispatching_task() {
         "driver must be in Listening or Idle so next turns can proceed"
     );
 }
+
+#[tokio::test]
+async fn test_stop_fence_prevents_stale_speech_resurrection() {
+    let root = tempfile::tempdir().unwrap();
+    let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+    let stt = Arc::new(Stt(AtomicUsize::new(0)));
+    let router = Arc::new(Router(AtomicUsize::new(0)));
+    let tasks = Arc::new(Tasks { release: Notify::new(), entered: Notify::new(), task: Mutex::new(None) });
+
+    let (mut rt, _) = VoiceCompanionRuntime::from_capture(
+        Arc::new(nomifun_voice_models::ModelManager::new(root.path())),
+        Arc::new(OobeManager::new_bypassed()),
+        Arc::new(Mutex::new(capture)),
+        stt.clone(),
+        router.clone(),
+    );
+    let gate = Arc::new(voice_companion::voice::SpeechEndTestGate::default());
+    rt.set_dispatch_queue_gate(Some(gate.clone()));
+
+    let rt = Arc::new(rt.with_tasks(tasks.clone()).with_test_playback(
+        Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
+        Arc::new(Speech),
+    ));
+
+    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true }.into()).unwrap();
+    rt.handle_wake().await.unwrap();
+    let worker = rt.start_worker();
+
+    // Input A
+    for i in 0..80 {
+        producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    tokio::time::timeout(Duration::from_secs(2), tasks.entered.notified()).await.unwrap();
+    let task = tasks.task.lock().await.clone().unwrap();
+    rt.update_task_status(Some(task.clone()));
+
+    let resume_gate = gate.clone();
+    let r = rt.clone();
+    let stop_task = tokio::spawn(async move {
+        resume_gate.reached.notified().await;
+        let s = r.snapshot();
+        let request = VoiceSessionControlRequest {
+            instance_id: s.instance_id,
+            session_id: s.session_id,
+            turn_id: s.turn_id,
+        };
+        r.stop_session(&request).await.unwrap();
+        resume_gate.resume.notify_one();
+    });
+
+    // Input B
+    for i in 0..85 {
+        producer.push(&vec![if i < 30 { 0.4 } else { 0.0 }; 320]);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    stop_task.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let snap = rt.snapshot();
+    let count = stt.0.load(Ordering::SeqCst);
+    assert_eq!(count, 1, "Stale B must NOT be transcribed after stop_session");
+    assert_eq!(snap.ended_reason, Some(VoiceSessionEndReason::UserStop), "UserStop must be preserved");
+    assert_eq!(snap.phase, VoiceSessionPhase::Idle, "Phase must remain Idle");
+
+    worker.abort();
+    let _ = worker.await;
+}

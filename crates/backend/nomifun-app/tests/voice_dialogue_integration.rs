@@ -2376,3 +2376,329 @@ async fn test_host_epoch_rejection_on_workspace_mismatch() {
         "Workspace mismatch must be strictly rejected, got: {res:?}");
     db.close().await;
 }
+
+#[tokio::test]
+async fn test_host_epoch_rejection_on_unmatched_external_advance() {
+    // Verifies that external mutation (+1) without matching receipt is strictly rejected (N2 boundary)
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    let a = VoiceDialogueRequest::scoped("session-A", "turn-A", "first task");
+    let p = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p else { panic!("new A must be Ready") };
+
+    const TASK: &str = r#"{"intent_type":"agent_task","task_goal":"first task","spoken_ack":"accepted","requires_confirmation":false}"#;
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"second reply"}"#;
+
+    recorder.record_pair(&id, &a, TASK).await.unwrap();
+    let repo = svc.conversation_repo();
+    let epoch = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    let claim = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        OWNER_CONST, &id, "operation-A", &nomifun_common::MessageId::new().into_string(),
+        r#"{"content":"first task"}"#, epoch, nomifun_common::now_ms(),
+    ).await.unwrap();
+    assert!(claim.claimed_new);
+
+    let b = VoiceDialogueRequest::scoped("session-A", "turn-B", "second input while A completes");
+    assert!(matches!(recorder.preflight(&b).await.unwrap(), VoiceDialoguePreflight::Ready { .. }));
+
+    let completion = nomifun_db::TurnReceiptCompletion {
+        operation_id: "operation-A".into(),
+        kind: "turn".into(),
+        request_payload: r#"{"content":"first task"}"#.into(),
+        result_ok: true,
+        result_text: Some("task A result".into()),
+        result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
+    };
+    repo.finalize_turn(OWNER_CONST, &id, Some(&completion), nomifun_common::now_ms()).await.unwrap();
+
+    // Rogue external advance of +1 without matching completion receipt
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 1 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+
+    let saved = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(matches!(saved, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Unmatched external epoch advance must be rejected, got: {saved:?}");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
+    // End-to-end joint chain: Capture Worker -> Voice Companion Runtime -> Voice Router Bridge -> Host Dialogue Recorder -> SQLite
+    const USER: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let journal_dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(USER.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(USER),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let conv_id = svc.ensure_default_voice_conversation(USER).await.unwrap();
+    let recorder = Arc::new(ConversationVoiceDialogueRecorder::new(svc.clone(), USER.into(), journal_dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: Some(conv_id.clone()),
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        }))));
+
+    use voice_companion::voice::{VoiceCompanionRuntime, SpeechEndTestGate};
+    use voice_companion::oobe::OobeManager;
+    use voice_companion::replay_terminal as nomifun_voice_terminal;
+    use nomifun_audio::voice_pipeline::{VoiceCapturePipeline, PipelineConfig};
+    use nomifun_audio::{SttCallback, AudioChannel};
+
+    // STT Test Substitute (Clearly labeled test stand-in)
+    struct JointStt(std::sync::atomic::AtomicUsize);
+    #[async_trait::async_trait]
+    impl SttCallback for JointStt {
+        async fn transcribe(&self, _: AudioChannel, pcm: Vec<f32>, _: u32) -> Option<String> {
+            let _n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let peak = pcm.iter().fold(0.0f32, |v, s| v.max(s.abs()));
+            let label = if peak > 0.65 { "input-A: 请执行任务" } else if peak > 0.5 { "input-C: 明天会下雨吗" } else { "input-B: 今天天气怎么样" };
+            println!("[DEBUG JointStt] call={_n} peak={peak} label={label}");
+            Some(label.into())
+        }
+    }
+
+    // Router Test Substitute (Bridges to Host Dialogue Recorder)
+    struct JointRouter {
+        recorder: Arc<ConversationVoiceDialogueRecorder>,
+        bound_conv_id: Arc<std::sync::Mutex<Option<String>>>,
+        call_count: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::driver::VoiceRouter for JointRouter {
+        fn is_configured(&self) -> bool { true }
+        async fn route_with_status(&self, text: &str, _: Option<&str>) -> Result<nomifun_voice_terminal::contract::VoiceDecision, nomifun_voice_terminal::driver::RouteError> {
+            let n = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            println!("[DEBUG JointRouter] route_with_status n={n} text={text}");
+            let req = VoiceDialogueRequest::scoped("joint-session", &format!("turn-{n}"), text);
+            let preflight = self.recorder.preflight(&req).await.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
+            let VoiceDialoguePreflight::Ready { conversation_id } = preflight else {
+                return Err(nomifun_voice_terminal::driver::RouteError::Generation("preflight not ready".into()));
+            };
+            println!("[DEBUG JointRouter] route_with_status n={n} conversation_id={conversation_id}");
+            *self.bound_conv_id.lock().unwrap() = Some(conversation_id.clone());
+            if n == 0 {
+                const TASK_DECISION: &str = r#"{"intent_type":"agent_task","task_goal":"请执行任务","spoken_ack":"任务已接单，正在执行。","requires_confirmation":false}"#;
+                self.recorder.record_pair(&conversation_id, &req, TASK_DECISION).await.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
+                nomifun_voice_terminal::driver::StubVoiceRouter::agent_task("任务已接单，正在执行。", "请执行任务", false).route("a").await
+            } else if n == 1 {
+                const CHAT_DECISION: &str = r#"{"intent_type":"chat","reply_tts":"天气晴朗，气温22度。"}"#;
+                let res = self.recorder.record_pair(&conversation_id, &req, CHAT_DECISION).await;
+                println!("[DEBUG JointRouter] B record_pair result: {res:?}");
+                res.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
+                nomifun_voice_terminal::driver::StubVoiceRouter::chat("天气晴朗，气温22度。").route("b").await
+            } else {
+                const CHAT_DECISION_2: &str = r#"{"intent_type":"chat","reply_tts":"任务正在后台执行中。"}"#;
+                let res = self.recorder.record_pair(&conversation_id, &req, CHAT_DECISION_2).await;
+                println!("[DEBUG JointRouter] C record_pair result: {res:?}");
+                res.map_err(|e| nomifun_voice_terminal::driver::RouteError::Generation(e.to_string()))?;
+                nomifun_voice_terminal::driver::StubVoiceRouter::chat("任务正在后台执行中。").route("c").await
+            }
+        }
+    }
+
+    // Tasks client substitute
+    struct JointTasks {
+        release: tokio::sync::Notify,
+        entered: tokio::sync::Notify,
+        task: tokio::sync::Mutex<Option<nomifun_api_types::voice::VoiceTaskSnapshot>>,
+    }
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::task_client::VoiceTaskClient for JointTasks {
+        async fn current(&self) -> Result<Option<nomifun_api_types::voice::VoiceTaskSnapshot>, String> {
+            Ok(self.task.lock().await.clone())
+        }
+        async fn control(&self, _: nomifun_api_types::voice::VoiceTaskControlCommand) -> Result<nomifun_api_types::voice::VoiceTaskSnapshot, String> {
+            Err("unused".into())
+        }
+        async fn submit(&self, r: nomifun_api_types::voice::VoiceTaskSubmitRequest) -> Result<nomifun_api_types::voice::VoiceTaskDelivery, String> {
+            println!("[DEBUG JointTasks] submit called for {:?}", r.command.command_id);
+            let task = nomifun_api_types::voice::VoiceTaskSnapshot {
+                command_id: r.command.command_id,
+                session_id: r.command.session_id,
+                acoustic_turn_id: r.command.turn_id,
+                conversation_id: Some("test-conv".into()),
+                message_id: Some("test-msg".into()),
+                runtime_turn_id: Some("test-runtime".into()),
+                status: nomifun_api_types::voice::VoiceTaskStatus::Accepted,
+                result_ok: None,
+                result_text: None,
+                error_code: None,
+            };
+            *self.task.lock().await = Some(task.clone());
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(nomifun_api_types::voice::VoiceTaskDelivery { freshly_accepted: true, task })
+        }
+    }
+
+    struct Speech;
+    #[async_trait::async_trait]
+    impl nomifun_voice_terminal::tts::TtsProvider for Speech {
+        async fn synthesize_stream(&self, _: &str, _: &str) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, nomifun_voice_terminal::tts::TtsError> {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tx.send(nomifun_audio::pcm_to_wav(&vec![0.05; 2400], 24000)).await.unwrap();
+            Ok(rx)
+        }
+    }
+
+    let (capture, producer) = VoiceCapturePipeline::new(PipelineConfig::default());
+    let stt = Arc::new(JointStt(std::sync::atomic::AtomicUsize::new(0)));
+    let bound_conv = Arc::new(std::sync::Mutex::new(None));
+    let router = Arc::new(JointRouter {
+        recorder: recorder.clone(),
+        bound_conv_id: bound_conv.clone(),
+        call_count: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let tasks = Arc::new(JointTasks {
+        release: tokio::sync::Notify::new(),
+        entered: tokio::sync::Notify::new(),
+        task: tokio::sync::Mutex::new(None),
+    });
+
+    let (mut rt, _) = VoiceCompanionRuntime::from_capture(
+        Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+        Arc::new(OobeManager::new_bypassed()),
+        Arc::new(tokio::sync::Mutex::new(capture)),
+        stt.clone(),
+        router.clone(),
+    );
+    let gate = Arc::new(SpeechEndTestGate::default());
+    rt.set_dispatch_queue_gate(Some(gate.clone()));
+
+    let rt = Arc::new(rt.with_tasks(tasks.clone()).with_test_playback(
+        Arc::new(nomifun_voice_terminal::playback::PlaybackPipeline::new(Arc::new(nomifun_voice_terminal::playback::TestAudioSink::new()))),
+        Arc::new(Speech),
+    ));
+
+    rt.update_feedback(nomifun_api_types::voice::VoiceFeedbackConfig {
+        mode: nomifun_api_types::voice::VoiceFeedbackMode::Off, volume: 0, speak_replies: true,
+    }.into()).unwrap();
+
+    rt.handle_wake().await.unwrap();
+    let worker = rt.start_worker();
+
+    // 1. Feed Input A (Task)
+    for i in 0..80 {
+        producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(2), tasks.entered.notified()).await.unwrap();
+    let task_snap = tasks.task.lock().await.clone().unwrap();
+    rt.update_task_status(Some(task_snap.clone()));
+
+    // Admit Task A into DB
+    let repo = svc.conversation_repo();
+    let epoch = repo.get_turn_admission_state(USER, &conv_id).await.unwrap().epoch;
+    let _ = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        USER, &conv_id, "operation-task-A", &nomifun_common::MessageId::new().into_string(),
+        r#"{"content":"请执行任务"}"#, epoch, nomifun_common::now_ms(),
+    ).await.unwrap();
+
+    // 2. Concurrently finish Task A and feed Input B (Chat)
+    let resume_gate = gate.clone();
+    let r = rt.clone();
+    let t = tasks.clone();
+    let svc_clone = svc.clone();
+    let conv_id_clone = conv_id.clone();
+    let completion_task = tokio::spawn(async move {
+        resume_gate.reached.notified().await;
+        // Finalize Task A in DB
+        let completion = nomifun_db::TurnReceiptCompletion {
+            operation_id: "operation-task-A".into(),
+            kind: "turn".into(),
+            request_payload: r#"{"content":"请执行任务"}"#.into(),
+            result_ok: true,
+            result_text: Some("任务已完成".into()),
+            result_error: None,
+            result_error_code: None,
+            result_error_retryable: None,
+        };
+        svc_clone.conversation_repo().finalize_turn(USER, &conv_id_clone, Some(&completion), nomifun_common::now_ms()).await.unwrap();
+
+        let mut completed_snap = task_snap;
+        completed_snap.status = nomifun_api_types::voice::VoiceTaskStatus::Completed;
+        completed_snap.result_text = Some("任务已完成".into());
+        r.update_task_status_versioned(Some(completed_snap), None, Some(10));
+        t.release.notify_one();
+        resume_gate.resume.notify_one();
+    });
+
+    for i in 0..85 {
+        producer.push(&vec![if i < 30 { 0.4 } else { 0.0 }; 320]);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    completion_task.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    // 3. Feed Input C (Follow-up Chat)
+    for i in 0..85 {
+        producer.push(&vec![if i < 30 { 0.6 } else { 0.0 }; 320]);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // Wait for turn C to complete routing and persistence
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while router.call_count.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("Turn C must complete routing");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 4. Verify End-to-End Database Persistence and Turn Sequence
+    let target_conv = bound_conv.lock().unwrap().clone().unwrap_or_else(|| conv_id.clone());
+    let messages = svc.list_messages(USER, &target_conv, Default::default()).await.unwrap().items;
+    println!("[DEBUG] messages count in target_conv {target_conv}: {}", messages.len());
+    for m in &messages {
+        println!("   -> msg: {}", m.content);
+    }
+    let b_persisted = messages.iter().any(|m| m.content.to_string().contains("今天天气怎么样"));
+    let c_persisted = messages.iter().any(|m| m.content.to_string().contains("明天会下雨吗"));
+    assert!(b_persisted, "Sentence B must be persisted in database");
+    assert!(c_persisted, "Sentence C must be persisted in database");
+
+    let snap = rt.snapshot();
+    assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
+    assert_eq!(router.call_count.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 turns must be routed");
+    assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
+    assert!(snap.ended_reason.is_none(), "Session must remain active");
+
+    worker.abort();
+    let _ = worker.await;
+    db.close().await;
+}
