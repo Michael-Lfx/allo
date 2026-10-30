@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
@@ -142,6 +142,10 @@ struct SmokeWiring {
     knowledge: Arc<nomifun_knowledge::KnowledgeService>,
     pool: nomifun_db::sqlx::SqlitePool,
     owner: UserId,
+    /// 长任务 finish 行的进程内捕获（e1 相位耗时读数行）：观测旁路在落
+    /// jsonl 的同时留一份内存序——各档读数行从这里取数，`--db` 复用时不受
+    /// 历史行污染。
+    task_finishes: Arc<Mutex<Vec<serde_json::Value>>>,
     /// 保持临时目录存活到命令结束（缺省从零临时库时非空）。
     _temp: Option<tempfile::TempDir>,
 }
@@ -277,9 +281,12 @@ async fn wire(
             prompt_observer: lesson_observer,
         },
     ));
-    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录。
+    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录；finish
+    // 行同时留一份进程内捕获（e1 相位耗时读数行的取数面）。
+    let task_finishes: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     {
         let observation_dir = cli.data_dir.join("observation").join("learning-smoke");
+        let captures = Arc::clone(&task_finishes);
         service.set_generation_task_observer(Arc::new(move |line: &str| {
             use std::io::Write;
             let _ = std::fs::create_dir_all(&observation_dir);
@@ -291,6 +298,11 @@ async fn wire(
                 return;
             };
             let _ = writeln!(file, "{line}");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if value["type"] == "finish" {
+                    captures.lock().unwrap().push(value);
+                }
+            }
         }));
     }
 
@@ -300,11 +312,38 @@ async fn wire(
             knowledge: knowledge_service,
             pool,
             owner: UserId::parse(&owner_id)?,
+            task_finishes,
             _temp,
         },
         archiving,
         live,
     ))
+}
+
+/// 打印某类任务的 finish 读数行（e1 相位耗时读数）：本进程捕获的该类全部
+/// finish（多节点 content 档逐条列出）。读数面非门禁——jsonl 是全量留档，
+/// 这里只是人读摘要。
+fn print_phase_readings(finishes: &[serde_json::Value], kind: &str) {
+    let rows: Vec<&serde_json::Value> = finishes
+        .iter()
+        .filter(|line| line["kind"] == kind)
+        .collect();
+    if rows.is_empty() {
+        println!("phase reading ({kind}): no finish line captured this run");
+        return;
+    }
+    for (index, finish) in rows.iter().enumerate() {
+        println!(
+            "phase reading ({kind} {}/{}): state={} elapsed_ms={} llm_calls={} input_chars={} output_chars={}",
+            index + 1,
+            rows.len(),
+            finish["state"],
+            finish["elapsed_ms"],
+            finish["llm_calls"],
+            finish["input_chars"],
+            finish["output_chars"],
+        );
+    }
 }
 
 async fn owner_id_string(pool: &nomifun_db::sqlx::SqlitePool) -> String {
@@ -1171,6 +1210,9 @@ async fn run_structure(
         "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
         course_id.as_str()
     );
+    // 相位耗时读数（e1）：两仓首条结构相位耗时基线（jsonl 全量留档，这里
+    // 是人读摘要）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "structure");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1448,6 +1490,8 @@ async fn run_grow(
         course_id.as_str(),
         if with_structure { "loop" } else { "grow" }
     );
+    // 相位耗时读数（e1）：生长相位（多批逐条）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "growth");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2274,7 +2318,8 @@ async fn run_quiz(
 /// 的管线半边「管线走通并发布」承接（见下方 `generate_lesson_content` 调
 /// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
 /// 属豁免项，不在本波判据清单。读数
-/// （软）：字数/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
+/// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
+/// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
 #[allow(clippy::too_many_arguments)]
 async fn run_content(
@@ -2546,12 +2591,22 @@ async fn run_content(
         );
     }
 
-    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。
+    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。密度基线
+    // （e5）：节均字符量 + 例题节数——learnhub 定调「语义纪律不是机械门」，
+    // 不立字数下限，只立对照基线（薄不薄看画像是否吃到 est×档位，回查
+    // est_budget / boundary 读数行）。
     let body_chars: usize = view
         .sections
         .iter()
         .map(|section| section.body_md.chars().filter(|c| !c.is_whitespace()).count())
         .sum();
+    let section_count = view.sections.len();
+    let sec_avg_chars = if section_count == 0 { 0 } else { body_chars / section_count };
+    let example_sections = view
+        .sections
+        .iter()
+        .filter(|section| section.kind == nomifun_learning::SectionKind::Example)
+        .count();
     let joined: String = view
         .sections
         .iter()
@@ -2559,7 +2614,8 @@ async fn run_content(
         .collect::<Vec<_>>()
         .join("\n");
     println!(
-        "content read-out: sections={} activities={} body_chars={body_chars} est={}",
+        "content read-out: sections={} activities={} body_chars={body_chars} \
+         sec_avg_chars={sec_avg_chars} example_sections={example_sections} est={}",
         view.sections.len(),
         view.activities.len(),
         view.est,
@@ -2645,6 +2701,9 @@ async fn run_content(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
         cli.data_dir.display()
     );
+    // 相位耗时读数（e1）：内容相位（多节点逐条）——9-15 次串行小调用的
+    // 调用数与字符量基线，两遍式对照（后续票）从这里起表。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "lesson");
     if !failed.is_empty() {
         for failure in &failed {
             eprintln!("{failure}");

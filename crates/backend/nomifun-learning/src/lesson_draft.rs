@@ -350,6 +350,11 @@ pub struct LessonGenerationContext {
     /// 防超纲黑名单：传统课时已随概念契约下线（恒空）；学习图节点预渲染
     /// 下游节点标题清单。空 = 无。由上下文构造方决定原料,提示词统一消费。
     pub forbidden_concepts: String,
+    /// 相位耗时读数（e1）：长任务注册表派发的 LLM 用量累计句柄——引擎侧的
+    /// provider 计数装饰器每次 LLM 调用后上报（调用数 + 输入/输出字符量），
+    /// 注册表在 finish 行聚合落 `learning-tasks.jsonl`。`None` = 无读数
+    /// （测试/旧构造点缺省；观测面缺席零语义）。
+    pub usage: Option<crate::completer::LlmUsageMeter>,
 }
 
 impl LessonGenerationContext {
@@ -482,6 +487,14 @@ pub struct LessonActivitySummary {
     pub prompt: String,
 }
 
+/// 一节已写正文的摘要（e1 段级续跑）：key + 非空字符数。inspect 视图与续
+/// 跑开场共用的「哪些节已落库」读数——字符数与节级质检长度口径一致。
+#[derive(Debug, serde::Serialize)]
+pub struct LessonSectionBodySummary {
+    pub section_key: String,
+    pub chars: usize,
+}
+
 /// Overview for `ls_inspect`: document shape, activity list and the fresh
 /// audit findings.
 #[derive(Debug, serde::Serialize)]
@@ -496,6 +509,11 @@ pub struct LessonInspectView {
     /// 超容自报（k03）：规划时对照时长预算的自报留痕；缺席 = 未自报。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capacity_note: Option<String>,
+    /// 分节契约的逐节正文状态（e1 段级续跑读数）：已落库正文各节的 key 与
+    /// 非空字符数，按清单序；单篇旧草稿为空。续跑开场据此告诉模型「已写的
+    /// 节就在草稿里」——段级幂等跳过的判定面也读这里。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub section_bodies: Vec<LessonSectionBodySummary>,
     pub activities: Vec<LessonActivitySummary>,
     pub findings: Vec<LessonFinding>,
 }
@@ -839,6 +857,23 @@ impl LessonDraft {
             document_sections,
             estimated_minutes: self.estimated_minutes,
             capacity_note: self.capacity_note.clone(),
+            section_bodies: self
+                .section_manifest
+                .as_ref()
+                .map(|manifest| {
+                    manifest
+                        .iter()
+                        .filter_map(|section| {
+                            self.section_bodies
+                                .get(&section.section_key)
+                                .map(|(body, _)| LessonSectionBodySummary {
+                                    section_key: section.section_key.clone(),
+                                    chars: body.chars().filter(|c| !c.is_whitespace()).count(),
+                                })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             activities: self
                 .activities
                 .iter()
@@ -1286,6 +1321,7 @@ mod tests {
             graph: None,
             goal: None,
             forbidden_concepts: String::new(),
+            usage: None,
         }
     }
 
@@ -1660,6 +1696,9 @@ mod tests {
     /// 尺寸锚开盘（模型仍可 set_estimated_minutes 复议）；传统课时维持旧
     /// 默认 10；越界 est（>240）不铸回旧默认。
     #[test]
+    // 读 `NOMI_LEARNING_EST_BUDGET` 开关（est_budget_enabled）——必须与改写
+    // 该环境变量的 serial 开关臂测试互斥（并行读到 off 臂 = 铸值消失）。
+    #[serial_test::serial]
     fn draft_seeds_estimated_minutes_from_the_node_est() {
         let mut ctx = context();
         ctx.graph = Some(GraphLessonContext {
@@ -1825,5 +1864,52 @@ mod tests {
         assert_eq!(legacy.capacity_note, None);
         // 未自报的草稿同样缺席。
         assert_eq!(LessonDraft::new(context()).to_output().capacity_note, None);
+    }
+
+    /// e1 段级续跑读数：inspect 视图的 section_bodies 按清单序携带已落库
+    /// 节（key + 非空字符数）；缺正文的节不出现；单篇旧草稿（无清单）为
+    /// 空。生成面幂等跳过与续跑开场都读这份投影（认知与执法单源）。
+    #[test]
+    fn inspect_view_carries_section_body_summaries_in_manifest_order() {
+        let mut draft = LessonDraft::new(context());
+        // 清单前不产生投影（无清单 = 单篇形态）。
+        assert!(draft.inspect().section_bodies.is_empty());
+
+        draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                manifest_pack("s1", SectionKind::Concept, "表格"),
+                manifest_pack("s2", SectionKind::Practice, "无"),
+            ],
+            capacity_note: None,
+        }]);
+        assert!(draft.inspect().section_bodies.is_empty(), "规划后未写正文仍为空");
+
+        draft.apply_ops(vec![
+            LessonOp::SetSectionBody {
+                section_key: "s2".into(),
+                // 练习节下限 40 非空字符（只写能力目标与作答引导）。
+                body: format!("## t-s2\n\n完成以下判断题，检验对本节要点的掌握；{}", "作答后阅读解析回顾关键区别。".repeat(2)),
+            },
+            LessonOp::SetSectionBody {
+                section_key: "s1".into(),
+                // 概念节：清单声明了「表格」visual，正文须真带表格（承诺兑现
+                // 门）且剥可视化后纯文字过下限（ComplexityTier::Low 150）。
+                body: format!(
+                    "## t-s1\n\n| 要点 | 说明 |\n| --- | --- |\n| 甲 | 乙 |\n\n{}\n",
+                    "这是一段足够长的概念讲解正文，用于通过节级质检门的文字下限。".repeat(8)
+                ),
+            },
+        ]);
+        let bodies = draft.inspect().section_bodies;
+        assert_eq!(bodies.len(), 2, "两节都已落库");
+        // 清单序（s1, s2），不随写入序漂移。
+        assert_eq!(bodies[0].section_key, "s1");
+        assert_eq!(bodies[1].section_key, "s2");
+        // 非空字符口径：与节级质检长度底数一致（尾随空白不计）。
+        let s1_body = format!(
+            "## t-s1\n\n| 要点 | 说明 |\n| --- | --- |\n| 甲 | 乙 |\n\n{}\n",
+            "这是一段足够长的概念讲解正文，用于通过节级质检门的文字下限。".repeat(8)
+        );
+        assert_eq!(bodies[0].chars, s1_body.chars().filter(|c| !c.is_whitespace()).count());
     }
 }

@@ -20,7 +20,7 @@ pub use switches::{
     OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
 };
 
-pub use completer::LearningCompleter;
+pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};
 
 pub use events::LearningEventEmitter;
 
@@ -34,9 +34,9 @@ pub use course_outline::draft::{
 pub use lesson_draft::{
     EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
-    LessonPatchReport, LessonPrecedent, est_budget_enabled, is_est_budget_disabled_value,
-    normalize_capacity_note, render_est_budget_line, render_known_names_line,
-    render_precedent_block, render_teaches_tier_line,
+    LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
+    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
+    render_known_names_line, render_precedent_block, render_teaches_tier_line,
 };
 
 pub use generation::{

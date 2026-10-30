@@ -11,7 +11,77 @@
 //! so every stage passes the budget it actually needs instead of a
 //! one-size-fits-all cap.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
 use nomifun_common::AppError;
+
+/// 一次 LLM 调用的用量增量（e1 相位耗时读数面）：任务体的计数包装（学习侧
+/// [`crate::service::CountingCompleter`] / 课时侧 agent 的 CountingProvider）
+/// 在每次调用后上报；长任务注册表在 finish 行聚合落档。字符量口径 =
+/// `chars().count()` 全字符（含空白）——读数是体量代理，不是计费口径。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LlmUsageDelta {
+    pub llm_calls: u64,
+    pub input_chars: u64,
+    pub output_chars: u64,
+}
+
+/// 长任务 LLM 用量累计句柄（e1 相位耗时读数）：任务 begin 时铸造、guard 持
+/// 有一份，任务体的计数包装经 [`Self::add`] 上报，注册表 finish 时取
+/// [`Self::snapshot`]。Clone 廉价（Arc 内核）；原子面 = 多调用并发安全
+/// （e4 段写并行的前置）。
+#[derive(Clone, Default)]
+pub struct LlmUsageMeter {
+    totals: Arc<LlmUsageTotals>,
+}
+
+#[derive(Default)]
+struct LlmUsageTotals {
+    llm_calls: AtomicU64,
+    input_chars: AtomicU64,
+    output_chars: AtomicU64,
+}
+
+impl LlmUsageMeter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 记一批用量增量（并发安全；零增量无开销差异）。
+    pub fn add(&self, delta: LlmUsageDelta) {
+        self.totals
+            .llm_calls
+            .fetch_add(delta.llm_calls, AtomicOrdering::Relaxed);
+        self.totals
+            .input_chars
+            .fetch_add(delta.input_chars, AtomicOrdering::Relaxed);
+        self.totals
+            .output_chars
+            .fetch_add(delta.output_chars, AtomicOrdering::Relaxed);
+    }
+
+    /// 当前累计快照。
+    pub fn snapshot(&self) -> LlmUsageDelta {
+        LlmUsageDelta {
+            llm_calls: self.totals.llm_calls.load(AtomicOrdering::Relaxed),
+            input_chars: self.totals.input_chars.load(AtomicOrdering::Relaxed),
+            output_chars: self.totals.output_chars.load(AtomicOrdering::Relaxed),
+        }
+    }
+}
+
+impl std::fmt::Debug for LlmUsageMeter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let usage = self.snapshot();
+        formatter
+            .debug_struct("LlmUsageMeter")
+            .field("llm_calls", &usage.llm_calls)
+            .field("input_chars", &usage.input_chars)
+            .field("output_chars", &usage.output_chars)
+            .finish()
+    }
+}
 
 #[async_trait::async_trait]
 pub trait LearningCompleter: Send + Sync {

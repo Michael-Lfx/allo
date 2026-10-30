@@ -255,6 +255,9 @@ impl LearningService {
                 matches: config.matches.clone(),
                 node_id: lesson_id.clone(),
                 node_name: node_name.clone(),
+                // e5 消解案的取数面：题面难度随 config_json 下发（装配面从
+                // 节点 teaches 档位铸值）；存量行 None 容错。
+                difficulty: config.difficulty,
             }];
 
             // 变式（q3）：同型换皮 + 防复用池；失败如实跳过（只出旧题）。
@@ -275,6 +278,9 @@ impl LearningService {
                         &module_title,
                         &node_name,
                         &node_summary,
+                        // 变式与旧题同考点同节点（e5）：继承旧题的铸值难度，
+                        // 本场回合内 tier 口径一致。
+                        config.difficulty,
                     )
                     .await
                 {
@@ -295,6 +301,7 @@ impl LearningService {
                         matches: variant.matches,
                         node_id: lesson_id,
                         node_name,
+                        difficulty: variant.difficulty,
                     });
                 }
             }
@@ -768,6 +775,8 @@ impl LearningService {
         module_title: &str,
         node_name: &str,
         node_summary: &str,
+        // e5：旧题的铸值难度，变式判分底原样继承（同考点同档）。
+        bank_difficulty: Option<u8>,
     ) -> Option<GeneratedVariant> {
         let existing = match self.existing_lesson_questions(
             &LearningLessonId::parse(node).ok()?,
@@ -809,7 +818,7 @@ impl LearningService {
                     distractors: pack.distractors.clone(),
                     tol: None,
                     matches: Vec::new(),
-                    difficulty: None,
+                    difficulty: bank_difficulty,
                     evidence: pack
                         .evidence
                         .as_deref()
@@ -825,6 +834,7 @@ impl LearningService {
                     prompt: pack.prompt.clone(),
                     options: pack.options,
                     matches: config.matches.clone(),
+                    difficulty: config.difficulty,
                     payload: VariantPayload {
                         prompt: pack.prompt,
                         options: config.options.clone(),
@@ -980,6 +990,8 @@ struct GeneratedVariant {
     prompt: String,
     options: Vec<String>,
     matches: Vec<String>,
+    /// 继承旧题的铸值难度（e5），投影面随变式题下发。
+    difficulty: Option<u8>,
     payload: VariantPayload,
 }
 
