@@ -49,6 +49,7 @@ const ExpertCard: React.FC<{
       summaryTestId={`expert-summary-${expert.slug}`}
       actionTestId={`expert-summon-${expert.slug}`}
       name={name}
+      avatarUrl={expert.avatarUrl}
       summary={summary}
       tags={tags}
       actionLabel={t('settings.experts.summon', { defaultValue: 'Summon' })}

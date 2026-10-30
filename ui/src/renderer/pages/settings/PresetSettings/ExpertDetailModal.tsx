@@ -12,6 +12,7 @@ import {
   readPromptText,
   type ExpertDetailErrorKind,
 } from './expertCatalogModel';
+import { ExpertMark } from './ExpertTile';
 
 type ExpertDetailModalProps = {
   expert: IExpertSummary | null;
@@ -92,9 +93,7 @@ const ExpertDetailModal: React.FC<ExpertDetailModalProps> = ({
       {expert ? (
         <div className='flex flex-col gap-20px text-13px leading-20px text-t-primary'>
           <div className='flex items-start gap-16px pr-32px'>
-            <span className='flex size-64px shrink-0 items-center justify-center rounded-16px bg-fill-2 text-24px font-semibold text-t-primary'>
-              {name.trim().charAt(0) || '?'}
-            </span>
+            <ExpertMark name={name} avatarUrl={source?.avatarUrl} size={64} />
             <div className='flex min-w-0 flex-1 flex-col items-start gap-8px'>
               <div className='flex min-w-0 max-w-full items-baseline gap-8px'>
                 <h2 className='m-0 min-w-0 truncate text-18px font-semibold leading-26px'>{name}</h2>

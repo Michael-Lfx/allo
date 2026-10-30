@@ -115,6 +115,9 @@ pub struct ExpertSummary {
     pub zip_size_bytes: i64,
     #[serde(default, deserialize_with = "string_or_empty")]
     pub avatar_path: String,
+    /// CDN image URL from `avatarUrl`. Empty when the catalog row has no image.
+    #[serde(default, deserialize_with = "string_or_empty")]
+    pub avatar_url: String,
     #[serde(default, deserialize_with = "bool_or_false")]
     pub has_detail: bool,
     #[serde(default, deserialize_with = "i64_or_zero")]
@@ -203,6 +206,7 @@ mod tests {
             "downloadCount": 3860,
             "zipSizeBytes": 2048,
             "avatarPath": "avatar.png",
+            "avatarUrl": "https://cdn.example.com/experts/a.png",
             "hasDetail": true,
             "sort": 2
         }"#;
@@ -214,6 +218,8 @@ mod tests {
         assert_eq!(row.sha256, "");
         assert_eq!(row.file_count, 0);
         assert_eq!(row.download_count, 3860);
+        assert_eq!(row.avatar_path, "avatar.png");
+        assert_eq!(row.avatar_url, "https://cdn.example.com/experts/a.png");
         assert_eq!(row.zip_size_bytes, 2048);
         assert!(row.has_detail);
         assert_eq!(row.tags.len(), 1);
