@@ -70,7 +70,7 @@ bun run test:voice-joint-trace
 
 ### 脚本质量与安全保障
 - **环境自适应**：动态解析 `cargo` 与 `bun`（复用 `process.execPath`），杜绝开发者个人绝对路径硬编码；
-- **有界执行**：子进程设置超时（Rust 180s，Bun 45s）与 `SIGKILL` 终止，严禁无界挂起；
+- **原生挂起归属与有界执行 (CREATE_SUSPENDED)**：通过 Windows 原生 `CreateProcessW` 挂起创建进程，在执行第一条指令前已通过 `AssignProcessToJobObject` 纳入本次 Job，再调用 `ResumeThread` 恢复执行；Assign 失败则就地终止未运行的目标。彻底消除启动与加入 Job 之间的调度竞争窗口，超时（Rust 180s，Bun 45s）触发 `TerminateJobObject` 确保多级派生子树 100% 退出；
 - **finally 可靠清理**：即便发生故障或断言失败，统一在 `finally` 中清理独占临时目录，绝不遗留垃圾；
 - **密码学指纹验证**：Rust 导出后生产者计算 SHA256，通过环境变量传递给 Bun 消费者，解析前进行严格比对，防篡改与截断。
 

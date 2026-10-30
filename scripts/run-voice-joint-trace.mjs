@@ -115,6 +115,10 @@ export function spawnProcessInJob(executable, args = [], options = {}) {
       err.code = 'ETIMEDOUT';
       return { status: 124, error: err, stdout: res.stdout, stderr: res.stderr };
     }
+    if (res.status !== 0 && !res.error) {
+      const errMsg = res.stderr?.toString('utf8').trim() || `Process exited with code ${res.status}`;
+      return { status: res.status, error: new Error(errMsg), stdout: res.stdout, stderr: res.stderr };
+    }
     return res;
   } else {
     return spawnSync(executable, args, {
