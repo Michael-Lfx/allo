@@ -454,11 +454,15 @@ impl LearningService {
             &format!("课时内容 · {lesson_title}"),
         ).await?;
         task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
+        // 相位耗时读数（e1）：用量句柄随两条生成路径下传（图节点 = 上下文
+        // 进引擎的 provider 计数装饰器；传统课时 = 上下文 + 兜底管线的计数
+        // completer）。两条路径全程持有，finish 行聚合落档。
+        let usage = task.usage();
         if row.try_get::<String, _>("course_kind").map_err(internal)?
             == CourseKind::LearningGraph.as_str()
         {
             let result = self
-                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request)
+                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request, usage)
                 .await;
             return match result {
                 Ok(view) => {
@@ -603,6 +607,10 @@ impl LearningService {
             goal: course_goal,
             // 大纲已无概念契约（ADR-0009）：传统课时没有防超纲黑名单。
             forbidden_concepts: String::new(),
+            // 相位耗时读数（e1）：引擎分支进 provider 计数装饰器；兜底分支
+            // 不经上下文（generate_lesson 直收蓝图），其计数在下方 completer
+            // 包装上。
+            usage: Some(usage.clone()),
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -658,8 +666,12 @@ impl LearningService {
                             "knowledge-backed course generation is not configured".into(),
                         )
                     })?;
+                // 相位耗时读数（e1）：兜底管线经计数 completer 上报（调用数
+                // + 输入/输出字符量），与 agent 分支同一 finish 行聚合。
+                let counting =
+                    crate::service::CountingCompleter::new(completer.as_ref(), &usage);
                 match generate_lesson(
-                    completer.as_ref(),
+                    &counting,
                     model_override,
                     &blueprint,
                     module,
@@ -726,6 +738,7 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         course_id: &LearningCourseId,
         request: &GenerateLessonRequest,
+        usage: crate::completer::LlmUsageMeter,
     ) -> Result<LessonView, AppError> {
         let lesson = sqlx::query(
             "SELECT l.title, l.purpose, l.position, l.estimated_minutes, \
@@ -801,6 +814,8 @@ impl LearningService {
             goal: None,
             // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
             forbidden_concepts: topology.forbidden_concepts,
+            // 相位耗时读数（e1）：随上下文进引擎，provider 计数装饰器上报。
+            usage: Some(usage),
         };
 
         self.emit_lesson_event(serde_json::json!({
@@ -1650,6 +1665,39 @@ impl LearningService {
         Ok(taught)
     }
 
+    /// 节点 tier → 题面难度铸值（e5 difficulty 消解案，装配面注入）：
+    /// 读本课 teaches 行的档位，取最深档映射 1-3（know=辨析 / apply=应用 /
+    /// teach=综合——节点教得最深的概念决定题面难度上限锚，learnhub「以骨架
+    /// 行的难度档为准」的输入锚同义）。无 teaches 行（传统课/概念绑定整体
+    /// 下线的旧课）或档位不可解析 → None——出题输出契约已撤 difficulty，
+    /// None 兜回模型自报值（存量 agent 路径）或保持空（读侧 serde 缺省容
+    /// 错）。查询失败同样降级为 None：铸值是尽力注入，不阻断发布。
+    /// executor 由调用方给：persist 面传在开事务上（同池并发查询会饿死
+    /// 单连接池），加题面传池。
+    async fn injected_activity_difficulty<'e, E>(
+        executor: E,
+        lesson_id: &LearningLessonId,
+    ) -> Option<u8>
+    where
+        E: sqlx::SqliteExecutor<'e>,
+    {
+        let tiers: Vec<String> = sqlx::query_scalar(
+            "SELECT tier FROM learning_lesson_concepts \
+             WHERE lesson_id = ? AND role = 'teaches'",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(executor)
+        .await
+        .ok()?;
+        tiers
+            .iter()
+            .filter_map(|tier| {
+                crate::learning_graph::ConceptTier::try_from_str(tier.trim())
+            })
+            .max()
+            .map(crate::learning_graph::ConceptTier::difficulty_value)
+    }
+
     /// 生成事务落库尾（传统与学习图两条路径共用）：更新课时行（文档/时长/
     /// 生成标记）并替换全部活动。概念绑定随 per-course 概念体系整体下线
     /// （ADR-0009），活动不再携带 concept 绑定。
@@ -1723,6 +1771,11 @@ impl LearningService {
             .await
             .map_err(internal)?;
 
+        // e5 difficulty 消解（装配面注入）：难度不指望模型输出——按本课
+        // teaches 档位铸值一次，全体活动继承；无档位可依时兜回模型自报值
+        // （存量 agent 路径）或保持 None。查询走同一事务（不另借池连接）。
+        let injected_difficulty =
+            Self::injected_activity_difficulty(&mut *transaction, lesson_id).await;
         for (position, activity) in output.activities.iter().enumerate() {
             let activity_id = LearningActivityId::new();
             let config = StoredActivityConfig {
@@ -1732,7 +1785,7 @@ impl LearningService {
                 distractors: activity.distractors.clone(),
                 tol: activity.tol,
                 matches: matching_candidates(activity),
-                difficulty: activity.difficulty,
+                difficulty: injected_difficulty.or(activity.difficulty),
                 evidence: activity
                     .evidence
                     .as_deref()
@@ -1775,7 +1828,7 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         request: CreateLessonActivityRequest,
     ) -> Result<LessonView, AppError> {
-        let (prompt, config) = validate_question_payload(
+        let (prompt, mut config) = validate_question_payload(
             request.kind,
             &request.prompt,
             &request.options,
@@ -1783,6 +1836,13 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
+        // e5 difficulty 消解：手动加题与生成装配同一注入面——课时题继承
+        // 节点 teaches 档位（无档位可依时保持 None，读侧容错），保证 quiz
+        // tier 取数在整张题库上口径一致。
+        config.difficulty =
+            Self::injected_activity_difficulty(&self.pool, lesson_id)
+                .await
+                .or(config.difficulty);
         // Resolve the enrollment through the lesson, creating it on demand
         // exactly like update_lesson_progress does for the first write.
         let enrollment_id: Option<String> = sqlx::query_scalar(

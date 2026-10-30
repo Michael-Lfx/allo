@@ -64,13 +64,15 @@ const GROWTH_MAX_ATTEMPTS: usize = 3;
 
 impl LearningService {
 
-    // ── Course creation（建课 = 学习目标 → 知识结构生成 → 首生长）────────
+    // ── Course creation（建课 = 学习目标 → 知识结构生成，完成即停）────────
 
     /// 学习图课程创建入口（`GenerateCourseRequest.course_kind = learning_graph`）：
     /// 描述即学习目标，程度/基础声明可选（g2 输入最小化）。课程落库后
     /// **知识结构生成在后台启动**（双产物契约门 → structure_json 快照原子
-    /// 落列，WS structure_* 事件驱动），随后**首生长**接续——接口立即返回
-    /// 课程详情，进度走 WS 与 generation_registry（状态/取消端点共用）。
+    /// 落列，WS structure_* 事件驱动），**结构完成即停**（e3 声明窗口）——
+    /// 首批生长不再自动衔接，改由用户在学习窗口显式触发（POST grow）。
+    /// 接口立即返回课程详情，进度走 WS 与 generation_registry（状态/取消
+    /// 端点共用）。
     pub(crate) async fn generate_learning_graph_course(
         &self,
         user_id: &UserId,
@@ -132,8 +134,10 @@ impl LearningService {
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
 
-        // 结构生成 → 首生长都在后台串行（首生的门口参照来自结构产物的地形；
-        // 结构失败不阻断生长——铁律：结构对生长不供内容）。后台任务要求
+        // 结构生成在后台跑（双产物契约门 → 快照落列），**完成即停**
+        // （e3 声明窗口：结构就绪后前端给出门口声明窗口，首批生长改由用户
+        // 显式触发——学习窗口「开始学习」= POST grow；learnhub ADR-0024
+        // 语义：生长是学习动作的副作用，不是建课的副作用）。后台任务要求
         // 'static：模型偏好先持有化再入任务。
         let service = self.clone();
         let owner = user_id.clone();
@@ -155,9 +159,8 @@ impl LearningService {
             {
                 tracing::warn!(course = course.as_str(), %error, "structure generation failed");
             }
-            if let Err(error) = service.kick_growth(&owner, &course, true, spawn_override).await {
-                tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
-            }
+            // e3：不再衔接首生长。零节点时停摆臂本就拦住自动臂（m10 补批
+            // 语义不动），首批 = 用户显式动作（POST grow，force 恒过停摆臂）。
         });
 
         self.course_detail(&course_id, Some(user_id)).await
@@ -199,8 +202,12 @@ impl LearningService {
             }),
         );
         let completer = self.course_completer()?;
+        // 相位耗时读数（e1）：计数包在内、取消包在门面内层——被取消竞速丢
+        // 弃的调用不上报（观测面只算活着走完的调用）。
+        let usage = task.usage();
+        let counting = crate::service::CountingCompleter::new(completer.as_ref(), &usage);
         let result = crate::learning_graph::structure_gen::generate_structure_artifacts(
-            completer.as_ref(),
+            &counting,
             model_override,
             input,
             Some(&token),
@@ -265,10 +272,39 @@ impl LearningService {
                     .and_then(|doors| doors.as_array())
                     .map(Vec::len)
                     .unwrap_or(0);
+                // 零标注读数（e2，learnhub check_door_references 同款 warn-only，
+                // 刻意不加机械门）：门口对账已过、地形门口在场，却零块带门位
+                // 标签——过门自检与已会声明将无命中（静默失活）。读数不拒收
+                // 不回炉；标注块数随 info 行透出（smoke structure 档对照面）。
+                let labeled = artifacts
+                    .structure
+                    .get("blocks")
+                    .and_then(|blocks| blocks.as_array())
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| {
+                                block
+                                    .get("door_refs")
+                                    .and_then(serde_json::Value::as_array)
+                                    .is_some_and(|refs| !refs.is_empty())
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0);
+                if doors > 0 && labeled == 0 {
+                    tracing::warn!(
+                        course = course_id.as_str(),
+                        terrain_doors = doors,
+                        labeled_blocks = labeled,
+                        "结构门口对账通过但零块门位标签——door_refs 静默失活（过门自检与已会声明将无命中）"
+                    );
+                }
                 tracing::info!(
                     course = course_id.as_str(),
                     blocks,
                     doors,
+                    labeled,
                     "knowledge structure snapshot stored"
                 );
                 task.finish_done(format!("双产物落列（{blocks} 块 / {doors} 门）"));
@@ -1414,10 +1450,10 @@ impl LearningService {
         Ok(())
     }
 
-    // ── Growth（就绪 < 3 触发 / 手动 / 建课后首生长，共用一条管道）────────
+    // ── Growth（就绪 < 3 触发 / 手动显式，共用一条管道）────────────────────
 
     /// 触发一次生长。`force = false` 时（节点完成自动触发）就绪存量不低于
-    /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动/首生长）总是
+    /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动显式触发）总是
     /// 补到 [`READY_TARGET`]。返回是否真的启动了后台生长。
     pub async fn kick_growth(
         &self,
@@ -1497,8 +1533,9 @@ impl LearningService {
     }
 
     /// 停摆臂（ADR-0010 裁决：只留空图一臂）：课程还没有任何学习节点时
-    /// 自动触发退出（建课瞬间的首生长 force 走，不占自动触发）。生长无
-    /// 自动终态——「课程长完了」不再有机器语义，收尾交给学习者归档。
+    /// 自动触发退出（e3 起首批 = 用户显式 POST grow，force 恒过停摆臂，
+    /// 不占自动触发）。生长无自动终态——「课程长完了」不再有机器语义，
+    /// 收尾交给学习者归档。
     async fn growth_stalled(&self, course_id: &LearningCourseId) -> Result<bool, AppError> {
         let learning_nodes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_lessons l \
@@ -1545,7 +1582,9 @@ impl LearningService {
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
         // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
         let pending = self.begin_pending_batch(course_id).await?;
-        let result = self.growth_body(engine, &pending, token.clone()).await;
+        // 相位耗时读数（e1）：用量句柄随批体下传（计数包在取消包内层）。
+        let usage = task.usage();
+        let result = self.growth_body(engine, &pending, token.clone(), &usage).await;
         match &result {
             Ok(applied) => {
                 task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
@@ -1655,6 +1694,7 @@ impl LearningService {
         engine: &crate::learning_graph::GrowthRunner,
         pending: &PendingBatch,
         token: tokio_util::sync::CancellationToken,
+        usage: &crate::completer::LlmUsageMeter,
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
@@ -1662,11 +1702,14 @@ impl LearningService {
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
+        // 相位耗时读数（e1）：计数包在内、取消包在外——被取消竞速丢弃的调
+        // 用不上报（与结构循环同一组装次序）。
+        let counting = crate::service::CountingCompleter::new(inner_completer.as_ref(), usage);
         // 真取消（三轮 t2）：全部 completer 调用与 token select! 竞速——调用
         // 前已取消 = 零调用；调用中被取消 = 断 HTTP。批事务原子落库 =
         // 中断零落库。
         let cancellation = crate::service::CancellationCompleter::new(
-            inner_completer.as_ref(),
+            &counting,
             token.clone(),
         );
         let completer: &dyn LearningCompleter = &cancellation;
@@ -4573,8 +4616,11 @@ impl LearningService {
         // 命中块（AND 口径，m1 door_refs 读侧同源）：door_refs 全落勾选集。
         let target_rows = basis::target_rows(&structure_view.blocks, &checked);
         if target_rows.is_empty() {
+            // 零命中拒绝带出路（e2，learnhub 同款文案域中立化）：较早生成的课
+            // 程无 door_refs 标注时声明走不通，出路 = 学习图逐节点跳过（既有
+            // UI 面：节点跳过满足前置、不种复习项）。
             return Err(AppError::BadRequest(
-                "勾选的门口没有命中任何带门位标签的知识块：较早生成的课程无 door_refs 标注，无法按声明铸概念".into(),
+                "勾选的门口没有命中任何带门位标签的知识块：较早生成的课程无 door_refs 标注，请改用逐节点跳过".into(),
             ));
         }
         let block_names: Vec<String> = target_rows.iter().map(|row| row.name.clone()).collect();

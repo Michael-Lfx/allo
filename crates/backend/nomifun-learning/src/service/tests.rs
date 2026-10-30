@@ -319,6 +319,199 @@ teaching_style: crate::models::TeachingStyle::Standard,
         );
     }
 
+    /// e5 存量行容错：config_json 缺 difficulty 键 / 显式 null（旧行两形态）
+    /// 读侧 serde 缺省为 None；铸值行 1-3 原样读回——quiz tier 取数面对
+    /// 两类行都不炸。
+    #[test]
+    fn stored_activity_config_tolerates_legacy_rows_without_difficulty() {
+        let legacy: StoredActivityConfig =
+            serde_json::from_str(r#"{"options":[],"answer":null,"explanation":""}"#).unwrap();
+        assert_eq!(legacy.difficulty, None);
+        let nulled: StoredActivityConfig = serde_json::from_str(
+            r#"{"options":[],"answer":null,"explanation":"","difficulty":null}"#,
+        )
+        .unwrap();
+        assert_eq!(nulled.difficulty, None);
+        let cast: StoredActivityConfig = serde_json::from_str(
+            r#"{"options":[],"answer":null,"explanation":"","difficulty":2}"#,
+        )
+        .unwrap();
+        assert_eq!(cast.difficulty, Some(2));
+    }
+
+    /// e5 difficulty 消解（装配面注入）：课时带 teaches 档位行（apply）时，
+    /// 生成落库的全体活动继承铸值难度 Some(2)——注入值压过引擎自报值；
+    /// `config_json.difficulty` 即 quiz tier 取数面，值域保持 1-3。
+    #[tokio::test]
+    async fn lesson_persist_casts_activity_difficulty_from_teaches_tier() {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let owner_id = nomifun_db::installation_owner_id(database.pool())
+            .await
+            .unwrap();
+        let user_id = UserId::parse(owner_id).unwrap();
+        let service = LearningService::new(database.pool().clone());
+
+        let lesson_pack = |title: &str| LessonPack {
+            title: title.into(),
+            summary: String::new(),
+            purpose: "目标".into(),
+            est: 10,
+            source: None,
+            sources: Vec::new(),
+            activities: Vec::new(),
+            sections: Vec::new(),
+        };
+        let pack = CoursePack {
+            title: "铸值课程".into(),
+            teaching_style: crate::models::TeachingStyle::Standard,
+            description: "单课时".into(),
+            domain: "math".into(),
+            source_kb_id: None,
+            version: 1,
+            modules: vec![ModulePack {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![lesson_pack("唯一课")],
+            }],
+        };
+        let blueprint = Blueprint {
+            title: "铸值课程".into(),
+            description: "单课时".into(),
+            domain: "math".into(),
+            version: 1,
+            modules: vec![crate::generation::BlueprintModule {
+                title: "模块一".into(),
+                description: String::new(),
+                lessons: vec![crate::generation::BlueprintLesson {
+                    title: "唯一课".into(),
+                    purpose: "目标".into(),
+                    source: None,
+                    sources: Vec::new(),
+                    anchor: None,
+                }],
+            }],
+        };
+        let detail = service
+            .import_course_outline(
+                pack,
+                OutlineSnapshot {
+                    blueprint_json: serde_json::to_string(&blueprint).unwrap(),
+                    samples_json: "[]".into(),
+                    learning_goal: String::new(),
+                    samples_meta_json: None,
+                    source_kb_ids: Vec::new(),
+                    course_source_plan_json: None,
+                },
+            )
+            .await
+            .unwrap();
+        let lesson_id = detail.modules[0].lessons[0].id.clone();
+
+        // teaches 档位行（apply）：铸值数据源（登记表行 + 挂接行）。
+        let concept_id = nomifun_common::LearningConceptId::new().into_string();
+        let now = nomifun_common::now_ms();
+        sqlx::query(
+            "INSERT INTO learning_concept_registry \
+             (concept_id, canonical, aliases_json, definition, created_at, updated_at) \
+             VALUES (?, '向量', '[]', '有大小有方向的量', ?, ?)",
+        )
+        .bind(&concept_id)
+        .bind(now)
+        .bind(now)
+        .execute(database.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO learning_lesson_concepts (lesson_id, concept_id, role, tier) \
+             VALUES (?, ?, 'teaches', 'apply')",
+        )
+        .bind(lesson_id.as_str())
+        .bind(&concept_id)
+        .execute(database.pool())
+        .await
+        .unwrap();
+
+        // 脚本引擎：出两道活动（objective + AI 批改），自报 difficulty=3
+        // ——装配面注入值（apply→2）必须压过自报值。
+        struct CastingEngine;
+
+        #[async_trait::async_trait]
+        impl LessonContentAgentEngine for CastingEngine {
+            async fn generate(
+                &self,
+                _user_id: &UserId,
+                _context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, nomifun_common::AppError> {
+                Ok(LessonOutput {
+                    summary: "## 概念：向量\n占位正文，长度满足审计下限即可。".into(),
+                    estimated_minutes: 10,
+                    activities: vec![
+                        ActivityPack {
+                            difficulty: Some(3),
+                            kind: ActivityKind::TrueFalse,
+                            prompt: "向量既有大小又有方向。".into(),
+                            options: Vec::new(),
+                            answer: Value::Bool(true),
+                            explanation: "几何定义：有大小有方向的量。".into(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: Some("「有大小有方向的量」".into()),
+                        },
+                        ActivityPack {
+                            difficulty: Some(3),
+                            kind: ActivityKind::Reflection,
+                            prompt: "举一个生活中的向量并说明理由。".into(),
+                            options: Vec::new(),
+                            answer: Value::Null,
+                            explanation: "评卷要点：量与方向并举，例子自洽。".into(),
+                            distractors: Vec::new(),
+                            tol: None,
+                            section_key: None,
+                            evidence: None,
+                        },
+                    ],
+                    sections: Vec::new(),
+                    degraded_keys: Vec::new(),
+                    capacity_note: None,
+                })
+            }
+
+            async fn resume(
+                &self,
+                _user_id: &UserId,
+                _draft_id: &str,
+                context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, nomifun_common::AppError> {
+                self.generate(_user_id, context, _model_override).await
+            }
+        }
+        service.set_lesson_engine(Arc::new(CastingEngine));
+        service
+            .generate_lesson_content(&user_id, &lesson_id, &GenerateLessonRequest::default())
+            .await
+            .unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT config_json FROM learning_activities WHERE lesson_id = ? ORDER BY position",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        for (config_json,) in rows {
+            let config: StoredActivityConfig = serde_json::from_str(&config_json).unwrap();
+            assert_eq!(
+                config.difficulty,
+                Some(2),
+                "apply tier must cast difficulty 2 (injected wins over declared): {config_json}"
+            );
+        }
+    }
+
     #[test]
     fn pack_validation_rejects_missing_title_and_empty_modules() {
         let mut pack = valid_pack();
@@ -3411,6 +3604,162 @@ async fn growth_burns_the_full_budget_when_violations_differ() {
     assert_eq!(stats.stop_reason, "exhausted");
 }
 
+/// e3 声明窗口 smoke（structure 档硬判据）：建课流「结构完成即停」——
+/// 结构双产物过门落快照后，**零生长批次、零生长任务在册**（建课不再自动
+/// 点火首批，声明窗口留给用户）；首批只由用户显式触发（学习窗口「开始
+/// 学习」= POST grow，force 恒过停摆臂）——同一课程随后显式 kick 照常
+/// 起批。结构稿构型与 structure_gen 门面测试的 golden 同款（6 主干 ×
+/// 7 块，恰好过 gd.blocks.count 下限）。
+#[tokio::test]
+async fn graph_course_creation_stops_at_structure_with_zero_growth_tasks() {
+    fn e3_golden_terrain() -> serde_json::Value {
+        serde_json::json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "learner_basis_assumed": "纯零基础（未声明）",
+            "generated_by": "test-model",
+            "disclaimer": "门口判据为生成时点快照，供自检参考",
+            "doors": [
+                { "id": "G1", "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard" }
+            ]
+        })
+    }
+    fn e3_golden_structure() -> serde_json::Value {
+        let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+        let mut blocks = Vec::new();
+        for (spine_index, spine) in spine_names.iter().enumerate() {
+            for block_index in 0..7 {
+                let ordinal = spine_index * 7 + block_index;
+                let stage = ["入门", "进阶", "高级"][ordinal % 3];
+                blocks.push(serde_json::json!({
+                    "name": format!("块{ordinal:02}"),
+                    "slug": format!("block-{ordinal:02}"),
+                    "spine": spine,
+                    "stage": stage,
+                    "note": format!("第 {ordinal} 个主题的一句话描述"),
+                }));
+            }
+        }
+        serde_json::json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "goal_type": "capability",
+            "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
+            "domain_type": "理论",
+            "form_reference": "Flowy 学习结构模板 v1",
+            "source_tier": "名录",
+            "generated_by": "test-model",
+            "disclaimer": "快照为生成时点参考地图，可能存在盲区",
+            "domain": {
+                "core_definition": "一元二次方程的代数求解体系",
+                "includes": ["方程变形", "求根公式", "判别式"],
+                "excludes": ["三次方程", "复数域", "数值分析"],
+                "prerequisite_doors": ["G1"],
+                "audience": "零基础成年学习者",
+                "scenarios": ["解题应用", "讲解他人"],
+                "granularity": "每块一个可独立教学的解题动作"
+            },
+            "spines": spine_names.iter().map(|spine| serde_json::json!({
+                "name": spine,
+                "definition": format!("{spine}的一句话定义"),
+                "key_points": ["要点一"],
+                "instance": format!("达标{spine}时能独立完成一次求解"),
+            })).collect::<Vec<_>>(),
+            "blocks": blocks,
+            "edges": [
+                { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" }
+            ],
+            "gaps": [
+                { "item": "应用题情境覆盖不足", "direction": "补行程类情境" },
+                { "item": "图像法未展开", "direction": "补抛物线图像判读" },
+                { "item": "近似解法缺位", "direction": "补估算策略" }
+            ],
+            "quality": [
+                { "check": "主干数在 6–12 档", "status": "met" },
+                { "check": "块名一物一名", "status": "met" },
+                { "check": "边端点全部可解析", "status": "met" },
+                { "check": "无顺序承诺", "status": "met" },
+                { "check": "盲区已标注", "status": "unmet", "reason": "应用情境块待补" }
+            ]
+        })
+    }
+
+    let (service, _knowledge, owner) = job_test_service().await;
+    let completer = SequencedCompleter::new(vec![
+        serde_json::to_string(&e3_golden_terrain()).unwrap(),
+        serde_json::to_string(&e3_golden_structure()).unwrap(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    let detail = service
+        .generate_course(
+            &owner,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::LearningGraph,
+                teaching_style: None,
+                knowledge_base_id: None,
+                description: Some("能独立完成一元二次方程的求解与检验".into()),
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: None,
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let course_id = detail.course.id.as_str().to_owned();
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+
+    // 结构完成：快照落列（后台 spawn 轮询落定）。
+    let mut structured = false;
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses \
+             WHERE course_id = ? AND structure_json IS NOT NULL \
+             AND trim(structure_json) <> ''",
+        )
+        .bind(&course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            structured = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(structured, "structure snapshot must land after creation");
+
+    // 硬判据：结构完成后零生长任务在册——无批次行、注册表无 growth 任务。
+    let batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(batches, 0, "creation must not auto-kick the first batch");
+    let growth_tasks = service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == crate::service::KIND_GROWTH)
+        .count();
+    assert_eq!(growth_tasks, 0, "registry must hold no growth task");
+
+    // 显式首批照常可达（学习窗口「开始学习」链路）：force 恒过停摆臂，
+    // kick 即起批——末项重复稿过不了生长门，批次以 failed 落定即为凭证。
+    let kicked = service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    assert!(kicked, "explicit first kick must start a batch");
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "the explicit batch must run through the growth pipeline"
+    );
+}
+
 /// 容量守卫（重裁出口）：超容稿的 ng.batch.size 整批违规改判定向重装指令
 /// （ng.batch.redraft_capacity），下一轮按拆分形态装箱后过门落库。
 #[tokio::test]
@@ -3836,7 +4185,9 @@ async fn structure_generation_stops_early_on_repeated_violations() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("均未通过"));
+    // e1 D2：早停消息如实报「提前停止」与真实轮数（不再谎报满预算）。
+    assert!(error.to_string().contains("提前停止"), "{}", error);
+    assert!(error.to_string().contains("2/3"), "{}", error);
     // 早停：结构稿每轮违约即打回；每轮耗 2 次调用（结构稿 JSON 合法、
     // 门口对账在地形稿之后才红）——2 轮 = 4 次调用，第 3 轮的 2 次不发生。
     assert_eq!(
