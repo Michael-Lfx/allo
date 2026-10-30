@@ -332,8 +332,8 @@ pub(crate) async fn generate_lesson(
             points: planned.points.clone(),
             visual: planned.visual.clone(),
             body_md: crate::generation::parser::fix_mermaid_quotes(&body),
+            degraded,
         });
-        let _ = degraded;
     }
 
     // ── Stage 3: all questions in one call, bound to section keys ──────
@@ -367,6 +367,9 @@ pub(crate) async fn generate_lesson(
         sections,
         // 传统管线无 capacity_note 契约（机械预算已足够，k03 范围注记）。
         capacity_note: None,
+        // 传统线的 lint 打回走 attempts 循环（validate_body 并入），无事件
+        // 计数面（f3 计数属于图线草稿/publish 帧口径）。
+        viz_lint_events: 0,
     })
 }
 
@@ -413,10 +416,19 @@ async fn generate_section_outline(
         .await
         .map_err(|error| error.to_string())?;
         match parse_json_object::<SectionOutline>(&raw) {
-            Ok(outline) => match validate_section_outline(&outline) {
-                Ok(()) => return Ok(outline),
-                Err(error) => last_error = error,
-            },
+            Ok(outline) => {
+                // f3：degraded 是终检系统 mutation 的节级标记，模型 JSON 不得
+                // 走私（demo 硬门豁免只属于终检兜底面）——大纲解析出口统一清零。
+                let mut outline = outline;
+                outline
+                    .sections
+                    .iter_mut()
+                    .for_each(|section| section.degraded = false);
+                match validate_section_outline(&outline) {
+                    Ok(()) => return Ok(outline),
+                    Err(error) => last_error = error,
+                }
+            }
             Err(error) => last_error = error,
         }
     }
@@ -500,6 +512,7 @@ async fn generate_section_body(
             points: planned.points.clone(),
             visual: planned.visual.clone(),
             body_md: body,
+            degraded: false,
         };
         match candidate.validate_body() {
             Ok(()) => return Ok(candidate.body_md),
@@ -588,6 +601,9 @@ pub(crate) async fn rewrite_section_body(
                 points: planned.points.clone(),
                 visual: if degraded { "无".into() } else { planned.visual.clone() },
                 body_md: body,
+                // 传统线降级语义保持原样（零新机制，A4）：degraded 豁免只属
+                // 终检兜底面，这里的降级轮仍走原 demo 硬门判定。
+                degraded: false,
             };
             match candidate.validate_body() {
                 Ok(()) => return Ok((candidate.body_md, degraded)),

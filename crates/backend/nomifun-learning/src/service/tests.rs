@@ -175,6 +175,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 sections: Vec::new(),
                 degraded_keys: Vec::new(),
                 capacity_note: None,
+                viz_lint_events: 0,
             })
         }
 
@@ -475,6 +476,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     sections: Vec::new(),
                     degraded_keys: Vec::new(),
                     capacity_note: None,
+                    viz_lint_events: 0,
                 })
             }
 

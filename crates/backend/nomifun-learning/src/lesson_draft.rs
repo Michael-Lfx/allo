@@ -414,6 +414,12 @@ pub struct LessonDraft {
     /// anything" signal.
     pub revision: usize,
     pub findings: Vec<LessonFinding>,
+    /// f3 viz lint 事件计数：op 接纳面打回（lint 违约被拒）与终检剔除累计
+    /// ——经 to_output 穿出，publish 帧披露（smoke viz_lint_events 读数）。
+    viz_lint_events: usize,
+    /// f3 终检系统剔块降声明的节 key（to_output 穿出 → 落库 degraded 列，
+    /// service/lesson.rs persist 先例）。清单序。
+    degraded_keys: Vec<String>,
 }
 
 /// Patch ops for a lesson draft. Tagged `{"op": "..."}` over the wire like
@@ -567,6 +573,8 @@ impl LessonDraft {
             capacity_note: None,
             revision: 0,
             findings: Vec::new(),
+            viz_lint_events: 0,
+            degraded_keys: Vec::new(),
         };
         draft.refresh_audit();
         draft
@@ -640,6 +648,12 @@ impl LessonDraft {
                 if sections.is_empty() {
                     return Err("section manifest must not be empty".into());
                 }
+                // f3：degraded 是终检系统 mutation 的节级标记，模型 op 不得
+                // 走私（demo 硬门豁免只属于终检兜底面）——op 入口统一清零。
+                let mut sections = sections;
+                sections
+                    .iter_mut()
+                    .for_each(|section| section.degraded = false);
                 let mut seen = HashSet::new();
                 for (index, section) in sections.iter().enumerate() {
                     if section.title.trim().is_empty() {
@@ -725,7 +739,13 @@ impl LessonDraft {
                     points: planned.points.clone(),
                     visual: planned.visual.clone(),
                     body_md: crate::generation::fix_mermaid_quotes(&trimmed),
+                    degraded: false,
                 };
+                // f3 lint 打回通道（4.2）：lint 并入 validate_body，坏块 op 在
+                // 接纳面被拒（拒绝理由含定位与处置指引）→ 模型重提或改申报；
+                // 事件计数穿出 publish 帧（viz_lint_events 读数）。
+                self.viz_lint_events +=
+                    crate::models::lint_visual_blocks(&candidate.body_md).len();
                 candidate.validate_body()?;
                 let existed = self.section_bodies.contains_key(&section_key);
                 let report_key = section_key.clone();
@@ -908,6 +928,7 @@ impl LessonDraft {
                     points: planned.points.clone(),
                     visual: planned.visual.clone(),
                     body_md: body.clone(),
+                    degraded: planned.degraded,
                 })
             })
             .collect();
@@ -944,9 +965,74 @@ impl LessonDraft {
             estimated_minutes: self.estimated_minutes,
             activities: self.activities.clone(),
             sections,
-            degraded_keys: Vec::new(),
+            // f3：degraded_keys 从图线草稿穿出（不再恒空）——终检系统剔块的
+            // 节落库 degraded 列；viz lint 事件计数随发布帧披露。
+            degraded_keys: self.degraded_keys.clone(),
             capacity_note: self.capacity_note.clone(),
+            viz_lint_events: self.viz_lint_events,
         }
+    }
+
+    /// f3 终检兜底（4.4/A4）：对每节已落库正文跑 lint，仍坏的围栏块系统
+    /// 剔除（节其余保留）；该节 visual 声明按余块形态同步降级（无余块 →
+    /// 无），节记 degraded（to_output 穿出落库 degraded 列）。系统
+    /// mutation，非模型 op。返回剔除 findings（warning viz_block_lint_
+    /// dropped）——调用方（finish 门）在 refresh_audit 之后追加，避免被
+    /// 审计整表重算覆盖；tracing::warn 同步留痕（findings 无持久表）。
+    pub(crate) fn sweep_broken_visual_blocks(&mut self) -> Vec<LessonFinding> {
+        let mut dropped = Vec::new();
+        let keys: Vec<String> = match self.section_manifest.as_ref() {
+            Some(manifest) => manifest
+                .iter()
+                .map(|section| section.section_key.clone())
+                .collect(),
+            None => return dropped,
+        };
+        for key in keys {
+            let Some((body, stored)) = self.section_bodies.get_mut(&key) else {
+                continue;
+            };
+            let (stripped, removed) =
+                crate::models::strip_broken_visual_blocks(body);
+            if removed == 0 {
+                continue;
+            }
+            let downgraded = crate::models::declared_visual_after_strip(&stripped);
+            *body = stripped;
+            let stored = stored.as_mut().expect("stored plan present");
+            stored.visual = downgraded.to_owned();
+            stored.degraded = true;
+            if let Some(section) = self
+                .section_manifest
+                .as_mut()
+                .and_then(|manifest| {
+                    manifest
+                        .iter_mut()
+                        .find(|section| section.section_key == key)
+                })
+            {
+                section.visual = downgraded.to_owned();
+                section.degraded = true;
+            }
+            self.degraded_keys.push(key.clone());
+            self.viz_lint_events += removed;
+            dropped.push(LessonFinding {
+                severity: SEV_WARNING,
+                kind: "viz_block_lint_dropped".to_owned(),
+                message: format!(
+                    "节 {key} 的 {removed} 个坏可视化块已由终检系统剔除，visual 声明降为\
+                     「{downgraded}」——修复该围栏块语法或改用表格/公式承载后可恢复原声明"
+                ),
+            });
+            tracing::warn!(
+                target: "nomifun_learning",
+                section_key = %key,
+                removed,
+                visual = %downgraded,
+                "viz_block_lint_dropped"
+            );
+        }
+        dropped
     }
 }
 
@@ -1004,9 +1090,30 @@ fn audit_findings(
                                 points: section.points.clone(),
                                 visual: section.visual.clone(),
                                 body_md: body.clone(),
+                                degraded: section.degraded,
                             };
                             if let Err(error) = candidate.validate_body() {
                                 findings.push(danger("section_invalid", error));
+                            }
+                            // f3 观察条（viz_block_lint warning，4.5）：存量正文
+                            // 里的坏可视化块点名——修复对照行的触发源。正常路径
+                            // op 接纳已拦死坏块，存量坏块只出现在重规划保留正文
+                            // /跨版本续跑等旁路；danger 面由 section_invalid 承载。
+                            let issues = crate::models::lint_visual_blocks(body);
+                            if !issues.is_empty() {
+                                let details = issues
+                                    .iter()
+                                    .map(|issue| issue.detail.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("；");
+                                findings.push(warning(
+                                    "viz_block_lint",
+                                    format!(
+                                        "节 {} 的正文存在可视化块语法问题：{details}——\
+                                         修复该围栏块语法，或改用表格/公式承载该节讲解",
+                                        section.section_key
+                                    ),
+                                ));
                             }
                         }
                     }
@@ -1581,7 +1688,142 @@ mod tests {
             points: String::new(),
             visual: visual.into(),
             body_md: String::new(),
+            degraded: false,
         }
+    }
+
+    /// f3 图线打回通道（4.2/A3）：坏 mermaid 的 op 被 validate_body 拒（拒绝
+    /// 理由含 lint 定位与处置指引），正文不入库；重提合法 mermaid 过闸。
+    /// lint 打回事件计数留痕（publish 帧 viz_lint_events 的数据源）。
+    #[test]
+    fn viz_lint_rejects_the_bad_mermaid_op_then_accepts_the_fixed_resubmit() {
+        let mut draft = LessonDraft::new(context());
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("s1", SectionKind::Concept, "流程图"),
+                    manifest_pack("s2", SectionKind::Practice, "无"),
+                ],
+                capacity_note: None,
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("manifest accepted");
+        let prose =
+            "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        // op 面红样取 fix_mermaid_quotes 不可吸收的形态（两个 `[` 开、无闭合
+        // `]`——无引号跨度可包裹，fix 原样返回，块级净差 +2 必红）。法证原行
+        // 本体在 lint 层红样钉死（models::viz_lint_tests）；它经 fix 的引号改
+        // 写后括号恰被"配平"（现行为不动，蓝图禁区），op 面不再对它打回。
+        let bad = format!(
+            "## t-s1\n\n```mermaid\nflowchart TD\n\
+             A[本金 P -->|算利息| B[利息1\n```\n\n{prose}"
+        );
+        let report = draft.apply_ops(vec![LessonOp::SetSectionBody {
+            section_key: "s1".into(),
+            body: bad,
+        }]);
+        assert_eq!(report.rejected.len(), 1, "坏块 op 被拒");
+        assert!(
+            report.rejected[0]
+                .reason
+                .contains("invalid visualization block syntax"),
+            "{}",
+            report.rejected[0].reason
+        );
+        assert!(
+            report.rejected[0].reason.contains("修复该围栏块语法"),
+            "{}",
+            report.rejected[0].reason
+        );
+        assert!(draft.section_bodies.is_empty(), "被拒正文不入库");
+        // 计数按 issue 条：该坏块两条查项同时命中（括号净差 +2 + 泄漏端点
+        // 「P」无形状定义）→ 2 条事件。
+        assert_eq!(draft.viz_lint_events, 2, "lint 打回事件计数");
+
+        // 重提合法 mermaid 过闸；观察条不误报。
+        let good = format!(
+            "## t-s1\n\n```mermaid\nflowchart TD\n\
+             A[本金] -->|计息| B[本息]\n```\n\n{prose}"
+        );
+        let report = draft.apply_ops(vec![LessonOp::SetSectionBody {
+            section_key: "s1".into(),
+            body: good,
+        }]);
+        assert_eq!(report.accepted.len(), 1, "合法 mermaid 过闸");
+        assert_eq!(draft.viz_lint_events, 2, "合法重提不计事件");
+        assert!(!draft.findings.iter().any(|f| f.kind == "viz_block_lint"));
+
+        // 模型不得走私 degraded 豁免（f3：系统 mutation 专属标记，op 入口
+        // 统一清零——demo 硬门豁免只属于终检兜底面）。
+        let smuggled: LessonOp = serde_json::from_value(serde_json::json!({
+            "op": "set_section_manifest",
+            "sections": [
+                { "section_key": "s1", "kind": "concept", "title": "t-s1",
+                  "points": "", "visual": "流程图", "degraded": true },
+                { "section_key": "s2", "kind": "practice", "title": "t-s2",
+                  "points": "", "visual": "无", "degraded": true }
+            ]
+        }))
+        .expect("op JSON parses");
+        draft.apply_ops(vec![smuggled]);
+        assert!(
+            draft
+                .section_manifest
+                .iter()
+                .flatten()
+                .all(|section| !section.degraded),
+            "op 入口的 degraded 被清零"
+        );
+    }
+
+    /// f3 观察条（4.5）：存量坏块（重规划保留/跨版本续跑等旁路入库形态）
+    /// 在审计里以 viz_block_lint warning 点名（修复对照行的触发源）；
+    /// danger 面由 section_invalid 承载（lint 已并入 validate_body）。
+    #[test]
+    fn audit_names_stored_broken_visual_blocks_as_viz_block_lint_warnings() {
+        let mut draft = LessonDraft::new(context());
+        draft
+            .apply_ops(vec![LessonOp::SetSectionManifest {
+                sections: vec![
+                    manifest_pack("s1", SectionKind::Concept, "流程图"),
+                    manifest_pack("s2", SectionKind::Practice, "无"),
+                ],
+                capacity_note: None,
+            }])
+            .accepted
+            .into_iter()
+            .next()
+            .expect("manifest accepted");
+        let prose =
+            "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        let bad = format!(
+            "## t-s1\n\n```mermaid\nflowchart TD\n\
+             A[[\"第1期 本金 P] -->|\"算利息 P×利率\"| B[利息1\"]\n```\n\n{prose}"
+        );
+        // 旁路入库（字段直塞，不过 op）——lint 落地前已存量的正文形态。
+        draft.section_bodies.insert(
+            "s1".to_owned(),
+            (
+                bad,
+                Some(manifest_pack("s1", SectionKind::Concept, "流程图")),
+            ),
+        );
+        draft.refresh_audit();
+        let warning = draft
+            .findings
+            .iter()
+            .find(|finding| finding.kind == "viz_block_lint")
+            .expect("存量坏块被点名");
+        assert_eq!(warning.severity, SEV_WARNING, "观察条非阻断");
+        assert!(warning.message.contains("s1"), "{}", warning.message);
+        assert!(warning.message.contains("修复该围栏块语法"));
+        assert!(
+            draft.findings.iter().any(|finding| finding.kind == "section_invalid"
+                && finding.severity == SEV_DANGER),
+            "lint 违约经 validate_body 进 danger"
+        );
     }
 
     /// 「无」声明监督（ADR-0008）：概念/例题节全部声明 visual=无 时审计给
