@@ -2,6 +2,7 @@ import { Modal } from '@arco-design/web-react';
 import { LinkOne, Lightning } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { ExpertMark } from '../PresetSettings/ExpertTile';
 import type { MarketActionState, MarketPrimaryActionConfig } from './marketContracts';
 import { formatSkillHubMarketCount } from './marketViewModel';
 import type { MarketItemViewModel } from './marketViewModel';
@@ -32,6 +33,8 @@ const MarketItemDetailModal: React.FC<MarketItemDetailModalProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const downloads = item?.skillHub?.downloads;
+  const category = item?.skillHub?.category;
+  const tags = category ? [category, ...(item?.allTags ?? []).filter((tag) => tag !== category)] : (item?.allTags ?? []);
   const actionText =
     actionState === 'checking'
       ? t('common.loading', { defaultValue: '加载中' })
@@ -54,9 +57,7 @@ const MarketItemDetailModal: React.FC<MarketItemDetailModalProps> = ({
       {item ? (
         <div className='flex flex-col gap-20px text-13px leading-20px text-t-primary'>
           <div className='flex items-start gap-16px pr-32px'>
-            <span className='flex size-64px shrink-0 items-center justify-center rounded-16px bg-fill-2 text-24px font-semibold text-t-primary'>
-              {item.title.trim().charAt(0) || '?'}
-            </span>
+            <ExpertMark name={item.title} avatarUrl={item.avatar} size={64} />
             <div className='flex min-w-0 flex-1 flex-col items-start gap-8px'>
               <h2 className='m-0 max-w-full truncate text-18px font-semibold leading-26px'>{item.title}</h2>
               <button
@@ -72,9 +73,9 @@ const MarketItemDetailModal: React.FC<MarketItemDetailModalProps> = ({
             </div>
           </div>
           {item.summary ? <p className='m-0'>{item.summary}</p> : null}
-          {item.allTags.length > 0 ? (
+          {tags.length > 0 ? (
             <div className='flex flex-wrap gap-6px'>
-              {item.allTags.map((tag) => (
+              {tags.map((tag) => (
                 <span key={tag} className='rounded-6px bg-fill-2 px-10px py-4px text-12px leading-18px text-t-secondary'>
                   {tag}
                 </span>

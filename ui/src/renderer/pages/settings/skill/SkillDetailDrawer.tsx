@@ -1,15 +1,14 @@
 /**
- * SkillDetailDrawer — read-only inspection for the canonical SKILL.md.
+ * Skill detail — centered modal for the canonical SKILL.md.
  * Metadata stays visible above the document, while Preview / Source modes let
  * people understand the skill or inspect its exact file without leaving Nomi.
  */
 import { ipcBridge } from '@/common';
 import type { PresetTag } from '@/common/types/agent/presetTypes';
 import LazyMarkdownView from '@/renderer/components/Markdown/LazyMarkdownView';
-import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
 import type { SkillInfo } from '@/renderer/pages/settings/PresetSettings/types';
-import { Button, Drawer, Message, Spin, Switch } from '@arco-design/web-react';
-import { Code, FileText, FolderOpen, Refresh, SettingOne } from '@icon-park/react';
+import { Message, Modal, Spin, Switch } from '@arco-design/web-react';
+import { Code, Delete, FileText, FolderOpen, Refresh, SettingOne } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import SkillAvatar from './SkillAvatar';
@@ -24,6 +23,7 @@ type SkillDetailDrawerProps = {
   isAutoInjected: boolean;
   onClose: () => void;
   onEditTags: (skill: SkillInfo) => void;
+  onDelete: (skill: SkillInfo) => void;
 };
 
 type ViewMode = 'preview' | 'source';
@@ -36,9 +36,9 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
   isAutoInjected,
   onClose,
   onEditTags,
+  onDelete,
 }) => {
   const { t } = useTranslation();
-  const isMobile = useLayoutContext()?.isMobile ?? false;
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -128,7 +128,6 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
   const previewContent = useMemo(() => stripSkillFrontmatter(content).trim(), [content]);
   const resolveTags = (keys: string[] | undefined) =>
     (keys ?? []).map((key) => tagByKey.get(key)).filter((tag): tag is PresetTag => Boolean(tag));
-  const audienceTags = resolveTags(skill?.audience_tags);
   const scenarioTags = resolveTags(skill?.scenario_tags);
 
   const sourceLabel = isAutoInjected
@@ -170,42 +169,57 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
     </div>
   );
 
+  const themeButtonClass =
+    'inline-flex cursor-pointer items-center gap-6px rounded-full border-none bg-[var(--color-text-1)] px-16px py-6px text-13px font-semibold leading-20px text-[var(--color-bg-1)]';
+  const secondaryButtonClass =
+    'inline-flex cursor-pointer items-center gap-6px rounded-full border-none bg-fill-2 px-16px py-6px text-13px font-semibold leading-20px text-t-primary';
+
   return (
-    <Drawer
+    <Modal
       visible={visible}
       unmountOnExit
       onCancel={onClose}
-      placement='right'
-      width={isMobile ? '100%' : 760}
-      zIndex={1250}
       autoFocus={false}
-      getPopupContainer={() => document.body}
       title={t('settings.skillsHub.detailTitle', { defaultValue: 'Skill Details' })}
-      className='skill-detail-drawer'
-      data-testid='skill-detail-drawer'
-      headerStyle={{ background: 'var(--color-bg-1)' }}
-      bodyStyle={{ background: 'var(--color-bg-1)', padding: 0 }}
+      className='skill-detail-modal'
+      data-testid='skill-detail-modal'
+      style={{ width: 760, maxWidth: '92vw', borderRadius: 16 }}
       footer={
         <div className='flex w-full items-center justify-between gap-12px'>
-          <Button onClick={onClose} className='min-w-100px rounded-[100px] bg-fill-2'>
+          {skill?.source === 'custom' ? (
+            <button
+              type='button'
+              onClick={() => onDelete(skill)}
+              className='inline-flex cursor-pointer items-center gap-6px border-none bg-transparent px-8px py-6px text-13px font-semibold text-t-tertiary hover:text-[rgb(var(--danger-6))]'
+              data-testid='btn-detail-delete'
+            >
+              <Delete theme='outline' size={14} fill='currentColor' />
+              {t('common.delete', { defaultValue: 'Delete' })}
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className='flex items-center gap-12px'>
+          <button type='button' onClick={onClose} className={secondaryButtonClass}>
             {t('common.close', { defaultValue: 'Close' })}
-          </Button>
-          {skill && (
-            <Button
-              type='primary'
-              icon={<SettingOne size={14} strokeWidth={3} />}
+          </button>
+          {skill ? (
+            <button
+              type='button'
               onClick={() => onEditTags(skill)}
-              className='flowy-icon-text-btn rounded-[100px]'
+              className={themeButtonClass}
               data-testid='btn-detail-edit-tags'
             >
+              <SettingOne theme='outline' size={14} fill='currentColor' strokeWidth={3} />
               {t('settings.skillsHub.editTags', { defaultValue: 'Edit Tags' })}
-            </Button>
-          )}
+            </button>
+          ) : null}
+          </div>
         </div>
       }
     >
       {skill && display && (
-        <div className='flex h-full min-h-0 flex-col' data-testid='skill-detail-content'>
+        <div className='flex flex-col' data-testid='skill-detail-content'>
           <div className='flex-shrink-0 border-b border-b-solid border-[var(--color-border-1)] px-24px py-20px'>
             <div className='flex items-start gap-14px'>
               <SkillAvatar skill={skill} isAutoInjected={isAutoInjected} size={44} radiusClassName='rounded-12px' />
@@ -268,7 +282,6 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
             </div>
 
             <div className='mt-18px flex flex-col gap-10px rounded-12px bg-fill-2 p-12px'>
-              {renderTagGroup(t('settings.presetTagAudience', { defaultValue: 'Audience' }), audienceTags)}
               {renderTagGroup(t('settings.presetTagScenario', { defaultValue: 'Skill Scenario' }), scenarioTags)}
               <div className='flex min-w-0 items-start gap-10px pt-10px'>
                 <span className='w-72px flex-shrink-0 pt-2px text-11px font-600 uppercase tracking-[0.08em] text-t-tertiary'>
@@ -284,7 +297,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
             </div>
           </div>
 
-          <div className='flex min-h-0 flex-1 flex-col px-24px py-18px'>
+          <div className='flex flex-col px-24px py-18px'>
             <div className='mb-12px flex flex-shrink-0 items-center justify-between gap-12px'>
               <div>
                 <div className='text-13px font-700 text-t-primary'>
@@ -321,7 +334,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
               </div>
             </div>
 
-            <div className='min-h-0 flex-1 overflow-auto rounded-14px border border-solid border-[var(--color-border-1)] bg-base p-18px'>
+            <div className='max-h-[42vh] min-h-180px overflow-auto rounded-14px border border-solid border-[var(--color-border-1)] bg-base p-18px'>
               {loading ? (
                 <div className='flex h-full min-h-180px items-center justify-center' data-testid='skill-detail-loading'>
                   <Spin size={24} />
@@ -339,9 +352,14 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
                       defaultValue: 'The file may have moved or is no longer readable. Refresh the skill list and try again.',
                     })}
                   </div>
-                  <Button size='small' className='flowy-icon-text-btn' icon={<Refresh size={13} />} onClick={() => void loadContent()}>
+                  <button
+                    type='button'
+                    className='inline-flex cursor-pointer items-center gap-6px rounded-full border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-16px py-6px text-13px font-semibold leading-20px text-t-primary'
+                    onClick={() => void loadContent()}
+                  >
+                    <Refresh theme='outline' size={13} fill='currentColor' />
                     {t('common.retry', { defaultValue: 'Retry' })}
-                  </Button>
+                  </button>
                 </div>
               ) : viewMode === 'source' ? (
                 <pre
@@ -363,7 +381,7 @@ const SkillDetailDrawer: React.FC<SkillDetailDrawerProps> = ({
           </div>
         </div>
       )}
-    </Drawer>
+    </Modal>
   );
 };
 

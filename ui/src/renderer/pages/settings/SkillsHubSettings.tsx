@@ -1,25 +1,23 @@
 /**
  * SkillsHubSettings — The Skills Hub page. Every skill (built-in, custom,
  * extension, auto-injected) lives in ONE responsive card grid, filtered by a
- * shared two-row tag bar (Audience / Skill Scenario) over the preset tag
- * vocabulary. Cards open a SkillTagModal to assign tags; the "Manage Tags" chip
- * opens the shared TagManagementModal for vocabulary CRUD.
+ * single scrolling scenario strip over the preset scenario tags. Cards open a
+ * SkillTagModal to assign tags; "Manage Tags" opens TagManagementModal.
  *
- * Visual language mirrors the preset page: a soft fill-2 panel, an
- * PresetTagFilterBar, and PresetCard-style grid items (see SkillCard).
- * Theme variables only; `<div onClick>`/Arco controls (no <button>).
+ * Visual language mirrors the expert catalog: a scrolling scenario strip
+ * and the shared market tile (see SkillCard).
  */
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
+import type { PresetTagId } from '@/common/types/ids';
 import { resolveLocaleKey } from '@/common/utils';
 import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
+import { SKILL_CATALOG_CHANGED_EVENT } from '@/renderer/hooks/skills/skillCatalogEvents';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 // Shared tag UI + vocabulary — reused verbatim from the preset page so the
 // skill and preset surfaces share one chip language and one tag vocabulary.
 import { usePresetTags } from '@/renderer/hooks/preset';
-import PresetTagFilterBar from './PresetSettings/PresetTagFilterBar';
-import type { TagFilterState } from './PresetSettings/presetUtils';
 import TagManagementModal from './PresetSettings/TagManagementModal';
 import type { SkillInfo } from './PresetSettings/types';
 import AgentSkillImportDrawer from './skill/AgentSkillImportDrawer';
@@ -33,7 +31,8 @@ import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import FlowyButton from '@renderer/components/base/FlowyButton';
 import FlowySearch from '@renderer/components/base/FlowySearch';
 import { Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
-import { FileZip, FolderOpen, Info } from '@icon-park/react';
+import { FileZip, FolderOpen, Info, SettingTwo } from '@icon-park/react';
+import SkillScenarioBar from './skill/SkillScenarioBar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -83,7 +82,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   const search_query_value = searchQueryProp ?? search_query;
   const setSearchQuery = onSearchQueryChange ?? setSearchQueryState;
   const [searchExpanded, setSearchExpanded] = useState(false);
-  const [tagFilter, setTagFilter] = useState<TagFilterState>({ audience: [], scenario: [] });
+  const [scenarioId, setScenarioId] = useState<PresetTagId | null>(null);
   const [agentImportVisible, setAgentImportVisible] = useState(false);
 
   // Shared preset tag vocabulary.
@@ -125,25 +124,22 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   }, [fetchData]);
 
   useEffect(() => {
+    const refresh = () => {
+      void fetchData();
+    };
+    window.addEventListener(SKILL_CATALOG_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(SKILL_CATALOG_CHANGED_EVENT, refresh);
+  }, [fetchData]);
+
+  useEffect(() => {
     if (loading) return;
     onInstalledCountChange?.(availableSkills.length);
   }, [availableSkills.length, loading, onInstalledCountChange]);
 
   const skillTagFilter = useMemo<SkillTagFilterState>(() => {
-    const keyById = new Map(
-      [...tags.audienceTags, ...tags.scenarioTags].map((tag) => [tag.preset_tag_id, tag.key] as const)
-    );
-    return {
-      audience: tagFilter.audience.flatMap((presetTagId) => {
-        const key = keyById.get(presetTagId);
-        return key ? [key] : [];
-      }),
-      scenario: tagFilter.scenario.flatMap((presetTagId) => {
-        const key = keyById.get(presetTagId);
-        return key ? [key] : [];
-      }),
-    };
-  }, [tagFilter, tags.audienceTags, tags.scenarioTags]);
+    const scenario = tags.scenarioTags.find((tag) => tag.preset_tag_id === scenarioId);
+    return { audience: [], scenario: scenario ? [scenario.key] : [] };
+  }, [scenarioId, tags.scenarioTags]);
 
   const filteredSkills = useMemo(() => {
     return filterSkillsByTags(availableSkills, search_query_value, skillTagFilter, localeKey);
@@ -153,15 +149,10 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
   // the management modal must not leave a stale key invisibly constraining a
   // facet. Mirrors PresetListPanel's guard.
   useEffect(() => {
-    const audienceIds = new Set(tags.audienceTags.map((tag) => tag.preset_tag_id));
-    const scenarioIds = new Set(tags.scenarioTags.map((tag) => tag.preset_tag_id));
-    setTagFilter((prev) => {
-      const audience = prev.audience.filter((presetTagId) => audienceIds.has(presetTagId));
-      const scenario = prev.scenario.filter((presetTagId) => scenarioIds.has(presetTagId));
-      if (audience.length === prev.audience.length && scenario.length === prev.scenario.length) return prev;
-      return { audience, scenario };
-    });
-  }, [tags.audienceTags, tags.scenarioTags]);
+    if (!scenarioId) return;
+    if (tags.scenarioTags.some((tag) => tag.preset_tag_id === scenarioId)) return;
+    setScenarioId(null);
+  }, [scenarioId, tags.scenarioTags]);
 
   // Scroll to and highlight a skill when navigated with ?highlight=skillName.
   useEffect(() => {
@@ -364,15 +355,26 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
           )}
 
           <div className={hideChrome ? 'flex flex-col gap-16px mb-20px' : undefined}>
-            {/* Shared tag filter bar — vocab from usePresetTags */}
-            <PresetTagFilterBar
-              audienceTags={tags.audienceTags}
-              scenarioTags={tags.scenarioTags}
-              value={tagFilter}
-              onChange={setTagFilter}
-              localeKey={localeKey}
-              onManageTags={() => setTagMgmtVisible(true)}
-            />
+            {/* Scenario strip — same scroll pattern as the expert category bar. */}
+            <div className='flex min-w-0 items-center gap-8px'>
+              <div className='min-w-0 flex-1'>
+                <SkillScenarioBar
+                  tags={tags.scenarioTags}
+                  localeKey={localeKey}
+                  activeId={scenarioId}
+                  onChange={setScenarioId}
+                />
+              </div>
+              <button
+                type='button'
+                data-testid='btn-manage-tags'
+                onClick={() => setTagMgmtVisible(true)}
+                className='inline-flex shrink-0 cursor-pointer items-center gap-4px border-none bg-transparent px-8px py-6px text-12px text-t-tertiary hover:text-t-primary'
+              >
+                <SettingTwo theme='outline' size={14} />
+                {t('settings.presetManageTags', { defaultValue: 'Manage Tags' })}
+              </button>
+            </div>
           </div>
 
           {/* Single card grid for all skills */}
@@ -415,7 +417,6 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
                       isAutoInjected={skill.source !== 'extension' && autoInjectedNames.has(skill.name)}
                       onOpenDetails={setDetailSkill}
                       onEditTags={setTagModalSkill}
-                      onDelete={confirmDelete}
                       highlighted={highlightedSkill === skill.name}
                       cardRef={(el) => {
                         skillRefs.current[skill.name] = el;
@@ -446,7 +447,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
         </div>
 
         {/* Usage tip */}
-        <div className='px-16px md:px-[24px] py-20px bg-base border border-b-base shadow-sm rd-16px flex items-start gap-12px text-t-secondary'>
+        <div className='px-16px md:px-[24px] py-20px bg-base border border-solid border-[var(--border-base)] shadow-sm rd-16px flex items-start gap-12px text-t-secondary'>
           <Info size={18} className='text-primary-6 mt-2px shrink-0' />
           <div className='flex flex-col gap-4px'>
             <span className='font-bold text-t-primary text-14px'>
@@ -472,13 +473,16 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
           setDetailSkill(null);
           setTagModalSkill(skill);
         }}
+        onDelete={(skill) => {
+          setDetailSkill(null);
+          confirmDelete(skill);
+        }}
       />
 
       <SkillTagModal
         visible={tagModalSkill !== null}
         skill={tagModalSkill}
         onClose={() => setTagModalSkill(null)}
-        audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}
         onCreateTag={tags.createTag}
         localeKey={localeKey}
@@ -489,6 +493,7 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
       <TagManagementModal
         visible={tagMgmtVisible}
         onClose={() => setTagMgmtVisible(false)}
+        hideAudience
         audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}
         localeKey={localeKey}

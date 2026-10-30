@@ -84,9 +84,12 @@ describe('capability hub load contracts', () => {
     expect(market).toContain('SkillHubMarketPanel');
     expect(skillHubPanel).toContain('AVAILABLE_SKILLS_SWR_KEY');
     expect(skillHubPanel).toContain('installSkillMarketSkill');
-    expect(skillHubPanel).toContain('showInstallCommand={false}');
+    expect(skillHubPanel).toContain('<MarketItemTile');
+    expect(skillHubPanel).not.toContain('<SkillMarketCard');
+    expect(skillHubPanel).toContain('<MarketItemDetailModal');
+    expect(skillHubPanel).not.toContain('<MarketDetailDrawer');
     expect(market).not.toContain('useNomiQuickStart');
-    expect(skillHubHook).toContain('v7');
+    expect(skillHubHook).toContain('v8');
     expect(market).not.toContain('rankings.v5');
     expect(market).not.toContain('ClawHub');
     expect(market).not.toContain('LoopHub');

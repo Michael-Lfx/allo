@@ -673,3 +673,13 @@
     justify-content: stretch;
   }
 }
+
+.skill-detail-modal .arco-switch-checked,
+body[arco-theme='dark'] .skill-detail-modal .arco-switch-checked {
+  background-color: var(--color-text-1) !important;
+}
+
+.skill-detail-modal .arco-switch-checked .arco-switch-dot,
+body[arco-theme='dark'] .skill-detail-modal .arco-switch-checked .arco-switch-dot {
+  color: var(--color-text-1) !important;
+}
