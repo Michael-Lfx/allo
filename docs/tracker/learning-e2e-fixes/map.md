@@ -1,14 +1,22 @@
 # Map: 全流程 E2E 修复波——生成耗时 + 旅程四缺陷（e1–e5）
 
 <!-- wayfinder:map -->
-<!-- 状态：开图（2026-10-29）。来源 = 吸收六波后的真实课程全流程 E2E（复利课，
-      learn0928 尖端 c67c991dd..8335d719c 二进制）。五票全部 open，互不阻塞；
-      e2（door_refs）是用户旅程 BLOCKER 优先级最高。 -->
-<!-- 前情：六轮吸收波已并入 feat/learn0928（六轮 map 关闭于
-      docs/tracker/learning-absorb-6/，真机四臂对照卡在其 assets/）。 -->
-<!-- 参考：learnhub C:\Users\test\Desktop\my\learnhub（tip bd31277；其后 3 票只
-      动 node_growth/sessions/coach/judge，行号涉彼已按 bd31277 核准）。研究
-      代理 2026-10-29 五面深挖结论已织入各票 Reference。 -->
+<!-- 状态：**波到达目的地（2026-10-30 关闭）**。五票全关（Resolution 在各票）
+      + code-review 双轴 + 修复批 110ad60b9 + 真机验收
+      （assets/acceptance.md：door_refs 0/42→13/51、声明 200 解锁 BLOCKER、
+      建课停点、202 双模、相位耗时基线 198s/477s/229s/140s）。
+      集成 feat/learn-e2e-fixes 已含全量（含 e2e 修复批），未推送。 -->
+<!-- 雾区交接：①首批准入要不要剪已声明覆盖节点（产品裁决，e3 Resolution）
+      ②两遍式内容管线迁移（e1 D1 第二步，15 次串行调用成本已入档）
+      ③max_tokens 杠杆在 provider_models.output_limit（行为未动）
+      ④CountingProvider::stream Err 计数口径注释不符（观测面）
+      ⑤read_prior_content 工具轮 / #179 入册（沿六波雾区）。 -->
+<!-- 前情：吸收六波后真实课程全流程 E2E（复利课，learn0928 尖端
+      c67c991dd..8335d719c 二进制）暴露五发现 → 本波。过程事故两起均已恢复：
+      磁盘 7.2G/99%（并发工作树产物，纪律已固化入 quirks #9）+ 后台代理
+      静默死亡 ×2（merger 主会话亲收尾、e3 死前进度审计续作零损失）。 -->
+<!-- 来源：learnhub C:\Users\test\Desktop\my\learnhub（tip bd31277）五面深挖
+      （研究代理 2026-10-29），参考实码逐票引用（Reference 表）。 -->
 
 ## E2E 分相位账目（2026-10-29，Flowy Cloud flash，真实课程「复利与利息」）
 

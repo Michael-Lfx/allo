@@ -2,7 +2,7 @@
 id: e3
 title: "声明窗口——建课后暂停在门口，生长不自动抢跑"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -58,3 +58,9 @@ part_of: ../map.md
 - 传统课程线（course_outline 无此流）。
 - e2 的 door_refs 标注（独立票；e3 先落时声明仍会 400——两票按 e2→e3 序
   实施，或 e3 先落但声明入口在 e2 前保持置灰提示）。
+
+## Resolution（2026-10-30 关票）
+
+- 实施 5feee6e3b + b1a5ff712（前任实现者静默死亡，死前进度经审计原样落盘为两提交 + 续作并入 e1，零冲突）。建课流「结构完成即停」（kick_growth 衔接删除）；前端 DeclarationWindow（门口梯队 GateCoverage + 勾选已会 + 「开始学习」主动作）；首批触发 = 用户显式 graph/grow（learnhub 语义：生长是学习动作的副作用）；m10 补批臂零改动。
+- 真机（acceptance.md）：结构 done/failed 两种终态后均**零 growth 任务**（smoke [e3.zero-growth] 硬判据 + 单测）；显式 kick 229s 起批 5 节点。
+- **验收措辞修正（如实注记）**：票面验收「首批不含已声明覆盖块」写得过强——m2 被吸收语义（ADR-0032）= 声明是概念就绪 + 下游 assumes 解锁，**不自动剪枝节点**；节点级出口 = declare 400 文案的「逐个跳过」。真课实测声明覆盖块仍入首批，属语义边界非缺陷。「首批准入要不要剪已声明覆盖节点」立为产品问题留雾区。
