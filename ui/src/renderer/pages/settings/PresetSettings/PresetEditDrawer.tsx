@@ -1,11 +1,10 @@
 /**
- * PresetEditDrawer — Drawer for creating/editing an preset.
+ * PresetEditDrawer — Centered modal for creating/editing a preset, styled like the other detail modals.
  * Contains name/avatar fields, agent selector, rules editor, and skills section.
  */
 import type {
   PresetListItem,
 } from './types';
-import type { AvailableBackend } from '@/renderer/hooks/preset';
 import type {
   CreatePresetTagRequest,
   PresetTag,
@@ -33,14 +32,13 @@ import { useModelsForTask } from '@/renderer/hooks/agent/useModelsForTask';
 import { useModelSelectorProviderLabel } from '@/renderer/hooks/agent/useModelSelectorProviderLabel';
 import { formatCloudModelLabel } from '@/renderer/utils/model/cloudModelLabel';
 import { useKnowledgeBases } from '@/renderer/pages/knowledge/useKnowledge';
-import { Avatar, Button, Checkbox, Collapse, Drawer, Input, Modal, Select, Tag, Typography } from '@arco-design/web-react';
-import { Close, Delete, Info, Plus, Robot } from '@icon-park/react';
+import { Avatar, Button, Checkbox, Collapse, Input, Modal, Select, Typography } from '@arco-design/web-react';
+import { Delete, Info, Plus, Robot } from '@icon-park/react';
 import classNames from 'classnames';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import {
-  parseAgentId,
   parseKnowledgeBaseId,
   parseMcpServerId,
   parseProviderId,
@@ -49,6 +47,11 @@ import { useMcpServers } from '@/renderer/hooks/mcp';
 import type { PresetEditorController } from '@/renderer/hooks/preset/usePresetEditor';
 
 const ANY_PROVIDER_TOKEN = '*';
+
+const themeButtonClass =
+  'inline-flex cursor-pointer items-center gap-6px rounded-full border-none bg-[var(--color-text-1)] px-16px py-6px text-13px font-semibold leading-20px text-[var(--color-bg-1)] disabled:cursor-default disabled:opacity-60';
+const secondaryButtonClass =
+  'inline-flex cursor-pointer items-center gap-6px rounded-full border-none bg-fill-2 px-16px py-6px text-13px font-semibold leading-20px text-t-primary';
 
 const catalogSourceLabelKey = {
   builtin: 'conversation.skills.sources.builtin',
@@ -81,11 +84,8 @@ const LocalizedSkillContent: React.FC<{
 type PresetEditDrawerProps = {
   editor: PresetEditorController;
   editAvatarImage: string | undefined;
-  editAudienceTags: PresetTagId[];
-  setEditAudienceTags: (v: PresetTagId[]) => void;
   editScenarioTags: PresetTagId[];
   setEditScenarioTags: (v: PresetTagId[]) => void;
-  audienceTags: PresetTag[];
   scenarioTags: PresetTag[];
   onCreateTag: (req: CreatePresetTagRequest) => Promise<PresetTag>;
   /** When true (built-in / extension), the tag pickers render read-only. */
@@ -97,7 +97,6 @@ type PresetEditDrawerProps = {
   isExtensionPreset: (preset: PresetListItem | null | undefined) => boolean;
 
   // Agent backend options
-  availableBackends: AvailableBackend[];
   onImportAgentSkills: (rows: AgentSkillImportRow[]) => Promise<ImportedAgentSkill[]>;
   handleDeleteClick: () => void;
   /** Duplicate the active preset. Used by the builtin readonly banner so
@@ -108,18 +107,14 @@ type PresetEditDrawerProps = {
 const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   editor,
   editAvatarImage,
-  editAudienceTags,
-  setEditAudienceTags,
   editScenarioTags,
   setEditScenarioTags,
-  audienceTags,
   scenarioTags,
   onCreateTag,
   readOnly,
   localeKey,
   activePreset,
   isExtensionPreset,
-  availableBackends,
   onImportAgentSkills,
   handleDeleteClick,
   handleDuplicate,
@@ -136,8 +131,6 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
     setEditRoutingDescription,
     editAvatar,
     setEditAvatar,
-    editAgents,
-    setEditAgents,
     editModels,
     setEditModels,
     editTargets,
@@ -175,15 +168,13 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   const drawerHeadingRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const wasDrawerVisibleRef = useRef(false);
-  const audiencePickerRef = useRef<PresetTagPickerHandle>(null);
   const scenarioPickerRef = useRef<PresetTagPickerHandle>(null);
-  const [drawerWidth, setDrawerWidth] = useState(760);
   const [rulesExpanded, setRulesExpanded] = useState(false);
   const [agentImportVisible, setAgentImportVisible] = useState(false);
   const promptPreviewContent = useMemo(() => stripSkillFrontmatter(editContext).trim(), [editContext]);
 
   const { resetPendingTagDrafts, closeDrawer, handleDrawerSave } = useMemo(
-    () => createPresetTagDraftLifecycle(audiencePickerRef, scenarioPickerRef, setEditVisible, handleSave),
+    () => createPresetTagDraftLifecycle(scenarioPickerRef, setEditVisible, handleSave),
     [handleSave, setEditVisible]
   );
 
@@ -193,19 +184,6 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
       setAgentImportVisible(false);
     }
   }, [editVisible, resetPendingTagDrafts]);
-
-  // Responsive drawer width
-  useEffect(() => {
-    const updateDrawerWidth = () => {
-      if (typeof window === 'undefined') return;
-      const nextWidth = window.innerWidth >= 840 ? Math.min(760, window.innerWidth - 64) : window.innerWidth;
-      setDrawerWidth(nextWidth);
-    };
-
-    updateDrawerWidth();
-    window.addEventListener('resize', updateDrawerWidth);
-    return () => window.removeEventListener('resize', updateDrawerWidth);
-  }, []);
 
   useEffect(() => {
     if (editVisible && !wasDrawerVisibleRef.current && document.activeElement instanceof HTMLElement) {
@@ -245,8 +223,6 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   // builtins show a read-only toggle list. The backend has already filtered
   // extension presets into their own source class.
   const showSkills = isCreating || (activePreset !== null && activePreset.source !== 'extension');
-
-  const agentOptions = availableBackends;
 
   const { groups: chatGroups } = useModelsForTask('chat', undefined, { enabled: editVisible });
   const providerLabel = useModelSelectorProviderLabel();
@@ -358,65 +334,53 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
   };
 
   return (
-    <Drawer
+    <Modal
       title={
         <div ref={drawerHeadingRef} tabIndex={-1} className='outline-none'>
-          <span>
-            {isCreating
-              ? t('settings.createPreset', { defaultValue: 'Create Preset' })
-              : t('settings.editPreset', { defaultValue: 'Edit preset' })}
-          </span>
-          {!agentImportVisible && (
-            <Button
-              type='text'
-              size='mini'
-              aria-label={t('common.close', { defaultValue: '关闭' })}
-              onClick={requestClose}
-              className='!absolute !right-0 !top-0 !h-32px !w-32px !rounded-8px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-              style={{ zIndex: 10, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-              icon={<Close size={18} />}
-            />
-          )}
+          {isCreating
+            ? t('settings.createPreset', { defaultValue: 'Create Preset' })
+            : t('settings.editPreset', { defaultValue: 'Edit expert' })}
         </div>
       }
-      closable={false}
       visible={editVisible}
       unmountOnExit
-      placement='right'
-      width={drawerWidth}
-      zIndex={1200}
+      wrapStyle={{ zIndex: 1200 }}
       getPopupContainer={() => document.body}
       autoFocus={false}
       onCancel={requestClose}
-      headerStyle={{ background: 'var(--color-bg-1)', borderBottom: '1px solid var(--color-border-2)' }}
-      bodyStyle={{ background: 'var(--color-bg-1)', padding: '20px 24px' }}
+      className='preset-edit-modal'
+      data-testid='preset-edit-modal'
+      style={{ width: 760, maxWidth: '92vw', borderRadius: 16 }}
       footer={agentImportVisible ? null : (
-        <div className='flex items-center justify-between w-full'>
-          {!isCreating && activePreset?.source !== 'builtin' && !isExtensionPreset(activePreset) && (
-            <Button
-              status='danger'
+        <div className='flex w-full items-center justify-between gap-12px'>
+          {!isCreating && activePreset?.source !== 'builtin' && !isExtensionPreset(activePreset) ? (
+            <button
+              type='button'
               onClick={handleDeleteClick}
               data-testid='btn-delete-preset'
-              className='!h-36px !rounded-8px !px-16px font-medium'
+              className='inline-flex cursor-pointer items-center gap-6px border-none bg-transparent px-8px py-6px text-13px font-semibold text-t-tertiary hover:text-[rgb(var(--danger-6))]'
             >
+              <Delete theme='outline' size={14} fill='currentColor' />
               {t('common.delete', { defaultValue: 'Delete' })}
-            </Button>
+            </button>
+          ) : (
+            <span />
           )}
-          <div className='ml-auto flex items-center gap-10px'>
-            <Button onClick={requestClose} className='!h-36px !min-w-88px !rounded-8px !bg-fill-2 font-medium'>
+          <div className='flex items-center gap-12px'>
+            <button type='button' onClick={requestClose} className={secondaryButtonClass}>
               {t('common.cancel', { defaultValue: 'Cancel' })}
-            </Button>
+            </button>
             {!readOnly && (
-              <Button
-                type='primary'
+              <button
+                type='button'
                 disabled={saveDisabled}
-                loading={editor.saving}
+                aria-busy={editor.saving}
                 onClick={() => void handleDrawerSaveClick()}
                 data-testid='btn-save-preset'
-                className='!h-36px !min-w-88px !rounded-8px font-500 shadow-sm'
+                className={themeButtonClass}
               >
                 {isCreating ? t('common.create', { defaultValue: 'Create' }) : t('common.save', { defaultValue: 'Save' })}
-              </Button>
+              </button>
             )}
           </div>
         </div>
@@ -541,94 +505,47 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             <Typography.Title heading={6} className='!mb-14px !text-t-primary'>
               {t('settings.presetSectionPreferences', { defaultValue: '运行偏好' })}
             </Typography.Title>
-            <Typography.Text bold>{t('settings.presetPreferredAgents', { defaultValue: 'Preferred Agents' })}</Typography.Text>
-            <NomiSelect
-              mode='multiple'
-              className='mt-10px w-full rounded-4px'
-              value={editAgents}
-              onChange={(value) => setEditAgents((value as string[]).map(parseAgentId))}
-              disabled={readOnly}
-              allowClear
-              showSearch
-              data-testid='select-preset-agent'
-            >
-              {agentOptions.map((opt) => (
-                <NomiSelect.Option key={opt.id} value={opt.id}>
-                  <span className='flex items-center gap-6px'>
-                    {opt.name}
-                    {opt.isExtension && (
-                      <Tag size='small' bordered={false} className='!bg-primary-1 !text-primary-6'>
-                        ext
-                      </Tag>
-                    )}
-                  </span>
-                </NomiSelect.Option>
-              ))}
-            </NomiSelect>
-            <div className='mt-6px text-12px text-t-secondary'>
-              {t('settings.presetPreferenceOrderHint', {
-                defaultValue: 'The first available option is used. Drag-and-drop ordering will follow the selected order.',
-              })}
+            <div className='flex-shrink-0'>
+              <Typography.Text bold>
+                {t('settings.presetPreferredModels', { defaultValue: '偏好模型（可选）' })}
+              </Typography.Text>
+              <NomiSelect
+                mode='multiple'
+                className='mt-10px w-full'
+                value={selectedModelValues}
+                onChange={(value) =>
+                  setEditModels(
+                    (value as string[]).map((item) => {
+                      const [providerId, ...modelParts] = item.split('::');
+                      return {
+                        provider_id: providerId === ANY_PROVIDER_TOKEN ? undefined : parseProviderId(providerId),
+                        model: modelParts.join('::'),
+                        required: false,
+                      };
+                    })
+                  )
+                }
+                disabled={readOnly}
+                allowClear
+                showSearch
+                placeholder={t('settings.presetPreferredModelsPlaceholder', {
+                  defaultValue: '该角色参与协作任务时优先选用的模型',
+                })}
+                notFoundContent={
+                  <div className='text-center text-t-secondary text-12px py-8px'>
+                    {t('settings.noAvailableModels', { defaultValue: 'No available models' })}
+                  </div>
+                }
+                data-testid='select-preset-preferred-models'
+              >
+                {modelOptions.map((option) => (
+                  <NomiSelect.Option key={option.value} value={option.value}>
+                    {option.label}
+                  </NomiSelect.Option>
+                ))}
+              </NomiSelect>
             </div>
           </section>
-
-          {/* Provider-qualified model preferences. */}
-          <div className='flex-shrink-0'>
-            <Typography.Text bold>
-              {t('settings.presetPreferredModels', { defaultValue: '偏好模型（可选）' })}
-            </Typography.Text>
-            <NomiSelect
-              mode='multiple'
-              className='mt-10px w-full'
-              value={selectedModelValues}
-              onChange={(value) =>
-                setEditModels(
-                  (value as string[]).map((item) => {
-                    const [providerId, ...modelParts] = item.split('::');
-                    return {
-                      provider_id: providerId === ANY_PROVIDER_TOKEN ? undefined : parseProviderId(providerId),
-                      model: modelParts.join('::'),
-                      required: false,
-                    };
-                  })
-                )
-              }
-              disabled={readOnly}
-              allowClear
-              showSearch
-              placeholder={t('settings.presetPreferredModelsPlaceholder', {
-                defaultValue: '该角色参与协作任务时优先选用的模型',
-              })}
-              notFoundContent={
-                <div className='text-center text-t-secondary text-12px py-8px'>
-                  {t('settings.noAvailableModels', { defaultValue: 'No available models' })}
-                </div>
-              }
-              data-testid='select-preset-preferred-models'
-            >
-              {modelOptions.map((option) => (
-                <NomiSelect.Option key={option.value} value={option.value}>
-                  {option.label}
-                </NomiSelect.Option>
-              ))}
-            </NomiSelect>
-          </div>
-
-          {/* Summary */}
-          <div className='text-12px text-t-secondary'>
-            {editAgents.length > 0
-              ? t('settings.presetSelectionSummary', {
-                  agents: editAgents.length,
-                  selectedSkills: totalActiveSkillsCount,
-                  totalSkills: totalSkillsCount,
-                  defaultValue: `已选择 ${editAgents.length} 个 Agent，已选择 ${totalActiveSkillsCount}/${totalSkillsCount} 个技能。`,
-                })
-              : t('settings.presetAutomaticAgentSummary', {
-                  selectedSkills: totalActiveSkillsCount,
-                  totalSkills: totalSkillsCount,
-                  defaultValue: `自动选择 Agent，已选择 ${totalActiveSkillsCount}/${totalSkillsCount} 个技能。`,
-                })}
-          </div>
 
           <section ref={targetsFieldRef} className='flex-shrink-0 border-t border-t-solid border-arco-2 pt-20px'>
             <Typography.Text bold>{t('settings.presetApplication', { defaultValue: 'Application' })}</Typography.Text>
@@ -771,23 +688,10 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
             </div>
           </div>
 
-          {/* Tags — audience / scenario chip pickers. Read-only for builtin /
-              extension presets (their tags are immutable at the source). */}
+          {/* Tags — scenario chip picker. Read-only for builtin / extension presets
+              (their tags are immutable at the source). */}
           <div className='flex-shrink-0 flex flex-col gap-14px'>
             <Typography.Text bold>{t('settings.presetTags', { defaultValue: 'Tags' })}</Typography.Text>
-            <PresetTagPicker
-              ref={audiencePickerRef}
-              dimension='audience'
-              label={t('settings.presetTagPickAudience', { defaultValue: 'Audience tags' })}
-              tags={audienceTags}
-              value={editAudienceTags}
-              onChange={(values) => setEditAudienceTags(values as PresetTagId[])}
-              onCreateTag={onCreateTag}
-              localeKey={localeKey}
-              readOnly={readOnly}
-              reference='id'
-              showAddHint
-            />
             <PresetTagPicker
               ref={scenarioPickerRef}
               dimension='scenario'
@@ -1247,7 +1151,7 @@ const PresetEditDrawer: React.FC<PresetEditDrawerProps> = ({
           mode='preset'
         />
       </div>
-    </Drawer>
+    </Modal>
   );
 };
 

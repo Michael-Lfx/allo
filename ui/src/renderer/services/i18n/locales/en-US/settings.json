@@ -279,7 +279,7 @@
   "presetsEmpty": "No presets yet. Create one to save a reusable Agent, model, Skill, and knowledge launch configuration.",
   "game3dPresetName": "3D Game",
   "game3dPresetDesc": "Generate a complete 3D platform collection game in one HTML file.",
-  "editPreset": "Edit preset",
+  "editPreset": "Edit expert",
   "presetNameAvatar": "Name & Avatar",
   "presetSectionPreferences": "Run preferences",
   "presetSelectionSummary": "{{agents}} Agents selected, {{selectedSkills}} of {{totalSkills}} skills selected.",
@@ -1695,7 +1695,7 @@
     "title": "MCP",
     "subtitle": "Register MCP servers and browse MCP markets.",
     "railTitle": "MCP",
-    "backToMarket": "Back to MCP"
+    "backToMarket": "MCP Market"
   },
   "link": {
     "title": "Connect a phone",

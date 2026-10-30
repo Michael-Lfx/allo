@@ -138,6 +138,7 @@ const InternalSelect = React.forwardRef<SelectHandle, NomiSelectProps>(
       contentFit = false,
       contentMinWidth = 0,
       contentMaxWidth = '100%',
+      dropdownMenuStyle,
       triggerProps,
       ...rest
     },
@@ -159,6 +160,7 @@ const InternalSelect = React.forwardRef<SelectHandle, NomiSelectProps>(
           ...(contentFit ? { autoAlignPopupWidth: false } : undefined),
           ...triggerProps,
         }}
+        dropdownMenuStyle={{ overflowY: 'auto', ...dropdownMenuStyle }}
         getPopupContainer={getPopupContainer || defaultGetPopupContainer}
         {...rest}
       />

@@ -186,7 +186,7 @@ const PresetCard: React.FC<PresetCardProps> = ({
           className='inline-flex items-center gap-4px whitespace-nowrap border-0 bg-transparent p-0 leading-none text-12px text-[var(--color-text-2)] cursor-pointer hover:text-[var(--color-text-1)] transition-colors'
         >
           <SettingOne theme='outline' size={13} strokeWidth={3} />
-          {t('settings.editPreset', { defaultValue: 'Edit preset' })}
+          {t('settings.editPreset', { defaultValue: 'Edit expert' })}
         </button>
       </div>
     </div>

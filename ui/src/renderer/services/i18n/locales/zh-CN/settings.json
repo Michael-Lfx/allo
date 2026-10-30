@@ -279,7 +279,7 @@
   "presetsEmpty": "还没有设定。创建一个设定，保存可复用的 Agent、模型、Skill 与知识启动配置。",
   "game3dPresetName": "3D 游戏生成",
   "game3dPresetDesc": "用单个 HTML 文件生成完整的 3D 平台收集游戏。",
-  "editPreset": "编辑设定",
+  "editPreset": "编辑专家",
   "presetNameAvatar": "名称及头像",
   "presetSectionPreferences": "运行偏好",
   "presetSelectionSummary": "已选择 {{agents}} 个 Agent，已选择 {{selectedSkills}}/{{totalSkills}} 个技能。",
@@ -1696,7 +1696,7 @@
     "title": "MCP",
     "subtitle": "管理已安装 MCP 与 MCP 市场。",
     "railTitle": "MCP",
-    "backToMarket": "返回MCP"
+    "backToMarket": "MCP 市场"
   },
   "link": {
     "title": "连接手机",

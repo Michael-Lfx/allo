@@ -7,26 +7,33 @@ const TAG_GAP_PX = 6;
 const TAG_CLASS = 'max-w-[160px] shrink-0 truncate rounded-6px bg-fill-2 px-10px py-4px text-12px leading-18px text-t-secondary';
 const BADGE_CLASS = 'shrink-0 px-4px text-12px leading-18px text-t-tertiary';
 
-export const ExpertMark: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
-  name,
-  avatarUrl,
-  size,
-}) => <ExpertMarkFace key={avatarUrl?.trim() || 'letter'} name={name} avatarUrl={avatarUrl} size={size} />;
+type ExpertMarkProps = {
+  name: string;
+  avatarUrl?: string;
+  /** Already-resolved image source, for example a bundled icon or a data URL. */
+  imageSrc?: string;
+  /** Emoji avatar; shown when there is no image. */
+  emoji?: string;
+  size: 44 | 64;
+};
 
-const ExpertMarkFace: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
-  name,
-  avatarUrl,
-  size,
-}) => {
+export const ExpertMark: React.FC<ExpertMarkProps> = (props) => (
+  <ExpertMarkFace key={props.imageSrc || props.avatarUrl?.trim() || props.emoji || 'letter'} {...props} />
+);
+
+const ExpertMarkFace: React.FC<ExpertMarkProps> = ({ name, avatarUrl, imageSrc, emoji, size }) => {
   const [failed, setFailed] = useState(false);
-  const src = displayableExpertAvatar(avatarUrl);
+  const src = imageSrc ?? displayableExpertAvatar(avatarUrl);
   const box = size === 64 ? 'size-64px rounded-16px text-24px' : 'size-44px rounded-12px text-16px';
+  const emojiClass = size === 64 ? 'text-36px leading-none' : 'text-24px leading-none';
   return (
     <span
       className={`flex shrink-0 items-center justify-center overflow-hidden bg-fill-2 font-semibold text-t-primary ${box}`}
     >
       {src && !failed ? (
         <img src={src} alt='' className='size-full object-cover' onError={() => setFailed(true)} />
+      ) : emoji ? (
+        <span className={emojiClass}>{emoji}</span>
       ) : (
         name.trim().charAt(0) || '?'
       )}
@@ -38,6 +45,8 @@ export type ExpertTileProps = {
   testId: string;
   name: string;
   avatarUrl?: string;
+  avatarImageSrc?: string;
+  avatarEmoji?: string;
   summary: string;
   tags: string[];
   actionLabel?: string;
@@ -63,6 +72,8 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
   testId,
   name,
   avatarUrl,
+  avatarImageSrc,
+  avatarEmoji,
   summary,
   tags,
   actionLabel,
@@ -144,7 +155,7 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
       ].filter(Boolean).join(' ')}
     >
       <div className='flex min-w-0 items-start gap-12px'>
-        <ExpertMark name={name} avatarUrl={avatarUrl} size={44} />
+        <ExpertMark name={name} avatarUrl={avatarUrl} imageSrc={avatarImageSrc} emoji={avatarEmoji} size={44} />
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-8px'>
             {splitActions ? (
