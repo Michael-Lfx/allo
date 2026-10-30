@@ -67,6 +67,17 @@ test('voice resources include the actual executable and existing licenses; failu
   }
 });
 
+async function writeCrt(dir, machine) {
+  await mkdir(dir, { recursive: true });
+  for (const dll of REQUIRED_VC_REDIST_DLLS) {
+    await writeFile(join(dir, dll), pe(machine));
+  }
+}
+
+function isolatedProgramFiles(root) {
+  return { ProgramFiles: join(root, 'pf'), 'ProgramFiles(x86)': join(root, 'pf86') };
+}
+
 test('VC++ runtime redistributable resolution finds and validates required CRT DLLs', async () => {
   const root = await mkdtemp(join(tmpdir(), 'flowy-vc-redist-fixture-'));
   try {
@@ -87,6 +98,108 @@ test('VC++ runtime redistributable resolution finds and validates required CRT D
     // Wrong architecture fails
     await writeFile(join(crtDir, 'msvcp140.dll'), pe(0xaa64)); // arm64 DLL for x64 request
     expect(() => resolveVcRedistCrt('x64', { VC_REDIST_CRT_DIR: crtDir })).toThrow('not found');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('VC++ runtime resolution finds the VS 2026 ARM64 CRT and prefers it over VC143', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-vc-redist-vs18-'));
+  try {
+    const env = isolatedProgramFiles(root);
+    const latest = join(
+      env.ProgramFiles,
+      'Microsoft Visual Studio',
+      '18',
+      'Enterprise',
+      'VC',
+      'Redist',
+      'MSVC',
+      '14.50.35717',
+      'arm64',
+      'Microsoft.VC145.CRT'
+    );
+    const previous = join(
+      env.ProgramFiles,
+      'Microsoft Visual Studio',
+      '2022',
+      'Enterprise',
+      'VC',
+      'Redist',
+      'MSVC',
+      '14.44.35207',
+      'arm64',
+      'Microsoft.VC143.CRT'
+    );
+    const alias = join(
+      env.ProgramFiles,
+      'Microsoft Visual Studio',
+      '18',
+      'Enterprise',
+      'VC',
+      'Redist',
+      'MSVC',
+      'v145',
+      'arm64',
+      'Microsoft.VC145.CRT'
+    );
+    const debug = join(
+      env.ProgramFiles,
+      'Microsoft Visual Studio',
+      '18',
+      'Enterprise',
+      'VC',
+      'Redist',
+      'MSVC',
+      '14.50.35717',
+      'arm64',
+      'Microsoft.VC145.DebugCRT'
+    );
+    await writeCrt(latest, 0xaa64);
+    await writeCrt(previous, 0xaa64);
+    await writeCrt(alias, 0xaa64);
+    await writeCrt(debug, 0xaa64);
+
+    const resolved = resolveVcRedistCrt('arm64', env);
+    expect(resolved['vcruntime140.dll']).toBe(join(latest, 'vcruntime140.dll'));
+
+    await rm(latest, { recursive: true, force: true });
+    await rm(alias, { recursive: true, force: true });
+    const fallback = resolveVcRedistCrt('arm64', env);
+    expect(fallback['msvcp140.dll']).toBe(join(previous, 'msvcp140.dll'));
+
+    await rm(previous, { recursive: true, force: true });
+    expect(() => resolveVcRedistCrt('arm64', env)).toThrow('not found');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('VC++ runtime resolution keeps a complete older CRT when the newer directory is the wrong architecture', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-vc-redist-arch-'));
+  try {
+    const env = isolatedProgramFiles(root);
+    const newer = join(env.ProgramFiles, 'Microsoft Visual Studio', '18', 'Enterprise', 'VC', 'Redist', 'MSVC', '14.50.35717', 'arm64', 'Microsoft.VC145.CRT');
+    const older = join(env.ProgramFiles, 'Microsoft Visual Studio', '2022', 'BuildTools', 'VC', 'Redist', 'MSVC', '14.40.33807', 'arm64', 'Microsoft.VC143.CRT');
+    await writeCrt(newer, 0x8664);
+    await writeCrt(older, 0xaa64);
+    const resolved = resolveVcRedistCrt('aarch64', env);
+    expect(resolved['vcruntime140.dll']).toBe(join(older, 'vcruntime140.dll'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('VC++ runtime resolution reads VCToolsRedistDir toolset folders other than VC143', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'flowy-vc-redist-tools-'));
+  try {
+    const crtDir = join(root, 'MSVC', '14.50.35717', 'x64', 'Microsoft.VC145.CRT');
+    await writeCrt(crtDir, 0x8664);
+    const resolved = resolveVcRedistCrt('x64', {
+      VCToolsRedistDir: join(root, 'MSVC', '14.50.35717'),
+      ...isolatedProgramFiles(root),
+    });
+    expect(resolved['msvcp140_1.dll']).toBe(join(crtDir, 'msvcp140_1.dll'));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
