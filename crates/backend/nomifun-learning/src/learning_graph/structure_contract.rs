@@ -126,8 +126,12 @@ pub const GOAL_TYPES: &[&str] = &["capability", "coverage"];
 /// 质量清单状态词表。
 pub const QUALITY_STATUS: &[&str] = &["met", "unmet"];
 
-/// 块表量级档：下限 / 越档线（告警）/ 硬上限。
-pub const BLOCKS_MIN: usize = 40;
+/// 块表量级档：硬下限 / 密度参考档（低于即告警）/ 越档线（告警）/ 硬上限。
+/// f2 三档制（A1）：25 以下是结构非法（红）；25–39「低于 40 参考档」只警告
+/// ——小目标课如实精简，密度抽验兜底（E2E 两轮对照 31 条与 51 条内容密度
+/// 无差，硬凑 40 产出「底数与指数」类边缘块）；80–100 越档警告不变。
+pub const BLOCKS_MIN: usize = 25;
+pub const BLOCKS_DENSITY_FLOOR: usize = 40;
 pub const BLOCKS_SOFT_MAX: usize = 80;
 pub const BLOCKS_MAX: usize = 100;
 /// 主干条数档。
@@ -372,6 +376,16 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
                 blocks.len()
             ),
         ));
+    } else if blocks.len() < BLOCKS_DENSITY_FLOOR {
+        // f2（A1）：25–39 只警告不拒收——小目标课如实精简，密度抽验兜底；
+        // 警告不进重试反馈（A2：不触发重试，预算让给真实违约）。
+        violations.push(ContractViolation::warn(
+            "gd.blocks.count",
+            format!(
+                "blocks {} 条低于 {BLOCKS_DENSITY_FLOOR} 参考档——小目标课如实精简，密度抽验兜底",
+                blocks.len()
+            ),
+        ));
     } else if blocks.len() > BLOCKS_SOFT_MAX {
         violations.push(ContractViolation::warn(
             "gd.blocks.count",
@@ -409,8 +423,10 @@ pub fn validate_structure(value: &Value) -> Vec<ContractViolation> {
         if let Some(mark) = compound_name_mark(name) {
             violations.push(ContractViolation::red(
                 "gd.blocks.one_name",
+                // f2（A3）：出路指引补「改用无并列的规范名」半句（learnhub 同
+                // 款先例）——报全逻辑不动，打地鼠走提示词交卷自检句压制。
                 format!(
-                    "块名「{name}」含并列标记「{mark}」——一条 = 一个独立教学主题，多个主题须拆条；官方术语本身含并列形的以「」包裹"
+                    "块名「{name}」含并列标记「{mark}」——一条 = 一个独立教学主题，多个主题须拆条；官方术语本身含并列形的以「」包裹，或改用无并列的规范名"
                 ),
             ));
         }
@@ -1114,7 +1130,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// 一份恰好过门的 structure 样本（40 块 / 6 主干 / 每干 ≥5 块）。
+    /// 一份恰好过门的 structure 样本（42 块 / 6 主干 / 每干 7 块）。
     fn golden_structure() -> Value {
         let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
         let mut blocks = Vec::new();
@@ -1354,6 +1370,117 @@ mod tests {
             violations.iter().any(|violation| violation.code == "gd.blocks.count" && !violation.warning),
             "{violations:?}"
         );
+    }
+
+    /// 把金样块表替换为恰 n 条（按主干轮转分布），不足配额的主干声明薄干
+    /// 豁免——除 gd.blocks.count 外零杂音，专供下限/参考档边界考察。
+    fn structure_with_block_count(n: usize) -> Value {
+        let mut value = golden_structure();
+        let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+        let blocks: Vec<Value> = (0..n)
+            .map(|ordinal| {
+                json!({
+                    "name": format!("块{ordinal:02}"),
+                    "slug": format!("block-{ordinal:02}"),
+                    "spine": spine_names[ordinal % spine_names.len()],
+                    "stage": STAGES[ordinal % STAGES.len()],
+                    "note": format!("第 {ordinal} 个主题的一句话描述"),
+                })
+            })
+            .collect();
+        value["blocks"] = json!(blocks);
+        let mut per_spine = [0usize; 6];
+        for ordinal in 0..n {
+            per_spine[ordinal % spine_names.len()] += 1;
+        }
+        for (index, spine) in value["spines"].as_array_mut().unwrap().iter_mut().enumerate() {
+            if per_spine[index] < SPINE_BLOCK_QUOTA {
+                spine["thin_spine"] = json!(true);
+                spine["reason"] = json!("该方向只分出这些独立教学主题");
+            }
+        }
+        value
+    }
+
+    /// f2（③ 下限三档，A1）：25 红 / 40 参考档 warn / 100 红三档——下限边界
+    /// 24 红、25–39「低于 40 参考档」警告过闸不拒收（31 块小目标课复验零红
+    /// 条）；84 越档警告与 104 硬上限红照旧。schema minItems 与常量互钉
+    /// （schema_is_pinned_to_validator_constants）自动跟随，零改。
+    #[test]
+    fn gd_blocks_count_three_tiers_boundary() {
+        // 24：不足下限 25，红。
+        let under = validate_structure(&structure_with_block_count(24));
+        let violation = under
+            .iter()
+            .find(|violation| violation.code == "gd.blocks.count")
+            .expect("24 blocks must be flagged");
+        assert!(!violation.warning, "{under:?}");
+        assert!(violation.message.contains("不足下限 25"), "{}", violation.message);
+
+        // 25 / 31 / 39：参考档下带 warn 过闸（不拒收），且除该警告外零违约
+        // （31 块小目标课红条消失，smoke structure 档放行的单测级判据）。
+        for n in [25, 31, 39] {
+            let violations = validate_structure(&structure_with_block_count(n));
+            let violation = violations
+                .iter()
+                .find(|violation| violation.code == "gd.blocks.count")
+                .unwrap_or_else(|| panic!("{n} blocks must hit the density floor"));
+            assert!(violation.warning, "{n}: {violations:?}");
+            assert!(
+                violation.message.contains("低于 40 参考档"),
+                "{n}: {}",
+                violation.message
+            );
+            assert!(
+                violations.iter().all(|violation| violation.warning),
+                "{n} 块零红条: {violations:?}"
+            );
+        }
+
+        // 84：越档警告（既有档不变）；104：硬上限红。
+        let soft = validate_structure(&structure_with_block_count(84));
+        assert!(
+            soft.iter().any(|violation| violation.code == "gd.blocks.count" && violation.warning),
+            "{soft:?}"
+        );
+        let beyond = validate_structure(&structure_with_block_count(104));
+        assert!(
+            beyond
+                .iter()
+                .any(|violation| violation.code == "gd.blocks.count" && !violation.warning),
+            "{beyond:?}"
+        );
+    }
+
+    /// f2（② 打地鼠防回归，A3）：多个块名同含并列标记时校验器**一次报全**
+    /// ——报告逐块一行、各提一名（被点名的与别处新冒的同在这一份报告里，
+    /// 模型无需逐轮试探）；违约消息带出路指引（拆条 / 「」包裹 / 改规范名）。
+    #[test]
+    fn gd_blocks_one_name_reports_all_offenders_with_guidance_in_one_pass() {
+        let mut value = golden_structure();
+        // 边端点不引用块02/块05——改名不牵动 gd.edges.endpoints，判据不混。
+        value["blocks"][2]["name"] = json!("百分数与利率的对应");
+        value["blocks"][5]["name"] = json!("底数与指数");
+        let violations = validate_structure(&value);
+        let one_name: Vec<&ContractViolation> = violations
+            .iter()
+            .filter(|violation| violation.code == "gd.blocks.one_name")
+            .collect();
+        assert_eq!(one_name.len(), 2, "一次报全: {violations:?}");
+        assert!(
+            one_name.iter().any(|violation| violation.message.contains("百分数与利率的对应"))
+                && one_name.iter().any(|violation| violation.message.contains("底数与指数")),
+            "每行各提一名: {:?}",
+            one_name
+        );
+        for violation in &one_name {
+            assert!(
+                violation.message.contains("多个主题须拆条")
+                    && violation.message.contains("或改用无并列的规范名"),
+                "出路指引在每行: {}",
+                violation.message
+            );
+        }
     }
 
     #[test]
