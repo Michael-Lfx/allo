@@ -11,9 +11,26 @@
  * click (looking like "nav highlighted but page never rendered"). Keep this
  * module free of page-level imports so the sider stays out of those chunks.
  */
-/** Warm the skill store before a primary-rail click. */
+import { preload } from 'swr';
+import { fetchPresetCatalog, PRESET_CATALOG_SWR_KEY } from '@/renderer/hooks/preset/presetCatalog';
+import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
+
+/** Warm the skill store (chunk and installed list) before a primary-rail click. */
 export function prefetchSkillsStore(): void {
   void import('./SkillsSettingsPage').catch(() => undefined);
+  void preload(AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills).catch(() => undefined);
+}
+
+/** Warm a settings capability hub (chunk and, where it is SWR-backed, its data) on tab hover. */
+export function prefetchCapabilityHub(hub: 'presets' | 'skills' | 'mcp'): void {
+  if (hub === 'presets') {
+    void import('./PresetSettings').catch(() => undefined);
+    void preload(PRESET_CATALOG_SWR_KEY, fetchPresetCatalog).catch(() => undefined);
+  } else if (hub === 'skills') {
+    prefetchSkillsStore();
+  } else {
+    void import('@/renderer/pages/mcp').catch(() => undefined);
+  }
 }
 
 export function prefetchSettingsPages(): void {

@@ -93,6 +93,8 @@ export const useMarketCatalog = ({
     });
   }, [enableTagFilter, tags.audienceTags, tags.scenarioTags]);
 
+  const updateSearchQuery = useCallback((value: string) => setSearchQuery(cleanMarketText(value, 80)), []);
+
   const syncMarket = useCallback(
     async (options?: { showToast?: boolean }) => {
       const showToast = options?.showToast ?? true;
@@ -213,7 +215,7 @@ export const useMarketCatalog = ({
     errors,
     loading,
     searchQuery,
-    setSearchQuery: (value: string) => setSearchQuery(cleanMarketText(value, 80)),
+    setSearchQuery: updateSearchQuery,
     searchExpanded,
     setSearchExpanded,
     tagFilter,

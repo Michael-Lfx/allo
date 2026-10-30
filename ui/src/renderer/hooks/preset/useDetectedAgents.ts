@@ -23,9 +23,12 @@ export type AvailableBackend = {
  * Returns `availableBackends` (simplified shape for Select dropdowns)
  * and `refreshAgentDetection` to trigger a re-scan.
  */
-export const useDetectedAgents = () => {
+export const useDetectedAgents = (options?: { enabled?: boolean }) => {
+  const enabled = options?.enabled ?? true;
+  // `enabled: false` skips the detection fetch for callers that only need
+  // `refreshAgentDetection` (it writes through the global SWR cache).
   const { data: rawAgents = [] } = useSWR<AgentMetadata[]>(
-    DETECTED_AGENTS_SWR_KEY,
+    enabled ? DETECTED_AGENTS_SWR_KEY : null,
     fetchDetectedAgents,
     DETECTED_AGENTS_SWR_OPTIONS
   );

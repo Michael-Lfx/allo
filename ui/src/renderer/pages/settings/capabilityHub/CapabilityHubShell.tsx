@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import HubPageShell from '@/renderer/components/layout/HubPageShell';
 import CapabilityHubHeader from './CapabilityHubHeader';
@@ -38,6 +38,7 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   const { view, setView, goToHub, redirectTo } = useCapabilityHubRoute(hub);
   const { pendingTarget } = useSettingsNavigationTransition();
   const [searchQuery, setSearchQuery] = useState('');
+  const searchContextValue = useMemo(() => ({ searchQuery, setSearchQuery }), [searchQuery]);
   const pendingHub = pendingTarget
     ? parseCapabilityHubFromPathname(pendingTarget.split(/[?#]/u, 1)[0])
     : null;
@@ -48,7 +49,7 @@ const CapabilityHubShell: React.FC<CapabilityHubShellProps> = ({
   }
 
   return (
-    <CapabilityHubSearchContext.Provider value={{ searchQuery, setSearchQuery }}>
+    <CapabilityHubSearchContext.Provider value={searchContextValue}>
       <HubPageShell
         hideHeader
         className='capability-hub-page'

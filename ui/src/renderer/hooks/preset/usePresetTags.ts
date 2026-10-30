@@ -4,30 +4,36 @@ import type {
   PresetTagDimension,
   CreatePresetTagRequest,
 } from '@/common/types/agent/presetTypes';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
+import useSWR from 'swr';
+
+/** One cache identity for every tag-vocabulary consumer (experts, skills, Guid). */
+export const PRESET_TAGS_SWR_KEY = 'presetTags.list';
+
+const EMPTY_TAGS: PresetTag[] = [];
+
+const fetchPresetTags = (): Promise<PresetTag[]> => ipcBridge.presetTags.list.invoke();
 
 /** Loads the merged tag vocabulary and exposes CRUD + per-dimension views. */
 export const usePresetTags = (options?: { enabled?: boolean }) => {
   const enabled = options?.enabled ?? true;
-  const [tags, setTags] = useState<PresetTag[]>([]);
-  const [loading, setLoading] = useState(false);
+  const {
+    data,
+    isLoading: loading,
+    mutate,
+  } = useSWR<PresetTag[]>(enabled ? PRESET_TAGS_SWR_KEY : null, fetchPresetTags, {
+    revalidateOnFocus: false,
+    onError: (error) => console.error('Failed to load preset tags:', error),
+  });
+  const tags = data ?? EMPTY_TAGS;
 
   const loadTags = useCallback(async () => {
-    setLoading(true);
     try {
-      setTags(await ipcBridge.presetTags.list.invoke());
+      await mutate();
     } catch (error) {
       console.error('Failed to load preset tags:', error);
-      setTags([]);
-    } finally {
-      setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    if (!enabled) return;
-    void loadTags();
-  }, [enabled, loadTags]);
+  }, [mutate]);
 
   const audienceTags = useMemo(
     () => tags.filter((t) => t.dimension === 'audience').sort((a, b) => a.sort_order - b.sort_order),

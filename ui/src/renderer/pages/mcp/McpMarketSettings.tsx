@@ -12,7 +12,7 @@ import type { ISkillMarketItem } from '@/common/adapter/ipcBridge';
 import type { IMcpServer, IMcpServerTransport } from '@/common/config/storage';
 import { Alert, Button, Modal, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import MarketSettingsPanel from '@/renderer/pages/settings/MarketSettingsPanel';
@@ -38,16 +38,37 @@ type McpMarketSettingsProps = {
 const normalizeMcpMarketName = (value: string): string =>
   value.trim().toLocaleLowerCase().replace(/[\s_]+/g, '-');
 
+type McpInstalledIndex = {
+  originIds: ReadonlySet<string>;
+  names: ReadonlySet<string>;
+};
+
+/** Parse each server's `original_json` once, so per-card checks are plain set lookups. */
+export const buildMcpInstalledIndex = (servers: readonly IMcpServer[]): McpInstalledIndex => {
+  const originIds = new Set<string>();
+  const names = new Set<string>();
+  for (const server of servers) {
+    const origin = getMcpMarketOrigin(server);
+    if (origin) originIds.add(origin);
+    names.add(normalizeMcpMarketName(server.name));
+  }
+  return { originIds, names };
+};
+
+export const isMcpMarketItemInIndex = (
+  item: Pick<ISkillMarketItem, 'id' | 'name'>,
+  index: McpInstalledIndex
+): boolean => {
+  if (index.originIds.has(item.id)) return true;
+
+  const idSlug = item.id.split(':').slice(1).join(':').split('/').filter(Boolean).at(-1) ?? '';
+  return [item.name, idSlug].map(normalizeMcpMarketName).some((name) => name !== '' && index.names.has(name));
+};
+
 export const isMcpMarketItemInstalled = (
   item: Pick<ISkillMarketItem, 'id' | 'name'>,
   servers: readonly IMcpServer[]
-): boolean => {
-  if (servers.some((server) => getMcpMarketOrigin(server) === item.id)) return true;
-
-  const idSlug = item.id.split(':').slice(1).join(':').split('/').filter(Boolean).at(-1) ?? '';
-  const legacyNames = new Set([item.name, idSlug].map(normalizeMcpMarketName).filter(Boolean));
-  return servers.some((server) => legacyNames.has(normalizeMcpMarketName(server.name)));
-};
+): boolean => isMcpMarketItemInIndex(item, buildMcpInstalledIndex(servers));
 
 /** Read-only transport summary so the user can review exactly what would run or be contacted. */
 const TransportDetails: React.FC<{ transport: IMcpServerTransport }> = ({ transport }) => {
@@ -199,9 +220,10 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
   );
 
   const hasStdioServer = (pendingServers ?? []).some((server) => server.transport.type === 'stdio');
+  const installedIndex = useMemo(() => buildMcpInstalledIndex(mcpServers), [mcpServers]);
   const isAdded = useCallback(
-    (item: ISkillMarketItem) => isMcpMarketItemInstalled(item, mcpServers),
-    [mcpServers]
+    (item: ISkillMarketItem) => isMcpMarketItemInIndex(item, installedIndex),
+    [installedIndex]
   );
 
   return (

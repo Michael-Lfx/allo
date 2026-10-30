@@ -276,17 +276,31 @@ function McpInstalledList({
     [login, message, t, handleTestMcpConnection]
   );
 
+  // Re-check OAuth only when the set of URL-based servers (id + url) changes.
+  // Test results, toggles and saves rewrite `mcpServers` without touching URLs,
+  // and must not re-fire one IPC call per server.
+  const oauthTargetsKey = useMemo(
+    () =>
+      mcpServers
+        .flatMap((s) =>
+          s.transport.type === 'http' || s.transport.type === 'sse' || s.transport.type === 'streamable_http'
+            ? [`${s.mcp_server_id}\u0000${s.transport.url}`]
+            : []
+        )
+        .toSorted()
+        .join('\u0001'),
+    [mcpServers]
+  );
+  const mcpServersRef = useRef(mcpServers);
+  mcpServersRef.current = mcpServers;
+
   useEffect(() => {
-    if (isMcpServersLoading || mcpServersLoadFailed) return;
-    const httpServers = mcpServers.filter(
-      (s) => s.transport.type === 'http' || s.transport.type === 'sse' || s.transport.type === 'streamable_http'
-    );
-    if (httpServers.length > 0) {
-      httpServers.forEach((server) => {
-        void checkOAuthStatus(server);
-      });
+    if (isMcpServersLoading || mcpServersLoadFailed || !oauthTargetsKey) return;
+    const targetIds = new Set(oauthTargetsKey.split('\u0001').map((entry) => entry.split('\u0000')[0]));
+    for (const server of mcpServersRef.current) {
+      if (targetIds.has(server.mcp_server_id)) void checkOAuthStatus(server);
     }
-  }, [checkOAuthStatus, isMcpServersLoading, mcpServers, mcpServersLoadFailed]);
+  }, [checkOAuthStatus, isMcpServersLoading, mcpServersLoadFailed, oauthTargetsKey]);
 
   const loadErrorNotice = mcpServersLoadFailed ? (
     <div
