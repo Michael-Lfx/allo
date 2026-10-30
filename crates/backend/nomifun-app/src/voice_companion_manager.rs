@@ -641,6 +641,121 @@ impl ConversationVoiceDialogueRecorder {
         }
         Ok(None)
     }
+
+    async fn reconcile_legitimate_epoch_advance(
+        &self,
+        records: &mut [DialogueRecord],
+        session_id: &str,
+        conversation_id: &str,
+        frozen_workspace: Option<&str>,
+        recorded_epoch: i64,
+        current_epoch: i64,
+        target_record_id: Option<&str>,
+    ) -> Result<i64, VoiceDialogueRecorderError> {
+        if current_epoch == recorded_epoch {
+            return Ok(current_epoch);
+        }
+        if current_epoch < recorded_epoch {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+
+        // 1. Target conversation and owner verification
+        let conv = self.conversation_service.get(&self.user_id, conversation_id).await.map_err(|e| match e {
+            nomifun_common::AppError::NotFound(_) => VoiceDialogueRecorderError::BindingInvalid("target_deleted".into()),
+            _ => VoiceDialogueRecorderError::WriteFailed(e.to_string()),
+        })?;
+        if conv.conversation_id != conversation_id {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+        if conv.extra.get("voice_lifecycle").and_then(|v| v.as_str()) == Some("discarded") {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_deleted".into()));
+        }
+        if conv.extra.get("_edit_resubmit_fence").is_some() {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+
+        // 2. Workspace equivalence verification
+        let conv_ws = conv.extra.get("workspace").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        match (frozen_workspace, conv_ws) {
+            (Some(expected), Some(actual)) => {
+                let canonical_expected = nomifun_common::paths::canonicalize_simplified(Path::new(expected))
+                    .map_err(|_| VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()))?;
+                let canonical_actual = nomifun_common::paths::canonicalize_simplified(Path::new(actual))
+                    .map_err(|_| VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()))?;
+                if !nomifun_common::paths::paths_equivalent(&canonical_expected, &canonical_actual) {
+                    return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            }
+        }
+
+        // 3. Legitimate task handoff verification
+        let current_state = self.conversation_service.conversation_repo()
+            .get_turn_admission_state(&self.user_id, conversation_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+
+        // Bound revision advance: legitimate handoff within a turn lifecycle can advance epoch by at most 2 (claim + finalize)
+        let epoch_delta = current_epoch - recorded_epoch;
+        if epoch_delta < 1 || epoch_delta > 2 {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+
+        // Verify that the advance is associated with an active or completed task from the current session
+        let matches_session_operation = if let Some(ref active_op) = current_state.active_operation_id {
+            // Task is currently running: must belong to our session's recorded commands
+            records.iter().any(|r| {
+                r.request.session_id.as_deref() == Some(session_id)
+                    && (r.command_id.as_deref() == Some(active_op) || r.request.voice_record_id.as_deref() == Some(active_op))
+            })
+        } else {
+            // Task has completed: check that latest receipt belongs to our session or there's a prior projected record
+            let receipt_matches = self.conversation_service.conversation_repo()
+                .latest_completed_turn_receipt(&self.user_id, conversation_id).await
+                .ok()
+                .flatten()
+                .is_some_and(|r| {
+                    r.status == "completed" && r.result_ok == Some(true)
+                        && records.iter().any(|rec| {
+                            rec.request.session_id.as_deref() == Some(session_id)
+                                && (rec.command_id.as_deref() == Some(&r.operation_id)
+                                    || rec.request.voice_record_id.as_deref() == Some(&r.operation_id))
+                        })
+                });
+
+            let has_prior_record = records.iter().any(|r| {
+                r.request.session_id.as_deref() == Some(session_id)
+                    && r.request.voice_record_id.is_some()
+                    && r.request.voice_record_id.as_deref() != target_record_id
+                    && r.projected
+            });
+
+            receipt_matches || has_prior_record
+        };
+
+        if !matches_session_operation {
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+        }
+
+        // 4. Update records and journal atomically
+        if let Some(target_id) = target_record_id {
+            if let Some(r) = records.iter_mut().find(|r| r.request.voice_record_id.as_deref() == Some(target_id)) {
+                r.admission_epoch = current_epoch;
+            }
+        } else {
+            for r in records.iter_mut().filter(|r| r.request.session_id.as_deref() == Some(session_id) && !r.projected) {
+                r.admission_epoch = current_epoch;
+            }
+        }
+        if let Some(sentinel) = records.iter_mut().find(|r| r.request.session_id.as_deref() == Some(session_id) && r.request.voice_record_id.is_none()) {
+            sentinel.admission_epoch = current_epoch;
+        }
+        self.save_records(records)?;
+
+        Ok(current_epoch)
+    }
 }
 
 #[async_trait::async_trait]
@@ -971,8 +1086,21 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
                 && !r.projected
         });
         if has_unsettled {
-            if records.iter().find(|r| r.request.session_id == request.session_id).is_some_and(|r| r.admission_epoch != epoch) {
-                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            let sentinel_epoch = records.iter()
+                .find(|r| r.request.session_id == request.session_id)
+                .map(|r| r.admission_epoch);
+            if let Some(recorded_epoch) = sentinel_epoch {
+                if recorded_epoch != epoch {
+                    self.reconcile_legitimate_epoch_advance(
+                        &mut records,
+                        session,
+                        &conversation_id,
+                        source_workspace.as_deref(),
+                        recorded_epoch,
+                        epoch,
+                        None,
+                    ).await?;
+                }
             }
         } else if let Some(sentinel) = records.iter_mut().find(|r| r.request.session_id == request.session_id && r.request.voice_record_id.is_none()) {
             sentinel.admission_epoch = epoch;
@@ -1026,6 +1154,8 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         let mut records=self.read_records()?;
         let admission_epoch;
         let user_message_id;
+        let source_workspace;
+        let session_id;
         {
             let record=records.iter_mut().find(|r|r.request.voice_record_id==request.voice_record_id)
                 .ok_or(VoiceDialogueRecorderError::Conflict)?;
@@ -1037,8 +1167,27 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             record.message_id = Some(mid.clone());
             user_message_id = mid;
             admission_epoch = record.admission_epoch;
+            source_workspace = record.source_workspace.clone();
+            session_id = record.request.session_id.clone().unwrap_or_default();
         }
+        let mut admission_epoch = admission_epoch;
         self.save_records(&records)?; // Never regenerate an answer when transcript projection fails.
+
+        let current_state = self.conversation_service.conversation_repo()
+            .get_turn_admission_state(&self.user_id, conversation_id).await
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        let current_epoch = current_state.epoch;
+        if current_epoch != admission_epoch {
+            admission_epoch = self.reconcile_legitimate_epoch_advance(
+                &mut records,
+                &session_id,
+                conversation_id,
+                source_workspace.as_deref(),
+                admission_epoch,
+                current_epoch,
+                request.voice_record_id.as_deref(),
+            ).await?;
+        }
 
         let decision=nomifun_api_types::voice::parse_voice_decision(assistant_content).map_err(|_|VoiceDialogueRecorderError::DecisionInvalid)?;
         if decision.intent_type == nomifun_api_types::voice::VoiceIntentType::Ignore {
@@ -1046,11 +1195,20 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             return self.save_records(&records);
         }
         if decision.intent_type == nomifun_api_types::voice::VoiceIntentType::TaskControl {
-            let current_epoch = self.conversation_service.conversation_repo()
+            let current_state = self.conversation_service.conversation_repo()
                 .get_turn_admission_state(&self.user_id, conversation_id).await
-                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
+                .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+            let current_epoch = current_state.epoch;
             if current_epoch != admission_epoch {
-                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+                admission_epoch = self.reconcile_legitimate_epoch_advance(
+                    &mut records,
+                    &session_id,
+                    conversation_id,
+                    source_workspace.as_deref(),
+                    admission_epoch,
+                    current_epoch,
+                    request.voice_record_id.as_deref(),
+                ).await?;
             }
             let raw_user_text = request.raw_user_text.as_deref().unwrap_or("").trim();
             if !raw_user_text.is_empty() {
@@ -1075,11 +1233,20 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
             .or(decision.understood_request.as_deref())
             .unwrap_or_default().to_owned();
 
-        let current_epoch = self.conversation_service.conversation_repo()
+        let current_state = self.conversation_service.conversation_repo()
             .get_turn_admission_state(&self.user_id, conversation_id).await
-            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        let current_epoch = current_state.epoch;
         if current_epoch != admission_epoch {
-            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            admission_epoch = self.reconcile_legitimate_epoch_advance(
+                &mut records,
+                &session_id,
+                conversation_id,
+                source_workspace.as_deref(),
+                admission_epoch,
+                current_epoch,
+                request.voice_record_id.as_deref(),
+            ).await?;
         }
 
         let raw_user_text = request.raw_user_text.as_deref().unwrap_or("").trim();
@@ -1125,11 +1292,20 @@ impl VoiceDialogueRecorder for ConversationVoiceDialogueRecorder {
         }
 
         // Busy append fallback (or omitted optional display fields):
-        let current_epoch = self.conversation_service.conversation_repo()
+        let current_state = self.conversation_service.conversation_repo()
             .get_turn_admission_state(&self.user_id, conversation_id).await
-            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?.epoch;
+            .map_err(|e| VoiceDialogueRecorderError::WriteFailed(e.to_string()))?;
+        let current_epoch = current_state.epoch;
         if current_epoch != admission_epoch {
-            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
+            admission_epoch = self.reconcile_legitimate_epoch_advance(
+                &mut records,
+                &session_id,
+                conversation_id,
+                source_workspace.as_deref(),
+                admission_epoch,
+                current_epoch,
+                request.voice_record_id.as_deref(),
+            ).await?;
         }
 
         if !raw_user_text.is_empty() {

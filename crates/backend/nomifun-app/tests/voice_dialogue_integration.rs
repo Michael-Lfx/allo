@@ -2194,3 +2194,185 @@ async fn task_control_defers_display_until_the_real_task_result() {
     assert_eq!(right, 1, "the user question must be persisted");
     assert_eq!(left, 0, "no assistant placeholder may be persisted before the real task result");
 }
+
+async fn run_host_epoch_regression_case(overlap: bool) -> bool {
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    let a = VoiceDialogueRequest::scoped("session-A", "turn-A", "first task");
+    let p = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p else { panic!("new A must be Ready") };
+
+    const TASK: &str = r#"{"intent_type":"agent_task","task_goal":"first task","spoken_ack":"accepted","requires_confirmation":false}"#;
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"second reply"}"#;
+
+    recorder.record_pair(&id, &a, TASK).await.unwrap();
+    let repo = svc.conversation_repo();
+    let epoch = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    let claim = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        OWNER_CONST, &id, "operation-A", &nomifun_common::MessageId::new().into_string(),
+        r#"{"content":"first task"}"#, epoch, nomifun_common::now_ms(),
+    ).await.unwrap();
+    assert!(claim.claimed_new);
+
+    let admitted = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    let b = VoiceDialogueRequest::scoped("session-A", "turn-B", "second input while A completes");
+
+    if overlap {
+        println!("B preflight while A running = {:?}", recorder.preflight(&b).await.unwrap());
+    }
+
+    let completion = nomifun_db::TurnReceiptCompletion {
+        operation_id: "operation-A".into(),
+        kind: "turn".into(),
+        request_payload: r#"{"content":"first task"}"#.into(),
+        result_ok: true,
+        result_text: Some("task A result".into()),
+        result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
+    };
+    let finalized = repo.finalize_turn(OWNER_CONST, &id, Some(&completion), nomifun_common::now_ms()).await.unwrap();
+    let finished = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    println!("overlap={overlap} actual DB admission={epoch}->{admitted}->{finished}, finalization={finalized:?}");
+
+    if !overlap {
+        println!("B preflight after A finished = {:?}", recorder.preflight(&b).await.unwrap());
+    }
+
+    let saved = recorder.record_pair(&id, &b, CHAT).await;
+    println!("B record_pair={saved:?}");
+
+    let c = VoiceDialogueRequest::scoped("session-A", "turn-C", "third input");
+    let next = recorder.preflight(&c).await;
+    println!("C preflight={next:?}");
+
+    let messages = svc.list_messages(OWNER_CONST, &id, Default::default()).await.unwrap();
+    let persisted_count = messages.items.iter().filter(|m| m.content.to_string().contains("second input")).count();
+    println!("B text persisted count={persisted_count}");
+
+    let okay = saved.is_ok() && next.is_ok() && persisted_count == 1;
+    db.close().await;
+    okay
+}
+
+#[tokio::test]
+async fn test_host_epoch_control_case() {
+    assert!(run_host_epoch_regression_case(false).await, "Control case (sequential finalize then B) must pass");
+}
+
+#[tokio::test]
+async fn test_host_epoch_overlap_f2_resolution() {
+    assert!(run_host_epoch_regression_case(true).await, "Overlap case (A Running->Finalize overlaps B preflight) must heal epoch and persist B, unblocking C");
+}
+
+#[tokio::test]
+async fn test_host_epoch_rejection_on_arbitrary_revision_jump() {
+    // Verifies that arbitrary epoch jump (> 2) is strictly rejected (F-04 boundary)
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    let a = VoiceDialogueRequest::scoped("session-A", "turn-A", "input");
+    let p = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p else { panic!("Ready") };
+
+    // Jump epoch by 5 in DB
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 5 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"reply"}"#;
+    let res = recorder.record_pair(&id, &a, CHAT).await;
+    assert!(matches!(res, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Arbitrary revision jump must be strictly rejected, got: {res:?}");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn test_host_epoch_rejection_on_workspace_mismatch() {
+    // Verifies that workspace alteration is strictly rejected (F-04 boundary)
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    let a = VoiceDialogueRequest::scoped("session-A", "turn-A", "input");
+    let p = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p else { panic!("Ready") };
+
+    // Alter workspace in DB
+    let other_ws = other_dir.path().to_str().unwrap();
+    sqlx::query("UPDATE conversations SET extra = json_set(COALESCE(extra, '{}'), '$.workspace', ?) WHERE conversation_id = ?")
+        .bind(other_ws).bind(&id).execute(db.pool()).await.unwrap();
+
+    // Advance epoch by 1
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 1 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"reply"}"#;
+    let res = recorder.record_pair(&id, &a, CHAT).await;
+    assert!(matches!(res, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Workspace mismatch must be strictly rejected, got: {res:?}");
+    db.close().await;
+}
