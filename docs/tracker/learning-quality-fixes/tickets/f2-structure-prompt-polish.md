@@ -2,7 +2,7 @@
 id: f2
 title: "结构生成模型面打磨——door_list 输出示例 / one_name 报全与自检 / 块数下限弹性"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -111,3 +111,21 @@ part_of: ../map.md
   类边缘块的实证）。
 
 施工图：[blueprints/2026-10-30-f2-structure-prompt-polish.md](../blueprints/2026-10-30-f2-structure-prompt-polish.md)。
+
+## 真机验收（2026-10-30，quality-fixes-verify）与收口
+
+**判据全过（status: closed）。**
+
+- structure smoke EXIT=0：`blocks=46 warnings=0`，OK 读数行含 `warnings=`
+  字段（⑥ 收口项落地）。
+- **整行抄写指纹零出现**：smoke + 旅程两臂共 4+ 次结构生成，日志零
+  「必须是 G<数字> 形」；全程唯一一次条款打回 = `gd.no_schedule`（无关
+  条款），重试一轮自愈。
+- 如实记档：本轮真机 blocks 抽签 46，25–39 warn 非零路径未踩到——由单测
+  24 红/25 过/31 warn/39 warn 覆盖；下次小目标课真机时目验 `warnings≥1`。
+
+评审修复批（`010a7d4e4`）：①蓝图要求的「整行注入行作 door 字符串 → 红」
+防回归红样补钉（spec 缺口）；②缺陷回写闭环——structure-repair.md L35
+「块数 40–100」未随三档同步（走查没抓到跨文件短语重复），已改三档行文 +
+golden/structure-repair.md 重生成（幂等复核）+ repair 断言随批。修复批后
+`cargo test -p nomifun-learning` 707 全绿。

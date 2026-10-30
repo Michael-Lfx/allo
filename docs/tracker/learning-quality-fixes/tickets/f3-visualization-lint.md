@@ -118,3 +118,36 @@ part_of: ../map.md
   FIGURE_REPAIR 端点只支持 svg/jsxgraph 不含 mermaid（completer.rs:66-103），不扩。
 
 施工图：[blueprints/2026-10-30-f3-viz-lint.md](../blueprints/2026-10-30-f3-viz-lint.md)。
+
+## 真机验收（2026-10-30，quality-fixes-verify）与实施备注记档
+
+**判据全过。**content smoke 两课（a3/b3）EXIT=0 判据全过：
+
+- `viz_lint read-out: viz_lint_events=0` 双零——两课零打回（读数非门禁，
+  在场即判据面）；audit findings 零 viz_block_lint warning。
+- 瞬断注入臂恢复设计语义：`injected_remaining=0 attempts_used=2
+  stop_reason=success`。
+
+**实施备注四条（记档，①③为方向级留裁决）：**
+
+1. `fix_mermaid_quotes` 洗白效应：法证原行的单行 `[`..`]` 特异形态经引号
+   改写后落入引号豁免段过闸（引号改写先于 lint 是蓝图禁区保持的顺序）。
+   lint 层红样仍钉死原行；无闭合 `]`/多行失衡/引号奇数形态照拦。若真机
+   后续出现该形态漏网成规模，再议顺序翻转（方向级）。
+2. flowchart 裸边端点（`A --> B` 无形状）按蓝图伪代码从紧记
+   MermaidNodeUndefined——严于 mermaid 语法（合法隐式节点），恰合
+   VISUAL_STANDARD 质量 bar，绿样钉住。
+3. 终检兜底可达性：op 面硬拒使正常路径草稿内无坏块，sweep 只覆盖旁路形态
+   （重规划保留/跨版本续跑）；「模型反复交坏图」按 A3 由循环预算收口为整课
+   失败——真机若现「需末轮收容」语义再议（方向级，未擅动）。
+4. **存量发现（非本票引入）**：传统线 demo 节降级保底（lesson.rs:295-327/561
+   visual=无 重写）对 demo kind 恒失败（demo 硬门 vs 纯文字降级稿）= 死臂，
+   f3 保持原语义零新机制；修复需方向裁决，留后续票。
+
+**验收解锁的 e4 存量缺陷修复（`ddb464348`）**：flaky_provider 计数下溢——
+无条件 `fetch_sub` 在计数归零后回绕 usize::MAX，掐流永不恢复，content 档
+三试耗尽 EXIT=2（真机实录「还剩 18446744073709551611 次」）。e4 关票真机走
+HTTP 旅程未踩注入臂，故存量未曝；与本票零代码关联（f3 未触碰该文件）。
+修复 = `compare_exchange` 仅在 >0 时扣减 + 归零恢复透传回归钉单测；修复后
+注入臂恢复 attempts_used=2/success。提交 `c7048d231`/`515ac83c1`/
+`b701cd1a2`（票本体）。

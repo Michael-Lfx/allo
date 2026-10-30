@@ -56,3 +56,20 @@
   查砍）；learnhub 有 svg 规格闸先例（cc.svg.spec），首创仅 mermaid 语法闸。
 - **实施编排**：单分支 `feat/learning-quality-fixes`（基 feat/learn0928 尖端）
   三票顺序、每票一提交；施工图三份（blueprints/，可并发领票）。
+
+## 波次关闭（2026-10-30）
+
+- **三票全部真机验收过、status closed**。integration 尖端 `ddb464348`
+  （含 fixer 修复批 010a7d4e4/2990a89b7 与 e4 存量缺陷修复 ddb464348）。
+  单测基线：learning 707 / ai-agent 1123（+flaky 回归钉）/ workspace check 净。
+- **真机判据**（quality-fixes-verify/ 留档）：f1 旅程=声明 G1+G2 4 概念
+  minted→二批复用声明概念发布、两份 server 日志零 provenance 死亡指纹
+  （e2e2 基线同旅程确定性双死的对照面）；f2=4+ 次结构生成零「G<数字> 形」
+  整行抄写、smoke EXIT=0 且 `warnings=` 读数在场（46 块未踩 warn 档，如实
+  记档）；f3=content 两课 EXIT=0、`viz_lint_events=0` 双零。
+- **验收解锁的存量修复**：e4 flaky_provider 计数下溢（归零回绕掐流永不
+  恢复）——e4 关票真机走 HTTP 旅程未踩注入臂故未曝；ddb464348 修复+回归钉。
+- 并行真机的教训入册：多臂并发必挤兑 provider（480s 超时连环）——真机臂
+  一律严格串行（run-arms.sh 纪律）。
+- 后置票面（触发条件在 f3 备注）：fix_mermaid_quotes 顺序翻转、末轮收容
+  语义、传统线 demo 降级死臂——均方向级，真机复现再立票。
