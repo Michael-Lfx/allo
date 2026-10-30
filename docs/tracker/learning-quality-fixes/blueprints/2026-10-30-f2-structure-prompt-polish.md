@@ -139,3 +139,4 @@ prerequisite_doors（门口编号列表：只写编号本身，如 ["G1","G2"]�
 | 日期 | 类型 | 位置 | 变更 | 根因/触发 |
 |---|---|---|---|---|
 | 2026-10-30 | 修订（定稿前） | 全图 | v1 成图：Q3（25+warn+读数）/Q4（② 收窄）入图；票面落点勘误（structure_contract.rs） | grilling 2026-10-30 + 影响面核查 |
+| 2026-10-30 | 缺陷回写 | 禁区「只重生成一份金样」 | structure-repair.md L35「块数 40–100」漏随三档同步——修补提示词仍教旧下限；评审轴发现后由修复批 010a7d4e4 闭环（连带 golden/structure-repair.md 重生成） | **走查未覆盖跨文件短语重复**（goal-decomposition 与 structure-repair 同文条款只在单文件视角走查） |

@@ -111,3 +111,21 @@ part_of: ../map.md
   非门禁，追加打印即可。
 
 施工图：[blueprints/2026-10-30-f1-provenance-external-anchors.md](../blueprints/2026-10-30-f1-provenance-external-anchors.md)。
+
+## 真机验收（2026-10-30，quality-fixes-verify/journey-out）
+
+**判据全过。**复刻 e2e2 旅程（建课→结构+首批→声明 G1+G2→二次生长）：
+
+- 声明步真机过：G1+G2 → 4 概念 minted（分数化小数/分数化百分数/利息计算/
+  小数化分数），source=basis-declaration。
+- 二次生长**复用声明概念并发布**：图谱概念面 14 条含全部四个声明概念
+  （批二在教，声明后不可能由首批铸造）。
+- 两份 server 日志**零**「provenance table unusable」/「provenance validation
+  failed」/「degraded pass」——评审非降级通过。
+- 对照：e2e2 基线（learn0928 尖端）同旅程在此点**确定性双死降级**（f1 立票
+  法证）；同形状旅程现全程干净 = 放行域真机生效。
+
+实施备注（蓝图授权范围内）：ExternalAnchor 增 `name` 字段（4.1 明示「元素
+形状以实码为准」——service 落池 rulings 须从单源函数重建提名名→宿主）；
+`verify_reuse_rulings` 弃裁日志去 `course` 字段（蓝图定死双参，函数无课程
+上下文）。提交 `fc9cdd409`/`057c66d4a`。
