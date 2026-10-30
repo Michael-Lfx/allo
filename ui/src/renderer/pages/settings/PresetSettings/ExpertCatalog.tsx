@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@arco-design/web-react';
 import { Lightning } from '@icon-park/react';
@@ -15,8 +15,9 @@ import {
   EXPERT_PAGE_SIZE,
   expertCategoryParam,
   expertListErrorKind,
-  loadAllExperts,
+  expertListHasMore,
   localizedPair,
+  mergeExpertPage,
   localizedTags,
   type ExpertCategoryFilter,
   type ExpertListErrorKind,
@@ -82,12 +83,21 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
   const [keyword, setKeyword] = useState('');
   const [items, setItems] = useState<IExpertSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [errorKind, setErrorKind] = useState<ExpertListErrorKind | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [selected, setSelected] = useState<IExpertSummary | null>(null);
   const [pendingSlug, setPendingSlug] = useState<string | null>(null);
   const [installedSlugs, setInstalledSlugs] = useState<ReadonlySet<string>>(() => new Set());
+  const listSeq = useRef(0);
+  const inFlight = useRef(false);
+  const pageRef = useRef(1);
+  const itemsRef = useRef(items);
+  const filterRef = useRef({ keyword, category });
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  itemsRef.current = items;
+  filterRef.current = { keyword, category };
 
   useEffect(() => {
     const timer = window.setTimeout(() => setKeyword(searchQuery.trim()), 300);
@@ -157,35 +167,77 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
       .finally(() => setPendingSlug(null));
   };
 
-  useEffect(() => {
-    let cancelled = false;
+  const fetchExpertPage = (pageNumber: number, mode: 'replace' | 'append') => {
+    if (mode === 'append' && inFlight.current) return;
+    const seq = mode === 'replace' ? ++listSeq.current : listSeq.current;
+    const filter = filterRef.current;
+    inFlight.current = true;
     setLoading(true);
-    setErrorKind(null);
-    setItems([]);
-    setTruncated(false);
-    void loadAllExperts((page) =>
-      ipcBridge.cloud.listExperts.invoke({
-        page,
+    if (mode === 'replace') {
+      pageRef.current = 1;
+      setErrorKind(null);
+      setItems([]);
+      itemsRef.current = [];
+      setHasMore(false);
+      setTruncated(false);
+    }
+    void ipcBridge.cloud.listExperts
+      .invoke({
+        page: pageNumber,
         pageSize: EXPERT_PAGE_SIZE,
-        keyword: keyword || undefined,
-        categoryId: expertCategoryParam(category),
+        keyword: filter.keyword || undefined,
+        categoryId: expertCategoryParam(filter.category),
       })
-    )
-      .then((result) => {
-        if (cancelled) return;
-        setItems(result.items);
-        setTruncated(result.truncated);
+      .then((data) => {
+        if (seq !== listSeq.current) return;
+        const pageLength = data.list?.length ?? 0;
+        const total = typeof data.total === 'number' ? data.total : null;
+        let loadedCount = 0;
+        setItems((current) => {
+          const merged = mergeExpertPage(mode === 'replace' ? [] : current, data.list);
+          itemsRef.current = merged;
+          loadedCount = merged.length;
+          return merged;
+        });
+        const more = expertListHasMore(loadedCount, pageLength, total, pageNumber);
+        pageRef.current = pageNumber;
+        setHasMore(more.hasMore);
+        setTruncated(more.truncated);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setErrorKind(expertListErrorKind(error));
+        if (seq !== listSeq.current) return;
+        if (mode === 'replace') setErrorKind(expertListErrorKind(error));
+        setHasMore(false);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (seq !== listSeq.current) return;
+        inFlight.current = false;
+        setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    fetchExpertPage(1, 'replace');
     return () => {
-      cancelled = true;
+      listSeq.current += 1;
+      inFlight.current = false;
     };
+    // The page loader closes over the latest filter; restarting only on those inputs avoids a request loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, keyword, reloadKey]);
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore || loading) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting) || inFlight.current) return;
+      fetchExpertPage(pageRef.current + 1, 'append');
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+    // Re-arm only after the current page settles, so a visible sentinel cannot overlap the in-flight request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasMore, items.length, loading]);
 
   const errorText =
     errorKind === 'login'
@@ -229,6 +281,10 @@ const ExpertCatalog: React.FC<ExpertCatalogProps> = ({ highlightId, onHighlightC
             />
           ))}
         </div>
+      ) : null}
+      {hasMore ? <div ref={sentinelRef} className='h-1px' aria-hidden='true' /> : null}
+      {loading && items.length > 0 ? (
+        <div className='text-12px text-t-tertiary'>{t('common.loading', { defaultValue: 'Loading' })}</div>
       ) : null}
       {truncated ? (
         <div className='text-12px text-t-tertiary'>

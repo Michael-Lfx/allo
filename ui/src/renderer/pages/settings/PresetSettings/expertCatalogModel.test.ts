@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { IExpertListResponse } from '@/common/adapter/ipcBridge';
 import {
   EXPERT_CATEGORIES,
+  EXPERT_MAX_PAGES,
   EXPERT_PAGE_SIZE,
   expertCategoryParam,
   expertDetailErrorKind,
@@ -9,7 +10,9 @@ import {
   expertTypeParam,
   formatZipSize,
   displayableExpertAvatar,
+  expertListHasMore,
   loadAllExperts,
+  mergeExpertPage,
   localizedPair,
   localizedTags,
   readExpertPeople,
@@ -67,6 +70,21 @@ describe('expert catalog model', () => {
     ]);
     expect(expertCategoryParam('all')).toBeUndefined();
     expect(expertCategoryParam('02-Engineering')).toBe('02-Engineering');
+  });
+
+  test('stops a page when the total is reached and caps a full catalog', () => {
+    expect(expertListHasMore(24, 24, 40, 1).hasMore).toBe(true);
+    expect(expertListHasMore(24, 24, 24, 1)).toEqual({ hasMore: false, truncated: false });
+    expect(expertListHasMore(40, 16, 40, 2)).toEqual({ hasMore: false, truncated: false });
+    expect(expertListHasMore(EXPERT_PAGE_SIZE, EXPERT_PAGE_SIZE, 10_000, EXPERT_MAX_PAGES).truncated).toBe(true);
+    const merged = mergeExpertPage(
+      [{ slug: 'a', name: 'A' }],
+      [
+        { slug: 'a', name: 'A' },
+        { slug: ' b ', name: 'B' },
+      ]
+    );
+    expect(merged.map((item) => item.slug)).toEqual(['a', 'b']);
   });
 
   test('loads every page until the catalog is exhausted', async () => {

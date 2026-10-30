@@ -173,6 +173,37 @@ export const expertDetailErrorKind = (error: unknown): ExpertDetailErrorKind => 
   return 'failed';
 };
 
+export function mergeExpertPage(
+  current: IExpertSummary[],
+  pageItems: IExpertSummary[] | undefined
+): IExpertSummary[] {
+  const seen = new Set(current.map((item) => item.slug));
+  const next = current.slice();
+  for (const item of pageItems ?? []) {
+    const slug = item.slug?.trim();
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    next.push({ ...item, slug });
+  }
+  return next;
+}
+
+/** One full page can continue; a short page, a reached total, or the page cap stops. */
+export function expertListHasMore(
+  loadedCount: number,
+  pageLength: number,
+  total: number | null | undefined,
+  page: number,
+  maxPages = EXPERT_MAX_PAGES
+): { hasMore: boolean; truncated: boolean } {
+  const reachedTotal = typeof total === 'number' && loadedCount >= total;
+  if (pageLength <= 0 || pageLength < EXPERT_PAGE_SIZE || reachedTotal) {
+    return { hasMore: false, truncated: false };
+  }
+  if (page >= maxPages) return { hasMore: false, truncated: true };
+  return { hasMore: true, truncated: false };
+}
+
 export async function loadAllExperts(
   fetchPage: (page: number) => Promise<IExpertListResponse>,
   maxPages = EXPERT_MAX_PAGES
