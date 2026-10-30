@@ -295,7 +295,8 @@ async fn cancel_learning_graph_generation(
     }))))
 }
 
-/// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。
+/// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。e3 起也是
+/// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
