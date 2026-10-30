@@ -25,14 +25,10 @@ pub struct FlakyStreamProvider {
 
 impl FlakyStreamProvider {
     /// 包装真实 provider；`remaining` 由调用方持有（smoke 在生成前写入注入
-    /// 次数，事后读 0 = 全部注入被吸收）。
+    /// 次数，事后读 0 = 全部注入被吸收——计数器由调用方直读，包装不再另设
+    /// 读数口）。
     pub fn new(inner: Arc<dyn LlmProvider>, remaining: Arc<AtomicUsize>) -> Arc<Self> {
         Arc::new(Self { inner, remaining })
-    }
-
-    /// 已注入次数的读数（smoke 判据面：0 = 注入全部被吸收）。
-    pub fn remaining(&self) -> usize {
-        self.remaining.load(Ordering::SeqCst)
     }
 }
 

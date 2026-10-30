@@ -82,6 +82,8 @@ pub use learning_graph::structure_contract::{
     validate_structure as validate_structure_artifact,
 };
 pub use learning_graph::structure_gen::StructureInput;
+/// 门位标签读数单源（e2）：快照 info/warn 行与 smoke structure 档 OK 行共用。
+pub use learning_graph::structure_gen::count_door_labeled_blocks;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, ConceptAuditCycle,

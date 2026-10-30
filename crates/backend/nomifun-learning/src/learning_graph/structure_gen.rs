@@ -168,6 +168,27 @@ pub(crate) fn door_list_markdown(terrain: &Value) -> String {
         .join("\n")
 }
 
+/// 门位标签读数（e2 单源）：带**非空** `door_refs` 的块数——生成门面落库后
+/// 的零标注 warn/info 读数与 smoke structure 档 OK 行共用本函数（读数数字
+/// 逐字一致，零第二真相）；改口径只动这里。
+pub fn count_door_labeled_blocks(structure: &Value) -> usize {
+    structure
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .get("door_refs")
+                        .and_then(Value::as_array)
+                        .is_some_and(|refs| !refs.is_empty())
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// 单次尝试：地形 → 结构 串行（e2 判定输入通道：结构生成必须看见门口清单
 /// ——编号+判据是 door_refs 门位标签与课程门逐字全收的判定源，learnhub #161
 /// 同构），双契约门 + 门口对账，全成才算过。
@@ -585,6 +606,24 @@ mod tests {
             4,
             "early stop after the second identical fingerprint: 2 rounds x 2 calls, not 6"
         );
+    }
+
+    /// 门位标签读数（e2 单源）：只计带非空 door_refs 的块——空数组、缺键、
+    /// 非 door_refs 键一律不计；无 blocks 键 = 0（与快照 info/warn 与 smoke
+    /// OK 行共用的同一读数口径）。
+    #[test]
+    fn count_door_labeled_blocks_counts_only_non_empty_refs() {
+        let structure = json!({
+            "blocks": [
+                { "name": "块A", "slug": "block-a", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1"] },
+                { "name": "块B", "slug": "block-b", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] },
+                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "进阶", "note": "n", "door_refs": [] },
+                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "高级", "note": "n" }
+            ]
+        });
+        assert_eq!(count_door_labeled_blocks(&structure), 2);
+        assert_eq!(count_door_labeled_blocks(&json!({})), 0);
+        assert_eq!(count_door_labeled_blocks(&golden_structure()), 0);
     }
 
     /// 快照信封：version/generated_at/双产物成形，且是 JSON 对象（列 CHECK）。

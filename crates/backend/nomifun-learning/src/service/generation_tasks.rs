@@ -1591,7 +1591,11 @@ impl LearningCompleter for CancellationCompleter<'_> {
 /// 用量计数包装 completer（e1 相位耗时读数，与 [`CancellationCompleter`]
 /// 同层）：委托内层并在每次调用后上报增量——调用数恒 +1（失败调用也是
 /// 花掉的延迟），输入/输出字符量只在 Ok 时计（`chars().count()` 全字符，
-/// 含空白）。与取消包装的组装次序（两条循环一致）：取消包在外、计数包在
+/// 含空白）。与课时侧 nomifun-ai-agent `learning_loop::CountingProvider` 是
+/// **跨 crate 同职能双实现**（单源意图 = completer/provider 形状差异——
+/// 这里是一次式 complete 接缝，彼处是流事件接缝，不强行合并）；改动用量
+/// 口径（何时计调用数、字符量怎么算）时两处同步。与取消包装的组装次序
+/// （两条循环一致）：取消包在外、计数包在
 /// 内——被取消竞速丢弃的调用不上报，观测面如实反映「活着走完的调用」。
 pub(crate) struct CountingCompleter<'a> {
     inner: &'a dyn LearningCompleter,

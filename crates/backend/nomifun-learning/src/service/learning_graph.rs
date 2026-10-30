@@ -275,23 +275,11 @@ impl LearningService {
                 // 零标注读数（e2，learnhub check_door_references 同款 warn-only，
                 // 刻意不加机械门）：门口对账已过、地形门口在场，却零块带门位
                 // 标签——过门自检与已会声明将无命中（静默失活）。读数不拒收
-                // 不回炉；标注块数随 info 行透出（smoke structure 档对照面）。
-                let labeled = artifacts
-                    .structure
-                    .get("blocks")
-                    .and_then(|blocks| blocks.as_array())
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter(|block| {
-                                block
-                                    .get("door_refs")
-                                    .and_then(serde_json::Value::as_array)
-                                    .is_some_and(|refs| !refs.is_empty())
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0);
+                // 不回炉；标注块数随 info 行透出（smoke structure 档对照面，
+                // 口径单源 = count_door_labeled_blocks）。
+                let labeled = crate::learning_graph::structure_gen::count_door_labeled_blocks(
+                    &artifacts.structure,
+                );
                 if doors > 0 && labeled == 0 {
                     tracing::warn!(
                         course = course_id.as_str(),

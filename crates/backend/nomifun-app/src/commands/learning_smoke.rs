@@ -1183,20 +1183,9 @@ async fn run_structure(
     let doors = terrain["doors"].as_array().map(Vec::len).unwrap_or(0);
     // 门位标签读数（e2）：带非空 door_refs 的块数——零标注 warn 在生成门面落
     // 日志，这里随 OK 行并排透出（对照 learnhub 3/21 低标注基线的读数面）。
-    let labeled = structure["blocks"]
-        .as_array()
-        .map(|blocks| {
-            blocks
-                .iter()
-                .filter(|block| {
-                    block
-                        .get("door_refs")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|refs| !refs.is_empty())
-                })
-                .count()
-        })
-        .unwrap_or(0);
+    // 口径单源 = nomifun-learning 的 count_door_labeled_blocks（与快照
+    // info/warn 行同一函数，读数数字逐字一致）。
+    let labeled = nomifun_learning::count_door_labeled_blocks(&structure);
     // e3 声明窗口硬判据：结构完成后零生长任务在册——建课/结构完成不自动
     // 点火首批，生长只由用户显式触发（学习窗口「开始学习」= POST grow）。
     // 本档驱动 run_structure_generation 直达管线，判据护栏防的是未来把生长

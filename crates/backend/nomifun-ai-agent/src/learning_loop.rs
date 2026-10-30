@@ -123,9 +123,12 @@ fn event_output_chars(event: &LlmEvent) -> u64 {
     }
 }
 
-/// 用量计数 provider 包装（e1 相位耗时读数，课时引擎专用；与学习侧
-/// [`crate::service::CountingCompleter`] 同职能）：每次 `stream()` 计一次
-/// LLM 调用，输入 = 请求字符量，输出 = 流内文本/工具参数字符量。观测面
+/// 用量计数 provider 包装（e1 相位耗时读数，课时引擎专用）：每次 `stream()`
+/// 计一次 LLM 调用，输入 = 请求字符量，输出 = 流内文本/工具参数字符量。与
+/// nomifun-learning 的 `CountingCompleter` 是**跨 crate 同职能双实现**（单源
+/// 意图 = 各自 crate 的 provider/completer 形状差异——这里是流事件接缝，
+/// 彼处是一次式 complete 接缝，不强行合并）；改动用量口径（何时计调用数、
+/// 字符量怎么算）时两处同步。观测面
 /// 零语义——上报闭包（任务注册表的 [`nomifun_learning::LlmUsageMeter`]）
 /// 缺席时不装配本包装。取消语义不在此层（课时循环未接取消令牌，见
 /// ADR-0004 显式差异）；并发安全（e4 段写并行的前置）由原子累计承担。
