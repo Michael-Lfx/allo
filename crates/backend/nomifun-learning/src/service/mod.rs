@@ -123,6 +123,9 @@ pub struct LearningService {
     /// 最近一次生长的重试读数（attempts_used/stop_reason，二轮 t1 smoke
     /// 读数面）。内存态，仅诊断。
     growth_run_stats: Arc<Mutex<Option<GrowthRunStats>>>,
+    /// 最近一次课时生成的重试读数（e4 门面重试环：attempts_used/stop_reason
+    /// /last_error，smoke content 档瞬断臂判据数据源）。内存态，仅诊断。
+    lesson_run_stats: Arc<Mutex<Option<LessonRunStats>>>,
     /// 铸名门外部证据搜索提供方（m11，ADR-0030 门内增强）：`None` = 零搜
     /// 索（fail-open 无证据）。组合根接线 DDG 无 key 提供方；开关
     /// `NOMI_LEARNING_MINT_RESEARCH` 在机制内再闸一道。
@@ -178,6 +181,7 @@ impl LearningService {
             agent_course_jobs: Arc::new(Mutex::new(HashMap::new())),
             generation_tasks: Arc::new(GenerationTaskRegistry::new()),
             growth_run_stats: Arc::new(Mutex::new(None)),
+            lesson_run_stats: Arc::new(Mutex::new(None)),
             mint_search: Arc::new(RwLock::new(None)),
             mint_research_stats: Arc::new(Mutex::new(None)),
             companion_xp_sink: Arc::new(RwLock::new(None)),
@@ -551,6 +555,8 @@ mod review;
 mod tags;
 mod xp;
 
+pub use lesson::{LessonGenerationAccepted, LessonRunStats};
+
 pub use xp::CompanionXpSink;
 
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档把判底/作答原文注册进
@@ -558,9 +564,10 @@ pub use xp::CompanionXpSink;
 pub use open_judge::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};
 
 pub(crate) use generation_tasks::{
-    CANCELLED_MESSAGE, CancellationCompleter, GenerationTaskGuard, GenerationTaskRegistry,
-    GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE, KIND_STRUCTURE,
-    KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST, STATE_RUNNING,
+    CANCELLED_MESSAGE, CountingCompleter, CancellationCompleter, GenerationTaskGuard,
+    GenerationTaskRegistry, GenerationTaskView, KIND_GROWTH, KIND_LESSON, KIND_OUTLINE,
+    KIND_STRUCTURE, KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST,
+    STATE_RUNNING,
 };
 
 #[cfg(test)]

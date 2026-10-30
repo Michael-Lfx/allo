@@ -44,6 +44,7 @@ import { CourseArchivedBadge, CourseRenameButton } from './CourseCard';
 import LearningModelSelector, { useLearningAutogenModel } from './LearningModelSelector';
 import ContentWidthToggle, { useWideContentLayout } from './ContentWidthToggle';
 import { StructureGraphTab } from './structure/StructureGraphTab';
+import { DeclarationWindow } from './structure/DeclarationWindow';
 
 const { Text, Title, Paragraph } = Typography;
 
@@ -332,6 +333,9 @@ const LearningGraphWorkspace: React.FC<{
   }
   const readyCount = graph.ready_count;
   const readyStockFull = readyCount >= graph.ready_target;
+  // 声明窗口（e3）：零节点（结构完成、首批未生长）时学习 Tab 落在门口
+  // 声明画面——生长不再自动抢跑，首批由「开始学习」显式触发。
+  const zeroNodes = lessons.length === 0;
 
   return (
     <div className='app-page-shell h-full w-full box-border overflow-y-auto'>
@@ -477,6 +481,21 @@ const LearningGraphWorkspace: React.FC<{
 
       <Tabs activeTab={activeTab} onChange={setActiveTab} type='line' className='flex min-h-0 flex-1 flex-col [&_.arco-tabs-content]:flex-1 [&_.arco-tabs-content]:pt-8px'>
         <Tabs.TabPane key='study' title={t('learning.learningGraphTabStudy')}>
+          {zeroNodes ? (
+            <DeclarationWindow
+              view={structure}
+              structureRunning={structureRunning}
+              structureError={structureError}
+              basis={basis}
+              declaring={declaringBasis}
+              revoking={revokingBasis}
+              onDeclare={(doors) => void declareBasis(doors)}
+              onRevoke={() => void revokeBasis()}
+              starting={growing}
+              growthRunning={graph.growth_running}
+              onStart={() => void grow()}
+            />
+          ) : (
           <div className='flex min-h-0 gap-12px'>
             <aside className='flex w-280px shrink-0 flex-col gap-10px'>
               {/* 主推荐卡：当前应学的节点——最重要的学习入口，点击即进入学习 */}
@@ -597,6 +616,7 @@ const LearningGraphWorkspace: React.FC<{
               )}
             </section>
           </div>
+          )}
         </Tabs.TabPane>
         <Tabs.TabPane key='history' title={t('learning.learningGraphTabHistory')}>
           <GraphHistory courseId={detail.course.id} enrollmentKey={detail.enrollment_id} />

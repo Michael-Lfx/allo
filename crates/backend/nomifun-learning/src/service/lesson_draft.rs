@@ -166,6 +166,8 @@ mod tests {
             graph: None,
             goal: None,
             forbidden_concepts: String::new(),
+            usage: None,
+            retry_feedback: None,
         }
     }
 

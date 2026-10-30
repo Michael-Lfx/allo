@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use axum::extract::{Extension, Json, Path, Query, RawQuery, State};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use nomifun_api_types::ApiResponse;
@@ -295,7 +296,8 @@ async fn cancel_learning_graph_generation(
     }))))
 }
 
-/// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。
+/// 手动触发一次生长（就绪 < 目标即补到 7；已在生长中报冲突）。e3 起也是
+/// 零节点课程的首批触发面：学习窗口「开始学习」调这里（force 恒过停摆臂）。
 async fn grow_learning_graph(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
@@ -587,19 +589,42 @@ async fn lesson_detail(
     )))
 }
 
+/// `?wait=true` 同步臂查询参数（e4 双模化）：缺省 = 异步（202 + 任务键，
+/// 任务脱离请求生命周期，断连不取消）；`wait=true` = 既有同步语义（分钟级
+/// 阻塞直至发布——冒烟/脚本的回归面）。
+#[derive(Debug, Deserialize)]
+struct LessonGenerateQuery {
+    wait: Option<bool>,
+}
+
+/// e4 双模化：默认异步——登记 j03 任务注册表（kind=lesson）即回 202 +
+/// 任务键，生成体在脱离任务里跑完（learnhub「分钟级任务不占请求生命周期」
+/// 红线）；前端轮询 `GET /api/learning/generation-tasks`（响应体 `poll`
+/// 字段）或听 `learning.lesson-generation` WS 流。`?wait=true` 保留同步臂。
 async fn generate_lesson(
     State(state): State<LearningRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
+    Query(query): Query<LessonGenerateQuery>,
     Json(request): Json<GenerateLessonRequest>,
-) -> Result<Json<ApiResponse<crate::models::LessonView>>, AppError> {
+) -> Result<axum::response::Response, AppError> {
     let id = parse_id::<LearningLessonId>(id)?;
-    Ok(Json(ApiResponse::ok(
-        state
+    if query.wait.unwrap_or(false) {
+        // 同步臂：返回已发布的课时视图（历史响应形状零变化）。
+        let view = state
             .service
             .generate_lesson_content(&user.id, &id, &request)
-            .await?,
-    )))
+            .await?;
+        return Ok(Json(ApiResponse::ok(view)).into_response());
+    }
+    // 默认异步臂：202 Accepted + 任务键。
+    let accepted = state
+        .service
+        .start_lesson_generation(&user.id, &id, &request)
+        .await?;
+    let mut response = Json(ApiResponse::ok(accepted)).into_response();
+    *response.status_mut() = axum::http::StatusCode::ACCEPTED;
+    Ok(response)
 }
 
 async fn rewrite_lesson_section(

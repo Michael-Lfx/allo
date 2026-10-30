@@ -80,6 +80,110 @@ fn sort_supplements_by_path(fragments: &mut [LessonExcerpt]) {
     fragments[primary_len..].sort_by(|left, right| left.path.cmp(&right.path));
 }
 
+// ── 门面重试环（e4：learnhub contentgen facade 的 MAX_ATTEMPTS 形态移植）──
+//
+// E2E 实录：瞬断流错误在 provider 层仅一次重试（loop_core 的开流单重试），
+// 第二断即 BAD_GATEWAY 裸抛调用方，33s 失败尝试直接回错误页。本环在
+// 「课时循环入口」（引擎调用的门面）再兜一层：≤3 次带反馈的重试，错误
+// 先过两桶分类——传输/流/超时/空响应归可重试桶，数据性失败原样上抛。
+
+/// 门面重试环的尝试预算（learnhub contentgen `MAX_ATTEMPTS` 同值 3）：LLM
+/// 抖动两三次内应收敛；预算含首试。
+const LESSON_GENERATE_ATTEMPTS: usize = 3;
+
+/// 瞬断退避基数（learnhub contentgen 层内短退避同值）：300ms × attempt。
+/// 只缓冲瞬态，不弃已得——段级幂等跳过（e1）保证已落库的节在重试中保留。
+const LESSON_RETRY_BACKOFF_MS: u64 = 300;
+
+/// 单次尝试的显式超时（judge 90s 形态的移植落点之一）：引擎管线自带
+/// 600s 总预算（ADR-0004，`TOTAL_TIMEOUT_SECS`），正常路径由它先到且以
+/// `Timeout` 变体上抛（可重试桶）；本限时是外加的死人开关，覆盖引擎预算
+/// 之外的悬挂面（provider 解析、审计、落库前读）——后台任务脱离请求生命
+/// 周期后（e4），任何悬挂都占着一枚生成闸许可，必须有界。600s + 60s 余量。
+const LESSON_ATTEMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(660);
+
+/// 错误两桶（learnhub infra/llm.rs 口径，e4 对齐）：流解码错误/传输故障/
+/// 超时/空响应 = 可重试（重试裁决归门面重试环）；数据性失败（课程快照
+/// 缺失、审计门终判、归档冲突等）重试无意义，立即上抛。可重试判定单源，
+/// 与 image_analyze 的 `is_retryable` 同形。
+fn is_retryable_lesson_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::BadGateway(_) | AppError::Timeout(_) | AppError::RateLimited
+    )
+}
+
+/// 同错误熔断（learnhub coach.rs `step_guard` 同款，e4 课时重试环移植）：
+/// 同一步骤（此处 = 同一次任务体的生成步）连续 2 次同指纹失败 = 熔断
+/// loud，不再烧掉剩余尝试；成功清零。指纹 = 错误 Display 逐字。状态内存
+/// 态、作用域 = 一次任务体的重试环（跨提交不持久——崩溃恢复的正确性靠
+/// 段级幂等兜底，不靠熔断，learnhub 同注）。
+#[derive(Default)]
+struct LessonStepBreaker {
+    last_fingerprint: Option<String>,
+}
+
+impl LessonStepBreaker {
+    /// 记一次失败；与上一记同指纹 = 熔断触发（true）。
+    fn trips_on(&mut self, fingerprint: &str) -> bool {
+        if self.last_fingerprint.as_deref() == Some(fingerprint) {
+            return true;
+        }
+        self.last_fingerprint = Some(fingerprint.to_owned());
+        false
+    }
+
+    fn clear(&mut self) {
+        self.last_fingerprint = None;
+    }
+}
+
+/// 一次课时生成的重试读数（门面重试环的出口面；smoke content 档瞬断臂
+/// 判据数据源 + 进程内诊断）。内存态仅诊断，与生长的 [`GrowthRunStats`]
+/// 同作风。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LessonRunStats {
+    /// 实际消耗的尝试次数（含首试；成功 = 停在那一次）。
+    pub attempts_used: usize,
+    /// success | exhausted | circuit_open。
+    pub stop_reason: String,
+    /// 末次失败的错误指纹（success = None）。
+    pub last_error: Option<String>,
+}
+
+/// 课时生成任务的目标行投影（`load_lesson_generation_target` 的产物，双模
+/// 入口共用同一套守卫）：调度守卫（404/409）过闸后的最小字段集。
+struct LessonGenerationTarget {
+    course_id: LearningCourseId,
+    lesson_title: String,
+    /// 学习图节点路径（course_kind == learning_graph）：无蓝图快照，只走
+    /// agent 引擎。
+    graph: bool,
+    /// 课时已有内容（幂等短路面：传统课时的同步臂见此即返回现视图）。
+    content_generated: bool,
+    teaching_style: TeachingStyle,
+    /// 蓝图坐标（传统路径解析模块/课时锚）。
+    module_position: i64,
+    lesson_position: i64,
+}
+
+/// 异步臂的 202 响应体（e4 双模化）：任务键 + 轮询面提示。前端拿键轮询
+/// `GET /api/learning/generation-tasks`（或听 `learning.lesson-generation`
+/// WS 流），终态后拉课时详情；`?wait=true` 同步臂的调用方（冒烟/脚本）
+/// 不受影响。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LessonGenerationAccepted {
+    /// 任务键（`lesson:{course_id}:{lesson_id}`；generation-tasks 快照与
+    /// 取消端点的定位键）。
+    pub task_key: String,
+    pub lesson_id: String,
+    pub course_id: String,
+    /// 登记时点的任务状态快照（queued | running）；此后以轮询为准。
+    pub state: String,
+    /// 轮询面提示：任务快照端点路径。
+    pub poll: &'static str,
+}
+
 /// 检索扩读（t3）：`search_bases` 取相关文件命中 → 逐条 `read_file` 读全文 →
 /// 补充片段（带库归属与命中章节，可溯源）。`cited` 是课时的**全部**主引用
 /// `(kb_id, 库内相对路径)`——其中任一命中时跳过（它们已是 primary——锚定
@@ -392,17 +496,14 @@ impl LearningService {
         self.lesson_view(lesson_id, enrollment.as_ref()).await
     }
 
-    /// Generate the study document and activities for one on-demand lesson and
-    /// persist them, returning the updated lesson view. Idempotent: a lesson
-    /// that already has content returns its current view unchanged.
-    pub async fn generate_lesson_content(
+    /// 课时生成目标行：调度守卫过闸后的最小投影（[`Self::load_lesson_generation_target`]
+    /// 产物，双模入口共用同一套 404/409 守卫与幂等读数）。
+    async fn load_lesson_generation_target(
         &self,
-        user_id: &UserId,
         lesson_id: &LearningLessonId,
-        request: &GenerateLessonRequest,
-    ) -> Result<LessonView, AppError> {
+    ) -> Result<LessonGenerationTarget, AppError> {
         let row = sqlx::query(
-            "SELECT l.module_id, l.position, l.content_generated, l.title AS lesson_title, m.course_id, \
+            "SELECT l.position, l.content_generated, l.title AS lesson_title, m.course_id, \
                     m.position AS module_position, c.course_kind, c.teaching_style, \
                     c.deleted_at, c.enabled \
              FROM learning_lessons l \
@@ -428,50 +529,308 @@ impl LearningService {
             ));
         }
 
-        let course_id: LearningCourseId = parse_id(row.try_get("course_id").map_err(internal)?)?;
-        let teaching_style: TeachingStyle = TeachingStyle::try_from(
-            row.try_get::<String, _>("teaching_style")
-                .map_err(internal)?
-                .as_str(),
-        )
-        .map_err(AppError::Internal)?;
-        let content_generated: i64 = row.try_get("content_generated").map_err(internal)?;
-        if content_generated != 0 {
-            let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
+        Ok(LessonGenerationTarget {
+            course_id: parse_id(row.try_get("course_id").map_err(internal)?)?,
+            lesson_title: row.try_get("lesson_title").map_err(internal)?,
+            graph: row.try_get::<String, _>("course_kind").map_err(internal)?
+                == CourseKind::LearningGraph.as_str(),
+            content_generated: row.try_get::<i64, _>("content_generated").map_err(internal)? != 0,
+            teaching_style: TeachingStyle::try_from(
+                row.try_get::<String, _>("teaching_style")
+                    .map_err(internal)?
+                    .as_str(),
+            )
+            .map_err(AppError::Internal)?,
+            module_position: row.try_get("module_position").map_err(internal)?,
+            lesson_position: row.try_get("position").map_err(internal)?,
+        })
+    }
+
+    /// Generate the study document and activities for one on-demand lesson and
+    /// persist them, returning the updated lesson view. Idempotent: a lesson
+    /// that already has content returns its current view unchanged.
+    ///
+    /// 同步臂（e4 双模化）：`?wait=true` 查询参数与冒烟/脚本的既有语义——
+    /// 分钟级阻塞直至发布，HTTP 断开即中断（历史行为原样保留）。默认入口
+    /// 是异步臂 [`Self::start_lesson_generation`]。
+    pub async fn generate_lesson_content(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: &GenerateLessonRequest,
+    ) -> Result<LessonView, AppError> {
+        let target = self.load_lesson_generation_target(lesson_id).await?;
+        if target.content_generated {
+            let enrollment = self.enrollment_id_for(user_id, &target.course_id).await?;
             return self.lesson_view(lesson_id, enrollment.as_ref()).await;
         }
-
-        // 课程类型分流（幂等检查已共享）：学习图节点没有蓝图快照，走图
-        // 专属路径——上下文来自课程行与前置边表，且只走 agent 引擎。
-        // 课时内容生成为长任务（三轮 t2 注册面：快照可见、断开请求即中断
-        // ——循环内取消接线的显式差异见 ADR-0004，取消请求如实拒绝）。
-        let lesson_title: String =
-            row.try_get("lesson_title").map_err(internal)?;
-        let mut task = self.begin_generation_task(
+        let task = self.begin_generation_task(
             crate::service::KIND_LESSON,
-            course_id.as_str(),
+            target.course_id.as_str(),
             Some(lesson_id.as_str()),
-            &format!("课时内容 · {lesson_title}"),
+            &format!("课时内容 · {}", target.lesson_title),
         ).await?;
-        task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
-        if row.try_get::<String, _>("course_kind").map_err(internal)?
-            == CourseKind::LearningGraph.as_str()
-        {
-            let result = self
-                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request)
-                .await;
-            return match result {
-                Ok(view) => {
-                    task.finish_done("课时内容已发布");
-                    Ok(view)
-                }
-                Err(error) => {
-                    task.finish_failed(error.to_string());
-                    Err(error)
-                }
-            };
-        }
+        self.run_lesson_generation_with_task(user_id, lesson_id, request, task, target)
+            .await
+    }
 
+    /// 异步臂（e4，HTTP 默认）：登记任务 → 立即返回 202 面（任务键 + 轮询
+    /// 提示）；生成体在 spawn 出的**脱离任务**里等闸准入、跑完落库——断连
+    /// **不取消**（learnhub「分钟级任务一律不占请求生命周期」红线的移植；
+    /// 此前两套模型并存：注册表记了任务、HTTP 却同步阻塞，调用方断连即静默
+    /// 取消）。登记同步落 queued 记录，满闸时 202 照常秒回（排队在任务侧
+    /// 等待）。同键已有在跑/排队任务 = Conflict（防双击双跑，与同步臂同面）；
+    /// 课时已生成 = 幂等：任务照常登记，任务体短路 done。
+    pub async fn start_lesson_generation(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: &GenerateLessonRequest,
+    ) -> Result<LessonGenerationAccepted, AppError> {
+        let target = self.load_lesson_generation_target(lesson_id).await?;
+        let task_key = self.generation_tasks.pre_register(
+            crate::service::KIND_LESSON,
+            target.course_id.as_str(),
+            Some(lesson_id.as_str()),
+            &format!("课时内容 · {}", target.lesson_title),
+        )?;
+        // 登记时点的状态快照（queued | running）进 202 体；此后以轮询为准。
+        let state = self
+            .generation_tasks
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == task_key)
+            .map(|task| task.state)
+            .unwrap_or_else(|| crate::service::STATE_RUNNING.to_owned());
+        let course_id = target.course_id.as_str().to_owned();
+        let service = self.clone();
+        let owner = user_id.clone();
+        let lid = lesson_id.clone();
+        let req = request.clone();
+        let admission_key = task_key.clone();
+        tokio::spawn(async move {
+            match service.generation_tasks.begin_registered(admission_key).await {
+                Ok(task) => {
+                    let _ = service
+                        .run_lesson_generation_with_task(&owner, &lid, &req, task, target)
+                        .await;
+                }
+                // 排队期取消 / 记录消失：终态已由取消侧或注册表落账，无可收尾。
+                Err(error) => {
+                    tracing::warn!(%error, "detached lesson generation was never admitted")
+                }
+            }
+        });
+        Ok(LessonGenerationAccepted {
+            task_key,
+            lesson_id: lesson_id.as_str().to_owned(),
+            course_id,
+            state,
+            poll: "/api/learning/generation-tasks",
+        })
+    }
+
+    /// 双模共用的任务体：任务登记之后的一切（幂等短路面、分流、门面重试
+    /// 环、落库、任务收尾）。同步臂在请求生命周期内 await 本方法；异步臂在
+    /// 脱离任务里跑它——两条臂从此共享同一份行为。
+    async fn run_lesson_generation_with_task(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: &GenerateLessonRequest,
+        task: crate::service::GenerationTaskGuard,
+        target: LessonGenerationTarget,
+    ) -> Result<LessonView, AppError> {
+        // 幂等短路面（异步臂）：课时已生成（登记到准入的间隙内被并行任务
+        // 完成，或重复提交）——如实 done，不重付预算。
+        if target.content_generated {
+            task.finish_done("课时内容已就绪");
+            let enrollment = self.enrollment_id_for(user_id, &target.course_id).await?;
+            return self.lesson_view(lesson_id, enrollment.as_ref()).await;
+        }
+        task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
+        // 相位耗时读数（e1）：用量句柄随两条生成路径下传（图节点 = 上下文
+        // 进引擎的 provider 计数装饰器；传统课时 = 上下文 + 兜底管线的计数
+        // completer）。两条路径全程持有，finish 行聚合落档。
+        let usage = task.usage();
+        // 课程类型分流：学习图节点没有蓝图快照，走图专属路径——上下文来自
+        // 课程行与前置边表，且只走 agent 引擎。
+        let result = if target.graph {
+            self.generate_graph_lesson_content(
+                user_id,
+                lesson_id,
+                &target.course_id,
+                request,
+                usage,
+                &task,
+            )
+            .await
+        } else {
+            self.generate_traditional_lesson_content(
+                user_id,
+                lesson_id,
+                request,
+                target,
+                usage,
+                &task,
+            )
+            .await
+        };
+        match result {
+            Ok((view, stats)) => {
+                match stats.filter(|stats| stats.attempts_used > 1) {
+                    Some(stats) => task.finish_done(format!(
+                        "课时内容已发布（第 {} 次尝试成功，瞬断已自愈）",
+                        stats.attempts_used
+                    )),
+                    None => task.finish_done("课时内容已发布"),
+                }
+                Ok(view)
+            }
+            Err(error) => {
+                // 耗尽 = 结构化错误：原因进任务 finish 行（异步臂调用方经
+                // 任务快照读因），同步臂收同文的结构化错误——不再裸 502。
+                task.finish_failed(error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// 门面重试环（e4，learnhub contentgen facade `MAX_ATTEMPTS` 形态移植，
+    /// 落点 = 课时循环入口）：引擎调用包三件瞬断加固——
+    /// ①错误两桶（[`is_retryable_lesson_error`]）：流解码/传输/超时/空响应
+    ///   = 可重试，数据性失败原样上抛；
+    /// ②≤3 次带反馈重试：`retry_feedback` 回灌上次瞬断指纹 + 段级幂等提示
+    ///   （e1 原语在工具面执法，这里补认知）；失败退避 300ms×attempt；
+    /// ③单次尝试显式超时（[`LESSON_ATTEMPT_DEADLINE`]）：超时 = 可重试失败
+    ///   只弃其果（judge 90s 形态；引擎自身 600s 预算先行，本限时是脱离
+    ///   任务的死人开关）；
+    /// 外加同错误熔断（[`LessonStepBreaker`]，coach `step_guard` 同款）：
+    /// 连续 2 次同指纹失败 = 熔断 loud，不烧掉剩余尝试。
+    async fn generate_lesson_with_retry(
+        &self,
+        user_id: &UserId,
+        engine: &Arc<dyn LessonContentAgentEngine>,
+        mut context: LessonGenerationContext,
+        model_override: Option<(&str, &str)>,
+        task: &crate::service::GenerationTaskGuard,
+        attempt_deadline: std::time::Duration,
+    ) -> Result<(LessonOutput, LessonRunStats), AppError> {
+        let mut breaker = LessonStepBreaker::default();
+        let mut last_fingerprint = String::new();
+        for attempt in 1..=LESSON_GENERATE_ATTEMPTS {
+            if attempt > 1 {
+                context.retry_feedback = Some(format!(
+                    "第 {} 次尝试因瞬断中断（{}）；已写好的节已在草稿里，对它们再调用 \
+                     ls_set_section_body 会被幂等跳过——接着写未完成的节即可。",
+                    attempt - 1,
+                    last_fingerprint
+                ));
+                task.set_step(
+                    "generate",
+                    &format!("瞬断重试：第 {attempt}/{LESSON_GENERATE_ATTEMPTS} 次尝试…"),
+                );
+                self.emit_lesson_event(serde_json::json!({
+                    "phase": "retry",
+                    "lesson_id": context.lesson_id,
+                    "attempt": attempt,
+                    "last_error": last_fingerprint,
+                }));
+            }
+            // 单次尝试显式超时：超时按可重试失败处理，只弃其果。
+            let outcome = tokio::time::timeout(
+                attempt_deadline,
+                self.generate_or_resume_lesson(user_id, engine, &context, model_override),
+            )
+            .await;
+            let fingerprint = match outcome {
+                Ok(Ok(output)) => {
+                    breaker.clear();
+                    let stats = LessonRunStats {
+                        attempts_used: attempt,
+                        stop_reason: "success".to_owned(),
+                        last_error: None,
+                    };
+                    self.record_lesson_run_stats(stats.clone());
+                    return Ok((output, stats));
+                }
+                Ok(Err(error)) => {
+                    let fingerprint = error.to_string();
+                    if !is_retryable_lesson_error(&error) {
+                        // 数据性失败（第二桶）：重试无意义，原样上抛。
+                        self.record_lesson_run_stats(LessonRunStats {
+                            attempts_used: attempt,
+                            stop_reason: "fatal".to_owned(),
+                            last_error: Some(fingerprint),
+                        });
+                        return Err(error);
+                    }
+                    fingerprint
+                }
+                Err(_elapsed) => format!(
+                    "单次尝试超过 {}s 显式限时（超时按可重试失败处理，只弃其果）",
+                    attempt_deadline.as_secs()
+                ),
+            };
+            last_fingerprint = fingerprint.clone();
+            // 同错误熔断：连续 2 次同指纹失败 = CircuitOpen loud。
+            if breaker.trips_on(&fingerprint) {
+                self.record_lesson_run_stats(LessonRunStats {
+                    attempts_used: attempt,
+                    stop_reason: "circuit_open".to_owned(),
+                    last_error: Some(fingerprint.clone()),
+                });
+                return Err(AppError::BadGateway(format!(
+                    "课时内容生成熔断中止（同一步骤连续 2 次同一错误，重试无意义）：{fingerprint}"
+                )));
+            }
+            // 短退避（learnhub contentgen 层内退避同款）：只缓冲瞬态，不弃
+            // 已得——已落库的节在重试中由段级幂等跳过原样保留。
+            if attempt < LESSON_GENERATE_ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    LESSON_RETRY_BACKOFF_MS * attempt as u64,
+                ))
+                .await;
+            }
+        }
+        self.record_lesson_run_stats(LessonRunStats {
+            attempts_used: LESSON_GENERATE_ATTEMPTS,
+            stop_reason: "exhausted".to_owned(),
+            last_error: Some(last_fingerprint.clone()),
+        });
+        Err(AppError::BadGateway(format!(
+            "课时内容生成在 {LESSON_GENERATE_ATTEMPTS} 次尝试后仍失败（瞬断重试预算耗尽）：{last_fingerprint}"
+        )))
+    }
+
+    /// 最近一次课时生成的重试读数（smoke content 档瞬断臂判据数据源；内存态
+    /// 仅诊断，与 [`GrowthRunStats`] 同作风）。
+    pub fn lesson_run_stats(&self) -> Option<LessonRunStats> {
+        self.lesson_run_stats
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    fn record_lesson_run_stats(&self, stats: LessonRunStats) {
+        if let Ok(mut guard) = self.lesson_run_stats.lock() {
+            *guard = Some(stats);
+        }
+    }
+
+    /// 传统课时路径（蓝图快照流）：grounding 装配 → 上下文 → 门面重试环
+    /// （引擎在册）或 legacy 一次性兜底管线（测试/未接引擎）→ 落库。
+    /// 返回（课时视图，重试读数——兜底管线无重试环恒 `None`）。
+    async fn generate_traditional_lesson_content(
+        &self,
+        user_id: &UserId,
+        lesson_id: &LearningLessonId,
+        request: &GenerateLessonRequest,
+        target: LessonGenerationTarget,
+        usage: crate::completer::LlmUsageMeter,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<(LessonView, Option<LessonRunStats>), AppError> {
+        let course_id = &target.course_id;
         let snapshot = sqlx::query(
             "SELECT title, blueprint_json, samples_json, learning_goal, source_kb_id, source_kb_ids, \
                     samples_meta_json FROM learning_courses WHERE course_id = ?",
@@ -517,8 +876,8 @@ impl LearningService {
             None => None,
         };
 
-        let module_position: i64 = row.try_get("module_position").map_err(internal)?;
-        let lesson_position: i64 = row.try_get("position").map_err(internal)?;
+        let module_position: i64 = target.module_position;
+        let lesson_position: i64 = target.lesson_position;
         let module = blueprint
             .modules
             .get(module_position as usize)
@@ -603,6 +962,12 @@ impl LearningService {
             goal: course_goal,
             // 大纲已无概念契约（ADR-0009）：传统课时没有防超纲黑名单。
             forbidden_concepts: String::new(),
+            // 相位耗时读数（e1）：引擎分支进 provider 计数装饰器；兜底分支
+            // 不经上下文（generate_lesson 直收蓝图），其计数在下方 completer
+            // 包装上。
+            usage: Some(usage.clone()),
+            // 门面重试环的反馈槽（e4）：首试为空；重试臂在重试环内改写。
+            retry_feedback: None,
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -610,22 +975,26 @@ impl LearningService {
             "title": lesson.title,
             "module": module.title,
         }));
-        let output = match self.lesson_engine() {
+        let (output, stats) = match self.lesson_engine() {
             // Agent loop path: the injected two-loop engine owns the whole
             // lifecycle (draft + `ls_*` tools, audit-gated publish); its
             // LoopContext emits the round/audit progress frames itself.
             // A live draft from a failed run resumes instead of restarting.
+            // e4：调用包门面重试环（两桶分类 + ≤3 次带反馈 + 显式超时 +
+            // 同错误熔断），瞬断在门面吸收，耗尽才结构化上抛。
             Some(engine) => {
                 let result = self
-                    .generate_or_resume_lesson(
+                    .generate_lesson_with_retry(
                         user_id,
                         &engine,
-                        &context,
+                        context,
                         model_override.map(|(provider, model)| (provider.as_str(), model)),
+                        task,
+                        LESSON_ATTEMPT_DEADLINE,
                     )
                     .await;
                 match &result {
-                    Ok(output) => self.emit_lesson_event(serde_json::json!({
+                    Ok((output, _stats)) => self.emit_lesson_event(serde_json::json!({
                         "phase": "completed",
                         "lesson_id": lesson_id.as_str(),
                         "title": lesson.title,
@@ -640,11 +1009,12 @@ impl LearningService {
                         "error": error.to_string(),
                     })),
                 }
-                result?
+                let (output, stats) = result?;
+                (output, Some(stats))
             }
             // Fallback: the legacy two-stage one-shot pipeline (tests and
             // direct calls), wrapped with the same terminal events so the
-            // UI stays uniform.
+            // UI stays uniform. 无门面重试环（legacy 面，读数恒 None）。
             None => {
                 let completer = self
                     .course_completer
@@ -658,8 +1028,12 @@ impl LearningService {
                             "knowledge-backed course generation is not configured".into(),
                         )
                     })?;
-                match generate_lesson(
-                    completer.as_ref(),
+                // 相位耗时读数（e1）：兜底管线经计数 completer 上报（调用数
+                // + 输入/输出字符量），与 agent 分支同一 finish 行聚合。
+                let counting =
+                    crate::service::CountingCompleter::new(completer.as_ref(), &usage);
+                let output = match generate_lesson(
+                    &counting,
                     model_override,
                     &blueprint,
                     module,
@@ -669,7 +1043,7 @@ impl LearningService {
                     total_lessons,
                     next_lesson_title,
                     &crate::generation::render_grounding_fragments(&context.excerpts),
-                    teaching_style,
+                    target.teaching_style,
                 )
                 .await
                 {
@@ -691,13 +1065,13 @@ impl LearningService {
                             "title": lesson.title,
                             "error": error,
                         }));
-                        task.finish_failed(format!("lesson '{}' failed", lesson.title));
                         return Err(AppError::UnprocessableEntity(format!(
                             "lesson '{}' failed to generate: {error}",
                             lesson.title
                         )));
                     }
-                }
+                };
+                (output, None)
             }
         };
 
@@ -710,10 +1084,10 @@ impl LearningService {
             }));
         }
         self.persist_lesson_output(lesson_id, &output).await?;
-        task.finish_done("课时内容已发布");
 
-        let enrollment = self.enrollment_id_for(user_id, &course_id).await?;
-        self.lesson_view(lesson_id, enrollment.as_ref()).await
+        let enrollment = self.enrollment_id_for(user_id, course_id).await?;
+        let view = self.lesson_view(lesson_id, enrollment.as_ref()).await?;
+        Ok((view, stats))
     }
 
     /// 学习图课程节点的内容生成（beta）。学习图课程没有蓝图快照：上下文
@@ -726,7 +1100,9 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         course_id: &LearningCourseId,
         request: &GenerateLessonRequest,
-    ) -> Result<LessonView, AppError> {
+        usage: crate::completer::LlmUsageMeter,
+        task: &crate::service::GenerationTaskGuard,
+    ) -> Result<(LessonView, Option<LessonRunStats>), AppError> {
         let lesson = sqlx::query(
             "SELECT l.title, l.purpose, l.position, l.estimated_minutes, \
                     m.title AS module_title \
@@ -801,6 +1177,10 @@ impl LearningService {
             goal: None,
             // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
             forbidden_concepts: topology.forbidden_concepts,
+            // 相位耗时读数（e1）：随上下文进引擎，provider 计数装饰器上报。
+            usage: Some(usage),
+            // 门面重试环的反馈槽（e4）：首试为空；重试臂在重试环内改写。
+            retry_feedback: None,
         };
 
         self.emit_lesson_event(serde_json::json!({
@@ -815,19 +1195,24 @@ impl LearningService {
             )
         })?;
         let model_override = request.provider_id.as_ref().zip(request.model.as_deref());
+        // e4：调用包门面重试环（两桶分类 + ≤3 次带反馈 + 显式超时 + 同错误
+        // 熔断），瞬断在门面吸收，耗尽才结构化上抛。
+        let lesson_title = context.lesson_title.clone();
         let result = self
-            .generate_or_resume_lesson(
+            .generate_lesson_with_retry(
                 user_id,
                 &engine,
-                &context,
+                context,
                 model_override.map(|(provider, model)| (provider.as_str(), model)),
+                task,
+                LESSON_ATTEMPT_DEADLINE,
             )
             .await;
         match &result {
-            Ok(output) => self.emit_lesson_event(serde_json::json!({
+            Ok((output, _stats)) => self.emit_lesson_event(serde_json::json!({
                 "phase": "completed",
                 "lesson_id": lesson_id.as_str(),
-                "title": context.lesson_title,
+                "title": lesson_title,
                 "activities": output.activities.len(),
                 "est": output.estimated_minutes,
                 "visuals": crate::models::visual_distribution(&output.sections),
@@ -835,15 +1220,16 @@ impl LearningService {
             Err(error) => self.emit_lesson_event(serde_json::json!({
                 "phase": "failed",
                 "lesson_id": lesson_id.as_str(),
-                "title": context.lesson_title,
+                "title": lesson_title,
                 "error": error.to_string(),
             })),
         }
-        let output = result?;
+        let (output, stats) = result?;
         self.persist_lesson_output(lesson_id, &output).await?;
 
         let enrollment = self.enrollment_id_for(user_id, course_id).await?;
-        self.lesson_view(lesson_id, enrollment.as_ref()).await
+        let view = self.lesson_view(lesson_id, enrollment.as_ref()).await?;
+        Ok((view, Some(stats)))
     }
 
     /// 学习图节点的拓扑上下文（节点内容生成与单节重写共用），概念网口径
@@ -1650,6 +2036,39 @@ impl LearningService {
         Ok(taught)
     }
 
+    /// 节点 tier → 题面难度铸值（e5 difficulty 消解案，装配面注入）：
+    /// 读本课 teaches 行的档位，取最深档映射 1-3（know=辨析 / apply=应用 /
+    /// teach=综合——节点教得最深的概念决定题面难度上限锚，learnhub「以骨架
+    /// 行的难度档为准」的输入锚同义）。无 teaches 行（传统课/概念绑定整体
+    /// 下线的旧课）或档位不可解析 → None——出题输出契约已撤 difficulty，
+    /// None 兜回模型自报值（存量 agent 路径）或保持空（读侧 serde 缺省容
+    /// 错）。查询失败同样降级为 None：铸值是尽力注入，不阻断发布。
+    /// executor 由调用方给：persist 面传在开事务上（同池并发查询会饿死
+    /// 单连接池），加题面传池。
+    async fn injected_activity_difficulty<'e, E>(
+        executor: E,
+        lesson_id: &LearningLessonId,
+    ) -> Option<u8>
+    where
+        E: sqlx::SqliteExecutor<'e>,
+    {
+        let tiers: Vec<String> = sqlx::query_scalar(
+            "SELECT tier FROM learning_lesson_concepts \
+             WHERE lesson_id = ? AND role = 'teaches'",
+        )
+        .bind(lesson_id.as_str())
+        .fetch_all(executor)
+        .await
+        .ok()?;
+        tiers
+            .iter()
+            .filter_map(|tier| {
+                crate::learning_graph::ConceptTier::try_from_str(tier.trim())
+            })
+            .max()
+            .map(crate::learning_graph::ConceptTier::difficulty_value)
+    }
+
     /// 生成事务落库尾（传统与学习图两条路径共用）：更新课时行（文档/时长/
     /// 生成标记）并替换全部活动。概念绑定随 per-course 概念体系整体下线
     /// （ADR-0009），活动不再携带 concept 绑定。
@@ -1723,6 +2142,11 @@ impl LearningService {
             .await
             .map_err(internal)?;
 
+        // e5 difficulty 消解（装配面注入）：难度不指望模型输出——按本课
+        // teaches 档位铸值一次，全体活动继承；无档位可依时兜回模型自报值
+        // （存量 agent 路径）或保持 None。查询走同一事务（不另借池连接）。
+        let injected_difficulty =
+            Self::injected_activity_difficulty(&mut *transaction, lesson_id).await;
         for (position, activity) in output.activities.iter().enumerate() {
             let activity_id = LearningActivityId::new();
             let config = StoredActivityConfig {
@@ -1732,7 +2156,7 @@ impl LearningService {
                 distractors: activity.distractors.clone(),
                 tol: activity.tol,
                 matches: matching_candidates(activity),
-                difficulty: activity.difficulty,
+                difficulty: injected_difficulty.or(activity.difficulty),
                 evidence: activity
                     .evidence
                     .as_deref()
@@ -1775,7 +2199,7 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         request: CreateLessonActivityRequest,
     ) -> Result<LessonView, AppError> {
-        let (prompt, config) = validate_question_payload(
+        let (prompt, mut config) = validate_question_payload(
             request.kind,
             &request.prompt,
             &request.options,
@@ -1783,6 +2207,13 @@ impl LearningService {
             &request.explanation,
             &request.distractors,
         )?;
+        // e5 difficulty 消解：手动加题与生成装配同一注入面——课时题继承
+        // 节点 teaches 档位（无档位可依时保持 None，读侧容错），保证 quiz
+        // tier 取数在整张题库上口径一致。
+        config.difficulty =
+            Self::injected_activity_difficulty(&self.pool, lesson_id)
+                .await
+                .or(config.difficulty);
         // Resolve the enrollment through the lesson, creating it on demand
         // exactly like update_lesson_progress does for the first write.
         let enrollment_id: Option<String> = sqlx::query_scalar(
@@ -2931,5 +3362,436 @@ mod tests {
             "练会已知两边求第三边".to_owned(),
         )]);
         assert!(text.contains("——练会已知两边求第三边"), "{text}");
+    }
+
+    // ── 门面重试环（e4）：两桶分类 / ≤3 带反馈 / 显式超时 / 同错误熔断 ──
+
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    /// 错误两桶（e4，learnhub infra/llm.rs 口径）：流解码/传输/超时/空响应
+    /// （统一落 BadGateway/Timeout/RateLimited 变体）= 可重试；数据性失败
+    /// （冲突/不存在/审计门终判/内部故障）重试无意义 = 原样上抛。
+    #[test]
+    fn error_taxonomy_splits_retryable_from_fatal() {
+        assert!(is_retryable_lesson_error(&AppError::BadGateway(
+            "LLM stream error: connection reset".into()
+        )));
+        assert!(is_retryable_lesson_error(&AppError::Timeout(
+            "agent timed out after 600s".into()
+        )));
+        assert!(is_retryable_lesson_error(&AppError::RateLimited));
+        assert!(!is_retryable_lesson_error(&AppError::Conflict(
+            "课程已归档".into()
+        )));
+        assert!(!is_retryable_lesson_error(&AppError::NotFound(
+            "learning lesson x".into()
+        )));
+        assert!(!is_retryable_lesson_error(&AppError::UnprocessableEntity(
+            "exhausted 3 repair loops".into()
+        )));
+        assert!(!is_retryable_lesson_error(&AppError::Internal(
+            "lock poisoned".into()
+        )));
+    }
+
+    /// 脚本化假引擎：generate/resume 按脚本步进（每步一段行为），记录调用
+    /// 次数与 resume 时收到的 retry_feedback——门面重试环的红绿样直接驱动
+    /// 它。
+    struct ScriptedLessonEngine {
+        service: Arc<LearningService>,
+        generate_calls: AtomicUsize,
+        resume_calls: AtomicUsize,
+        /// 每次尝试的行为：Err = 该尝试以给定错误失败；Ok = 成功发布。
+        /// generate 与 resume 共用同一脚本（重试环先 generate，草稿存活
+        /// 后续尝试走 resume）。
+        steps: Mutex<VecDeque<Result<LessonOutput, AppError>>>,
+        /// resume 尝试收到的 retry_feedback（最后一次；None = 未收到）。
+        seen_retry_feedback: Mutex<Option<String>>,
+        /// resume 尝试看到的草稿里已落库的节（最后一次；段级续跑钉子）。
+        seen_resume_sections: Mutex<Vec<String>>,
+        /// 「首败留草稿」的上下文（见 [`Self::arm_seed_on_failure`]）。
+        seed_on_failure: Mutex<Option<LessonGenerationContext>>,
+    }
+
+    impl ScriptedLessonEngine {
+        fn new(
+            service: Arc<LearningService>,
+            steps: Vec<Result<LessonOutput, AppError>>,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                service,
+                generate_calls: AtomicUsize::new(0),
+                resume_calls: AtomicUsize::new(0),
+                steps: Mutex::new(steps.into()),
+                seen_retry_feedback: Mutex::new(None),
+                seen_resume_sections: Mutex::new(Vec::new()),
+                seed_on_failure: Mutex::new(None),
+            })
+        }
+
+        /// 设置「首败留草稿」：generate 步失败前先以该上下文创建草稿并写
+        /// 入 s1（模拟「循环写过一节后瞬断」——e1 段级幂等的存活面），使
+        /// 重试走 e1 的 resume 续跑。
+        fn arm_seed_on_failure(&self, context: &LessonGenerationContext) {
+            *self.seed_on_failure.lock().unwrap() = Some(context.clone());
+        }
+
+        /// 预置「上次会话」存活草稿：manifest + s1 已落库正文（过节级质检
+        /// 门的长正文，visual 表格兑现承诺）。
+        fn seed_draft(&self, context: &LessonGenerationContext) -> String {
+            let view = self.service.create_lesson_draft(context.clone()).unwrap();
+            self.service
+                .patch_lesson_draft(
+                    &view.draft_id,
+                    vec![LessonOp::SetSectionManifest {
+                        sections: serde_json::from_value(serde_json::json!([
+                            { "section_key": "s1", "kind": "concept", "title": "概念：复利", "points": "利滚利", "visual": "表格" },
+                            { "section_key": "s2", "kind": "practice", "title": "练习：复利判断", "points": "自测", "visual": "无" }
+                        ]))
+                        .unwrap(),
+                        capacity_note: None,
+                    },
+                    LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: format!(
+                            "## 概念：复利\n\n| 期数 | 终值 |\n| --- | --- |\n| 1 | 本金×(1+r) |\n\n{}\n",
+                            "这是一个足够长的正文段落，用于通过节级质检门的长度下限要求。".repeat(12)
+                        ),
+                    },
+                ])
+                .unwrap();
+            view.draft_id
+        }
+    }
+
+    fn fake_output() -> LessonOutput {
+        LessonOutput {
+            summary: "## 概念：复利\n\n完成的正文。".into(),
+            estimated_minutes: 15,
+            activities: Vec::new(),
+            sections: Vec::new(),
+            degraded_keys: Vec::new(),
+            capacity_note: None,
+        }
+    }
+
+    fn retry_context() -> LessonGenerationContext {
+        LessonGenerationContext {
+            lesson_id: "lesson-retry".into(),
+            course_title: "测试课程".into(),
+            course_description: String::new(),
+            module_title: "模块一".into(),
+            module_index: 0,
+            lesson_title: "课时一".into(),
+            lesson_index: 0,
+            total_lessons: 1,
+            next_lesson_title: None,
+            purpose: "理解复利".into(),
+            excerpt: None,
+            excerpts: Vec::new(),
+            outline_tree: String::new(),
+            adjacent_context: String::new(),
+            graph: None,
+            goal: None,
+            forbidden_concepts: String::new(),
+            usage: None,
+            retry_feedback: None,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LessonContentAgentEngine for ScriptedLessonEngine {
+        async fn generate(
+            &self,
+            _user_id: &UserId,
+            _context: &LessonGenerationContext,
+            _model_override: Option<(&str, &str)>,
+        ) -> Result<LessonOutput, AppError> {
+            self.generate_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            let step = self
+                .steps
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("script exhausted in generate");
+            if step.is_err() {
+                // 「循环写过一节后瞬断」形态：失败前把草稿与已落库的节留下。
+                if let Some(context) = self
+                    .seed_on_failure
+                    .lock()
+                    .unwrap()
+                    .take()
+                {
+                    self.seed_draft(&context);
+                }
+            }
+            step
+        }
+
+        async fn resume(
+            &self,
+            _user_id: &UserId,
+            draft_id: &str,
+            context: &LessonGenerationContext,
+            _model_override: Option<(&str, &str)>,
+        ) -> Result<LessonOutput, AppError> {
+            self.resume_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            *self.seen_retry_feedback.lock().unwrap() = context.retry_feedback.clone();
+            let view = self.service.inspect_lesson_draft(draft_id).unwrap();
+            *self.seen_resume_sections.lock().unwrap() = view
+                .section_bodies
+                .iter()
+                .map(|body| body.section_key.clone())
+                .collect();
+            self.steps
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("script exhausted in resume")
+        }
+    }
+
+    async fn retry_test_service() -> (Arc<LearningService>, tempfile::TempDir) {
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = Arc::new(LearningService::new(database.pool().clone()));
+        (service, tempfile::tempdir().unwrap())
+    }
+
+    /// 红绿样（e4 核心臂）：瞬断一次 → 门面重试环吸收，第二次尝试经 e1
+    /// 的草稿续跑（resume）完成发布；段级续跑钉子——resume 时草稿里已落库
+    /// 的 s1 原样在库（不重写），retry_feedback 已回灌给开场轮。
+    #[tokio::test]
+    async fn retry_loop_absorbs_a_transient_failure_and_resumes_the_draft() {
+        let (service, _dir) = retry_test_service().await;
+        let context = retry_context();
+        let engine = ScriptedLessonEngine::new(
+            Arc::clone(&service),
+            vec![
+                Err(AppError::BadGateway("瞬断：连接被重置".into())),
+                Ok(fake_output()),
+            ],
+        );
+        engine.arm_seed_on_failure(&context);
+        service.set_lesson_engine(engine.clone());
+        let task = service
+            .begin_generation_task(crate::service::KIND_LESSON, "c", Some("lesson-retry"), "t")
+            .await
+            .unwrap();
+        let engine_dyn =
+            engine.clone() as Arc<dyn LessonContentAgentEngine>;
+        let (output, stats) = service
+            .generate_lesson_with_retry(
+                &nomifun_common::UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
+                &engine_dyn,
+                context.clone(),
+                None,
+                &task,
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .expect("second attempt publishes");
+        assert_eq!(output.summary, fake_output().summary);
+        assert_eq!(
+            engine.generate_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "首试走 generate"
+        );
+        assert_eq!(
+            engine.resume_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "重试走 resume（e1 草稿续跑）"
+        );
+        assert_eq!(stats.attempts_used, 2);
+        assert_eq!(stats.stop_reason, "success");
+        // 段级续跑钉子：resume 时草稿里已落库的 s1 在库（幂等跳过原语保证
+        // 它不被重写——重试环天然受益）。
+        assert_eq!(
+            engine.seen_resume_sections.lock().unwrap().last(),
+            Some(&"s1".to_owned()),
+            "seeded section must still be in the draft at resume time"
+        );
+        // 反馈回灌钉子：resume 开场带 retry_feedback（上次瞬断指纹 + 不重
+        // 写提示）。
+        let feedback = engine.seen_retry_feedback.lock().unwrap().clone();
+        let feedback = feedback.expect("resume must carry retry feedback");
+        assert!(feedback.contains("瞬断：连接被重置"), "{feedback}");
+        assert!(feedback.contains("幂等跳过"), "{feedback}");
+        // 服务级读数面与返回值一致（smoke content 档判据数据源）。
+        assert_eq!(service.lesson_run_stats().unwrap().attempts_used, 2);
+    }
+
+    /// 同错误熔断（step_guard 同款）：连续两次同指纹失败 = CircuitOpen loud，
+    /// 第三次尝试不烧（重试预算不趟浑水）。
+    #[tokio::test]
+    async fn same_error_twice_trips_the_circuit_breaker() {
+        let (service, _dir) = retry_test_service().await;
+        let engine = ScriptedLessonEngine::new(
+            Arc::clone(&service),
+            vec![
+                Err(AppError::BadGateway("same upstream error".into())),
+                Err(AppError::BadGateway("same upstream error".into())),
+            ],
+        );
+        service.set_lesson_engine(engine.clone());
+        let task = service
+            .begin_generation_task(crate::service::KIND_LESSON, "c", Some("lesson-retry"), "t")
+            .await
+            .unwrap();
+        let engine_dyn = engine.clone() as Arc<dyn LessonContentAgentEngine>;
+        let error = service
+            .generate_lesson_with_retry(
+                &nomifun_common::UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
+                &engine_dyn,
+                retry_context(),
+                None,
+                &task,
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .expect_err("circuit opens");
+        assert!(
+            error.to_string().contains("熔断中止"),
+            "circuit-open error must be loud: {error}"
+        );
+        assert!(
+            error.to_string().contains("same upstream error"),
+            "fingerprint carried in the structured reason: {error}"
+        );
+        assert_eq!(
+            engine.generate_calls.load(AtomicOrdering::SeqCst),
+            2,
+            "second identical failure opens the circuit before attempt 3"
+        );
+        let stats = service.lesson_run_stats().unwrap();
+        assert_eq!(stats.stop_reason, "circuit_open");
+        assert_eq!(stats.attempts_used, 2);
+    }
+
+    /// 数据性失败（第二桶）原样上抛：不重试、不包装、如实失败一次。
+    #[tokio::test]
+    async fn fatal_errors_pass_through_without_retry() {
+        let (service, _dir) = retry_test_service().await;
+        let engine = ScriptedLessonEngine::new(
+            Arc::clone(&service),
+            vec![Err(AppError::Conflict("课程已归档".into()))],
+        );
+        service.set_lesson_engine(engine.clone());
+        let task = service
+            .begin_generation_task(crate::service::KIND_LESSON, "c", Some("lesson-retry"), "t")
+            .await
+            .unwrap();
+        let engine_dyn = engine.clone() as Arc<dyn LessonContentAgentEngine>;
+        let error = service
+            .generate_lesson_with_retry(
+                &nomifun_common::UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
+                &engine_dyn,
+                retry_context(),
+                None,
+                &task,
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .expect_err("fatal error propagates");
+        assert!(
+            matches!(error, AppError::Conflict(ref message) if message.contains("课程已归档")),
+            "original error variant preserved: {error}"
+        );
+        assert_eq!(engine.generate_calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(service.lesson_run_stats().unwrap().stop_reason, "fatal");
+    }
+
+    /// 错误两桶的边界：同一轮不同的可重试错误各自记指纹，不触发熔断，预
+    /// 算耗尽后以结构化错误收场（不裸 502 文案）。
+    #[tokio::test]
+    async fn distinct_retryable_errors_exhaust_the_budget_structured() {
+        let (service, _dir) = retry_test_service().await;
+        let engine = ScriptedLessonEngine::new(
+            Arc::clone(&service),
+            vec![
+                Err(AppError::BadGateway("first cut".into())),
+                Err(AppError::BadGateway("second cut".into())),
+                Err(AppError::Timeout("hung past the clock".into())),
+            ],
+        );
+        service.set_lesson_engine(engine.clone());
+        let task = service
+            .begin_generation_task(crate::service::KIND_LESSON, "c", Some("lesson-retry"), "t")
+            .await
+            .unwrap();
+        let engine_dyn = engine.clone() as Arc<dyn LessonContentAgentEngine>;
+        let error = service
+            .generate_lesson_with_retry(
+                &nomifun_common::UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
+                &engine_dyn,
+                retry_context(),
+                None,
+                &task,
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .expect_err("budget exhausts");
+        let text = error.to_string();
+        assert!(text.contains("3 次尝试后仍失败"), "{text}");
+        assert!(text.contains("hung past the clock"), "{text}");
+        assert_eq!(engine.generate_calls.load(AtomicOrdering::SeqCst), 3);
+        let stats = service.lesson_run_stats().unwrap();
+        assert_eq!(stats.stop_reason, "exhausted");
+    }
+
+    /// 单次尝试显式超时（judge 形态）：引擎悬挂 → 超时按可重试失败处理
+    /// （指纹进重试环），同指纹两连 → 熔断收场；悬挂的 future 只弃其果。
+    #[tokio::test]
+    async fn attempt_timeout_is_a_retryable_failure_and_trips_the_breaker() {
+        struct HangingEngine {
+            calls: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl LessonContentAgentEngine for HangingEngine {
+            async fn generate(
+                &self,
+                _user_id: &UserId,
+                _context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, AppError> {
+                self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(fake_output())
+            }
+            async fn resume(
+                &self,
+                _user_id: &UserId,
+                _draft_id: &str,
+                _context: &LessonGenerationContext,
+                _model_override: Option<(&str, &str)>,
+            ) -> Result<LessonOutput, AppError> {
+                panic!("timeout test never resumes (no draft)");
+            }
+        }
+        let (service, _dir) = retry_test_service().await;
+        let hanging = Arc::new(HangingEngine { calls: AtomicUsize::new(0) });
+        service.set_lesson_engine(hanging.clone());
+        let task = service
+            .begin_generation_task(crate::service::KIND_LESSON, "c", Some("lesson-retry"), "t")
+            .await
+            .unwrap();
+        let error = service
+            .generate_lesson_with_retry(
+                &nomifun_common::UserId::parse("0190f5fe-7c00-7a00-8000-000000000001").unwrap(),
+                &(hanging.clone() as Arc<dyn LessonContentAgentEngine>),
+                retry_context(),
+                None,
+                &task,
+                std::time::Duration::from_millis(50),
+            )
+            .await
+            .expect_err("timeout fingerprints trip the breaker");
+        assert!(
+            error.to_string().contains("熔断中止")
+                && error.to_string().contains("显式限时"),
+            "timeout treated as retryable, breaker opens on the repeat: {error}"
+        );
+        assert_eq!(hanging.calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(service.lesson_run_stats().unwrap().stop_reason, "circuit_open");
     }
 }

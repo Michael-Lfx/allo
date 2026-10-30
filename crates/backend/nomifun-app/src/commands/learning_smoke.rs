@@ -7,7 +7,8 @@
 //! 可用 provider 时命令会如实失败）。
 //!
 //! - `structure`：双产物生成 → gd.* 契约门 + 门口对账 → `structure_json`
-//!   落列；机械判据 = 落列后重读快照、本地重验双契约与对账（失败非零退出）。
+//!   落列；机械判据 = 落列后重读快照、本地重验双契约与对账（失败非零退出）
+//!   + 零生长任务在册（e3 声明窗口：结构完成即停，不自动点火首批）。
 //!   运行必挂 [`nomifun_ai_agent::ArchivingCompleter`]（观测存档
 //!   `<data-dir>/observation/learning-smoke/<run>/`）。
 //! - `json`：json_object 能力读数（合法 JSON 率 / 空内容 / 怪癖分类）；
@@ -17,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
@@ -141,6 +142,13 @@ struct SmokeWiring {
     knowledge: Arc<nomifun_knowledge::KnowledgeService>,
     pool: nomifun_db::sqlx::SqlitePool,
     owner: UserId,
+    /// 长任务 finish 行的进程内捕获（e1 相位耗时读数行）：观测旁路在落
+    /// jsonl 的同时留一份内存序——各档读数行从这里取数，`--db` 复用时不受
+    /// 历史行污染。
+    task_finishes: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// 课时引擎的瞬断注入计数（e4 content 档判据面）：>0 时每次课时 LLM
+    /// 开流注入一次瞬断并扣减，归零后透传。恒 0 = 纯透传（其余档零影响）。
+    lesson_flaky_remaining: Arc<std::sync::atomic::AtomicUsize>,
     /// 保持临时目录存活到命令结束（缺省从零临时库时非空）。
     _temp: Option<tempfile::TempDir>,
 }
@@ -249,6 +257,10 @@ async fn wire(
     // 课时内容 agent 引擎（j07 content 冒烟需要）：与应用同款接线——引擎
     // 自行解析 provider（OneShotDeps），不经管线 completer。首轮观测钩子把
     // system/user 追加进本次运行的 calls.jsonl（k03/k05 双臂读数面）。
+    // e4：provider 装饰钩子挂共享瞬断计数——计数 >0 时每次课时 LLM 开流
+    // 掐断一次（content 档瞬断臂的注入面），归零透传（其余档零影响）。
+    let lesson_flaky_remaining = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let flaky_counter = Arc::clone(&lesson_flaky_remaining);
     let lesson_observer = archiving.as_ref().map(|archiving| {
         let path = archiving.run_dir().join("calls.jsonl");
         Arc::new(move |record: serde_json::Value| {
@@ -274,11 +286,20 @@ async fn wire(
             },
             round_logs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             prompt_observer: lesson_observer,
+            provider_decorator: Some(Arc::new(move |provider| {
+                nomifun_ai_agent::flaky_provider::FlakyStreamProvider::new(
+                    provider,
+                    Arc::clone(&flaky_counter),
+                )
+            })),
         },
     ));
-    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录。
+    // 长任务观测旁路（与应用同形）：begin/finish JSONL 落观测目录；finish
+    // 行同时留一份进程内捕获（e1 相位耗时读数行的取数面）。
+    let task_finishes: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
     {
         let observation_dir = cli.data_dir.join("observation").join("learning-smoke");
+        let captures = Arc::clone(&task_finishes);
         service.set_generation_task_observer(Arc::new(move |line: &str| {
             use std::io::Write;
             let _ = std::fs::create_dir_all(&observation_dir);
@@ -290,6 +311,11 @@ async fn wire(
                 return;
             };
             let _ = writeln!(file, "{line}");
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                if value["type"] == "finish" {
+                    captures.lock().unwrap().push(value);
+                }
+            }
         }));
     }
 
@@ -299,11 +325,39 @@ async fn wire(
             knowledge: knowledge_service,
             pool,
             owner: UserId::parse(&owner_id)?,
+            task_finishes,
+            lesson_flaky_remaining,
             _temp,
         },
         archiving,
         live,
     ))
+}
+
+/// 打印某类任务的 finish 读数行（e1 相位耗时读数）：本进程捕获的该类全部
+/// finish（多节点 content 档逐条列出）。读数面非门禁——jsonl 是全量留档，
+/// 这里只是人读摘要。
+fn print_phase_readings(finishes: &[serde_json::Value], kind: &str) {
+    let rows: Vec<&serde_json::Value> = finishes
+        .iter()
+        .filter(|line| line["kind"] == kind)
+        .collect();
+    if rows.is_empty() {
+        println!("phase reading ({kind}): no finish line captured this run");
+        return;
+    }
+    for (index, finish) in rows.iter().enumerate() {
+        println!(
+            "phase reading ({kind} {}/{}): state={} elapsed_ms={} llm_calls={} input_chars={} output_chars={}",
+            index + 1,
+            rows.len(),
+            finish["state"],
+            finish["elapsed_ms"],
+            finish["llm_calls"],
+            finish["input_chars"],
+            finish["output_chars"],
+        );
+    }
 }
 
 async fn owner_id_string(pool: &nomifun_db::sqlx::SqlitePool) -> String {
@@ -1127,10 +1181,41 @@ async fn run_structure(
     let spines = structure["spines"].as_array().map(Vec::len).unwrap_or(0);
     let edges = structure["edges"].as_array().map(Vec::len).unwrap_or(0);
     let doors = terrain["doors"].as_array().map(Vec::len).unwrap_or(0);
+    // 门位标签读数（e2）：带非空 door_refs 的块数——零标注 warn 在生成门面落
+    // 日志，这里随 OK 行并排透出（对照 learnhub 3/21 低标注基线的读数面）。
+    // 口径单源 = nomifun-learning 的 count_door_labeled_blocks（与快照
+    // info/warn 行同一函数，读数数字逐字一致）。
+    let labeled = nomifun_learning::count_door_labeled_blocks(&structure);
+    // e3 声明窗口硬判据：结构完成后零生长任务在册——建课/结构完成不自动
+    // 点火首批，生长只由用户显式触发（学习窗口「开始学习」= POST grow）。
+    // 本档驱动 run_structure_generation 直达管线，判据护栏防的是未来把生长
+    // 重新耦合回结构管线的回归。
+    let growth_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    let growth_tasks = wiring
+        .service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == "growth")
+        .count();
+    if growth_batches != 0 || growth_tasks != 0 {
+        eprintln!(
+            "CRITERION VIOLATION [e3.zero-growth] structure done but growth already kicked: \
+             batches={growth_batches} tasks={growth_tasks}"
+        );
+        return Ok(ExitCode::from(2));
+    }
     println!(
-        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}",
+        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
         course_id.as_str()
     );
+    // 相位耗时读数（e1）：两仓首条结构相位耗时基线（jsonl 全量留档，这里
+    // 是人读摘要）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "structure");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1408,6 +1493,8 @@ async fn run_grow(
         course_id.as_str(),
         if with_structure { "loop" } else { "grow" }
     );
+    // 相位耗时读数（e1）：生长相位（多批逐条）。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "growth");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -2233,8 +2320,11 @@ async fn run_quiz(
 /// 断档记档（评审裁定，判据面不重构）：④（落位面）不单列——由 ③ 契约面
 /// 的管线半边「管线走通并发布」承接（见下方 `generate_lesson_content` 调
 /// 用点：生成/发布失败即 EXIT=2，ready 正文发布即落位）；⑥（#179 入册）
-/// 属豁免项，不在本波判据清单。读数
-/// （软）：字数/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
+/// 属豁免项，不在本波判据清单。e4 追加⑦：瞬断注入臂——生成前掐断两次
+/// 开流再恢复（provider 层单次重试吸收第一断、门面重试环吸收第二断），
+/// 生成仍成功且重试读数 attempts_used=2/success。读数
+/// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
+/// 门）/小节数/题目数/首现与用名标注/超纲专名抽查（人读对照卡，
 /// 超纲面无机械门）。无凭据临时库走到生成即如实非零。
 #[allow(clippy::too_many_arguments)]
 async fn run_content(
@@ -2405,6 +2495,12 @@ async fn run_content(
         feedback: None,
     };
     let lesson_b_id = nomifun_common::LearningLessonId::parse(&lesson_b)?;
+    // 瞬断注入臂（e4）：生成前注入两次开流瞬断再恢复——第一断被 loop_core
+    // 的 provider 层开流单重试吸收，第二断由门面重试环吸收（retry_feedback
+    // 回灌 + 段级幂等续跑，已落库的节不重写），生成仍成功。E2E 实录形态
+    // （第二次瞬断即 BAD_GATEWAY 裸抛）在此必红。
+    wiring.lesson_flaky_remaining.store(2, std::sync::atomic::Ordering::SeqCst);
+    println!("  (transient injection: 2 stream-open cuts queued before the run)");
     // 硬判据③（契约面，管线半边）= 管线真实走通并发布：生成失败如实非零
     // 退出（无凭据临时库走到这里即报 no enabled provider——structure 冒烟
     // 同纪律）。
@@ -2421,6 +2517,33 @@ async fn run_content(
 
     println!("[2/2] hard criteria (D7: input face / clauses / contract / precedents)…");
     let mut failed: Vec<String> = Vec::new();
+    // 判据⑦（e4 瞬断注入臂）：两次注入全部被吸收（计数归零）+ 门面重试环
+    // 读数 attempts_used=2 / stop_reason=success——瞬断自愈不是靠运气，是
+    // 重试环真实跑了两试。
+    {
+        let injected_left = wiring
+            .lesson_flaky_remaining
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let stats = service.lesson_run_stats();
+        let attempts = stats.as_ref().map(|stats| stats.attempts_used).unwrap_or(0);
+        let stop_reason = stats
+            .as_ref()
+            .map(|stats| stats.stop_reason.as_str())
+            .unwrap_or("missing");
+        println!(
+            "transient read-out: injected_remaining={injected_left} attempts_used={attempts} stop_reason={stop_reason}"
+        );
+        if injected_left != 0 {
+            failed.push(format!(
+                "判据7红：瞬断注入未被全部吸收（剩余 {injected_left} 次未消费）——注入面失灵"
+            ));
+        }
+        if attempts != 2 || stop_reason != "success" {
+            failed.push(format!(
+                "判据7红：门面重试环读数异常（attempts_used={attempts}, stop_reason={stop_reason}，应为 2/success）——第二断应由重试环吸收"
+            ));
+        }
+    }
     // 观测存档行：user 字段 = 输入面（两面装配事实），system 字段 = 条款面。
     let archive = archiving.as_ref().expect("content smoke wires archiving");
     let calls = std::fs::read_to_string(archive.run_dir().join("calls.jsonl"))
@@ -2506,12 +2629,22 @@ async fn run_content(
         );
     }
 
-    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。
+    // 读数面（非门禁）：字数 / 小节 / 题目 / 首现与用名标注。密度基线
+    // （e5）：节均字符量 + 例题节数——learnhub 定调「语义纪律不是机械门」，
+    // 不立字数下限，只立对照基线（薄不薄看画像是否吃到 est×档位，回查
+    // est_budget / boundary 读数行）。
     let body_chars: usize = view
         .sections
         .iter()
         .map(|section| section.body_md.chars().filter(|c| !c.is_whitespace()).count())
         .sum();
+    let section_count = view.sections.len();
+    let sec_avg_chars = if section_count == 0 { 0 } else { body_chars / section_count };
+    let example_sections = view
+        .sections
+        .iter()
+        .filter(|section| section.kind == nomifun_learning::SectionKind::Example)
+        .count();
     let joined: String = view
         .sections
         .iter()
@@ -2519,7 +2652,8 @@ async fn run_content(
         .collect::<Vec<_>>()
         .join("\n");
     println!(
-        "content read-out: sections={} activities={} body_chars={body_chars} est={}",
+        "content read-out: sections={} activities={} body_chars={body_chars} \
+         sec_avg_chars={sec_avg_chars} example_sections={example_sections} est={}",
         view.sections.len(),
         view.activities.len(),
         view.est,
@@ -2605,6 +2739,9 @@ async fn run_content(
         "observation: {}/observation/learning-smoke (ArchivingCompleter + task JSONL)",
         cli.data_dir.display()
     );
+    // 相位耗时读数（e1）：内容相位（多节点逐条）——9-15 次串行小调用的
+    // 调用数与字符量基线，两遍式对照（后续票）从这里起表。
+    print_phase_readings(&wiring.task_finishes.lock().unwrap(), "lesson");
     if !failed.is_empty() {
         for failure in &failed {
             eprintln!("{failure}");

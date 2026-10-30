@@ -20,7 +20,7 @@ pub use switches::{
     OPEN_JUDGE_SWITCH_ENV, TASK_GATE_SWITCH_ENV,
 };
 
-pub use completer::LearningCompleter;
+pub use completer::{LearningCompleter, LlmUsageDelta, LlmUsageMeter};
 
 pub use events::LearningEventEmitter;
 
@@ -34,9 +34,9 @@ pub use course_outline::draft::{
 pub use lesson_draft::{
     EST_BUDGET_SWITCH_ENV, ExcerptRole, GraphConceptFaces, GraphLessonContext, LessonContentAgentEngine,
     LessonDraftView, LessonExcerpt, LessonGenerationContext, LessonInspectView, LessonOp,
-    LessonPatchReport, LessonPrecedent, est_budget_enabled, is_est_budget_disabled_value,
-    normalize_capacity_note, render_est_budget_line, render_known_names_line,
-    render_precedent_block, render_teaches_tier_line,
+    LessonPatchReport, LessonPrecedent, LessonSectionBodySummary, est_budget_enabled,
+    is_est_budget_disabled_value, normalize_capacity_note, render_est_budget_line,
+    render_known_names_line, render_precedent_block, render_teaches_tier_line,
 };
 
 pub use generation::{
@@ -82,6 +82,8 @@ pub use learning_graph::structure_contract::{
     validate_structure as validate_structure_artifact,
 };
 pub use learning_graph::structure_gen::StructureInput;
+/// 门位标签读数单源（e2）：快照 info/warn 行与 smoke structure 档 OK 行共用。
+pub use learning_graph::structure_gen::count_door_labeled_blocks;
 
 pub use models::{
     ActivityKind, ActivityView, AttemptResult, BasisConceptView, BasisView, ConceptAuditCycle,
@@ -113,6 +115,8 @@ pub use models::{
 };
 pub use routes::learning_routes;
 pub use service::{CompanionXpSink, GrowthRunStats, LearningService};
+/// 课时生成双模面（e4）：异步臂 202 响应体 + 门面重试环读数（smoke 判据）。
+pub use service::{LessonGenerationAccepted, LessonRunStats};
 /// 判分观测面脱敏占位（n4 D9）：smoke grade 档注册进 `ArchivingCompleter`
 /// 时引用同一常量——占位文本单源（判底/作答原文不进观测面）。
 pub use service::{REDACTED_GROUNDING_PLACEHOLDER, REDACTED_RESPONSE_PLACEHOLDER};

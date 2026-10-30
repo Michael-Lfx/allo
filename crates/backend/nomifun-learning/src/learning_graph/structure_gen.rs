@@ -1,8 +1,10 @@
-//! 知识结构生成门面（wayfinder 票 g2/g4）：① structure ② 前置地形串行双
-//! 调用（json 接缝、thinking ON），任一产物违反契约或门口对账失败，两份
-//! **一起**重新生成并把逐条款违规报告注入重试装配，≤3 轮，全成才返回快照
-//! 信封（service 层单 UPDATE 原子落列）。provider 不支持 json_object 即整轮
-//! 失败并明示原因（fail loud，不降级）——重试不耗时：provider 在流入口即拒。
+//! 知识结构生成门面（wayfinder 票 g2/g4）：① 前置地形 ② structure 串行双
+//! 调用（json 接缝、thinking ON；e2 判定输入通道：地形先产出，门口清单注入
+//! 结构装配——door_refs 门位标签的判定源），任一产物违反契约或门口对账失
+//! 败，两份**一起**重新生成并把逐条款违规报告注入重试装配，≤3 轮，全成才返
+//! 回快照信封（service 层单 UPDATE 原子落列）。provider 不支持 json_object
+//! 即整轮失败并明示原因（fail loud，不降级）——重试不耗时：provider 在流入
+//! 口即拒。
 
 use serde_json::Value;
 
@@ -76,6 +78,9 @@ pub(crate) async fn generate_structure_artifacts(
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
     let mut prev_fingerprint: Option<String> = None;
+    // 提前停战轮次（e1 D2）：消息面如实区分「预算耗尽」与「同指纹早停」——
+    // 早停后仍报满预算轮数是撒谎，读数与排障都依赖真实轮数。
+    let mut early_stop: Option<usize> = None;
     for attempt in 1..=MAX_ATTEMPTS {
         if cancel.is_some_and(|token| token.is_cancelled()) {
             return Err(AppError::Conflict(
@@ -90,15 +95,27 @@ pub(crate) async fn generate_structure_artifacts(
                     report_head = %report.chars().take(400).collect::<String>(),
                     "structure generation rejected — regenerating both artifacts with clause feedback"
                 );
-                // 同指纹早停：上一轮也是这份逐条款报告 → 重试已无收敛可能
-                //（反馈回灌已无法改变结果，连败两次即停，调用数 2 非 3）。
+                // 同指纹早停（e1 D2 通用化：判据走 growth_retry::
+                // should_stop_early 单源——「两个循环共用指纹与判别口径」从
+                // 注释约定升为代码事实）。上一轮也是这份逐条款报告 → 反馈回
+                // 灌已无法改变结果（同装配同输出），立即耗尽不烧剩余轮次——
+                // 省掉 E2E 实录的 4 分钟白跑。守卫豁免随共享判据自带；结构
+                // 侧当前没有机械守卫失败面（attempt_once 的失败全是生成面：
+                // 解析/契约/LLM 错误），guard 恒 false——判据先行统一，将来
+                // 加守卫面时早停语义零改动。
                 let fingerprint = super::growth_retry::normalize_report(&report);
-                if attempt > 1 && prev_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                if super::growth_retry::should_stop_early(
+                    attempt,
+                    &fingerprint,
+                    prev_fingerprint.as_deref(),
+                    false,
+                ) {
                     tracing::warn!(
                         attempt,
                         "structure generation produced the same violations twice — stopping early"
                     );
                     last = report;
+                    early_stop = Some(attempt);
                     break;
                 }
                 prev_fingerprint = Some(fingerprint);
@@ -110,43 +127,77 @@ pub(crate) async fn generate_structure_artifacts(
             }
         }
     }
-    Err(AppError::UnprocessableEntity(format!(
-        "知识结构生成 {MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）；课程已保留，可重试生成：\n{last}"
-    )))
+    let message = match early_stop {
+        Some(attempt) => format!(
+            "知识结构生成连续两轮产出相同违约报告（重试反馈已无法收敛），\
+             在第 {attempt}/{MAX_ATTEMPTS} 轮提前停止；课程已保留，可重试生成：\n{last}"
+        ),
+        None => format!(
+            "知识结构生成 {MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）；课程已保留，可重试生成：\n{last}"
+        ),
+    };
+    Err(AppError::UnprocessableEntity(message))
 }
 
-/// 单次尝试：结构 → 地形 串行，双契约门 + 门口对账，全成才算过。
+/// 门口清单装配（纯函数，learnhub `door_list_markdown` 域中立移植）：每门一行
+/// `- [编号]（hard=硬前置/self_check=可自检）判据`，编号与判据逐字取自前置地形
+/// 产物——结构侧课程门「逐字全收」与 door_refs 门位标签覆盖判定的判定源。
+/// 行措辞与已会声明的 terrain_reference 同族（[编号]（语义）判据）。
+pub(crate) fn door_list_markdown(terrain: &Value) -> String {
+    let doors = terrain
+        .get("doors")
+        .and_then(Value::as_array)
+        .map(|doors| doors.as_slice())
+        .unwrap_or_default();
+    if doors.is_empty() {
+        return "（无：前置地形未产出门口清单）".to_owned();
+    }
+    doors
+        .iter()
+        .filter_map(|door| {
+            let id = door.get("id").and_then(Value::as_str)?.trim();
+            let criterion = door.get("criterion").and_then(Value::as_str)?.trim();
+            let kind = match door.get("kind").and_then(Value::as_str).unwrap_or_default() {
+                "hard" => "硬前置",
+                "self_check" => "可自检",
+                _ => "门口",
+            };
+            Some(format!("- [{id}]（{kind}）{criterion}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 门位标签读数（e2 单源）：带**非空** `door_refs` 的块数——生成门面落库后
+/// 的零标注 warn/info 读数与 smoke structure 档 OK 行共用本函数（读数数字
+/// 逐字一致，零第二真相）；改口径只动这里。
+pub fn count_door_labeled_blocks(structure: &Value) -> usize {
+    structure
+        .get("blocks")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| {
+                    block
+                        .get("door_refs")
+                        .and_then(Value::as_array)
+                        .is_some_and(|refs| !refs.is_empty())
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// 单次尝试：地形 → 结构 串行（e2 判定输入通道：结构生成必须看见门口清单
+/// ——编号+判据是 door_refs 门位标签与课程门逐字全收的判定源，learnhub #161
+/// 同构），双契约门 + 门口对账，全成才算过。
 async fn attempt_once(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
     input: &StructureInput,
     feedback: &str,
 ) -> Result<StructureArtifacts, String> {
-    let proficiency = match input.proficiency_statement.as_deref().map(str::trim) {
-        Some(text) if !text.is_empty() => text.to_owned(),
-        _ => "（未提供——请依据目标扩写一句可检验的程度声明，写进 proficiency_statement）".to_owned(),
-    };
-    let structure_prompt = structure_prompts::assemble(
-        &structure_prompts::GOAL_DECOMPOSITION,
-        &[
-            ("goal", input.goal.as_str()),
-            ("proficiency_statement", proficiency.as_str()),
-            ("retry_feedback", feedback),
-        ],
-    )
-    .map_err(|error| error.to_string())?;
-    let structure_raw = crate::generation::complete_json_coach(
-        completer,
-        model_override,
-        STRUCTURE_SYSTEM,
-        &structure_prompt.text,
-        crate::generation::STRUCTURE_MAX_TOKENS,
-        Some(structure_prompts::GOAL_DECOMPOSITION.temperature),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let structure = parse_artifact(&structure_raw, "知识结构")?;
-
     let basis = match input.learner_basis.as_deref().map(str::trim) {
         Some(text) if !text.is_empty() => text.to_owned(),
         _ => "（未提供——按纯零基础处理）".to_owned(),
@@ -171,6 +222,33 @@ async fn attempt_once(
     .await
     .map_err(|error| error.to_string())?;
     let terrain = parse_artifact(&terrain_raw, "前置地形")?;
+
+    let proficiency = match input.proficiency_statement.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => text.to_owned(),
+        _ => "（未提供——请依据目标扩写一句可检验的程度声明，写进 proficiency_statement）".to_owned(),
+    };
+    let door_list = door_list_markdown(&terrain);
+    let structure_prompt = structure_prompts::assemble(
+        &structure_prompts::GOAL_DECOMPOSITION,
+        &[
+            ("goal", input.goal.as_str()),
+            ("proficiency_statement", proficiency.as_str()),
+            ("door_list", door_list.as_str()),
+            ("retry_feedback", feedback),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    let structure_raw = crate::generation::complete_json_coach(
+        completer,
+        model_override,
+        STRUCTURE_SYSTEM,
+        &structure_prompt.text,
+        crate::generation::STRUCTURE_MAX_TOKENS,
+        Some(structure_prompts::GOAL_DECOMPOSITION.temperature),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let structure = parse_artifact(&structure_raw, "知识结构")?;
 
     // 契约门：双产物逐条款执法 + 门口对账（g2：structure 的门口只准引用
     // 地形门口）。警告级只透出，不触发重试。
@@ -294,8 +372,16 @@ mod tests {
         })
     }
 
-    /// 脚本 completer：按序吐回包，只走 json 接缝；脚本耗尽即报错。
-    struct Scripted(std::sync::Mutex<Vec<String>>);
+    /// 脚本 completer：按序吐回包并留存每次收到的 prompt 全文（e2 判定输入
+    /// 通道的断言面），只走 json 接缝；脚本耗尽即报错。留存的 prompt 数
+    /// （= json 接缝调用次数）供早停红绿样断言「剩余预算没烧」。
+    struct Scripted(std::sync::Mutex<Vec<String>>, std::sync::Mutex<Vec<String>>);
+
+    impl Scripted {
+        fn calls(&self) -> usize {
+            self.1.lock().unwrap().len()
+        }
+    }
 
     #[async_trait::async_trait]
     impl LearningCompleter for Scripted {
@@ -312,10 +398,13 @@ mod tests {
             &self,
             _: Option<(&str, &str)>,
             _: &str,
-            _: &str,
+            prompt: &str,
             _: u32,
             _: Option<f32>,
         ) -> Result<String, nomifun_common::AppError> {
+            let mut prompts = self.1.lock().unwrap();
+            prompts.push(prompt.to_owned());
+            drop(prompts);
             let mut replies = self.0.lock().unwrap();
             if replies.is_empty() {
                 return Err(nomifun_common::AppError::Internal("script exhausted".into()));
@@ -325,18 +414,22 @@ mod tests {
     }
 
     fn scripted(replies: Vec<Value>) -> Scripted {
-        Scripted(std::sync::Mutex::new(
-            replies
-                .into_iter()
-                .map(|value| serde_json::to_string(&value).unwrap())
-                .collect(),
-        ))
+        Scripted(
+            std::sync::Mutex::new(
+                replies
+                    .into_iter()
+                    .map(|value| serde_json::to_string(&value).unwrap())
+                    .collect(),
+            ),
+            std::sync::Mutex::new(Vec::new()),
+        )
     }
 
-    /// 过门回路：双产物契约全绿 + 门口对账通过，门面一轮即成功。
+    /// 过门回路：双产物契约全绿 + 门口对账通过，门面一轮即成功；且结构装配
+    /// 收到的 prompt 携带门口清单（e2 判定输入通道：地形先行、编号+判据注入）。
     #[tokio::test]
     async fn golden_artifacts_pass_in_one_attempt() {
-        let completer = scripted(vec![golden_structure(), golden_terrain()]);
+        let completer = scripted(vec![golden_terrain(), golden_structure()]);
         let artifacts = generate_structure_artifacts(
             &completer,
             None,
@@ -351,6 +444,43 @@ mod tests {
         .expect("golden artifacts pass");
         assert_eq!(artifacts.structure["goal_type"], json!("capability"));
         assert_eq!(artifacts.terrain["doors"][0]["id"], json!("G1"));
+        // 判定输入通道：第一次调用 = 地形，第二次 = 结构且带门口清单原文。
+        let prompts = completer.1.lock().unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[0].contains("前置地形"), "{:#}", prompts[0]);
+        assert!(
+            prompts[1].contains("知识结构") && prompts[1].contains("门口清单"),
+            "{:#}",
+            prompts[1]
+        );
+        assert!(
+            prompts[1].contains("能用配方法解形如 x²=p 的方程"),
+            "结构装配必须携带门口判据原文（door_refs 判定源）：{:#}",
+            prompts[1]
+        );
+        assert!(prompts[1].contains("- [G1]（硬前置）"), "{:#}", prompts[1]);
+    }
+
+    /// 门口清单装配（纯函数）：判据逐字、kind 双档措辞、空清单防御回退。
+    #[test]
+    fn door_list_markdown_renders_ids_kinds_and_criteria() {
+        let two_doors = json!({
+            "doors": [
+                { "id": "G1", "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard" },
+                { "id": "G2", "criterion": "可辨认等式两边同乘同除的合法性", "kind": "self_check" }
+            ]
+        });
+        let list = door_list_markdown(&two_doors);
+        assert!(
+            list.contains("- [G1]（硬前置）能用配方法解形如 x²=p 的方程"),
+            "{list}"
+        );
+        assert!(
+            list.contains("- [G2]（可自检）可辨认等式两边同乘同除的合法性"),
+            "{list}"
+        );
+        assert_eq!(door_list_markdown(&json!({ "doors": [] })), "（无：前置地形未产出门口清单）");
+        assert_eq!(door_list_markdown(&json!({})), "（无：前置地形未产出门口清单）");
     }
 
     /// 首轮门口对账失败（结构引用了地形未定义的 G9）→ 报告进反馈 → 第二轮
@@ -360,10 +490,10 @@ mod tests {
         let mut bad_structure = golden_structure();
         bad_structure["domain"]["prerequisite_doors"] = json!(["G1", "G9"]);
         let completer = scripted(vec![
+            golden_terrain(),
             bad_structure,
             golden_terrain(),
             golden_structure(),
-            golden_terrain(),
         ]);
         let artifacts = generate_structure_artifacts(
             &completer,
@@ -390,10 +520,10 @@ mod tests {
         let mut aligned = golden_structure();
         aligned["blocks"][0]["door_refs"] = json!(["G1"]);
         let completer = scripted(vec![
+            golden_terrain(),
             bad_structure,
             golden_terrain(),
             aligned,
-            golden_terrain(),
         ]);
         let artifacts = generate_structure_artifacts(
             &completer,
@@ -410,12 +540,21 @@ mod tests {
         assert_eq!(artifacts.structure["blocks"][0]["door_refs"], json!(["G1"]));
     }
 
-    /// 预算耗尽：持续违约 = 明示失败，消息携带最后一轮逐条款报告。
+    /// 预算耗尽（全预算路径）：每轮**不同**违约（指纹永不重复）= 早停不
+    /// 触发，明示失败烧满 3 轮（6 次调用），消息携带最后一轮逐条款报告。
     #[tokio::test]
     async fn exhausted_budget_fails_loud_with_clause_report() {
-        let mut bad = golden_structure();
-        bad["blocks"] = json!([]); // gd.blocks.count 红，永不修正
-        let completer = scripted(vec![bad; 6]); // 3 轮 ×（结构 + 地形）
+        let mut bad_a = golden_structure();
+        bad_a["blocks"] = json!([]); // gd.blocks.count 红
+        let mut bad_b = golden_structure();
+        bad_b["domain"]["prerequisite_doors"] = json!(["G1", "G9"]); // 门口对账红
+        let mut bad_c = golden_structure();
+        bad_c["blocks"][0]["door_refs"] = json!(["G1", "G9"]); // gd.blocks.door_refs 红
+        let completer = scripted(vec![
+            golden_terrain(), bad_a, // 第 1 轮
+            golden_terrain(), bad_b, // 第 2 轮（违约互异 → 早停不触发）
+            golden_terrain(), bad_c, // 第 3 轮
+        ]); // 3 轮 ×（地形 + 结构），每轮违约不同 = 指纹永不重复
         let error = generate_structure_artifacts(
             &completer,
             None,
@@ -430,7 +569,61 @@ mod tests {
         .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("3 轮"), "{message}");
+        assert!(message.contains("gd.blocks.door_refs"), "{message}");
+        assert_eq!(completer.calls(), 6, "three full rounds x (structure + terrain)");
+    }
+
+    /// e1 D2 红绿样（早停臂）：同一违约报告连败两次 = 反馈回灌已无法改变
+    /// 结果 → 第 2 轮即提前停止，剩余轮次不烧（4 次调用非 6）；消息如实
+    /// 报「提前停止」并携带违约报告。
+    #[tokio::test]
+    async fn same_fingerprint_stops_early_and_saves_the_remaining_budget() {
+        let mut bad = golden_structure();
+        bad["blocks"] = json!([]); // gd.blocks.count 红，永不修正
+        let completer = scripted(vec![
+            golden_terrain(), bad.clone(), // 第 1 轮
+            golden_terrain(), bad.clone(), // 第 2 轮（同指纹 → 早停）
+            golden_terrain(), bad, // 不应到达（预算 proof：脚本有余量）
+        ]);
+        let error = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("提前停止"), "{message}");
+        assert!(message.contains("2/3"), "{message}");
         assert!(message.contains("gd.blocks.count"), "{message}");
+        assert_eq!(
+            completer.calls(),
+            4,
+            "early stop after the second identical fingerprint: 2 rounds x 2 calls, not 6"
+        );
+    }
+
+    /// 门位标签读数（e2 单源）：只计带非空 door_refs 的块——空数组、缺键、
+    /// 非 door_refs 键一律不计；无 blocks 键 = 0（与快照 info/warn 与 smoke
+    /// OK 行共用的同一读数口径）。
+    #[test]
+    fn count_door_labeled_blocks_counts_only_non_empty_refs() {
+        let structure = json!({
+            "blocks": [
+                { "name": "块A", "slug": "block-a", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1"] },
+                { "name": "块B", "slug": "block-b", "spine": "s", "stage": "入门", "note": "n", "door_refs": ["G1", "G2"] },
+                { "name": "块C", "slug": "block-c", "spine": "s", "stage": "进阶", "note": "n", "door_refs": [] },
+                { "name": "块D", "slug": "block-d", "spine": "s", "stage": "高级", "note": "n" }
+            ]
+        });
+        assert_eq!(count_door_labeled_blocks(&structure), 2);
+        assert_eq!(count_door_labeled_blocks(&json!({})), 0);
+        assert_eq!(count_door_labeled_blocks(&golden_structure()), 0);
     }
 
     /// 快照信封：version/generated_at/双产物成形，且是 JSON 对象（列 CHECK）。

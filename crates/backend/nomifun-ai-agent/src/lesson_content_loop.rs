@@ -178,6 +178,14 @@ pub struct LiveLessonContentAgentEngine {
     /// `{method:"lesson_agent_publish", capacity_note, estimated_minutes}`。
     /// 生产接线恒 None（引擎自带 provider，不经 ArchivingCompleter）。
     pub prompt_observer: Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    /// 可选 provider 装饰钩子（e4 冒烟瞬断注入面）：引擎解析出真实 provider
+    /// 后经它包装再进计数层（`None` = 直通，生产接线恒 None）。smoke content
+    /// 档注入「先掐断两次再放行」的 flaky 包装，钉「provider 层单次重试吸收
+    /// 第一断、门面重试环吸收第二断，生成仍成功」的判据——与 prompt_observer
+    /// 同一先例：测试接缝住结构体、生产零装配。
+    pub provider_decorator: Option<
+        Arc<dyn Fn(Arc<dyn LlmProvider>) -> Arc<dyn LlmProvider> + Send + Sync>,
+    >,
 }
 
 #[async_trait::async_trait]
@@ -240,6 +248,21 @@ impl LiveLessonContentAgentEngine {
         )
         .await?;
         let provider: Arc<dyn LlmProvider> = create_provider(&cfg);
+        // 冒烟瞬断注入面（e4）：装饰钩子先包（flaky 故障在计数层的内圈——
+        // 被掐断的调用也如实计入调用数，与 CountingCompleter 的 Err 口径一致）。
+        let provider: Arc<dyn LlmProvider> = match self.provider_decorator.as_ref() {
+            Some(decorator) => decorator(provider),
+            None => provider,
+        };
+        // 相位耗时读数（e1）：上下文携带任务注册表的用量句柄时，经计数包装
+        // 上报每次 LLM 调用（调用数 + 输入/输出字符量），finish 行聚合落档。
+        let provider: Arc<dyn LlmProvider> = match context.usage.as_ref() {
+            Some(usage) => Arc::new(crate::learning_loop::CountingProvider {
+                inner: provider,
+                usage: usage.clone(),
+            }),
+            None => provider,
+        };
         tracing::info!(
             course = %context.course_title,
             lesson = %context.lesson_title,
@@ -365,7 +388,11 @@ impl LiveLessonContentAgentEngine {
                     "ok": false,
                     "error": "timeout",
                 }));
-                Err(AppError::Internal(message))
+                // 显式超时 = 可重试失败（e4 错误两桶：judge 90s 形态的移植）。
+                // tokio 超时在 await 点丢弃管线 future——在途流连接随之断开，
+                // 「线程分离不可撤销，只弃其果」的 async 原生等价物；草稿与
+                // 轮次日志已留档，门面重试环把本错误归可重试桶接续。
+                Err(AppError::Timeout(message))
             }
         }
     }
@@ -735,10 +762,15 @@ fn compose_resume_user_text(
 ) -> String {
     let mut text = lesson_user_text(context);
     text.push_str(&format!(
-        "\n【上次会话进度（{} 轮后中断；接着此进度继续，不要重复已写好的节与题目）】\n当前草稿状态：{}\n",
+        "\n【上次会话进度（{} 轮后中断；接着此进度继续，不要重复已写好的节与题目——草稿状态里的 section_bodies 就是已落库的节，对它们再调用 ls_set_section_body 会被幂等跳过）】\n当前草稿状态：{}\n",
         previous_rounds.len(),
         draft_state_json
     ));
+    // 门面重试环的反馈槽（e4）：上次尝试因瞬断中断时重试环写入——模型先
+    // 知道发生了什么、该从哪继续，而不是对着无声的进度猜。
+    if let Some(feedback) = context.retry_feedback.as_deref().filter(|f| !f.trim().is_empty()) {
+        text.push_str(&format!("\n【重试反馈】{feedback}\n"));
+    }
     for line in previous_rounds {
         text.push_str("\n- ");
         text.push_str(line);
@@ -768,7 +800,7 @@ fn lesson_content_tools(ctx: Arc<LoopContext>, repair_face: bool) -> Vec<OneShot
     }
     tools.push(ls_inspect(Arc::clone(&ctx)));
     tools.push(ls_set_section_manifest(Arc::clone(&ctx)));
-    tools.push(ls_set_section_body(Arc::clone(&ctx)));
+    tools.push(ls_set_section_body(Arc::clone(&ctx), repair_face));
     tools.push(ls_patch_activities(Arc::clone(&ctx)));
     tools.push(ls_audit(Arc::clone(&ctx)));
     tools.push(ls_finish(Arc::clone(&ctx)));
@@ -909,12 +941,29 @@ fn ls_set_section_manifest(ctx: Arc<LoopContext>) -> OneShotTool {
     }
 }
 
-fn ls_set_section_body(ctx: Arc<LoopContext>) -> OneShotTool {
+/// 段级幂等跳过（e1 D1 第一步原语，生成面专属）：已落库正文的节再收到
+/// `ls_set_section_body` 即短路返回「已在库」——不落 op、不 bump revision、
+/// 模型写好的正文原样保留。这是 learnhub 备料「内容在→只补题库」的循环
+/// 形式等价物：整课重试/续跑时已成功落库的节不重写，天然断点续跑。语义
+/// 面向并发安全（e4 段写并行依赖此原语）：不同 section_key 落不同的草稿
+/// 表项互不依赖；同 key 竞争时先写者赢、后到者拿「已在库」——跳过判定
+/// 与落库虽非同一临界区，但草稿 op 本身按 key 整体替换，两种交错都收敛
+/// 到「恰一份正文在库」，无半写状态。修复面**不带**跳过：审计打回的节
+/// 必须能按报告重写（repair loop 的正当改稿通道）。
+///
+/// 跳过判定读 inspect 视图的 `section_bodies`（清单序已落库节 + 字符数）
+/// ——模型在 ls_inspect 与续跑开场看到的是同一份读数，认知与执法单源。
+fn ls_set_section_body(ctx: Arc<LoopContext>, repair_face: bool) -> OneShotTool {
     let prose_budgets = prose_budget_rules();
+    let rewrite_clause = if repair_face {
+        "每节可多次调用，重复调用即整节重写（修复面按审计报告改稿）。"
+    } else {
+        "每节调用一次；已写好正文的节再调用即幂等跳过（已落库的节不重写——断点续跑纪律），该节需要改动时走审计报告驱动的修复轮。"
+    };
     OneShotTool {
         name: "ls_set_section_body".into(),
         description: format!(
-            "写入一节正文：body 是该节的完整 Markdown，直接以 `## ` 标题行开头（照抄清单标题），不要 JSON、不要包裹围栏、节内禁止 ### 子标题。篇幅按节型（{prose_budgets}；demo 可视化为主；summary 要点清单；practice ≤{PRACTICE_BODY_TARGET_CHARS} 字不写题）。每节调用一次；重复调用即整节重写。"
+            "写入一节正文：body 是该节的完整 Markdown，直接以 `## ` 标题行开头（照抄清单标题），不要 JSON、不要包裹围栏、节内禁止 ### 子标题。篇幅按节型（{prose_budgets}；demo 可视化为主；summary 要点清单；practice ≤{PRACTICE_BODY_TARGET_CHARS} 字不写题）。{rewrite_clause}"
         ),
         input_schema: serde_json::json!({
             "type": "object",
@@ -940,6 +989,24 @@ fn ls_set_section_body(ctx: Arc<LoopContext>) -> OneShotTool {
                     .filter(|body| !body.trim().is_empty())
                     .ok_or_else(|| "ls_set_section_body: body 必须是非空 Markdown 文本".to_owned())?
                     .to_owned();
+                // 段级幂等跳过（生成面）：已落库的节原样保留，短路返回。
+                if !repair_face {
+                    let view = ctx
+                        .service
+                        .inspect_lesson_draft(&draft_id)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(existing) = view
+                        .section_bodies
+                        .iter()
+                        .find(|body| body.section_key == section_key)
+                    {
+                        return Ok(format!(
+                            "section {section_key} 正文已在库（{} 非空字符）——幂等跳过，未重写（已落库的节不重写）。\
+                             继续写未完成的节，或 ls_audit 自查后 ls_finish。",
+                            existing.chars
+                        ));
+                    }
+                }
                 let report = ctx
                     .service
                     .patch_lesson_draft(
@@ -1104,7 +1171,7 @@ mod tests {
         serde_json::json!({ "operations": [
             { "op": "add_activity", "activity": { "kind": "single_choice", "prompt": "期权的本质是什么？", "options": ["权利", "义务", "债务"], "answer": "权利", "explanation": "买方持有的是权利而非义务。" } },
             { "op": "add_activity", "activity": { "kind": "true_false", "prompt": "期权卖方没有履约义务。", "answer": false, "explanation": "卖方承担履约义务。" } },
-            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "" } },
+            { "op": "add_activity", "activity": { "kind": "reflection", "prompt": "结合一个场景说明权利与义务的不对称。", "answer": null, "explanation": "用身边合同或规则的例子说明：权利可以放弃，义务不履行会有后果，两者不对等。" } },
             { "op": "set_estimated_minutes", "minutes": 15 }
         ] })
     }
@@ -1154,6 +1221,8 @@ mod tests {
             graph: None,
             goal: None,
             forbidden_concepts: String::new(),
+            usage: None,
+            retry_feedback: None,
         }
     }
 
@@ -1461,6 +1530,7 @@ mod tests {
             deps: test_deps(),
             round_logs: Arc::new(Mutex::new(HashMap::new())),
             prompt_observer: None,
+            provider_decorator: None,
         }
     }
 
@@ -1558,6 +1628,85 @@ mod tests {
             ContentBlock::ToolResult { is_error: true, content, .. }
                 if content.contains("ls_start")
         ));
+    }
+
+    /// e1 D1 段级幂等跳过（红绿样）：生成面对已落库正文的节再调用
+    /// ls_set_section_body = 短路返回「已在库」，正文原样保留（revision 不
+    /// 动）——整课重试/续跑时已成功落库的节不重写；修复面同款调用照旧整
+    /// 节重写（审计打回的正当改稿通道不受跳过约束）。
+    #[tokio::test]
+    async fn generation_face_skips_written_sections_while_repair_face_rewrites() {
+        let (service, _dir) = test_service().await;
+        let (ctx, draft_slot, _published) = context(Arc::clone(&service));
+        // 预置草稿 = 「上次会话」形态：清单 + s1 正文已落库。
+        let view = service.create_lesson_draft(ctx.context.clone()).unwrap();
+        *draft_slot.lock().unwrap() = Some(view.draft_id.clone());
+        service
+            .patch_lesson_draft(
+                &view.draft_id,
+                vec![
+                    nomifun_learning::LessonOp::SetSectionManifest {
+                        sections: serde_json::from_value(section_manifest_ops()["sections"].clone())
+                            .unwrap(),
+                        capacity_note: None,
+                    },
+                    nomifun_learning::LessonOp::SetSectionBody {
+                        section_key: "s1".into(),
+                        body: concept_body(),
+                    },
+                ],
+            )
+            .unwrap();
+        let before = service.inspect_lesson_draft(&view.draft_id).unwrap();
+        assert_eq!(before.section_bodies.len(), 1, "s1 已落库");
+        let original_chars = before.section_bodies[0].chars;
+
+        // 生成面：同 key 交一份**不同**正文 → 幂等跳过，原稿保留。
+        let generation_face = lesson_content_tools(Arc::clone(&ctx), false)
+            .into_iter()
+            .find(|tool| tool.name == "ls_set_section_body")
+            .unwrap();
+        let reply = (generation_face.handler)(serde_json::json!({
+            "section_key": "s1",
+            "body": format!("## 概念：期权的定义\n\n被续跑重写尝试污染的正文。{}", "凑长度。".repeat(40)),
+        }))
+        .await
+        .unwrap();
+        assert!(reply.contains("幂等跳过"), "{reply}");
+        assert!(reply.contains("已在库"), "{reply}");
+        let after_skip = service.inspect_lesson_draft(&view.draft_id).unwrap();
+        assert_eq!(
+            after_skip.revision, before.revision,
+            "skipped op must not bump the revision"
+        );
+        assert_eq!(
+            after_skip.section_bodies[0].chars, original_chars,
+            "the original body must survive the rewrite attempt verbatim"
+        );
+
+        // 修复面：同 key 同正文 → 照旧整节重写（replaced 报告 + 正文更新）。
+        // 正文带表格 = 过概念节的 visual 承诺门（改稿必须能落库）。
+        let repair_face = lesson_content_tools(Arc::clone(&ctx), true)
+            .into_iter()
+            .find(|tool| tool.name == "ls_set_section_body")
+            .unwrap();
+        let rewritten = format!(
+            "## 概念：期权的定义\n\n| 头寸 | 义务 |\n| --- | --- |\n| 卖方 | 有 |\n\n{}\n",
+            "修复轮按审计报告重写的正文段落。".repeat(20)
+        );
+        let reply = (repair_face.handler)(serde_json::json!({
+            "section_key": "s1",
+            "body": rewritten,
+        }))
+        .await
+        .unwrap();
+        assert!(reply.contains("replaced"), "{reply}");
+        let after_repair = service.inspect_lesson_draft(&view.draft_id).unwrap();
+        assert!(after_repair.revision > after_skip.revision, "repair op bumps the revision");
+        assert_ne!(
+            after_repair.section_bodies[0].chars, original_chars,
+            "the repair face must be able to rewrite a flagged section"
+        );
     }
 
     /// 分节草稿缺节就过早 ls_finish（section_body_missing danger）→ 发布被
@@ -1904,6 +2053,25 @@ mod tests {
         // 新会话（无日志）不出现该段。
         let fresh = lesson_user_text(&context);
         assert!(!fresh.contains("上次会话进度"), "{fresh}");
+    }
+
+    /// e4 门面重试环的反馈槽：resume 开场渲染【重试反馈】段（上次瞬断指纹
+    /// + 段级幂等提示——认知面与 e1 的工具面执法同源）；无反馈不出现该段。
+    #[test]
+    fn resume_opening_carries_the_retry_feedback_slot() {
+        let mut context = lesson_context();
+        context.clear_grounding();
+        context.retry_feedback = Some(
+            "第 1 次尝试因瞬断中断（瞬断：连接被重置）；已写好的节已在草稿里。".into(),
+        );
+        let text = compose_resume_user_text(&context, r#"{"revision":2}"#, &[]);
+        assert!(text.contains("【重试反馈】"), "{text}");
+        assert!(text.contains("瞬断：连接被重置"), "{text}");
+
+        let mut plain = lesson_context();
+        plain.clear_grounding();
+        let no_feedback = compose_resume_user_text(&plain, r#"{"revision":1}"#, &[]);
+        assert!(!no_feedback.contains("【重试反馈】"), "{no_feedback}");
     }
 
     /// 发布帧披露 visual 声明分布（ADR-0008）：整课「无」独占即可疑的

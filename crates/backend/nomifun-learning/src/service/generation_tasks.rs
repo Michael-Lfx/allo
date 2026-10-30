@@ -27,7 +27,8 @@
 //! - **真取消**：每个任务一枚 token；任务体在检查点轮询 + 经
 //!   [`CancellationCompleter`] 在 LLM 调用内 `select!` 真中断（中断 = 断
 //!   HTTP；批事务原子落库 = 中断零落库）。课时内容循环尚未接 token
-//!   （ADR-0004 显式差异，断开请求即中断）——对它的取消请求如实拒绝
+//!   （ADR-0004 显式差异）——e4 起课时任务已后台化（脱离请求生命周期，
+//!   断连**不再**中断生成），远程取消仍未接线，对它的取消请求如实拒绝
 //!   （排队期课时任务取消安全：body 零执行，不涉及 token 接线）。
 //! - **观测旁路**：begin/finish 两型 JSONL 行经注入的 observer 旁路落盘
 //!   （非执法；observer 缺席或写失败都静默降级）。
@@ -155,7 +156,8 @@ impl Drop for GatePermit {
 /// 一次长任务的注册句柄：`token()` 供任务体接检查点；显式 `finish_*` 收尾
 /// （终态首写即定）；未收尾即 drop（任务被 abort/panic）按 failed 留痕。
 /// 过闸任务的许可住守卫内（RAII）：任何退出路径（含 panic 展开）都归还
-/// 许可，容量不随异常退出泄漏。
+/// 许可，容量不随异常退出泄漏。`usage()` 是相位耗时读数的上报面（e1）：
+/// 任务体的计数包装往里加增量，finish 行聚合落档。
 pub(crate) struct GenerationTaskGuard {
     registry: Arc<GenerationTaskRegistry>,
     key: String,
@@ -163,6 +165,9 @@ pub(crate) struct GenerationTaskGuard {
     /// 在跑占用（过闸 = 真许可，off 臂 = 仅读数；drop 即归还，任何退出路径
     /// 含 panic 展开都不泄漏）。
     permit: GatePermit,
+    /// LLM 用量累计（e1 相位耗时读数）：begin 铸造，任务体经计数包装上报，
+    /// 显式 finish 与 drop 兜底两条收尾路径都进 finish 行。
+    usage: crate::completer::LlmUsageMeter,
 }
 
 impl GenerationTaskGuard {
@@ -173,6 +178,12 @@ impl GenerationTaskGuard {
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    /// LLM 用量累计句柄（e1 相位耗时读数）：计数包装（结构/生长 =
+    /// [`CountingCompleter`]，课时 = agent 侧 CountingProvider）上报增量。
+    pub fn usage(&self) -> crate::completer::LlmUsageMeter {
+        self.usage.clone()
     }
 
     /// 进度叙事（step 机器面 / detail 人面，后端单源）：快照与事件共用。
@@ -193,7 +204,9 @@ impl GenerationTaskGuard {
     }
 
     fn finish(mut self, state: &'static str, detail: impl Into<String>) {
-        self.registry.finish(&self.key, state, detail.into());
+        let usage = self.usage.snapshot();
+        self.registry
+            .finish(&self.key, state, detail.into(), usage);
         // 阻止 Drop 再标 failed（finish 已消费语义，这里只是双保险）。
         self.key.clear();
     }
@@ -202,8 +215,13 @@ impl GenerationTaskGuard {
 impl Drop for GenerationTaskGuard {
     fn drop(&mut self) {
         if !self.key.is_empty() {
-            self.registry
-                .finish(&self.key.clone(), STATE_FAILED, "任务中断（未收尾即退出）".into());
+            let usage = self.usage.snapshot();
+            self.registry.finish(
+                &self.key.clone(),
+                STATE_FAILED,
+                "任务中断（未收尾即退出）".into(),
+                usage,
+            );
         }
         // 许可（若过闸）在此归还——panic/abort 展开也走这里，容量不泄漏。
         let _ = &self.permit;
@@ -308,6 +326,24 @@ impl GenerationTaskRegistry {
         node_id: Option<&str>,
         topic: &str,
     ) -> Result<GenerationTaskGuard, AppError> {
+        let key = self.pre_register(kind, course_id, node_id, topic)?;
+        self.begin_registered(key).await
+    }
+
+    /// 登记（快路径，不等待准入）：同步落 `queued` 记录（gate off = 直落
+    /// running，与 [`Self::begin`] 同临界区语义）+ 排队读数 + begin 观测行，
+    /// 立即返回任务键。准入等待与 body 执行由调用方经 [`Self::begin_registered`]
+    /// 在**任意任务生命周期**接续——e4 课时后台化即：HTTP 请求只登记（202
+    /// 秒回，满闸也不等），spawn 出的脱离任务再等准入、跑完 body（断连不
+    /// 取消）。同键已有 `queued|running` 记录 = Conflict（防双击双跑，与
+    /// begin 同面）。
+    pub(crate) fn pre_register(
+        &self,
+        kind: &'static str,
+        course_id: &str,
+        node_id: Option<&str>,
+        topic: &str,
+    ) -> Result<String, AppError> {
         let key = Self::key(kind, course_id, node_id);
         let token = CancellationToken::new();
         let gated = self.gate.is_some();
@@ -353,8 +389,28 @@ impl GenerationTaskRegistry {
             "at": now_ms(),
         })
         .to_string());
+        Ok(key)
+    }
 
-        // —— 过闸等待：许可到手后同锁复查终态（见方法注释第 3 步）。
+    /// 接续一个已登记任务（[`Self::pre_register`] 的下半程）：等闸准入 +
+    /// 同锁复查终态，返回任务 guard。排队期取消 = Err（取消冲突文案，body
+    /// 零执行，终态已由取消侧落账）。
+    pub(crate) async fn begin_registered(
+        self: &Arc<Self>,
+        key: String,
+    ) -> Result<GenerationTaskGuard, AppError> {
+        // 任务令牌在登记时已入册（cancel 触发的就是它）：guard 持同一枚，
+        // 两臂一致。
+        let token = {
+            let tasks = self.tasks.lock().expect("generation task registry poisoned");
+            tasks
+                .get(&key)
+                .map(|record| record.token.clone())
+                .ok_or_else(|| {
+                    AppError::Internal(format!("generation task record vanished: {key}"))
+                })?
+        };
+        // —— 过闸等待：许可到手后同锁复查终态（见 begin 注释第 3 步）。
         let permit = match self.gate.clone() {
             None => GatePermit::uncounted(self),
             Some(semaphore) => {
@@ -416,6 +472,7 @@ impl GenerationTaskRegistry {
             key,
             token,
             permit,
+            usage: crate::completer::LlmUsageMeter::new(),
         })
     }
 
@@ -431,8 +488,16 @@ impl GenerationTaskRegistry {
     }
 
     /// 终态收尾（首写即定；对已终态记录的收尾是无操作）。观测旁路发
-    /// finish 行。
-    fn finish(&self, key: &str, state: &'static str, detail: String) {
+    /// finish 行——携带相位耗时读数（e1）：`elapsed_ms` = 准入到收尾的墙钟
+    /// （排队期不计），`llm_calls`/`input_chars`/`output_chars` = 任务体计数
+    /// 包装的累计（缺席计数包装的任务三项为 0）。
+    fn finish(
+        &self,
+        key: &str,
+        state: &'static str,
+        detail: String,
+        usage: crate::completer::LlmUsageDelta,
+    ) {
         let line = {
             let mut tasks = self.tasks.lock().expect("generation task registry poisoned");
             let Some(record) = tasks.get_mut(key) else {
@@ -450,6 +515,10 @@ impl GenerationTaskRegistry {
                 "kind": record.kind,
                 "state": state,
                 "at": now_ms(),
+                "elapsed_ms": record.started_at.elapsed().as_millis() as u64,
+                "llm_calls": usage.llm_calls,
+                "input_chars": usage.input_chars,
+                "output_chars": usage.output_chars,
             })
             .to_string()
         };
@@ -484,7 +553,7 @@ impl GenerationTaskRegistry {
         }
         if record.kind == KIND_LESSON {
             return Err(AppError::Conflict(
-                "课时内容生成暂不支持远程取消：请求断开即中断".into(),
+                "课时内容生成暂不支持远程取消：任务已后台运行（断连不中断），取消接线另议".into(),
             ));
         }
         record.state = STATE_CANCELLED;
@@ -1073,6 +1142,90 @@ mod tests {
         );
     }
 
+    /// e4 登记面拆分：`pre_register` 同步落 queued 记录（快照立即可见，满
+    /// 闸也不等待——HTTP 202 秒回的地基），`begin_registered` 在脱离任务里
+    /// 随后准入跑完 body。
+    #[tokio::test]
+    async fn pre_register_is_immediate_and_begin_registered_admits_later() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+
+        // 满闸：pre_register 不等准入，queued 记录同步可见。
+        let key = registry
+            .pre_register(KIND_LESSON, "c", Some("l"), "detached")
+            .expect("register must not wait for admission");
+        assert_eq!(key, "lesson:c:l");
+        let view = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == key)
+            .expect("queued record visible immediately after pre_register");
+        assert_eq!(view.state, STATE_QUEUED);
+
+        // 同键二次登记拒绝（防双击双跑，与 begin 同面）。
+        assert!(registry
+            .pre_register(KIND_LESSON, "c", Some("l"), "dup")
+            .is_err());
+
+        // 脱离任务里接续：放行在跑占位 → 空位释放 → 准入迁移 running、跑完
+        // 收 done（排队等待发生在任务侧，不占提交方）。
+        let runner = {
+            let registry = Arc::clone(&registry);
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                let guard = registry.begin_registered(key).await?;
+                gate.arrive();
+                gate.wait_open(Duration::from_secs(10))
+                    .await
+                    .map_err(AppError::Conflict)?;
+                guard.finish_done("detached done");
+                Ok::<(), AppError>(())
+            })
+        };
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+        runner.await.unwrap().unwrap();
+        // 注册表内的终态（queued → running → done 可能快到 RUNNING 观察不
+        // 到——登记时点 queued 已在上面断过，这里只钉终态）。
+        let state = registry
+            .snapshot()
+            .into_iter()
+            .find(|task| task.key == "lesson:c:l")
+            .unwrap()
+            .state;
+        assert_eq!(state, STATE_DONE);
+    }
+
+    /// e4 排队取消窗口在拆分面上同样闭合：登记后取消 → `begin_registered`
+    /// 返回取消冲突，body 零执行（取消侧先写终态再触发 token 的不变式由
+    /// pre_register/begin_registered 共享同一把锁承载）。
+    #[tokio::test]
+    async fn begin_registered_honors_a_queued_cancel() {
+        let registry = gated_registry();
+        let gate = TestGate::new();
+        let fillers = fill_capacity(&registry, Arc::clone(&gate), "a", TASK_GATE_LIMIT);
+        assert!(gate.wait_arrived(TASK_GATE_LIMIT, Duration::from_secs(5)).await);
+        let key = registry.pre_register(KIND_LESSON, "c", None, "t").unwrap();
+        assert_eq!(registry.cancel(&key).unwrap(), Some(STATE_CANCELLED));
+        let result = registry.begin_registered(key).await;
+        let error = match result {
+            Ok(_) => panic!("queued cancel must surface as the cancel conflict"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains(CANCELLED_MESSAGE),
+            "queued cancel surfaces as the cancel conflict: {error}"
+        );
+        gate.open();
+        for handle in fillers {
+            handle.await.unwrap().unwrap();
+        }
+    }
+
     /// m7 键级互斥回归：排队态同样拒绝同键并发 begin（防双击双跑面扩大到
     /// queued）。
     #[tokio::test]
@@ -1229,6 +1382,124 @@ mod tests {
         assert!(result.is_err_and(|error| error.to_string().contains(CANCELLED_MESSAGE)));
         assert_eq!(inner.calls.load(Ordering::SeqCst), 1, "inner ran exactly once");
     }
+
+    /// e1 相位耗时读数：finish 行携带 `elapsed_ms` + 用量三项；显式 finish
+    /// 与 drop 兜底两条收尾路径都带数；begin 行不带（读数只在收尾结算）。
+    #[tokio::test]
+    async fn finish_line_carries_phase_readings() {
+        let registry = gated_registry();
+        let lines: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        registry.set_observer(Arc::new(move |line: &str| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                sink.lock().unwrap().push(value);
+            }
+        }));
+
+        let task = registry.begin(KIND_STRUCTURE, "c", None, "t").await.unwrap();
+        // 任务体上报两笔增量（如两次 LLM 调用）。
+        task.usage().add(crate::completer::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars: 100,
+            output_chars: 30,
+        });
+        task.usage().add(crate::completer::LlmUsageDelta {
+            llm_calls: 1,
+            input_chars: 60,
+            output_chars: 20,
+        });
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        task.finish_done("ok");
+
+        let begin = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "begin")
+            .expect("begin line captured")
+            .clone();
+        assert!(begin.get("elapsed_ms").is_none(), "begin 行不带读数");
+        let finish = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "finish")
+            .expect("finish line captured")
+            .clone();
+        assert_eq!(finish["llm_calls"], 2, "两笔增量聚合");
+        assert_eq!(finish["input_chars"], 160);
+        assert_eq!(finish["output_chars"], 50);
+        assert!(
+            finish["elapsed_ms"].as_u64().is_some_and(|ms| ms < 60_000),
+            "elapsed_ms 在场且量级 sane: {finish}"
+        );
+    }
+
+    /// e1 相位耗时读数（drop 兜底臂）：未收尾即 drop = failed 留痕，finish
+    /// 行照带已上报的用量——中断任务的耗时读数不缺口。
+    #[tokio::test]
+    async fn dropped_guard_finish_line_still_carries_reported_usage() {
+        let registry = gated_registry();
+        let lines: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        registry.set_observer(Arc::new(move |line: &str| {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                sink.lock().unwrap().push(value);
+            }
+        }));
+        {
+            let task = registry.begin(KIND_LESSON, "c", Some("l"), "t").await.unwrap();
+            task.usage().add(crate::completer::LlmUsageDelta {
+                llm_calls: 3,
+                input_chars: 900,
+                output_chars: 120,
+            });
+        }
+        let finish = lines
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|line| line["type"] == "finish")
+            .expect("drop leaves the failed finish line")
+            .clone();
+        assert_eq!(finish["state"], STATE_FAILED);
+        assert_eq!(finish["llm_calls"], 3);
+        assert_eq!(finish["output_chars"], 120);
+    }
+
+    /// CountingCompleter：Ok 调用计调用数 + 双向字符量；Err 调用只计调用
+    /// 数（失败调用也是花掉的延迟，但没有产出可计）。
+    #[tokio::test]
+    async fn counting_completer_reports_ok_volume_and_err_calls() {
+        struct Stub;
+        #[async_trait::async_trait]
+        impl LearningCompleter for Stub {
+            async fn complete(
+                &self,
+                _model_override: Option<(&str, &str)>,
+                system: &str,
+                user: &str,
+                _max_tokens: u32,
+            ) -> Result<String, AppError> {
+                if user == "boom" {
+                    return Err(AppError::BadGateway("down".into()));
+                }
+                Ok(format!("{system}{user}reply"))
+            }
+        }
+        let meter = crate::completer::LlmUsageMeter::new();
+        let counting = CountingCompleter::new(&Stub, &meter);
+        counting.complete(None, "sys", "usr", 8).await.unwrap();
+        counting.complete(None, "sys", "boom", 8).await.unwrap_err();
+        let usage = meter.snapshot();
+        assert_eq!(usage.llm_calls, 2, "失败调用也计入调用数");
+        // Ok 调用：input = system+user 字符；output = 回包字符。Err 调用
+        // 不计字符。
+        assert_eq!(usage.input_chars, ("sysusr".chars().count()) as u64);
+        assert_eq!(usage.output_chars, ("sysusrreply".chars().count()) as u64);
+    }
 }
 
 /// 取消包装 completer（三轮 t2 真中断）：每个 LLM 调用与取消令牌
@@ -1314,5 +1585,110 @@ impl LearningCompleter for CancellationCompleter<'_> {
                 .complete_json_with_thinking(model_override, system, user, max_tokens, temperature),
         )
         .await
+    }
+}
+
+/// 用量计数包装 completer（e1 相位耗时读数，与 [`CancellationCompleter`]
+/// 同层）：委托内层并在每次调用后上报增量——调用数恒 +1（失败调用也是
+/// 花掉的延迟），输入/输出字符量只在 Ok 时计（`chars().count()` 全字符，
+/// 含空白）。与课时侧 nomifun-ai-agent `learning_loop::CountingProvider` 是
+/// **跨 crate 同职能双实现**（单源意图 = completer/provider 形状差异——
+/// 这里是一次式 complete 接缝，彼处是流事件接缝，不强行合并）；改动用量
+/// 口径（何时计调用数、字符量怎么算）时两处同步。与取消包装的组装次序
+/// （两条循环一致）：取消包在外、计数包在
+/// 内——被取消竞速丢弃的调用不上报，观测面如实反映「活着走完的调用」。
+pub(crate) struct CountingCompleter<'a> {
+    inner: &'a dyn LearningCompleter,
+    usage: &'a crate::completer::LlmUsageMeter,
+}
+
+impl<'a> CountingCompleter<'a> {
+    pub(crate) fn new(
+        inner: &'a dyn LearningCompleter,
+        usage: &'a crate::completer::LlmUsageMeter,
+    ) -> Self {
+        Self { inner, usage }
+    }
+
+    async fn count(
+        &self,
+        input_chars: usize,
+        result: Result<String, AppError>,
+    ) -> Result<String, AppError> {
+        match &result {
+            Ok(reply) => self.usage.add(crate::completer::LlmUsageDelta {
+                llm_calls: 1,
+                input_chars: input_chars as u64,
+                output_chars: reply.chars().count() as u64,
+            }),
+            Err(_) => self.usage.add(crate::completer::LlmUsageDelta {
+                llm_calls: 1,
+                input_chars: 0,
+                output_chars: 0,
+            }),
+        }
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl LearningCompleter for CountingCompleter<'_> {
+    async fn complete(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self.inner.complete(model_override, system, user, max_tokens).await;
+        self.count(input, result).await
+    }
+
+    async fn complete_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_with_thinking(model_override, system, user, max_tokens)
+            .await;
+        self.count(input, result).await
+    }
+
+    async fn complete_json(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_json(model_override, system, user, max_tokens, temperature)
+            .await;
+        self.count(input, result).await
+    }
+
+    async fn complete_json_with_thinking(
+        &self,
+        model_override: Option<(&str, &str)>,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+    ) -> Result<String, AppError> {
+        let input = system.chars().count() + user.chars().count();
+        let result = self
+            .inner
+            .complete_json_with_thinking(model_override, system, user, max_tokens, temperature)
+            .await;
+        self.count(input, result).await
     }
 }

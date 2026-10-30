@@ -77,6 +77,40 @@
         );
     }
 
+    /// e5 difficulty 消解 + explanation 三保险的条款覆盖断言（金样半边）：
+    /// 输出契约不再含 difficulty 字段（难度由装配面从节点 tier 铸值注入，
+    /// learnhub v1.8① 的「输入锚不进输出契约」同构）；交卷自检句在整课
+    /// 批与单节加题两面都在场——AI 批改题也必须写解析。
+    #[test]
+    fn difficulty_is_absent_and_self_check_clause_present_in_prompts() {
+        // 契约撤字段：整份提示词不再出现 difficulty（不区分大小写——难度
+        // 由装配面从节点 tier 铸值，模型零感知零铸值）。
+        assert!(
+            !LESSON_SYSTEM.to_lowercase().contains("difficulty"),
+            "LESSON_SYSTEM must not ask the model for difficulty"
+        );
+        assert!(
+            !LESSON_ACTIVITY_SYSTEM
+                .to_lowercase()
+                .contains("difficulty"),
+            "LESSON_ACTIVITY_SYSTEM must not mention difficulty"
+        );
+        // 排序条款仍在（提示词保留「由易到难」的教学弧，字段换成系统铸值）。
+        assert!(LESSON_SYSTEM.contains("Order the set easy to hard"));
+        // 交卷自检句（learnhub 三模板域中立移植）：重解一遍 + AI 批改题
+        // 也必须写 explanation。
+        assert!(LESSON_SYSTEM.contains("re-solve every question as if you were the candidate"));
+        assert!(
+            LESSON_SYSTEM
+                .contains("AI-graded questions (reflection/open_question) must carry a real \"explanation\"")
+        );
+        assert!(LESSON_ACTIVITY_SYSTEM.contains("re-solve this question as if you were the candidate"));
+        assert!(
+            LESSON_ACTIVITY_SYSTEM
+                .contains("a reflection question must carry a real \"explanation\"")
+        );
+    }
+
     #[test]
     fn section_outline_guardrails_block_direction_extremes() {
         let section = |key: &str| SectionPack {
@@ -363,7 +397,7 @@
             prompt: prompt.into(),
             options: Vec::new(),
             answer: json!(null),
-            explanation: String::new(),
+            explanation: "判分底：答出推理链与一个自取实例。".into(),
             distractors: Vec::new(),
             tol: None,
             section_key: None,
@@ -391,6 +425,20 @@ evidence: None,
         let mut under_floor = at_cap.clone();
         under_floor.remove(0);
         assert!(validate_lesson_activities(&under_floor).is_err());
+
+        // e5 explanation 三保险（机械面）：AI 批改题空解析在 shape 闸被
+        // 打回——整批校验（装配面）与单节加题共用 validate_shape，反馈
+        // 点名补解析；存量空解析行读侧容错不变（不走本闸）。
+        let mut silent = at_cap.clone();
+        let mut unsolved = reflection("r2");
+        unsolved.explanation = String::new();
+        assert!(unsolved
+            .validate_shape((3, 5), true)
+            .unwrap_err()
+            .contains("explanation"));
+        silent[3] = unsolved;
+        let error = validate_lesson_activities(&silent).unwrap_err();
+        assert!(error.contains("explanation"), "{error}");
     }
 
     /// 证据回引硬门（t2）：objective 题缺/空 evidence = 违约（重试反馈点名）；
@@ -414,7 +462,7 @@ evidence: None,
             prompt: "r".into(),
             options: Vec::new(),
             answer: json!(null),
-            explanation: String::new(),
+            explanation: "评卷要点：说清量与方向的区别。".into(),
             distractors: Vec::new(),
             tol: None,
             section_key: None,
@@ -942,7 +990,7 @@ evidence: None,
             {"kind": "single_choice", "prompt": "q1", "options": ["A", "B", "C"], "answer": "A", "explanation": "e", "evidence": "「q1 的证据回引」", "section_key": "s1", "difficulty": 1},
             {"kind": "numeric", "prompt": "q2", "options": [], "answer": 9.8, "tol": 0.1, "explanation": "e", "evidence": "「q2 的证据回引」", "section_key": "s1", "difficulty": 2},
             {"kind": "multi_choice", "prompt": "q3", "options": ["速度", "质量", "位移"], "answer": ["速度", "位移"], "explanation": "e", "evidence": "「q3 的证据回引」", "section_key": "s1", "difficulty": 2},
-            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "", "section_key": "general", "difficulty": 3}
+            {"kind": "open_question", "prompt": "q4", "options": [], "answer": null, "explanation": "评卷要点：复述复利机制并给出一个生活实例。", "section_key": "general", "difficulty": 3}
           ]
         }"#
         .into()
