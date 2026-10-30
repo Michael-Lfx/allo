@@ -411,7 +411,9 @@ mod tests {
             "disclaimer",
             "prerequisite_doors",
             "6–12",
-            "40–80",
+            // f2（③ 三档 25 硬/40 参考档/100 硬）：下限随校验器常量同批。
+            "25–80",
+            "不足 25 拒收",
             "五个键",
             "assumes",
             "composes",
@@ -434,9 +436,10 @@ mod tests {
             "宁缺勿滥",
             "必然已会本块",
             // e2（learnhub #161 判定输入通道域中立移植）：门口清单输入——
-            // prerequisite_doors 逐字全收 + 判据原文出处。
+            // prerequisite_doors 只写编号本身、逐字取自清单（f2 ①：「逐字
+            // 全收」措辞被模型误读为整行照抄，措辞随批换形）。
             "门口清单",
-            "逐字全收",
+            "逐字取自输入门口清单",
             "判据原文见输入门口清单",
         ] {
             assert!(goal_body.contains(phrase), "goal prompt missing「{phrase}」");

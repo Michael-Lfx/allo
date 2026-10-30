@@ -1177,6 +1177,9 @@ async fn run_structure(
     if !red.is_empty() {
         return Ok(ExitCode::from(2));
     }
+    // warn 档读数（f2/A2）：警告不拒收、不进重试反馈，但在验收面可见
+    // （k04「读数行在场」先例）——低于 40 参考档与越档两处警告档由此显影。
+    let warnings = violations.iter().filter(|violation| violation.warning).count();
     let blocks = structure["blocks"].as_array().map(Vec::len).unwrap_or(0);
     let spines = structure["spines"].as_array().map(Vec::len).unwrap_or(0);
     let edges = structure["edges"].as_array().map(Vec::len).unwrap_or(0);
@@ -1210,7 +1213,7 @@ async fn run_structure(
         return Ok(ExitCode::from(2));
     }
     println!(
-        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
+        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  warnings={warnings}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
         course_id.as_str()
     );
     // 相位耗时读数（e1）：两仓首条结构相位耗时基线（jsonl 全量留档，这里
@@ -1426,13 +1429,15 @@ async fn run_grow(
         let (nodes, seq) = batch_summary(&wiring.pool, &course_id, round as i64).await?;
         // 重试读数（二轮 t1，读数面非门禁）：最近一次生长的轮次与停因。
         // 挂号表读数行（m3）：rows/invalid/retried/degraded——机械校验观测面。
+        // external_hits（f1 A5）：行 concept 命中本批复用锚的行数——挂号行
+        // 锚定 registry 概念的可观察信号。
         // 碎片裁决读数行（m9 补接）：total/rows/unhandled/degraded——同款观测面。
         let stats = wiring.service.growth_run_stats();
         match stats {
             Some(stats) => println!(
                 "  round {round}: batch #{seq}, {nodes} nodes, criteria green  \
                  [retry: attempts_used={}, stop_reason={}]  \
-                 [provenance: rows={} invalid={} retried={} degraded={}]  \
+                 [provenance: rows={} invalid={} retried={} degraded={} external_hits={}]  \
                  [fragments: total={} rows={} unhandled={} degraded={}]  \
                  [review_state: {} injections={}]",
                 stats.attempts_used,
@@ -1441,6 +1446,7 @@ async fn run_grow(
                 stats.review_provenance_invalid,
                 stats.review_provenance_retried,
                 stats.review_provenance_degraded,
+                stats.review_provenance_external_hits,
                 stats.review_fragments_total,
                 stats.review_fragments_rows,
                 stats.review_fragments_unhandled,
@@ -3082,6 +3088,9 @@ async fn run_repair(
         eprintln!("CRITERION VIOLATION [{}] {}", violation.code, violation.message);
     }
     anyhow::ensure!(red.is_empty(), "disk re-read failed full gd.* validation");
+    // warn 档读数（f2/A2）：修补档与 structure 档同构——警告不拒收但在
+    // 验收面可见。
+    let warnings = violations.iter().filter(|violation| violation.warning).count();
 
     // 级联标记：结构已改时挂载必须判 stale（读侧 hash 比对单点兜住）。
     let new_hash = nomifun_learning::learning_graph_hash(disk_raw.as_bytes());
@@ -3098,7 +3107,7 @@ async fn run_repair(
         return Ok(ExitCode::from(3));
     }
     let _ = new_hash;
-    println!("OK  course={course_id}");
+    println!("OK  course={course_id}  warnings={warnings}");
     Ok(ExitCode::SUCCESS)
 }
 
