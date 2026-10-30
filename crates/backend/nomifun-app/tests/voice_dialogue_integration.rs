@@ -2623,10 +2623,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     rt.update_task_status(Some(task_snap.clone()));
 
     // Admit Task A into DB
+    let bound_conv_for_claim = bound_conv.lock().unwrap().clone().unwrap_or_else(|| conv_id.clone());
     let repo = svc.conversation_repo();
-    let epoch = repo.get_turn_admission_state(USER, &conv_id).await.unwrap().epoch;
+    let epoch = repo.get_turn_admission_state(USER, &bound_conv_for_claim).await.unwrap().epoch;
     let _ = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
-        USER, &conv_id, "operation-task-A", &nomifun_common::MessageId::new().into_string(),
+        USER, &bound_conv_for_claim, "operation-task-A", &nomifun_common::MessageId::new().into_string(),
         r#"{"content":"请执行任务"}"#, epoch, nomifun_common::now_ms(),
     ).await.unwrap();
 
@@ -2635,7 +2636,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let r = rt.clone();
     let t = tasks.clone();
     let svc_clone = svc.clone();
-    let conv_id_clone = conv_id.clone();
+    let conv_id_clone = bound_conv_for_claim.clone();
     let completion_task = tokio::spawn(async move {
         resume_gate.reached.notified().await;
         // Finalize Task A in DB
@@ -2680,25 +2681,113 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     }).await.expect("Turn C must complete routing");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    // 4. Verify End-to-End Database Persistence and Turn Sequence
+    // 4. Verify End-to-End Database Persistence and Exact Sequential 6 Messages
     let target_conv = bound_conv.lock().unwrap().clone().unwrap_or_else(|| conv_id.clone());
     let messages = svc.list_messages(USER, &target_conv, Default::default()).await.unwrap().items;
-    println!("[DEBUG] messages count in target_conv {target_conv}: {}", messages.len());
-    for m in &messages {
-        println!("   -> msg: {}", m.content);
-    }
-    let b_persisted = messages.iter().any(|m| m.content.to_string().contains("今天天气怎么样"));
-    let c_persisted = messages.iter().any(|m| m.content.to_string().contains("明天会下雨吗"));
-    assert!(b_persisted, "Sentence B must be persisted in database");
-    assert!(c_persisted, "Sentence C must be persisted in database");
+    assert_eq!(messages.len(), 6, "Must persist exactly 6 messages (3 user prompts + 3 assistant responses)");
+
+    // Assert exact order and content of all 6 messages:
+    assert!(messages[0].content.to_string().contains("input-A: 请执行任务"));
+    assert_eq!(messages[0].position, Some(nomifun_common::MessagePosition::Right));
+    assert!(messages[1].content.to_string().contains("任务已接单，正在执行。"));
+    assert_eq!(messages[1].position, Some(nomifun_common::MessagePosition::Left));
+
+    assert!(messages[2].content.to_string().contains("input-B: 今天天气怎么样"));
+    assert_eq!(messages[2].position, Some(nomifun_common::MessagePosition::Right));
+    assert!(messages[3].content.to_string().contains("天气晴朗，气温22度。"));
+    assert_eq!(messages[3].position, Some(nomifun_common::MessagePosition::Left));
+
+    assert!(messages[4].content.to_string().contains("input-C: 明天会下雨吗"));
+    assert_eq!(messages[4].position, Some(nomifun_common::MessagePosition::Right));
+    assert!(messages[5].content.to_string().contains("任务正在后台执行中。"));
+    assert_eq!(messages[5].position, Some(nomifun_common::MessagePosition::Left));
+
+    // Assert Task A completed delivery receipt in repository:
+    let receipt = svc.conversation_repo().get_delivery_receipt(USER, &target_conv, "operation-task-A").await.unwrap().unwrap();
+    assert_eq!(receipt.status, "completed");
+    assert_eq!(receipt.result_ok, Some(true));
 
     let snap = rt.snapshot();
     assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
     assert_eq!(router.call_count.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 turns must be routed");
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
     assert!(snap.ended_reason.is_none(), "Session must remain active");
+    assert_eq!(snap.conversation.len(), 3, "Snapshot must record 3 conversation turns");
 
     worker.abort();
     let _ = worker.await;
+    db.close().await;
+}
+
+#[tokio::test]
+async fn test_host_epoch_rejection_when_no_active_task_at_preflight_even_with_history() {
+    // Verifies that when no task was active at preflight, historical completed receipts cannot authorize an external +1 bump
+    const OWNER_CONST: &str = "0190f5fe-7c00-7a00-8000-000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let db = nomifun_db::init_database_memory_with_owner(nomifun_common::UserId::parse(OWNER_CONST.to_owned()).unwrap()).await.unwrap();
+    let pool = db.pool().clone();
+
+    let svc = Arc::new(ConversationService::new(
+        Arc::<str>::from(OWNER_CONST),
+        dir.path().into(),
+        Arc::new(ReviewCapturedEvents::default()),
+        Arc::new(NoopSkillResolver),
+        Arc::new(EmptyRegistry),
+        Arc::new(SqliteConversationRepository::new(pool.clone())),
+        Arc::new(SqliteAgentMetadataRepository::new(pool.clone())),
+        Arc::new(SqliteAcpSessionRepository::new(pool)),
+        Arc::new(nomifun_conversation::NoExecutionConversationBoundary),
+    ));
+
+    let recorder = ConversationVoiceDialogueRecorder::new(svc.clone(), OWNER_CONST.into(), dir.path())
+        .with_active_window_candidate(Arc::new(std::sync::RwLock::new(VoiceWindowContext {
+            conversation_id: None,
+            workspace: Some(dir.path().to_str().unwrap().into()),
+            sequence: 1,
+        })));
+
+    // 1. Task A runs and completes: epoch becomes 2, completed receipt exists in DB
+    let a = VoiceDialogueRequest::scoped("session-history", "turn-A", "historical task");
+    let p = recorder.preflight(&a).await.unwrap();
+    let VoiceDialoguePreflight::Ready { conversation_id: id } = p else { panic!("Ready") };
+    const TASK: &str = r#"{"intent_type":"agent_task","task_goal":"historical task","spoken_ack":"accepted","requires_confirmation":false}"#;
+    recorder.record_pair(&id, &a, TASK).await.unwrap();
+
+    let repo = svc.conversation_repo();
+    let epoch = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    let _ = repo.claim_turn_delivery_receipt_and_admit_with_candidate(
+        OWNER_CONST, &id, "operation-history-A", &nomifun_common::MessageId::new().into_string(),
+        r#"{"content":"historical task"}"#, epoch, nomifun_common::now_ms(),
+    ).await.unwrap();
+    let completion = nomifun_db::TurnReceiptCompletion {
+        operation_id: "operation-history-A".into(),
+        kind: "turn".into(),
+        request_payload: r#"{"content":"historical task"}"#.into(),
+        result_ok: true,
+        result_text: Some("task done".into()),
+        result_error: None,
+        result_error_code: None,
+        result_error_retryable: None,
+    };
+    repo.finalize_turn(OWNER_CONST, &id, Some(&completion), nomifun_common::now_ms()).await.unwrap();
+    let epoch_after_a = repo.get_turn_admission_state(OWNER_CONST, &id).await.unwrap().epoch;
+    assert_eq!(epoch_after_a, 2);
+
+    // 2. B preflights when NO task is running (active_operation_id == None, recorded_epoch == 2)
+    let b = VoiceDialogueRequest::scoped("session-history", "turn-B", "new chat while idle");
+    let p_b = recorder.preflight(&b).await.unwrap();
+    assert!(matches!(p_b, VoiceDialoguePreflight::Ready { .. }));
+
+    // 3. Rogue external mutation advances epoch by +1 (2 -> 3) with NO new receipt
+    sqlx::query("UPDATE conversations SET admission_epoch = admission_epoch + 1 WHERE conversation_id = ?")
+        .bind(&id).execute(db.pool()).await.unwrap();
+
+    // 4. B calls record_pair: must NOT use old operation-history-A receipt to authorize +1 jump!
+    const CHAT: &str = r#"{"intent_type":"chat","reply_tts":"reply B"}"#;
+    let res = recorder.record_pair(&id, &b, CHAT).await;
+    assert!(
+        matches!(res, Err(VoiceDialogueRecorderError::BindingInvalid(ref code)) if code == "target_revision_changed"),
+        "Historical completed receipt must NOT authorize new epoch advance when preflight had no active task, got: {res:?}"
+    );
     db.close().await;
 }

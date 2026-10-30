@@ -722,30 +722,8 @@ impl ConversationVoiceDialogueRecorder {
             receipt.as_ref().is_some_and(|r| r.status == "completed")
         } else {
             // No task was running at preflight time:
-            if epoch_delta < 1 || epoch_delta > 2 {
-                return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
-            }
-            if let Some(ref active_op) = current_state.active_operation_id {
-                // Task is currently active: must belong to our session
-                records.iter().any(|r| {
-                    r.request.session_id.as_deref() == Some(session_id)
-                        && (r.command_id.as_deref() == Some(active_op) || r.request.voice_record_id.as_deref() == Some(active_op))
-                })
-            } else {
-                // Task has completed: must have matching receipt from our session
-                self.conversation_service.conversation_repo()
-                    .latest_completed_turn_receipt(&self.user_id, conversation_id).await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|r| {
-                        r.status == "completed"
-                            && records.iter().any(|rec| {
-                                rec.request.session_id.as_deref() == Some(session_id)
-                                    && (rec.command_id.as_deref() == Some(&r.operation_id)
-                                        || rec.request.voice_record_id.as_deref() == Some(&r.operation_id))
-                            })
-                    })
-            }
+            // An epoch advance cannot be authorized by historical completed receipts!
+            return Err(VoiceDialogueRecorderError::BindingInvalid("target_revision_changed".into()));
         };
 
         if !matches_session_operation {

@@ -3969,7 +3969,9 @@ impl VoiceCompanionRuntime {
                             code: "pending_utterance_dropped".into(),
                         });
                         let mut act = active_turn_clone.lock().unwrap_or_else(|e| e.into_inner());
-                        *act = None;
+                        if input_generation.load(Ordering::SeqCst) == input_id {
+                            *act = None;
+                        }
                     }
                 }
             }
@@ -4833,7 +4835,22 @@ impl VoiceCompanionRuntime {
                             speech_started = false;
                             listen_start = None;
 
+                            let snap = event_tx.snapshot();
+                            if snap.ended_reason.is_some() || snap.session_id.is_none() || snap.session_id.as_deref() != session.as_deref() {
+                                utterance_pcm.clear();
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                                continue;
+                            }
+
                             let mut d = driver.lock().await;
+                            let snap = event_tx.snapshot();
+                            if snap.ended_reason.is_some() || snap.session_id.is_none() || snap.session_id.as_deref() != session.as_deref() {
+                                drop(d);
+                                utterance_pcm.clear();
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                                continue;
+                            }
+
                             if let Ok(AcousticState::Deciding) =
                                 d.handle_event(AcousticEvent::SpeechEnd)
                             {
@@ -4867,6 +4884,10 @@ impl VoiceCompanionRuntime {
                                 );
                                 utterance_pcm.clear();
                                 native_worker_call!("kws_reset", kws.reset().await, ());
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                            } else {
+                                drop(d);
+                                utterance_pcm.clear();
                                 native_worker_call!("vad_reset", vad.reset().await, ());
                             }
                         }
@@ -4908,7 +4929,22 @@ impl VoiceCompanionRuntime {
                             speech_started = false;
                             listen_start = None;
 
+                            let snap = event_tx.snapshot();
+                            if snap.ended_reason.is_some() || snap.session_id.is_none() || snap.session_id.as_deref() != session.as_deref() {
+                                utterance_pcm.clear();
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                                continue;
+                            }
+
                             let mut d = driver.lock().await;
+                            let snap = event_tx.snapshot();
+                            if snap.ended_reason.is_some() || snap.session_id.is_none() || snap.session_id.as_deref() != session.as_deref() {
+                                drop(d);
+                                utterance_pcm.clear();
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                                continue;
+                            }
+
                             if let Ok(AcousticState::Deciding) =
                                 d.handle_event(AcousticEvent::FollowUpSpeech)
                             {
@@ -4942,6 +4978,10 @@ impl VoiceCompanionRuntime {
                                 );
                                 utterance_pcm.clear();
                                 native_worker_call!("kws_reset", kws.reset().await, ());
+                                native_worker_call!("vad_reset", vad.reset().await, ());
+                            } else {
+                                drop(d);
+                                utterance_pcm.clear();
                                 native_worker_call!("vad_reset", vad.reset().await, ());
                             }
                         }

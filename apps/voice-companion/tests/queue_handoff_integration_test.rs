@@ -98,13 +98,15 @@ async fn run_queue_handoff_case(offset: u64, announce: bool) -> bool {
     let router = Arc::new(Router(AtomicUsize::new(0)));
     let tasks = Arc::new(Tasks { release: Notify::new(), entered: Notify::new(), task: Mutex::new(None) });
 
-    let (rt, _) = VoiceCompanionRuntime::from_capture(
+    let (mut rt, _) = VoiceCompanionRuntime::from_capture(
         Arc::new(nomifun_voice_models::ModelManager::new(root.path())),
         Arc::new(OobeManager::new_bypassed()),
         Arc::new(Mutex::new(capture)),
         stt.clone(),
         router.clone(),
     );
+    let gate = Arc::new(voice_companion::voice::SpeechEndTestGate::default());
+    rt.set_dispatch_queue_gate(Some(gate.clone()));
     let rt = Arc::new(rt.with_tasks(tasks.clone()).with_test_playback(
         Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
         Arc::new(Speech),
@@ -138,8 +140,6 @@ async fn run_queue_handoff_case(offset: u64, announce: bool) -> bool {
     rt.update_task_status(Some(task.clone()));
     println!("CASE offset={offset} announce={announce} A submitted phase={:?}", rt.snapshot().phase);
 
-    let gate = Arc::new(voice_companion::voice::SpeechEndTestGate::default());
-    assert!(voice_companion::voice::PARENT_DISPATCH_QUEUE_GATE.set(gate.clone()).is_ok());
     let resume_gate = gate.clone();
     let r = rt.clone();
     let t = tasks.clone();
