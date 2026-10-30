@@ -167,24 +167,19 @@ pub(crate) fn validate_term_provenance(
     let mut external_hits = 0usize;
     for row in rows {
         let concept = row.concept.trim();
-        if concept.is_empty() {
+        // f1（A1）：行 concept 合法域 = 批内提名 ∪ 本批复用命中锚——canonical
+        // 落锚集 = 复用登记表存量，合法（命中行数进读数）。空 concept 与
+        // 「两域皆无」（提名、锚都不在）同罪同文：凭空/存量概念不得作为行
+        // concept，死因共用一份措辞（A2：指引让重试可满足，替代短路 belt）。
+        if concept.is_empty() || (!nominees.contains(concept) && !anchors.contains(&key(concept))) {
             return Err(format!(
                 "行 concept 「{}」不在批内提名，也不在本批复用命中——登记表存量概念不得作为行 concept（本批未复用它）：删除该行，或改锚本批实际铸造/提名的概念",
-                row.concept.trim()
+                concept
             ));
         }
         if !nominees.contains(concept) {
-            // f1（A1）：批外概念只在「本批复用命中」时放行——canonical 落锚
-            // 集 = 复用登记表存量，合法（命中行数进读数）；两域皆无 = 凭空
-            // 概念，死因带处置指引（A2：指引让重试可满足，替代短路 belt）。
-            if anchors.contains(&key(concept)) {
-                external_hits += 1;
-            } else {
-                return Err(format!(
-                    "行 concept 「{}」不在批内提名，也不在本批复用命中——登记表存量概念不得作为行 concept（本批未复用它）：删除该行，或改锚本批实际铸造/提名的概念",
-                    row.concept.trim()
-                ));
-            }
+            // 走到这里的批外概念必已命中锚（两域皆无已在上方打回）。
+            external_hits += 1;
         }
         // 逐字落地只对「文本词」行（常识/缺失）成立：它们声称的是定义原文里
         // 的某个词；已教/自教行写的是定义**所预设的概念名**（如「代数式」
