@@ -199,8 +199,12 @@ impl LearningService {
             }),
         );
         let completer = self.course_completer()?;
+        // 相位耗时读数（e1）：计数包在内、取消包在门面内层——被取消竞速丢
+        // 弃的调用不上报（观测面只算活着走完的调用）。
+        let usage = task.usage();
+        let counting = crate::service::CountingCompleter::new(completer.as_ref(), &usage);
         let result = crate::learning_graph::structure_gen::generate_structure_artifacts(
-            completer.as_ref(),
+            &counting,
             model_override,
             input,
             Some(&token),
@@ -1574,7 +1578,9 @@ impl LearningService {
         // 批行状态机：生长开始即落 pending 行（slot 串行保证此课程此刻
         // 不可能有别的生长在跑，残留的 pending 一律是上次中断 → 转 failed）。
         let pending = self.begin_pending_batch(course_id).await?;
-        let result = self.growth_body(engine, &pending, token.clone()).await;
+        // 相位耗时读数（e1）：用量句柄随批体下传（计数包在取消包内层）。
+        let usage = task.usage();
+        let result = self.growth_body(engine, &pending, token.clone(), &usage).await;
         match &result {
             Ok(applied) => {
                 task.finish_done(if applied.idle { "就绪已满，本批无可长方向" } else { "批次已落库" });
@@ -1684,6 +1690,7 @@ impl LearningService {
         engine: &crate::learning_graph::GrowthRunner,
         pending: &PendingBatch,
         token: tokio_util::sync::CancellationToken,
+        usage: &crate::completer::LlmUsageMeter,
     ) -> Result<GrowthApplied, AppError> {
         use crate::learning_graph::growth_retry::{
             AttemptFail, is_batch_size_violation, normalize_report, redraft_capacity_report,
@@ -1691,11 +1698,14 @@ impl LearningService {
         };
         let course_id = &engine.course_id;
         let inner_completer = self.course_completer()?;
+        // 相位耗时读数（e1）：计数包在内、取消包在外——被取消竞速丢弃的调
+        // 用不上报（与结构循环同一组装次序）。
+        let counting = crate::service::CountingCompleter::new(inner_completer.as_ref(), usage);
         // 真取消（三轮 t2）：全部 completer 调用与 token select! 竞速——调用
         // 前已取消 = 零调用；调用中被取消 = 断 HTTP。批事务原子落库 =
         // 中断零落库。
         let cancellation = crate::service::CancellationCompleter::new(
-            inner_completer.as_ref(),
+            &counting,
             token.clone(),
         );
         let completer: &dyn LearningCompleter = &cancellation;

@@ -4029,7 +4029,9 @@ async fn structure_generation_stops_early_on_repeated_violations() {
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("均未通过"));
+    // e1 D2：早停消息如实报「提前停止」与真实轮数（不再谎报满预算）。
+    assert!(error.to_string().contains("提前停止"), "{}", error);
+    assert!(error.to_string().contains("2/3"), "{}", error);
     // 早停：结构稿每轮违约即打回；每轮耗 2 次调用（结构稿 JSON 合法、
     // 门口对账在地形稿之后才红）——2 轮 = 4 次调用，第 3 轮的 2 次不发生。
     assert_eq!(

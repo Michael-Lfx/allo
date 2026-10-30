@@ -78,6 +78,9 @@ pub(crate) async fn generate_structure_artifacts(
     let mut feedback = "(无:首次)".to_owned();
     let mut last = String::from("(未执行)");
     let mut prev_fingerprint: Option<String> = None;
+    // 提前停战轮次（e1 D2）：消息面如实区分「预算耗尽」与「同指纹早停」——
+    // 早停后仍报满预算轮数是撒谎，读数与排障都依赖真实轮数。
+    let mut early_stop: Option<usize> = None;
     for attempt in 1..=MAX_ATTEMPTS {
         if cancel.is_some_and(|token| token.is_cancelled()) {
             return Err(AppError::Conflict(
@@ -92,15 +95,27 @@ pub(crate) async fn generate_structure_artifacts(
                     report_head = %report.chars().take(400).collect::<String>(),
                     "structure generation rejected — regenerating both artifacts with clause feedback"
                 );
-                // 同指纹早停：上一轮也是这份逐条款报告 → 重试已无收敛可能
-                //（反馈回灌已无法改变结果，连败两次即停，调用数 2 非 3）。
+                // 同指纹早停（e1 D2 通用化：判据走 growth_retry::
+                // should_stop_early 单源——「两个循环共用指纹与判别口径」从
+                // 注释约定升为代码事实）。上一轮也是这份逐条款报告 → 反馈回
+                // 灌已无法改变结果（同装配同输出），立即耗尽不烧剩余轮次——
+                // 省掉 E2E 实录的 4 分钟白跑。守卫豁免随共享判据自带；结构
+                // 侧当前没有机械守卫失败面（attempt_once 的失败全是生成面：
+                // 解析/契约/LLM 错误），guard 恒 false——判据先行统一，将来
+                // 加守卫面时早停语义零改动。
                 let fingerprint = super::growth_retry::normalize_report(&report);
-                if attempt > 1 && prev_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+                if super::growth_retry::should_stop_early(
+                    attempt,
+                    &fingerprint,
+                    prev_fingerprint.as_deref(),
+                    false,
+                ) {
                     tracing::warn!(
                         attempt,
                         "structure generation produced the same violations twice — stopping early"
                     );
                     last = report;
+                    early_stop = Some(attempt);
                     break;
                 }
                 prev_fingerprint = Some(fingerprint);
@@ -112,9 +127,16 @@ pub(crate) async fn generate_structure_artifacts(
             }
         }
     }
-    Err(AppError::UnprocessableEntity(format!(
-        "知识结构生成 {MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）；课程已保留，可重试生成：\n{last}"
-    )))
+    let message = match early_stop {
+        Some(attempt) => format!(
+            "知识结构生成连续两轮产出相同违约报告（重试反馈已无法收敛），\
+             在第 {attempt}/{MAX_ATTEMPTS} 轮提前停止；课程已保留，可重试生成：\n{last}"
+        ),
+        None => format!(
+            "知识结构生成 {MAX_ATTEMPTS} 轮均未通过（最后一轮原因见下）；课程已保留，可重试生成：\n{last}"
+        ),
+    };
+    Err(AppError::UnprocessableEntity(message))
 }
 
 /// 门口清单装配（纯函数，learnhub `door_list_markdown` 域中立移植）：每门一行
@@ -330,8 +352,15 @@ mod tests {
     }
 
     /// 脚本 completer：按序吐回包并留存每次收到的 prompt 全文（e2 判定输入
-    /// 通道的断言面），只走 json 接缝；脚本耗尽即报错。
+    /// 通道的断言面），只走 json 接缝；脚本耗尽即报错。留存的 prompt 数
+    /// （= json 接缝调用次数）供早停红绿样断言「剩余预算没烧」。
     struct Scripted(std::sync::Mutex<Vec<String>>, std::sync::Mutex<Vec<String>>);
+
+    impl Scripted {
+        fn calls(&self) -> usize {
+            self.1.lock().unwrap().len()
+        }
+    }
 
     #[async_trait::async_trait]
     impl LearningCompleter for Scripted {
@@ -490,19 +519,21 @@ mod tests {
         assert_eq!(artifacts.structure["blocks"][0]["door_refs"], json!(["G1"]));
     }
 
-    /// 预算耗尽：持续违约 = 明示失败，消息携带最后一轮逐条款报告。
+    /// 预算耗尽（全预算路径）：每轮**不同**违约（指纹永不重复）= 早停不
+    /// 触发，明示失败烧满 3 轮（6 次调用），消息携带最后一轮逐条款报告。
     #[tokio::test]
     async fn exhausted_budget_fails_loud_with_clause_report() {
-        let mut bad = golden_structure();
-        bad["blocks"] = json!([]); // gd.blocks.count 红，永不修正
+        let mut bad_a = golden_structure();
+        bad_a["blocks"] = json!([]); // gd.blocks.count 红
+        let mut bad_b = golden_structure();
+        bad_b["domain"]["prerequisite_doors"] = json!(["G1", "G9"]); // 门口对账红
+        let mut bad_c = golden_structure();
+        bad_c["blocks"][0]["door_refs"] = json!(["G1", "G9"]); // gd.blocks.door_refs 红
         let completer = scripted(vec![
-            golden_terrain(),
-            bad.clone(),
-            golden_terrain(),
-            bad.clone(),
-            golden_terrain(),
-            bad,
-        ]); // 3 轮 ×（地形 + 结构）
+            golden_terrain(), bad_a, // 第 1 轮
+            golden_terrain(), bad_b, // 第 2 轮（违约互异 → 早停不触发）
+            golden_terrain(), bad_c, // 第 3 轮
+        ]); // 3 轮 ×（地形 + 结构），每轮违约不同 = 指纹永不重复
         let error = generate_structure_artifacts(
             &completer,
             None,
@@ -517,7 +548,43 @@ mod tests {
         .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("3 轮"), "{message}");
+        assert!(message.contains("gd.blocks.door_refs"), "{message}");
+        assert_eq!(completer.calls(), 6, "three full rounds x (structure + terrain)");
+    }
+
+    /// e1 D2 红绿样（早停臂）：同一违约报告连败两次 = 反馈回灌已无法改变
+    /// 结果 → 第 2 轮即提前停止，剩余轮次不烧（4 次调用非 6）；消息如实
+    /// 报「提前停止」并携带违约报告。
+    #[tokio::test]
+    async fn same_fingerprint_stops_early_and_saves_the_remaining_budget() {
+        let mut bad = golden_structure();
+        bad["blocks"] = json!([]); // gd.blocks.count 红，永不修正
+        let completer = scripted(vec![
+            golden_terrain(), bad.clone(), // 第 1 轮
+            golden_terrain(), bad.clone(), // 第 2 轮（同指纹 → 早停）
+            golden_terrain(), bad, // 不应到达（预算 proof：脚本有余量）
+        ]);
+        let error = generate_structure_artifacts(
+            &completer,
+            None,
+            &StructureInput {
+                goal: "目标".into(),
+                proficiency_statement: None,
+                learner_basis: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("提前停止"), "{message}");
+        assert!(message.contains("2/3"), "{message}");
         assert!(message.contains("gd.blocks.count"), "{message}");
+        assert_eq!(
+            completer.calls(),
+            4,
+            "early stop after the second identical fingerprint: 2 rounds x 2 calls, not 6"
+        );
     }
 
     /// 快照信封：version/generated_at/双产物成形，且是 JSON 对象（列 CHECK）。

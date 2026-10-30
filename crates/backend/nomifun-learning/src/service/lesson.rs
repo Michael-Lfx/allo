@@ -454,11 +454,15 @@ impl LearningService {
             &format!("课时内容 · {lesson_title}"),
         ).await?;
         task.set_step("generate", "正在生成本课时的分节正文与检索练习…");
+        // 相位耗时读数（e1）：用量句柄随两条生成路径下传（图节点 = 上下文
+        // 进引擎的 provider 计数装饰器；传统课时 = 上下文 + 兜底管线的计数
+        // completer）。两条路径全程持有，finish 行聚合落档。
+        let usage = task.usage();
         if row.try_get::<String, _>("course_kind").map_err(internal)?
             == CourseKind::LearningGraph.as_str()
         {
             let result = self
-                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request)
+                .generate_graph_lesson_content(user_id, lesson_id, &course_id, request, usage)
                 .await;
             return match result {
                 Ok(view) => {
@@ -603,6 +607,10 @@ impl LearningService {
             goal: course_goal,
             // 大纲已无概念契约（ADR-0009）：传统课时没有防超纲黑名单。
             forbidden_concepts: String::new(),
+            // 相位耗时读数（e1）：引擎分支进 provider 计数装饰器；兜底分支
+            // 不经上下文（generate_lesson 直收蓝图），其计数在下方 completer
+            // 包装上。
+            usage: Some(usage.clone()),
         };
         self.emit_lesson_event(serde_json::json!({
             "phase": "started",
@@ -658,8 +666,12 @@ impl LearningService {
                             "knowledge-backed course generation is not configured".into(),
                         )
                     })?;
+                // 相位耗时读数（e1）：兜底管线经计数 completer 上报（调用数
+                // + 输入/输出字符量），与 agent 分支同一 finish 行聚合。
+                let counting =
+                    crate::service::CountingCompleter::new(completer.as_ref(), &usage);
                 match generate_lesson(
-                    completer.as_ref(),
+                    &counting,
                     model_override,
                     &blueprint,
                     module,
@@ -726,6 +738,7 @@ impl LearningService {
         lesson_id: &LearningLessonId,
         course_id: &LearningCourseId,
         request: &GenerateLessonRequest,
+        usage: crate::completer::LlmUsageMeter,
     ) -> Result<LessonView, AppError> {
         let lesson = sqlx::query(
             "SELECT l.title, l.purpose, l.position, l.estimated_minutes, \
@@ -801,6 +814,8 @@ impl LearningService {
             goal: None,
             // 防超纲黑名单：下游节点标题清单（概念网反查，ADR-0009）。
             forbidden_concepts: topology.forbidden_concepts,
+            // 相位耗时读数（e1）：随上下文进引擎，provider 计数装饰器上报。
+            usage: Some(usage),
         };
 
         self.emit_lesson_event(serde_json::json!({
