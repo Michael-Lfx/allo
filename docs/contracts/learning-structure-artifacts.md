@@ -1,15 +1,15 @@
 ---
 contract: learning-structure-artifacts
-version: "1.6"
-date: 2026-10-26
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）
+version: "1.7"
+date: 2026-10-29
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）。v1.7（e2，E2E 修复波）：§6 生成轮次随实码同步——时序反转为「① 前置地形 ② 知识结构」（e2 判定输入通道：门口清单经 `door_list_markdown` 装配注入结构装配，`prerequisite_doors` 逐字全收、块级 door_refs 判定源同此）+ 同指纹早停注记；零机械条款改动
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
 ---
 
 # 学习结构产物契约 v1.0
 
-> 输入学习目标（+ 可选程度/基础声明）→ 一次生成两份产物：①**知识结构**
-> （structure，spines/blocks/edges 快照）②**前置地形**（terrain，门口 G 判据）。
+> 输入学习目标（+ 可选程度/基础声明）→ 一次生成两份产物：①**前置地形**
+> （terrain，门口 G 判据）②**知识结构**（structure，spines/blocks/edges 快照）。
 > 本契约约束两份产物的字段、权威面、质量门槛与存储；结构生成管线按本契约实现，
 > `gd.*` 条款编号是**校验器报错、整批重试反馈、提示词自查**三方的公共语言。
 > validator 与 JSON Schema 的单源实现住 `nomifun-learning` 的
@@ -214,13 +214,22 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
   LLM、零时钟），不建关系表存块间边（ADR-0002）。
 - 快照是**生成时点显影剂**：可整体退役（置 NULL），退役不损登记表与账本。
 
-## 6 生成轮次（g2 裁决）
+## 6 生成轮次（g2 裁决；v1.7 随实码同步 e2 时序）
 
-① structure ② terrain 串行双调用（均走 json 接缝、thinking ON）；任一产物
-违反契约或门口对账失败，**两份一起**重生成、逐条款违规报告注入重试装配，
-**≤3 轮**；全部通过才落库（快照原子更新）。耗尽则**结构生成失败明示**
-（WS `structure_failed` + 前端可重试的重新生成按钮），**课程保留、快照保持
-NULL、无半成品落列**（建课接口不等待生成，失败不回收课程——可重试重跑）。
+① **前置地形**（terrain）② **知识结构**（structure）串行双调用（均走 json
+接缝、thinking ON）。地形先行是结构生成的**判定输入通道**（e2，learnhub #161
+同构）：terrain 产出后由 `door_list_markdown` 纯函数装配**门口清单**（每门
+一行 `- [编号]（硬前置/可自检）判据`，编号与判据逐字取自门口产物；空清单
+装配防御行「（无：前置地形未产出门口清单）」），作为 `door_list` 槽注入结构
+装配——结构侧 `domain.prerequisite_doors` **逐字全收**清单编号（不得改写、
+不得新造编号），块级 `door_refs` 门位标签同以该清单为判定源（§2.1/§2.2/§4）。
+任一产物违反契约或门口对账失败，**两份一起**重生成、逐条款违规报告注入重试
+装配（地形与结构装配各留 `retry_feedback` 槽），**≤3 轮**；同一逐条款报告
+连现两轮 = **同指纹早停**（e1 D2：反馈回灌已无法收敛，剩余轮次不烧，消息面
+如实区分「预算耗尽」与「提前停止」）。全部通过才落库（快照原子更新）。耗尽
+（或早停）则**结构生成失败明示**（WS `structure_failed` + 前端可重试的重新
+生成按钮），**课程保留、快照保持 NULL、无半成品落列**（建课接口不等待生成，
+失败不回收课程——可重试重跑）。
 
 ## 7 与 learnhub 的差异清单（全部有裁决依据，不得"补齐"回旧形态）
 

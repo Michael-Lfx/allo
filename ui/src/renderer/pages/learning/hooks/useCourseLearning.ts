@@ -45,10 +45,12 @@ export function useCourseLearning({ load, t, setBusyId }: UseCourseLearningOptio
   // e4 异步臂轮询：任务键 → 终态。生成已脱离请求生命周期（断开连接不中
   // 断），前端轮询 generation-tasks 快照等 done；failed/cancelled 以任务
   // detail（后端结构化原因）抛错。快照短暂缺行（登记与查询的竞速窗口）
-  // 继续等；总时长封顶（课时生成分钟级，20 分钟已数倍于 E2E 实录）。
+  // 继续等；总时长封顶 35 分钟 = 后端最坏路径对齐（3 次重试 × 单次尝试
+  // 660s 死人开关 LESSON_ATTEMPT_DEADLINE ≈ 33 分钟，留 2 分钟轮询余量）
+  // ——20 分钟会在后端仍在重试时前端先报超时假阴性。
   const pollLessonTask = useCallback(
     async (taskKey: string) => {
-      const deadline = Date.now() + 20 * 60_000;
+      const deadline = Date.now() + 35 * 60_000;
       while (Date.now() < deadline) {
         const tasks = await learningApi.generationTasks();
         const task = tasks.find((item) => item.key === taskKey);
