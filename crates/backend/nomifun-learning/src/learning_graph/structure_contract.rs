@@ -1309,6 +1309,55 @@ mod tests {
         assert_eq!(codes.iter().filter(|code| **code == "gd.domain.doors").count(), 2);
     }
 
+    /// f2（① 防措辞回归红样，蓝图 4.2/A4）：注入行是 `- [G1]（硬前置）判据`
+    /// 的人读形状——措辞回归（模型把整行照抄进门口字段）必须仍被拒。整行作
+    /// door 字符串：形态臂（非 G<数字> 形）与对账臂（地形门口集解析）双红。
+    #[test]
+    fn whole_injection_line_as_door_string_stays_red() {
+        let injected = "- [G1]（硬前置）能用配方法解形如 x²=p 的方程";
+
+        // 课程门臂：gd.domain.doors 形态红，逐字点名整行。
+        let mut gates = golden_structure();
+        gates["domain"]["prerequisite_doors"] = json!([injected]);
+        let violations = validate_structure(&gates);
+        let doors: Vec<&ContractViolation> = violations
+            .iter()
+            .filter(|violation| violation.code == "gd.domain.doors" && !violation.warning)
+            .collect();
+        assert_eq!(doors.len(), 1, "整行照抄恰红一条: {violations:?}");
+        assert!(
+            doors[0].message.contains("G<数字>") && doors[0].message.contains(injected),
+            "形态臂点名整行: {}",
+            doors[0].message
+        );
+
+        // 对账臂：整行解析不进地形门口集——悬空红。
+        let violations = reconcile_doors(&gates, &golden_terrain());
+        assert!(
+            violations.iter().any(|violation| violation.code == "gd.domain.doors"
+                && !violation.warning
+                && violation.message.contains(injected)),
+            "对账臂悬空红: {violations:?}"
+        );
+
+        // 块级门位标签臂（m1）：整行进 door_refs——形态红 + 对账悬空红。
+        let mut refs = golden_structure();
+        refs["blocks"][0]["door_refs"] = json!([injected]);
+        let violations = validate_structure(&refs);
+        assert!(
+            violations.iter().any(|violation| violation.code == "gd.blocks.door_refs"
+                && !violation.warning),
+            "door_refs 形态红: {violations:?}"
+        );
+        let violations = reconcile_doors(&refs, &golden_terrain());
+        assert!(
+            violations.iter().any(|violation| violation.code == "gd.blocks.door_refs"
+                && !violation.warning
+                && violation.message.contains(injected)),
+            "door_refs 对账悬空红: {violations:?}"
+        );
+    }
+
     #[test]
     fn gd_spines_enforce_count_bounds() {
         let mut value = golden_structure();

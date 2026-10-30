@@ -499,6 +499,10 @@ mod tests {
             "低风险维护",
             "全量复核",
             "宁可少改",
+            // f2（③ 三档 25 硬/40 参考档/100 硬）：修补面下限措辞与生成面
+            // goal-decomposition 同批同步（「40–100」旧两档行文不得回流）。
+            "25–80",
+            "不足 25 拒收",
         ] {
             assert!(repair_body.contains(phrase), "repair prompt missing「{phrase}」");
         }
