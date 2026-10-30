@@ -326,6 +326,7 @@ serde_json.workspace = true
 base64.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+tempfile.workspace = true
 reqwest.workspace = true
 url.workspace = true
 # Marketplace remote-source fetch layer (git clone materialization).
@@ -395,7 +396,6 @@ nomifun-ai-agent = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
 git2.workspace = true
 http-body-util.workspace = true
-tempfile = "3"
 tower = { workspace = true, features = ["util"] }
 tokio-tungstenite.workspace = true
 wiremock = "0.6"

@@ -31,6 +31,8 @@ type MarketToolbarProps = {
   onTagFilterChange?: (value: TagFilterState) => void;
   localeKey?: string;
   hideSearch?: boolean;
+  /** Render the source switcher as a left-aligned tab row, matching the expert category bar. */
+  sourcesAsTabs?: boolean;
 };
 
 const MarketToolbar: React.FC<MarketToolbarProps> = ({
@@ -56,6 +58,7 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
   onTagFilterChange,
   localeKey = 'zh-CN',
   hideSearch = false,
+  sourcesAsTabs = false,
 }) => {
   const { t } = useTranslation();
   const headingId = useId();
@@ -91,6 +94,35 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
 
   return (
     <div className='mb-16px flex flex-col gap-12px pt-4px' aria-labelledby={headingId}>
+      {sourcesAsTabs && (
+        <div role='tablist' aria-label={title} className='flex max-w-full items-center gap-4px overflow-x-auto'>
+          {sources.map((source) => {
+            const selected = source === activeSource;
+            return (
+              <button
+                key={source}
+                type='button'
+                role='tab'
+                aria-selected={selected}
+                data-testid={testId(`btn-{market}-source-${source}`)}
+                onClick={() => {
+                  if (!selected) onSourceChange(source);
+                }}
+                className={[
+                  'shrink-0 cursor-pointer rounded-8px border-none px-12px py-6px text-13px leading-20px whitespace-nowrap',
+                  'transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
+                  selected
+                    ? 'bg-fill-2 font-medium text-t-primary'
+                    : 'bg-transparent text-t-secondary hover:text-t-primary',
+                ].join(' ')}
+              >
+                <span>{marketSourceLabel(source)}</span>
+                {(sourceCounts[source] ?? 0) > 0 && <span className='ml-4px text-12px text-t-tertiary'>{sourceCounts[source]}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div ref={rowRef} className={`flex gap-12px ${isMobile ? 'flex-col' : 'items-start justify-between'}`}>
         <div ref={headingRef} className='min-w-0'>
           <h2 id={headingId} className='sr-only'>{title}</h2>
@@ -100,7 +132,7 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
           <div ref={measureRef} aria-hidden='true' className='pointer-events-none absolute left-0 top-0 inline-flex invisible items-center gap-4px whitespace-nowrap rounded-12px border border-solid border-border-2 p-3px'>
             {sources.map((source) => <span key={source} className='h-28px px-12px text-12px'>{marketSourceLabel(source)} <small>{sourceCounts[source] ?? 0}</small></span>)}
           </div>
-          {sources.length > 1 && (compactSourcePicker ? (
+          {!sourcesAsTabs && sources.length > 1 && (compactSourcePicker ? (
             <Select
               size='small'
               className='w-180px'

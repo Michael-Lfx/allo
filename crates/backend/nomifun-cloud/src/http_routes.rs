@@ -13,7 +13,7 @@ use nomifun_api_types::{
     ApiResponse, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingCurrency,
     CloudBillingOrder, CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
-    CloudDeviceActivationRetryResponse,
+    CloudDeviceActivationRetryResponse, ExpertDetail, ExpertListResponse,
     CloudDeviceActivationStatusResponse, CloudImAttachmentPayload, CloudImConversation,
     CloudImLogUploadResponse, CloudImMessage, CloudImMessageList, CloudImSendMessageRequest,
     CloudLoginContinueRequest, CloudLoginStartRequest, CloudLoginStartResponse,
@@ -26,6 +26,7 @@ use nomifun_common::AppError;
 use nomifun_db::{IClientPreferenceRepository, IProviderModelRepository, IProviderRepository};
 use tracing::warn;
 
+use crate::flowy::{prepare_expert_list_query, prepare_expert_slug};
 use crate::http_service::CloudService;
 use crate::provider_sync::{disable_flowy_builtin_provider, sync_flowy_builtin_provider};
 
@@ -210,6 +211,8 @@ pub fn cloud_routes(state: CloudRouterState) -> Router {
             "/api/cloud/growth/video/events",
             post(upload_video_growth_events),
         )
+        .route("/api/cloud/experts", get(list_experts))
+        .route("/api/cloud/experts/{slug}", get(get_expert))
         .route("/api/cloud/plans", get(list_billing_plans))
         .route("/api/cloud/credit-packs", get(list_billing_credit_packs))
         .route("/api/cloud/coupons", get(list_billing_coupons))
@@ -773,6 +776,41 @@ fn validate_create_order(
         *period = normalized;
     }
     Ok(request)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpertCatalogQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    keyword: Option<String>,
+    expert_type: Option<String>,
+    category_id: Option<String>,
+}
+
+async fn list_experts(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Query(query): Query<ExpertCatalogQuery>,
+) -> Result<Json<ApiResponse<ExpertListResponse>>, AppError> {
+    let params = prepare_expert_list_query(
+        query.page,
+        query.page_size,
+        query.keyword,
+        query.expert_type,
+        query.category_id,
+    )
+    .map_err(|message| AppError::BadRequest(message.into()))?;
+    Ok(Json(ApiResponse::ok(state.service.list_experts(params).await?)))
+}
+
+async fn get_expert(
+    State(state): State<CloudRouterState>,
+    Extension(_user): Extension<CurrentUser>,
+    Path(slug): Path<String>,
+) -> Result<Json<ApiResponse<ExpertDetail>>, AppError> {
+    let slug = prepare_expert_slug(&slug).map_err(|message| AppError::BadRequest(message.into()))?;
+    Ok(Json(ApiResponse::ok(state.service.get_expert(&slug).await?)))
 }
 
 async fn list_billing_plans(

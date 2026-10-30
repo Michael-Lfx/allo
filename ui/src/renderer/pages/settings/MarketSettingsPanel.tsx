@@ -69,6 +69,8 @@ type MarketSettingsPanelProps = {
   showInstallCommand?: boolean;
   /** Additional consumer-owned filter applied before source/search filtering. */
   itemFilter?: (item: ISkillMarketItem) => boolean;
+  /** Show the source switcher as a left-aligned tab row instead of the right-side toolbar control. */
+  sourcesAsTabs?: boolean;
 };
 
 /**
@@ -95,6 +97,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   onSearchQueryChange,
   showInstallCommand = true,
   itemFilter,
+  sourcesAsTabs = false,
 }) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
@@ -248,6 +251,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
         isMobile={isMobile}
         testId={testId}
         hideSearch={hideSearch}
+        sourcesAsTabs={sourcesAsTabs}
         enableTagFilter={enableTagFilter}
         audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}

@@ -3,7 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Config, Down, Right, Robot, Puzzle, Tool } from '@icon-park/react';
+import { Config, Down, Right, Puzzle, Tool } from '@icon-park/react';
+import { GraduationCap } from 'lucide-react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 
@@ -51,10 +52,10 @@ const SiderConfigGroup: React.FC<SiderConfigGroupProps> = ({
   const children: ConfigChild[] = [
     {
       id: 'presets',
-      label: t('settings.presetsHub.railTitle', { defaultValue: 'Presets' }),
+      label: t('settings.presetsHub.railTitle', { defaultValue: 'Experts' }),
       active: presetsActive,
       onClick: onPresets,
-      icon: <Robot theme='outline' size='14' fill='currentColor' className='block leading-none' style={{ lineHeight: 0 }} />,
+      icon: <GraduationCap size={14} strokeWidth={2} className='block' />,
     },
     {
       id: 'skills',

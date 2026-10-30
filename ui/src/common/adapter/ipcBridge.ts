@@ -8079,6 +8079,58 @@ export type ICloudNetworkDiagnoseReport = {
   summary: string;
 };
 
+export interface IExpertText {
+  zh?: string;
+  en?: string;
+}
+
+export interface IExpertSummary {
+  id?: string;
+  slug: string;
+  expertType?: string;
+  name?: string;
+  nameEn?: string;
+  profession?: string;
+  professionEn?: string;
+  summary?: string;
+  summaryEn?: string;
+  tags?: IExpertText[];
+  version?: string;
+  downloadUrl?: string;
+  sha256?: string;
+  fileCount?: number;
+  downloadCount?: number;
+  zipSizeBytes?: number;
+  avatarPath?: string;
+  hasDetail?: boolean;
+  sort?: number;
+}
+
+export interface IExpertListResponse {
+  list?: IExpertSummary[];
+  total?: number | null;
+  page?: number | null;
+  pageSize?: number | null;
+}
+
+export interface IExpertDetail extends IExpertSummary {
+  description?: string;
+  detailMarkdown?: string;
+  agentName?: string;
+  defaultInitPrompt?: IExpertText | null;
+  quickPrompts?: unknown[];
+  teamInfo?: unknown;
+  members?: unknown[];
+}
+
+export interface IExpertListQuery {
+  page?: number;
+  pageSize?: number;
+  keyword?: string;
+  expertType?: 'agent' | 'team';
+  categoryId?: string;
+}
+
 export const cloud = {
   getSettings: httpGet<ICloudServerSettings, void>('/api/cloud/settings'),
   updateSettings: httpPatch<ICloudServerSettings, IUpdateCloudServerSettings>('/api/cloud/settings'),
@@ -8111,6 +8163,30 @@ export const cloud = {
   ),
   /** Re-fetch Flowy chat catalog into the local builtin provider (soft no-op if not logged in). */
   syncModels: httpPost<ICloudSyncModelsResponse, void>('/api/cloud/sync-models'),
+  /** Full expert catalog from Flowy `GET /experts`. */
+  listExperts: httpGet<IExpertListResponse, IExpertListQuery>((p) => {
+    const params = new URLSearchParams();
+    if (p?.page != null) params.set('page', String(p.page));
+    if (p?.pageSize != null) params.set('pageSize', String(p.pageSize));
+    const keyword = p?.keyword?.trim();
+    if (keyword) params.set('keyword', keyword);
+    if (p?.expertType) params.set('expertType', p.expertType);
+    const categoryId = p?.categoryId?.trim();
+    if (categoryId) params.set('categoryId', categoryId);
+    const query = params.toString();
+    return query ? `/api/cloud/experts?${query}` : '/api/cloud/experts';
+  }),
+  getExpert: httpGet<IExpertDetail, { slug: string }>(
+    (p) => `/api/cloud/experts/${encodeURIComponent(p.slug)}`
+  ),
+  installedExperts: httpGet<{ slugs: string[] }, void>('/api/cloud/expert-installs'),
+  installExpert: httpPost<
+    { presetId: string; name: string; alreadyInstalled: boolean; installedSkills?: string[]; warnings?: string[] },
+    { slug: string; id?: string }
+  >(
+    (p) => `/api/cloud/experts/${encodeURIComponent(p.slug)}/install`,
+    (p) => ({ id: p.id ?? '' })
+  ),
   listPlans: httpGet<ICloudBillingPlan[], { currency: ICloudBillingCurrency }>(
     (p) => `/api/cloud/plans?currency=${encodeURIComponent(p.currency)}`
   ),
