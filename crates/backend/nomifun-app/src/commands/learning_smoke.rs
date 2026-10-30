@@ -2685,6 +2685,17 @@ async fn run_content(
         println!(
             "est_budget read-out: budget_line_calls={budget_line_calls} capacity_note_events={capacity_notes}"
         );
+        // f3 读数面（非门禁）：viz lint 事件经发布帧披露的累计（op 打回 +
+        // 终检剔除）——0 = 生成期零 lint 介入（真机判据：零打回或打回后自愈；
+        // 出现剔除事件回查 tracing 的 viz_block_lint_dropped 行）。
+        let viz_lint_events: u64 = rows
+            .iter()
+            .filter(|value| {
+                value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish")
+            })
+            .filter_map(|value| value.get("viz_lint_events").and_then(|v| v.as_u64()))
+            .sum();
+        println!("viz_lint read-out: viz_lint_events={viz_lint_events}");
         // k05 读数面（非门禁）：四条纪律短语在存档里的在场性（off 臂 0）。
         let discipline_hits = [
             "具象替身先（R10）",
