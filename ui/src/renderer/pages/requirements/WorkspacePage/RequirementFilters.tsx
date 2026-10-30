@@ -9,7 +9,8 @@
  */
 import { Button, Checkbox, Dropdown, Input, Menu, Popconfirm, Radio, Select } from '@arco-design/web-react';
 import type { RefInputType } from '@arco-design/web-react/es/Input/interface';
-import { ArrowDown, ArrowUp, Check, Filter, Search, SortTwo, Tag } from '@icon-park/react';
+import { ArrowDown, ArrowUp, Check, Filter, SortTwo, Tag } from '@icon-park/react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -270,9 +271,9 @@ const RequirementFilters: React.FC<RequirementFiltersProps> = ({
           <Input
             ref={searchInputRef}
             allowClear
-            prefix={<Search theme='outline' size='15' fill='currentColor' />}
+            prefix={<FlowyIcon name='search' size={14} />}
             placeholder={t('requirements.search')}
-            className='max-w-full w-260px'
+            className='flowy-search max-w-full w-260px'
             value={search}
             onChange={onSearchChange}
             onBlur={() => {
@@ -287,7 +288,7 @@ const RequirementFilters: React.FC<RequirementFiltersProps> = ({
           />
         ) : (
           <FilterTrigger
-            icon={<Search theme='outline' size='15' fill='currentColor' />}
+            icon={<FlowyIcon name='search' size={14} />}
             label={searchLabel}
             onClick={() => setSearchActive(true)}
           />

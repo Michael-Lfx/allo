@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { GraduationCap } from 'lucide-react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -38,7 +38,7 @@ const SiderPresetEntry: React.FC<SiderPresetEntryProps> = ({
           {...navRowProps(onClick, label)}
           onClick={onClick}
         >
-          <GraduationCap size={20} strokeWidth={2} className='block shrink-0' />
+          <FlowyIcon name='graduationCap' size={20} className='block shrink-0' />
         </div>
       </Tooltip>
     );
@@ -56,7 +56,7 @@ const SiderPresetEntry: React.FC<SiderPresetEntryProps> = ({
           onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <GraduationCap size={16} strokeWidth={2} className='block' />
+          <FlowyIcon name='graduationCap' size={16} className='block' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>

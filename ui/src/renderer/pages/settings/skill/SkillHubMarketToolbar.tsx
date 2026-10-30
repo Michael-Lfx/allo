@@ -1,5 +1,6 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowyButton from '@renderer/components/base/FlowyButton';
 import { Button, Select } from '@arco-design/web-react';
-import { Refresh } from '@icon-park/react';
 import React from 'react';
 import type { SkillHubMarketSort } from '@/common/adapter/ipcBridge';
 import FilterPills from '@/renderer/pages/videoGeneration/components/FilterPills';
@@ -135,12 +136,12 @@ const SkillHubMarketToolbar: React.FC<SkillHubMarketToolbarProps> = ({
         />
 
         {onRefresh && (
-          <Button
-            type='text'
+          <FlowyButton
+            role='icon'
             size='small'
             data-testid='btn-sync-skill-market'
-            className='!h-32px !w-32px !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-2 hover:!text-t-primary'
-            icon={<Refresh size={16} fill='currentColor' className={refreshing ? 'animate-spin' : ''} />}
+            className='!text-t-secondary'
+            icon={<FlowyIcon name='refresh' size={16} className={refreshing ? 'animate-spin' : ''} />}
             onClick={onRefresh}
             title={t('common.refresh', { defaultValue: '刷新' })}
           />

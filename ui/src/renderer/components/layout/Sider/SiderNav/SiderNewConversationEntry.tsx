@@ -1,8 +1,8 @@
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Plus } from '@icon-park/react';
 import classNames from 'classnames';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import {
@@ -49,13 +49,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
           onClick={onClick}
           aria-label={tooltip}
         >
-          <Plus
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='plus' size={16} className='block leading-none' />
         </button>
       </Tooltip>
     );
@@ -76,13 +70,7 @@ const SiderNewConversationEntry: React.FC<SiderNewConversationEntryProps> = ({
         aria-label={tooltip}
       >
         <span className='size-22px flex items-center justify-center shrink-0 text-t-primary'>
-          <Plus
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className={classNames('block leading-none shrink-0', styles.newChatIcon)}
-            style={{ lineHeight: 0 }}
-          />
+          <FlowyIcon name='plus' size={16} className={classNames('block leading-none shrink-0', styles.newChatIcon)} />
         </span>
         <span className='collapsed-hidden text-t-primary text-14px font-[500] leading-24px truncate'>
           {label}

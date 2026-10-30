@@ -1,6 +1,6 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
-import { ArrowCircleLeft, ArrowLeft, ArrowRight, ExpandRight } from '@icon-park/react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -319,7 +319,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
               tooltip: backToChatTooltip,
               className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
               onClick: handleBackToChat,
-              children: <ArrowCircleLeft theme='outline' size={iconSize} fill='currentColor' />,
+              children: <FlowyIcon name='arrowCircleLeft' size={iconSize} />,
             })}
           {showSiderToggle &&
             renderIconButton({
@@ -340,7 +340,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
                 onClick: () => navigationHistory?.back(),
                 disabled: !navigationHistory?.canBack,
                 children: (
-                  <ArrowLeft theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
+                  <FlowyIcon name='arrowLeft' size={iconSize} />
                 ),
               })}
               {renderIconButton({
@@ -349,7 +349,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
                 onClick: () => navigationHistory?.forward(),
                 disabled: !navigationHistory?.canForward,
                 children: (
-                  <ArrowRight theme='outline' size={iconSize} fill='currentColor' strokeWidth={desktopIconStroke} />
+                  <FlowyIcon name='arrowRight' size={iconSize} />
                 ),
               })}
             </>
@@ -409,7 +409,7 @@ const Titlebar: React.FC<TitlebarProps> = ({ workspaceAvailable }) => {
             tooltip: workspaceTooltip,
             className: classNames('app-titlebar__button', layout?.isMobile && 'app-titlebar__button--mobile'),
             onClick: handleWorkspaceToggle,
-            children: <ExpandRight theme='outline' size={iconSize} fill='currentColor' />,
+            children: <FlowyIcon name='expandRight' size={iconSize} />,
           })
         )}
         {showWindowControls && <WindowControls />}

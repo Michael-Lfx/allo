@@ -1,9 +1,11 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowyButton from '@renderer/components/base/FlowyButton';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import type { SkillMarketSource } from '@/common/adapter/ipcBridge';
 import PresetTagFilterBar from '../PresetSettings/PresetTagFilterBar';
 import type { TagFilterState } from '../PresetSettings/presetUtils';
 import type { PresetTag } from '@/common/types/agent/presetTypes';
-import { Button, Input, Select } from '@arco-design/web-react';
-import { CloseSmall, Refresh, Search } from '@icon-park/react';
+import { Button, Select } from '@arco-design/web-react';
 import React, { useId, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { marketSourceLabel } from './skillMarket';
@@ -150,13 +152,13 @@ const MarketToolbar: React.FC<MarketToolbarProps> = ({
               ))}
             </div>
           ))}
-          <Button type='text' size='small' data-testid={testId('btn-sync-{market}')} className='flex !h-34px !w-34px items-center justify-center !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary' icon={<Refresh size={16} fill='currentColor' className={loading ? 'animate-spin' : ''} />} onClick={onRefresh} title={t('common.refresh', { defaultValue: '刷新' })} />
+          <FlowyButton role='icon' size='small' data-testid={testId('btn-sync-{market}')} className='!text-t-secondary' icon={<FlowyIcon name='refresh' size={16} className={loading ? 'animate-spin' : ''} />} onClick={onRefresh} title={t('common.refresh', { defaultValue: '刷新' })} />
           {!hideSearch && (
-          <Button type={isSearchVisible ? 'secondary' : 'text'} size='small' data-testid={testId('btn-search-{market}')} className='flex !h-34px !w-34px items-center justify-center !rounded-10px !p-0 !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary' icon={isSearchVisible ? <CloseSmall size={16} fill='currentColor' /> : <Search size={16} fill='currentColor' />} onClick={() => onSearchExpandedChange(!isSearchVisible)} aria-label={t('common.search', { defaultValue: '搜索' })} />
+          <FlowyButton role='icon' type={isSearchVisible ? 'secondary' : 'text'} size='small' data-testid={testId('btn-search-{market}')} className='!text-t-secondary' icon={isSearchVisible ? <FlowyIcon name='close' size={16} /> : <FlowyIcon name='search' size={16} />} onClick={() => onSearchExpandedChange(!isSearchVisible)} aria-label={t('common.search', { defaultValue: '搜索' })} aria-pressed={isSearchVisible} />
           )}
         </div>
       </div>
-      {!hideSearch && isSearchVisible && <Input allowClear autoFocus value={searchQuery} data-testid={testId('input-search-{market}')} className='!bg-[var(--color-bg-2)]' placeholder={searchPlaceholder} prefix={<Search size={14} fill='currentColor' />} onChange={onSearchQueryChange} />}
+      {!hideSearch && isSearchVisible && <FlowySearch autoFocus value={searchQuery} data-testid={testId('input-search-{market}')} placeholder={searchPlaceholder} onChange={onSearchQueryChange} />}
       {enableTagFilter && onTagFilterChange && <PresetTagFilterBar audienceTags={audienceTags} scenarioTags={scenarioTags} value={tagFilter} onChange={onTagFilterChange} localeKey={localeKey} onManageTags={() => undefined} hideManageTags />}
     </div>
   );

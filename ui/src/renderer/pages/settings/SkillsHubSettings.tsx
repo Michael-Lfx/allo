@@ -29,8 +29,11 @@ import SkillDetailDrawer from './skill/SkillDetailDrawer';
 import SkillTagModal from './skill/SkillTagModal';
 import { resolveSkillDisplay } from './skill/skillDisplay';
 import { filterSkillsByTags, type SkillTagFilterState } from './skill/skillFilter';
-import { Button, Dropdown, Input, Menu, Modal } from '@arco-design/web-react';
-import { CloseSmall, FileZip, FolderOpen, Info, Refresh, Search } from '@icon-park/react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowyButton from '@renderer/components/base/FlowyButton';
+import FlowySearch from '@renderer/components/base/FlowySearch';
+import { Button, Dropdown, Menu, Modal } from '@arco-design/web-react';
+import { FileZip, FolderOpen, Info } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
@@ -294,25 +297,27 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
                 </p>
               </div>
               <div className={`flex flex-wrap items-center justify-end gap-10px ${isMobile ? 'w-full' : 'flex-shrink-0'}`}>
-                <Button
-                  type='text'
+                <FlowyButton
+                  role='icon'
                   size='small'
                   data-testid='btn-refresh-skills'
-                  className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
-                  icon={<Refresh size={16} fill='currentColor' className={loading ? 'animate-spin' : ''} />}
+                  className='!text-t-secondary'
+                  icon={<FlowyIcon name='refresh' size={16} className={loading ? 'animate-spin' : ''} />}
                   onClick={async () => {
                     await fetchData();
                     message.success(t('common.refreshSuccess', { defaultValue: 'Refreshed' }));
                   }}
                   title={t('common.refresh', { defaultValue: 'Refresh' })}
                 />
-                <Button
+                <FlowyButton
+                  role='icon'
                   type={isSearchVisible ? 'secondary' : 'text'}
                   size='small'
                   data-testid='btn-search-toggle'
-                  className='!rounded-10px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+                  aria-pressed={isSearchVisible}
+                  className='!text-t-secondary'
                   icon={
-                    isSearchVisible ? <CloseSmall size={16} fill='currentColor' /> : <Search size={16} fill='currentColor' />
+                    isSearchVisible ? <FlowyIcon name='close' size={16} /> : <FlowyIcon name='search' size={16} />
                   }
                   onClick={() => {
                     if (isSearchVisible) {
@@ -347,15 +352,12 @@ const SkillsHubSettings: React.FC<SkillsHubSettingsProps> = ({
             </div>
 
             {isSearchVisible && (
-              <Input
-                allowClear
+              <FlowySearch
                 autoFocus
                 value={search_query_value}
                 onChange={setSearchQuery}
                 data-testid='input-search-skills'
-                className='!bg-[var(--color-bg-2)]'
                 placeholder={t('settings.skillsHub.searchPlaceholder', { defaultValue: 'Search skills...' })}
-                prefix={<Search size={14} fill='currentColor' />}
               />
             )}
           </div>

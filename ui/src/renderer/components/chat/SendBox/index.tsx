@@ -1,5 +1,6 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import type { ConversationId, MessageId } from '@/common/types/ids';
 import { ipcBridge } from '@/common';
 import AtFileMenu from '@/renderer/components/chat/AtFileMenu';
@@ -29,7 +30,6 @@ import { blurActiveElement, shouldBlockMobileInputFocus } from '@/renderer/utils
 import { Button, Input, Tag } from '@arco-design/web-react';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import { Aiming, CloseSmall, Paperclip, Plus, Quote } from '@icon-park/react';
 import type { SlashCommandItem } from '@/common/chat/slash/types';
 import {
   groupSlashLauncherItems,
@@ -1131,7 +1131,7 @@ const SendBox: React.FC<{
         key: 'files',
         label: t('common.fileAttach.filesAndFolders', { defaultValue: 'Files and folders' }),
         section: t('common.add'),
-        icon: <Paperclip theme='outline' size='17' />,
+        icon: <FlowyIcon name='paperclip' size={17} />,
       },
       ...(enableGoalMenu
         ? [
@@ -1143,7 +1143,7 @@ const SendBox: React.FC<{
                 t('conversation.goal.menu.description', {
                   defaultValue: 'Set a goal to keep pursuing',
                 }),
-              icon: <Aiming theme='outline' size='17' />,
+              icon: <FlowyIcon name='aiming' size={17} />,
             },
           ]
         : []),
@@ -2288,7 +2288,7 @@ const SendBox: React.FC<{
       type='secondary'
       size='small'
       className='sendbox-composer-plus-btn sendbox-mobile-plus-btn flowy-button-icon'
-      icon={<Plus theme='outline' size='16' strokeWidth={3} fill='currentColor' />}
+      icon={<FlowyIcon name='plus' size={16} />}
       onClick={onMobilePlusClick}
       data-testid='sendbox-mobile-plus-btn'
       aria-label={t('common.more', { defaultValue: 'More' })}
@@ -2455,7 +2455,7 @@ const SendBox: React.FC<{
                 onClick={cancelEdit}
                 style={{ lineHeight: 0 }}
               >
-                <CloseSmall theme='outline' size='14' />
+                <FlowyIcon name='close' size={14} />
               </div>
             </div>
           )}
@@ -2463,7 +2463,7 @@ const SendBox: React.FC<{
           {replyQuote && (
             <div className='flex items-start gap-10px mb-8px px-12px py-10px rd-10px bg-fill-1 b-1px b-solid border-arco-2'>
               <div className='flex-shrink-0 mt-2px' style={{ lineHeight: 0 }}>
-                <Quote theme='filled' size='16' fill='rgb(var(--primary-6))' />
+                <FlowyIcon name='quotes' size={16} weight='fill' />
               </div>
               <div className='flex-1 min-w-0 text-13px text-t-primary line-clamp-3 lh-20px whitespace-pre-wrap break-all'>
                 {replyQuote.content}
@@ -2473,7 +2473,7 @@ const SendBox: React.FC<{
                 onClick={() => setReplyQuote(null)}
                 style={{ lineHeight: 0 }}
               >
-                <CloseSmall theme='outline' size='14' />
+                <FlowyIcon name='close' size={14} />
               </div>
             </div>
           )}
@@ -2484,7 +2484,7 @@ const SendBox: React.FC<{
                 <Tag
                   key={snippet.id}
                   closable
-                  closeIcon={<CloseSmall theme='outline' size='12' />}
+                  closeIcon={<FlowyIcon name='close' size={12} />}
                   onClose={() => removeDomSnippet(snippet.id)}
                   className='text-12px bg-fill-2 b-1px b-solid border-arco-2 rd-4px'
                 >
@@ -2499,7 +2499,7 @@ const SendBox: React.FC<{
                 <Tag
                   key={typeof item === 'string' ? item : item.path}
                   closable
-                  closeIcon={<CloseSmall theme='outline' size='12' />}
+                  closeIcon={<FlowyIcon name='close' size={12} />}
                   onClose={() => {
                     const path = getSelectedItemPath(item);
                     if (!path) {

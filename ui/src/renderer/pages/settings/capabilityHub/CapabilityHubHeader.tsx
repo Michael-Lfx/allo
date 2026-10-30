@@ -1,6 +1,5 @@
-import { Puzzle, Search, Tool } from '@icon-park/react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import classNames from 'classnames';
-import { GraduationCap } from 'lucide-react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import NomiInput from '@/renderer/components/base/NomiInput';
@@ -38,11 +37,11 @@ const SEARCH_PLACEHOLDER_DEFAULTS: Record<CapabilityHubId, string> = {
 const CapabilityTabIcon: React.FC<{ id: CapabilityHubId }> = ({ id }) => {
   switch (id) {
     case 'presets':
-      return <GraduationCap size={18} strokeWidth={2} aria-hidden />;
+      return <FlowyIcon name='graduationCap' size={18} />;
     case 'skills':
-      return <Puzzle theme='outline' size={18} fill='currentColor' />;
+      return <FlowyIcon name='puzzle' size={18} />;
     case 'mcp':
-      return <Tool theme='outline' size={18} fill='currentColor' />;
+      return <FlowyIcon name='tool' size={18} />;
     default: {
       const _exhaustive: never = id;
       return _exhaustive;
@@ -106,9 +105,9 @@ const CapabilityHubHeader: React.FC<CapabilityHubHeaderProps> = ({
           value={searchQuery}
           onChange={onSearchQueryChange}
           data-testid='capability-hub-search'
-          className='capability-hub-search'
+          className='capability-hub-search flowy-search'
           placeholder={t(SEARCH_PLACEHOLDER_KEYS[hub], { defaultValue: SEARCH_PLACEHOLDER_DEFAULTS[hub] })}
-          prefix={<Search size={16} fill='currentColor' />}
+          prefix={<FlowyIcon name='search' size={14} />}
         />
         {extraActions ? <div className='capability-hub-actions'>{extraActions}</div> : null}
       </div>

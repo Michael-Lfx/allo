@@ -1,8 +1,8 @@
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import classNames from 'classnames';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { AlarmClock, BookOne, BookOpen, Experiment, Ghost, Puzzle, VideoOne } from '@icon-park/react';
 import { cleanupSiderTooltips, getSiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { useOptionalConversationHistoryContext } from '@renderer/hooks/context/ConversationHistoryContext';
@@ -505,7 +505,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     {
       item: {
         label: t('knowledge.title'),
-        icon: <BookOne theme='outline' size={15} fill='currentColor' />,
+        icon: <FlowyIcon name='book' size={15} />,
       },
       active: !effectiveBar2Module && pathname.startsWith('/knowledge'),
       select: handleKnowledgeClick,
@@ -513,7 +513,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     {
       item: {
         label: t('learning.title'),
-        icon: <BookOpen theme='outline' size={15} fill='currentColor' />,
+        icon: <FlowyIcon name='bookOpen' size={15} />,
       },
       active: !effectiveBar2Module && pathname.startsWith('/learn'),
       select: handleLearningClick,
@@ -522,7 +522,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
     {
       item: {
         label: t('cron.scheduledTasks'),
-        icon: <AlarmClock theme='outline' size={15} fill='currentColor' />,
+        icon: <FlowyIcon name='alarm' size={15} />,
       },
       active: !effectiveBar2Module && pathname === '/scheduled',
       select: handleScheduledClick,
@@ -533,7 +533,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
       item: {
         label: t('eval.title'),
         title: t('eval.dev.navTooltip'),
-        icon: <Experiment theme='outline' size={15} fill='currentColor' />,
+        icon: <FlowyIcon name='experiment' size={15} />,
       },
       active: !effectiveBar2Module && pathname.startsWith('/eval'),
       select: handleEvalClick,
@@ -595,13 +595,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('video')}
                     onPointerEnter={() => prefetchVideoGenerationHome()}
                     icon={
-                      <VideoOne
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='video' size={16} className='block leading-none shrink-0' />
                     }
                   />
                   <SiderModuleRow
@@ -613,13 +607,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={handleSkillsClick}
                     onPointerEnter={() => prefetchSkillsStore()}
                     icon={
-                      <Puzzle
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='puzzle' size={16} className='block leading-none shrink-0' />
                     }
                   />
                   <SiderModuleRow
@@ -631,13 +619,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={() => handleTabClick('companions')}
                     onPointerEnter={() => prefetchNomiPage()}
                     icon={
-                      <Ghost
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='ghost' size={16} className='block leading-none shrink-0' />
                     }
                   />
                 </>
@@ -680,13 +662,7 @@ const Sider: React.FC<SiderProps> = ({ onSessionClick, collapsed = false }) => {
                     onClick={handleSkillsClick}
                     onPointerEnter={() => prefetchSkillsStore()}
                     icon={
-                      <Puzzle
-                        theme='outline'
-                        size='16'
-                        fill='currentColor'
-                        className='block leading-none shrink-0'
-                        style={{ lineHeight: 0 }}
-                      />
+                      <FlowyIcon name='puzzle' size={16} className='block leading-none shrink-0' />
                     }
                   />
                 </>

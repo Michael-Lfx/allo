@@ -5,6 +5,7 @@ import CopyIconButton from '@/renderer/components/base/CopyIconButton';
 import PathText from '@/renderer/components/base/PathText';
 import { addRecentWorkspace, getRecentWorkspaces, WorkspacePickerPopover } from '@/renderer/components/workspace';
 import { Tooltip } from '@arco-design/web-react';
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import { Close, Down } from '@icon-park/react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -120,18 +121,7 @@ const GuidWorkspaceFootnote: React.FC<GuidWorkspaceFootnoteProps> = ({
       testId='guid-workspace-picker-popover'
     >
           <div className={styles.wsDropdownSearch}>
-            <svg
-              width='12'
-              height='12'
-              fill='none'
-              stroke='currentColor'
-              strokeWidth='2'
-              viewBox='0 0 24 24'
-              style={{ flexShrink: 0, color: 'var(--color-text-3)' }}
-            >
-              <circle cx='11' cy='11' r='8' />
-              <path d='M21 21l-4.35-4.35' />
-            </svg>
+            <FlowyIcon name='search' size={14} className='text-t-tertiary' />
             <input
               ref={searchRef}
               className={styles.wsDropdownSearchInput}

@@ -4,7 +4,6 @@ import {
   Checkbox,
   Dropdown,
   Empty,
-  Input,
   Modal,
   Select,
   Table,
@@ -16,6 +15,7 @@ import { IconPushpin } from '@arco-design/web-react/icon';
 import { AppMessage as Message } from '@/renderer/components/notifications';
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import FlowySearch from '@/renderer/components/base/FlowySearch';
 import { learningApi } from '../api';
 import { QUESTION_COLUMNS_STORAGE_KEY, QUESTION_SELECTABLE_COLUMNS } from '../constants';
 import type { CourseSummary, QuestionEntry } from '../types';
@@ -345,11 +345,11 @@ export function QuestionManager({
           <Select.Option value='archived'>{t('learning.questionStateArchived')}</Select.Option>
           <Select.Option value='edit_pending'>{t('learning.questionStateEditPending')}</Select.Option>
         </Select>
-        <Input.Search
+        <FlowySearch
           className='w-240px'
-          allowClear
           placeholder={t('learning.questionSearchPlaceholder')}
-          onSearch={(value) => setSearch(value)}
+          onPressEnter={(event) => setSearch(event.currentTarget.value)}
+          onClear={() => setSearch('')}
         />
         <div className='ml-auto flex items-center gap-8px'>
           <Dropdown

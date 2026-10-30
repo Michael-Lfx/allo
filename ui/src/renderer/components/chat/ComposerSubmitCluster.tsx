@@ -1,11 +1,11 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import SpeechInputButton, { type DictationActivationRequest } from '@/renderer/components/chat/SpeechInputButton';
 import { useClawAsrAvailable } from '@/renderer/hooks/system/useClawAsrAvailable';
 import { autoWorkStartDisabled } from '@/renderer/pages/guid/hooks/autoWorkEntry';
 import type { AutoWorkDraftValue } from '@/renderer/pages/conversation/components/AutoWorkControl';
 import { Button, Tooltip } from '@arco-design/web-react';
-import { ArrowUp, Lightning, PhoneCall, PhoneOff, Robot } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -154,7 +154,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
       ) : null}
 
         {isVoiceConversation && isVoiceActive && (showStopButton || effectiveShowSendButton) && onStopVoiceCall && (
-          <Button size='mini' type='text' status='danger' icon={<PhoneOff theme='outline' size='14'/>}
+          <Button size='mini' type='text' status='danger' icon={<FlowyIcon name='phoneOff' size={14} />}
             onClick={onStopVoiceCall} data-testid='composer-secondary-hangup'
             aria-label={t('voice.session.hangup')} title={t('voice.session.hangup')}/>
         )}
@@ -177,7 +177,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
             className='send-button-custom sendbox-steer-button'
             title={t('conversation.steer.button')}
             aria-label={t('conversation.steer.button')}
-            icon={<Lightning theme='filled' size='14' fill='white' strokeWidth={5} />}
+            icon={<FlowyIcon name='lightning' size={14} weight='fill' />}
             onClick={onSteer}
             data-testid='composer-steer-btn'
           />
@@ -191,7 +191,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               loading={loading}
               disabled={autoWorkDisabled}
               className='send-button-custom'
-              icon={<Robot theme='filled' size='14' fill='white' strokeWidth={5} />}
+              icon={<FlowyIcon name='robot' size={14} weight='fill' />}
               onClick={onSend}
               data-testid='composer-autowork-btn'
             />
@@ -205,7 +205,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
             loading={loading}
             disabled={sendDisabled}
             className='send-button-custom'
-            icon={<ArrowUp theme='filled' size='14' fill='white' strokeWidth={5} />}
+            icon={<FlowyIcon name='arrowUp' size={14} weight='fill' />}
             onClick={onSend}
             data-testid={sendTestId}
             data-layout-part='send'
@@ -235,7 +235,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               status='danger'
               disabled={isVoiceConnecting}
               className='send-button-custom sendbox-phone-hangup-button'
-              icon={<PhoneOff theme='filled' size='14' fill='white' strokeWidth={4} />}
+              icon={<FlowyIcon name='phoneOff' size={14} weight='fill' />}
               onClick={onStopVoiceCall}
               data-testid={phoneCallTestId}
               data-layout-part='phone'
@@ -249,7 +249,7 @@ const ComposerSubmitCluster: React.FC<ComposerSubmitClusterProps> = ({
               loading={isVoiceConnecting}
               className='send-button-custom sendbox-phone-call-button'
               disabled={isVoiceConnecting}
-              icon={<PhoneCall theme='filled' size='14' fill='white' strokeWidth={4} />}
+              icon={<FlowyIcon name='phone' size={14} weight='fill' />}
               onClick={onStartVoiceCall}
               data-testid={phoneCallTestId}
               data-layout-part='phone'

@@ -72,6 +72,13 @@
   border-right: 1px solid var(--flowy-border-subtle);
 }
 
+.layout-sider button[role='tab'] .collapsed-hidden,
+.layout-sider [role='button'] .collapsed-hidden {
+  font-size: var(--flowy-text-control, 13px);
+  font-weight: var(--flowy-weight-medium, 500);
+  line-height: var(--flowy-leading-control, 18px);
+}
+
 /* Arco animates sider width. That reflows the conversation pane every frame.
    Width snaps; labels fade in flowy-motion.css / base.css instead.
    Mobile still slides with an inline transform transition, which wins here. */
@@ -102,8 +109,8 @@
   background: transparent;
   color: var(--flowy-text-secondary, var(--color-text-2));
   font: inherit;
-  font-size: 12px;
-  line-height: 20px;
+  font-size: var(--flowy-text-control, 13px);
+  line-height: var(--flowy-leading-control, 18px);
   text-align: left;
   cursor: pointer;
   transition:
@@ -162,7 +169,7 @@
 }
 
 .flowy-workspace-section-action:active {
-  transform: scale(0.94);
+  background: var(--flowy-interactive-pressed, var(--color-fill-3));
 }
 
 .flowy-workspace-section-action:focus-visible {
@@ -187,7 +194,6 @@
 
 .session-overflow-button:active {
   background: var(--flowy-interactive-pressed, var(--color-fill-3));
-  transform: scale(0.985);
 }
 
 .session-overflow-button:focus-visible {

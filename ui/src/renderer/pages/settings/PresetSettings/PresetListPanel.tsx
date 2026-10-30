@@ -3,6 +3,9 @@
  * two-dimension tag filter bar (Audience / Skill Scenario) and a search toggle.
  * Replaces the old source-Tabs + enabled/disabled-section layout.
  */
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
+import FlowyButton from '@renderer/components/base/FlowyButton';
+import FlowySearch from '@renderer/components/base/FlowySearch';
 import { filterPresetsByTags, type TagFilterState } from './presetUtils';
 import SettingsContentLoading from '@/renderer/components/layout/SettingsContentLoading';
 import { useLayoutContext } from '@/renderer/hooks/context/LayoutContext';
@@ -10,8 +13,7 @@ import type { PresetReference, PresetTag } from '@/common/types/agent/presetType
 import type { PresetListItem } from './types';
 import PresetCard from './PresetCard';
 import PresetTagFilterBar from './PresetTagFilterBar';
-import { Button, Input } from '@arco-design/web-react';
-import { Plus, Search, CloseSmall } from '@icon-park/react';
+import { Button } from '@arco-design/web-react';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -139,17 +141,19 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
     <div className='flex flex-col gap-16px pb-16px'>
       {!hideChrome && (
       <div className={`flex items-center justify-end gap-8px ${isMobile ? 'w-full' : ''}`}>
-        <Button
+        <FlowyButton
+          role='icon'
           type={isSearchVisible ? 'secondary' : 'text'}
           size='small'
           aria-label={t('settings.searchPresets', { defaultValue: 'Search presets' })}
+          aria-pressed={isSearchVisible}
           data-testid='btn-search-toggle'
-          className='!rounded-6px !h-34px !w-34px !p-0 flex items-center justify-center !text-t-secondary hover:!bg-fill-1 hover:!text-t-primary'
+          className='!text-t-secondary'
           icon={
             isSearchVisible ? (
-              <CloseSmall size={16} fill='currentColor' />
+              <FlowyIcon name='close' size={16} />
             ) : (
-              <Search size={16} fill='currentColor' />
+              <FlowyIcon name='search' size={16} />
             )
           }
           onClick={() => {
@@ -165,7 +169,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
           type='secondary'
           size='small'
           className={`flowy-icon-text-btn !rounded-8px !border !border-solid !border-[var(--color-border-2)] !bg-[var(--color-bg-2)] !text-[var(--color-text-1)] hover:!bg-[var(--color-fill-1)] ${isMobile ? '!flex-1 !h-32px' : '!px-14px !h-30px'}`}
-          icon={<Plus size={14} fill='currentColor' />}
+          icon={<FlowyIcon name='plus' size={14} />}
           onClick={onCreate}
           data-testid='btn-create-preset'
         >
@@ -175,17 +179,14 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
       )}
 
       {isSearchVisible && (
-        <Input
-          allowClear
+        <FlowySearch
           autoFocus
           value={search_query_value}
           onChange={setSearchQuery}
           data-testid='input-search-preset'
-          className='!bg-[var(--color-bg-2)]'
           placeholder={t('settings.searchPresets', {
             defaultValue: 'Search presets by name or description',
           })}
-          prefix={<Search size={14} fill='currentColor' />}
         />
       )}
 
@@ -261,7 +262,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
                     })}
               </div>
               {presets.length === 0 && (
-                <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<Plus size={14} fill='currentColor' />} onClick={onCreate}>
+                <Button type='primary' size='small' className='flowy-icon-text-btn' icon={<FlowyIcon name='plus' size={14} />} onClick={onCreate}>
                   {t('settings.createPreset', { defaultValue: 'Create Preset' })}
                 </Button>
               )}

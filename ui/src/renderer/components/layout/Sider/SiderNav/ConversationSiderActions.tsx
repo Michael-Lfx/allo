@@ -1,9 +1,9 @@
 
 
+import { FlowyIcon } from '@renderer/components/base/FlowyIcon';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import InstantHoverTooltip from '@renderer/components/base/InstantHoverTooltip';
-import { FolderPlus, ListCheckbox, Plus } from '@icon-park/react';
 import classNames from 'classnames';
 
 type ConversationSiderActionsProps = {
@@ -68,7 +68,7 @@ const ConversationSiderActions: React.FC<ConversationSiderActionsProps> = ({
           key: 'create',
           tooltip: t('conversation.welcome.newConversation'),
           onClick: onNewChat,
-          icon: <Plus theme='outline' size='14' fill='currentColor' className='block leading-none' />,
+          icon: <FlowyIcon name='plus' size={14} className='block leading-none' />,
         })
       : null,
     onCreateProject
@@ -76,7 +76,7 @@ const ConversationSiderActions: React.FC<ConversationSiderActionsProps> = ({
           key: 'project',
           tooltip: t('sessionList.createProject'),
           onClick: onCreateProject,
-          icon: <FolderPlus theme='outline' size='14' fill='currentColor' className='block leading-none' />,
+          icon: <FlowyIcon name='folderPlus' size={14} className='block leading-none' />,
         })
       : null,
     renderAction({
@@ -85,7 +85,7 @@ const ConversationSiderActions: React.FC<ConversationSiderActionsProps> = ({
       active: isBatchMode,
       onClick: onToggleBatchMode,
       icon: (
-        <ListCheckbox theme='outline' size='14' className='block leading-none shrink-0' style={{ lineHeight: 0 }} />
+        <FlowyIcon name='listChecks' size={14} className='block leading-none shrink-0' />
       ),
     }),
   ].filter((action): action is React.ReactElement => action !== null);
