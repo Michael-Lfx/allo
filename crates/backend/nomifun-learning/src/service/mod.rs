@@ -572,6 +572,29 @@ pub(crate) use generation_tasks::{
     STATE_RUNNING,
 };
 
+/// 等待本课程出现 applied 生长批（tests.rs 与 basis_tests.rs 共用的测试
+/// utility，同 [`LearningService::pool_for_tests`] 惯例住本模块——跨测试
+/// 模块不互引，双方各经父模块取用）。只等 applied 批：pending 行在生长
+/// 开始即落库，等它会抢在落库前返回。
+#[cfg(test)]
+async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("growth batch did not land in time");
+}
+
 #[cfg(test)]
 mod basis_tests;
 #[cfg(test)]

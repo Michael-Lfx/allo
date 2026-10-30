@@ -570,11 +570,7 @@ impl SectionPack {
         // 循环、图线 op 拒绝重提）。
         let issues = lint_visual_blocks(body);
         if !issues.is_empty() {
-            let details = issues
-                .iter()
-                .map(|issue| issue.detail.as_str())
-                .collect::<Vec<_>>()
-                .join("；");
+            let details = lint_issue_details(&issues);
             return Err(format!(
                 "section {} ({}) has invalid visualization block syntax: {details} \
                  — fix the fenced block, or carry the section in a table/formula \
@@ -716,6 +712,17 @@ pub(crate) fn lint_visual_blocks(body: &str) -> Vec<VizLintIssue> {
     issues
 }
 
+/// lint 违约 detail 的汇总串（「；」连接）：节级质检违约文本（validate_body）
+/// 与审计观察条（lesson_draft audit_findings）共用同一拼装——「；」分隔符
+/// 零第二真相，改拼装只动这里。
+pub(crate) fn lint_issue_details(issues: &[VizLintIssue]) -> String {
+    issues
+        .iter()
+        .map(|issue| issue.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
 /// f3 终检兜底的机械剔除：lint 仍报坏的围栏块整体剔除（节其余保留），
 /// 返回（剔后正文, 剔除块数）。未闭合围栏零动作（原样保留，与 lint 同
 /// 口径——交由节级质检/审计的既有判定处理）。
@@ -768,15 +775,15 @@ pub(crate) fn strip_broken_visual_blocks(body: &str) -> (String, usize) {
 /// 落在 [`VISUAL_OPTIONS`] 菜单内，承诺门按新声明自然复审。
 pub(crate) fn declared_visual_after_strip(body: &str) -> &'static str {
     if body.contains("```mermaid") {
-        "流程图"
+        VISUAL_FLOWCHART
     } else if body.contains("```svg") || body.contains("```jsxgraph") {
-        "示意图"
+        VISUAL_DIAGRAM
     } else if body.contains("$$") {
-        "公式"
-    } else if body.contains("| ---") || body.contains("| --- ") {
-        "表格"
+        VISUAL_FORMULA
+    } else if body.contains("| ---") {
+        VISUAL_TABLE
     } else {
-        "无"
+        VISUAL_NONE
     }
 }
 
@@ -1194,9 +1201,29 @@ impl TryFrom<&str> for ComplexityTier {
 /// 节清单硬上限（大纲与清单护栏、提示词配比渲染共用）。
 pub(crate) const SECTION_OUTLINE_CAP: usize = 8;
 
+/// visual 菜单词的具名句柄（词面单源）：菜单 [`VISUAL_OPTIONS`] 与
+/// `declared_visual_after_strip` 的剔后反查共用同一份字面量——词表改动
+/// 只改这里；互钉测试（`visual_menu_and_strip_deduction_share_one_vocabulary`）
+/// 防两处漂移。
+pub const VISUAL_FORMULA: &str = "公式";
+pub const VISUAL_FUNCTION_GRAPH: &str = "函数图";
+pub const VISUAL_DIAGRAM: &str = "示意图";
+pub const VISUAL_FLOWCHART: &str = "流程图";
+pub const VISUAL_CHART: &str = "图表";
+pub const VISUAL_TABLE: &str = "表格";
+pub const VISUAL_NONE: &str = "无";
+
 /// 可视化声明菜单：大纲/清单 visual 字段的全部取值（几乎每节都有，确无
 /// 才写「无」）。两处质检门、提示词与工具 schema 枚举共用。
-pub const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
+pub const VISUAL_OPTIONS: [&str; 7] = [
+    VISUAL_FORMULA,
+    VISUAL_FUNCTION_GRAPH,
+    VISUAL_DIAGRAM,
+    VISUAL_FLOWCHART,
+    VISUAL_CHART,
+    VISUAL_TABLE,
+    VISUAL_NONE,
+];
 
 /// 练习节正文的作答引导目标字数（提示词口径；质检门硬拦 250）。
 pub const PRACTICE_BODY_TARGET_CHARS: usize = 120;
@@ -3763,6 +3790,29 @@ mod viz_lint_tests {
         assert_eq!(removed, 1);
         assert!(only_bad.contains(prose));
         assert_eq!(declared_visual_after_strip(&only_bad), "无");
+    }
+
+    /// 互钉（Standards③）：菜单词表与剔后反查同源——`VISUAL_OPTIONS` 词面
+    /// 按提示词展示序逐字钉死（测试即独立事实源），任一词改名/换序/增删
+    /// 即红；`declared_visual_after_strip` 的五个反查返回值必须始终是菜单
+    /// 成员（剔后声明落回菜单，承诺门按新声明自然复审的前提）。
+    #[test]
+    fn visual_menu_and_strip_deduction_share_one_vocabulary() {
+        assert_eq!(
+            VISUAL_OPTIONS,
+            ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"]
+        );
+        let cases = [
+            ("```mermaid\nflowchart TD\nA[本金] --> B[本息]\n```", VISUAL_FLOWCHART),
+            ("```svg\n<svg viewBox=\"0 0 10 10\"></svg>\n```", VISUAL_DIAGRAM),
+            ("正文一句。\n\n$$E=mc^2$$", VISUAL_FORMULA),
+            ("| 一 | 二 |\n| --- | --- |\n| 1 | 2 |", VISUAL_TABLE),
+            ("纯文字，无任何可视化块。", VISUAL_NONE),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(declared_visual_after_strip(body), expected, "{body}");
+            assert!(VISUAL_OPTIONS.contains(&expected), "{expected} 必须仍在菜单内");
+        }
     }
 
     /// f3 lint 并入 validate_body（4.2）：坏 mermaid 围栏在两线共享汇点

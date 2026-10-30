@@ -685,26 +685,6 @@ async fn basis_declaration_switch_off_rejects_loudly() {
 
 // ── f1：声明概念被复用批，评审挂号表非降级（批外锚放行）─────────────────
 
-/// 等待本课程出现 applied 批（与 tests.rs 的 wait_for_growth_batch 同构；
-/// 跨测试模块不互引）。
-async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
-    for _ in 0..500 {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches \
-             WHERE course_id = ? AND status = 'applied'",
-        )
-        .bind(course_id)
-        .fetch_one(service.pool_for_tests())
-        .await
-        .unwrap();
-        if count > 0 {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    panic!("growth batch did not land in time");
-}
-
 /// f1 端到端（法证案例回放，e2e2/server.log 06:46-06:47）：声明铸下的概念
 /// 被生长批复用（defnear 直定宿主 + 评审 reuse 裁决同宿主）时，挂号行
 /// concept 锚定登记表正名放行——评审非降级通过、零白烧重试、登记表零

@@ -1101,11 +1101,7 @@ fn audit_findings(
                             // /跨版本续跑等旁路；danger 面由 section_invalid 承载。
                             let issues = crate::models::lint_visual_blocks(body);
                             if !issues.is_empty() {
-                                let details = issues
-                                    .iter()
-                                    .map(|issue| issue.detail.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join("；");
+                                let details = crate::models::lint_issue_details(&issues);
                                 findings.push(warning(
                                     "viz_block_lint",
                                     format!(
