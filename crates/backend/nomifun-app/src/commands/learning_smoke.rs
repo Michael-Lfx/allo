@@ -7,7 +7,8 @@
 //! 可用 provider 时命令会如实失败）。
 //!
 //! - `structure`：双产物生成 → gd.* 契约门 + 门口对账 → `structure_json`
-//!   落列；机械判据 = 落列后重读快照、本地重验双契约与对账（失败非零退出）。
+//!   落列；机械判据 = 落列后重读快照、本地重验双契约与对账（失败非零退出）
+//!   + 零生长任务在册（e3 声明窗口：结构完成即停，不自动点火首批）。
 //!   运行必挂 [`nomifun_ai_agent::ArchivingCompleter`]（观测存档
 //!   `<data-dir>/observation/learning-smoke/<run>/`）。
 //! - `json`：json_object 能力读数（合法 JSON 率 / 空内容 / 怪癖分类）；
@@ -1182,8 +1183,31 @@ async fn run_structure(
                 .count()
         })
         .unwrap_or(0);
+    // e3 声明窗口硬判据：结构完成后零生长任务在册——建课/结构完成不自动
+    // 点火首批，生长只由用户显式触发（学习窗口「开始学习」= POST grow）。
+    // 本档驱动 run_structure_generation 直达管线，判据护栏防的是未来把生长
+    // 重新耦合回结构管线的回归。
+    let growth_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(course_id.as_str())
+    .fetch_one(&wiring.pool)
+    .await?;
+    let growth_tasks = wiring
+        .service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == "growth")
+        .count();
+    if growth_batches != 0 || growth_tasks != 0 {
+        eprintln!(
+            "CRITERION VIOLATION [e3.zero-growth] structure done but growth already kicked: \
+             batches={growth_batches} tasks={growth_tasks}"
+        );
+        return Ok(ExitCode::from(2));
+    }
     println!(
-        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}",
+        "OK  course={}  spines={spines}  blocks={blocks}  edges={edges}  doors={doors}  labeled={labeled}  growth_batches={growth_batches}  growth_tasks={growth_tasks}",
         course_id.as_str()
     );
     // 相位耗时读数（e1）：两仓首条结构相位耗时基线（jsonl 全量留档，这里

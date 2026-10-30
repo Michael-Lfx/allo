@@ -64,13 +64,15 @@ const GROWTH_MAX_ATTEMPTS: usize = 3;
 
 impl LearningService {
 
-    // ── Course creation（建课 = 学习目标 → 知识结构生成 → 首生长）────────
+    // ── Course creation（建课 = 学习目标 → 知识结构生成，完成即停）────────
 
     /// 学习图课程创建入口（`GenerateCourseRequest.course_kind = learning_graph`）：
     /// 描述即学习目标，程度/基础声明可选（g2 输入最小化）。课程落库后
     /// **知识结构生成在后台启动**（双产物契约门 → structure_json 快照原子
-    /// 落列，WS structure_* 事件驱动），随后**首生长**接续——接口立即返回
-    /// 课程详情，进度走 WS 与 generation_registry（状态/取消端点共用）。
+    /// 落列，WS structure_* 事件驱动），**结构完成即停**（e3 声明窗口）——
+    /// 首批生长不再自动衔接，改由用户在学习窗口显式触发（POST grow）。
+    /// 接口立即返回课程详情，进度走 WS 与 generation_registry（状态/取消
+    /// 端点共用）。
     pub(crate) async fn generate_learning_graph_course(
         &self,
         user_id: &UserId,
@@ -132,8 +134,10 @@ impl LearningService {
         .map_err(internal)?;
         transaction.commit().await.map_err(internal)?;
 
-        // 结构生成 → 首生长都在后台串行（首生的门口参照来自结构产物的地形；
-        // 结构失败不阻断生长——铁律：结构对生长不供内容）。后台任务要求
+        // 结构生成在后台跑（双产物契约门 → 快照落列），**完成即停**
+        // （e3 声明窗口：结构就绪后前端给出门口声明窗口，首批生长改由用户
+        // 显式触发——学习窗口「开始学习」= POST grow；learnhub ADR-0024
+        // 语义：生长是学习动作的副作用，不是建课的副作用）。后台任务要求
         // 'static：模型偏好先持有化再入任务。
         let service = self.clone();
         let owner = user_id.clone();
@@ -155,9 +159,8 @@ impl LearningService {
             {
                 tracing::warn!(course = course.as_str(), %error, "structure generation failed");
             }
-            if let Err(error) = service.kick_growth(&owner, &course, true, spawn_override).await {
-                tracing::warn!(course = course.as_str(), %error, "initial growth kick failed");
-            }
+            // e3：不再衔接首生长。零节点时停摆臂本就拦住自动臂（m10 补批
+            // 语义不动），首批 = 用户显式动作（POST grow，force 恒过停摆臂）。
         });
 
         self.course_detail(&course_id, Some(user_id)).await
@@ -1447,10 +1450,10 @@ impl LearningService {
         Ok(())
     }
 
-    // ── Growth（就绪 < 3 触发 / 手动 / 建课后首生长，共用一条管道）────────
+    // ── Growth（就绪 < 3 触发 / 手动显式，共用一条管道）────────────────────
 
     /// 触发一次生长。`force = false` 时（节点完成自动触发）就绪存量不低于
-    /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动/首生长）总是
+    /// [`READY_TRIGGER`] 就什么都不做；`force = true`（手动显式触发）总是
     /// 补到 [`READY_TARGET`]。返回是否真的启动了后台生长。
     pub async fn kick_growth(
         &self,
@@ -1530,8 +1533,9 @@ impl LearningService {
     }
 
     /// 停摆臂（ADR-0010 裁决：只留空图一臂）：课程还没有任何学习节点时
-    /// 自动触发退出（建课瞬间的首生长 force 走，不占自动触发）。生长无
-    /// 自动终态——「课程长完了」不再有机器语义，收尾交给学习者归档。
+    /// 自动触发退出（e3 起首批 = 用户显式 POST grow，force 恒过停摆臂，
+    /// 不占自动触发）。生长无自动终态——「课程长完了」不再有机器语义，
+    /// 收尾交给学习者归档。
     async fn growth_stalled(&self, course_id: &LearningCourseId) -> Result<bool, AppError> {
         let learning_nodes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM learning_lessons l \

@@ -3604,6 +3604,162 @@ async fn growth_burns_the_full_budget_when_violations_differ() {
     assert_eq!(stats.stop_reason, "exhausted");
 }
 
+/// e3 声明窗口 smoke（structure 档硬判据）：建课流「结构完成即停」——
+/// 结构双产物过门落快照后，**零生长批次、零生长任务在册**（建课不再自动
+/// 点火首批，声明窗口留给用户）；首批只由用户显式触发（学习窗口「开始
+/// 学习」= POST grow，force 恒过停摆臂）——同一课程随后显式 kick 照常
+/// 起批。结构稿构型与 structure_gen 门面测试的 golden 同款（6 主干 ×
+/// 7 块，恰好过 gd.blocks.count 下限）。
+#[tokio::test]
+async fn graph_course_creation_stops_at_structure_with_zero_growth_tasks() {
+    fn e3_golden_terrain() -> serde_json::Value {
+        serde_json::json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "learner_basis_assumed": "纯零基础（未声明）",
+            "generated_by": "test-model",
+            "disclaimer": "门口判据为生成时点快照，供自检参考",
+            "doors": [
+                { "id": "G1", "criterion": "能用配方法解形如 x²=p 的方程", "kind": "hard" }
+            ]
+        })
+    }
+    fn e3_golden_structure() -> serde_json::Value {
+        let spine_names = ["主干一", "主干二", "主干三", "主干四", "主干五", "主干六"];
+        let mut blocks = Vec::new();
+        for (spine_index, spine) in spine_names.iter().enumerate() {
+            for block_index in 0..7 {
+                let ordinal = spine_index * 7 + block_index;
+                let stage = ["入门", "进阶", "高级"][ordinal % 3];
+                blocks.push(serde_json::json!({
+                    "name": format!("块{ordinal:02}"),
+                    "slug": format!("block-{ordinal:02}"),
+                    "spine": spine,
+                    "stage": stage,
+                    "note": format!("第 {ordinal} 个主题的一句话描述"),
+                }));
+            }
+        }
+        serde_json::json!({
+            "goal": "能独立完成一元二次方程的求解与检验",
+            "goal_type": "capability",
+            "proficiency_statement": "达成后能独立解任意一元二次方程并讲解每一步依据",
+            "domain_type": "理论",
+            "form_reference": "Flowy 学习结构模板 v1",
+            "source_tier": "名录",
+            "generated_by": "test-model",
+            "disclaimer": "快照为生成时点参考地图，可能存在盲区",
+            "domain": {
+                "core_definition": "一元二次方程的代数求解体系",
+                "includes": ["方程变形", "求根公式", "判别式"],
+                "excludes": ["三次方程", "复数域", "数值分析"],
+                "prerequisite_doors": ["G1"],
+                "audience": "零基础成年学习者",
+                "scenarios": ["解题应用", "讲解他人"],
+                "granularity": "每块一个可独立教学的解题动作"
+            },
+            "spines": spine_names.iter().map(|spine| serde_json::json!({
+                "name": spine,
+                "definition": format!("{spine}的一句话定义"),
+                "key_points": ["要点一"],
+                "instance": format!("达标{spine}时能独立完成一次求解"),
+            })).collect::<Vec<_>>(),
+            "blocks": blocks,
+            "edges": [
+                { "source": "块01", "target": "块00", "type": "assumes", "tier": "know", "note": "先认后用" }
+            ],
+            "gaps": [
+                { "item": "应用题情境覆盖不足", "direction": "补行程类情境" },
+                { "item": "图像法未展开", "direction": "补抛物线图像判读" },
+                { "item": "近似解法缺位", "direction": "补估算策略" }
+            ],
+            "quality": [
+                { "check": "主干数在 6–12 档", "status": "met" },
+                { "check": "块名一物一名", "status": "met" },
+                { "check": "边端点全部可解析", "status": "met" },
+                { "check": "无顺序承诺", "status": "met" },
+                { "check": "盲区已标注", "status": "unmet", "reason": "应用情境块待补" }
+            ]
+        })
+    }
+
+    let (service, _knowledge, owner) = job_test_service().await;
+    let completer = SequencedCompleter::new(vec![
+        serde_json::to_string(&e3_golden_terrain()).unwrap(),
+        serde_json::to_string(&e3_golden_structure()).unwrap(),
+    ]);
+    *service.course_completer.write().unwrap() = Some(completer.clone());
+    let detail = service
+        .generate_course(
+            &owner,
+            GenerateCourseRequest {
+                course_kind: crate::models::CourseKind::LearningGraph,
+                teaching_style: None,
+                knowledge_base_id: None,
+                description: Some("能独立完成一元二次方程的求解与检验".into()),
+                domain: None,
+                provider_id: None,
+                model: None,
+                mode: crate::models::CourseGenerationMode::OnDemand,
+                goal: None,
+                proficiency_statement: None,
+                learner_basis: None,
+                knowledge_base_ids: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    let course_id = detail.course.id.as_str().to_owned();
+    let course = nomifun_common::LearningCourseId::parse(&course_id).unwrap();
+
+    // 结构完成：快照落列（后台 spawn 轮询落定）。
+    let mut structured = false;
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_courses \
+             WHERE course_id = ? AND structure_json IS NOT NULL \
+             AND trim(structure_json) <> ''",
+        )
+        .bind(&course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            structured = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(structured, "structure snapshot must land after creation");
+
+    // 硬判据：结构完成后零生长任务在册——无批次行、注册表无 growth 任务。
+    let batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM learning_growth_batches WHERE course_id = ?",
+    )
+    .bind(&course_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert_eq!(batches, 0, "creation must not auto-kick the first batch");
+    let growth_tasks = service
+        .generation_task_snapshot()
+        .into_iter()
+        .filter(|task| task.kind == crate::service::KIND_GROWTH)
+        .count();
+    assert_eq!(growth_tasks, 0, "registry must hold no growth task");
+
+    // 显式首批照常可达（学习窗口「开始学习」链路）：force 恒过停摆臂，
+    // kick 即起批——末项重复稿过不了生长门，批次以 failed 落定即为凭证。
+    let kicked = service
+        .kick_growth(&owner, &course, true, None)
+        .await
+        .unwrap();
+    assert!(kicked, "explicit first kick must start a batch");
+    assert!(
+        wait_for_batch_status(&service, &course_id, "failed").await,
+        "the explicit batch must run through the growth pipeline"
+    );
+}
+
 /// 容量守卫（重裁出口）：超容稿的 ng.batch.size 整批违规改判定向重装指令
 /// （ng.batch.redraft_capacity），下一轮按拆分形态装箱后过门落库。
 #[tokio::test]
