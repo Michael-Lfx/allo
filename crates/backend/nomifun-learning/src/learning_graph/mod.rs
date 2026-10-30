@@ -1052,7 +1052,7 @@ pub struct NominationPlan {
 }
 
 /// 结构门产出：语义门错误 + 提名候选装配。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GateOutcome {
     pub errors: Vec<GateError>,
     pub nominations: Vec<NominationPlan>,
@@ -1073,6 +1073,153 @@ pub struct GateOutcome {
     /// 名+别名 ∪ 本批铸名/提名——learnhub 门面同构（known 含本批产出：已教
     /// 行指向本批提名由校验器单独红）。
     pub provenance_known: HashSet<String>,
+    /// 本批复用命中的登记表概念锚（f1，评审前已知的机械两源；A1）：
+    /// 挂号表行 concept 的批外放行域——评审输入的【本批复用命中】块与
+    /// 校验放行域同源装配。
+    pub external_anchors_mech: Vec<ExternalAnchor>,
+}
+
+/// 锚来源三值（f1；A1 放行域三源）：撞名机械绑定 / 定义直定复用 /
+/// 评审裁决复用。前两源 gate 评审前已知（`external_anchors_mech`），第三源
+/// 响应后经 [`verify_reuse_rulings`] 核验产生。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AnchorSource {
+    /// 铸名撞登记表现有名 → 机械复用（gate `auto_reusals`，j04 撞池吸收）。
+    MintCollision,
+    /// 定义归一化逐字相等的直定宿主（gate `direct_host`，绕过评审）。
+    DirectHost,
+    /// 评审 `reuse[]` 裁决经机械核验通过的宿主。
+    ReviewReuse,
+}
+
+/// 本批复用命中的登记表概念锚（f1）：评审前后都可机械判定的「存量可锚」
+/// 集——挂号表行 concept 的放行域 = 批内提名 ∪ 锚 canonical（A1）；命中集
+/// 之外的 registry 存量不放行（凭空锚存量仍拒）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalAnchor {
+    /// 产生本锚的提名名（小写折叠口径；service 落池通道 rulings 的键同源）。
+    pub(crate) name: String,
+    /// 登记表概念 id（与 `registry_concept_ids` 同形）。
+    pub(crate) concept_id: String,
+    /// 登记表正名（挂号行 concept 的放行对照面，小写折叠比对）。
+    pub(crate) canonical: String,
+    /// 锚来源（注入块的来源注记）。
+    pub(crate) source: AnchorSource,
+}
+
+/// gate 末尾的机械锚装配（f1 4.1）：铸名撞池（auto_reusals）→
+/// [`AnchorSource::MintCollision`]、定义直定宿主 →
+/// [`AnchorSource::DirectHost`]。按批铸名序装配（注入块渲染稳定）；同概念
+/// 两源命中去重（撞池优先）；宿主查无登记表条目（防御）跳过。
+pub(crate) fn assemble_external_anchors(
+    batch: &ProposedBatch,
+    auto_reusals: &HashMap<String, String>,
+    nominations: &[NominationPlan],
+    registry_entries: &[defnear::RegistryEntry],
+) -> Vec<ExternalAnchor> {
+    let canonical_of = |concept_id: &str| {
+        registry_entries
+            .iter()
+            .find(|entry| entry.concept_id == concept_id)
+            .map(|entry| entry.canonical.trim().to_owned())
+    };
+    let mut anchors: Vec<ExternalAnchor> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for mint in &batch.mints {
+        let key = mint.canonical.trim().to_lowercase();
+        let Some(host_id) = auto_reusals.get(&key) else {
+            continue;
+        };
+        let Some(canonical) = canonical_of(host_id) else {
+            continue;
+        };
+        if !seen.insert(host_id.clone()) {
+            continue;
+        }
+        anchors.push(ExternalAnchor {
+            name: mint.canonical.trim().to_owned(),
+            concept_id: host_id.clone(),
+            canonical,
+            source: AnchorSource::MintCollision,
+        });
+    }
+    for plan in nominations {
+        let Some(host_id) = &plan.direct_host else {
+            continue;
+        };
+        let Some(canonical) = canonical_of(host_id) else {
+            continue;
+        };
+        if !seen.insert(host_id.clone()) {
+            continue;
+        }
+        anchors.push(ExternalAnchor {
+            name: plan.name.trim().to_lowercase(),
+            concept_id: host_id.clone(),
+            canonical,
+            source: AnchorSource::DirectHost,
+        });
+    }
+    anchors
+}
+
+/// 评审 `reuse[]` 的机械核验单源（f1 4.2；自 service 调用点提取）：
+/// name 不在批内提名 → 弃；concept_id 不在活跃登记表（编造）→ 弃；宿主在
+/// 候选集外但登记表合法 → 接受（日志注记）；其余 →
+/// [`AnchorSource::ReviewReuse`] 锚。concept_review 与 service 落池通道共用
+/// ——同一 reuse 两处判定必须一致，禁止复刻。
+pub(crate) fn verify_reuse_rulings(
+    reuse: &[ReuseRuling],
+    gate: &GateOutcome,
+) -> Vec<ExternalAnchor> {
+    let mut anchors = Vec::new();
+    for ruling in reuse {
+        let key = ruling.name.trim().to_lowercase();
+        let Some(plan) = gate
+            .nominations
+            .iter()
+            .find(|plan| plan.name.to_lowercase() == key)
+        else {
+            tracing::warn!(
+                name = %ruling.name,
+                "review reuse ruling dropped — name not in this batch"
+            );
+            continue;
+        };
+        let concept_id = ruling.concept_id.trim();
+        if !gate.registry_concept_ids.contains(concept_id) {
+            tracing::warn!(
+                name = %ruling.name,
+                concept_id,
+                "review reuse ruling dropped — concept_id is not an active registry concept"
+            );
+            continue;
+        }
+        if !plan
+            .candidates
+            .iter()
+            .any(|candidate| candidate.concept_id == concept_id)
+        {
+            tracing::info!(
+                name = %ruling.name,
+                concept_id,
+                "review reuse ruling host outside the nomination candidate set — accepted (registry-valid)"
+            );
+        }
+        let canonical = gate
+            .mint_registry
+            .iter()
+            .find(|entry| entry.concept_id == concept_id)
+            .map(|entry| entry.canonical.trim().to_owned())
+            .unwrap_or_else(|| concept_id.to_owned());
+        anchors.push(ExternalAnchor {
+            name: key,
+            concept_id: concept_id.to_owned(),
+            canonical,
+            source: AnchorSource::ReviewReuse,
+        });
+    }
+    anchors
 }
 
 /// Run the AI concept review over a gated batch. Any failure (no completer,
@@ -1095,6 +1242,12 @@ pub struct GateOutcome {
 /// findings；true = 合成打回问题，L1 级门失败走既有重裁回路）。开关读数
 /// 在调用方（服务面读 `NOMI_LEARNING_LEXICON_ENFORCE`，learnhub
 /// `ReviewInput.fragment_enforce` 同缝——测试注入不经进程 env）。
+///
+/// 复用命中锚（f1）：`gate` 单参定死——核验与注入都在函数内取。评审 user
+/// 消息注入【本批复用命中】块（只含 `external_anchors_mech`，评审前已知；
+/// A3：reuse 锚不入块，由校验侧核验放行）；挂号表校验的放行域 = 批内提名
+/// ∪（机械锚 ∪ 核验通过的 `reuse[]` 锚）（A1）。off 臂（挂号表面休眠）
+/// 零注入零锚——面前行为。
 pub(crate) async fn concept_review(
     completer: &dyn LearningCompleter,
     model_override: Option<(&nomifun_common::ProviderId, &str)>,
@@ -1104,6 +1257,7 @@ pub(crate) async fn concept_review(
     known_names: &[String],
     naming_list: &[String],
     fragment_enforce: bool,
+    gate: &GateOutcome,
 ) -> ReviewOutcome {
     let provenance_on = review_provenance_enabled();
     let fragments_on = review_fragments_enabled();
@@ -1113,6 +1267,26 @@ pub(crate) async fn concept_review(
         String::new()
     } else {
         format!("\n\n【提名候选集（复用裁决的机械面；concept_id 用材料里出现过的真实登记表 id）】\n{candidates}")
+    };
+    // 【本批复用命中】块（f1；A3）：只注入机械锚（评审前已知）——每行
+    // 「{canonical}（{撞名机械绑定|定义直定复用}）」。reuse 裁决是响应后才
+    // 可核验的量，时序上无法预注入；挂号表面 off = 零注入（面前行为）。
+    let anchors_block = if provenance_on && !gate.external_anchors_mech.is_empty() {
+        let mut block = String::from(
+            "\n\n【本批复用命中（挂号表可锚定的登记表存量概念）】\n\
+             以下登记表概念在本批被复用（本批不重铸）：`term_provenance` 挂号表的行 concept 可以（也应当）登记到这些正名；其余登记表存量概念不得作为行 concept。\n",
+        );
+        for anchor in &gate.external_anchors_mech {
+            let note = match anchor.source {
+                AnchorSource::MintCollision => "撞名机械绑定",
+                AnchorSource::DirectHost => "定义直定复用",
+                AnchorSource::ReviewReuse => "评审裁决复用",
+            };
+            block.push_str(&format!("- {}（{note}）\n", anchor.canonical));
+        }
+        block
+    } else {
+        String::new()
     };
     // 输出契约（ng.review.*）：verdict 词表 + problems/reuse 形状 + 挂号表
     // 行形状（serde default 容旧包/存量录制；必填性 = 提示词 + 重试执法，
@@ -1209,7 +1383,7 @@ pub(crate) async fn concept_review(
     let max_attempts = if provenance_on || fragments_on { REVIEW_PROVENANCE_ATTEMPTS } else { 1 };
     for attempt in 1..=max_attempts {
         let mut user = format!(
-            "{}\n\n【待审批次】\n{batch_json}{candidates_block}",
+            "{}\n\n【待审批次】\n{batch_json}{candidates_block}{anchors_block}",
             context.render()
         );
         if fragments_on {
@@ -1325,16 +1499,21 @@ pub(crate) async fn concept_review(
         if !provenance_on && !fragments_on {
             return verdict_outcome(verdict, readout, frag_readout, Vec::new(), Vec::new());
         }
-        // 挂号表机械核对（m3；原文路径保留）。
+        // 挂号表机械核对（m3；原文路径保留）。f1（A1）：放行域 = 批内提名
+        // ∪（机械锚 ∪ 核验通过的 reuse 裁决锚）——锚集在响应后拼定。
         if provenance_on {
+            let mut anchors = gate.external_anchors_mech.clone();
+            anchors.extend(verify_reuse_rulings(&verdict.reuse, gate));
             match provenance::validate_term_provenance(
                 &verdict.term_provenance,
                 verdict.verdict == "pass",
                 batch,
                 &known,
+                &anchors,
             ) {
-                Ok(rows) => {
-                    readout.rows = rows;
+                Ok(outcome) => {
+                    readout.rows = outcome.rows;
+                    readout.external_hits = outcome.external_hits;
                 }
                 Err(reason) => {
                     readout.invalid += 1;
@@ -1817,6 +1996,161 @@ mod tests {
         ProposedBatch { nodes, mints: Vec::new(), new_aliases: Vec::new(), note: String::new() }
     }
 
+    // ── 复用命中锚集（f1）：gate 机械锚装配 ─────────────────────────────────
+
+    /// f1（4.1）：gate 末尾的机械锚装配——auto_reusals 每条 → MintCollision、
+    /// direct_host 命中 → DirectHost；同概念两源命中去重（撞池优先）；
+    /// 宿主查无登记表条目（防御）跳过。
+    #[test]
+    fn external_anchor_assembly_covers_both_mechanical_sources() {
+        let host_a = "01JHOSTAAAAAAAAAAAAAAAAAAAAAA".to_owned();
+        let host_b = "01JHOSTBBBBBBBBBBBBBBBBBBBBBB".to_owned();
+        let registry = vec![
+            defnear::RegistryEntry {
+                concept_id: host_a.clone(),
+                canonical: "登记正名一".into(),
+                definition: String::new(),
+                active_aliases: Vec::new(),
+            },
+            defnear::RegistryEntry {
+                concept_id: host_b.clone(),
+                canonical: "登记正名二".into(),
+                definition: String::new(),
+                active_aliases: Vec::new(),
+            },
+        ];
+        let mut auto_reusals = HashMap::new();
+        auto_reusals.insert("撞名概念".to_owned(), host_a.clone());
+        let batch = ProposedBatch {
+            nodes: Vec::new(),
+            mints: vec![
+                ConceptMint {
+                    canonical: "撞名概念".into(),
+                    aliases: Vec::new(),
+                    definition: String::new(),
+                    source: None,
+                },
+                ConceptMint {
+                    canonical: "新铸概念".into(),
+                    aliases: Vec::new(),
+                    definition: String::new(),
+                    source: None,
+                },
+            ],
+            new_aliases: Vec::new(),
+            note: String::new(),
+        };
+        let nominations = vec![
+            NominationPlan {
+                name: "直定同义".into(),
+                // 与撞池同宿主 → 概念层去重，撞池源优先。
+                direct_host: Some(host_a.clone()),
+                candidates: Vec::new(),
+                evidence: Vec::new(),
+            },
+            NominationPlan {
+                name: "直定另义".into(),
+                direct_host: Some(host_b.clone()),
+                candidates: Vec::new(),
+                evidence: Vec::new(),
+            },
+            NominationPlan {
+                name: "幽灵直定".into(),
+                // 宿主不在登记表（防御面）→ 跳过。
+                direct_host: Some("01JGHOSTXXXXXXXXXXXXXXXXXXXX".into()),
+                candidates: Vec::new(),
+                evidence: Vec::new(),
+            },
+        ];
+        let anchors =
+            assemble_external_anchors(&batch, &auto_reusals, &nominations, &registry);
+        assert_eq!(
+            anchors,
+            vec![
+                ExternalAnchor {
+                    name: "撞名概念".into(),
+                    concept_id: host_a.clone(),
+                    canonical: "登记正名一".into(),
+                    source: AnchorSource::MintCollision,
+                },
+                ExternalAnchor {
+                    name: "直定另义".into(),
+                    concept_id: host_b,
+                    canonical: "登记正名二".into(),
+                    source: AnchorSource::DirectHost,
+                },
+            ],
+            "两源入集；同宿主去重（撞池优先）；幽灵宿主跳过"
+        );
+    }
+
+    /// f1（4.2）：reuse 核验单源——name 不在批内 → 弃；concept_id 不在活跃
+    /// 登记表（编造）→ 弃；候选集外但登记表合法 → 接受；其余 →
+    /// ReviewReuse 锚（canonical 取登记表正名）。
+    #[test]
+    fn verify_reuse_rulings_drops_batch_foreign_and_fabricated_rulings() {
+        let host = "01JHOSTAAAAAAAAAAAAAAAAAAAAAA";
+        let other = "01JHOSTBBBBBBBBBBBBBBBBBBBBBB";
+        let mut gate = GateOutcome::default();
+        gate.nominations = vec![NominationPlan {
+            name: "向量代数".into(),
+            direct_host: None,
+            candidates: vec![defnear::NeighborCandidate {
+                concept_id: host.into(),
+                canonical: "线性组合".into(),
+                reason: "r".into(),
+            }],
+            evidence: Vec::new(),
+        }];
+        gate.registry_concept_ids =
+            [host.to_owned(), other.to_owned()].into_iter().collect();
+        gate.mint_registry = vec![
+            defnear::RegistryEntry {
+                concept_id: host.into(),
+                canonical: "线性组合".into(),
+                definition: String::new(),
+                active_aliases: Vec::new(),
+            },
+            defnear::RegistryEntry {
+                concept_id: other.into(),
+                canonical: "平面向量".into(),
+                definition: String::new(),
+                active_aliases: Vec::new(),
+            },
+        ];
+        let rulings = vec![
+            ReuseRuling { name: "向量代数".into(), concept_id: host.into() },
+            // name 不在批内提名 → 弃。
+            ReuseRuling { name: "批外名".into(), concept_id: host.into() },
+            // concept_id 编造（不在活跃登记表）→ 弃。
+            ReuseRuling {
+                name: "向量代数".into(),
+                concept_id: "01JGHOSTXXXXXXXXXXXXXXXXXXXX".into(),
+            },
+            // 候选集外但登记表合法 → 接受（真机 run-1792395614887 语义）。
+            ReuseRuling { name: "向量代数".into(), concept_id: other.into() },
+        ];
+        let anchors = verify_reuse_rulings(&rulings, &gate);
+        assert_eq!(
+            anchors,
+            vec![
+                ExternalAnchor {
+                    name: "向量代数".into(),
+                    concept_id: host.into(),
+                    canonical: "线性组合".into(),
+                    source: AnchorSource::ReviewReuse,
+                },
+                ExternalAnchor {
+                    name: "向量代数".into(),
+                    concept_id: other.into(),
+                    canonical: "平面向量".into(),
+                    source: AnchorSource::ReviewReuse,
+                },
+            ],
+            "批外名弃、编造 id 弃；候选集外但登记表合法 → 接受"
+        );
+    }
+
     // ── Auto Refill（m10）────────────────────────────────────────────────────
 
     /// 裁决三态（m6 定案阈值不动：READY_TRIGGER=3）：就绪 ≥ 触发水位 =
@@ -2039,7 +2373,7 @@ mod tests {
             vec![],
         )]);
         let review =
-            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false).await;
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate()).await;
         assert_eq!(review.problems.len(), 2, "{review:?}");
         assert_eq!(review.reuse.len(), 1, "{review:?}");
         assert_eq!(review.reuse[0].name, "二进制数");
@@ -2195,7 +2529,7 @@ mod tests {
         )));
         let batch = batch_of(vec![node("校准研磨度", vec![], vec![])]);
         let review =
-            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false).await;
+            concept_review(&completer, None, &batch, &CoachContext::default(), "", &[], &[], false, &review_gate()).await;
         assert!(review.problems.is_empty(), "pass 不阻断：{review:?}");
         assert_eq!(review.findings.len(), 1, "{review:?}");
         assert!(review.findings[0].issue.contains("内嵌的上位词"));
@@ -2283,6 +2617,11 @@ mod tests {
         Restore(env_var, previous)
     }
 
+    /// 评审调用的缺省 gate（f1）：零错误零锚——既有评审测试的缺省装配。
+    fn review_gate() -> GateOutcome {
+        GateOutcome::default()
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn missing_table_retries_once_then_degrades_with_finding() {
@@ -2304,6 +2643,7 @@ mod tests {
             &["所有权".to_owned()],
             &[],
             false,
+            &review_gate(),
         )
         .await;
         // Degraded 保守放行：零 problems（评审器故障 ≠ 批缺陷），降级留痕
@@ -2318,12 +2658,181 @@ mod tests {
         );
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true }
+            provenance::ProvenanceReadout { rows: 0, invalid: 2, retried: 1, degraded: true, external_hits: 0 }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert_eq!(prompts.len(), 2, "重试恰一次：{prompts:?}");
         assert!(prompts[1].contains("缺挂号表行"), "次轮须携带死因：{}", prompts[1]);
         assert!(prompts[1].contains("挂号表不可用"), "次轮须点名挂号表：{}", prompts[1]);
+    }
+
+    // ── 复用命中锚接线（f1；A1/A3）──────────────────────────────────────────
+
+    /// f1：机械锚注入块随 user 消息进评审（只含 external_anchors_mech，来源
+    /// 注记），行 concept 锚定锚 canonical 放行，external_hits 进读数。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn mech_anchors_inject_and_release_anchored_row_concept() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let mut gate = review_gate();
+        gate.external_anchors_mech = vec![ExternalAnchor {
+            name: "percent".into(),
+            concept_id: "01JANCHORXXXXXXXXXXXXXXXXXX".into(),
+            canonical: "门口判读".into(),
+            source: AnchorSource::DirectHost,
+        }];
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![pass_with_table(serde_json::json!([
+                { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
+                { "concept": "门口判读", "term": "判据", "source": "已教", "ref": "门口判读" }
+            ]))]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned(), "门口判读".to_owned()],
+            &[],
+            false,
+            &gate,
+        )
+        .await;
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.findings.is_empty(), "锚放行不留痕：{review:?}");
+        assert_eq!(review.provenance.rows, 2, "{review:?}");
+        assert_eq!(review.provenance.external_hits, 1, "锚命中行进读数");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert!(
+            prompts[0].contains("【本批复用命中")
+                && prompts[0].contains("门口判读（定义直定复用）"),
+            "机械锚注入块随 user 消息：{}",
+            prompts[0]
+        );
+    }
+
+    /// f1（A1 第三源）：评审 reuse[] 核验通过 → 锚入放行域——零机械锚时
+    /// 同样放行行 concept = 宿主正名的挂号行；注入块不出现（A3：reuse 是
+    /// 响应后才可核验的量，不入块）。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reuse_ruling_anchor_releases_row_concept_without_mech() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let host = "01JHOSTAAAAAAAAAAAAAAAAAAAAAA";
+        let mut gate = review_gate();
+        gate.nominations = vec![NominationPlan {
+            name: "借用".into(),
+            direct_host: None,
+            candidates: Vec::new(),
+            evidence: Vec::new(),
+        }];
+        gate.registry_concept_ids = [host.to_owned()].into_iter().collect();
+        gate.mint_registry = vec![defnear::RegistryEntry {
+            concept_id: host.into(),
+            canonical: "线性组合".into(),
+            definition: String::new(),
+            active_aliases: Vec::new(),
+        }];
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![serde_json::to_string(&serde_json::json!({
+                "verdict": "pass",
+                "reuse": [{ "name": "借用", "concept_id": host }],
+                "term_provenance": [
+                    { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
+                    { "concept": "线性组合", "term": "作用域", "source": "常识" }
+                ]
+            }))
+            .unwrap()]
+            .into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned(), "线性组合".to_owned()],
+            &[],
+            false,
+            &gate,
+        )
+        .await;
+        assert!(review.problems.is_empty(), "{review:?}");
+        assert!(review.findings.is_empty(), "{review:?}");
+        assert_eq!(review.provenance.rows, 2, "{review:?}");
+        assert_eq!(review.provenance.external_hits, 1, "reuse 锚放行且计数");
+        let prompts = &completer.0.lock().unwrap().1;
+        assert!(
+            !prompts[0].contains("【本批复用命中"),
+            "reuse 锚不入注入块（A3）：{}",
+            prompts[0]
+        );
+    }
+
+    /// f1（A1 代价面 + A2）：reuse 编造 concept_id → 锚不入集，其挂号行照
+    /// 拒一轮（死因带存量指引）；次轮修正恢复——指引使重试可满足。
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn fabricated_reuse_id_leaves_row_unanchored_until_retry() {
+        let _env = set_env(REVIEW_PROVENANCE_SWITCH_ENV, "on");
+        let mut gate = review_gate();
+        gate.nominations = vec![NominationPlan {
+            name: "借用".into(),
+            direct_host: None,
+            candidates: Vec::new(),
+            evidence: Vec::new(),
+        }];
+        let bad = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "reuse": [{ "name": "借用", "concept_id": "01JGHOSTXXXXXXXXXXXXXXXXXXXX" }],
+            "term_provenance": [
+                { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
+                { "concept": "线性组合", "term": "作用域", "source": "常识" }
+            ]
+        }))
+        .unwrap();
+        let good = serde_json::to_string(&serde_json::json!({
+            "verdict": "pass",
+            "term_provenance": [
+                { "concept": "借用", "term": "所有权", "source": "已教", "ref": "所有权" },
+                { "concept": "借用", "term": "作用域", "source": "常识" }
+            ]
+        }))
+        .unwrap();
+        let completer = ScriptedReview(std::sync::Mutex::new((
+            vec![bad, good].into_iter(),
+            Vec::new(),
+        )));
+        let review = concept_review(
+            &completer,
+            None,
+            &review_batch_with_mint(),
+            &CoachContext::default(),
+            "",
+            &["所有权".to_owned()],
+            &[],
+            false,
+            &gate,
+        )
+        .await;
+        assert!(review.problems.is_empty() && review.findings.is_empty(), "{review:?}");
+        assert_eq!(review.provenance.rows, 2, "{review:?}");
+        assert_eq!(review.provenance.invalid, 1, "首轮锚域拒绝");
+        assert_eq!(review.provenance.retried, 1);
+        assert_eq!(
+            review.provenance.external_hits, 0,
+            "编造锚不入集，末表零锚命中"
+        );
+        let prompts = &completer.0.lock().unwrap().1;
+        assert!(
+            prompts[1].contains("不在批内提名，也不在本批复用命中"),
+            "死因带存量指引：{}",
+            prompts[1]
+        );
     }
 
     #[tokio::test]
@@ -2347,13 +2856,14 @@ mod tests {
             &["所有权".to_owned()],
             &[],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
         assert!(review.findings.is_empty(), "恢复则不留痕：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0 }
         );
     }
 
@@ -2377,6 +2887,7 @@ mod tests {
             &["所有权".to_owned()],
             &[],
             false,
+            &review_gate(),
         )
         .await;
         // off 臂 = k07 后行为：不要求表、不做机械校验，缺表照常放行。
@@ -2415,13 +2926,14 @@ mod tests {
             &["所有权".to_owned()],
             &[],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
         assert!(review.findings.is_empty(), "次轮干净结论恢复：{review:?}");
         assert_eq!(
             review.provenance,
-            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false }
+            provenance::ProvenanceReadout { rows: 2, invalid: 1, retried: 1, degraded: false, external_hits: 0 }
         );
         let prompts = &completer.0.lock().unwrap().1;
         assert!(
@@ -2543,6 +3055,7 @@ mod tests {
             &[],
             &["线段".to_owned(), "内角".to_owned()],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "{review:?}");
@@ -2581,6 +3094,7 @@ mod tests {
             &[],
             &["线段".to_owned(), "内角".to_owned()],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "report-only 不打回：{review:?}");
@@ -2624,6 +3138,7 @@ mod tests {
             &[],
             &["线段".to_owned(), "内角".to_owned()],
             true,
+            &review_gate(),
         )
         .await;
         assert_eq!(review.problems.len(), 1, "未处置合成打回问题：{review:?}");
@@ -2659,6 +3174,7 @@ mod tests {
             &[],
             &["线段".to_owned(), "内角".to_owned()],
             true,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "全处置不误伤：{review:?}");
@@ -2692,6 +3208,7 @@ mod tests {
             &[],
             &["线段".to_owned()],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty(), "Degraded 保守放行：{review:?}");
@@ -2746,6 +3263,7 @@ mod tests {
             &["所有权".to_owned()],
             &["线段".to_owned()],
             false,
+            &review_gate(),
         )
         .await;
         assert!(
@@ -2780,6 +3298,7 @@ mod tests {
             &[],
             &["线段".to_owned()],
             false,
+            &review_gate(),
         )
         .await;
         assert!(review.problems.is_empty() && review.findings.is_empty(), "{review:?}");

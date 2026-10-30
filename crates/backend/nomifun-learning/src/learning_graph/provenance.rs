@@ -25,7 +25,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::ProposedBatch;
+use super::{ExternalAnchor, ProposedBatch};
 
 /// 挂号表来源四值词表（与评审提示词逐字一致；`缺失` 承重——缺口的自认通道）。
 /// 消费面 = review_schema + 互钉测试（词表-枚举-提示词三面同源）——与
@@ -77,8 +77,8 @@ pub(crate) struct TermProvenance {
     pub(crate) ref_name: Option<String>,
 }
 
-/// 机械校验读数（smoke 输出 `rows/invalid/retried/degraded` 行的数据源；
-/// 读数面非门禁）。跨评审调用累加：[`ProvenanceReadout::merge`]。
+/// 机械校验读数（smoke 输出 `rows/invalid/retried/degraded/external_hits`
+/// 行的数据源；读数面非门禁）。跨评审调用累加：[`ProvenanceReadout::merge`]。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct ProvenanceReadout {
     /// 被接受的结论携带的挂号表行数。
@@ -89,6 +89,9 @@ pub(crate) struct ProvenanceReadout {
     pub(crate) retried: usize,
     /// 重试仍败 → Degraded 保守放行。
     pub(crate) degraded: bool,
+    /// 行 concept 命中本批复用锚的行数（f1 A5 观察位：挂号行锚定 registry
+    /// 概念的真机可观察信号）。
+    pub(crate) external_hits: usize,
 }
 
 impl ProvenanceReadout {
@@ -97,17 +100,30 @@ impl ProvenanceReadout {
         self.invalid += other.invalid;
         self.retried += other.retried;
         self.degraded |= other.degraded;
+        self.external_hits += other.external_hits;
     }
 }
 
+/// 挂号表机械核对结果：行数（进 `readout.rows`）+ 批外锚命中行数（进
+/// `readout.external_hits`，f1 A5）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TableOutcome {
+    pub(crate) rows: usize,
+    pub(crate) external_hits: usize,
+}
+
 /// 挂号表机械核对（纯函数）：违规 = `Err`（死因，进重试反馈），通过 =
-/// `Ok`（行数，进读数）。`pass` = 结论是否放行（缺失行 + 放行 = 自相矛盾）。
+/// `Ok`（表结果，进读数）。`pass` = 结论是否放行（缺失行 + 放行 = 自相矛盾）。
+/// `external_anchors` = 本批复用命中的登记表概念锚（f1 A1）：行 concept 的
+/// 合法域 = 批内提名 ∪ 锚 canonical（小写折叠，对齐 known_names 风格）；
+/// 命中锚的行数进读数（A5）。
 pub(crate) fn validate_term_provenance(
     rows: &[TermProvenance],
     pass: bool,
     batch: &ProposedBatch,
     known_names: &HashSet<String>,
-) -> Result<usize, String> {
+    external_anchors: &[ExternalAnchor],
+) -> Result<TableOutcome, String> {
     // 名字池一律小写折叠（allo 名字解析全口径小写；池由 gate_batch 装配）。
     let known = known_names;
     // 提名集（mints canonical ∪ 别名名）+ 定义对照域（canonical/提名名 → 定义）。
@@ -139,13 +155,36 @@ pub(crate) fn validate_term_provenance(
         .map(|concept| concept.name.trim())
         .filter(|name| !name.is_empty())
         .collect();
+    // 本批复用命中锚的正名（小写折叠，对齐 known_names 风格；f1 A1）——
+    // 行 concept 放行域 = 提名 ∪ 锚；命中集之外的 registry 存量不放行。
+    let anchors: HashSet<String> = external_anchors
+        .iter()
+        .map(|anchor| anchor.canonical.trim().to_lowercase())
+        .collect();
     let key = |value: &str| value.trim().to_lowercase();
 
     let mut covered: HashSet<&str> = HashSet::new();
+    let mut external_hits = 0usize;
     for row in rows {
         let concept = row.concept.trim();
-        if concept.is_empty() || !nominees.contains(concept) {
-            return Err(format!("行 concept 「{}」不在批内提名", row.concept.trim()));
+        if concept.is_empty() {
+            return Err(format!(
+                "行 concept 「{}」不在批内提名，也不在本批复用命中——登记表存量概念不得作为行 concept（本批未复用它）：删除该行，或改锚本批实际铸造/提名的概念",
+                row.concept.trim()
+            ));
+        }
+        if !nominees.contains(concept) {
+            // f1（A1）：批外概念只在「本批复用命中」时放行——canonical 落锚
+            // 集 = 复用登记表存量，合法（命中行数进读数）；两域皆无 = 凭空
+            // 概念，死因带处置指引（A2：指引让重试可满足，替代短路 belt）。
+            if anchors.contains(&key(concept)) {
+                external_hits += 1;
+            } else {
+                return Err(format!(
+                    "行 concept 「{}」不在批内提名，也不在本批复用命中——登记表存量概念不得作为行 concept（本批未复用它）：删除该行，或改锚本批实际铸造/提名的概念",
+                    row.concept.trim()
+                ));
+            }
         }
         // 逐字落地只对「文本词」行（常识/缺失）成立：它们声称的是定义原文里
         // 的某个词；已教/自教行写的是定义**所预设的概念名**（如「代数式」
@@ -230,7 +269,7 @@ pub(crate) fn validate_term_provenance(
     if !uncovered.is_empty() {
         return Err(format!("提名缺挂号表行：{}", uncovered.join("、")));
     }
-    Ok(rows.len())
+    Ok(TableOutcome { rows: rows.len(), external_hits })
 }
 
 /// 行名词是否逐字来自定义原文。宽容面：去掉首尾空白与**尾随括注**（模型常
@@ -353,15 +392,19 @@ mod tests {
 
     #[test]
     fn legal_table_passes_with_row_count() {
-        let read = validate_term_provenance(&legal_rows(), true, &batch(), &known());
-        assert_eq!(read, Ok(3), "合法表过，行数进读数");
+        let read = validate_term_provenance(&legal_rows(), true, &batch(), &known(), &[]).unwrap();
+        assert_eq!(read.rows, 3, "合法表过，行数进读数");
+        assert_eq!(read.external_hits, 0, "无锚批零命中");
     }
 
     #[test]
     fn empty_batch_with_empty_table_passes() {
         // 零提名批：空表空转（legacy 形态兼容——off 臂与空批都不卡）。
         let batch = ProposedBatch::default();
-        assert_eq!(validate_term_provenance(&[], true, &batch, &known()), Ok(0));
+        assert_eq!(
+            validate_term_provenance(&[], true, &batch, &known(), &[]).map(|o| o.rows),
+            Ok(0)
+        );
     }
 
     #[test]
@@ -370,7 +413,7 @@ mod tests {
             row("借用", "所有权", TermSource::Taught, Some("不存在的概念")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在名池"), "{error}");
     }
 
@@ -380,7 +423,7 @@ mod tests {
             row("借用", "所有权", TermSource::Taught, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺 ref"), "{error}");
     }
 
@@ -392,7 +435,7 @@ mod tests {
             row("借用", "所有权", TermSource::SelfTaught, Some("借用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("循环自证"), "{error}");
     }
 
@@ -404,7 +447,7 @@ mod tests {
             row("借用", "引用", TermSource::SelfTaught, Some("引用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在批内 teaches"), "{error}");
     }
 
@@ -414,7 +457,10 @@ mod tests {
             row("借用", "所有权", TermSource::SelfTaught, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        assert_eq!(validate_term_provenance(&rows, true, &batch(), &known()), Ok(2));
+        assert_eq!(
+            validate_term_provenance(&rows, true, &batch(), &known(), &[]).map(|o| o.rows),
+            Ok(2)
+        );
     }
 
     #[test]
@@ -425,7 +471,7 @@ mod tests {
             row("借用", "作用域", TermSource::Taught, Some("借用")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("本批提名"), "{error}");
     }
 
@@ -436,7 +482,7 @@ mod tests {
             row("借用", "所有权", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("命中名池"), "{error}");
     }
 
@@ -446,14 +492,14 @@ mod tests {
             row("借用", "作用域", TermSource::CommonSense, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("常识行") && error.contains("不得带 ref"), "{error}");
 
         let rows = vec![
             row("借用", "作用域", TermSource::Missing, Some("所有权")),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, false, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, false, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺失行") && error.contains("不得带 ref"), "{error}");
     }
 
@@ -461,7 +507,7 @@ mod tests {
     fn uncovered_nomination_is_red() {
         // 漏行：某条提名没有任何挂号行 = 提名定义无人核查。
         let rows = vec![row("借用", "所有权", TermSource::Taught, Some("所有权"))];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺挂号表行") && error.contains("折引用"), "{error}");
     }
 
@@ -471,7 +517,7 @@ mod tests {
             row("幽灵", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("不在批内提名"), "{error}");
     }
 
@@ -482,7 +528,7 @@ mod tests {
             row("借用", "资源独占的约束", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
     }
 
@@ -497,7 +543,7 @@ mod tests {
             row("借用", "作用域", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch, &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch, &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
 
         // 缺失行同走这一臂（pass=false 避开缺失行「自认缺口却放行」先报）。
@@ -505,7 +551,7 @@ mod tests {
             row("借用", "作用域", TermSource::Missing, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, false, &batch, &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, false, &batch, &known(), &[]).unwrap_err();
         assert!(error.contains("未逐字出现"), "{error}");
     }
 
@@ -517,7 +563,10 @@ mod tests {
             row("借用", "作用域（编译期检查）", TermSource::CommonSense, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        assert_eq!(validate_term_provenance(&rows, true, &batch(), &known()), Ok(3));
+        assert_eq!(
+            validate_term_provenance(&rows, true, &batch(), &known(), &[]).map(|o| o.rows),
+            Ok(3)
+        );
     }
 
     #[test]
@@ -527,20 +576,123 @@ mod tests {
             row("借用", "所有权", TermSource::Missing, None),
             row("折引用", "引用", TermSource::Taught, Some("引用")),
         ];
-        let error = validate_term_provenance(&rows, true, &batch(), &known()).unwrap_err();
+        let error = validate_term_provenance(&rows, true, &batch(), &known(), &[]).unwrap_err();
         assert!(error.contains("缺口未打回"), "{error}");
         // 配套 pass=false = 自洽（缺失行合法，结论照打回）。
-        assert_eq!(validate_term_provenance(&rows, false, &batch(), &known()), Ok(2));
+        assert_eq!(
+            validate_term_provenance(&rows, false, &batch(), &known(), &[]).map(|o| o.rows),
+            Ok(2)
+        );
     }
 
     #[test]
     fn readout_merges_accumulate() {
         let mut total = ProvenanceReadout::default();
-        total.merge(&ProvenanceReadout { rows: 3, invalid: 1, retried: 1, degraded: false });
-        total.merge(&ProvenanceReadout { rows: 2, invalid: 0, retried: 0, degraded: true });
+        total.merge(&ProvenanceReadout {
+            rows: 3,
+            invalid: 1,
+            retried: 1,
+            degraded: false,
+            external_hits: 0,
+        });
+        total.merge(&ProvenanceReadout {
+            rows: 2,
+            invalid: 0,
+            retried: 0,
+            degraded: true,
+            external_hits: 2,
+        });
         assert_eq!(
             total,
-            ProvenanceReadout { rows: 5, invalid: 1, retried: 1, degraded: true }
+            ProvenanceReadout {
+                rows: 5,
+                invalid: 1,
+                retried: 1,
+                degraded: true,
+                external_hits: 2
+            }
         );
+    }
+
+    // ── 批外锚放行（f1；A1/A4/A5）──────────────────────────────────────────
+
+    /// 锚集测试原料：登记表存量概念「百分数改写为小数」为本批复用命中
+    /// （direct_host 直定复用）——canonical 不在批内提名，锚放行后合法。
+    fn anchor(canonical: &str) -> ExternalAnchor {
+        ExternalAnchor {
+            name: "percent".into(),
+            concept_id: "01JANCHORXXXXXXXXXXXXXXXXXX".into(),
+            canonical: canonical.into(),
+            source: crate::learning_graph::AnchorSource::DirectHost,
+        }
+    }
+
+    /// f1（A1）红绿样：批外锚放行——行 concept = 锚 canonical（非提名）→
+    /// 合法，external_hits 计数（A5）。
+    #[test]
+    fn external_anchor_canonical_releases_row_concept_and_counts_hits() {
+        let anchors = vec![anchor("百分数改写为小数")];
+        let rows = vec![
+            row("借用", "所有权", TermSource::Taught, Some("所有权")),
+            row("百分数改写为小数", "作用域", TermSource::CommonSense, None),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let read = validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap();
+        assert_eq!(read.rows, 3, "锚放行后全表过：{read:?}");
+        assert_eq!(read.external_hits, 1, "命中锚的行数进读数");
+    }
+
+    /// f1（A4）红绿样：复用锚行走现行 taught+ref 路径——ref=锚正名在名池
+    /// （gate 已把声明概念并网进 provenance_known），行四字段全数合法。
+    #[test]
+    fn anchored_row_keeps_taught_ref_semantics() {
+        let anchors = vec![anchor("百分数改写为小数")];
+        // 名池加锚正名（gate_batch 装配口径：登记表活跃名并入 known）。
+        let mut known = known();
+        known.insert("百分数改写为小数".to_owned());
+        let rows = vec![
+            row("借用", "所有权", TermSource::Taught, Some("所有权")),
+            row(
+                "百分数改写为小数",
+                "作用域",
+                TermSource::Taught,
+                Some("百分数改写为小数"),
+            ),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let read = validate_term_provenance(&rows, true, &batch(), &known, &anchors).unwrap();
+        assert_eq!(read.rows, 3, "taught+ref=正名路径全绿：{read:?}");
+        assert_eq!(read.external_hits, 1);
+    }
+
+    /// f1 红绿样：凭空概念（提名与锚两域皆无）仍拒——死因带存量指引
+    /// （A2：指引替代短路），测试只钉「不在批内提名」前缀（既有锚）。
+    #[test]
+    fn fabricated_concept_outside_both_domains_stays_red_with_stock_guidance() {
+        // 锚在场也救不了两域皆无的凭空概念。
+        let anchors = vec![anchor("百分数改写为小数")];
+        let rows = vec![
+            row("幽灵", "作用域", TermSource::CommonSense, None),
+            row("折引用", "引用", TermSource::Taught, Some("引用")),
+        ];
+        let error =
+            validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap_err();
+        assert!(error.contains("不在批内提名"), "{error}");
+        assert!(error.contains("本批复用命中"), "死因点名锚域：{error}");
+        assert!(
+            error.contains("删除该行") && error.contains("改锚"),
+            "死因带处置指引（存量概念/删除/改锚三要素）：{error}"
+        );
+    }
+
+    /// f1（A1 边界）：锚 canonical 与提名重合时走现行分支——命中锚计数不
+    /// 重复记（伪代码「concept ∈ 提名 → 现行分支不动」）。
+    #[test]
+    fn nominee_rows_take_the_current_branch_and_skip_anchor_counting() {
+        let anchors = vec![anchor("借用")];
+        let rows = legal_rows();
+        let read = validate_term_provenance(&rows, true, &batch(), &known(), &anchors).unwrap();
+        assert_eq!(read.rows, 3);
+        assert_eq!(read.external_hits, 0, "提名行不算锚命中");
     }
 }
