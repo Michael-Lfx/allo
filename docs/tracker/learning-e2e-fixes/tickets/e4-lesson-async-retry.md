@@ -2,7 +2,7 @@
 id: e4
 title: "lesson/generate 后台化 + 瞬断重试加固"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -62,3 +62,9 @@ part_of: ../map.md
 
 - 课时循环内部形态改两遍式（e1 D1 管辖）。
 - 取消 UI（j03 的 cancel 端点已有，前端暴露面另议）。
+
+## Resolution（2026-10-30 关票）
+
+- 实施 589ad0c53。双模：默认 POST → **202** + {task_key,state,poll}（spawn 脱离请求生命周期，断连不取消；已生成幂等短路 done）；?wait=true 同步臂逐字保留。瞬断三件：门面重试环 ≤3 带反馈（落 service 层一处覆盖图/传统两路径，resume 经 e1 段级原语承载回灌）+ 显式超时（每 attempt 660s 死人开关——粒度偏差已申报：每引擎调用而非每 LLM 轮，防误杀）+ step_guard 同错误熔断（连续 2 次同指纹 loud）。错误两桶（BadGateway/Timeout/RateLimited=可重试）。
+- smoke content 瞬断注入臂（掐 2 次自愈，硬判据⑦ attempts_used=2/stop_reason=success）；registry 拆分 pre_register/begin_registered（m7 排队取消不变式跨拆分保持，测试钉住）；cancel 拒绝文案修正（断连不再中断）；flaky provider 无 feature 门（prompt_observer 同形，生产零装配）。
+- 真机（acceptance.md）：**202 秒回实锤** + 后台 140s 完成 + 内容落库。

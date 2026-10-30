@@ -2,7 +2,7 @@
 id: e1
 title: "生成耗时优化——相位预算、白跑早停、调用形态收敛裁决"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -63,3 +63,10 @@ part_of: ../map.md
 - 课时循环改两遍式（D1 第二步，后置独立票）。
 - 换模型/路由档位（learnhub ADR-0035 经济学定调 flash 即前沿，不动）。
 - 定时维护/自动补批节奏（m10 已落）。
+
+## Resolution（2026-10-30 关票）
+
+- 实施 b6069234c（评审修复批 110ad60b9 随波）。D2 事实修正如实记录：结构侧早停 j03 已有内联版（票面前提「结构侧没有」过时），本票升为 should_stop_early 单源判据 + 补齐红绿样 + 诚实轮数消息。D1 按推荐预裁：只落段级幂等原语（e4 消费），**段间串行 = 票面逃逸舱「拿不准就串行」的合法执行**（Spec 轴核对通过）；两遍式后置独立票。max_tokens 盘点按票面以报告交付（杠杆 = provider_models.output_limit=384000 覆盖代码 65536，行为未动）。
+- 相位耗时读数上线（两仓首条）：tasks.jsonl finish 行 elapsed_ms/llm_calls/input_chars/output_chars + smoke 三档读数行。
+- 真机（acceptance.md）：structure failed 198s loud+课程保留 / done 477s（含一次内循环重试）、growth 229s、lesson 140s·**15 次串行调用**（形态成本首次有数据）。首轮违约三轮指纹各异——早停未触发属正确行为。
+- 遗留备注：CountingProvider::stream 的 Err 路径不计调用数，与 lesson_content_loop.rs:252 注释口径不符（仅观测面非判据闸）。

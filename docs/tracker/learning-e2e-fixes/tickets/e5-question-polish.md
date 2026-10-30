@@ -2,7 +2,7 @@
 id: e5
 title: "题面小项——difficulty 消解、reflection explanation 三保险、密度锚补强"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -61,3 +61,10 @@ part_of: ../map.md
 - 字数/节数机械下限（learnhub 明拒）。
 - tier 五档制（learnhub v1.8① 的低/中/高样例密度档——评估面另议）。
 - quiz 变式面改动（q3 已关）。
+
+## Resolution（2026-10-30 关票）
+
+- 实施 945108c74。difficulty **结构消解**（推荐案）：输出契约去字段，teaches 最深档铸值注入（know/apply/teach→1/2/3 写入 config_json，注入压过自报；无 teaches 行容错回落）；quiz tier 取数续读 config（serde default 容存量）。explanation 双口径咬死（validate_shape 单题 + validate_lesson_activities 整批）+ 提示词交卷自检句。密度读数行 sec_avg_chars/example_sections（无下限，learnhub 定调照搬）。
+- 红绿样揪出真缺陷并修：persist 事务期间另借池连接 → 单连接池饿死超时。
+- 接受偏差（如实记录）：①变式继承旧题 tier（簿记一致性，票面非目标边缘——可剥离）；②单档铸值 vs「由易到难」递进弧的张力（弧由排序条款承担，learnhub v1.8①「单值难度零区分度」同款认知）；③「节画像档」未作注入源（ComplexityTier 生成期不落库）。
+- 真机抽验：复利数学正确（fill_in_blank 第 2 期按 110 计息）；difficulty 注入率与 reflection explanation 非空率未逐题核——下轮真课抽验补。

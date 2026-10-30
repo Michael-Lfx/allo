@@ -2,7 +2,7 @@
 id: e2
 title: "door_refs 生成侧标注——解锁已会声明旅程（BLOCKER）"
 type: task
-status: open
+status: closed
 assignee:
 blocked_by: []
 part_of: ../map.md
@@ -61,3 +61,10 @@ part_of: ../map.md
 - 存量无标注课程补标（learnhub 出路 = 删课重建；allo 同——不加修补通道）。
 - 过门自检读侧消费（m1 已落）。
 - 机械门（learnhub 刻意 warn-only，照搬）。
+
+## Resolution（2026-10-30 关票）
+
+- 实施 178851682。**根因修正**：m1 条款与校验器早已在，真因 = 生成顺序（先结构后地形，标注时看不见门口判据；E2E 铁证=块被 G2 判据逐字覆盖却标空）。修法 = learnhub #161 判定输入通道域中立移植：换序**地形先行→结构** + door_list 清单注入 + prerequisite_doors 逐字全收。域中立取舍：不照搬 learnhub「纯零基础才标」触发（allo 门位地板随 learner_basis 移动，door_refs 无条件适用于入门档）。
+- 生成门面零标注 warn 读数（不拒收，learnhub 同款）+ declare 400 文案带出路（「请改用逐节点跳过」）。
+- 真机（acceptance.md）：**door_refs 0/42 → 13/51**（全部入门档、进阶档零标注、编号 ∈ 门口清单）；**声明 200**：G1+G2 命中 4 块、铸概念 4 条、声明零节点写入（计数守恒）。BLOCKER 解除。
+- 契约文档 §6 随实码同步（修复批 110ad60b9，v1.7）；gd.blocks.door_refs 条款行经核对 §2.2 已含（形态/去重/双臂对账与 learnhub 同构）。
