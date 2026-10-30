@@ -5,8 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
-- Fixed Windows release builds omitting the voice companion. Installers now include the daemon and app-local VC++ runtime, with package checks for required files and architecture.
-- Expanded Hey Flowy wake aliases with separate full-sentence safeguards for ambiguous words. Commands spoken with a wake phrase now follow the normal conversation route without a second transcription; unseparated English words no longer match.
+## v1.7.0 - 2026-10-30
+
+- Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.
+- The home Experts catalog pages in, shows avatars, and can install an expert as a local preset. Marketplace cards and details use the same expert-style layout.
+- Vimax can pack multiple cameras of the same scene into one clip and plans duration against the model limit. The session skill bar above the composer is removed.
+- The login page opens Chinese and English privacy policy and terms of service.
 
 ## v1.6.9 - 2026-10-29
 
