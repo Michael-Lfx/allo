@@ -20,7 +20,9 @@ describe('PresetSettings page shell', () => {
     expect(source.includes('<CapabilityHubShell')).toBe(true);
     expect(source.includes("hub='presets'")).toBe(true);
     expect(source.includes('marketEnabled={false}')).toBe(true);
-    expect(source.includes('<PresetListPanel')).toBe(true);
+    expect(source.includes('showViewSwitch={false}')).toBe(true);
+    expect(source.includes('<ExpertCatalog')).toBe(true);
+    expect(source.includes('installedCount=')).toBe(false);
     expect(source.includes('PresetPackageMarketSettings')).toBe(false);
     expect(source.includes('flowy-settings-tabs')).toBe(false);
   });
@@ -32,14 +34,15 @@ describe('PresetSettings page shell', () => {
     expect(source.includes("title={t('settings.presetsHub.title'")).toBe(false);
   });
 
-  test('uses the theme-aware primary action for creating a preset', () => {
+  test('uses a plain white action labeled as my experts', () => {
     const source = readSource(new URL('./index.tsx', import.meta.url));
     const styles = readSource(new URL('../components/settings.css', import.meta.url));
 
-    expect(source).toContain("type='primary'");
-    expect(source).toContain('capability-hub-action-btn--primary');
-    expect(styles).toContain('.capability-hub-action-btn.arco-btn:not(.capability-hub-action-btn--primary)');
-    expect(styles).toContain('.capability-hub-action-btn--primary.arco-btn');
-    expect(styles).toContain('font-weight: 600 !important;');
+    expect(source).toContain('capability-hub-action-btn--plain');
+    expect(source).toContain("t('settings.capabilityHub.myPresets'");
+    expect(source).not.toContain("type='primary'");
+    expect(styles).toContain('.capability-hub-action-btn.capability-hub-action-btn--plain.arco-btn');
+    expect(styles).toContain('background: var(--color-bg-1) !important;');
+    expect(styles).toContain('font-weight: 400 !important;');
   });
 });

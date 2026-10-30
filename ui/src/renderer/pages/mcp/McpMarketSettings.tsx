@@ -254,6 +254,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         searchQuery={searchQuery}
         onSearchQueryChange={onSearchQueryChange}
         showInstallCommand={false}
+        sourcesAsTabs
         primaryAction={{
           label: t('settings.mcpMarket.importConfig'),
           pendingLabel: t('settings.mcpMarket.importingConfig'),

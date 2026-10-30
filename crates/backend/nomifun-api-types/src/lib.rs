@@ -12,6 +12,7 @@ mod channel;
 mod cloud;
 mod cloud_billing;
 mod cloud_im;
+mod expert_catalog;
 mod campaign;
 mod tv_show;
 mod vimax_skill_hub;
@@ -186,6 +187,9 @@ pub use cloud_billing::{
 pub use cloud_im::{
     CloudImAttachmentPayload, CloudImConversation, CloudImLogUploadResponse, CloudImMessage,
     CloudImMessageList, CloudImReadRequest, CloudImSendMessageRequest,
+};
+pub use expert_catalog::{
+    ExpertDetail, ExpertInstallIndex, ExpertInstallResponse, ExpertListResponse, ExpertSummary, ExpertText,
 };
 pub use campaign::{
     CampaignCarouselItem, CampaignCarouselResponse, CampaignDetail, CampaignListResponse,

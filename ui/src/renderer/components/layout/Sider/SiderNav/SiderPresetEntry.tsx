@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Tooltip } from '@arco-design/web-react';
-import { Robot } from '@icon-park/react';
+import { GraduationCap } from 'lucide-react';
 import classNames from 'classnames';
 import { navRowProps } from './navRowProps';
 import type { SiderTooltipProps } from '@renderer/utils/ui/siderTooltip';
@@ -25,7 +25,7 @@ const SiderPresetEntry: React.FC<SiderPresetEntryProps> = ({
   onClick,
 }) => {
   const { t } = useTranslation();
-  const label = t('settings.presetsHub.railTitle', { defaultValue: 'Presets' });
+  const label = t('settings.presetsHub.railTitle', { defaultValue: 'Experts' });
 
   if (collapsed) {
     return (
@@ -38,13 +38,7 @@ const SiderPresetEntry: React.FC<SiderPresetEntryProps> = ({
           {...navRowProps(onClick, label)}
           onClick={onClick}
         >
-          <Robot
-            theme='outline'
-            size='20'
-            fill='currentColor'
-            className='block leading-none shrink-0'
-            style={{ lineHeight: 0 }}
-          />
+          <GraduationCap size={20} strokeWidth={2} className='block shrink-0' />
         </div>
       </Tooltip>
     );
@@ -62,13 +56,7 @@ const SiderPresetEntry: React.FC<SiderPresetEntryProps> = ({
           onClick={onClick}
       >
         <span className='size-22px flex items-center justify-center shrink-0'>
-          <Robot
-            theme='outline'
-            size='16'
-            fill='currentColor'
-            className='block leading-none'
-            style={{ lineHeight: 0 }}
-          />
+          <GraduationCap size={16} strokeWidth={2} className='block' />
         </span>
         <span className='collapsed-hidden text-14px font-[500] leading-24px'>{label}</span>
       </div>

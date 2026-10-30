@@ -126,7 +126,7 @@ describe('Flowy auth surface contract', () => {
     expect(authCss).toContain('.flowy-auth-status__spinner');
   });
 
-  test('keeps cloud legal links visibly wired but intentionally offline', () => {
+  test('opens bundled privacy and terms documents from cloud legal links', () => {
     expect(zhCloudLocale).toContain('"privacy": "隐私政策"');
     expect(zhCloudLocale).toContain('"and": "和"');
     expect(zhCloudLocale).toContain('"terms": "服务条款"');
@@ -138,9 +138,21 @@ describe('Flowy auth surface contract', () => {
     expect(cloudSource).toContain('const CloudLoginLegalLinks');
     expect(cloudSource).toContain("cloudLogin.legal.and");
     expect(cloudSource).toContain('brandLegal={<CloudLoginLegalLinks />}');
-    expect(cloudSource).toContain("href='#'");
-    expect(cloudSource).toContain("aria-disabled='true'");
-    expect(cloudSource).toContain('event.preventDefault()');
+    expect(cloudSource).toContain("from '@renderer/pages/legal/documents/privacy-policy.zh-CN.md?raw'");
+    expect(cloudSource).toContain("from '@renderer/pages/legal/documents/privacy-policy.en-US.md?raw'");
+    expect(cloudSource).toContain("from '@renderer/pages/legal/documents/terms-of-service.zh-CN.md?raw'");
+    expect(cloudSource).toContain("from '@renderer/pages/legal/documents/terms-of-service.en-US.md?raw'");
+    expect(cloudSource).toContain('legalDocumentMarkdown(i18n.language, legalDocument)');
+    expect(cloudSource).toContain('resolveLocaleKey(language)');
+    expect(cloudSource).toContain('<NomiModal');
+    expect(cloudSource).toContain("className='flowy-legal-modal'");
+    expect(cloudSource).toContain('unmountOnExit');
+    expect(cloudSource).toContain('node.scrollTop = 0');
+    expect(cloudSource).toContain('key={legalDocument}');
+    expect(cloudSource).toContain('<MarkdownView>');
+    expect(cloudLoginCss).toContain('.arco-modal-wrapper:has(.flowy-legal-modal)');
+    expect(cloudLoginCss).toContain('.flowy-legal-document');
+    expect(cloudLoginCss).toContain('overflow-y: auto;');
     expect(cloudSource).toContain('flowy-auth-brand__legal-separator');
     expect(cloudSource).not.toContain('footer={<CloudLoginLegalLinks />}');
     expect(cloudSource).not.toContain('cloudLogin.footerPrimary');
@@ -416,7 +428,6 @@ describe('Flowy auth surface contract', () => {
     expect(cloudSource).toContain('.catch(() => undefined)');
     expect(cloudSource).toContain('cloudLogin.legal.privacy');
     expect(cloudSource).toContain('cloudLogin.legal.terms');
-    expect(cloudSource).toContain('preventPlaceholderNavigation');
     expect(cloudSource).toContain("aria-busy={onRetry ? 'false' : 'true'}");
     expect(cloudSource).toContain('workspacePreparationFailed');
     expect(cloudSource).toContain('retryWorkspacePreparation');

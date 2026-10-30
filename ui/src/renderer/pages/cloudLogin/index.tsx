@@ -1,8 +1,11 @@
+import { resolveLocaleKey } from '@/common/utils/utils';
 import appLogo from '@renderer/assets/logo.svg';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { Refresh } from '@icon-park/react';
+import MarkdownView from '@renderer/components/Markdown';
+import NomiModal from '@renderer/components/base/NomiModal';
 import WindowControls from '@renderer/components/layout/WindowControls';
 import AuthCooldownHint from '@renderer/components/auth/AuthCooldownHint';
 import AuthField from '@renderer/components/auth/AuthField';
@@ -17,6 +20,10 @@ import type {
   CloudActivationLevel,
   IntentFieldPhase,
 } from '@renderer/components/auth/authTypes';
+import privacyPolicyEn from '@renderer/pages/legal/documents/privacy-policy.en-US.md?raw';
+import privacyPolicyZh from '@renderer/pages/legal/documents/privacy-policy.zh-CN.md?raw';
+import termsOfServiceEn from '@renderer/pages/legal/documents/terms-of-service.en-US.md?raw';
+import termsOfServiceZh from '@renderer/pages/legal/documents/terms-of-service.zh-CN.md?raw';
 import useEmailOtpLogin, { EMAIL_OTP_LENGTH } from '@renderer/hooks/auth/useEmailOtpLogin';
 import { useCloudAuth } from '@renderer/hooks/context/CloudAuthContext';
 import { isDesktopShell, isMacOS } from '@renderer/utils/platform';
@@ -48,35 +55,67 @@ interface CloudLoginFlowProps {
   onSuccess: () => Promise<void>;
 }
 
-const preventPlaceholderNavigation = (event: React.MouseEvent<HTMLAnchorElement>) => {
-  event.preventDefault();
-};
+type LegalDocumentKey = 'privacy' | 'terms';
+
+const LEGAL_DOCUMENTS = {
+  'zh-CN': { privacy: privacyPolicyZh, terms: termsOfServiceZh },
+  'en-US': { privacy: privacyPolicyEn, terms: termsOfServiceEn },
+} as const;
+
+const legalDocumentMarkdown = (language: string, key: LegalDocumentKey): string =>
+  LEGAL_DOCUMENTS[resolveLocaleKey(language)][key];
 
 const CloudLoginLegalLinks: React.FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const legalDocumentRef = useRef<HTMLDivElement>(null);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentKey>('privacy');
+  const [isLegalOpen, setIsLegalOpen] = useState(false);
+
+  const resetLegalScroll = useCallback(() => {
+    const node = legalDocumentRef.current;
+    if (!node) return;
+    node.scrollTop = 0;
+  }, []);
+
+  const openLegalDocument = (key: LegalDocumentKey) => {
+    setLegalDocument(key);
+    setIsLegalOpen(true);
+  };
+
+  useLayoutEffect(() => {
+    if (!isLegalOpen) return;
+    resetLegalScroll();
+  }, [isLegalOpen, legalDocument, resetLegalScroll]);
 
   return (
     <>
-      <a
-        className='flowy-auth-brand__legal-link'
-        href='#'
-        aria-disabled='true'
-        onClick={preventPlaceholderNavigation}
-      >
+      <button type='button' className='flowy-auth-brand__legal-link' onClick={() => openLegalDocument('privacy')}>
         {t('cloudLogin.legal.privacy')}
-      </a>
+      </button>
       <span className='flowy-auth-brand__legal-separator' aria-hidden='true'>{t('cloudLogin.legal.and')}</span>
-      <a
-        className='flowy-auth-brand__legal-link'
-        href='#'
-        aria-disabled='true'
-        onClick={preventPlaceholderNavigation}
-      >
+      <button type='button' className='flowy-auth-brand__legal-link' onClick={() => openLegalDocument('terms')}>
         {t('cloudLogin.legal.terms')}
-      </a>
+      </button>
+      <NomiModal
+        className='flowy-legal-modal'
+        visible={isLegalOpen}
+        unmountOnExit
+        afterOpen={resetLegalScroll}
+        style={{ width: 'min(800px, calc(100vw - 48px))', height: 'auto' }}
+        header={legalDocument === 'privacy' ? t('cloudLogin.legal.privacy') : t('cloudLogin.legal.terms')}
+        footer={null}
+        onCancel={() => setIsLegalOpen(false)}
+      >
+        <div key={legalDocument} ref={legalDocumentRef} className='flowy-legal-document'>
+          <MarkdownView>
+            {legalDocumentMarkdown(i18n.language, legalDocument)}
+          </MarkdownView>
+        </div>
+      </NomiModal>
     </>
   );
 };
+
 
 interface CloudLoginTransitionProps {
   message: string;

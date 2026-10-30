@@ -83,11 +83,12 @@
   },
   "capabilityHub": {
     "navLabel": "Capability Hub",
-    "myPresets": "My Presets",
+    "myPresets": "My experts",
+    "myMcp": "My MCP",
     "myInstalled": "Installed",
     "discover": "Discover",
     "installed": "Installed",
-    "searchPresets": "Search presets",
+    "searchPresets": "Search experts",
     "searchSkills": "Search skills",
     "searchMcp": "Search MCP"
   },
@@ -1644,14 +1645,61 @@
     "sectionWebhook": "Webhook"
   },
   "presetsHub": {
-    "title": "Presets",
-    "subtitle": "Save Agents, models, Skills and knowledge scope as reusable one-click configurations.",
-    "railTitle": "Presets"
+    "title": "Experts",
+    "subtitle": "Browse every expert. Search by name or summary.",
+    "railTitle": "Experts"
+  },
+  "experts": {
+    "filterLabel": "Expert category",
+    "scrollCategoriesPrev": "Previous categories",
+    "scrollCategories": "More categories",
+    "all": "All",
+    "categories": {
+      "productDesign": "Product design",
+      "engineering": "Engineering",
+      "gameSpatial": "Games & space",
+      "dataAi": "Data & AI",
+      "marketingGrowth": "Marketing & growth",
+      "contentCreative": "Content",
+      "salesCommerce": "Sales",
+      "financeInvestment": "Finance & investment",
+      "operationsHr": "Operations & people",
+      "projectQuality": "Project quality",
+      "securityCompliance": "Legal & security",
+      "industryConsultant": "Industry advisors",
+      "tencentZone": "Tencent",
+      "globalDevelopment": "Global development",
+      "backToSchool": "Back to school"
+    },
+    "agent": "Expert",
+    "team": "Expert team",
+    "summon": "Summon",
+    "summoning": "Summoning",
+    "summoned": "Summoned",
+    "installSuccess": "Summoned {{name}}",
+    "alreadyInstalled": "{{name}} is already summoned",
+    "installFailed": "Could not summon this expert",
+    "empty": "No experts match the current search.",
+    "loginRequired": "Sign in to the cloud account to browse experts.",
+    "notFound": "This expert is not listed or does not exist.",
+    "version": "Version {{version}}",
+    "files": "{{count}} files",
+    "quickPrompts": "Quick prompts",
+    "initPrompt": "Opening prompt",
+    "helpsWith": "What this expert can do",
+    "versionLabel": "Version",
+    "packageSize": "Package size",
+    "downloads": "Downloads / uses",
+    "truncated": "Showing the first part of the catalog.",
+    "create": "Create expert",
+    "mineEmpty": "You haven't created any experts yet.",
+    "backToCatalog": "Back to experts"
   },
   "mcpHub": {
     "title": "MCP",
     "subtitle": "Register MCP servers and browse MCP markets.",
-    "railTitle": "MCP"
+    "railTitle": "MCP",
+    "backToMarket": "Back to MCP"
   },
   "link": {
     "title": "Connect a phone",

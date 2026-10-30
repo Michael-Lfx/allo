@@ -12,7 +12,9 @@ use crate::{
     AuthManager, AuthPollResult, AuthUserInput, LoginMethod, PendingLogin, ServerClientError,
 };
 use crate::activation::DeviceActivation;
-use crate::flowy::FlowyApiClient;
+use crate::flowy::{
+    is_expert_not_found, FlowyApiClient, ExpertListParams,
+};
 use crate::session::ServerSession;
 use nomifun_api_types::{
     AgentQualityAck, AgentQualityBadcaseRequest, AgentQualityPromotedItem, AgentQualityRunRequest,
@@ -20,7 +22,7 @@ use nomifun_api_types::{
     CloudImSendMessageRequest, CloudBillingAirwallexSession, CloudBillingCouponList,
     CloudBillingCreateOrderRequest, CloudBillingCreditPack, CloudBillingCurrency,
     CloudBillingOrder, CloudBillingPaymentChannel, CloudBillingPaymentInfo, CloudBillingPlan,
-    VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
+    ExpertDetail, ExpertListResponse, VideoGrowthEventBatchRequest, VideoGrowthEventBatchResponse,
 };
 use nomifun_common::AppError;
 
@@ -345,6 +347,43 @@ impl CloudService {
                 crate::website::WebsiteLanding::from_query(landing),
             ),
         })
+    }
+
+    pub(crate) async fn list_experts(
+        &self,
+        params: ExpertListParams,
+    ) -> Result<ExpertListResponse, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .list_experts(&session, &params)
+            .await
+            .map_err(map_im_client_error)
+    }
+
+    pub async fn get_expert(&self, slug: &str) -> Result<ExpertDetail, AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client.get_expert(&session, slug).await.map_err(|err| {
+            if is_expert_not_found(&err) {
+                AppError::NotFound("error.expert_not_found".into())
+            } else {
+                map_im_client_error(err)
+            }
+        })
+    }
+
+    /// Count one summon. `id` is the catalog list row id.
+    pub async fn record_expert_download(&self, id: &str) -> Result<(), AppError> {
+        let (client, session) = self.im_client_and_session().await?;
+        client
+            .record_expert_download(&session, id)
+            .await
+            .map_err(|err| {
+                if is_expert_not_found(&err) {
+                    AppError::NotFound("error.expert_not_found".into())
+                } else {
+                    map_im_client_error(err)
+                }
+            })
     }
 
     pub async fn list_billing_plans(

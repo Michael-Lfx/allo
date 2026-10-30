@@ -40,6 +40,7 @@ mod services;
 mod workshop_bridge;
 mod channel_asset_resolver;
 mod eval_quality_sink;
+mod expert_package_install;
 mod observation_telemetry;
 
 // Promoted from the `nomicore` bin so in-process hosts (Tauri desktop, web)

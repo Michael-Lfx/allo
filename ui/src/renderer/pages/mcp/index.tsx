@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { Button } from '@arco-design/web-react';
+import { Tool } from '@icon-park/react';
 import { useMcpServers } from '@/renderer/hooks/mcp';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import {
@@ -104,6 +107,8 @@ const McpHubBody: React.FC<{
 };
 
 const McpPage: React.FC = () => {
+  const { t } = useTranslation();
+  const { view, setView } = useCapabilityHubRoute('mcp');
   const [mcpMessage, mcpMessageContext] = useArcoMessage({ maxCount: 10 });
   const panelRef = useRef<McpInstalledPanelHandle>(null);
   const {
@@ -116,11 +121,28 @@ const McpPage: React.FC = () => {
     setMcpServers,
   } = useMcpServers();
 
+  const isInstalledView = view === 'installed';
+
   return (
     <CapabilityHubShell
       hub='mcp'
-      installedCount={mcpServers.length + extensionMcpServers.length}
-      extraActions={<McpAddServerButton onOpen={(mode) => panelRef.current?.openAdd(mode)} />}
+      showViewSwitch={false}
+      extraActions={
+        <>
+          {isInstalledView ? <McpAddServerButton onOpen={(mode) => panelRef.current?.openAdd(mode)} /> : null}
+          <Button
+            size='small'
+            className='flowy-icon-text-btn capability-hub-action-btn capability-hub-action-btn--plain'
+            icon={<Tool theme='outline' size={16} fill='currentColor' />}
+            onClick={() => setView(isInstalledView ? 'market' : 'installed')}
+            data-testid='btn-my-mcp'
+          >
+            {isInstalledView
+              ? t('settings.mcpHub.backToMarket', { defaultValue: 'Back to MCP' })
+              : t('settings.capabilityHub.myMcp', { defaultValue: 'My MCP' })}
+          </Button>
+        </>
+      }
     >
       <McpHubBody
         panelRef={panelRef}

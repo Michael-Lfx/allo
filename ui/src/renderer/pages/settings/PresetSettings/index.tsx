@@ -21,17 +21,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Button } from '@arco-design/web-react';
-import { Plus } from '@icon-park/react';
+import { GraduationCap } from 'lucide-react';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import coworkSvg from '@/renderer/assets/icons/cowork.svg';
 import { useDetectedAgents, usePresetEditor, usePresetList, usePresetTags } from '@/renderer/hooks/preset';
-import CapabilityHubShell, { useCapabilityHubSearch } from '../capabilityHub/CapabilityHubShell';
+import CapabilityHubShell from '../capabilityHub/CapabilityHubShell';
 import { resolveAvatarImageSrc } from './presetUtils';
+import ExpertCatalog from './ExpertCatalog';
+import MyExpertCatalog from './MyExpertCatalog';
 import PresetEditDrawer from './PresetEditDrawer';
-import PresetListPanel from './PresetListPanel';
 import DeletePresetModal from './DeletePresetModal';
 import SkillConfirmModals from './SkillConfirmModals';
-import TagManagementModal from './TagManagementModal';
 
 type PresetNavigationState = {
   openPresetId?: string;
@@ -46,66 +46,6 @@ type PresetNavigationState = {
 };
 const OPEN_PRESET_EDITOR_INTENT_KEY = 'guid.openPresetEditorIntent';
 
-type PresetHubBodyProps = {
-  presets: ReturnType<typeof usePresetList>['presets'];
-  localeKey: string;
-  avatarImageMap: Record<string, string>;
-  isExtensionPreset: ReturnType<typeof usePresetList>['isExtensionPreset'];
-  editor: ReturnType<typeof usePresetEditor>;
-  setActivePresetId: ReturnType<typeof usePresetList>['setActivePresetId'];
-  highlightId: string | null;
-  onHighlightConsumed: () => void;
-  tags: ReturnType<typeof usePresetTags>;
-  onManageTags: () => void;
-  loadPresets: ReturnType<typeof usePresetList>['loadPresets'];
-  presetsLoading: boolean;
-  presetsLoadError: boolean;
-};
-
-const PresetHubBody: React.FC<PresetHubBodyProps> = ({
-  presets,
-  localeKey,
-  avatarImageMap,
-  isExtensionPreset,
-  editor,
-  setActivePresetId,
-  highlightId,
-  onHighlightConsumed,
-  tags,
-  onManageTags,
-  loadPresets,
-  presetsLoading,
-  presetsLoadError,
-}) => {
-  const { searchQuery, setSearchQuery } = useCapabilityHubSearch();
-
-  return (
-    <PresetListPanel
-      presets={presets}
-      localeKey={localeKey}
-      avatarImageMap={avatarImageMap}
-      isExtensionPreset={isExtensionPreset}
-      onEdit={(preset) => void editor.handleEdit(preset)}
-      onDuplicate={(preset) => void editor.handleDuplicate(preset)}
-      onCreate={() => void editor.handleCreate()}
-      onToggleEnabled={(preset, checked) => void editor.handleToggleEnabled(preset, checked)}
-      setActivePresetId={setActivePresetId}
-      highlightId={highlightId}
-      onHighlightConsumed={onHighlightConsumed}
-      audienceTags={tags.audienceTags}
-      scenarioTags={tags.scenarioTags}
-      tagById={tags.tagById}
-      onManageTags={onManageTags}
-      hideChrome
-      searchQuery={searchQuery}
-      onSearchQueryChange={setSearchQuery}
-      loading={presetsLoading}
-      error={presetsLoadError}
-      onRetry={loadPresets}
-    />
-  );
-};
-
 const PresetSettings: React.FC = () => {
   const { t } = useTranslation();
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
@@ -113,6 +53,7 @@ const PresetSettings: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigationState = (location.state as PresetNavigationState | null) ?? null;
   const highlightId = searchParams.get('highlight');
+  const [view, setView] = useState<'catalog' | 'mine'>('catalog');
 
   const handleHighlightConsumed = useCallback(() => {
     const next = new URLSearchParams(searchParams);
@@ -135,15 +76,12 @@ const PresetSettings: React.FC = () => {
     activePreset,
     isExtensionPreset,
     loadPresets,
-    loadError: presetsLoadError,
-    isLoading: presetsLoading,
     localeKey,
   } = usePresetList();
 
   const { availableBackends, refreshAgentDetection } = useDetectedAgents();
 
   const tags = usePresetTags();
-  const [tagModalVisible, setTagModalVisible] = useState(false);
 
   const editor = usePresetEditor({
     localeKey,
@@ -203,36 +141,37 @@ const PresetSettings: React.FC = () => {
     <CapabilityHubShell
       hub='presets'
       marketEnabled={false}
-      installedCount={presets.length}
+      showViewSwitch={false}
       extraActions={
         <Button
           size='small'
-          type='primary'
-          className='flowy-icon-text-btn capability-hub-action-btn capability-hub-action-btn--primary'
-          icon={<Plus size={14} fill='currentColor' />}
-          onClick={() => void editor.handleCreate()}
-          data-testid='btn-create-preset'
+          className='flowy-icon-text-btn capability-hub-action-btn capability-hub-action-btn--plain'
+          icon={<GraduationCap size={16} strokeWidth={2} />}
+          onClick={() => setView((current) => (current === 'mine' ? 'catalog' : 'mine'))}
+          data-testid='btn-my-experts'
         >
-          {t('settings.createPreset', { defaultValue: 'Create Preset' })}
+          {view === 'mine'
+            ? t('settings.experts.backToCatalog', { defaultValue: 'Back to experts' })
+            : t('settings.capabilityHub.myPresets', { defaultValue: 'My experts' })}
         </Button>
       }
     >
       {messageContext}
-      <PresetHubBody
-        presets={presets}
-        localeKey={localeKey}
-        avatarImageMap={avatarImageMap}
-        isExtensionPreset={isExtensionPreset}
-        editor={editor}
-        setActivePresetId={setActivePresetId}
-        highlightId={highlightId}
-        onHighlightConsumed={handleHighlightConsumed}
-        tags={tags}
-        onManageTags={() => setTagModalVisible(true)}
-        loadPresets={loadPresets}
-        presetsLoading={presetsLoading}
-        presetsLoadError={Boolean(presetsLoadError)}
-      />
+      {view === 'mine' ? (
+        <MyExpertCatalog
+          presets={presets}
+          tagById={tags.tagById}
+          localeKey={localeKey}
+          onOpen={(preset) => void editor.handleEdit(preset)}
+          onCreate={() => void editor.handleCreate()}
+        />
+      ) : (
+        <ExpertCatalog
+          highlightId={highlightId}
+          onHighlightConsumed={handleHighlightConsumed}
+          onInstalled={() => void loadPresets()}
+        />
+      )}
 
       <PresetEditDrawer
         editor={editor}
@@ -278,17 +217,6 @@ const PresetSettings: React.FC = () => {
         message={message}
       />
 
-      <TagManagementModal
-        visible={tagModalVisible}
-        onClose={() => setTagModalVisible(false)}
-        audienceTags={tags.audienceTags}
-        scenarioTags={tags.scenarioTags}
-        localeKey={localeKey}
-        onCreate={tags.createTag}
-        onRename={tags.renameTag}
-        onDelete={tags.deleteTag}
-        message={message}
-      />
     </CapabilityHubShell>
   );
 };

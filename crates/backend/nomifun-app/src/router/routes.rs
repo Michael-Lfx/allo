@@ -1091,6 +1091,16 @@ pub fn create_router_with_all_state(
         &instance_owner_state,
     );
 
+    let expert_install_authenticated = crate::expert_package_install::expert_install_routes(
+        crate::expert_package_install::ExpertInstallState::new(
+            states.cloud.service.clone(),
+            states.preset.service.clone(),
+            states.skill.skill_paths.clone(),
+            services.data_dir.clone(),
+        ),
+    )
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     let cloud_authenticated = cloud_routes(states.cloud)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -1638,6 +1648,7 @@ pub fn create_router_with_all_state(
         .merge(briefing_authenticated)
         .merge(video_canvas_authenticated)
         .merge(cloud_authenticated)
+        .merge(expert_install_authenticated)
         .merge(webhook_authenticated)
         .merge(agent_execution_authenticated)
         .merge(agent_execution_template_authenticated)

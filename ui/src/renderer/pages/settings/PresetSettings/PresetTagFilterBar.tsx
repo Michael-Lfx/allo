@@ -9,7 +9,7 @@
 import type { PresetTag, PresetTagDimension } from '@/common/types/agent/presetTypes';
 import type { PresetTagId } from '@/common/types/ids';
 import type { TagFilterState } from './presetUtils';
-import { SettingTwo } from '@icon-park/react';
+import { Right, SettingTwo } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import filterBarStyles from './PresetTagFilterBar.module.css';
@@ -21,7 +21,7 @@ type PresetTagFilterBarProps = {
   onChange: (next: TagFilterState) => void;
   localeKey: string;
   onManageTags: () => void;
-  variant?: 'default' | 'drawer';
+  variant?: 'default' | 'drawer' | 'tabs';
   className?: string;
   hideManageTags?: boolean;
 };
@@ -34,7 +34,7 @@ const FilterChip: React.FC<{
   active: boolean;
   onClick: () => void;
   testId?: string;
-  variant?: 'default' | 'drawer';
+  variant?: 'default' | 'drawer' | 'tabs';
 }> = ({ label, active, onClick, testId, variant = 'default' }) => (
   <button
     type='button'
@@ -42,7 +42,9 @@ const FilterChip: React.FC<{
     aria-pressed={active}
     onClick={onClick}
     className={
-      variant === 'drawer'
+      variant === 'tabs'
+        ? [filterBarStyles.tab, active ? filterBarStyles.tabActive : ''].filter(Boolean).join(' ')
+        : variant === 'drawer'
         ? [
             filterBarStyles.drawerFilterChip,
             active ? filterBarStyles.drawerFilterChipActive : '',
@@ -59,6 +61,44 @@ const FilterChip: React.FC<{
     {label}
   </button>
 );
+
+/** Borderless single-line tab strip with a right-edge scroll arrow when it overflows. */
+const TabsRow: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const scrollerRef = React.useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = React.useState(false);
+
+  React.useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const update = () => setOverflow(el.scrollWidth - el.scrollLeft - el.clientWidth > 4);
+    update();
+    el.addEventListener('scroll', update);
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
+  }, [children]);
+
+  return (
+    <div className={filterBarStyles.tabsRow}>
+      <div ref={scrollerRef} className={filterBarStyles.tabsScroller}>
+        {children}
+      </div>
+      {overflow && (
+        <button
+          type='button'
+          aria-label='scroll right'
+          className={filterBarStyles.tabsArrow}
+          onClick={() => scrollerRef.current?.scrollBy({ left: 240, behavior: 'smooth' })}
+        >
+          <Right theme='outline' size={14} />
+        </button>
+      )}
+    </div>
+  );
+};
 
 const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
   audienceTags,
@@ -120,6 +160,35 @@ const PresetTagFilterBar: React.FC<PresetTagFilterBarProps> = ({
 
   const hasAudience = audienceTags.length > 0;
   const hasScenario = scenarioTags.length > 0;
+
+  if (variant === 'tabs') {
+    const allActive = value.audience.length === 0 && value.scenario.length === 0;
+    const renderTab = (dimension: PresetTagDimension, tag: PresetTag) => (
+      <FilterChip
+        key={tag.preset_tag_id}
+        label={resolveTagLabel(tag, localeKey)}
+        active={value[dimension].includes(tag.preset_tag_id)}
+        onClick={() => toggle(dimension, tag.preset_tag_id)}
+        testId={`tag-chip-${dimension}-${tag.key}`}
+        variant='tabs'
+      />
+    );
+    return (
+      <div className={[filterBarStyles.tabsBar, className].filter(Boolean).join(' ')}>
+        <TabsRow>
+          <FilterChip
+            label={t('settings.presetTagAll', { defaultValue: 'All' })}
+            active={allActive}
+            onClick={() => onChange({ ...value, audience: [], scenario: [] })}
+            testId='tag-chip-all'
+            variant='tabs'
+          />
+          {audienceTags.map((tag) => renderTab('audience', tag))}
+          {scenarioTags.map((tag) => renderTab('scenario', tag))}
+        </TabsRow>
+      </div>
+    );
+  }
 
   return (
     <div

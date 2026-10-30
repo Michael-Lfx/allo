@@ -162,9 +162,9 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
           }}
         />
         <Button
-          type='primary'
+          type='secondary'
           size='small'
-          className={`flowy-icon-text-btn ${isMobile ? '!flex-1 !h-36px' : '!px-16px !h-34px'}`}
+          className={`flowy-icon-text-btn !rounded-8px !border !border-solid !border-[var(--color-border-2)] !bg-[var(--color-bg-2)] !text-[var(--color-text-1)] hover:!bg-[var(--color-fill-1)] ${isMobile ? '!flex-1 !h-32px' : '!px-14px !h-30px'}`}
           icon={<Plus size={14} fill='currentColor' />}
           onClick={onCreate}
           data-testid='btn-create-preset'
@@ -196,6 +196,7 @@ const PresetListPanel: React.FC<PresetListPanelProps> = ({
         onChange={setTagFilter}
         localeKey={localeKey}
         onManageTags={onManageTags}
+        variant='tabs'
       />
 
       {loading ? (

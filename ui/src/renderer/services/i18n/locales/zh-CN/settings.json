@@ -83,11 +83,12 @@
   },
   "capabilityHub": {
     "navLabel": "能力中心",
-    "myPresets": "我的设定",
+    "myPresets": "我的专家",
+    "myMcp": "我的MCP",
     "myInstalled": "我安装的",
     "discover": "发现",
     "installed": "已装",
-    "searchPresets": "搜索设定",
+    "searchPresets": "搜索专家",
     "searchSkills": "搜索技能",
     "searchMcp": "搜索 MCP"
   },
@@ -1645,14 +1646,61 @@
     "sectionWebhook": "Webhook"
   },
   "presetsHub": {
-    "title": "设定",
-    "subtitle": "将 Agent、模型、Skill 与知识范围固化为可一键启动的复用配置。",
-    "railTitle": "设定"
+    "title": "专家",
+    "subtitle": "浏览全部专家，可按名称或摘要搜索。",
+    "railTitle": "专家"
+  },
+  "experts": {
+    "filterLabel": "专家分类",
+    "scrollCategoriesPrev": "上一组分类",
+    "scrollCategories": "更多分类",
+    "all": "全部",
+    "categories": {
+      "productDesign": "产品设计",
+      "engineering": "技术工程",
+      "gameSpatial": "游戏空间",
+      "dataAi": "数据智能",
+      "marketingGrowth": "营销增长",
+      "contentCreative": "内容创作",
+      "salesCommerce": "销售商务",
+      "financeInvestment": "金融投资",
+      "operationsHr": "运营人力",
+      "projectQuality": "项目质量",
+      "securityCompliance": "法务安全",
+      "industryConsultant": "行业顾问",
+      "tencentZone": "腾讯专区",
+      "globalDevelopment": "全球发展",
+      "backToSchool": "开学季"
+    },
+    "agent": "单专家",
+    "team": "专家团",
+    "summon": "召唤",
+    "summoning": "召唤中",
+    "summoned": "已召唤",
+    "installSuccess": "已召唤 {{name}}",
+    "alreadyInstalled": "{{name}} 已经召唤过了",
+    "installFailed": "召唤失败",
+    "empty": "没有匹配的专家",
+    "loginRequired": "登录云账号后才能查看专家",
+    "notFound": "这个专家未上架或不存在",
+    "version": "版本 {{version}}",
+    "files": "{{count}} 个文件",
+    "quickPrompts": "快捷提示",
+    "initPrompt": "开场提示",
+    "helpsWith": "专家帮你做",
+    "versionLabel": "版本",
+    "packageSize": "包大小",
+    "downloads": "下载量/使用量",
+    "truncated": "只显示了前一部分专家",
+    "create": "创建专家",
+    "mineEmpty": "还没有创建任何专家",
+    "backToCatalog": "返回专家"
   },
   "mcpHub": {
     "title": "MCP",
     "subtitle": "管理已安装 MCP 与 MCP 市场。",
-    "railTitle": "MCP"
+    "railTitle": "MCP",
+    "backToMarket": "返回MCP"
   },
   "link": {
     "title": "连接手机",

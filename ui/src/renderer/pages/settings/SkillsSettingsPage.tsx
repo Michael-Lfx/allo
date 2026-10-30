@@ -84,7 +84,7 @@ const SkillsSettingsPage: React.FC = () => {
             <div className='capability-hub-toolbar-pair'>
               <NomiInput
                 allowClear
-                height={36}
+                height={32}
                 value={searchQuery}
                 onChange={setSearchQuery}
                 data-testid='capability-hub-search'
