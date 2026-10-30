@@ -14,8 +14,10 @@ import { copyText } from '@/renderer/utils/ui/clipboard';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import SkillMarketCard from './skill/SkillMarketCard';
 import MarketDetailDrawer from './skill/MarketDetailDrawer';
+import MarketItemDetailModal from './skill/MarketItemDetailModal';
 import MarketToolbar from './skill/MarketToolbar';
 import MarketCardGrid from './skill/MarketCardGrid';
+import MarketItemTile from './skill/MarketItemTile';
 import { createMarketItemViewModel, type MarketItemViewModel } from './skill/marketViewModel';
 import type { MarketPrimaryActionConfig } from './skill/marketContracts';
 import { useMarketActionState } from './skill/useMarketActionState';
@@ -71,6 +73,8 @@ type MarketSettingsPanelProps = {
   itemFilter?: (item: ISkillMarketItem) => boolean;
   /** Show the source switcher as a left-aligned tab row instead of the right-side toolbar control. */
   sourcesAsTabs?: boolean;
+  /** Render items with the expert catalog tile instead of the market article card. */
+  cardVariant?: 'card' | 'tile';
 };
 
 /**
@@ -98,6 +102,7 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
   showInstallCommand = true,
   itemFilter,
   sourcesAsTabs = false,
+  cardVariant = 'card',
 }) => {
   const { t, i18n } = useTranslation();
   const localeKey = resolveLocaleKey(i18n.language);
@@ -268,26 +273,41 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
 
       {filteredItems.length > 0 ? (
         <MarketCardGrid busy={loading}>
-          {viewModels.map((item) => (
-            <SkillMarketCard
-              key={item.id}
-              item={item}
-              actionLabel={primaryAction.label}
-              pendingLabel={primaryAction.pendingLabel}
-              completedLabel={primaryAction.completedLabel}
-              actionState={actionState.getState(item)}
-              busy={actionState.isBusy(item.id)}
-              disabled={actionState.isDisabled(item)}
-              onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
-              onOpenSource={(marketItem) => void handleOpenItemSource(marketItem)}
-              onCopyInstallCommand={(marketItem) => void handleCopyInstallCommand(marketItem)}
-              showInstallCommand={showInstallCommand}
-              onViewDetails={(marketItem, trigger) => {
-                detailTriggerRef.current = trigger ?? null;
-                setDetailItem(marketItem);
-              }}
-            />
-          ))}
+          {viewModels.map((item) =>
+            cardVariant === 'tile' ? (
+              <MarketItemTile
+                key={item.id}
+                item={item}
+                action={primaryAction}
+                actionState={actionState.getState(item)}
+                busy={actionState.isBusy(item.id)}
+                onAction={(marketItem) => void actionState.runPrimaryAction(marketItem)}
+                onViewDetails={(marketItem) => {
+                  detailTriggerRef.current = null;
+                  setDetailItem(marketItem);
+                }}
+              />
+            ) : (
+              <SkillMarketCard
+                key={item.id}
+                item={item}
+                actionLabel={primaryAction.label}
+                pendingLabel={primaryAction.pendingLabel}
+                completedLabel={primaryAction.completedLabel}
+                actionState={actionState.getState(item)}
+                busy={actionState.isBusy(item.id)}
+                disabled={actionState.isDisabled(item)}
+                onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
+                onOpenSource={(marketItem) => void handleOpenItemSource(marketItem)}
+                onCopyInstallCommand={(marketItem) => void handleCopyInstallCommand(marketItem)}
+                showInstallCommand={showInstallCommand}
+                onViewDetails={(marketItem, trigger) => {
+                  detailTriggerRef.current = trigger ?? null;
+                  setDetailItem(marketItem);
+                }}
+              />
+            ),
+          )}
         </MarketCardGrid>
       ) : loading && items.length === 0 ? (
         <div
@@ -334,20 +354,33 @@ const MarketSettingsPanel: React.FC<MarketSettingsPanelProps> = ({
         </div>
       )}
 
-      <MarketDetailDrawer
-        item={detailItem}
-        visible={detailItem !== null}
-        action={primaryAction}
-        actionState={detailItem ? actionState.getState(detailItem) : 'ready'}
-        busy={detailItem ? actionState.isBusy(detailItem.id) : false}
-        disabled={detailItem ? actionState.isDisabled(detailItem) : false}
-        onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
-        onCopyInstallCommand={(item) => void handleCopyInstallCommand(item)}
-        showInstallCommand={showInstallCommand}
-        onOpenSource={(item) => void handleOpenItemSource(item)}
-        onClose={() => setDetailItem(null)}
-        restoreFocusRef={detailTriggerRef}
-      />
+      {cardVariant === 'tile' ? (
+        <MarketItemDetailModal
+          item={detailItem}
+          action={primaryAction}
+          actionState={detailItem ? actionState.getState(detailItem) : 'ready'}
+          busy={detailItem ? actionState.isBusy(detailItem.id) : false}
+          disabled={detailItem ? actionState.isDisabled(detailItem) : false}
+          onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
+          onOpenSource={(item) => void handleOpenItemSource(item)}
+          onClose={() => setDetailItem(null)}
+        />
+      ) : (
+        <MarketDetailDrawer
+          item={detailItem}
+          visible={detailItem !== null}
+          action={primaryAction}
+          actionState={detailItem ? actionState.getState(detailItem) : 'ready'}
+          busy={detailItem ? actionState.isBusy(detailItem.id) : false}
+          disabled={detailItem ? actionState.isDisabled(detailItem) : false}
+          onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
+          onCopyInstallCommand={(item) => void handleCopyInstallCommand(item)}
+          showInstallCommand={showInstallCommand}
+          onOpenSource={(item) => void handleOpenItemSource(item)}
+          onClose={() => setDetailItem(null)}
+          restoreFocusRef={detailTriggerRef}
+        />
+      )}
     </div>
   );
 };
