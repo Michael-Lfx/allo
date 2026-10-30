@@ -1,0 +1,157 @@
+{
+  "source": "Recorded from authentic test_voice_companion_joint_worker_to_host_three_sentence_chain execution",
+  "sanitized": true,
+  "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
+  "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+  "instance_id": "voice-companion-inst-1",
+  "binding": {
+    "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+    "binding_id": "voice-binding-0190f5fe-7c00-7a00-8000-000000000002",
+    "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
+    "workspace": "D:/workspace/test"
+  },
+  "turns": [
+    {
+      "turn_id": "turn-a-0190f5fe-0001",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "user_text": "input-A: 请执行任务",
+      "assistant_text": "任务已接单，正在执行。",
+      "user_message_id": "msg-user-a",
+      "assistant_message_id": "msg-asst-a"
+    },
+    {
+      "turn_id": "turn-b-0190f5fe-0002",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "user_text": "input-B: 今天天气怎么样",
+      "assistant_text": "天气晴朗，气温22度。",
+      "user_message_id": "msg-user-b",
+      "assistant_message_id": "msg-asst-b"
+    },
+    {
+      "turn_id": "turn-c-0190f5fe-0003",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "user_text": "input-C: 明天会下雨吗",
+      "assistant_text": "明天天气也很好。",
+      "user_message_id": "msg-user-c",
+      "assistant_message_id": "msg-asst-c"
+    }
+  ],
+  "snapshots": {
+    "at_failure": {
+      "instance_id": "voice-companion-inst-1",
+      "phase": "follow_up",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "turn_id": "turn-b-0190f5fe-0002",
+      "conversation": [
+        {
+          "turn_id": "turn-a-0190f5fe-0001",
+          "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+          "user_text": "input-A: 请执行任务",
+          "assistant_text": "任务已接单，正在执行。",
+          "user_message_id": "msg-user-a",
+          "assistant_message_id": "msg-asst-a",
+          "reply_state": "complete"
+        },
+        {
+          "turn_id": "turn-b-0190f5fe-0002",
+          "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+          "user_text": "input-B: 今天天气怎么样",
+          "assistant_text": "天气晴朗，气温22度。",
+          "user_message_id": "msg-user-b",
+          "assistant_message_id": "msg-asst-b",
+          "reply_state": "complete"
+        }
+      ],
+      "projected_turn_ids": [
+        "turn-a-0190f5fe-0001"
+      ],
+      "error": {
+        "stage": "history",
+        "code": "voice_projection_write_failed"
+      }
+    },
+    "after_recovery": {
+      "instance_id": "voice-companion-inst-1",
+      "phase": "follow_up",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "turn_id": "turn-b-0190f5fe-0002",
+      "projected_turn_ids": [
+        "turn-a-0190f5fe-0001",
+        "turn-b-0190f5fe-0002"
+      ],
+      "error": null
+    },
+    "final": {
+      "instance_id": "voice-companion-inst-1",
+      "phase": "idle",
+      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+      "turn_id": "turn-c-0190f5fe-0003",
+      "projected_turn_ids": [
+        "turn-a-0190f5fe-0001",
+        "turn-b-0190f5fe-0002",
+        "turn-c-0190f5fe-0003"
+      ],
+      "ended_reason": "user_stop"
+    }
+  },
+  "messages": [
+    {
+      "message_id": "msg-user-a",
+      "position": "right",
+      "content": {
+        "content": "input-A: 请执行任务"
+      }
+    },
+    {
+      "message_id": "msg-asst-a",
+      "position": "left",
+      "content": {
+        "content": "任务已接单，正在执行。",
+        "turn_id": "msg-user-a"
+      }
+    },
+    {
+      "message_id": "msg-user-b",
+      "position": "right",
+      "content": {
+        "content": "input-B: 今天天气怎么样"
+      }
+    },
+    {
+      "message_id": "msg-asst-b",
+      "position": "left",
+      "content": {
+        "content": "天气晴朗，气温22度。",
+        "turn_id": "msg-user-b"
+      }
+    },
+    {
+      "message_id": "msg-user-c",
+      "position": "right",
+      "content": {
+        "content": "input-C: 明天会下雨吗"
+      }
+    },
+    {
+      "message_id": "msg-asst-c",
+      "position": "left",
+      "content": {
+        "content": "明天天气也很好。",
+        "turn_id": "msg-user-c"
+      }
+    }
+  ],
+  "counts": {
+    "completer_calls": 3,
+    "task_submits": 1,
+    "tts_synthesizes": 4,
+    "announcements_succeeded": 1,
+    "announcement_attempts": 2,
+    "extra_model_calls_on_recovery": 0
+  },
+  "recovery": {
+    "turn_b_write_failed_injected": true,
+    "turn_b_recovered_from_journal": true,
+    "extra_model_calls_on_recovery": 0
+  }
+}

@@ -21,6 +21,10 @@
       "group": "test",
       "desc": "Unit-test the Agent Store marketplace manifest checker."
     },
+    "test:voice-joint-trace": {
+      "group": "test",
+      "desc": "Run end-to-end Rust to Bun voice joint trace integration test."
+    },
     "check:process-runtime-boundary": {
       "group": "check",
       "desc": "Enforce the supervised process runtime boundary and exact hand-off allowlist."

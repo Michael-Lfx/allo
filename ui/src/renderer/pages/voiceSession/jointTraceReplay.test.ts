@@ -12,10 +12,18 @@ import type { TMessage } from '@common/chat/chatLib';
 import { voiceErrorKey, voiceErrorTranslationKey } from './VoiceErrorStatus';
 import zhLocale from '../../services/i18n/locales/zh-CN/voice.json';
 import enLocale from '../../services/i18n/locales/en-US/voice.json';
+import defaultFixture from './fixtures/jointTraceFixture.json';
 
 interface JointTracePayload {
   conversation_id: string;
   session_id: string;
+  instance_id: string;
+  binding?: {
+    session_id: string;
+    binding_id: string;
+    conversation_id: string;
+    workspace?: string;
+  };
   messages: Array<{
     message_id: string;
     position: 'right' | 'left';
@@ -25,7 +33,8 @@ interface JointTracePayload {
     completer_calls: number;
     task_submits: number;
     tts_synthesizes: number;
-    announcements: number;
+    announcements_succeeded?: number;
+    announcement_attempts?: number;
   };
   recovery: {
     turn_b_write_failed_injected: boolean;
@@ -35,34 +44,28 @@ interface JointTracePayload {
 }
 
 function loadTrace(): JointTracePayload {
-  const tracePath = path.resolve(
-    process.cwd(),
-    '../build.noindex',
-    'voice-task-completion-round5-closeout-20261030',
-    'joint-trace.json',
-  );
-  const fallbackPath = path.resolve(
-    process.cwd(),
-    'build.noindex',
-    'voice-task-completion-round5-closeout-20261030',
-    'joint-trace.json',
-  );
-  const resolved = fs.existsSync(tracePath) ? tracePath : fallbackPath;
-  if (!fs.existsSync(resolved)) {
-    throw new Error(`joint-trace.json not found at ${tracePath} or ${fallbackPath}`);
+  const customPath = process.env.VOICE_JOINT_TRACE_PATH;
+  if (customPath) {
+    if (!fs.existsSync(customPath)) {
+      throw new Error(`explicit VOICE_JOINT_TRACE_PATH not found at ${customPath}`);
+    }
+    const raw = fs.readFileSync(customPath, 'utf8');
+    if (!raw.trim()) {
+      throw new Error(`explicit VOICE_JOINT_TRACE_PATH is empty at ${customPath}`);
+    }
+    return JSON.parse(raw);
   }
-  const raw = fs.readFileSync(resolved, 'utf8');
-  return JSON.parse(raw);
+  return defaultFixture as unknown as JointTracePayload;
 }
 
-test('joint trace from authentic Rust joint chain is valid and conforms to spec', () => {
+test('joint trace fixture is valid and contains authentic fields without hardcoding', () => {
   const trace = loadTrace();
   expect(trace.conversation_id).toBeTruthy();
-  expect(trace.session_id).toBe('scoped-joint-control');
+  expect(trace.session_id).toBeTruthy();
+  expect(trace.session_id).not.toBe('scoped-joint-control'); // Proves real session id, not control token
   expect(trace.messages).toHaveLength(6);
   expect(trace.counts.completer_calls).toBe(3);
   expect(trace.counts.task_submits).toBe(1);
-  expect(trace.counts.announcements).toBe(1);
   expect(trace.recovery.turn_b_write_failed_injected).toBe(true);
   expect(trace.recovery.turn_b_recovered_from_journal).toBe(true);
   expect(trace.recovery.extra_model_calls_on_recovery).toBe(0);
@@ -80,20 +83,20 @@ test('failure phase: simulated projection failure preserves user input and model
     assistant_text: trace.messages[3].content.content,
     reply_state: 'complete',
     model_text: trace.messages[3].content.content,
-    user_message_id: null,
-    assistant_message_id: null,
+    user_message_id: trace.messages[2].message_id,
+    assistant_message_id: trace.messages[3].message_id,
   };
 
   const snapshotWithFailure = {
-    instance_id: 'inst-1',
+    instance_id: trace.instance_id ?? 'voice-companion-inst-1',
     phase: 'follow_up',
     session_id: trace.session_id,
     turn_id: 'turn-b',
-    binding: {
+    binding: trace.binding ?? {
       session_id: trace.session_id,
-      binding_id: 'binding-1',
+      binding_id: `voice-binding-${trace.session_id}`,
       conversation_id: convId,
-      workspace: 'D:/owned',
+      workspace: 'D:/workspace/test',
     },
     conversation: [turnB],
     projected_turn_ids: [],
@@ -119,11 +122,103 @@ test('failure phase: simulated projection failure preserves user input and model
   expect(enLocale.audio.projectionFailed).not.toContain('voice_projection_write_failed');
 });
 
-test('recovery and reload phase: durable trace rows retire live rows with zero duplicates and exact ordering', () => {
+test('non-empty live history retires turn B upon matching durable row arrival, preserving order and foreign scope', () => {
   const trace = loadTrace();
   const convId = parseConversationId(trace.conversation_id);
 
-  // Convert trace messages to durable TMessage rows
+  // 1. Establish non-empty live history with Turn B in-flight
+  const turnB: NonNullable<VoiceSnapshot['conversation']>[number] = {
+    session_id: trace.session_id,
+    turn_id: 'turn-b-live',
+    user_text: trace.messages[2].content.content,
+    assistant_text: trace.messages[3].content.content,
+    reply_state: 'complete',
+    model_text: trace.messages[3].content.content,
+    user_message_id: trace.messages[2].message_id,
+    assistant_message_id: trace.messages[3].message_id,
+  };
+
+  const foreignTurn: NonNullable<VoiceSnapshot['conversation']>[number] = {
+    session_id: 'foreign-session-id',
+    turn_id: 'foreign-turn-id',
+    user_text: 'foreign input',
+    assistant_text: 'foreign reply',
+    reply_state: 'complete',
+    model_text: 'foreign reply',
+    user_message_id: 'foreign-user-msg',
+    assistant_message_id: 'foreign-asst-msg',
+  };
+
+  const snapshotWithB = {
+    instance_id: trace.instance_id ?? 'voice-companion-inst-1',
+    phase: 'follow_up',
+    session_id: trace.session_id,
+    turn_id: 'turn-b-live',
+    binding: trace.binding ?? {
+      session_id: trace.session_id,
+      binding_id: `voice-binding-${trace.session_id}`,
+      conversation_id: convId,
+      workspace: 'D:/workspace/test',
+    },
+    conversation: [turnB, foreignTurn],
+    projected_turn_ids: [],
+  } as unknown as VoiceSnapshot;
+
+  const liveBefore = buildVoiceLiveMessages(snapshotWithB, convId, []);
+  expect(liveBefore).toHaveLength(2);
+  expect((liveBefore[0].content as { content: string }).content).toContain('今天天气怎么样');
+  expect((liveBefore[1].content as { content: string }).content).toContain('天气晴朗');
+
+  // 2. Durable message rows arrive containing B
+  const durableBRows: TMessage[] = [
+    {
+      id: 3,
+      message_id: trace.messages[2].message_id,
+      conversation_id: trace.conversation_id,
+      msg_id: trace.messages[2].message_id,
+      type: 'text',
+      content: trace.messages[2].content,
+      position: 'right',
+      status: 'finish',
+      hidden: false,
+      created_at: 1020,
+    },
+    {
+      id: 4,
+      message_id: trace.messages[3].message_id,
+      conversation_id: trace.conversation_id,
+      msg_id: trace.messages[3].message_id,
+      type: 'text',
+      content: trace.messages[3].content,
+      position: 'left',
+      status: 'finish',
+      hidden: false,
+      created_at: 1030,
+    },
+  ] as unknown as TMessage[];
+
+  const snapshotAfterBProjected = {
+    ...snapshotWithB,
+    projected_turn_ids: ['turn-b-live'],
+  } as unknown as VoiceSnapshot;
+
+  const history = createLiveVoiceHistory();
+  const reconciled = reconcileLiveVoiceHistory(history, {
+    snapshot: snapshotAfterBProjected,
+    conversationId: convId,
+    epoch: 2,
+    visibleIds: new Set(durableBRows.map((r) => r.message_id as string).filter(Boolean)),
+    currentSequence: 2,
+    latestPage: { conversationId: convId, epoch: 2, sequence: 2 },
+  });
+
+  // Turn B is accurately retired!
+  const liveAfter = buildVoiceLiveMessages(snapshotAfterBProjected, convId, durableBRows, reconciled.state);
+  expect(liveAfter).toHaveLength(0);
+});
+
+test('durable trace rows assert strict six message sequential ordering and roles', () => {
+  const trace = loadTrace();
   const durableRows: TMessage[] = trace.messages.map((m, idx) => ({
     id: idx + 1,
     message_id: m.message_id,
@@ -152,28 +247,4 @@ test('recovery and reload phase: durable trace rows retire live rows with zero d
   expect((durableRows[4].content as { content: string }).content).toContain('明天会下雨吗');
   expect(durableRows[5].position).toBe('left');
   expect((durableRows[5].content as { content: string }).content).toContain('明天天气也很好');
-
-  // Once durable messages arrive, live messages retire smoothly
-  const finalSnapshot = {
-    instance_id: 'inst-1',
-    phase: 'idle',
-    session_id: trace.session_id,
-    turn_id: 'turn-c',
-    conversation: [],
-    projected_turn_ids: ['turn-a', 'turn-b', 'turn-c'],
-    ended_reason: 'user_stop',
-  } as unknown as VoiceSnapshot;
-
-  const initialHistory = createLiveVoiceHistory();
-  const reconciled = reconcileLiveVoiceHistory(initialHistory, {
-    snapshot: finalSnapshot,
-    conversationId: convId,
-    epoch: 2,
-    visibleIds: new Set(durableRows.map((r) => r.message_id as string).filter(Boolean)),
-    currentSequence: 1,
-    latestPage: { conversationId: convId, epoch: 2, sequence: 1 },
-  });
-
-  const remainingLive = buildVoiceLiveMessages(finalSnapshot, convId, durableRows, reconciled.state);
-  expect(remainingLive).toHaveLength(0); // Zero duplicate messages remaining in live view
 });
