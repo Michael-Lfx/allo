@@ -303,8 +303,8 @@ const NomiModal: React.FC<NomiModalProps> = ({
               }}
               loading={props.confirmLoading || props.okButtonProps?.loading}
               disabled={props.okButtonProps?.disabled}
-              className='px-20px min-w-80px'
-              style={{ borderRadius: 8 }}
+              className={['px-20px min-w-80px', props.okButtonProps?.className].filter(Boolean).join(' ')}
+              style={{ borderRadius: 8, ...props.okButtonProps?.style }}
             >
               {okLabel}
             </Button>

@@ -42,7 +42,7 @@ const McpServerDetails: React.FC<McpServerDetailsProps> = ({ server, activationS
         </div>
       ) : null}
       {checkedAt ? <div className='text-t-tertiary'>{t('settings.mcpCheckedAt', { time: checkedAt })}</div> : null}
-      <div className='border-t border-solid border-arco-2 pt-12px'>
+      <div className='border-t border-t-solid border-arco-2 pt-12px'>
         <div className='mb-8px font-medium text-t-primary'>
           {t('settings.mcpDiscoveredTools', { count: server.tools?.length ?? 0 })}
         </div>

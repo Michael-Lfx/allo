@@ -247,6 +247,8 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
           <Button
             key='activate'
             type='primary'
+            className='!border-[var(--color-text-1)] !text-[var(--color-bg-1)]'
+            style={{ '--flowy-accent': 'var(--color-text-1)' } as React.CSSProperties}
             loading={importing}
             onClick={() => void handleConfirmImport('activate')}
           >
@@ -256,7 +258,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         maskClosable={false}
       >
         <div className='space-y-12px'>
-          <div className='grid grid-cols-3 border-y border-solid border-arco-2 py-10px text-center text-12px text-t-secondary'>
+          <div className='grid grid-cols-3 border-t border-b border-t-solid border-b-solid border-arco-2 py-10px text-center text-12px text-t-secondary'>
             <span className='font-medium text-t-primary'>{t('settings.mcpMarket.flowImport')}</span>
             <span>{t('settings.mcpMarket.flowTest')}</span>
             <span>{t('settings.mcpMarket.flowEnable')}</span>
@@ -281,9 +283,9 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
               })}
             />
           )}
-          <div className='border-y border-solid border-arco-2'>
+          <div className='border-t border-b border-t-solid border-b-solid border-arco-2'>
             {(pendingServers ?? []).map((server, index) => (
-              <div key={server.name} className={`py-12px ${index > 0 ? 'border-t border-solid border-arco-2' : ''}`}>
+              <div key={server.name} className={`py-12px ${index > 0 ? 'border-t border-t-solid border-arco-2' : ''}`}>
                 <div className='flex min-w-0 items-center gap-8px'>
                   <span className='truncate text-14px font-medium text-t-primary'>{server.name}</span>
                   <Tag size='small' bordered={false} className='!flex-shrink-0 !text-11px'>

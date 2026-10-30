@@ -3,7 +3,8 @@ import { Alert, Button, Tag } from '@arco-design/web-react';
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import CodeMirror from '@renderer/components/editors/CodeMirrorEditor';
-import { Link } from '@icon-park/react';
+import { Info, Link } from '@icon-park/react';
+import { iconColors } from '@/renderer/styles/colors';
 import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import { copyText } from '@/renderer/utils/ui/clipboard';
@@ -65,7 +66,7 @@ const McpConfigSummary: React.FC<{ server: IMcpServer }> = ({ server }) => {
       : Object.keys(server.transport.headers ?? {});
 
   return (
-    <div className='border-y border-solid border-arco-2 py-10px'>
+    <div className='border-t border-b border-t-solid border-b-solid border-arco-2 py-10px'>
       <div className='mb-8px flex items-center justify-between gap-8px'>
         <span className='text-12px font-medium text-t-primary'>{t('settings.mcpConfigSummary')}</span>
         <Tag size='small' bordered={false} color={server.enabled ? 'green' : 'gray'}>
@@ -248,7 +249,12 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
       onOk={handleSubmit}
       okText={server ? t('common.save') : undefined}
       confirmLoading={submitting}
-      okButtonProps={{ disabled: !validation.isValid || submitting, loading: submitting }}
+      okButtonProps={{
+        disabled: !validation.isValid || submitting,
+        loading: submitting,
+        className: '!border-[var(--color-text-1)] !text-[var(--color-bg-1)]',
+        style: { '--flowy-accent': 'var(--color-text-1)' } as React.CSSProperties,
+      }}
       header={{ title: server ? t('settings.mcpViewConfig') : t('settings.mcpImportFromJSON'), showClose: true }}
       style={{ width: 600, maxHeight: '90vh' }}
       contentStyle={{
@@ -360,20 +366,17 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
         </div>
 
         {server ? null : (
-          <Alert
-            type='info'
-            showIcon
-            content={
-              <div>
-                <div>{t('settings.mcpImportTips')}</div>
-                <ul className='list-disc pl-5 mt-2 space-y-1 text-sm'>
-                  <li>{t('settings.mcpImportTip1')}</li>
-                  <li>{t('settings.mcpImportTip2')}</li>
-                  <li>{t('settings.mcpImportTip3')}</li>
-                </ul>
-              </div>
-            }
-          />
+          <div className='flex gap-10px rd-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-1)] px-14px py-12px'>
+            <Info theme='outline' size={16} fill={iconColors.secondary} className='mt-2px shrink-0' />
+            <div className='min-w-0 flex-1'>
+              <div className='text-13px font-semibold leading-20px text-t-primary'>{t('settings.mcpImportTips')}</div>
+              <ul className='mt-6px mb-0 list-disc pl-18px text-13px leading-20px text-t-secondary'>
+                <li>{t('settings.mcpImportTip1')}</li>
+                <li>{t('settings.mcpImportTip2')}</li>
+                <li>{t('settings.mcpImportTip3')}</li>
+              </ul>
+            </div>
+          </div>
         )}
       </div>
     </NomiModal>

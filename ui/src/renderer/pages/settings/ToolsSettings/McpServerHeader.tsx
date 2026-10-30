@@ -1,7 +1,7 @@
 import type { McpServerId } from '@/common/types/ids';
 import type { IMcpServer } from '@/common/config/storage';
-import { Button, Dropdown, Menu, Tag, Tooltip } from '@arco-design/web-react';
-import { Check, CloseSmall, DeleteFour, Info, Key, Link, Login, More, Server, Shop, Terminal, Write } from '@icon-park/react';
+import { Button, Tag, Tooltip } from '@arco-design/web-react';
+import { Check, CloseSmall, DeleteFour, Info, Key, Link, Login, PauseOne, Server, Shop, Terminal, Write } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { McpOAuthStatus } from '@/renderer/hooks/mcp/useMcpOAuth';
@@ -32,7 +32,7 @@ interface McpServerHeaderProps {
 
 const STATUS_ICON_SIZE = 16;
 const STATUS_ICON_SLOT_CLASS = 'inline-flex h-24px w-24px shrink-0 items-center justify-center';
-const HEADER_META_CLASS = 'inline-flex h-22px shrink-0 items-center gap-4px text-11px text-t-tertiary';
+const HEADER_META_CLASS = 'inline-flex h-22px shrink-0 items-center gap-4px text-12px text-t-secondary';
 
 const getEffectiveLoading = (
   isTestingConnection: boolean,
@@ -136,6 +136,7 @@ const StatusActionCta: React.FC<{
     return (
       <Button
         size='mini'
+        type='outline'
         disabled
         className='flowy-icon-text-btn !min-w-150px justify-center'
         icon={<McpLoadingIndicator size='small' />}
@@ -181,7 +182,7 @@ const StatusActionCta: React.FC<{
 
   if (isEnabled) {
     return (
-      <Button size='mini' className='flowy-icon-text-btn' onClick={() => onTestConnection(server)}>
+      <Button size='mini' type='outline' className='flowy-icon-text-btn' onClick={() => onTestConnection(server)}>
         {t('settings.mcpRetestConnection')}
       </Button>
     );
@@ -192,7 +193,8 @@ const StatusActionCta: React.FC<{
       <Button
         size='mini'
         type='primary'
-        className='flowy-icon-text-btn'
+        className='flowy-icon-text-btn !border-[var(--color-text-1)] !text-[var(--color-bg-1)]'
+        style={{ '--flowy-accent': 'var(--color-text-1)' } as React.CSSProperties}
         loading={isTogglingEnabled}
         onClick={() => onToggleEnabled(server)}
       >
@@ -207,7 +209,7 @@ const StatusActionCta: React.FC<{
   return (
     <Button
       size='mini'
-      type={canRetry ? 'secondary' : 'primary'}
+      type={canRetry ? 'outline' : 'primary'}
       className='flowy-icon-text-btn'
       onClick={() => onTestConnection(server)}
     >
@@ -255,13 +257,13 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
         </Tooltip>
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 flex-wrap items-center gap-x-8px gap-y-6px'>
-            <span className={`${MCP_SERVER_TITLE_CLASS} truncate text-14px font-medium text-t-primary`}>{server.name}</span>
+            <span className={`${MCP_SERVER_TITLE_CLASS} truncate text-15px font-semibold text-t-primary`}>{server.name}</span>
             <Tag size='small' bordered={false} color={isEnabled ? 'green' : 'gray'} className='!flex-shrink-0 !text-11px'>
               {t(isEnabled ? 'settings.mcpEnabled' : 'settings.mcpDisabled')}
             </Tag>
             {isError && !isFocusedActivation ? <FeedbackButton /> : null}
           </div>
-          <div className='mt-6px flex min-w-0 items-center gap-x-10px text-12px text-t-tertiary'>
+          <div className='mt-6px flex min-w-0 items-center gap-x-10px text-12px text-t-secondary'>
             <span className={HEADER_META_CLASS} title={server.transport.type}>
               {getTransportIcon(server.transport)}
               {t(getMcpTransportLabelKey(server.transport))}
@@ -277,7 +279,7 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
             </span>
           </div>
           <div
-            className='mt-6px text-12px leading-18px text-t-secondary'
+            className='mt-6px text-13px leading-20px text-t-primary'
             role={isLoading ? 'status' : undefined}
             aria-live={isLoading ? 'polite' : undefined}
           >
@@ -328,35 +330,38 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
           ) : null}
           {!server.builtin ? (
             <>
+              {server.enabled ? (
+                <Tooltip content={t('settings.mcpDisable')}>
+                  <Button
+                    size='mini'
+                    type='text'
+                    className='flowy-button-icon'
+                    icon={<PauseOne size='14' />}
+                    aria-label={t('settings.mcpDisable')}
+                    onClick={() => onToggleEnabled(server)}
+                  />
+                </Tooltip>
+              ) : null}
               <Tooltip content={t('settings.mcpViewConfig')}>
                 <Button
                   size='mini'
+                  type='text'
                   className='flowy-button-icon'
                   icon={<Write size='14' />}
                   aria-label={t('settings.mcpViewConfig')}
                   onClick={() => onEditServer(server)}
                 />
               </Tooltip>
-              <Dropdown
-                trigger='click'
-                droplist={
-                  <Menu>
-                    {server.enabled ? (
-                      <Menu.Item key='disable' onClick={() => onToggleEnabled(server)}>
-                        {t('settings.mcpDisable')}
-                      </Menu.Item>
-                    ) : null}
-                    <Menu.Item key='delete' onClick={() => onDeleteServer(server.mcp_server_id)}>
-                      <div className='flex items-center gap-2 text-red-500'>
-                        <DeleteFour size='14' />
-                        {t('settings.mcpDeleteServer')}
-                      </div>
-                    </Menu.Item>
-                  </Menu>
-                }
-              >
-                <Button size='mini' className='flowy-button-icon' icon={<More size='14' />} aria-label={t('common.more')} />
-              </Dropdown>
+              <Tooltip content={t('settings.mcpDeleteServer')}>
+                <Button
+                  size='mini'
+                  type='text'
+                  className='flowy-button-icon'
+                  icon={<DeleteFour size='14' fill={iconColors.danger} />}
+                  aria-label={t('settings.mcpDeleteServer')}
+                  onClick={() => onDeleteServer(server.mcp_server_id)}
+                />
+              </Tooltip>
             </>
           ) : null}
         </div>
