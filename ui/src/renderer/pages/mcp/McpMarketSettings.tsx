@@ -20,6 +20,8 @@ import { MCP_MARKET_SOURCES } from '@/renderer/pages/settings/skill/skillMarket'
 import { useMcpServerCRUD } from '@/renderer/hooks/mcp';
 import type { McpActivationNavigationState } from '@/renderer/hooks/mcp/useMcpActivationFlow';
 import {
+  attachMcpMarketOrigin,
+  getMcpMarketOrigin,
   toImportableMcpServersFromConfig,
   type ImportableMcpServer,
 } from '@/renderer/pages/settings/ToolsSettings/mcpImportUtils';
@@ -31,41 +33,6 @@ type McpMarketSettingsProps = {
   hideSearch?: boolean;
   searchQuery?: string;
   onSearchQueryChange?: (value: string) => void;
-};
-
-const MCP_MARKET_ORIGIN_KEY = '_nomifun_market';
-
-export const attachMcpMarketOrigin = (originalJson: string, marketItemId: string): string => {
-  let original: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(originalJson) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      original = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Importable market configs normally contain valid JSON. Keep provenance
-    // even if an upstream formatter produced malformed original_json.
-  }
-  return JSON.stringify(
-    {
-      ...original,
-      [MCP_MARKET_ORIGIN_KEY]: { version: 1, item_id: marketItemId },
-    },
-    null,
-    2
-  );
-};
-
-export const getMcpMarketOrigin = (server: Pick<IMcpServer, 'original_json'>): string | null => {
-  try {
-    const parsed = JSON.parse(server.original_json) as Record<string, unknown>;
-    const origin = parsed[MCP_MARKET_ORIGIN_KEY];
-    if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
-    const itemId = (origin as Record<string, unknown>).item_id;
-    return typeof itemId === 'string' && itemId.trim() ? itemId : null;
-  } catch {
-    return null;
-  }
 };
 
 const normalizeMcpMarketName = (value: string): string =>

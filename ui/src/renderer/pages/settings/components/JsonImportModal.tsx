@@ -8,8 +8,13 @@ import { useThemeContext } from '@/renderer/hooks/context/ThemeContext';
 import NomiModal from '@/renderer/components/base/NomiModal';
 import { copyText } from '@/renderer/utils/ui/clipboard';
 import { parseMcpJsonImport } from '../ToolsSettings/mcpJsonImport';
-import { toImportableMcpServer } from '../ToolsSettings/mcpImportUtils';
-import { getSafeMcpEndpoint } from '../ToolsSettings/McpServerDetails';
+import {
+  attachMcpMarketOrigin,
+  getMcpMarketOrigin,
+  stripMcpMarketOrigin,
+  toImportableMcpServer,
+} from '../ToolsSettings/mcpImportUtils';
+import { getMcpTransportLabelKey, getSafeMcpEndpoint } from '../ToolsSettings/McpServerDetails';
 import { getMcpApiKeyUrl } from '@/renderer/hooks/mcp/mcpAuthConfig';
 import { openExternalUrl } from '@/renderer/utils/platform';
 
@@ -54,7 +59,7 @@ const McpConfigSummary: React.FC<{ server: IMcpServer }> = ({ server }) => {
   const { t } = useTranslation();
   // Masked like the installed card: args/headers carrying tokens render as bullets.
   const endpoint = getSafeMcpEndpoint(server);
-  const sensitiveKeys =
+  const configuredNames =
     server.transport.type === 'stdio'
       ? Object.keys(server.transport.env ?? {})
       : Object.keys(server.transport.headers ?? {});
@@ -69,13 +74,17 @@ const McpConfigSummary: React.FC<{ server: IMcpServer }> = ({ server }) => {
       </div>
       <div className='grid grid-cols-[80px_minmax(0,1fr)] gap-x-10px gap-y-6px text-12px leading-18px'>
         <span className='text-t-tertiary'>{t('settings.mcpTransport')}</span>
-        <span className='text-t-primary'>{server.transport.type}</span>
+        <span className='text-t-primary'>{t(getMcpTransportLabelKey(server.transport))}</span>
         <span className='text-t-tertiary'>{t('settings.mcpEndpoint')}</span>
         <code className='break-all font-mono text-t-primary'>{endpoint}</code>
-        <span className='text-t-tertiary'>{t('settings.mcpSensitiveFields')}</span>
-        <span className='break-all text-t-secondary'>
-          {sensitiveKeys.length > 0 ? sensitiveKeys.join(', ') : t('settings.mcpNone')}
-        </span>
+        {configuredNames.length > 0 ? (
+          <>
+            <span className='text-t-tertiary'>
+              {t(server.transport.type === 'stdio' ? 'settings.mcpConfiguredEnv' : 'settings.mcpConfiguredHeaders')}
+            </span>
+            <span className='break-all text-t-secondary'>{configuredNames.join(', ')}</span>
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -129,8 +138,9 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
     if (visible && server) {
       // 优先使用存储的original_json，如果没有则生成JSON配置
       if (server.original_json) {
-        setJsonInput(server.original_json);
-        setInitialJson(server.original_json);
+        const editableJson = stripMcpMarketOrigin(server.original_json);
+        setJsonInput(editableJson);
+        setInitialJson(editableJson);
       } else {
         // 兼容没有original_json的旧数据，生成JSON配置
         const serverConfig = {
@@ -219,8 +229,10 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
     }
 
     // 单个服务器导入
+    const marketItemId = server ? getMcpMarketOrigin(server) : null;
+    const originalJson = marketItemId ? attachMcpMarketOrigin(jsonInput, marketItemId) : jsonInput;
     try {
-      await onSubmit(toImportableMcpServer(parsedServers[0], jsonInput, server?.enabled ?? true));
+      await onSubmit(toImportableMcpServer(parsedServers[0], originalJson, server?.enabled ?? true));
       onCancel();
     } finally {
       setSubmitting(false);
@@ -234,6 +246,7 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
       visible={visible}
       onCancel={onCancel}
       onOk={handleSubmit}
+      okText={server ? t('common.save') : undefined}
       confirmLoading={submitting}
       okButtonProps={{ disabled: !validation.isValid || submitting, loading: submitting }}
       header={{ title: server ? t('settings.mcpViewConfig') : t('settings.mcpImportFromJSON'), showClose: true }}
@@ -256,7 +269,9 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
         ) : null}
         <div>
           <div className='mb-2 flex items-center justify-between gap-2'>
-            <div className='text-sm text-t-secondary'>{t('settings.mcpImportPlaceholder')}</div>
+            <div className='text-sm text-t-secondary'>
+              {t(server ? 'settings.mcpEditConfigIntro' : 'settings.mcpImportPlaceholder')}
+            </div>
             {apiKeyUrl && (
               <Button
                 size='mini'
@@ -344,20 +359,22 @@ const JsonImportModal: React.FC<JsonImportModalProps> = ({ visible, server, onCa
           </div>
         </div>
 
-        <Alert
-          type='info'
-          showIcon
-          content={
-            <div>
-              <div>{t('settings.mcpImportTips')}</div>
-              <ul className='list-disc pl-5 mt-2 space-y-1 text-sm'>
-                <li>{t('settings.mcpImportTip1')}</li>
-                <li>{t('settings.mcpImportTip2')}</li>
-                <li>{t('settings.mcpImportTip3')}</li>
-              </ul>
-            </div>
-          }
-        />
+        {server ? null : (
+          <Alert
+            type='info'
+            showIcon
+            content={
+              <div>
+                <div>{t('settings.mcpImportTips')}</div>
+                <ul className='list-disc pl-5 mt-2 space-y-1 text-sm'>
+                  <li>{t('settings.mcpImportTip1')}</li>
+                  <li>{t('settings.mcpImportTip2')}</li>
+                  <li>{t('settings.mcpImportTip3')}</li>
+                </ul>
+              </div>
+            }
+          />
+        )}
       </div>
     </NomiModal>
   );

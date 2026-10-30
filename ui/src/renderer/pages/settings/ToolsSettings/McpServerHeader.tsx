@@ -1,7 +1,7 @@
 import type { McpServerId } from '@/common/types/ids';
 import type { IMcpServer } from '@/common/config/storage';
 import { Button, Dropdown, Menu, Tag, Tooltip } from '@arco-design/web-react';
-import { Check, CloseSmall, Code, DeleteFour, Info, Key, Link, Login, More, Server, Shop, Terminal, Write } from '@icon-park/react';
+import { Check, CloseSmall, DeleteFour, Info, Key, Link, Login, More, Server, Shop, Terminal, Write } from '@icon-park/react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { McpOAuthStatus } from '@/renderer/hooks/mcp/useMcpOAuth';
@@ -9,7 +9,8 @@ import type { McpActivationItemState } from '@/renderer/hooks/mcp/useMcpActivati
 import FeedbackButton from '@/renderer/components/base/FeedbackButton';
 import { iconColors } from '@/renderer/styles/colors';
 import { MCP_SERVER_TITLE_CLASS } from './mcpServerCollapse';
-import { getSafeMcpEndpoint } from './McpServerDetails';
+import { getMcpTransportLabelKey, getSafeMcpEndpoint } from './McpServerDetails';
+import { getMcpMarketOrigin } from './mcpImportUtils';
 import McpLoadingIndicator from './McpLoadingIndicator';
 
 interface McpServerHeaderProps {
@@ -31,6 +32,7 @@ interface McpServerHeaderProps {
 
 const STATUS_ICON_SIZE = 16;
 const STATUS_ICON_SLOT_CLASS = 'inline-flex h-24px w-24px shrink-0 items-center justify-center';
+const HEADER_META_CLASS = 'inline-flex h-22px shrink-0 items-center gap-4px text-11px text-t-tertiary';
 
 const getEffectiveLoading = (
   isTestingConnection: boolean,
@@ -39,8 +41,12 @@ const getEffectiveLoading = (
 ) =>
   isTestingConnection || activationState === 'queued' || activationState === 'testing' || Boolean(oauthStatus?.isChecking);
 
+const isServerEnabled = (server: IMcpServer, activationState?: McpActivationItemState) =>
+  activationState === 'enabled' || server.enabled;
+
 const getStatusIcon = (
   server: IMcpServer,
+  isEnabled: boolean,
   oauthStatus?: McpOAuthStatus,
   isLoading?: boolean,
   activationState?: McpActivationItemState
@@ -52,19 +58,15 @@ const getStatusIcon = (
   if (activationState === 'needs-auth' || oauthStatus?.needsLogin) {
     return <Key size={STATUS_ICON_SIZE} fill={iconColors.warning} />;
   }
-  if (server.last_test_status === 'connected' || activationState === 'enabled' || oauthStatus?.isAuthenticated) {
+  if (isEnabled) {
     return <Check size={STATUS_ICON_SIZE} fill={iconColors.success} />;
   }
   return <Info theme='outline' size={STATUS_ICON_SIZE} fill={iconColors.secondary} />;
 };
 
-const formatStatusTimestamp = (timestamp?: number): string | null => {
-  if (!timestamp) return null;
-  return new Date(timestamp).toLocaleString();
-};
-
 const getStatusText = (
   server: IMcpServer,
+  isEnabled: boolean,
   activationState: McpActivationItemState | undefined,
   oauthStatus: McpOAuthStatus | undefined,
   isLoading: boolean,
@@ -74,47 +76,30 @@ const getStatusText = (
   if (oauthStatus?.isChecking) return t('settings.mcpOAuthChecking');
   if (activationState === 'testing' || isLoading) return t('settings.mcpActivationChecking');
   if (activationState === 'config-changed') return t('settings.mcpConfigChangedDuringTest');
-  if (activationState === 'needs-auth' || oauthStatus?.needsLogin) return t('settings.mcpNeedsLogin');
-  if (activationState === 'failed' || server.last_test_status === 'error') return t('settings.mcpCheckFailedSimple');
-  if (server.enabled) return t('settings.mcpEnabledAndSelectable');
-  if (server.last_test_status === 'connected') return t('settings.mcpCheckPassedSimple');
-  return t('settings.mcpDisconnected');
-};
-
-const MCP_MARKET_ORIGIN_KEY = '_nomifun_market';
-
-type McpSourceKind = 'builtin' | 'market' | 'local';
-
-const getSourceKind = (server: IMcpServer): McpSourceKind => {
-  if (server.builtin) return 'builtin';
-  try {
-    const parsed = JSON.parse(server.original_json) as Record<string, unknown>;
-    const market = parsed[MCP_MARKET_ORIGIN_KEY];
-    if (market && typeof market === 'object' && !Array.isArray(market)) {
-      const itemId = (market as Record<string, unknown>).item_id;
-      if (typeof itemId === 'string' && itemId.trim()) return 'market';
-    }
-  } catch {
-    // A malformed original JSON should not prevent the installed card from rendering.
+  if (activationState === 'needs-auth' || oauthStatus?.needsLogin) return t('settings.mcpActivationNeedsAuthHint');
+  if (activationState === 'failed' || server.last_test_status === 'error') {
+    return t('settings.mcpNextStepRetry', { action: t('settings.mcpStatusCtaRetry') });
   }
-  return 'local';
+  if (isEnabled) return t('settings.mcpEnabledAndSelectable');
+  if (server.last_test_status === 'connected') {
+    return t('settings.mcpNextStepEnable', { action: t('settings.mcpStatusCtaEnable') });
+  }
+  return t('settings.mcpNextStepCheck', { action: t('settings.mcpStatusCtaCheck') });
 };
 
-const getSourceLabel = (sourceKind: McpSourceKind, t: (key: string) => string) => {
-  if (sourceKind === 'builtin') return t('settings.mcpBuiltinSource');
-  if (sourceKind === 'market') return t('settings.mcpMarketSource');
-  return t('settings.mcpLocalSource');
+const getSourceMeta = (server: IMcpServer, t: (key: string) => string) => {
+  if (server.builtin) {
+    return { icon: <Server size='13' fill='currentColor' />, label: t('settings.mcpBuiltinSource') };
+  }
+  if (getMcpMarketOrigin(server)) {
+    return { icon: <Shop size='13' fill='currentColor' />, label: t('settings.mcpMarketSource') };
+  }
+  return null;
 };
 
 const getTransportIcon = (transport: IMcpServer['transport']) => {
   if (transport.type === 'stdio') return <Terminal size='13' fill='currentColor' />;
   return <Link size='13' fill='currentColor' />;
-};
-
-const getSourceIcon = (sourceKind: McpSourceKind) => {
-  if (sourceKind === 'builtin') return <Server size='13' fill='currentColor' />;
-  if (sourceKind === 'market') return <Shop size='13' fill='currentColor' />;
-  return <Code size='13' fill='currentColor' />;
 };
 
 const StatusActionCta: React.FC<{
@@ -145,6 +130,7 @@ const StatusActionCta: React.FC<{
   onOAuthLogin,
 }) => {
   const { t } = useTranslation();
+  const isEnabled = isServerEnabled(server, activationState);
 
   if (activationState === 'queued' || activationState === 'testing' || isTestingConnection || isCheckingOAuth) {
     return (
@@ -193,7 +179,7 @@ const StatusActionCta: React.FC<{
     );
   }
 
-  if (server.enabled) {
+  if (isEnabled) {
     return (
       <Button size='mini' className='flowy-icon-text-btn' onClick={() => onTestConnection(server)}>
         {t('settings.mcpRetestConnection')}
@@ -201,7 +187,7 @@ const StatusActionCta: React.FC<{
     );
   }
 
-  if (activationState === 'enabled' || server.last_test_status === 'connected') {
+  if (server.last_test_status === 'connected') {
     return (
       <Button
         size='mini'
@@ -249,32 +235,20 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
   const oauthCapable =
     server.transport.type === 'http' || server.transport.type === 'sse' || server.transport.type === 'streamable_http';
   const needsLogin = Boolean(oauthCapable && (activationState === 'needs-auth' || oauthStatus?.needsLogin));
+  const isEnabled = isServerEnabled(server, activationState);
   const isLoading = getEffectiveLoading(isTestingConnection, activationState, oauthStatus);
-  const statusText = getStatusText(server, activationState, oauthStatus, isLoading, t);
-  const statusIcon = getStatusIcon(server, oauthStatus, isLoading, activationState);
-  const checkedAt = formatStatusTimestamp(server.last_connected || server.updated_at);
-  const sourceKind = getSourceKind(server);
-  const sourceLabel = getSourceLabel(sourceKind, t);
-  const isEnabledForDisplay = activationState === 'enabled' || server.enabled;
-  const stateTagLabel = isLoading
-    ? t(
-        activationState === 'queued'
-          ? 'settings.mcpActivationPreparing'
-          : oauthStatus?.isChecking
-            ? 'settings.mcpOAuthChecking'
-            : 'settings.mcpActivationChecking'
-      )
-    : t(isEnabledForDisplay ? 'settings.mcpEnabled' : 'settings.mcpDisabled');
+  const statusText = getStatusText(server, isEnabled, activationState, oauthStatus, isLoading, t);
+  const statusIcon = getStatusIcon(server, isEnabled, oauthStatus, isLoading, activationState);
+  const sourceMeta = getSourceMeta(server, t);
   const isError =
     activationState === 'failed' || activationState === 'config-changed' || server.last_test_status === 'error';
   const needsAuth = activationState === 'needs-auth' || Boolean(oauthStatus?.needsLogin);
   const isFocusedActivation = activationState === 'queued' || activationState === 'testing';
-  const statusDescription = activationError || (isError ? t('settings.mcpInlineConfigHint') : statusText);
 
   return (
     <div className='grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-16px gap-y-12px max-[900px]:grid-cols-1'>
       <div className='flex min-w-0 items-start gap-10px'>
-        <Tooltip content={statusDescription} position='top'>
+        <Tooltip content={activationError || statusText} position='top'>
           <span className={`${STATUS_ICON_SLOT_CLASS} mt-2px cursor-default`} aria-label={statusText}>
             {statusIcon}
           </span>
@@ -282,36 +256,32 @@ const McpServerHeader: React.FC<McpServerHeaderProps> = ({
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 flex-wrap items-center gap-x-8px gap-y-6px'>
             <span className={`${MCP_SERVER_TITLE_CLASS} truncate text-14px font-medium text-t-primary`}>{server.name}</span>
-            <span className='inline-flex h-22px shrink-0 items-center gap-4px rd-6px bg-fill-2 px-6px text-11px text-t-secondary'>
-              {getTransportIcon(server.transport)}
-              {server.transport.type}
-            </span>
-            <span className='inline-flex h-22px shrink-0 items-center gap-4px text-11px text-t-tertiary'>
-              {getSourceIcon(sourceKind)}
-              {sourceLabel}
-            </span>
-            <Tag size='small' bordered={false} color={isEnabledForDisplay && !isLoading ? 'green' : 'gray'} className='!flex-shrink-0 !text-11px'>
-              {stateTagLabel}
+            <Tag size='small' bordered={false} color={isEnabled ? 'green' : 'gray'} className='!flex-shrink-0 !text-11px'>
+              {t(isEnabled ? 'settings.mcpEnabled' : 'settings.mcpDisabled')}
             </Tag>
             {isError && !isFocusedActivation ? <FeedbackButton /> : null}
           </div>
-          <div className='mt-8px flex min-w-0 items-center gap-6px font-mono text-12px text-t-tertiary' title={getSafeMcpEndpoint(server)}>
-            <Code size='13' fill='currentColor' className='shrink-0' aria-hidden='true' />
-            <span className='truncate'>{getSafeMcpEndpoint(server)}</span>
+          <div className='mt-6px flex min-w-0 items-center gap-x-10px text-12px text-t-tertiary'>
+            <span className={HEADER_META_CLASS} title={server.transport.type}>
+              {getTransportIcon(server.transport)}
+              {t(getMcpTransportLabelKey(server.transport))}
+            </span>
+            {sourceMeta ? (
+              <span className={HEADER_META_CLASS}>
+                {sourceMeta.icon}
+                {sourceMeta.label}
+              </span>
+            ) : null}
+            <span className='min-w-0 truncate font-mono' title={getSafeMcpEndpoint(server)}>
+              {getSafeMcpEndpoint(server)}
+            </span>
           </div>
           <div
-            className='mt-8px flex flex-wrap items-center gap-x-10px gap-y-4px text-12px text-t-secondary'
+            className='mt-6px text-12px leading-18px text-t-secondary'
             role={isLoading ? 'status' : undefined}
             aria-live={isLoading ? 'polite' : undefined}
           >
-            <span>{statusText}</span>
-            <span className='text-t-tertiary' aria-hidden='true'>
-              ·
-            </span>
-            <span>{t('settings.mcpDiscoveredTools', { count: server.tools?.length ?? 0 })}</span>
-            {checkedAt ? (
-              <span className='text-t-tertiary'>{`${t('settings.mcpCheckedAtLabel')} ${checkedAt}`}</span>
-            ) : null}
+            {statusText}
           </div>
           {activationError ? (
             <div className='mt-4px truncate text-12px text-[var(--warning)]' role='alert' title={activationError}>

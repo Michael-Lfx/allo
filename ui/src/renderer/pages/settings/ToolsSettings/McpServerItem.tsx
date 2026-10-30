@@ -78,7 +78,7 @@ const McpServerItem: React.FC<McpServerItemProps> = ({
           }
           name='1'
         >
-          <McpServerDetails server={server} activationState={activationState} activationError={activationError} />
+          <McpServerDetails server={server} activationState={activationState} />
         </Collapse.Item>
       </Collapse>
     </div>

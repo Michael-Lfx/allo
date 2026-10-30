@@ -7,6 +7,53 @@ export type ImportableMcpServer = Omit<IMcpServer, 'mcp_server_id' | 'created_at
   market_configuration_fields?: string[];
 };
 
+const MCP_MARKET_ORIGIN_KEY = '_nomifun_market';
+
+export const attachMcpMarketOrigin = (originalJson: string, marketItemId: string): string => {
+  let original: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(originalJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      original = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Importable market configs normally contain valid JSON. Keep provenance
+    // even if an upstream formatter produced malformed original_json.
+  }
+  return JSON.stringify(
+    {
+      ...original,
+      [MCP_MARKET_ORIGIN_KEY]: { version: 1, item_id: marketItemId },
+    },
+    null,
+    2
+  );
+};
+
+export const getMcpMarketOrigin = (server: Pick<IMcpServer, 'original_json'>): string | null => {
+  try {
+    const parsed = JSON.parse(server.original_json) as Record<string, unknown>;
+    const origin = parsed[MCP_MARKET_ORIGIN_KEY];
+    if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
+    const itemId = (origin as Record<string, unknown>).item_id;
+    return typeof itemId === 'string' && itemId.trim() ? itemId : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Callers that save the stripped JSON must re-attach the origin with attachMcpMarketOrigin, or the market link is lost. */
+export const stripMcpMarketOrigin = (originalJson: string): string => {
+  try {
+    const config = JSON.parse(originalJson) as Record<string, unknown>;
+    if (!(MCP_MARKET_ORIGIN_KEY in config)) return originalJson;
+    delete config[MCP_MARKET_ORIGIN_KEY];
+    return JSON.stringify(config, null, 2);
+  } catch {
+    return originalJson;
+  }
+};
+
 const SPLITTABLE_STDIO_LAUNCHERS = ['npx', 'pnpx', 'bunx', 'uvx', 'uv', 'node', 'python', 'python3', 'deno'];
 
 const shellSplit = (input: string): string[] => {
