@@ -8,10 +8,9 @@ import { describe, expect, test } from 'bun:test';
 import { createPresetTagDraftLifecycle } from './presetTagDraftLifecycle';
 
 describe('preset tag draft lifecycle', () => {
-  test('resets both drafts before saving without changing drawer visibility', () => {
+  test('resets the tag draft before saving without changing drawer visibility', () => {
     const calls: string[] = [];
     const lifecycle = createPresetTagDraftLifecycle(
-      { current: { resetPendingTag: () => calls.push('audience') } },
       { current: { resetPendingTag: () => calls.push('scenario') } },
       (visible) => calls.push(`visible:${visible}`),
       async () => {
@@ -22,13 +21,12 @@ describe('preset tag draft lifecycle', () => {
 
     lifecycle.handleDrawerSave();
 
-    expect(calls).toEqual(['audience', 'scenario', 'save']);
+    expect(calls).toEqual(['scenario', 'save']);
   });
 
-  test('resets both drafts before closing the drawer', () => {
+  test('resets the tag draft before closing the drawer', () => {
     const calls: string[] = [];
     const lifecycle = createPresetTagDraftLifecycle(
-      { current: { resetPendingTag: () => calls.push('audience') } },
       { current: { resetPendingTag: () => calls.push('scenario') } },
       (visible) => calls.push(`visible:${visible}`),
       async () => {
@@ -39,12 +37,11 @@ describe('preset tag draft lifecycle', () => {
 
     lifecycle.closeDrawer();
 
-    expect(calls).toEqual(['audience', 'scenario', 'visible:false']);
+    expect(calls).toEqual(['scenario', 'visible:false']);
   });
 
-  test('allows the drawer to be hidden before either picker mounts', () => {
+  test('allows the drawer to be hidden before the picker mounts', () => {
     const lifecycle = createPresetTagDraftLifecycle(
-      { current: null },
       { current: null },
       () => {},
       async () => null

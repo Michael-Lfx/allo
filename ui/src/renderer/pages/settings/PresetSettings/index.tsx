@@ -79,7 +79,7 @@ const PresetSettings: React.FC = () => {
     localeKey,
   } = usePresetList();
 
-  const { availableBackends, refreshAgentDetection } = useDetectedAgents();
+  const { refreshAgentDetection } = useDetectedAgents();
 
   const tags = usePresetTags();
 
@@ -162,6 +162,7 @@ const PresetSettings: React.FC = () => {
           presets={presets}
           tagById={tags.tagById}
           localeKey={localeKey}
+          avatarImageMap={avatarImageMap}
           onOpen={(preset) => void editor.handleEdit(preset)}
           onCreate={() => void editor.handleCreate()}
         />
@@ -176,11 +177,8 @@ const PresetSettings: React.FC = () => {
       <PresetEditDrawer
         editor={editor}
         editAvatarImage={editAvatarImage}
-        editAudienceTags={editor.editAudienceTags}
-        setEditAudienceTags={editor.setEditAudienceTags}
         editScenarioTags={editor.editScenarioTags}
         setEditScenarioTags={editor.setEditScenarioTags}
-        audienceTags={tags.audienceTags}
         scenarioTags={tags.scenarioTags}
         onCreateTag={tags.createTag}
         readOnly={
@@ -191,7 +189,6 @@ const PresetSettings: React.FC = () => {
         localeKey={localeKey}
         activePreset={activePreset}
         isExtensionPreset={isExtensionPreset}
-        availableBackends={availableBackends}
         onImportAgentSkills={editor.handleImportAgentSkills}
         handleDeleteClick={editor.handleDeleteClick}
         handleDuplicate={(preset) => void editor.handleDuplicate(preset)}

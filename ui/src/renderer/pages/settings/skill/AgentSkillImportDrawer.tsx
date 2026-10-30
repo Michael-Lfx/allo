@@ -1,7 +1,7 @@
 import { ipcBridge } from '@/common';
 import { isBackendHttpError } from '@/common/adapter/httpBridge';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
-import { Button, Checkbox, Drawer, Tag } from '@arco-design/web-react';
+import { Button, Checkbox, Modal, Tag } from '@arco-design/web-react';
 import { CheckSmall, FolderOpen, ImportAndExport, Info, Refresh } from '@icon-park/react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -176,7 +176,7 @@ type AgentSkillImportContentProps = {
   controller: AgentSkillImportController;
 };
 
-/** Shared body used by the standalone Drawer and the embedded preset step. */
+/** Shared body used by the standalone import modal and the embedded preset step. */
 export const AgentSkillImportContent: React.FC<AgentSkillImportContentProps> = ({ controller }) => {
   const { t } = useTranslation();
   const { sources, loading, rows, selectedRows, selectedKeySet, allSelected, fetchSources, toggleRow, handleSelectAll, messageContext } = controller;
@@ -250,7 +250,14 @@ const AgentSkillImportFooter: React.FC<{
         <Button onClick={onClose} className='!h-36px !rounded-8px'>
           {closeLabel ?? t('common.cancel', { defaultValue: 'Cancel' })}
         </Button>
-        <Button type='primary' loading={importing} disabled={selectedRows.length === 0} onClick={handleImport} className='flowy-icon-text-btn !h-36px !rounded-8px !whitespace-nowrap' icon={<ImportAndExport size={14} fill='currentColor' />} data-testid='btn-confirm-agent-skill-import'>
+        <Button
+          loading={importing}
+          disabled={selectedRows.length === 0}
+          onClick={handleImport}
+          className='flowy-icon-text-btn !h-36px !rounded-8px !whitespace-nowrap !border-none !bg-[var(--color-text-1)] !text-[var(--color-bg-1)] disabled:!opacity-40'
+          icon={<ImportAndExport size={14} fill='currentColor' />}
+          data-testid='btn-confirm-agent-skill-import'
+        >
           {mode === 'preset' ? t('settings.agentSkillImport.addToPreset', { defaultValue: 'Add to preset' }) : t('settings.agentSkillImport.importSelected', { defaultValue: 'Import selected' })}
         </Button>
       </div>
@@ -262,9 +269,18 @@ const AgentSkillImportDrawer: React.FC<AgentSkillImportDrawerProps> = ({ visible
   const { t } = useTranslation();
   const controller = useAgentSkillImportController({ visible, onClose, existingSkillNames, onImported, mode, loadSources, importSkills });
   return (
-    <Drawer visible={visible} onCancel={onClose} width={680} zIndex={1300} placement='right' title={t('settings.agentSkillImport.title', { defaultValue: 'Import from Agent' })} className='agent-skill-import-drawer' data-testid='agent-skill-import-drawer' footer={<AgentSkillImportFooter controller={controller} mode={mode} onClose={onClose} />}>
+    <Modal
+      visible={visible}
+      unmountOnExit
+      onCancel={onClose}
+      title={t('settings.agentSkillImport.title', { defaultValue: 'Import from Agent' })}
+      className='agent-skill-import-modal'
+      data-testid='agent-skill-import-drawer'
+      style={{ width: 720, maxWidth: '92vw', borderRadius: 16 }}
+      footer={<AgentSkillImportFooter controller={controller} mode={mode} onClose={onClose} />}
+    >
       <AgentSkillImportContent controller={controller} />
-    </Drawer>
+    </Modal>
   );
 };
 

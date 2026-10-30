@@ -8,6 +8,9 @@ describe('SkillsSettingsPage hub chrome', () => {
     const source = readSource(new URL('./SkillsSettingsPage.tsx', import.meta.url));
 
     expect(source).toContain('<HubPageShell');
+    expect(source).toContain("data-testid='skill-store-toolbar'");
+    expect(source).toContain("data-testid='capability-hub-installed'");
+    expect(source).toContain('settings.capabilityHub.discover');
     expect(source).toContain("useCapabilityHubRoute('skills')");
     expect(source).toContain('settings.skillsMarket.title');
     expect(source).not.toContain('<CapabilityHubShell');

@@ -15,7 +15,6 @@ describe('PresetEditDrawer unfinished tag drafts', () => {
     const picker = source(new URL('./PresetTagPicker.tsx', import.meta.url));
 
     expect(drawer.includes('type PresetTagPickerHandle')).toBe(true);
-    expect(drawer.includes('const audiencePickerRef = useRef<PresetTagPickerHandle>(null);')).toBe(true);
     expect(drawer.includes('const scenarioPickerRef = useRef<PresetTagPickerHandle>(null);')).toBe(true);
     expect(drawer.includes('createPresetTagDraftLifecycle')).toBe(true);
     expect(drawer.includes('const { resetPendingTagDrafts, closeDrawer, handleDrawerSave } = useMemo(')).toBe(true);

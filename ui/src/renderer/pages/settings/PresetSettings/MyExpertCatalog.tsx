@@ -5,16 +5,25 @@ import { Plus } from '@icon-park/react';
 import type { Preset, PresetTag } from '@/common/types/agent/presetTypes';
 import { useCapabilityHubSearch } from '../capabilityHub/CapabilityHubShell';
 import ExpertTile, { EXPERT_CARD_GRID_COLS } from './ExpertTile';
+import { isEmoji, resolveAvatarImageSrc } from './presetUtils';
 
 type MyExpertCatalogProps = {
   presets: Preset[];
   tagById: Map<string, PresetTag>;
   localeKey: string;
+  avatarImageMap: Record<string, string>;
   onOpen: (preset: Preset) => void;
   onCreate: () => void;
 };
 
-const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({ presets, tagById, localeKey, onOpen, onCreate }) => {
+const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({
+  presets,
+  tagById,
+  localeKey,
+  avatarImageMap,
+  onOpen,
+  onCreate,
+}) => {
   const { t } = useTranslation();
   const { searchQuery } = useCapabilityHubSearch();
 
@@ -71,6 +80,8 @@ const MyExpertCatalog: React.FC<MyExpertCatalogProps> = ({ presets, tagById, loc
               name={preset.name_i18n?.[localeKey] || preset.name}
               summary={preset.description_i18n?.[localeKey] || preset.description || ''}
               tags={tagLabels(preset)}
+              avatarImageSrc={resolveAvatarImageSrc(preset.avatar, avatarImageMap)}
+              avatarEmoji={preset.avatar && isEmoji(preset.avatar.trim()) ? preset.avatar.trim() : undefined}
               onOpen={() => onOpen(preset)}
             />
           ))}

@@ -26,6 +26,10 @@ const MarketItemTile: React.FC<MarketItemTileProps> = ({
 }) => {
   const testId = normalizeTestId(item.id);
   const downloads = item.skillHub ? formatSkillHubMarketCount(item.skillHub.downloads) : item.compactStats;
+  const category = item.skillHub?.category;
+  const tags = category
+    ? [category, ...item.allTags.filter((tag) => tag !== category)]
+    : item.allTags;
 
   return (
     <ExpertTile
@@ -34,8 +38,9 @@ const MarketItemTile: React.FC<MarketItemTileProps> = ({
       summaryTestId={`market-summary-${testId}`}
       actionTestId={`btn-add-market-skill-${testId}`}
       name={item.title}
+      avatarUrl={item.avatar}
       summary={item.summary}
-      tags={item.allTags}
+      tags={tags}
       actionLabel={action.label}
       actionPendingLabel={action.pendingLabel}
       actionDoneLabel={action.completedLabel}

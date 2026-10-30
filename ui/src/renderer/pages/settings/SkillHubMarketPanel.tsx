@@ -6,15 +6,15 @@ import { openExternalUrl } from '@/renderer/utils/platform';
 import { useArcoMessage } from '@/renderer/utils/ui/useArcoMessage';
 import { Button } from '@arco-design/web-react';
 import { LinkOne } from '@icon-park/react';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { AVAILABLE_SKILLS_SWR_KEY, fetchAvailableSkills } from './skill/availableSkills';
 import MarketCardGrid from './skill/MarketCardGrid';
-import MarketDetailDrawer from './skill/MarketDetailDrawer';
+import MarketItemDetailModal from './skill/MarketItemDetailModal';
 import SkillHubMarketToolbar from './skill/SkillHubMarketToolbar';
+import MarketItemTile from './skill/MarketItemTile';
 import SkillMarketListRow from './skill/SkillMarketListRow';
-import SkillMarketCard from './skill/SkillMarketCard';
 import type { MarketPrimaryActionConfig } from './skill/marketContracts';
 import { isSkillMarketItemInstalled, marketSkillInstallErrorMessage } from './skill/skillMarket';
 import { createSkillHubMarketItemViewModel, type MarketItemViewModel } from './skill/marketViewModel';
@@ -45,7 +45,6 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
   const [message, messageContext] = useArcoMessage({ maxCount: 10 });
   const [detailItem, setDetailItem] = useState<MarketItemViewModel | null>(null);
   const [installedMarketIds, setInstalledMarketIds] = useState<Set<string>>(() => new Set());
-  const detailTriggerRef = useRef<HTMLElement | null>(null);
   const { data: skills, error: installedError, isLoading: installedLoading, mutate } = useSWR(
     active ? AVAILABLE_SKILLS_SWR_KEY : null,
     fetchAvailableSkills,
@@ -251,8 +250,7 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
                 disabled={actionState.isDisabled(item)}
                 onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
                 onOpenSource={(marketItem) => void handleOpenSource(marketItem)}
-                onViewDetails={(marketItem, trigger) => {
-                  detailTriggerRef.current = trigger ?? null;
+                onViewDetails={(marketItem) => {
                   setDetailItem(marketItem);
                 }}
               />
@@ -261,21 +259,14 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
         ) : (
           <MarketCardGrid busy={market.loading}>
             {viewModels.map((item) => (
-              <SkillMarketCard
+              <MarketItemTile
                 key={item.id}
                 item={item}
-                actionLabel={primaryAction.label}
-                pendingLabel={primaryAction.pendingLabel}
-                completedLabel={primaryAction.completedLabel}
+                action={primaryAction}
                 actionState={actionState.getState(item)}
                 busy={actionState.isBusy(item.id)}
-                disabled={actionState.isDisabled(item)}
-                showInstallCommand={false}
-                onAdd={(marketItem) => void actionState.runPrimaryAction(marketItem)}
-                onOpenSource={(marketItem) => void handleOpenSource(marketItem)}
-                onCopyInstallCommand={() => undefined}
-                onViewDetails={(marketItem, trigger) => {
-                  detailTriggerRef.current = trigger ?? null;
+                onAction={(marketItem) => void actionState.runPrimaryAction(marketItem)}
+                onViewDetails={(marketItem) => {
                   setDetailItem(marketItem);
                 }}
               />
@@ -285,7 +276,7 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
       ) : market.loading ? (
         <div aria-busy='true' className='grid items-start gap-16px' style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))' }}>
           {Array.from({ length: 6 }, (_, index) => (
-            <div key={index} className='h-220px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-18px'>
+            <div key={index} className='h-128px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--color-bg-2)] p-16px'>
               <div className='h-34px w-full animate-pulse rounded-8px bg-[var(--color-fill-2)]' />
               <div className='mt-16px h-14px w-5/6 animate-pulse rounded bg-[var(--color-fill-2)]' />
               <div className='mt-8px h-14px w-3/5 animate-pulse rounded bg-[var(--color-fill-2)]' />
@@ -329,19 +320,15 @@ const SkillHubMarketPanel: React.FC<SkillHubMarketPanelProps> = ({
         </div>
       )}
 
-      <MarketDetailDrawer
+      <MarketItemDetailModal
         item={detailItem}
-        visible={detailItem !== null}
         action={primaryAction}
         actionState={detailItem ? actionState.getState(detailItem) : 'ready'}
         busy={detailItem ? actionState.isBusy(detailItem.id) : false}
         disabled={detailItem ? actionState.isDisabled(detailItem) : false}
         onPrimaryAction={(item) => void actionState.runPrimaryAction(item)}
-        onCopyInstallCommand={() => undefined}
-        showInstallCommand={false}
         onOpenSource={(item) => void handleOpenSource(item)}
         onClose={() => setDetailItem(null)}
-        restoreFocusRef={detailTriggerRef}
       />
     </div>
   );

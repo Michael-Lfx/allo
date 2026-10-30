@@ -20,6 +20,8 @@ import { MCP_MARKET_SOURCES } from '@/renderer/pages/settings/skill/skillMarket'
 import { useMcpServerCRUD } from '@/renderer/hooks/mcp';
 import type { McpActivationNavigationState } from '@/renderer/hooks/mcp/useMcpActivationFlow';
 import {
+  attachMcpMarketOrigin,
+  getMcpMarketOrigin,
   toImportableMcpServersFromConfig,
   type ImportableMcpServer,
 } from '@/renderer/pages/settings/ToolsSettings/mcpImportUtils';
@@ -31,41 +33,6 @@ type McpMarketSettingsProps = {
   hideSearch?: boolean;
   searchQuery?: string;
   onSearchQueryChange?: (value: string) => void;
-};
-
-const MCP_MARKET_ORIGIN_KEY = '_nomifun_market';
-
-export const attachMcpMarketOrigin = (originalJson: string, marketItemId: string): string => {
-  let original: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(originalJson) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      original = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Importable market configs normally contain valid JSON. Keep provenance
-    // even if an upstream formatter produced malformed original_json.
-  }
-  return JSON.stringify(
-    {
-      ...original,
-      [MCP_MARKET_ORIGIN_KEY]: { version: 1, item_id: marketItemId },
-    },
-    null,
-    2
-  );
-};
-
-export const getMcpMarketOrigin = (server: Pick<IMcpServer, 'original_json'>): string | null => {
-  try {
-    const parsed = JSON.parse(server.original_json) as Record<string, unknown>;
-    const origin = parsed[MCP_MARKET_ORIGIN_KEY];
-    if (!origin || typeof origin !== 'object' || Array.isArray(origin)) return null;
-    const itemId = (origin as Record<string, unknown>).item_id;
-    return typeof itemId === 'string' && itemId.trim() ? itemId : null;
-  } catch {
-    return null;
-  }
 };
 
 const normalizeMcpMarketName = (value: string): string =>
@@ -280,6 +247,8 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
           <Button
             key='activate'
             type='primary'
+            className='!border-[var(--color-text-1)] !text-[var(--color-bg-1)]'
+            style={{ '--flowy-accent': 'var(--color-text-1)' } as React.CSSProperties}
             loading={importing}
             onClick={() => void handleConfirmImport('activate')}
           >
@@ -289,7 +258,7 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
         maskClosable={false}
       >
         <div className='space-y-12px'>
-          <div className='grid grid-cols-3 border-y border-solid border-arco-2 py-10px text-center text-12px text-t-secondary'>
+          <div className='grid grid-cols-3 border-t border-b border-t-solid border-b-solid border-arco-2 py-10px text-center text-12px text-t-secondary'>
             <span className='font-medium text-t-primary'>{t('settings.mcpMarket.flowImport')}</span>
             <span>{t('settings.mcpMarket.flowTest')}</span>
             <span>{t('settings.mcpMarket.flowEnable')}</span>
@@ -314,9 +283,9 @@ const McpMarketSettings: React.FC<McpMarketSettingsProps> = ({
               })}
             />
           )}
-          <div className='border-y border-solid border-arco-2'>
+          <div className='border-t border-b border-t-solid border-b-solid border-arco-2'>
             {(pendingServers ?? []).map((server, index) => (
-              <div key={server.name} className={`py-12px ${index > 0 ? 'border-t border-solid border-arco-2' : ''}`}>
+              <div key={server.name} className={`py-12px ${index > 0 ? 'border-t border-t-solid border-arco-2' : ''}`}>
                 <div className='flex min-w-0 items-center gap-8px'>
                   <span className='truncate text-14px font-medium text-t-primary'>{server.name}</span>
                   <Tag size='small' bordered={false} className='!flex-shrink-0 !text-11px'>

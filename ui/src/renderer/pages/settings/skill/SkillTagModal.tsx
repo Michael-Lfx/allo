@@ -1,9 +1,9 @@
 /**
- * SkillTagModal — Assigns tags to a single skill. An Arco Modal titled with the
- * skill name, holding two PresetTagPicker rows (Audience / Skill Scenario)
- * over the SHARED preset tag vocabulary. Selections are prefilled from the
- * skill's currently-resolved tags and held in local state until Save, which
- * PUTs to /api/skills/{name}/tags and then calls onSaved so the parent reloads.
+ * SkillTagModal — Assigns scenario tags to a single skill. An Arco Modal titled
+ * with the skill name, holding one PresetTagPicker over the shared preset tag
+ * vocabulary. Selections are prefilled from the skill's current tags and held
+ * in local state until Save, which PUTs to /api/skills/{name}/tags and then
+ * calls onSaved so the parent reloads.
  *
  * Inline tag creation flows through onCreateTag (usePresetTags().createTag),
  * keeping the skill and preset pages on one vocabulary.
@@ -28,7 +28,6 @@ type SkillTagModalProps = {
   visible: boolean;
   skill: SkillInfo | null;
   onClose: () => void;
-  audienceTags: PresetTag[];
   scenarioTags: PresetTag[];
   onCreateTag: (req: CreatePresetTagRequest) => Promise<PresetTag>;
   localeKey: string;
@@ -41,7 +40,6 @@ const SkillTagModal: React.FC<SkillTagModalProps> = ({
   visible,
   skill,
   onClose,
-  audienceTags,
   scenarioTags,
   onCreateTag,
   localeKey,
@@ -49,25 +47,20 @@ const SkillTagModal: React.FC<SkillTagModalProps> = ({
   message,
 }) => {
   const { t } = useTranslation();
-  const [audience, setAudience] = useState<string[]>([]);
   const [scenario, setScenario] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const audiencePickerRef = useRef<PresetTagPickerHandle>(null);
   const scenarioPickerRef = useRef<PresetTagPickerHandle>(null);
   const display = skill ? resolveSkillDisplay(skill, localeKey) : null;
 
   // Re-seed local selection whenever a new skill opens.
   useEffect(() => {
     if (visible && skill) {
-      setAudience(skill.audience_tags ?? []);
       setScenario(skill.scenario_tags ?? []);
-      audiencePickerRef.current?.resetPendingTag();
       scenarioPickerRef.current?.resetPendingTag();
     }
   }, [visible, skill]);
 
   const handleClose = () => {
-    audiencePickerRef.current?.resetPendingTag();
     scenarioPickerRef.current?.resetPendingTag();
     onClose();
   };
@@ -76,15 +69,11 @@ const SkillTagModal: React.FC<SkillTagModalProps> = ({
     if (!skill || saving) return;
     setSaving(true);
     try {
-      const [nextAudience, nextScenario] = await Promise.all([
-        audiencePickerRef.current?.flushPendingTag() ?? Promise.resolve(audience),
-        scenarioPickerRef.current?.flushPendingTag() ?? Promise.resolve(scenario),
-      ]);
-      setAudience(nextAudience);
+      const nextScenario = (await scenarioPickerRef.current?.flushPendingTag()) ?? scenario;
       setScenario(nextScenario);
       await ipcBridge.fs.setSkillTags.invoke({
         skill_name: skill.name,
-        audience_tags: nextAudience,
+        audience_tags: [],
         scenario_tags: nextScenario,
       });
       message.success(t('settings.skillsHub.tagsSaved', { defaultValue: 'Tags saved' }));
@@ -119,7 +108,12 @@ const SkillTagModal: React.FC<SkillTagModalProps> = ({
           <Button onClick={handleClose} disabled={saving}>
             {t('common.cancel', { defaultValue: 'Cancel' })}
           </Button>
-          <Button type='primary' loading={saving} onClick={() => void handleSave()} data-testid='btn-save-skill-tags'>
+          <Button
+            loading={saving}
+            onClick={() => void handleSave()}
+            data-testid='btn-save-skill-tags'
+            className='!border-none !bg-[var(--color-text-1)] !text-[var(--color-bg-1)]'
+          >
             {t('common.save', { defaultValue: 'Save' })}
           </Button>
         </div>
@@ -128,22 +122,10 @@ const SkillTagModal: React.FC<SkillTagModalProps> = ({
     >
       <p className='mt-0 mb-16px text-12px leading-18px text-[var(--color-text-3)]'>
         {t('settings.skillsHub.editTagsDesc', {
-          defaultValue: 'Tag this skill so it surfaces under the right audience and scenario filters.',
+          defaultValue: 'Tag this skill so it surfaces under the right scenario.',
         })}
       </p>
       <div className='flex flex-col gap-18px'>
-        <PresetTagPicker
-          ref={audiencePickerRef}
-          dimension='audience'
-          label={t('settings.presetTagAudience', { defaultValue: 'Audience' })}
-          tags={audienceTags}
-          value={audience}
-          onChange={setAudience}
-          onCreateTag={onCreateTag}
-          localeKey={localeKey}
-          readOnly={false}
-          commitOnBlur
-        />
         <PresetTagPicker
           ref={scenarioPickerRef}
           dimension='scenario'

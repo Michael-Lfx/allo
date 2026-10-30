@@ -356,6 +356,18 @@ body[arco-theme='dark'] .arco-modal:not(.conversation-search-modal) {
   border-color: var(--flowy-border, var(--border-base)) !important;
 }
 
+/* Preset editor is taller than most viewports: cap the form body so only it scrolls, never the overlay. */
+.preset-edit-modal.arco-modal:not(.arco-modal-simple) {
+  top: 16px;
+}
+
+.preset-edit-modal .arco-modal-content {
+  box-sizing: border-box;
+  max-height: calc(100dvh - 180px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .arco-modal:not(.arco-modal-simple):not(.nomifun-modal) .arco-modal-header {
   height: 56px;
   padding: 0 24px;

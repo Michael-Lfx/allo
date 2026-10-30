@@ -47,8 +47,9 @@ describe('MCP installed layout contracts', () => {
     expect(header).not.toContain('h-[24px]');
     expect(extension).not.toContain('h-[24px]');
     expect(item).toContain('McpServerDetails');
-    expect(details).toContain('settings.mcpAvailableToAgent');
-    expect(details).toContain('settings.mcpUnavailableToAgent');
+    expect(header).toContain('settings.mcpNextStepCheck');
+    expect(header).toContain('settings.mcpNextStepEnable');
+    expect(header).toContain('settings.mcpNextStepRetry');
     expect(details).toContain('McpServerToolsList');
   });
 

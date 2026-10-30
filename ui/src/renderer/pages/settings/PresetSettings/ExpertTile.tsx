@@ -7,26 +7,33 @@ const TAG_GAP_PX = 6;
 const TAG_CLASS = 'max-w-[160px] shrink-0 truncate rounded-6px bg-fill-2 px-10px py-4px text-12px leading-18px text-t-secondary';
 const BADGE_CLASS = 'shrink-0 px-4px text-12px leading-18px text-t-tertiary';
 
-export const ExpertMark: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
-  name,
-  avatarUrl,
-  size,
-}) => <ExpertMarkFace key={avatarUrl?.trim() || 'letter'} name={name} avatarUrl={avatarUrl} size={size} />;
+type ExpertMarkProps = {
+  name: string;
+  avatarUrl?: string;
+  /** Already-resolved image source, for example a bundled icon or a data URL. */
+  imageSrc?: string;
+  /** Emoji avatar; shown when there is no image. */
+  emoji?: string;
+  size: 44 | 64;
+};
 
-const ExpertMarkFace: React.FC<{ name: string; avatarUrl?: string; size: 44 | 64 }> = ({
-  name,
-  avatarUrl,
-  size,
-}) => {
+export const ExpertMark: React.FC<ExpertMarkProps> = (props) => (
+  <ExpertMarkFace key={props.imageSrc || props.avatarUrl?.trim() || props.emoji || 'letter'} {...props} />
+);
+
+const ExpertMarkFace: React.FC<ExpertMarkProps> = ({ name, avatarUrl, imageSrc, emoji, size }) => {
   const [failed, setFailed] = useState(false);
-  const src = displayableExpertAvatar(avatarUrl);
+  const src = imageSrc ?? displayableExpertAvatar(avatarUrl);
   const box = size === 64 ? 'size-64px rounded-16px text-24px' : 'size-44px rounded-12px text-16px';
+  const emojiClass = size === 64 ? 'text-36px leading-none' : 'text-24px leading-none';
   return (
     <span
       className={`flex shrink-0 items-center justify-center overflow-hidden bg-fill-2 font-semibold text-t-primary ${box}`}
     >
       {src && !failed ? (
         <img src={src} alt='' className='size-full object-cover' onError={() => setFailed(true)} />
+      ) : emoji ? (
+        <span className={emojiClass}>{emoji}</span>
       ) : (
         name.trim().charAt(0) || '?'
       )}
@@ -38,6 +45,8 @@ export type ExpertTileProps = {
   testId: string;
   name: string;
   avatarUrl?: string;
+  avatarImageSrc?: string;
+  avatarEmoji?: string;
   summary: string;
   tags: string[];
   actionLabel?: string;
@@ -49,6 +58,10 @@ export type ExpertTileProps = {
   actionPending?: boolean;
   actionDone?: boolean;
   footer?: React.ReactNode;
+  /** Extra control in the title row, for example a delete action. */
+  titleAside?: React.ReactNode;
+  className?: string;
+  rootRef?: React.Ref<HTMLDivElement>;
   onOpen: () => void;
   onAction?: () => void;
 };
@@ -59,6 +72,8 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
   testId,
   name,
   avatarUrl,
+  avatarImageSrc,
+  avatarEmoji,
   summary,
   tags,
   actionLabel,
@@ -70,6 +85,9 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
   actionPending = false,
   actionDone = false,
   footer,
+  titleAside,
+  className,
+  rootRef,
   onOpen,
   onAction,
 }) => {
@@ -84,6 +102,12 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
     : actionPending
       ? actionPendingLabel || actionLabel
       : actionLabel;
+  const actionButtonClass = [
+    'shrink-0 cursor-pointer rounded-full border-none bg-[var(--color-text-1)] px-10px py-3px text-12px font-semibold leading-18px text-[var(--color-bg-1)] transition-opacity duration-200',
+    actionPending || actionDone
+      ? 'disabled:cursor-default disabled:opacity-60'
+      : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
+  ].join(' ');
 
   useLayoutEffect(() => {
     const row = rowRef.current;
@@ -124,10 +148,14 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
               }
             }
       }
-      className='group flex cursor-pointer flex-col gap-12px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--bg-base)] p-16px text-left transition-[background-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-[1px] hover:bg-[var(--color-fill-1)] hover:shadow-[0_10px_24px_-18px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]'
+      ref={rootRef}
+      className={[
+        'group flex cursor-pointer flex-col gap-12px rounded-12px border border-solid border-[var(--color-border-2)] bg-[var(--bg-base)] p-16px text-left transition-[background-color,box-shadow,transform] duration-200 ease-out hover:-translate-y-[1px] hover:bg-[var(--color-fill-1)] hover:shadow-[0_10px_24px_-18px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(var(--primary-6),0.28)]',
+        className,
+      ].filter(Boolean).join(' ')}
     >
       <div className='flex min-w-0 items-start gap-12px'>
-        <ExpertMark name={name} avatarUrl={avatarUrl} size={44} />
+        <ExpertMark name={name} avatarUrl={avatarUrl} imageSrc={avatarImageSrc} emoji={avatarEmoji} size={44} />
         <div className='min-w-0 flex-1'>
           <div className='flex min-w-0 items-center gap-8px'>
             {splitActions ? (
@@ -142,13 +170,14 @@ const ExpertTile: React.FC<ExpertTileProps> = ({
             ) : (
               <span className='min-w-0 flex-1 truncate text-15px font-semibold leading-22px text-t-primary'>{name}</span>
             )}
+            {titleAside}
             {actionLabel && onAction ? (
               <button
                 type='button'
                 data-testid={actionTestId}
                 disabled={actionPending || actionDone}
                 aria-busy={actionPending}
-                className='shrink-0 cursor-pointer rounded-full border-none bg-[var(--color-text-1)] px-10px py-3px text-12px font-semibold leading-18px text-[var(--color-bg-1)] disabled:cursor-default disabled:opacity-60'
+                className={actionButtonClass}
                 onClick={onAction}
               >
                 {actionText}

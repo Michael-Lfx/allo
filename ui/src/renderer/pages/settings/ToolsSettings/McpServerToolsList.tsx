@@ -40,7 +40,7 @@ const McpServerToolsList: React.FC<McpServerToolsListProps> = ({ server, activat
     <div>
       {server.tools.map((tool, index) => (
         <div key={index} className='flex items-baseline gap-12px border-b border-b-solid border-arco-2 py-8px first:pt-0 last:border-b-0 last:pb-0'>
-          <div className='w-1/3 min-w-0 flex-shrink-0'>
+          <div className='w-150px min-w-0 flex-shrink-0'>
             <div className='break-words text-12px font-medium text-t-primary'>{tool.name}</div>
           </div>
           <div className='min-w-0 flex-1'>
