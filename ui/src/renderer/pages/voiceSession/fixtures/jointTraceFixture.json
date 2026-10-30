@@ -1,143 +1,372 @@
 {
-  "source": "Recorded from authentic test_voice_companion_joint_worker_to_host_three_sentence_chain execution",
-  "sanitized": true,
-  "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
-  "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-  "instance_id": "voice-companion-inst-1",
+  "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+  "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+  "instance_id": "01a18cf9-8fae-7a62-8c3c-f1f40532af06",
   "binding": {
-    "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-    "binding_id": "voice-binding-0190f5fe-7c00-7a00-8000-000000000002",
-    "conversation_id": "0190f5fe-7c00-7a00-8000-000000000001",
-    "workspace": "D:/workspace/test"
+    "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+    "binding_id": "voice-binding-01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+    "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+    "workspace": "D:/workspace/test",
+    "memory_owner_companion_id": null
   },
-  "turns": [
-    {
-      "turn_id": "turn-a-0190f5fe-0001",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "user_text": "input-A: 请执行任务",
-      "assistant_text": "任务已接单，正在执行。",
-      "user_message_id": "msg-user-a",
-      "assistant_message_id": "msg-asst-a"
-    },
-    {
-      "turn_id": "turn-b-0190f5fe-0002",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "user_text": "input-B: 今天天气怎么样",
-      "assistant_text": "天气晴朗，气温22度。",
-      "user_message_id": "msg-user-b",
-      "assistant_message_id": "msg-asst-b"
-    },
-    {
-      "turn_id": "turn-c-0190f5fe-0003",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "user_text": "input-C: 明天会下雨吗",
-      "assistant_text": "明天天气也很好。",
-      "user_message_id": "msg-user-c",
-      "assistant_message_id": "msg-asst-c"
-    }
-  ],
   "snapshots": {
-    "at_failure": {
-      "instance_id": "voice-companion-inst-1",
-      "phase": "follow_up",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "turn_id": "turn-b-0190f5fe-0002",
+    "at_b_failure": {
+      "projected_turn_ids": [
+        "01a18cf9-95b1-7f90-9066-082e5ca4c251"
+      ],
+      "queue": [],
+      "binding": {
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "binding_id": "voice-binding-01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "workspace": "D:/workspace/test",
+        "memory_owner_companion_id": null
+      },
+      "confirmation": null,
+      "task": {
+        "command_id": "voice-01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "acoustic_turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "message_id": "01a18cf9-95e6-7802-87e1-b84d0a693538",
+        "runtime_turn_id": "test-runtime",
+        "status": "completed",
+        "result_ok": null,
+        "result_text": "任务已完成",
+        "error_code": null
+      },
+      "task_ready": false,
+      "task_error_code": null,
+      "ended_reason": null,
+      "feedback": {
+        "request_id": "01a18cf9-a00b-7840-99c4-386adbcc2107",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+        "kind": "follow_up",
+        "status": "skipped",
+        "reason_code": "feedback_muted",
+        "at_ms": 1793366532107
+      },
       "conversation": [
         {
-          "turn_id": "turn-a-0190f5fe-0001",
-          "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+          "turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-95ca-7a11-8d66-378d159def96",
+          "assistant_message_id": "01a18cf9-95d9-7d50-accd-87790ec8e85b",
           "user_text": "input-A: 请执行任务",
+          "understood_request": null,
           "assistant_text": "任务已接单，正在执行。",
-          "user_message_id": "msg-user-a",
-          "assistant_message_id": "msg-asst-a",
+          "model_text": "```json\n{\"intent_type\":\"agent_task\",\"task_goal\":\"请执行任务\",\"spoken_ack\":\"任务已接单，正在执行。\",\"requires_confirmation\":false}\n```",
           "reply_state": "complete"
         },
         {
-          "turn_id": "turn-b-0190f5fe-0002",
-          "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
+          "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
           "user_text": "input-B: 今天天气怎么样",
+          "understood_request": null,
           "assistant_text": "天气晴朗，气温22度。",
-          "user_message_id": "msg-user-b",
-          "assistant_message_id": "msg-asst-b",
-          "reply_state": "complete"
+          "model_text": "```json\n{\"intent_type\":\"chat\",\"reply_tts\":\"天气晴朗，气温22度。\"}\n```",
+          "reply_state": "complete",
+          "error": {
+            "stage": "history",
+            "code": "voice_projection_write_failed"
+          }
         }
       ],
-      "projected_turn_ids": [
-        "turn-a-0190f5fe-0001"
-      ],
+      "enabled": true,
+      "connection": "connected",
+      "instance_id": "01a18cf9-8fae-7a62-8c3c-f1f40532af06",
+      "seq": 59,
+      "worker_epoch": 1,
+      "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+      "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+      "phase": "follow_up",
+      "user_text": "input-B: 今天天气怎么样",
+      "understood_request": null,
+      "assistant_text": "天气晴朗，气温22度。",
+      "follow_up_deadline_ms": 1793366712107,
+      "listening_deadline_ms": null,
       "error": {
         "stage": "history",
         "code": "voice_projection_write_failed"
+      },
+      "acoustic_ready": true,
+      "dialogue_ready": true,
+      "playback_ready": true,
+      "audio": {
+        "rms_milli": 0,
+        "peak_milli": 0,
+        "frames_received": 323,
+        "last_frame_at_ms": 1793366532853,
+        "capture_state": "receiving",
+        "speech_detected": false,
+        "asr_ready": true,
+        "kws_ready": false,
+        "vad_ready": true,
+        "barge_in_ready": false,
+        "barge_in_reason": "aec_unavailable",
+        "utterance_samples": 7680,
+        "utterance_peak_milli": 700
       }
     },
-    "after_recovery": {
-      "instance_id": "voice-companion-inst-1",
-      "phase": "follow_up",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "turn_id": "turn-b-0190f5fe-0002",
+    "after_b_recovery": {
       "projected_turn_ids": [
-        "turn-a-0190f5fe-0001",
-        "turn-b-0190f5fe-0002"
+        "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "01a18cf9-9fe3-74b2-8a61-f96dc14be717"
       ],
-      "error": null
+      "queue": [],
+      "binding": {
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "binding_id": "voice-binding-01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "workspace": "D:/workspace/test",
+        "memory_owner_companion_id": null
+      },
+      "confirmation": null,
+      "task": {
+        "command_id": "voice-01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "acoustic_turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "message_id": "01a18cf9-95e6-7802-87e1-b84d0a693538",
+        "runtime_turn_id": "test-runtime",
+        "status": "completed",
+        "result_ok": null,
+        "result_text": "任务已完成",
+        "error_code": null
+      },
+      "task_ready": false,
+      "task_error_code": null,
+      "ended_reason": null,
+      "feedback": {
+        "request_id": "01a18cf9-a00b-7840-99c4-386adbcc2107",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+        "kind": "follow_up",
+        "status": "skipped",
+        "reason_code": "feedback_muted",
+        "at_ms": 1793366532107
+      },
+      "conversation": [
+        {
+          "turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-95ca-7a11-8d66-378d159def96",
+          "assistant_message_id": "01a18cf9-95d9-7d50-accd-87790ec8e85b",
+          "user_text": "input-A: 请执行任务",
+          "understood_request": null,
+          "assistant_text": "任务已接单，正在执行。",
+          "model_text": "```json\n{\"intent_type\":\"agent_task\",\"task_goal\":\"请执行任务\",\"spoken_ack\":\"任务已接单，正在执行。\",\"requires_confirmation\":false}\n```",
+          "reply_state": "complete"
+        },
+        {
+          "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-9fea-7203-99f6-6aa2f34f0d88",
+          "assistant_message_id": "01a18cf9-a486-7602-b731-1c5eae8f9301",
+          "user_text": "input-B: 今天天气怎么样",
+          "understood_request": null,
+          "assistant_text": "天气晴朗，气温22度。",
+          "model_text": "```json\n{\"intent_type\":\"chat\",\"reply_tts\":\"天气晴朗，气温22度。\"}\n```",
+          "reply_state": "complete",
+          "error": {
+            "stage": "history",
+            "code": "voice_projection_write_failed"
+          }
+        }
+      ],
+      "enabled": true,
+      "connection": "connected",
+      "instance_id": "01a18cf9-8fae-7a62-8c3c-f1f40532af06",
+      "seq": 59,
+      "worker_epoch": 1,
+      "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+      "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+      "phase": "follow_up",
+      "user_text": "input-B: 今天天气怎么样",
+      "understood_request": null,
+      "assistant_text": "天气晴朗，气温22度。",
+      "follow_up_deadline_ms": 1793366712107,
+      "listening_deadline_ms": null,
+      "error": {
+        "stage": "history",
+        "code": "voice_projection_write_failed"
+      },
+      "acoustic_ready": true,
+      "dialogue_ready": true,
+      "playback_ready": true,
+      "audio": {
+        "rms_milli": 0,
+        "peak_milli": 0,
+        "frames_received": 323,
+        "last_frame_at_ms": 1793366532853,
+        "capture_state": "receiving",
+        "speech_detected": false,
+        "asr_ready": true,
+        "kws_ready": false,
+        "vad_ready": true,
+        "barge_in_ready": false,
+        "barge_in_reason": "aec_unavailable",
+        "utterance_samples": 7680,
+        "utterance_peak_milli": 700
+      }
     },
     "final": {
-      "instance_id": "voice-companion-inst-1",
-      "phase": "idle",
-      "session_id": "0190f5fe-7c00-7a00-8000-000000000002",
-      "turn_id": "turn-c-0190f5fe-0003",
       "projected_turn_ids": [
-        "turn-a-0190f5fe-0001",
-        "turn-b-0190f5fe-0002",
-        "turn-c-0190f5fe-0003"
+        "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+        "01a18cf9-ab38-79f1-a361-ba6e56b77a0c"
       ],
-      "ended_reason": "user_stop"
+      "queue": [],
+      "binding": {
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "binding_id": "voice-binding-01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "workspace": "D:/workspace/test",
+        "memory_owner_companion_id": null
+      },
+      "confirmation": null,
+      "task": {
+        "command_id": "voice-01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "acoustic_turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+        "conversation_id": "01a18cf9-8f8b-7570-997b-d5aa62e95772",
+        "message_id": "01a18cf9-95e6-7802-87e1-b84d0a693538",
+        "runtime_turn_id": "test-runtime",
+        "status": "completed",
+        "result_ok": null,
+        "result_text": "任务已完成",
+        "error_code": null
+      },
+      "task_ready": false,
+      "task_error_code": null,
+      "ended_reason": "user_stop",
+      "feedback": {
+        "request_id": "01a18cf9-b00a-7f22-98be-c08955846229",
+        "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+        "turn_id": "01a18cf9-ab38-79f1-a361-ba6e56b77a0c",
+        "kind": "stopped",
+        "status": "skipped",
+        "reason_code": "feedback_muted",
+        "at_ms": 1793366536202
+      },
+      "conversation": [
+        {
+          "turn_id": "01a18cf9-95b1-7f90-9066-082e5ca4c251",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-95ca-7a11-8d66-378d159def96",
+          "assistant_message_id": "01a18cf9-95d9-7d50-accd-87790ec8e85b",
+          "user_text": "input-A: 请执行任务",
+          "understood_request": null,
+          "assistant_text": "任务已接单，正在执行。",
+          "model_text": "```json\n{\"intent_type\":\"agent_task\",\"task_goal\":\"请执行任务\",\"spoken_ack\":\"任务已接单，正在执行。\",\"requires_confirmation\":false}\n```",
+          "reply_state": "complete"
+        },
+        {
+          "turn_id": "01a18cf9-9fe3-74b2-8a61-f96dc14be717",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-9fea-7203-99f6-6aa2f34f0d88",
+          "assistant_message_id": "01a18cf9-a486-7602-b731-1c5eae8f9301",
+          "user_text": "input-B: 今天天气怎么样",
+          "understood_request": null,
+          "assistant_text": "天气晴朗，气温22度。",
+          "model_text": "```json\n{\"intent_type\":\"chat\",\"reply_tts\":\"天气晴朗，气温22度。\"}\n```",
+          "reply_state": "complete",
+          "error": {
+            "stage": "history",
+            "code": "voice_projection_write_failed"
+          }
+        },
+        {
+          "turn_id": "01a18cf9-ab38-79f1-a361-ba6e56b77a0c",
+          "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+          "user_message_id": "01a18cf9-ab3e-7fb0-99f9-2469080e9bc4",
+          "assistant_message_id": "01a18cf9-ab56-7c83-af9e-946bf83bb8ab",
+          "user_text": "input-C: 明天会下雨吗",
+          "understood_request": null,
+          "assistant_text": "明天天气也很好。",
+          "model_text": "```json\n{\"intent_type\":\"chat\",\"reply_tts\":\"明天天气也很好。\"}\n```",
+          "reply_state": "complete"
+        }
+      ],
+      "enabled": true,
+      "connection": "connected",
+      "instance_id": "01a18cf9-8fae-7a62-8c3c-f1f40532af06",
+      "seq": 99,
+      "worker_epoch": 1,
+      "session_id": "01a18cf9-8faf-7422-bf4f-bbf6e7b29a21",
+      "turn_id": "01a18cf9-ab38-79f1-a361-ba6e56b77a0c",
+      "phase": "idle",
+      "user_text": "input-C: 明天会下雨吗",
+      "understood_request": null,
+      "assistant_text": "明天天气也很好。",
+      "follow_up_deadline_ms": null,
+      "listening_deadline_ms": null,
+      "error": null,
+      "acoustic_ready": true,
+      "dialogue_ready": true,
+      "playback_ready": true,
+      "audio": {
+        "rms_milli": 0,
+        "peak_milli": 0,
+        "frames_received": 499,
+        "last_frame_at_ms": 1793366535861,
+        "capture_state": "receiving",
+        "speech_detected": false,
+        "asr_ready": true,
+        "kws_ready": false,
+        "vad_ready": true,
+        "barge_in_ready": false,
+        "barge_in_reason": "aec_unavailable",
+        "utterance_samples": 8000,
+        "utterance_peak_milli": 700
+      }
     }
   },
   "messages": [
     {
-      "message_id": "msg-user-a",
+      "message_id": "01a18cf9-95ca-7a11-8d66-378d159def96",
       "position": "right",
       "content": {
         "content": "input-A: 请执行任务"
       }
     },
     {
-      "message_id": "msg-asst-a",
+      "message_id": "01a18cf9-95d9-7d50-accd-87790ec8e85b",
       "position": "left",
       "content": {
         "content": "任务已接单，正在执行。",
-        "turn_id": "msg-user-a"
+        "turn_id": "01a18cf9-95ca-7a11-8d66-378d159def96"
       }
     },
     {
-      "message_id": "msg-user-b",
+      "message_id": "01a18cf9-9fea-7203-99f6-6aa2f34f0d88",
       "position": "right",
       "content": {
         "content": "input-B: 今天天气怎么样"
       }
     },
     {
-      "message_id": "msg-asst-b",
+      "message_id": "01a18cf9-a486-7602-b731-1c5eae8f9301",
       "position": "left",
       "content": {
         "content": "天气晴朗，气温22度。",
-        "turn_id": "msg-user-b"
+        "turn_id": "01a18cf9-9fea-7203-99f6-6aa2f34f0d88"
       }
     },
     {
-      "message_id": "msg-user-c",
+      "message_id": "01a18cf9-ab3e-7fb0-99f9-2469080e9bc4",
       "position": "right",
       "content": {
         "content": "input-C: 明天会下雨吗"
       }
     },
     {
-      "message_id": "msg-asst-c",
+      "message_id": "01a18cf9-ab56-7c83-af9e-946bf83bb8ab",
       "position": "left",
       "content": {
         "content": "明天天气也很好。",
-        "turn_id": "msg-user-c"
+        "turn_id": "01a18cf9-ab3e-7fb0-99f9-2469080e9bc4"
       }
     }
   ],

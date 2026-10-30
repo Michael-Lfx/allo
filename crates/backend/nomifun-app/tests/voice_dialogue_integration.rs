@@ -2756,6 +2756,16 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert!(s_after_b_err.ended_reason.is_none(), "Session must not exit upon projection write failure");
     assert!(s_after_b_err.user_text.as_deref().is_some_and(|t| t.contains("今天天气怎么样")), "User text must be preserved");
 
+    let real_session_id = s_after_b_err.session_id.clone().unwrap_or_else(|| conv_id.clone());
+    let real_binding = nomifun_api_types::voice::VoiceBindingSnapshot {
+        session_id: real_session_id.clone(),
+        binding_id: format!("voice-binding-{real_session_id}"),
+        conversation_id: conv_id.clone(),
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        memory_owner_companion_id: None,
+    };
+    let snapshot_at_b_failure = recorder.project_snapshot(s_after_b_err.clone(), &real_binding);
+
     // Recover B from journal: original output and message ID are reused without calling the model again!
     let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
     let records_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
@@ -2779,6 +2789,9 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let extra_submits = submits_after_rec - submits_before_rec;
     assert_eq!(extra_model_calls, 0, "Recovery must not make additional model calls");
     assert_eq!(extra_submits, 0, "Recovery must not make additional task submits");
+
+    let s_after_b_rec = rt.snapshot();
+    let snapshot_after_b_recovery = recorder.project_snapshot(s_after_b_rec, &real_binding);
 
     let records_after: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
     let b_entry_after = records_after.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
@@ -2897,15 +2910,17 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
 
     let real_session_id = snap.session_id.clone().unwrap_or_else(|| conv_id.clone());
     let real_instance_id = snap.instance_id.clone();
+    let snapshot_final = recorder.project_snapshot(snap.clone(), &real_binding);
+
     let trace_payload = serde_json::json!({
         "conversation_id": conv_id,
         "session_id": real_session_id,
         "instance_id": real_instance_id,
-        "binding": {
-            "session_id": real_session_id,
-            "binding_id": format!("voice-binding-{real_session_id}"),
-            "conversation_id": conv_id,
-            "workspace": dir.path().to_string_lossy(),
+        "binding": real_binding,
+        "snapshots": {
+            "at_b_failure": snapshot_at_b_failure,
+            "after_b_recovery": snapshot_after_b_recovery,
+            "final": snapshot_final,
         },
         "messages": messages.iter().map(|m| serde_json::json!({
             "message_id": m.message_id,
@@ -2933,6 +2948,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             let _ = std::fs::create_dir_all(parent);
         }
         nomifun_common::dir_config::write_atomic_replace(path, &trace_bytes).unwrap();
+    }
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
+    let final_fix_dir = repo_root.join("build.noindex/voice-runtime-improvements-final-fix-20261030");
+    if final_fix_dir.exists() {
+        nomifun_common::dir_config::write_atomic_replace(&final_fix_dir.join("joint-trace.json"), &trace_bytes).unwrap();
     }
 
     worker.abort();
