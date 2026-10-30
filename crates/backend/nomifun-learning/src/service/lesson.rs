@@ -1712,6 +1712,7 @@ impl LearningService {
             points: current.points.clone(),
             visual: current.visual.clone(),
             body_md: String::new(),
+            degraded: false,
         };
         let previous_body = if position > 0 {
             Some(sections[position - 1].body_md.as_str())
@@ -1795,6 +1796,7 @@ impl LearningService {
                 points: section.points.clone(),
                 visual: section.visual.clone(),
                 body_md: String::new(),
+                degraded: false,
             })
             .collect();
         let (body, degraded) = crate::generation::rewrite_section_body(
@@ -3473,6 +3475,7 @@ mod tests {
             sections: Vec::new(),
             degraded_keys: Vec::new(),
             capacity_note: None,
+            viz_lint_events: 0,
         }
     }
 

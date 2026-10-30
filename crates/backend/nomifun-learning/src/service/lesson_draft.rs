@@ -119,7 +119,15 @@ impl LearningService {
         // trusted at the publish boundary, so a draft that was never
         // patched cannot slip through with zero findings.
         let mut draft = self.lesson_draft(draft_id)?;
+        // f3 终检兜底（4.4/A4，发布前）：对每节正文跑 lint——仍坏的围栏块
+        // 系统剔除 + 该节 visual 声明同步降级 + degraded 标记；剔后重审，
+        // 坏块不再挡发布（承诺门按新声明自然过、demo 硬门对 degraded 节
+        // 豁免、文字下限天然不撞——prose 剥围栏计算）。
+        let dropped_findings = draft.sweep_broken_visual_blocks();
         draft.refresh_audit();
+        // 剔除 findings 在审计重算之后追加（audit 整表重算会覆盖先加的
+        // 条目）——阻塞报告与 publish 面都能看见剔除事实。
+        draft.findings.extend(dropped_findings);
         if draft
             .findings
             .iter()
@@ -181,6 +189,120 @@ mod tests {
             object.extend(extra.clone());
         }
         serde_json::from_value(value).unwrap()
+    }
+
+    fn planned_pack(key: &str, kind: crate::models::SectionKind, visual: &str)
+        -> crate::models::SectionPack
+    {
+        crate::models::SectionPack {
+            section_key: key.into(),
+            kind,
+            title: format!("t-{key}"),
+            points: String::new(),
+            visual: visual.into(),
+            body_md: String::new(),
+            degraded: false,
+        }
+    }
+
+    /// f3 两连败兜底（4.4/A4）：修复轮救不回的坏块由终检系统剔除 + 该节
+    /// visual 声明同步降级 + degraded 标记穿出（degraded_keys /
+    /// viz_lint_events）——demo 硬门对 degraded 节豁免（唯一豁免门）、概念
+    /// 节承诺门按新声明自然过、文字下限不撞（prose 剥围栏计算），发布不
+    /// 阻断。存量坏块以字段直塞构造（op 面已被 lint 拦死，该形态只来自
+    /// 重规划保留/跨版本续跑等旁路——即终检兜底面对的存量形态）。
+    #[tokio::test]
+    async fn finish_sweeps_broken_visual_blocks_degrades_and_publishes() {
+        use crate::models::SectionKind;
+
+        let database = nomifun_db::init_database_memory().await.unwrap();
+        let service = LearningService::new(database.pool().clone());
+        let view = service.create_lesson_draft(context()).unwrap();
+
+        let prose =
+            "这是一个足够长的正文段落，用于通过节级质检门的长度下限要求。".repeat(8);
+        let bad_mermaid = "```mermaid\nflowchart TD\n\
+             A[[\"第1期 本金 P] -->|\"算利息 P×利率\"| B[利息1\"]\n```";
+        let mut draft = LessonDraft::new(context());
+        let report = draft.apply_ops(vec![LessonOp::SetSectionManifest {
+            sections: vec![
+                planned_pack("s1", SectionKind::Concept, "流程图"),
+                planned_pack("s2", SectionKind::Demo, "流程图"),
+                planned_pack("s3", SectionKind::Practice, "无"),
+            ],
+            capacity_note: None,
+        }]);
+        assert_eq!(report.accepted.len(), 1, "manifest accepted");
+        draft.section_bodies.insert(
+            "s1".to_owned(),
+            (
+                format!("## t-s1\n\n{bad_mermaid}\n\n{prose}"),
+                Some(planned_pack("s1", SectionKind::Concept, "流程图")),
+            ),
+        );
+        draft.section_bodies.insert(
+            "s2".to_owned(),
+            (
+                format!("## t-s2\n\n{bad_mermaid}\n\n{prose}"),
+                Some(planned_pack("s2", SectionKind::Demo, "流程图")),
+            ),
+        );
+        draft.section_bodies.insert(
+            "s3".to_owned(),
+            (
+                "## t-s3\n\n完成以下判断题，检验对复利滚雪球的理解；作答后阅读解析回顾关键区别。".to_owned(),
+                Some(planned_pack("s3", SectionKind::Practice, "无")),
+            ),
+        );
+        draft.activities = vec![
+            activity_json("single_choice", serde_json::json!({
+                "options": ["权利", "义务", "债务"], "answer": "权利"
+            })),
+            activity_json("true_false", serde_json::json!({ "answer": true })),
+            activity_json("reflection", serde_json::json!({ "answer": null })),
+        ];
+        draft.estimated_minutes = 15;
+
+        // 直塞草稿覆盖存储（tests 在 service 模块树内，可注入存量形态）。
+        service
+            .lesson_drafts
+            .write()
+            .expect("draft lock")
+            .insert(view.draft_id.clone(), (draft, std::time::Instant::now()));
+
+        let output = service
+            .finish_lesson_draft(&view.draft_id)
+            .expect("剔块降声明后发布成功（demo 硬门 degraded 豁免）");
+        assert_eq!(
+            output.degraded_keys,
+            vec!["s1".to_owned(), "s2".to_owned()],
+            "degraded_keys 按清单序穿出"
+        );
+        assert_eq!(output.viz_lint_events, 2, "剔除事件计数穿出");
+        let s1 = output
+            .sections
+            .iter()
+            .find(|section| section.section_key == "s1")
+            .unwrap();
+        assert_eq!(s1.visual, "无", "概念节声明按余块形态降级");
+        assert!(!s1.body_md.contains("```mermaid"), "坏块整体剔除");
+        assert!(s1.body_md.contains("这是一个足够长的正文段落"), "节其余保留");
+        assert!(s1.degraded, "degraded 标记随节穿出");
+        let s2 = output
+            .sections
+            .iter()
+            .find(|section| section.section_key == "s2")
+            .unwrap();
+        assert_eq!(s2.visual, "无");
+        assert!(s2.degraded, "demo 节同样 degraded（硬门豁免的前提标记）");
+        assert!(
+            !output
+                .summary
+                .contains("第1期 本金 P"),
+            "拼装 summary 不再含坏块"
+        );
+        // 草稿与续跑映射随发布清除（finish 门既有语义）。
+        assert!(service.live_lesson_draft_for_lesson("lesson-x").is_none());
     }
 
     /// 续跑映射生命周期：create 登记 → 失败期间可查（重试定位草稿）→
