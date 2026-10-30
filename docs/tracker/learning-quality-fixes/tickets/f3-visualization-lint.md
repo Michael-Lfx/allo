@@ -70,3 +70,51 @@ part_of: ../map.md
 - mermaid 全语法解析器（引依赖，超预算）。
 - 可视化门本身（≥1 块的要求不动；模型改交表格/公式也合法）。
 - jsxgraph 形态（先例少，随 mermaid 闸的括号检查顺带覆盖，不单列）。
+
+## Resolution（2026-10-30 grilling 裁决，影响面核查后；真机结果可复议）
+
+**裁决（用户：按推荐）：**
+
+1. **打回语义：放弃「恰一次」**，lint 红条并入各线既有打回通道（图线 = op 拒绝
+   reason + 修复对照行；传统线 = lint 并入 validate_body 走 attempts 循环）；
+   发布/装配终检仍坏才触发剔除兜底。
+2. **剔除兜底 = 修复轮前置 + 系统兜底**：修复对照行「修 mermaid 或换表格/公式
+   承载」（真机对照另一课同门 svg 质量良好，模型多数能自愈）；预算尽仍坏 →
+   系统剔坏块 + 同步降该节 visual 声明（系统 mutation，非模型 op）+ degraded
+   留痕。纯剔块撞三道门（见勘误），降声明是合法存活前提。
+3. **lint 查项修订**：①括号配平——块级累计（非按行，classDiagram 跨行块防
+   误杀），引号段豁免，六对括号；②节点定义查仅对 `flowchart`/`graph` 前缀
+   生效（sequence/state 参与者免定义，防误杀）；③「`---` 闭合」查砍掉（歧义
+   语法+法证案例未死于此）。
+
+**影响面核查勘误（2026-10-30 实码核实）：**
+
+- 五选一条款实为 lesson_content_loop.rs:110（90 是 static 起点）；传统线
+  VISUAL_STANDARD_BLOCK 实际 743-764，且 902 行已有 mermaid 引号卫生条款。
+- **「learnhub 没有可视化 lint」不准**：cc.visual.form + cc.svg.spec
+  （validator.rs:1000-1031；check_svg_block 495-611：viewBox/字号/白名单/容器
+  闭合）就是 svg 规格闸——svg 侧有先例可抄形状，**首创的只是 mermaid 语法闸**。
+- **learnhub 内容线 fail loud 无降级臂**（facade.rs:480/573 Exhausted）；降级
+  先例在 allo 本仓：generation/lesson.rs:295-327（visual=无 保底重写）+ 561
+  （`for degraded in [false, true]`）。
+- **「只剔块保正文」撞三道门**：承诺门（models.rs:562-606，声明「流程图」只认
+  mermaid，剔后 section_invalid danger）、demo 硬门（532-538，唯一块被剔=danger，
+  不按声明豁免——degraded 豁免通道必须覆盖它）、文字下限（490-506；**实核不撞**：
+  prose_char_count 本就剥围栏计算，剔块不减 prose）。草稿无单节改 visual 的模型
+  op → 降声明必须系统侧 mutation；degraded_keys 图线恒空（lesson_draft.rs:947）
+  → 需接线穿出。
+- **「两面取一」不成立**：面 A（草稿 op 接纳）对传统线无效（不经过草稿）；面 B
+  （装配）时模型循环已结束无法打回。落地形状 = lint 函数单源 + 各线循环接入
+  （打回）+ finish 终检（剔除兜底）。lint 函数落位 models.rs（validate_body
+  同文件邻域，两线共享汇点最短依赖）。
+- findings 无持久表：LessonFinding.kind 裸 String 零注册成本；留痕通道 =
+  草稿 findings warning（viz_block_lint 触发 / viz_block_lint_dropped 剔除）+
+  tracing::warn（service/lesson.rs:2084-2091 先例）+ publish 帧计数
+  （lesson_content_loop.rs:340-349）→ smoke `viz_lint_events` 读数（非门禁）。
+- fix_mermaid_quotes（lesson_draft.rs:727 调用、generation/parser.rs:93 定义）
+  零单测——lint 红绿样顺带补齐围栏状态机测试面。
+- 消费侧：MermaidBlock 渲染失败静默源码陈列（MermaidBlock.tsx:112-118，无错误
+  提示无修复按钮；svg/jsxgraph 有 AI 修复）——前端零改动，修生成门不修显示。
+  FIGURE_REPAIR 端点只支持 svg/jsxgraph 不含 mermaid（completer.rs:66-103），不扩。
+
+施工图：[blueprints/2026-10-30-f3-viz-lint.md](../blueprints/2026-10-30-f3-viz-lint.md)。

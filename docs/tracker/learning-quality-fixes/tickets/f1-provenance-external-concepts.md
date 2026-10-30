@@ -70,3 +70,44 @@ part_of: ../map.md
 - 声明覆盖块要不要进生长批（产品雾区，见 e3 Resolution）。
 - 降级语义本身（fail-open 保留）。
 - 释义级近义检测（雾区⑤）。
+
+## Resolution（2026-10-30 grilling 裁决，影响面核查后；真机结果可复议）
+
+**裁决（用户：按推荐）：**
+
+1. **放行域 = 本批复用命中集**：撞池机械复用（auto_reusals）∪ defnear 直定宿主
+   （direct_host）∪ 评审 reuse[] 机械核验通过的 concept_id。声明/历史批概念
+   **未被本批复用时不放行**（凭空锚 registry 存量仍拒）。
+2. **短路 belt 作废，改死因指引**：死因消息加指引（「该概念系登记表存量、非本批
+   铸造：删除该行，或改锚本批概念」）——重试变得可满足；不砍碎片面（m9）共享的
+   第二轮机会；主修复落地后此臂触发面极窄。
+3. 评审输入注入「本批复用命中表」块（候选集块模式），注记用锚来源三值
+   （撞名机械绑定/定义直定复用/评审裁决复用）；registry source 列不进注入。
+
+**影响面核查勘误（2026-10-30 实码核实）：**
+
+- 执法点 = `provenance.rs:145-149`（validate_term_provenance，行 concept ∉ 提名
+  即死）；重试环 `learning_graph/mod.rs:1329-1357`，**attempt 预算挂号面+碎片面
+  共享**（mod.rs:1207-1209）——短路作废的直接原因。
+- 票面「评审输入没有 ULID 表」不准：候选集已带真实 concept_id
+  （service/learning_graph.rs:2352-2377）；声明概念已进 provenance_known
+  （gate_batch 2751-2768+2993）与已教账（4339-4360）；**已教行 ref 锚声明概念
+  今天已合法**。真正缺的只有行 concept 字段的放行域。
+- 原短路 belt 缺原料（校验器只收合并名池，分不出 registry-only）——随短路作废
+  无需补。
+- degraded_outcome 清空模型 reuse[]（mod.rs:1197），机械复用不受影响——事故批
+  复用落池没死，死的是评审背书+白烧一轮。
+- **learnhub 碰撞核实（票面遗留问句已答）**：learnhub 结构性回避而非已解——
+  prompt 禁重教 declared 概念（node-growth.md:13/30 强制走 assumes）+ 铸名撞池
+  refuse 打回（facade.rs:2036-2050，不像 allo 留批内机械转复用）；validator
+  「不在批内提名」臂原样存在（reviewer.rs:401-404）。**allo 首创缝补成立**。
+- 行 schema 零变更：复用概念行走现有 source=taught + ref=正名 路径（ref 对照域
+  已放行）；review_schema() 无生产消费者且不动。
+- reuse 核验（service:2019-2057）须提取单源供 concept_review 内复用——同一
+  reuse 两处判定必须一致，禁止复刻。
+- concept_review 签名变更波及 mod.rs 内 12 处测试调用点 + service:1989。
+- ProvenanceReadout 增 external_hits 计数（真机判据「挂号行锚定 registry 概念」
+  的可观察信号）；smoke provenance 读数段已有（learning_smoke.rs:1428-1452）
+  非门禁，追加打印即可。
+
+施工图：[blueprints/2026-10-30-f1-provenance-external-anchors.md](../blueprints/2026-10-30-f1-provenance-external-anchors.md)。
