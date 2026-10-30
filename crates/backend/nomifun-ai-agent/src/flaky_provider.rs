@@ -42,13 +42,68 @@ impl LlmProvider for FlakyStreamProvider {
         &self,
         request: &LlmRequest,
     ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
-        let before = self.remaining.fetch_sub(1, Ordering::SeqCst);
-        if before > 0 {
-            return Err(ProviderError::Connection(format!(
-                "smoke 瞬断注入：连接被掐断（本轮注入后还剩 {} 次）",
-                before - 1
-            )));
+        // 只在仍有剩余注入时扣减：无条件 `fetch_sub` 会在归零后回绕成
+        // usize::MAX，从此每次开流都被误掐、注入永不恢复（真机 f3 验收
+        // 实录：`还剩 18446744073709551611 次`，门面预算三试耗尽）。
+        let mut observed = self.remaining.load(Ordering::SeqCst);
+        loop {
+            if observed == 0 {
+                break;
+            }
+            match self.remaining.compare_exchange_weak(
+                observed,
+                observed - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    return Err(ProviderError::Connection(format!(
+                        "smoke 瞬断注入：连接被掐断（本轮注入后还剩 {} 次）",
+                        observed - 1
+                    )));
+                }
+                Err(actual) => observed = actual,
+            }
         }
         self.inner.stream(request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 归零后必须恢复透传：多余开流不得回绕计数器、不得再掐（真机回归钉）。
+    #[tokio::test]
+    async fn stops_cutting_once_counter_hits_zero() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct NoopProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for NoopProvider {
+            fn input_tokens_include_cache(&self) -> bool {
+                false
+            }
+            async fn stream(
+                &self,
+                _request: &LlmRequest,
+            ) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+                let (tx, rx) = mpsc::channel(1);
+                drop(tx);
+                Ok(rx)
+            }
+        }
+
+        let remaining = Arc::new(AtomicUsize::new(2));
+        let provider = FlakyStreamProvider::new(Arc::new(NoopProvider), remaining.clone());
+        let request = LlmRequest::default();
+        let mut cuts = 0;
+        for _ in 0..6 {
+            if provider.stream(&request).await.is_err() {
+                cuts += 1;
+            }
+        }
+        assert_eq!(cuts, 2, "恰好掐断注入的 2 次");
+        assert_eq!(remaining.load(Ordering::SeqCst), 0, "计数归零且不回绕");
     }
 }
