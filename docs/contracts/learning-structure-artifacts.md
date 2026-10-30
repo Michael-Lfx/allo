@@ -1,8 +1,8 @@
 ---
 contract: learning-structure-artifacts
-version: "1.7"
-date: 2026-10-29
-status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）。v1.7（e2，E2E 修复波）：§6 生成轮次随实码同步——时序反转为「① 前置地形 ② 知识结构」（e2 判定输入通道：门口清单经 `door_list_markdown` 装配注入结构装配，`prerequisite_doors` 逐字全收、块级 door_refs 判定源同此）+ 同指纹早停注记；零机械条款改动
+version: "1.8"
+date: 2026-10-30
+status: 定稿（wayfinder 票 g1/g2/g4 裁决落地；ADR-0010 与 CONTEXT.md Structure 词条为最高约束）。v1.1：契约文本随批（j01）——门位口径 v2.10 采纳（§3 + 两份结构提示词）；术语纠偏 v2.8 确认归档；R9 叙述声部与跨课预告废除属内容面条款，随 j07 落内容契约位（§8 注记）。v1.2（j09）：新增 §10 结构修补 st.ops.* 五条款 + 挂载 §9（j08）——结构转活文档完整契约（ADR-0012）。v1.3（k03）：§8.1 课时输入面注记——est 时长预算行 + capacity_note 超容自报形状（只读回执标量，不改结构契约）。v1.4（k06）：§8.2 结构提示词写作面条款（assumes 逻辑前提/块链自检/门语义/档位深度本位；零机械条款改动）。v1.5（k05）：§8.3 内容纪律 R10–R13 织入两管线写作面（零机械门）。v1.6（m1，learnhub #165 契约 v2.14）：块级 door_refs 门位标签——§2.1 块增唯一可选键、§2.2 增 gd.blocks.door_refs 形态条款、§4 门口对账扩叉积核验（地形门口集 + 课程门双臂）、§3 门口梯队口径注记；读侧 BlockView.door_refs + TerrainView 每门口块覆盖统计 + 过门自检读侧展示（声明写侧归 m2）。v1.7（e2，E2E 修复波）：§6 生成轮次随实码同步——时序反转为「① 前置地形 ② 知识结构」（e2 判定输入通道：门口清单经 `door_list_markdown` 装配注入结构装配，`prerequisite_doors` 逐字全收、块级 door_refs 判定源同此）+ 同指纹早停注记；零机械条款改动。v1.8（f2，结构生成模型面打磨）：§2.2 gd.blocks.count 三档化——硬下限 40→**25**、新增 25–39「低于 40 参考档」警告档（小目标课如实精简、密度抽验兜底；不拒收、不进重试反馈），警告级汇总并入两 warn、smoke structure/repair 档 OK 读数行追加 `warnings={n}`；§6 `prerequisite_doors` 行文随提示词同步（只写编号本身——door_list 注入行「逐字全收」被模型误读为整行照抄，f2 票面法证）；§7 增 learnhub 块数量级档差异记档
 sources: [docs/tracker/learning-absorb/map.md, docs/tracker/learning-absorb-2/map.md, docs/tracker/learning-absorb-3/map.md, docs/tracker/learning-absorb-5/map.md, docs/adr/0010-endpoint-anchors-and-compass-retirement.md, learnhub decomposition-artifacts v2.14]
 ---
 
@@ -124,7 +124,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 | gd.domain.doors | prerequisite_doors ≥1 条、逐条形态 `G<数字>`（对账解析见 §4） |
 | gd.spines.count | spines 条数 ∈ 6..=12 |
 | gd.spines.required | 每条 name/definition/instance 非空、key_points ≥1；键 ⊆ {name, definition, key_points, instance, thin_spine, reason}；name 在产物内唯一 |
-| gd.blocks.count | 条数 < 40 红、> 100 红；80 < n ≤ 100 记「越档」**警告**（不拒收） |
+| gd.blocks.count | 条数 < 25 红、25 ≤ n < 40 记「低于 40 参考档」**警告**（不拒收）、> 100 红；80 < n ≤ 100 记「越档」警告 |
 | gd.blocks.fields | 块条目键 ⊆ {name, slug, spine, stage, note} + 唯一可选 door_refs（其余判据形字段 = 红）；stage ∈ {入门, 进阶, 高级}；note 非空 |
 | gd.blocks.door_refs | `door_refs` 逐条形态 `G<数字>` 且块内不重复；跨产物解析（引用 ⊆ 地形门口产出 **且** ⊆ 本课声明课程门）归 §4 对账面（悬挂/越出 = 红，learnhub `check_door_references` 同款） |
 | gd.blocks.one_name | 块名不含并列标记（与/和/及/、/,/，/斜杠），「…」段内豁免、词边「和」豁免 |
@@ -139,7 +139,7 @@ door_refs 标签）；声明写侧（勾选 → 铸概念）归 m2。**一物一
 | gd.quality | ≥5 条；status ∈ {met, unmet}；unmet 必带非空 reason |
 | gd.no_schedule | 全文无排期语词（机械代理词表：排期/日程/时间表/进度/计划/小时/每天/每周/每月/个月/半天/整周；裸「天/周/月」误报高，不扫）。**quality 清单与 disclaimer 豁免**（元声明面——自检理由合法地谈论红线本身） |
 
-警告级（不拒收、随报告透出）：`gd.blocks.count` 越档（80 < n ≤ 100）。
+警告级（不拒收、随报告透出、不进重试反馈）：`gd.blocks.count` 低于 40 参考档（25 ≤ n < 40，小目标课如实精简——密度抽验兜底）与越档（80 < n ≤ 100）。smoke structure/repair 档 OK 读数行以 `warnings={n}` 透出计数（f2/A2，warn 可见性走读数不走打回）。
 
 ## 3 产物二：前置地形（terrain）
 
@@ -221,8 +221,10 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
 同构）：terrain 产出后由 `door_list_markdown` 纯函数装配**门口清单**（每门
 一行 `- [编号]（硬前置/可自检）判据`，编号与判据逐字取自门口产物；空清单
 装配防御行「（无：前置地形未产出门口清单）」），作为 `door_list` 槽注入结构
-装配——结构侧 `domain.prerequisite_doors` **逐字全收**清单编号（不得改写、
-不得新造编号），块级 `door_refs` 门位标签同以该清单为判定源（§2.1/§2.2/§4）。
+装配——结构侧 `domain.prerequisite_doors` 只写门口编号本身（`G<数字>` 形，
+如 `["G1","G2"]`——不带类别标注、不带判据文字），编号与顺序**逐字取自**
+门口清单（不得自创、不得省略），块级 `door_refs` 门位标签同以该清单为判定
+源（§2.1/§2.2/§4）。
 任一产物违反契约或门口对账失败，**两份一起**重生成、逐条款违规报告注入重试
 装配（地形与结构装配各留 `retry_feedback` 槽），**≤3 轮**；同一逐条款报告
 连现两轮 = **同指纹早停**（e1 D2：反馈回灌已无法收敛，剩余轮次不烧，消息面
@@ -240,6 +242,7 @@ structure 的 `prerequisite_doors` 逐个编号必须能在 terrain 的 doors �
 | 普查 / 交付账 / selectable / NoFrontier / 铸名门 | 不存在，也不得重新引入 | 铁律：learnhub 已用真机代价否决（map Notes） |
 | 落盘 YAML（wire-only 转换） | JSON 直存快照列 | 单字段快照语义，无第二真相形态 |
 | gd.edges.audit 参考质量告警 | 未引入（v1 观测面后置） | 契约 = validator 1:1，不纸上设条款 |
+| 块数量级档 40–80（learnhub validator「低于量级档下限」即红） | gd.blocks.count 三档：< 25 红、25–39「低于 40 参考档」警告（不拒收、不进重试反馈）、80 < n ≤ 100 越档警告、> 100 红 | E2E 两轮对照 31 条与 51 条的课程内容密度无差，硬凑 40 产出「底数与指数」类边缘块（f2 票面法证）；learnhub 40–80 按其大课设计；警告级先例同构 |
 
 ## 8 契约文本随批注记（v1.1，j01）
 
