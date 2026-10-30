@@ -105,7 +105,10 @@ async fn run_mock_mirror_server(
                         }
                         let declared_len = end - start + 1;
                         resp = resp.header(CONTENT_LENGTH, declared_len.to_string());
-                        resp.body(Body::from(slice)).unwrap()
+                        let stream = futures_util::stream::once(async move {
+                            Ok::<_, std::io::Error>(axum::body::Bytes::from(slice))
+                        });
+                        resp.body(Body::from_stream(stream)).unwrap()
                     }
                 }
             }),
@@ -209,7 +212,7 @@ async fn test_vt_1_06_interrupted_stream_failover_to_cdn() {
             id: "primary".to_string(),
             base_url: primary_url.clone(),
             probe_url: Some(format!("{primary_url}/probe")),
-            is_modelscope: true,
+            is_modelscope: false,
             is_fallback_cdn: false,
         },
         MirrorConfig {
@@ -239,12 +242,119 @@ async fn test_vt_1_06_interrupted_stream_failover_to_cdn() {
 }
 
 #[tokio::test]
+async fn test_modelscope_transient_503_retries_and_succeeds() {
+    let dummy_payload = vec![88u8; 2048]; // 2KB payload
+    let payload = Arc::new(dummy_payload.clone());
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let req_count = request_count.clone();
+
+    let app = Router::new()
+        .route("/probe", head(|| async { StatusCode::OK }))
+        .route(
+            "/test_model.bin",
+            get(move || {
+                let req_count = req_count.clone();
+                let payload = payload.clone();
+                async move {
+                    let count = req_count.fetch_add(1, Ordering::SeqCst);
+                    if count == 0 {
+                        // First request returns transient 503
+                        (StatusCode::SERVICE_UNAVAILABLE, Body::empty()).into_response()
+                    } else {
+                        // Second request succeeds
+                        (StatusCode::OK, Body::from(payload.as_ref().clone())).into_response()
+                    }
+                }
+            }),
+        );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_url = format!("http://{addr}");
+    let _h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mirrors = vec![MirrorConfig {
+        id: "modelscope".to_string(),
+        base_url: server_url.clone(),
+        probe_url: Some(format!("{server_url}/probe")),
+        is_modelscope: true,
+        is_fallback_cdn: false,
+    }];
+
+    let downloader = ModelDownloader::new(mirrors);
+    let temp_dir = tempdir().expect("create temp dir");
+    let target_file = temp_dir.path().join("test_model.bin");
+
+    downloader
+        .download_with_failover("test_model.bin", &target_file, dummy_payload.len() as u64)
+        .await
+        .expect("retry after transient 503 should succeed");
+
+    assert!(target_file.exists());
+    let downloaded_data = std::fs::read(&target_file).expect("read file");
+    assert_eq!(downloaded_data, dummy_payload);
+
+    // Exact contract assertion:
+    // ModelScope transient error must retry exactly once, making total requests = 2
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn test_modelscope_deterministic_404_does_not_retry() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let req_count = request_count.clone();
+
+    let app = Router::new()
+        .route("/probe", head(|| async { StatusCode::OK }))
+        .route(
+            "/test_model.bin",
+            get(move || {
+                let req_count = req_count.clone();
+                async move {
+                    req_count.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::NOT_FOUND
+                }
+            }),
+        );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_url = format!("http://{addr}");
+    let _h = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let mirrors = vec![MirrorConfig {
+        id: "modelscope".to_string(),
+        base_url: server_url.clone(),
+        probe_url: Some(format!("{server_url}/probe")),
+        is_modelscope: true,
+        is_fallback_cdn: false,
+    }];
+
+    let downloader = ModelDownloader::new(mirrors);
+    let temp_dir = tempdir().expect("create temp dir");
+    let target_file = temp_dir.path().join("test_model.bin");
+
+    let err = downloader
+        .download_with_failover("test_model.bin", &target_file, 1024)
+        .await
+        .expect_err("404 must fail");
+
+    assert!(matches!(err, DownloaderError::UnexpectedStatus(StatusCode::NOT_FOUND)));
+    // Assert: Deterministic 404 must NOT retry on ModelScope; exactly 1 GET request made!
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn test_default_mirrors_order_matches_environment() {
-    // 1. Explicit global preference
+    // 1. Explicit global preference (ModelScope is primary authorized source, with official HF as first fallback)
     let global_mirrors = MirrorConfig::mirrors_for_environment(false);
-    assert_eq!(global_mirrors[0].id, "hf_official");
-    assert_eq!(global_mirrors[1].id, "hf_mirror");
-    assert_eq!(global_mirrors[2].id, "modelscope");
+    assert_eq!(global_mirrors[0].id, "modelscope");
+    assert_eq!(global_mirrors[1].id, "hf_official");
+    assert_eq!(global_mirrors[2].id, "hf_mirror");
 
     // 2. Explicit China preference
     let china_mirrors = MirrorConfig::mirrors_for_environment(true);
@@ -253,11 +363,10 @@ async fn test_default_mirrors_order_matches_environment() {
     assert_eq!(china_mirrors[2].id, "hf_official");
 
     assert!(!global_mirrors[0].is_fallback_cdn);
-    assert!(global_mirrors[2].is_fallback_cdn);
     assert!(!china_mirrors[0].is_fallback_cdn);
     assert!(china_mirrors[2].is_fallback_cdn);
-    assert!(!global_mirrors[0].supports("kws/encoder.int8.onnx"));
-    assert!(global_mirrors[2].supports("kws/encoder.int8.onnx"));
+    assert!(global_mirrors[0].supports("kws/encoder.int8.onnx"));
+    assert!(!global_mirrors[1].supports("kws/encoder.int8.onnx"));
 }
 
 #[test]
@@ -420,4 +529,29 @@ async fn test_speed_gate_triggers_failover_and_resumes_cleanly() {
     let downloaded_data = std::fs::read(&target_file).expect("read file");
     assert_eq!(downloaded_data.len(), dummy_payload.len());
     assert_eq!(downloaded_data, dummy_payload);
+}
+
+#[test]
+fn test_downloader_error_classification() {
+    // 1. Transient errors allowed to retry on the same mirror:
+    assert!(DownloaderError::Interrupted("stream stalled".into()).is_transient_retryable());
+    assert!(DownloaderError::UnexpectedStatus(StatusCode::SERVICE_UNAVAILABLE).is_transient_retryable());
+    assert!(DownloaderError::UnexpectedStatus(StatusCode::GATEWAY_TIMEOUT).is_transient_retryable());
+    assert!(DownloaderError::UnexpectedStatus(StatusCode::BAD_GATEWAY).is_transient_retryable());
+    assert!(DownloaderError::UnexpectedStatus(StatusCode::TOO_MANY_REQUESTS).is_transient_retryable());
+    assert!(DownloaderError::UnexpectedStatus(StatusCode::REQUEST_TIMEOUT).is_transient_retryable());
+
+    // 2. Deterministic errors that must NEVER be blindly retried:
+    assert!(!DownloaderError::ProtocolViolation("invalid range".into()).is_transient_retryable());
+    assert!(!DownloaderError::UnexpectedStatus(StatusCode::NOT_FOUND).is_transient_retryable());
+    assert!(!DownloaderError::UnexpectedStatus(StatusCode::FORBIDDEN).is_transient_retryable());
+    assert!(!DownloaderError::UnexpectedStatus(StatusCode::UNAUTHORIZED).is_transient_retryable());
+    assert!(!DownloaderError::UnexpectedStatus(StatusCode::RANGE_NOT_SATISFIABLE).is_transient_retryable());
+    assert!(!DownloaderError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "io error")).is_transient_retryable());
+    assert!(!DownloaderError::SpeedTooLow {
+        actual_bps: 100,
+        threshold_bps: 200,
+        mirror_id: "test".into()
+    }.is_transient_retryable());
+    assert!(!DownloaderError::AllMirrorsFailed.is_transient_retryable());
 }

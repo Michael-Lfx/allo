@@ -411,9 +411,9 @@ impl ModelManager {
                 Err(e) => {
                     let reason = match &e {
                         crate::downloader::DownloaderError::AllMirrorsFailed => {
-                            "无法连接到模型镜像源 (ModelScope)。请检查网络或运行 `python scripts/prepare-voice-models.py` 预先下载模型".to_string()
+                            "无法连接到模型镜像源 (ModelScope)。请检查网络连接后重试，或运行 `python scripts/prepare-voice-models.py` 离线部署".to_string()
                         }
-                        other => format!("Failed to download {rel_path}: {other}。可运行 `python scripts/prepare-voice-models.py` 离线部署"),
+                        other => format!("下载模型文件 {rel_path} 失败: {other}。请检查网络后点击重试，或运行 `python scripts/prepare-voice-models.py` 离线部署"),
                     };
                     error!("{reason}");
                     self.set_state(ModelInstallState::Failed {
