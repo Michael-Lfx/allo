@@ -444,10 +444,12 @@ impl FlowCycle for LiveLessonContentAgentEngine {
     }
 
     async fn finish(&self, ctx: &LoopContext, draft_id: &str) -> Result<LessonOutput, AppError> {
-        // w1：本会话 verify_math 失败数随发布面穿出（finish 门后 warning
-        // 留痕，不挡发布）。
+        // w1：verify_math 留痕随发布面穿出（finish 门后 warning，不挡发布）。
+        // w1 评审修复口径：传未复核修正数（Fail 后无复核 Pass）——自修正
+        // 会话零 warning（Q1 失败语义：自修正不是失败），累计 failed 只进
+        // 观测帧读数。
         self.service
-            .finish_lesson_draft(draft_id, ctx.math_verify.failed_u32())
+            .finish_lesson_draft(draft_id, ctx.math_verify.unresolved_u32())
     }
 
     fn revision(&self, _ctx: &LoopContext, draft_id: &str) -> Result<u64, AppError> {
@@ -542,15 +544,24 @@ pub(crate) struct LoopContext {
     math_verify: Arc<MathVerifyCounters>,
 }
 
-/// verify_math 调用计数（w1/A5）：calls/passed/failed 三个原子槽。观测面
-/// 而已——不进 WS publish_ok 帧（`publish_frame` 是拿不到 LoopContext 的
-/// trait 关联函数，不加签名）、不走 LessonDraft（verify_math 不落库，无
-/// 载体）；任何计数丢失不影响生成正确性。
+/// verify_math 调用计数（w1/A5）：calls/passed/failed/unresolved 四个原子
+/// 槽。观测面而已——不进 WS publish_ok 帧（`publish_frame` 是拿不到
+/// LoopContext 的 trait 关联函数，不加签名）、不走 LessonDraft（verify_math
+/// 不落库，无载体）；任何计数丢失不影响生成正确性。
+///
+/// `unresolved`（w1 评审修复）：未复核修正的失败数——Fail 置增、任一 Pass
+/// 清零（R14 自修改协议的机械形状：模型按 verdict 改正后重新提交核验 =
+/// 复核闭环）。它是 ls_finish 传给发布面留痕的计数：自修正会话（核验失败
+/// →打回→复核过→过闸，map.md 验证总纲第 1 条）零 warning；无视 Fail 硬写
+/// 错数的会话才有 `math_verify_failed` warning。v0 粗粒度：任一 Pass 视为
+/// 闭环在走，按量精确追踪是后置议题。累计 `failed` 只进观测帧读数（smoke
+/// read-out 行），不进任何硬门（Q1 失败语义：自修正不是失败）。
 #[derive(Default)]
 pub(crate) struct MathVerifyCounters {
     calls: AtomicUsize,
     passed: AtomicUsize,
     failed: AtomicUsize,
+    unresolved: AtomicUsize,
 }
 
 impl MathVerifyCounters {
@@ -560,26 +571,32 @@ impl MathVerifyCounters {
         match verdict {
             ClaimVerdict::Pass { .. } => {
                 self.passed.fetch_add(1, Ordering::Relaxed);
+                // 复核闭环：任一 Pass 即清空未修正失败（见 struct 文档）。
+                self.unresolved.store(0, Ordering::Relaxed);
             }
             ClaimVerdict::Fail { .. } => {
                 self.failed.fetch_add(1, Ordering::Relaxed);
+                self.unresolved.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
-    /// 发布观测帧的计数形状（smoke `math_verify read-out` 的取数面）。
+    /// 发布观测帧的计数形状（smoke `math_verify read-out` 与判据⑧的取数
+    /// 面）：failed = 会话累计（读数面）；unresolved = 未复核修正（finish
+    /// findings 口径，判据⑧硬门）。
     fn snapshot_json(&self) -> serde_json::Value {
         serde_json::json!({
             "calls": self.calls.load(Ordering::Relaxed),
             "passed": self.passed.load(Ordering::Relaxed),
             "failed": self.failed.load(Ordering::Relaxed),
+            "unresolved": self.unresolved.load(Ordering::Relaxed),
         })
     }
 
-    /// 失败数穿出发布面（`ls_finish` → finish 门后 warning 留痕）。usize
-    /// 饱和到 u32::MAX——计数溢出只影响读数形状，不 panic。
-    fn failed_u32(&self) -> u32 {
-        u32::try_from(self.failed.load(Ordering::Relaxed)).unwrap_or(u32::MAX)
+    /// 未复核修正失败数穿出发布面（`ls_finish` → finish 门后 warning 留痕）。
+    /// usize 饱和到 u32::MAX——计数溢出只影响读数形状，不 panic。
+    fn unresolved_u32(&self) -> u32 {
+        u32::try_from(self.unresolved.load(Ordering::Relaxed)).unwrap_or(u32::MAX)
     }
 }
 
@@ -1194,11 +1211,12 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
             let ctx = Arc::clone(&ctx);
             async move {
                 let draft_id = ctx.require_draft()?;
-                // w1：verify_math 失败数随发布面穿出（finish 门后 warning
-                // 留痕，A3——不挡发布、不重放核验）。
+                // w1：verify_math 留痕随发布面穿出（finish 门后 warning，
+                // A3——不挡发布、不重放核验）。w1 评审修复口径：传未复核
+                // 修正数（unresolved），自修正会话零 warning。
                 match ctx
                     .service
-                    .finish_lesson_draft(&draft_id, ctx.math_verify.failed_u32())
+                    .finish_lesson_draft(&draft_id, ctx.math_verify.unresolved_u32())
                 {
                     Ok(output) => {
                         let chars =
@@ -1225,6 +1243,11 @@ fn ls_finish(ctx: Arc<LoopContext>) -> OneShotTool {
 /// claim JSON 损坏 → Err（模型下一轮改 claim）；核验 Fail → **Ok**（
 /// verdict JSON 内含 reason/computed/counterexample——核验失败是正常结论
 /// 不是工具故障）。无任何路径触库；每次调用记入计数槽（观测面）。
+///
+/// 同步注记（w1 评审，记录不改）：本 description 与 input_schema 的字段
+/// 说明三处复述了求值器规则（表达式文法/函数表/容差缺省）——求值器单源
+/// 在 `nomifun_learning::verify_math`（`eval_expr` 文法与常量），同步靠人
+/// 盯，改动文法时逐字核对这三处文案。
 fn verify_math_tool(ctx: Arc<LoopContext>) -> OneShotTool {
     OneShotTool {
         name: "verify_math".into(),
@@ -1549,6 +1572,24 @@ mod tests {
         assert!(system.contains("对照要真对照"));
     }
 
+    /// R14 跨宿互钉（w1 评审修复，轻量漂移钉）：非对称孪生的两宿各自携带
+    /// R14 标记——EN 块（nomifun-learning `CONTENT_DISCIPLINE_V2_BLOCK`，传统
+    /// 线纪律版）与中文块（本图线 `CONTENT_DISCIPLINE_V2_CN`，绑 verify_math
+    /// 工具版）。本测试是唯一能同时看到两宿的位置（依赖方向 ai-agent →
+    /// learning）：任一侧删条目/换编号/漏改时这里即红，防孪生漂移成单宿
+    /// 条款。
+    #[test]
+    fn r14_marker_is_pinned_on_both_host_blocks() {
+        assert!(
+            CONTENT_DISCIPLINE_V2_CN.contains("R14"),
+            "中文块（图线宿主）缺 R14 标记——单侧漏改"
+        );
+        assert!(
+            nomifun_learning::CONTENT_DISCIPLINE_V2_BLOCK.contains("R14"),
+            "EN 块（传统线宿主）缺 R14 标记——单侧漏改"
+        );
+    }
+
     /// n3（#177/#178 条款移植）：规划面四条款（构件词边界 / 练习形态按
     /// 档位 / 取材池 / 意图画像与容量预算）+ 写作面「规划即雄心」进图管线
     /// 系统提示词——条款覆盖短语断言（三闸之短语闸；金样闸不适用：图线
@@ -1844,11 +1885,10 @@ mod tests {
             .find(|tool| tool.name == "verify_math")
             .expect("verify_math on the generation face");
 
-        // 解析边界：kind 缺失 / 未支持 kind / 字段拼错 → Err（形状指引前缀）。
+        // 解析边界：kind 缺失 / 未支持 kind / 字段类型错 → Err（形状指引前缀）。
         for bad in [
             serde_json::json!({}),
             serde_json::json!({ "kind": "equation", "expr": "1" }),
-            serde_json::json!({ "kind": "eval", "expr": "1+1", "wat": 1 }),
             serde_json::json!({ "kind": "eval", "expr": 12 }),
         ] {
             let error = (tool.handler)(bad).await.expect_err("corrupt claim is Err");
@@ -1858,6 +1898,15 @@ mod tests {
             );
             assert!(error.contains("{kind:eval|identity,...}"), "{error}");
         }
+
+        // 多余字段宽容（w1 评审修复：deny_unknown_fields 移除，全仓工具 op
+        // 参数均容多余字段——模型多带一字段不吃 Err 多耗一轮自纠）。
+        let reply = (tool.handler)(serde_json::json!({
+            "kind": "eval", "expr": "1+1", "expected": 2.0, "wat": 1
+        }))
+        .await
+        .unwrap();
+        assert!(reply.contains("\"kind\":\"pass\""), "{reply}");
 
         // 核验结论一律 Ok：pass / fail（fail 带 reason 与 computed）/ 解析错
         // verdict（定位死因）/ identity 反例。
@@ -1902,11 +1951,13 @@ mod tests {
         assert!(reply.contains("\"kind\":\"pass\""), "{reply}");
 
         // 计数槽：只计产出 verdict 的调用（Err 的损坏 claim 在解析层即拒，
-        // 不产结论——calls=5，pass=2 / fail=3）。
+        // 不产结论；多余字段样是合法调用照计——calls=6，pass=3 / fail=3，
+        // 且每个 Fail 后都有复核 Pass → 未复核修正数清零）。
         let counters = ctx.math_verify.snapshot_json();
-        assert_eq!(counters["calls"], 5, "{counters}");
-        assert_eq!(counters["passed"], 2, "{counters}");
+        assert_eq!(counters["calls"], 6, "{counters}");
+        assert_eq!(counters["passed"], 3, "{counters}");
         assert_eq!(counters["failed"], 3, "{counters}");
+        assert_eq!(counters["unresolved"], 0, "{counters}");
 
         // 修复面同备 verify_math，且两面共享同一计数槽（同一次会话累计）。
         let repair_tool = lesson_content_tools(Arc::clone(&ctx), true)
@@ -1919,13 +1970,42 @@ mod tests {
         .await
         .unwrap();
         let counters = ctx.math_verify.snapshot_json();
-        assert_eq!(counters["calls"], 6, "{counters}");
-        assert_eq!(counters["passed"], 3, "{counters}");
+        assert_eq!(counters["calls"], 7, "{counters}");
+        assert_eq!(counters["passed"], 4, "{counters}");
     }
 
-    /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）：发布观测帧（calls.jsonl 的
-    /// `lesson_agent_publish` 行）必须带 viz_lint_events（此前只进 WS
-    /// publish_ok 帧——smoke 读数结构性恒 0 的缺陷）与 math_verify 计数。
+    /// 未复核修正数语义（w1 评审修复）：Fail 置增、任一 Pass 清零——自修正
+    /// 会话（核验失败→打回→复核过）的 finish findings 零
+    /// `math_verify_failed` warning（Q1 口径：自修正不是失败）；累计 failed
+    /// 不清（观测读数面保留全量）。
+    #[test]
+    fn math_verify_unresolved_resets_on_recheck_pass() {
+        let counters = MathVerifyCounters::default();
+        let fail = ClaimVerdict::Fail {
+            reason: "boom".into(),
+            computed: None,
+            counterexample: None,
+        };
+        counters.record(&fail);
+        counters.record(&fail);
+        let snapshot = counters.snapshot_json();
+        assert_eq!(snapshot["failed"], 2, "{snapshot}");
+        assert_eq!(snapshot["unresolved"], 2, "{snapshot}");
+        assert_eq!(counters.unresolved_u32(), 2);
+
+        // 模型按 verdict 改正并重新提交核验 → Pass 清零未修正数。
+        counters.record(&ClaimVerdict::Pass { value: Some(2.0) });
+        let snapshot = counters.snapshot_json();
+        assert_eq!(snapshot["failed"], 2, "累计 failed 保留（读数面）: {snapshot}");
+        assert_eq!(snapshot["unresolved"], 0, "{snapshot}");
+        assert_eq!(counters.unresolved_u32(), 0, "finish findings 零留痕");
+    }
+
+    /// f3 读数修复 + w1 计数槽（蓝图 4.3/A5）+ w1 评审修复的 unresolved 面：
+    /// 发布观测帧（calls.jsonl 的 `lesson_agent_publish` 行）必须带
+    /// viz_lint_events（此前只进 WS publish_ok 帧——smoke 读数结构性恒 0 的
+    /// 缺陷）、math_verify 累计计数（读数面）与未复核修正数（finish
+    /// findings 口径，smoke 判据⑧硬门的取数面）。
     #[test]
     fn lesson_publish_observation_frame_carries_viz_lint_and_math_verify() {
         let output = LessonOutput {
@@ -1953,6 +2033,123 @@ mod tests {
         assert_eq!(frame["math_verify"]["calls"], 2);
         assert_eq!(frame["math_verify"]["passed"], 1);
         assert_eq!(frame["math_verify"]["failed"], 1);
+        assert_eq!(
+            frame["math_verify"]["unresolved"], 1,
+            "未复核修正数随帧披露（判据⑧ finish findings 口径的取数面）"
+        );
+    }
+
+    /// 全循环打回自修改样（w1 评审票面缺口，照
+    /// `incomplete_sectioned_draft_is_blocked_until_repaired_and_published`
+    /// 模子）：某轮调 verify_math（identity）得 Fail verdict——**Ok** 结果
+    /// 携带 computed/counterexample（核验失败是正常结论不是工具故障，A3）
+    /// ——模型下一轮按反例改正 claim 重新复核过（R14 自修改闭环），随后
+    /// 正文落库、活动补齐、ls_finish 过闸发布。钉住 map.md 验证总纲第 1 条
+    /// 「核验失败→打回→自修改→过闸」的循环内全链。
+    #[tokio::test]
+    async fn verify_math_fail_verdict_feeds_back_and_self_correction_publishes() {
+        let (service, _dir) = test_service().await;
+        let (ctx, _draft, _published) = context(Arc::clone(&service));
+
+        let provider = ScriptedProvider::new(vec![
+            vec![tool_use("ls_start", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![
+                tool_use("ls_set_section_manifest", section_manifest_ops()),
+                done(StopReason::ToolUse),
+            ],
+            // 核验失败轮：恒错 identity → Fail verdict 以 Ok ToolResult 回模型。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "(x+1)^2", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            // 自修改轮：按反例改正后的恒等式重新提交复核 → Pass（闭环）。
+            vec![
+                tool_use(
+                    "verify_math",
+                    serde_json::json!({
+                        "kind": "identity", "lhs": "x^2", "rhs": "x*x", "variables": ["x"]
+                    }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s1", "body": concept_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![
+                tool_use(
+                    "ls_set_section_body",
+                    serde_json::json!({ "section_key": "s2", "body": practice_body() }),
+                ),
+                done(StopReason::ToolUse),
+            ],
+            vec![tool_use("ls_patch_activities", valid_activity_ops()), done(StopReason::ToolUse)],
+            vec![tool_use("ls_finish", serde_json::json!({})), done(StopReason::ToolUse)],
+            vec![LlmEvent::TextDelta("已发布".into()), done(StopReason::EndTurn)],
+        ]);
+        let output = run_loops(
+            &engine(Arc::clone(&service)),
+            provider.clone(),
+            "test-model",
+            &lesson_user_text(&ctx.context),
+            Arc::clone(&ctx),
+            BUDGETS.round_tokens,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.activities.len(), 3, "self-corrected lesson publishes");
+        assert_eq!(output.sections.len(), 2);
+
+        // Fail verdict 的回灌面：Ok ToolResult（is_error=false）携带 verdict
+        // JSON 的 computed/counterexample 槽位与反例证据——模型据此自修改。
+        let rounds = provider.seen_messages.lock().unwrap();
+        let fail_result = rounds
+            .iter()
+            .flat_map(|round| round.iter())
+            .find_map(|message| match &message.content[0] {
+                ContentBlock::ToolResult { is_error: false, content, .. }
+                    if content.contains("\"kind\":\"fail\"") && content.contains("counterexample") =>
+                {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .expect("identity Fail verdict must come back as a successful ToolResult");
+        assert!(fail_result.contains("computed"), "{fail_result}");
+        assert!(fail_result.contains("采样核验失败"), "{fail_result}");
+        assert!(
+            fail_result.contains("lhs=") && fail_result.contains("rhs="),
+            "counterexample 带两侧实算值：{fail_result}"
+        );
+        // 复核轮的 Pass verdict 也在场（自修改闭环的另一半）。
+        assert!(
+            rounds
+                .iter()
+                .flat_map(|round| round.iter())
+                .any(|message| matches!(
+                    &message.content[0],
+                    ContentBlock::ToolResult { is_error: false, content, .. }
+                        if content.contains("\"kind\":\"pass\"")
+                )),
+            "the corrected claim must re-verify to a Pass verdict"
+        );
+
+        // 计数槽收尾：累计 failed=1（观测读数面保留），复核 Pass 把未复核
+        // 修正数清零——finish findings 零 `math_verify_failed` warning（判据
+        // ⑧ Q1 口径：自修正会话必须绿）。
+        let counters = ctx.math_verify.snapshot_json();
+        assert_eq!(counters["calls"], 2, "{counters}");
+        assert_eq!(counters["passed"], 1, "{counters}");
+        assert_eq!(counters["failed"], 1, "{counters}");
+        assert_eq!(counters["unresolved"], 0, "{counters}");
     }
 
     /// 分节草稿缺节就过早 ls_finish（section_body_missing danger）→ 发布被

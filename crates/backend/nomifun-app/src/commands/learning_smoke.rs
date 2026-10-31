@@ -2338,8 +2338,10 @@ const SMOKE_RETURN_SERIES: &str = "四个交易日的日对数收益（%）：+3
 /// 开流再恢复（provider 层单次重试吸收第一断、门面重试环吸收第二断），
 /// 生成仍成功且重试读数 attempts_used=2/success。w1 追加⑧：verify_math
 /// oracle——种子收益序列多通道预埋（概念定义/先行节要点与正文/summary，
-/// 期望 σ=√10≈3.1623 算死），判据 = 发布观测帧 math_verify 调用 ≥1 且
-/// failed == 0 且正文含「3.16」/「3.2」期望值变体（非门禁读数行
+/// 期望 σ=√10≈3.1623 算死），判据（w1 评审修复口径）= verify_math 调用 ≥1
+/// 且 finish findings 无 `math_verify_failed` warning（发布观测帧 unresolved
+/// 槽 == 0——只数 Fail 后无复核 Pass 的未修正失败；累计 failed 只进读数行
+/// 不进硬门，自修正会话必须绿）且正文含「3.16」/「3.2」期望值变体（
 /// `math_verify read-out` 随附；viz_lint 读数经 f3 修复恢复真实）。
 /// 读数
 /// （软）：字数/节均字符量/例题节数（e5 密度基线，learnhub 定调非机械
@@ -2713,12 +2715,17 @@ async fn run_content(
     );
     // w1 verify_math oracle（蓝图 4.6/A6）：计数取自修复后的发布观测帧
     // （calls.jsonl 的 lesson_agent_publish 行——f3 修复后该帧带 viz_lint_
-    // events 与 math_verify）。判据⑧（硬，进 EXIT）：verify_math 调用 ≥1
-    // 且失败数 == 0，且正文含期望值变体（σ = √10 ≈ 3.1623 → 「3.16」或
-    // 「3.2」；容忍 ≈/%/舍入变体的字符串包含形态，数值抽取器脆弱易误报
-    // ——Q4 裁决）。种子序列经多通道预埋（概念定义/先行节要点/先行节
-    // 正文/summary），期望值算死且与求值器单测对账。
-    let (mut math_calls, mut math_passed, mut math_failed) = (0u64, 0u64, 0u64);
+    // events 与 math_verify）。判据⑧（硬，进 EXIT；w1 评审修复口径）：
+    // verify_math 调用 ≥1 且 finish findings 无 `math_verify_failed`
+    // warning（帧 unresolved 槽 == 0：Fail 后无复核 Pass 的未修正失败数，
+    // Q1 口径——自修正会话「核验失败→打回→复核过→过闸」必须绿），且正文
+    // 含期望值变体（σ = √10 ≈ 3.1623 → 「3.16」或「3.2」；容忍 ≈/%/舍入
+    // 变体的字符串包含形态，数值抽取器脆弱易误报——Q4 裁决）。累计 failed
+    // 是会话计数（含已自修正失败），只进 read-out 读数行不进硬门。种子序
+    // 列经多通道预埋（概念定义/先行节要点/先行节正文/summary），期望值算
+    // 死且与求值器单测对账。
+    let (mut math_calls, mut math_passed, mut math_failed, mut math_unresolved) =
+        (0u64, 0u64, 0u64, 0u64);
     for value in rows
         .iter()
         .filter(|value| value.get("method").and_then(|v| v.as_str()) == Some("lesson_agent_publish"))
@@ -2727,18 +2734,24 @@ async fn run_content(
             math_calls += counters.get("calls").and_then(|v| v.as_u64()).unwrap_or(0);
             math_passed += counters.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
             math_failed += counters.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+            math_unresolved += counters.get("unresolved").and_then(|v| v.as_u64()).unwrap_or(0);
         }
     }
-    println!("math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed}");
+    println!(
+        "math_verify read-out: calls={math_calls} passed={math_passed} failed={math_failed} unresolved={math_unresolved}"
+    );
     if math_calls == 0 {
         failed.push(
             "判据8红（w1）：verify_math 调用计数为 0——模型未把可算量送核验（R14 条款未落地或工具面未生效）"
                 .into(),
         );
     }
-    if math_failed != 0 {
+    // 硬门按 finish findings 口径：finish 门按传入的未复核修正数追加
+    // `math_verify_failed` warning（lesson_draft.rs），unresolved > 0 = 有
+    // 核验失败未按 R14 复核闭环。累计 failed 不在此判（含已自修正失败）。
+    if math_unresolved != 0 {
         failed.push(format!(
-            "判据8红（w1）：math_verify.failed={math_failed}——核验失败未全部修正（发布观测帧口径）"
+            "判据8红（w1）：finish findings 带 math_verify_failed warning（unresolved={math_unresolved}）——核验失败未按 R14 复核闭环（改正文后用 verify_math 重新提交）；累计 failed={math_failed} 只作读数"
         ));
     }
     if !(joined.contains("3.16") || joined.contains("3.2")) {
