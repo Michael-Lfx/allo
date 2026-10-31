@@ -20,8 +20,6 @@ const DEFAULT_REL_TOLERANCE: f64 = 1e-9;
 const ABS_TOLERANCE_FLOOR: f64 = 1e-12;
 /// identity 缺省采样点数（蓝图 4.1；未决事项「实现可调常量」）。
 const IDENTITY_DEFAULT_SAMPLES: usize = 7;
-/// 有效采样点下限（蓝图 4.1：全部被奇点跳过 = 无效核验，如实 Fail）。
-const IDENTITY_MIN_VALID_POINTS: usize = 3;
 /// 采样补采上限（蓝图 4.1：跳过补采至多 3×samples——奇点邻域防死循环）。
 const IDENTITY_RESAMPLE_CAP_FACTOR: usize = 3;
 /// identity 缺省采样域（蓝图 4.1/未决事项：[−3, 3)）。
@@ -30,9 +28,11 @@ const IDENTITY_DOMAIN_HIGH: f64 = 3.0;
 
 /// 模型提交的数学断言（工具 op 的入参契约，serde 形状即 wire 契约）。
 /// `tolerance` 是相对容差（× max(1, |期望|) 的比较尺度）；缺席 = 缺省
-/// 1e-9。未知字段一律拒绝（严格形状，模型拼错字段名当场可见）。
+/// 1e-9。未知字段宽容忽略（w1 评审修复：全仓工具 op 参数均容多余字段，
+/// 模型多带一字段不该吃 Err 多耗一轮自纠——字段名拼错仍会因必填槽缺席
+/// 当场可见）。
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MathClaim {
     /// 求值断言：实算 `expr`，有 `expected` 时按容差比对，无则只回读实算值。
     Eval {
@@ -565,6 +565,7 @@ fn verify_identity(
         .max(1);
     let mut lcg = Lcg::new();
     let mut valid = 0usize;
+    let mut skipped = 0usize;
     let mut attempts = 0usize;
     let cap = point_count * IDENTITY_RESAMPLE_CAP_FACTOR;
     while valid < point_count && attempts < cap {
@@ -581,6 +582,7 @@ fn verify_identity(
         };
         // 奇点/溢出点跳过并补采（蓝图 4.1）；表达式级解析错已在上一臂报出。
         if !left.is_finite() || !right.is_finite() {
+            skipped += 1;
             continue;
         }
         valid += 1;
@@ -601,9 +603,13 @@ fn verify_identity(
             };
         }
     }
-    if valid < IDENTITY_MIN_VALID_POINTS {
+    // 有效点 == 0 才 Fail（w1 评审修复：旧 `valid < IDENTITY_MIN_VALID_POINTS`
+    // 把模型显式传 samples:1|2（wire 契约允许）且恒等式成立的合法低点数核验
+    // 误判成 Fail——点实为有限且相等，文案「{valid}/{point_count} 个点两侧
+    // 非有限」失实）。文案只报真实非有限计数。
+    if valid == 0 {
         return fail(format!(
-            "无有效采样点（{valid}/{point_count} 个点两侧非有限——检查表达式定义域与奇点）"
+            "无有效采样点（{skipped} 个采样点两侧非有限——检查表达式定义域与奇点）"
         ));
     }
     pass(None)
@@ -924,11 +930,45 @@ mod tests {
     }
 
     #[test]
+    fn identity_low_explicit_sample_counts_verify_normally() {
+        // w1 评审修复红绿样：wire 契约允许模型显式传 samples:1|2——恒等式
+        // 成立时按实际点数核验必须 Pass（旧 `valid < 3` 下限把这些合法低点
+        // 数核验误判成 Fail「两侧非有限」，点实为有限且相等）。
+        for samples in [1u8, 2] {
+            let claim = MathClaim::Identity {
+                lhs: "x^2".into(),
+                rhs: "x*x".into(),
+                variables: vec!["x".into()],
+                tolerance: None,
+                samples: Some(samples),
+            };
+            assert_eq!(verify(&claim), pass(None), "samples={samples} must pass");
+        }
+        // 低点数不豁免核验本身：恒错等式在单点采样下照样红（确定性 LCG 钉住）。
+        let wrong = MathClaim::Identity {
+            lhs: "x".into(),
+            rhs: "x+1".into(),
+            variables: vec!["x".into()],
+            tolerance: None,
+            samples: Some(1),
+        };
+        assert!(
+            matches!(verify(&wrong), ClaimVerdict::Fail { .. }),
+            "samples=1 恒错等式仍必红"
+        );
+    }
+
+    #[test]
     fn identity_skips_singularities_and_reports_when_no_valid_points() {
-        // ln(-1) 在每个采样点都非有限：补采上限耗尽后如实报「无有效采样点」。
+        // ln(-1) 在每个采样点都非有限：补采上限耗尽后如实报「无有效采样点」，
+        // 文案只报真实非有限计数（缺省 7 点 × 补采上限 3 = 21 次全非有限）。
         match verify(&identity_claim("ln(-1)", "0", &["x"])) {
             ClaimVerdict::Fail { reason, .. } => {
                 assert!(reason.contains("无有效采样点"), "{reason}");
+                assert!(
+                    reason.contains("21 个采样点两侧非有限"),
+                    "文案须报真实非有限计数：{reason}"
+                );
             }
             other => panic!("expected Fail, got {other:?}"),
         }
@@ -1001,18 +1041,27 @@ mod tests {
     }
 
     #[test]
-    fn claim_json_rejects_unknown_kind_and_unknown_fields() {
+    fn claim_json_tolerates_unknown_fields() {
+        // w1 评审修复红绿样：deny_unknown_fields 移除——全仓工具 op 参数均
+        // 容多余字段，模型多带一字段不该吃 Err 多耗一轮自纠。
+        let eval: MathClaim = serde_json::from_value(serde_json::json!({
+            "kind": "eval", "expr": "1", "wat": 1
+        }))
+        .expect("eval claim tolerates unknown fields");
+        assert_eq!(eval, eval_claim("1"));
+        let identity: MathClaim = serde_json::from_value(serde_json::json!({
+            "kind": "identity", "lhs": "x", "rhs": "x", "variables": [], "extra": true
+        }))
+        .expect("identity claim tolerates unknown fields");
+        assert_eq!(identity, identity_claim("x", "x", &[]));
+    }
+
+    #[test]
+    fn claim_json_rejects_unknown_kind() {
         assert!(
             serde_json::from_value::<MathClaim>(serde_json::json!({ "kind": "equation", "expr": "1" }))
                 .is_err(),
             "未支持 kind 如实报错（w3 才有 equation）"
-        );
-        assert!(
-            serde_json::from_value::<MathClaim>(
-                serde_json::json!({ "kind": "eval", "expr": "1", "wat": 1 })
-            )
-            .is_err(),
-            "未知字段拒绝（严格形状）"
         );
     }
 
