@@ -289,13 +289,6 @@ impl MirrorConfig {
 
     pub fn supports(&self, rel_path: &str) -> bool {
         let clean_path = rel_path.replace('\\', "/");
-        if self.is_modelscope {
-            // ModelScope upstream hosts ASR, KWS and VAD models directly.
-            // Offline TTS models (Matcha + Vocos) are hosted on HuggingFace / hf-mirror.
-            return clean_path.starts_with("asr/")
-                || clean_path.starts_with("vad/")
-                || clean_path.starts_with("kws/");
-        }
         if self.id == "hf_mirror"
             || self.id == "hf_official"
             || self.base_url.contains("hf-mirror.com")
@@ -303,8 +296,7 @@ impl MirrorConfig {
         {
             return clean_path.starts_with("asr/")
                 || clean_path.starts_with("vad/")
-                || clean_path.starts_with("tts/")
-                || clean_path.starts_with("kws/");
+                || clean_path.starts_with("tts/");
         }
         true
     }

@@ -2125,7 +2125,7 @@ impl VoiceCompanionRuntime {
             return;
         }
         if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2196,7 +2196,7 @@ impl VoiceCompanionRuntime {
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2218,7 +2218,7 @@ impl VoiceCompanionRuntime {
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
