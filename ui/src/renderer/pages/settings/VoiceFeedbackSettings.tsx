@@ -68,7 +68,11 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             <Input
               aria-label={t('voice.feedback.wakeWords')}
               placeholder={t('voice.feedback.wakeWordsPlaceholder')}
-              value={draft?.wake_words?.[0] ?? ''}
+              value={
+                !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
+                  ? ''
+                  : draft.wake_words[0]
+              }
               allowClear
               disabled={!draft || busy}
               onChange={(val) => {

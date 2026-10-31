@@ -142,6 +142,66 @@ fn effective_idle_timeout(events: &VoiceEventHub) -> u32 {
     events.feedback().idle_timeout_secs
 }
 
+fn strip_custom_wake_word(input: &str, custom_kw: &str) -> Option<String> {
+    let is_punct_or_ws = |c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '，' | '。'
+                    | '！'
+                    | '？'
+                    | ','
+                    | '.'
+                    | '!'
+                    | '?'
+                    | ':'
+                    | '：'
+                    | '-'
+                    | '_'
+                    | '；'
+                    | ';'
+                    | '、'
+                    | '—'
+                    | '…'
+            )
+    };
+    let kw_chars: Vec<char> = custom_kw.chars().filter(|c| !is_punct_or_ws(*c)).collect();
+    if kw_chars.is_empty() {
+        return None;
+    }
+    let mut input_iter = input.char_indices().peekable();
+    let mut matched_count = 0;
+    let mut end_idx = 0;
+
+    while let Some(&(idx, ch)) = input_iter.peek() {
+        if is_punct_or_ws(ch) {
+            input_iter.next();
+            if matched_count > 0 {
+                end_idx = idx + ch.len_utf8();
+            }
+            continue;
+        }
+        if matched_count < kw_chars.len()
+            && ch.to_lowercase().eq(kw_chars[matched_count].to_lowercase())
+        {
+            matched_count += 1;
+            end_idx = idx + ch.len_utf8();
+            input_iter.next();
+        } else {
+            break;
+        }
+    }
+
+    if matched_count == kw_chars.len() {
+        let remainder = input[end_idx..]
+            .trim_start_matches(is_punct_or_ws)
+            .to_string();
+        Some(remainder)
+    } else {
+        None
+    }
+}
+
 /// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
 /// to ensure the leading onset of user speech is not clipped upon barge-in interruption.
 const BARGE_IN_PREROLL_SAMPLES: usize = 8_000;
@@ -2359,13 +2419,9 @@ impl VoiceCompanionRuntime {
         };
         let feedback = event_tx.feedback();
         for custom_kw in &feedback.wake_words {
-            let kw_trimmed = custom_kw.trim();
-            if !kw_trimmed.is_empty() {
-                let candidate = clean_input.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ':' | '：'));
-                if let Some(rest) = candidate.strip_prefix(kw_trimmed) {
-                    clean_input = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ':' | '：')).to_string();
-                    break;
-                }
+            if let Some(stripped) = strip_custom_wake_word(&clean_input, custom_kw) {
+                clean_input = stripped;
+                break;
             }
         }
         let decision = if let Some(ref text) = text_opt {

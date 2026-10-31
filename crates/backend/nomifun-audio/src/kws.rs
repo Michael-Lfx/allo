@@ -558,6 +558,57 @@ pub fn convert_chinese_to_kws_pinyin(text: &str) -> Option<String> {
             '管' => "g uan",
             '家' => "j ia",
             '飞' => "f ei",
+            '爱' => "ai",
+            '度' => "d u",
+            '达' | '大' => "d a",
+            '米' => "m i",
+            '奇' => "q i",
+            '华' => "h ua",
+            '为' | '维' => "w ei",
+            '灵' => "l ing",
+            '猫' | '毛' => "m ao",
+            '天' | '甜' => "t ian",
+            '精' | '金' => "j in",
+            '美' | '妹' => "m ei",
+            '特' => "t e",
+            '斯' | '四' => "s i",
+            '丁' => "d ing",
+            '旺' | '王' => "w ang",
+            '财' => "c ai",
+            '豆' => "d ou",
+            '卡' => "k a",
+            '波' | '伯' => "b o",
+            '比' => "b i",
+            '布' => "b u",
+            '多' | '朵' => "d uo",
+            '可' => "k e",
+            '乐' => "l e",
+            '欢' => "h uan",
+            '迎' | '银' => "y in",
+            '电' => "d ian",
+            '脑' => "n ao",
+            '呼' | '虎' => "h u",
+            '叫' => "j iao",
+            '唤' => "h uan",
+            '贾' => "j ia",
+            '安' => "an",
+            '娜' => "n a",
+            '莫' => "m o",
+            '妮' => "n i",
+            '希' => "x i",
+            '瑞' => "r ui",
+            '龙' => "l ong",
+            '兔' => "t u",
+            '狗' => "g ou",
+            '阿' => "a",
+            '文' => "w en",
+            '森' => "s en",
+            '木' => "m u",
+            '杰' => "j ie",
+            '克' => "k e",
+            '西' => "x i",
+            '球' => "q iu",
+            '咪' => "m i",
             _ => return None,
         };
         tokens.push(pinyin);
@@ -566,6 +617,32 @@ pub fn convert_chinese_to_kws_pinyin(text: &str) -> Option<String> {
         None
     } else {
         Some(tokens.join(" "))
+    }
+}
+
+/// Maps common English wake words into CMUdict phonemes for bilingual Zipformer KWS.
+pub fn convert_english_to_kws_phonemes(text: &str) -> Option<String> {
+    let clean = text.trim().to_ascii_lowercase();
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    let mut phones = Vec::new();
+    for word in words {
+        let p = match word {
+            "hi" => "HH AY1",
+            "hey" => "HH EY1",
+            "hello" => "HH AH0 L OW1",
+            "flowy" => "F L OW1 IY0",
+            "ok" | "okay" => "OW1 K EY1",
+            "alexa" => "AH0 L EH1 K S AH0",
+            "computer" => "K AH0 M P Y UW1 T ER0",
+            "jarvis" => "JH AA1 R V IH0 S",
+            _ => return None,
+        };
+        phones.push(p);
+    }
+    if phones.is_empty() {
+        None
+    } else {
+        Some(phones.join(" "))
     }
 }
 
@@ -591,6 +668,9 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
         if let Some(pinyin) = convert_chinese_to_kws_pinyin(clean) {
             let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
             lines.push(format!("{pinyin} :2.0 #0.15 @{label}"));
+        } else if let Some(phones) = convert_english_to_kws_phonemes(clean) {
+            let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_").to_uppercase();
+            lines.push(format!("{phones} :2.0 #0.15 @{label}"));
         }
     }
 

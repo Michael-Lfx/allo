@@ -154,8 +154,9 @@ impl Default for EdgeTtsProvider {
 #[async_trait]
 impl TtsProvider for EdgeTtsProvider {
     fn diagnostic(&self, voice: &str) -> Option<nomifun_api_types::voice::VoiceTtsDiagnostic> {
+        let clean_voice = voice.split_once(";speed=").map(|(v, _)| v).unwrap_or(voice);
         Some(nomifun_api_types::voice::VoiceTtsDiagnostic {
-            provider: "edge".into(), voice: Some(if voice.is_empty() { self.default_voice.clone() } else { voice.into() }),
+            provider: "edge".into(), voice: Some(if clean_voice.is_empty() { self.default_voice.clone() } else { clean_voice.into() }),
             online: true, fallback_reason: None,
         })
     }

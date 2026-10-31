@@ -3011,3 +3011,27 @@
             assert_eq!(detect_task_control(input), expected, "input={input:?}");
         }
     }
+
+    #[test]
+    fn test_strip_custom_wake_word_punctuation_tolerance() {
+        assert_eq!(
+            strip_custom_wake_word("你好，小白，今天天气怎么样", "你好小白"),
+            Some("今天天气怎么样".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("你好，小白", "你好小白"),
+            Some("".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("你好小白今天天气怎么样", "你好，小白"),
+            Some("今天天气怎么样".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("Hey Flowy, what time is it", "Hey Flowy"),
+            Some("what time is it".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("今天天气不错", "你好小白"),
+            None
+        );
+    }
