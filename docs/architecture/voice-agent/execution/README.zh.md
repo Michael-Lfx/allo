@@ -1,4 +1,4 @@
-> **2026-10-31 新分支计划**：[语音伴侣本地合成、控制与监听优化](voice-companion-overhaul-plan-2026-10-31.zh.md)与[执行交接任务书](voice-companion-overhaul-agent-brief-2026-10-31.zh.md)。用户已确认本地TTS；明确资源、生产caller、取消、设备、KWS与桌宠的分阶段实施和验证。本轮仅方案落盘，未改业务实现；下方记录保留历史语境，不把当时阻断或通过数量冒充当前状态。
+> **2026-10-31 语音伴侣深度吸收插件 KWS、极简设置重塑与离线 TTS 完整闭环**：[实施与验证方案](voice-companion-overhaul-plan-2026-10-31.zh.md)与[执行交接任务书](voice-companion-overhaul-agent-brief-2026-10-31.zh.md)。已全量落地：① 9MB 双语 Zipformer KWS 引擎与拼音/音素动态热重载及 ASR 标点容错剥离；② 10 项 Matcha-TTS/Vocos 模型并入 ModelManager 17 项全量下载与 SHA-256 校验管线；③ 设置页终极极简卡片重构与输入框清空修复；④ 语言自适应预设发音（中文“我在”/“好的，再见”，英文“I'm here”/“Goodbye”）；⑤ 桌宠 6px 吸边与 36px 缓冲还原；⑥ 线上发布打包自动守卫（29 项通过）。本地编译与全量测试梯子 100% 绿灯。下方记录保留历史语境。
 
 > **2026-10-25 当前阻断与修复计划 rev2（优先）**：[语音套件全链路就绪与恢复方案](voice-ux-rev3/VOICE-SUITE-READINESS-AND-RECOVERY-PLAN-2026-10-25.zh.md)。生产启动小栈溢出、TTS 当前端点失败，以及新增错误 Range/锁文件删除虚假成功反例均未修复。方案补齐下载→校验→启用→KWS/VAD→双语 ASR→实际 LLM→双语 TTS→播放、30 项验收和全入口门禁；本轮仅文档与隔离探针，不把下方历史通过数量当成当前全链路可用证明，未提交/推送。
 

@@ -1608,4 +1608,36 @@ Flowy已有透明置顶独立桌宠窗口、hover条与气泡（companion/index.
 - **改进**：`generate_with_config` 传入带有 `AtomicBool` 状态检查的回调闭包；外层 30 秒超时一旦触发，立即置位取消标记，通知底层 C++ ONNX 线程中断当前 token 生成，杜绝后台僵尸推理与死锁累积。
 
 ### 10.5 多显示器吸附防跨屏跳跃几何
-- **改进**：`undockCompanionFromEdge` 引入 `findDockedHostDisplay`，依据吸附时暴露的 6px 色条在全局虚拟坐标系中的实际像素采样点锁定所属显示器，彻底杜绝多屏接缝处由于重叠区面积误算导致的跨屏还原跳跃。
+- **改进**：`undockCompanionFromEdge` 引入 `findDockedHostDisplay`，依据吸附时暴露的 6px 色条在全局虚拟坐标系中的实际像素采样点锁定所属显示器，彻底杜绝多屏接缝处由于重叠区面积误算导致的跨屏还原跳跃。同时增加 `36px` 还原缓冲（大于 `30px` 吸附阈值），根除窗口滑出后被 600ms 后系统 `onMoved` 误判重新回吸的死循环。
+
+### 10.6 设置页终极极简收敛与输入框交互修复
+- **痛点**：此前的设置页展示了过多的冗余配置（退下口令列表、退下告别语、插话打断词、唤醒应答语、快速回复模型、合成引擎单选、回复播报开关），且唤醒词输入框在删空时自动弹回 `Hey Flowy` 导致无法清空，页面各区块割裂。
+- **改进**：
+  1. 彻底移除 7 项多余输入项，收敛为单一的直觉化“语音首选项”卡片；
+  2. 唤醒词输入框支持 `allowClear`，当使用默认值或删空时，`value` 保持为空并自然透出浅灰色 `placeholder="Hey Flowy"`，彻底解决无法删除干净的问题；
+  3. 修改设置后，【保存设置】按钮出现高亮呼吸动画与角标提示（`● 未保存修改`），明确引导用户保存；
+  4. 顶部将“语音能力”与“检查并准备”合并为单张卡片，7 项自检进度（Capture/KWS/VAD/ASR/LLM/TTS/Playback）平铺一览无遗。
+
+### 10.7 语言自适应预设（Locale-Aware Presets）
+- **改进**：
+  1. 独立唤醒（仅呼叫唤醒词）：中文环境自动播报预设 `"我在"`，英文环境自动播报预设 `"I'm here"`；
+  2. 会话退下（自然口令短路或 LLM 意图识别）：中文环境自动播报预设 `"好的，再见"`，英文环境自动播报预设 `"Goodbye"`；
+  3. 会话挂断后自动安全释放麦克风，状态无缝变回“等待唤醒 (Idle)”。
+
+### 10.8 ModelManager 17 项全量资产下载与统一模型目录
+- **痛点**：套件删除重装后，旧 `ModelManager` 仅下载 7 项基础模型，导致 10 项 TTS 文件丢失并静默回退 Edge；后台伴侣进程 `config.rs` 因优先检查了空的 `Voice-Companion\models` 导致找不到 VAD 启动即自杀。
+- **改进**：
+  1. `ModelManager` 将 10 项 Matcha-TTS 与 Vocos 模型并入标准下载管线（全量 17 项文件），国内环境分别映射至 `modelscope.cn` 与 `hf-mirror.com`，下载后逐一校验权威 SHA-256；
+  2. `config.rs` 修正为优先定位包含 `asr` 的主程序模型库 `%LOCALAPPDATA%\Flowy\models`，彻底消除了后台伴侣进程因目录错位崩溃自退的严重隐患。
+
+### 10.9 9MB 双语 Zipformer KWS 引擎与动态音素/声韵母热重载
+- **改进**：
+  1. 底层声学引擎升级为 Sherpa-ONNX 官方 9MB 中英双语 Zipformer 模型；
+  2. 新增动态音素编译器：中文汉字自动解析为声母+韵母（如 `你好小白` $\to$ `n i h ao x iao b ai`，支持百余常用字），英文单词自动映射为 CMUdict 音素（如 `Hi Flowy` $\to$ `HH AY1 F L OW1 IY0`）；
+  3. 保存设置后通过原子标记通知伴侣 Worker 重新编译 Spotter 规则并原子重载，1 秒内声学热生效，无需重启应用；
+  4. ASR 阶段引入 `strip_custom_wake_word` 标点不敏感对齐算法，消除 SenseVoice 自动插入逗号（如 `"你好，小白"`）导致的唤醒词剥离失败。
+
+### 10.10 线上发布打包自动化校验守卫
+- **改进**：
+  1. `tauri.conf.json` 与 `tauri.ci-skip-ui.conf.json` 中的 `beforeBuildCommand` 均严格锁定 `prepare-voice-companion.mjs`；
+  2. 新增 `check:release-voice-preparation` 与 `verify-voice-release-package` 自动化门禁测试（29 项用例通过），确保 `voice-companion.exe` 与官方 MSVC CRT 依赖库始终可靠装入安装包 `bin/` 目录。

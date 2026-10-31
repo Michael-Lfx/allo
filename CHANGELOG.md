@@ -5,6 +5,11 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Upgraded voice companion KWS engine to official 9MB Sherpa-ONNX bilingual Zipformer with dynamic Chinese pinyin and English CMUdict phoneme compilation, enabling real-time hot-reloaded custom wake words without restarting the application.
+- Overhauled offline TTS pipeline to bundle all 10 Matcha-TTS and Vocos acoustic assets into ModelManager's 17-file SHA-256 verification and download pipeline, prioritizing ModelScope and hf-mirror to prevent silent Edge-TTS fallbacks upon reinstallation.
+- Redesigned voice settings page into a unified, minimalist preferences card with single-line clearable wake words, automatic dirty pulse animations, and merged capability diagnostics.
+- Added locale-adaptive preset voice responses for standalone wake ("我在" / "I'm here") and session dismiss ("好的，再见" / "Goodbye") with punctuation-tolerant ASR prefix stripping.
+- Enhanced desktop pet window geometry with 6px edge docking and 36px threshold-buffered hover undocking, preventing bezel-jumping and re-docking loops across multi-monitor setups.
 - Voice companion runtime and host manager are physically modularized into dedicated submodules (`tests`, `announcements`, `diagnostics`, `recorder`), reducing single-file complexity by over 50% while strictly preserving all lock lifecycles, states, and function token signatures.
 - Fixed the voice session failure chain where task A completion dropped utterance B and caused utterance C to fail with `binding_invalid`. Added atomic lock-guarded ownership checks, accurate epoch advance reconciliation, and isolation of stale callbacks.
 - Prioritized ModelScope mirror across all network environments for local voice acoustic models and hardened download failover with HTTP Range chunk resumption and relaxed speed gate timeouts.
