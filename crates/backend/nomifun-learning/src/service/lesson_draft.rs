@@ -114,11 +114,14 @@ impl LearningService {
     /// (with its resume mapping). The caller (synchronous pipeline or
     /// engine loop) persists it.
     ///
-    /// `math_verify_failed`（w1/蓝图 4.5/A3）：本会话 verify_math 核验失败
-    /// 次数（ls_finish handler 从计数槽读出传入）。> 0 时在 finish 门
+    /// `math_verify_failed`（w1/蓝图 4.5/A3；w1 评审修复口径）：**未复核修
+    /// 正**的 verify_math 失败数（ls_finish handler 从计数槽的 unresolved
+    /// 槽读出传入——Fail 置增、任一复核 Pass 清零）。> 0 时在 finish 门
     /// refresh 之后追加 warning 留痕（viz_block_lint_dropped 同位——audit
     /// 整表重算会覆盖先加的条目）；不挡发布（发布面无法重放核验，danger
-    /// 会把「一道题改不对」放大成整课失败——Q1 裁决）；0 = 零痕迹。
+    /// 会把「一道题改不对」放大成整课失败——Q1 裁决）；0 = 零痕迹。自修正
+    /// 会话（核验失败→打回→复核过→过闸）零 warning——累计失败数只进观测
+    /// 读数面，不进留痕门（自修正不是失败）。
     pub fn finish_lesson_draft(
         &self,
         draft_id: &str,
@@ -139,13 +142,15 @@ impl LearningService {
         // 条目）——阻塞报告与 publish 面都能看见剔除事实。
         draft.findings.extend(dropped_findings);
         // w1 verify_math 留痕：同为 refresh 之后追加（整表重算覆盖面同上）。
+        // w1 评审修复：计数语义 = 未复核修正数（传入侧见计数槽 unresolved），
+        // 文案随之点名「未复核修正」而非累计失败。
         if math_verify_failed > 0 {
             draft
                 .findings
                 .push(crate::lesson_draft::LessonFinding {
                     severity: crate::course_outline::SEV_WARNING,
                     kind: "math_verify_failed".to_owned(),
-                    message: format!("本课 verify_math 失败 {math_verify_failed} 次，未必已全部修正"),
+                    message: format!("本课 verify_math 有 {math_verify_failed} 次失败未复核修正"),
                 });
             tracing::warn!(
                 target: "nomifun_learning",
@@ -377,10 +382,11 @@ mod tests {
         assert!(service.live_lesson_draft_for_lesson("lesson-x").is_none());
     }
 
-    /// w1 verify_math 发布面留痕（蓝图 4.5/A3）：failed > 0 → finish 门
-    /// refresh 之后追加 `math_verify_failed` warning（viz_block_lint_dropped
-    /// 同位）——不挡发布（干净草稿照样 Ok）；草稿另有 danger 时 warning 随
-    /// 阻塞报告可见（留痕的消费面）；failed = 0 → 零痕迹。
+    /// w1 verify_math 发布面留痕（蓝图 4.5/A3；w1 评审修复口径）：传入计数
+    /// > 0 → finish 门 refresh 之后追加 `math_verify_failed` warning
+    /// （viz_block_lint_dropped 同位）——不挡发布（干净草稿照样 Ok）；草稿
+    /// 另有 danger 时 warning 随阻塞报告可见（留痕的消费面）；计数 = 0 →
+    /// 零痕迹（自修正会话——核验失败后复核 Pass——不留痕）。
     #[tokio::test]
     async fn finish_appends_math_verify_failed_warning_and_never_blocks() {
         let database = nomifun_db::init_database_memory().await.unwrap();
@@ -430,7 +436,7 @@ mod tests {
             .expect_err("缺活动 = danger，发布被拒");
         let report = blocked.to_string();
         assert!(report.contains("math_verify_failed"), "{report}");
-        assert!(report.contains("verify_math 失败 2 次"), "{report}");
+        assert!(report.contains("verify_math 有 2 次失败未复核修正"), "{report}");
 
         // 同草稿 failed=0 → 阻塞报告零 math_verify 痕迹。
         let blocked = service

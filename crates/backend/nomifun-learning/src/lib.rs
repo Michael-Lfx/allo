@@ -44,8 +44,10 @@ pub use generation::{
     Blueprint, BlueprintLesson, BlueprintModule, LessonOutput, SampleDisclosure,
 };
 pub use generation::{QB_SIMILARITY_SWITCH_ENV, qb_readings};
+// R14 EN 块随开关常量再导出（w1 评审修复）：ai-agent 的跨宿互钉测试经
+// crate 根引用（generation 模块私有，类型/常量公开先例同 SampleDisclosure）。
 pub use generation::{
-    CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
+    CONTENT_DISCIPLINE_V2_BLOCK, CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
     is_content_discipline_v2_disabled_value,
 };
 pub use generation::{

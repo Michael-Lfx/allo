@@ -357,7 +357,7 @@ pub(crate) use self::lesson::{
     render_grounding_fragments, rewrite_section_body, validate_lesson_document,
 };
 pub use self::lesson::{
-    CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
+    CONTENT_DISCIPLINE_V2_BLOCK, CONTENT_DISCIPLINE_V2_SWITCH_ENV, content_discipline_v2_enabled,
     is_content_discipline_v2_disabled_value,
 };
 pub(crate) use self::parser::{fix_mermaid_quotes, parse_json_object};
