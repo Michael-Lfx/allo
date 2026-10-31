@@ -1441,10 +1441,11 @@ fn qb_similarity_switch_values_are_strict() {
     }
 }
 
-// ── k05：内容纪律 R10–R13（开关臂）──
+// ── k05：内容纪律 R10–R13 + w1 R14（开关臂）──
 
-/// 四条新条款的开关生效：on 臂装配文本四条全在（传统写作面三条 body
-/// prompt + 规划面情境句）；off 臂逐条不在（= j07 后提示词）。
+/// 五条新条款的开关生效：on 臂装配文本五条全在（传统写作面 body prompt +
+/// 规划面情境句）；off 臂逐条不在（= j07 后提示词——R14 与 V2 块同命，
+/// w1 裁决：不新增开关）。R14 的 EN 版是纯纪律（传统线无工具循环，A4）。
 #[test]
 #[serial_test::serial]
 fn content_discipline_v2_switch_adds_and_removes_the_four_clauses() {
@@ -1473,6 +1474,7 @@ fn content_discipline_v2_switch_adds_and_removes_the_four_clauses() {
         "Audience register (R11)",
         "Vocabulary stays inside the known set (R12)",
         "Assertion-example consistency (R13)",
+        "Computable quantities are computed, never guessed (R14)",
     ];
 
     unsafe { std::env::set_var(super::lesson::CONTENT_DISCIPLINE_V2_SWITCH_ENV, "on") };
