@@ -206,6 +206,11 @@ impl ModelManager {
         }
     }
 
+    /// Returns whether the offline TTS models are present and pass SHA256 integrity verification.
+    pub async fn is_tts_ready(&self) -> bool {
+        self.verifier.verify_tts(&self.models_dir).await
+    }
+
     fn file_stamps(&self) -> std::io::Result<Vec<(u64, SystemTime)>> {
         EXPECTED_FILES
             .iter()

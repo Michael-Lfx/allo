@@ -2016,7 +2016,7 @@ impl VoiceCompanionProcessManager {
         let _guard = self.feedback_update_lock.lock().await;
         let requested = patch.apply(self.requested_feedback()?);
         requested.validate()?;
-        let value = serde_json::to_value(requested).map_err(|_| "configuration_invalid")?;
+        let value = serde_json::to_value(&requested).map_err(|_| "configuration_invalid")?;
         self.write_config_entry("feedback", value.clone())?;
         let effective = match self
             .feedback_rpc(reqwest::Method::POST, "", Some(value))

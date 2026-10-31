@@ -1324,16 +1324,24 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             return Err(TtsError::Synthesis("null_byte_detected".into()));
         }
 
-        let sid = if voice.is_empty() {
+        let (actual_voice, custom_speed) = if let Some((v, s)) = voice.split_once(";speed=") {
+            (v, s.parse::<f32>().ok())
+        } else {
+            (voice, None)
+        };
+
+        let sid = if actual_voice.is_empty() {
             self.config.sid
         } else {
-            voice.parse::<i32>().unwrap_or(self.config.sid)
+            actual_voice.parse::<i32>().unwrap_or(self.config.sid)
         };
+
+        let speed = custom_speed.unwrap_or(self.config.speed);
 
         let engines_arc = self.engines.clone();
         let config = self.config.clone();
         let text_owned = text_clean.to_string();
-        let default_locale = if voice.starts_with("en") || voice.contains("en_") || voice.contains("en-") {
+        let default_locale = if actual_voice.starts_with("en") || actual_voice.contains("en_") || actual_voice.contains("en-") {
             Some("en-US".to_string())
         } else {
             None
@@ -1350,7 +1358,7 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             }
             let engines = lock.as_ref().expect("engines initialized");
             let gen_config = sherpa_onnx::GenerationConfig {
-                speed: config.speed,
+                speed,
                 sid,
                 ..Default::default()
             };

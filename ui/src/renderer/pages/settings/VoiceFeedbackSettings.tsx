@@ -91,7 +91,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             control={
               <Input.TextArea
                 aria-label={t('voice.feedback.wakeWords')}
-                placeholder={'Hey Flowy\n你好 Flowy'}
+                placeholder={t('voice.feedback.wakeWordsPlaceholder')}
                 autoSize={{ minRows: 2, maxRows: 4 }}
                 value={draft?.wake_words?.join('\n') ?? ''}
                 disabled={!draft || busy}
@@ -109,7 +109,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             control={
               <Input
                 aria-label={t('voice.feedback.wakeReply')}
-                placeholder={'我在'}
+                placeholder={t('voice.feedback.wakeReplyPlaceholder')}
                 value={draft?.wake_reply ?? ''}
                 disabled={!draft || busy}
                 onChange={(val) => setDraft((prev) => prev && { ...prev, wake_reply: val.trim() })}
@@ -129,7 +129,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             control={
               <Input
                 aria-label={t('voice.feedback.interjectKeyword')}
-                placeholder={'Flowy'}
+                placeholder={t('voice.feedback.interjectKeywordPlaceholder')}
                 value={draft?.interject_keyword ?? ''}
                 disabled={!draft || busy}
                 onChange={(val) => setDraft((prev) => prev && { ...prev, interject_keyword: val.trim() })}
@@ -143,7 +143,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             control={
               <Input.TextArea
                 aria-label={t('voice.feedback.dismissPhrases')}
-                placeholder={'退下吧\n结束通话\n休息吧'}
+                placeholder={t('voice.feedback.dismissPhrasesPlaceholder')}
                 autoSize={{ minRows: 2, maxRows: 4 }}
                 value={draft?.dismiss_phrases?.join('\n') ?? ''}
                 disabled={!draft || busy}
@@ -161,7 +161,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             control={
               <Input
                 aria-label={t('voice.feedback.dismissReply')}
-                placeholder={'好的，再见'}
+                placeholder={t('voice.feedback.dismissReplyPlaceholder')}
                 value={draft?.dismiss_reply ?? ''}
                 disabled={!draft || busy}
                 onChange={(val) => setDraft((prev) => prev && { ...prev, dismiss_reply: val.trim() })}

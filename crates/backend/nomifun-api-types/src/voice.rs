@@ -52,10 +52,35 @@ impl Default for VoiceFeedbackConfig {
 impl VoiceFeedbackConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.volume > 100 {
-            Err("feedback_volume_invalid")
-        } else {
-            Ok(())
+            return Err("feedback_volume_invalid");
         }
+        if !self.tts_speed.is_finite() || self.tts_speed < 0.25 || self.tts_speed > 3.0 {
+            return Err("feedback_tts_speed_invalid");
+        }
+        if self.dismiss_phrases.len() > 30 || self.wake_words.len() > 30 {
+            return Err("feedback_phrase_count_exceeded");
+        }
+        const RESERVED_CONFIRM_WORDS: &[&str] = &[
+            "确认", "确定", "取消", "同意",
+            "confirm", "cancel", "yes", "no",
+        ];
+        for phrase in &self.dismiss_phrases {
+            let trimmed = phrase.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > 50 {
+                return Err("feedback_phrase_length_invalid");
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            if RESERVED_CONFIRM_WORDS.iter().any(|&r| r == lower) {
+                return Err("feedback_dismiss_reserved_conflict");
+            }
+        }
+        for word in &self.wake_words {
+            let trimmed = word.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > 50 {
+                return Err("feedback_phrase_length_invalid");
+            }
+        }
+        Ok(())
     }
 }
 

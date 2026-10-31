@@ -26,8 +26,12 @@ pub const DOWNLOAD_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
     "tts/matcha-icefall-zh-baker/tokens.txt",
     "tts/matcha-icefall-zh-baker/lexicon.txt",
+    "tts/matcha-icefall-zh-baker/date.fst",
+    "tts/matcha-icefall-zh-baker/number.fst",
+    "tts/matcha-icefall-zh-baker/phone.fst",
     "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
     "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
     "tts/vocos-22khz-univ.onnx",
 ];
 
@@ -138,6 +142,28 @@ impl ModelVerifier {
     /// Accesses the baseline manifest.
     pub fn baseline_manifest(&self) -> &HashMap<String, String> {
         &self.baseline_manifest
+    }
+
+    /// Cryptographically verifies all downloaded offline TTS model assets against the authoritative TTS manifest.
+    pub async fn verify_tts(&self, models_dir: &Path) -> bool {
+        let manifest = default_tts_manifest();
+        for &rel_path in DOWNLOAD_TTS_FILES {
+            let full_path = models_dir.join(rel_path);
+            if !full_path.exists() {
+                return false;
+            }
+            if let Some(expected) = manifest.get(rel_path) {
+                match compute_file_sha256(&full_path).await {
+                    Ok(actual) => {
+                        if !actual.eq_ignore_ascii_case(expected) {
+                            return false;
+                        }
+                    }
+                    Err(_) => return false,
+                }
+            }
+        }
+        true
     }
 
     /// Verifies all files in `models_dir` without making any network requests.

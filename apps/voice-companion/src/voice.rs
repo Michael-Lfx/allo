@@ -2361,9 +2361,10 @@ impl VoiceCompanionRuntime {
                         info!(action = "stop_speaking", "Voice direct control: stop speaking");
                         let mut d = driver.lock().await;
                         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
+                            let idle_secs = if feedback.idle_timeout_secs > 0 { feedback.idle_timeout_secs } else { 180 };
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, &control_scope);
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &control_scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &control_scope);
                         }
                         drop(d);
                         let _ = playback.interrupt().await;
@@ -2391,6 +2392,14 @@ impl VoiceCompanionRuntime {
                             &control_scope,
                         );
                         drop(d);
+                        let dismiss_reply = feedback.dismiss_reply.trim().to_string();
+                        if !dismiss_reply.is_empty() {
+                            let tts_clone = tts.clone();
+                            let playback_clone = playback.clone();
+                            tokio::spawn(async move {
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &dismiss_reply, "", sleep_gen, || {}).await;
+                            });
+                        }
                         voice_feedback::schedule(
                             playback.clone(),
                             event_tx.clone(),
@@ -2486,7 +2495,13 @@ impl VoiceCompanionRuntime {
                 let first_speech_text = Arc::new(std::sync::Mutex::new(None::<String>));
                 let latency_scope=(scope.session_id.clone(),scope.turn_id.clone());
                 let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let voice_name = if is_en { "en-US-JennyNeural" } else { "" };
+                let base_voice = if is_en { "en-US-JennyNeural" } else { "" };
+                let tts_speed = event_tx.feedback().tts_speed;
+                let voice_spec = if (tts_speed - 1.0).abs() > 0.01 {
+                    format!("{base_voice};speed={tts_speed}")
+                } else {
+                    base_voice.to_string()
+                };
                 let mut playback_guard = if speak_replies {
                     let playback = playback.clone();
                     let tts = tts.clone();
@@ -2511,7 +2526,7 @@ impl VoiceCompanionRuntime {
                         }
                     };
                     AbortOnDrop(Some(tokio::spawn(async move {
-                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, voice_name, on_started).await
+                        playback.speak_sentence_stream_with_voice(tts.as_ref(), speech_rx, expected_generation, cancel_rx, &voice_spec, on_started).await
                     })))
                 } else {
                     AbortOnDrop(None)
@@ -3734,6 +3749,22 @@ impl VoiceCompanionRuntime {
                 }
                 // 1. Check FSM watchdog timers (e.g. 8-second confirmation timeout)
                 let snapshot = event_tx.snapshot();
+                let has_confirmation = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+                let active_call = snapshot.phase != nomifun_api_types::voice::VoiceSessionPhase::Idle;
+                let hold_mic = should_hold_microphone(
+                    snapshot.enabled,
+                    true,
+                    active_call,
+                    has_confirmation,
+                    self_check_active.load(Ordering::Acquire),
+                    kws.is_initialized(),
+                );
+                if !hold_mic {
+                    let mut cap = capture.lock().await;
+                    while let CaptureReadResult::Chunk(_) = cap.try_next_chunk() {}
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                }
                 if matches!(
                     snapshot.phase,
                     nomifun_api_types::voice::VoiceSessionPhase::Transcribing
@@ -4152,6 +4183,11 @@ impl VoiceCompanionRuntime {
                                                 if nomifun_api_types::voice::classify_voice_direct_control(text, &feedback.dismiss_phrases) == Some(nomifun_api_types::voice::VoiceDirectControlAction::DismissSession) {
                                                     drop(guard);
                                                     let mut d = states.lock().await;
+                                                    let current = events.snapshot();
+                                                    let owned = pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|p| p.approval_id == approval_id && p.session_id == session_id && p.generation == generation);
+                                                    if !owned || !scope.matches(&current) || current.ended_reason.is_some() || output.generation_id() != generation {
+                                                        return;
+                                                    }
                                                     d.reset();
                                                     pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).take();
                                                     let _ = output.interrupt().await;
