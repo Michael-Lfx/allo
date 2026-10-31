@@ -4,7 +4,7 @@
 
 - **目标**：课时内容引擎新增 verify_math 工具 op——模型把数学翻译成 claim JSON，确定性核验器执行 eval/identity 采样核验；R14 条款双宿随批；smoke 种子预埋 oracle 对账；顺带修复 f3 viz_lint_events 读数写端缺陷
 - **版本**：v1
-- **状态**：草稿
+- **状态**：定稿
 - **日期**：2026-10-31
 - **票**：[tickets/w1-verify-math-v0.md](../tickets/w1-verify-math-v0.md)（Resolution 已记裁决与勘误）
 
