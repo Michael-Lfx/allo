@@ -315,6 +315,8 @@ W1–W4 形成首个可用端到端切片；W5–W6 完成任务闭环；W7 是�
 
 ## 附录：原始技术底稿与历史归档
 
+最新物理解耦与真实联合链路验收技术规范见 [2026-10-30-voice-runtime-decoupling-and-joint-trace.zh.md](execution/2026-10-30-voice-runtime-decoupling-and-joint-trace.zh.md)，记录了子模块拆分架构、守护进程域与宿主进程域的锁模型与端到端单命令联测规范。
+
 本文件首次新增。上轮方案全文保留在 [2026-10-14-desktop-voice-session-handoff.zh.md](execution/2026-10-14-desktop-voice-session-handoff.zh.md)，既有基线与完整底稿保留在 [interaction.zh.md](interaction.zh.md) 和 [interaction.archive.zh.md](interaction.archive.zh.md)。没有替换、概括后删除或重构旧正文。
 
 与旧提案相比，本次明确：产品独立与发行形态的区别、宿主投影的序号权威、普通对话与任务连接的可用性分离、幂等创建/发送两个身份、任务映射持久恢复、执行侧确认权威、物理播放完成和安装包门禁。上述增补均来自本次用户要求或源码证据，尚待业务实施。

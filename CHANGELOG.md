@@ -5,6 +5,12 @@ at a high level rather than a complete commit log.
 
 ## Unreleased
 
+- Voice companion runtime and host manager are physically modularized into dedicated submodules (`tests`, `announcements`, `diagnostics`, `recorder`), reducing single-file complexity by over 50% while strictly preserving all lock lifecycles, states, and function token signatures.
+- Fixed the voice session failure chain where task A completion dropped utterance B and caused utterance C to fail with `binding_invalid`. Added atomic lock-guarded ownership checks, accurate epoch advance reconciliation, and isolation of stale callbacks.
+- Prioritized ModelScope mirror across all network environments for local voice acoustic models and hardened download failover with HTTP Range chunk resumption and relaxed speed gate timeouts.
+- Added automated end-to-end joint trace pipeline (`bun run test:voice-joint-trace`) with built-in sanitized fixtures and cryptographic SHA-256 verification.
+- Hardened Windows process tree lifecycle management in test runners using native `CREATE_SUSPENDED` and Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), eliminating pre-assignment descendant escape windows and ensuring clean subtree termination.
+
 ## v1.7.0 - 2026-10-30
 
 - Windows installers include the voice companion daemon and app-local VC++ runtime. Hey Flowy wake aliases are expanded; a command spoken with a wake phrase follows the normal conversation route without a second transcription.
