@@ -26,6 +26,69 @@ pub struct MicSource {
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
+/// Whether an audio device name matches known virtual/loopback dummy drivers.
+pub fn is_known_virtual_audio_device(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("虚拟")
+        || lower.contains("virtual")
+        || lower.contains("steam")
+        || lower.contains("vbaudio")
+        || lower.contains("vb-audio")
+        || lower.contains("uu远程")
+        || lower.contains("todesk")
+        || lower.contains("anydesk")
+        || lower.contains("cable output")
+        || lower.contains("voicemeeter")
+}
+
+/// Resolves the optimal physical microphone input device, bypassing known virtual dummy soundcards.
+pub fn resolve_best_input_device(host: &cpal::Host) -> Result<cpal::Device, String> {
+    // 1. Explicit override via environment variable
+    if let Ok(override_name) = std::env::var("VOICE_MIC_DEVICE").or_else(|_| std::env::var("NOMIFUN_VOICE_MIC_DEVICE")) {
+        let trimmed = override_name.trim();
+        if !trimmed.is_empty() {
+            if let Ok(devices) = host.input_devices() {
+                for d in devices {
+                    if let Ok(name) = d.name() {
+                        if name.to_lowercase().contains(&trimmed.to_lowercase()) {
+                            tracing::info!(device = %name, "Using user-specified microphone override");
+                            return Ok(d);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Default device from host, with virtual device auto-bypass
+    let default_device = host.default_input_device();
+    match default_device {
+        Some(dev) => {
+            let name = dev.name().unwrap_or_default();
+            if is_known_virtual_audio_device(&name) {
+                tracing::warn!(device = %name, "Default input device is a known virtual audio device; searching for physical microphone candidate...");
+                if let Ok(devices) = host.input_devices() {
+                    let mut candidates = Vec::new();
+                    for d in devices {
+                        if let Ok(d_name) = d.name() {
+                            if !is_known_virtual_audio_device(&d_name) {
+                                candidates.push(d);
+                            }
+                        }
+                    }
+                    if let Some(physical) = candidates.into_iter().next() {
+                        let p_name = physical.name().unwrap_or_default();
+                        tracing::info!(device = %p_name, "Auto-selected physical microphone candidate instead of virtual dummy device");
+                        return Ok(physical);
+                    }
+                }
+            }
+            Ok(dev)
+        }
+        None => Err("no default input (microphone) device available".to_string()),
+    }
+}
+
 impl MicSource {
     /// Open the system default input device, resampled to `target_sample_rate`.
     ///
@@ -39,33 +102,7 @@ impl MicSource {
         };
 
         let host = cpal::default_host();
-        let default_device = host.default_input_device();
-        let is_virtual = |name: &str| {
-            let lower = name.to_lowercase();
-            lower.contains("虚拟") || lower.contains("virtual") || lower.contains("steam") || lower.contains("vbaudio") || lower.contains("uu远程")
-        };
-        let device = match default_device {
-            Some(dev) => {
-                let name = dev.name().unwrap_or_default();
-                if is_virtual(&name) {
-                    tracing::warn!(device = %name, "Default input device is a virtual audio device; searching for physical microphone candidate...");
-                    if let Ok(mut devices) = host.input_devices() {
-                        if let Some(physical) = devices.find(|d| d.name().map(|n| !is_virtual(&n)).unwrap_or(false)) {
-                            let p_name = physical.name().unwrap_or_default();
-                            tracing::info!(device = %p_name, "Auto-selected physical microphone candidate instead of virtual dummy device");
-                            physical
-                        } else {
-                            dev
-                        }
-                    } else {
-                        dev
-                    }
-                } else {
-                    dev
-                }
-            }
-            None => return Err("no default input (microphone) device available".to_string()),
-        };
+        let device = resolve_best_input_device(&host)?;
 
         let name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let supported = device
@@ -220,18 +257,18 @@ impl MicSource {
     }
 }
 
-/// Probes the system default microphone input device.
+/// Probes the optimal physical microphone input device.
 pub fn probe_default_device() -> nomifun_api_types::voice::VoiceDeviceStatusResponse {
     let host = cpal::default_host();
-    let device = match host.default_input_device() {
-        Some(d) => d,
-        None => {
+    let device = match resolve_best_input_device(&host) {
+        Ok(d) => d,
+        Err(e) => {
             return nomifun_api_types::voice::VoiceDeviceStatusResponse {
                 mic_available: false,
                 device_name: None,
                 sample_rate: None,
                 channels: None,
-                error: Some("No default audio input device found".to_string()),
+                error: Some(e),
             };
         }
     };
@@ -345,5 +382,18 @@ mod tests {
                 assert!(!e.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn test_virtual_audio_device_detection() {
+        assert!(is_known_virtual_audio_device("麦克风阵列 (UU远程虚拟音频设备)"));
+        assert!(is_known_virtual_audio_device("麦克风 (ToDesk Virtual Audio)"));
+        assert!(is_known_virtual_audio_device("Steam Streaming Microphone"));
+        assert!(is_known_virtual_audio_device("VB-Audio VoiceMeeter VAIO"));
+        assert!(is_known_virtual_audio_device("CABLE Output (VB-Audio Virtual Cable)"));
+
+        assert!(!is_known_virtual_audio_device("麦克风阵列 (适用于数字麦克风的英特尔® 智音技术)"));
+        assert!(!is_known_virtual_audio_device("麦克风 (Realtek(R) Audio)"));
+        assert!(!is_known_virtual_audio_device("Headset Microphone (Jabra Evolve 65)"));
     }
 }
