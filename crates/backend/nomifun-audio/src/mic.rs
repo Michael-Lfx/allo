@@ -39,9 +39,33 @@ impl MicSource {
         };
 
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "no default input (microphone) device available".to_string())?;
+        let default_device = host.default_input_device();
+        let is_virtual = |name: &str| {
+            let lower = name.to_lowercase();
+            lower.contains("虚拟") || lower.contains("virtual") || lower.contains("steam") || lower.contains("vbaudio") || lower.contains("uu远程")
+        };
+        let device = match default_device {
+            Some(dev) => {
+                let name = dev.name().unwrap_or_default();
+                if is_virtual(&name) {
+                    tracing::warn!(device = %name, "Default input device is a virtual audio device; searching for physical microphone candidate...");
+                    if let Ok(mut devices) = host.input_devices() {
+                        if let Some(physical) = devices.find(|d| d.name().map(|n| !is_virtual(&n)).unwrap_or(false)) {
+                            let p_name = physical.name().unwrap_or_default();
+                            tracing::info!(device = %p_name, "Auto-selected physical microphone candidate instead of virtual dummy device");
+                            physical
+                        } else {
+                            dev
+                        }
+                    } else {
+                        dev
+                    }
+                } else {
+                    dev
+                }
+            }
+            None => return Err("no default input (microphone) device available".to_string()),
+        };
 
         let name = device.name().unwrap_or_else(|_| "<unknown>".into());
         let supported = device
