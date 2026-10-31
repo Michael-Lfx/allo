@@ -181,13 +181,18 @@ impl KwsEngine {
 
     /// Resolves the directory containing neural KWS weights on disk.
     pub fn resolve_neural_kws_dir(&self) -> Option<PathBuf> {
+        let has_encoder = |base: &std::path::Path| -> bool {
+            base.join("encoder.int8.onnx").is_file()
+                || base.join("encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx").is_file()
+                || base.join("encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx").is_file()
+        };
         let mut candidates = Vec::new();
         if let Some(ref dir) = self.config.model_dir {
             // An explicitly selected suite must not silently borrow another installation.
-            if dir.join("kws").join("encoder.int8.onnx").is_file() {
+            if has_encoder(&dir.join("kws")) {
                 return Some(dir.join("kws"));
             }
-            return dir.join("encoder.int8.onnx").is_file().then(|| dir.clone());
+            return has_encoder(dir).then(|| dir.clone());
         }
         if let Some(registered) = crate::stt::active_model_dir() {
             candidates.push(registered);
@@ -203,10 +208,10 @@ impl KwsEngine {
         }
 
         for c in candidates {
-            if c.join("kws").join("encoder.int8.onnx").is_file() {
+            if has_encoder(&c.join("kws")) {
                 return Some(c.join("kws"));
             }
-            if c.join("encoder.int8.onnx").is_file() {
+            if has_encoder(&c) {
                 return Some(c);
             }
         }

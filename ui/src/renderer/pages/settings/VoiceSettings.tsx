@@ -960,6 +960,14 @@ const VoiceSettings: React.FC = () => {
 
                       {modelStatus === 'Ready' && (
                         <div className='flex items-center gap-12px'>
+                          <Button
+                            type='primary'
+                            size='small'
+                            loading={checkingCapabilities}
+                            onClick={handleSelfCheck}
+                          >
+                            {t('voice.capabilities.run')}
+                          </Button>
                           <Switch
                             aria-label={t('voice.service.enableIntent')}
                             checked={voiceEnabled}
@@ -1035,6 +1043,33 @@ const VoiceSettings: React.FC = () => {
                 />
               </div>
             </div>
+
+            {modelStatus === 'Ready' && capabilities && (
+              <div className='flex flex-col gap-2 px-4 pb-3 pt-3 text-12px border-t border-t-solid border-[var(--border-base)]' role='status'>
+                {(['capture', 'kws', 'vad', 'asr', 'llm', 'tts', 'playback'] as const).map((name) => {
+                  const item = capabilities[name];
+                  return (
+                    <div key={name} className='flex items-start justify-between gap-3'>
+                      <span className='text-t-secondary'>{t(`voice.capabilities.item.${name}`)}</span>
+                      <span
+                        className={
+                          item.status === 'ready'
+                            ? 'text-success-6 font-medium'
+                            : item.status === 'failed'
+                              ? 'text-danger-6'
+                              : 'text-t-tertiary'
+                        }
+                      >
+                        {t(`voice.capabilities.status.${item.status}`)}
+                        {item.reason_code && item.status !== 'ready'
+                          ? ` · ${t(`voice.capabilities.reason.${item.reason_code}`, { defaultValue: item.reason_code })}`
+                          : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </SettingsList>
         </SettingsSection>
 
@@ -1064,69 +1099,6 @@ const VoiceSettings: React.FC = () => {
               </summary>
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
-                <SettingsList>
-                  <SettingsRow
-                    label={t('voice.capabilities.title')}
-                    description={
-                      capabilities
-                        ? (capabilities.can_start_full_call
-                            ? t('voice.capabilities.fullReady')
-                            : t('voice.capabilities.notReady'))
-                        : t('voice.capabilities.notChecked')
-                    }
-                    controlLayout='actions'
-                    control={
-                      <Button
-                        type='primary'
-                        size='small'
-                        loading={checkingCapabilities}
-                        onClick={handleSelfCheck}
-                      >
-                        {t('voice.capabilities.run')}
-                      </Button>
-                    }
-                  />
-                </SettingsList>
-                {capabilities && (
-                  <div className='flex flex-col gap-2 px-4 pb-3 text-12px' role='status'>
-                    {(['capture', 'kws', 'vad', 'asr', 'llm', 'tts', 'playback'] as const).map((name) => {
-                      const item = capabilities[name];
-                      return (
-                        <div key={name} className='flex items-start justify-between gap-3'>
-                          <span className='text-t-secondary'>{t(`voice.capabilities.item.${name}`)}</span>
-                          <span
-                            className={
-                              item.status === 'ready'
-                                ? 'text-success-6'
-                                : item.status === 'failed'
-                                  ? 'text-danger-6'
-                                  : 'text-t-tertiary'
-                            }
-                          >
-                            {t(`voice.capabilities.status.${item.status}`)}
-                            {item.reason_code && item.status !== 'ready'
-                              ? ` · ${t(`voice.capabilities.reason.${item.reason_code}`, { defaultValue: item.reason_code })}`
-                              : ''}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    {!capabilities.can_start_full_call && (
-                      <div className='mt-1 flex flex-col gap-2 border-t border-t-solid border-[var(--border-base)] pt-2'>
-                        <div role='alert' className='text-danger-6'>
-                          {capabilities.degraded_text_only
-                            ? t('voice.capabilities.textOnly')
-                            : t('voice.capabilities.fixHint')}
-                        </div>
-                        <Button size='small' onClick={handleUseTextReply}>
-                          {t('voice.capabilities.useTextReply')}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <VoiceDialogueStatusSection />
                 <SettingsList>
                   <SettingsRow
                     label={t('voice.session.tryWake')}

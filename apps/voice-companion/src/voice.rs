@@ -1232,6 +1232,7 @@ pub struct VoiceCompanionRuntime {
     active_turn: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
     input_generation: Arc<AtomicU64>,
     pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
+    kws_reload_needed: Arc<AtomicBool>,
     /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
     #[allow(dead_code)]
     mic_source: Option<Arc<nomifun_audio::MicSource>>,
@@ -1387,6 +1388,7 @@ impl VoiceCompanionRuntime {
             call_admission_until_ms: Arc::new(AtomicU64::new(0)),
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
+            kws_reload_needed: Arc::new(AtomicBool::new(false)),
             input_generation: Arc::new(AtomicU64::new(0)),
             pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             mic_source,
@@ -1473,6 +1475,7 @@ impl VoiceCompanionRuntime {
                 active_turn: Arc::new(std::sync::Mutex::new(None)),
                 input_generation: Arc::new(AtomicU64::new(0)),
                 pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+                kws_reload_needed: Arc::new(AtomicBool::new(false)),
                 mic_source: None,
                 acoustic_ready: Arc::new(AtomicBool::new(true)),
                 self_check_active: Arc::new(AtomicBool::new(false)),
@@ -1805,6 +1808,7 @@ impl VoiceCompanionRuntime {
         let config = patch.apply(self.feedback());
         config.validate()?;
         self.event_tx.set_feedback(config);
+        self.kws_reload_needed.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -2348,16 +2352,26 @@ impl VoiceCompanionRuntime {
             Self::report_asr_failure(driver, playback, event_tx, generation, &control_scope, "asr_empty_result").await;
             return;
         }
-        let clean_input = if already_recognized {
+        let mut clean_input = if already_recognized {
             text_opt.clone().unwrap_or_default()
         } else {
             text_opt.as_deref().map(nomifun_audio::strip_wake_phrase).unwrap_or_default()
         };
+        let feedback = event_tx.feedback();
+        for custom_kw in &feedback.wake_words {
+            let kw_trimmed = custom_kw.trim();
+            if !kw_trimmed.is_empty() {
+                let candidate = clean_input.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ':' | '：'));
+                if let Some(rest) = candidate.strip_prefix(kw_trimmed) {
+                    clean_input = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | ':' | '：')).to_string();
+                    break;
+                }
+            }
+        }
         let decision = if let Some(ref text) = text_opt {
             info!("ASR transcription produced text");
 
             // Direct session controls (Stop Speaking & Dismiss Session) fast path BEFORE SpeechRecognized:
-            let feedback = event_tx.feedback();
             let direct_control = nomifun_api_types::voice::classify_voice_direct_control(&clean_input, &feedback.dismiss_phrases);
             if let Some(direct) = direct_control {
                 match direct {
@@ -3426,6 +3440,7 @@ impl VoiceCompanionRuntime {
         let active_turn = self.active_turn.clone();
         let pending_utterances = Arc::clone(&self.pending_utterances);
         let input_generation = self.input_generation.clone();
+        let kws_reload_needed = self.kws_reload_needed.clone();
         // Native capture has no render reference/AEC yet. Raw VAD is not safe barge-in.
         let barge_in_ready = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -3456,10 +3471,16 @@ impl VoiceCompanionRuntime {
             );
             let kws = loop {
                 let dir = models.models_dir().to_path_buf();
+                let wake_words = event_tx.feedback().wake_words;
                 match native_runner
                     .load(std::time::Duration::from_secs(30), move || {
                         KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                             model_dir: Some(dir),
+                            keywords: if wake_words.is_empty() {
+                                vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                            } else {
+                                wake_words
+                            },
                             ..Default::default()
                         })
                     })
@@ -3662,6 +3683,27 @@ impl VoiceCompanionRuntime {
                     native_worker_call!("vad_reset", vad.reset().await, ());
                     native_worker_call!("kws_reset", kws.reset().await, ());
                 }
+                if kws_reload_needed.swap(false, Ordering::AcqRel) {
+                    let dir = models.models_dir().to_path_buf();
+                    let wake_words = event_tx.feedback().wake_words;
+                    let loaded = native_runner
+                        .load(std::time::Duration::from_secs(30), move || {
+                            KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+                                model_dir: Some(dir),
+                                keywords: if wake_words.is_empty() {
+                                    vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                                } else {
+                                    wake_words
+                                },
+                                ..Default::default()
+                            })
+                        })
+                        .await;
+                    if let Ok(Ok(next)) = loaded {
+                        native_worker_call!("kws_reload", kws.replace(Box::new(next)).await, ());
+                        info!("KWS engine hot-reloaded with custom wake words");
+                    }
+                }
                 if !replay
                     && last_model_check
                         .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(1))
@@ -3670,10 +3712,16 @@ impl VoiceCompanionRuntime {
                     if models.get_status().await.state.is_ready() {
                         if !kws.is_initialized() {
                             let dir = models.models_dir().to_path_buf();
+                            let wake_words = event_tx.feedback().wake_words;
                             let loaded = native_runner
                                 .load(std::time::Duration::from_secs(30), move || {
                                     KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
                                         model_dir: Some(dir),
+                                        keywords: if wake_words.is_empty() {
+                                            vec!["HEY FLOWY".to_string(), "FLOWY".to_string()]
+                                        } else {
+                                            wake_words
+                                        },
                                         ..Default::default()
                                     })
                                 })

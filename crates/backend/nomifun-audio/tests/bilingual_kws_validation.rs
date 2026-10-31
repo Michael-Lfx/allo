@@ -60,4 +60,18 @@ x iao f u x ing @XIAO_FU_XING
         let _result = spotter.get_result(&stream);
     }
     println!("Bilingual stream accepted 1s silence cleanly without false trigger");
+
+    // Test dynamic keyword compilation for both Chinese and English
+    let custom_keywords = vec!["你好小白".to_string(), "Hey Flowy".to_string()];
+    let dynamic_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&custom_keywords);
+    assert!(dynamic_buf.contains("n i h ao x iao b ai"), "must contain pinyin for 你好小白");
+    assert!(dynamic_buf.contains("HH EY1 F L OW1 IY0"), "must contain phonemes for HEY_FLOWY");
+
+    // Test KwsEngine integration with custom keywords
+    let kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {
+        model_dir: Some(kws_dir.clone()),
+        keywords: custom_keywords,
+        ..Default::default()
+    }).expect("KwsEngine creation with custom bilingual keywords must succeed");
+    assert!(kws_engine.is_initialized(), "KwsEngine must be initialized");
 }
