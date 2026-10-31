@@ -207,7 +207,16 @@ impl ModelVerifier {
                         if let Some(expected) = expected_hash {
                             let is_match = actual_hash.eq_ignore_ascii_case(expected)
                                 || (rel_path == &"vad/silero_vad.onnx"
-                                    && actual_hash.eq_ignore_ascii_case("1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"));
+                                    && actual_hash.eq_ignore_ascii_case("1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"))
+                                || (rel_path == &"kws/encoder.int8.onnx"
+                                    && (actual_hash.eq_ignore_ascii_case("408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48")
+                                        || actual_hash.eq_ignore_ascii_case("2ca84d6bfe73e1ea3c9c49f600f7cad1c9ddd423c53c906b8bfe802444dd78d5")))
+                                || (rel_path == &"kws/decoder.int8.onnx"
+                                    && actual_hash.eq_ignore_ascii_case("63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21"))
+                                || (rel_path == &"kws/joiner.int8.onnx"
+                                    && actual_hash.eq_ignore_ascii_case("190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1"))
+                                || (rel_path == &"kws/tokens.txt"
+                                    && actual_hash.eq_ignore_ascii_case("2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0"));
 
                             if !is_match {
                                 return ModelInstallState::Failed {

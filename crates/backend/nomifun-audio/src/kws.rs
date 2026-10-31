@@ -572,7 +572,7 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
     lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
     lines.push("F L OW1 IY0 :2.0 #0.15 @FLOWY".to_string());
     lines.push("n i h ao :2.0 #0.15 @NI_HAO".to_string());
-    lines.push("n i h ao f l ow i :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+    lines.push("n i h ao F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
 
     for kw in keywords {
         let clean = kw.trim();
