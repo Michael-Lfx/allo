@@ -122,7 +122,19 @@ export function cancelVoiceTask(instanceId:string,task:VoiceTaskSnapshot):Promis
     instance_id:instanceId,command_id:task.command_id,conversation_id:task.conversation_id,message_id:task.message_id,
   });
 }
-export interface VoiceFeedbackConfig { mode: 'light' | 'essential' | 'off'; volume: number; speak_replies: boolean }
+export interface VoiceFeedbackConfig {
+  mode: 'light' | 'essential' | 'off';
+  volume: number;
+  speak_replies: boolean;
+  wake_words?: string[];
+  wake_reply?: string;
+  interject_keyword?: string;
+  dismiss_phrases?: string[];
+  dismiss_reply?: string;
+  tts_backend?: string;
+  tts_speed?: number;
+  idle_timeout_secs?: number;
+}
 export interface VoiceFeedbackSettings { requested: VoiceFeedbackConfig; effective: VoiceFeedbackConfig | null }
 export type VoicePreviewKind = 'wake' | 'recognized' | 'processing' | 'follow_up' | 'sleep' | 'error';
 

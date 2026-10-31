@@ -2652,6 +2652,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
 
     rt.update_feedback(nomifun_api_types::voice::VoiceFeedbackConfig {
         mode: nomifun_api_types::voice::VoiceFeedbackMode::Off, volume: 0, speak_replies: true,
+        ..Default::default()
     }.into()).unwrap();
 
     let mut events_sub = rt.event_sender().subscribe();

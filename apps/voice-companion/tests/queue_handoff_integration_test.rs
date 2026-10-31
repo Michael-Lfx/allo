@@ -112,7 +112,7 @@ async fn run_queue_handoff_case(offset: u64, announce: bool) -> bool {
         Arc::new(Speech),
     ));
 
-    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true }.into()).unwrap();
+    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true, ..Default::default() }.into()).unwrap();
 
     let mut events = rt.event_sender().subscribe();
     let event_log = tokio::spawn(async move {
@@ -302,7 +302,7 @@ async fn test_stop_fence_prevents_stale_speech_resurrection() {
         Arc::new(Speech),
     ));
 
-    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true }.into()).unwrap();
+    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true, ..Default::default() }.into()).unwrap();
     rt.handle_wake().await.unwrap();
     let worker = rt.start_worker();
 
@@ -368,7 +368,7 @@ async fn test_stale_callback_waiting_for_driver_mutex_cannot_hijack_newer_task_b
         Arc::new(PlaybackPipeline::new(Arc::new(TestAudioSink::new()))),
         Arc::new(Speech),
     ));
-    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true }.into()).unwrap();
+    rt.update_feedback(VoiceFeedbackConfig { mode: VoiceFeedbackMode::Off, volume: 0, speak_replies: true, ..Default::default() }.into()).unwrap();
     rt.handle_wake().await.unwrap();
     let worker = rt.start_worker();
 

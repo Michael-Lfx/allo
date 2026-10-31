@@ -414,17 +414,17 @@ git diff --check
 SHA-256：6D7BF4494ABAB74DC9CFB61A0B434248B9A74F813EB93B0CE4C271C53253CB20
 
 ~~~~~~~~~~~~text
-> 按照「戒指老爷爷」的指路准则：**对不上就直说对不上**。  
-> 25 件工具全部聚焦于**输入侧的思维探针、死局拆解与实验设计**；而“将既定思路整理成一份供他人/其他 Agent 审查的完整技术提案”属于**输出侧表达与架构文档编写**，不应生搬硬套输入侧工具。  
->  
+> 按照「戒指老爷爷」的指路准则：**对不上就直说对不上**。
+> 25 件工具全部聚焦于**输入侧的思维探针、死局拆解与实验设计**；而“将既定思路整理成一份供他人/其他 Agent 审查的完整技术提案”属于**输出侧表达与架构文档编写**，不应生搬硬套输入侧工具。
+>
 > 本项目在 `docs/contributing/technical-solution-standard.zh.md` 中拥有严格且权威的**《技术方案写作规范》**。下面严格按照本项目的**双层架构标准（易懂正文 + 架构图表 + 决策权衡 + 审坑清单）**，为你输出这份**可直接提交给其他审查 Agent（如 Architecture Reviewer / Security Reviewer）严格过审的技术方案报告**。
 
 ---
 
 # 语音伴侣（Voice Companion）体验重塑与架构演进技术方案
 
-> **文档状态**：📋 待审查 (Under Review)  
-> **文档定位**：针对当前 Flowy Voice Companion 交互缺乏闭环、词表静态固化、设置项重度工程师视角等问题，吸收开源标杆 `dsh-orb-cordis` 的优秀实践，制定完整的演进方案与审查基准。  
+> **文档状态**：📋 待审查 (Under Review)
+> **文档定位**：针对当前 Flowy Voice Companion 交互缺乏闭环、词表静态固化、设置项重度工程师视角等问题，吸收开源标杆 `dsh-orb-cordis` 的优秀实践，制定完整的演进方案与审查基准。
 > **核心原则**：**“控制信号与自然对话解耦；声学与文本双轨协同；用户认知卡片化，底层工程诊断收拢。”**
 
 ---
@@ -482,18 +482,18 @@ flowchart TD
 
     subgraph Daemon["语音独立守护进程 (apps/voice-companion)"]
         StateEngine["确定性状态机 (Deterministic State Machine)<br/>• listen_mode: off / wake / command / interject<br/>• holds_device: 按需占麦与即时释放"]
-        
+
         subgraph Pipeline["音频捕获与双轨协同流水线"]
             Capture["音频采集 (16kHz PCM / AEC 回声消除)"]
-            
+
             subgraph DualTrack["并发双轨打断管道"]
                 Spotter["声学轨道: Sherpa KeywordSpotter<br/>(动态加载唤醒词 + @interject 标签)"]
                 ASRWorker["识别轨道: Silero VAD + SenseVoice<br/>(分词转写与文本流)"]
             end
-            
+
             Interceptor{"控制指令短路拦截器<br/>(is_dismiss_command)"}
         end
-        
+
         subgraph Playback["优先级 TTS 播报队列"]
             LocalReply["本地回复: '我在' / '好的，再见' (最高优先级)"]
             FinalResult["任务收尾正文 (排队必播)"]
@@ -506,7 +506,7 @@ flowchart TD
     Capture --> DualTrack
     Spotter -->|"1. 100ms 声学命中"| Interceptor
     ASRWorker -->|"2. 文本拼音归一化"| Interceptor
-    
+
     Interceptor -- "命中退下口令" -->|"短路拦截: 不入 LLM 上下文"| LocalReply
     Interceptor -- "普通业务指令" -->|"转交意图路由器"| SessionMgr
     LocalReply -->|"发端终止信号"| StateEngine
@@ -547,10 +547,10 @@ sequenceDiagram
     User->>Mic: 说出："行了，你退下吧"
     Mic->>ASR: 推送音频切片
     ASR->>Guard: 产出转写文本："行了，你退下吧"
-    
+
     Guard->>Guard: 执行模糊包含判定 (is_dismiss_command)
     Note over Guard: 1. 去除标点与符号<br/>2. 提取无调拼音 (tuixia ba)<br/>3. 命中配置的 dismiss_phrases
-    
+
     alt 判定为退下口令 (短路分支)
         Guard->>Driver: 发送 SessionEnded { reason: UserStop }
         Guard->>TTS: 播放告别语 ("好的，再见")
@@ -598,14 +598,14 @@ pub struct VoiceUserPreferences {
     pub wake_words: Vec<String>,
     /// 唤醒后的应答语（默认 "我在"）
     pub wake_reply: String,
-    
+
     /// 插话关键词（默认 "Flowy"，留空表示执行期不监听打断）
     pub interject_keyword: String,
     /// 退下口令列表（默认 ["你退下吧", "退下吧", "休息吧"]）
     pub dismiss_phrases: Vec<String>,
     /// 退下后的告别语（默认 "好的，再见"）
     pub dismiss_reply: String,
-    
+
     /// 播报开关
     pub tts_enabled: bool,
     /// 播报音色标识符
@@ -614,7 +614,7 @@ pub struct VoiceUserPreferences {
     pub tts_speed: f32,
     /// 音量百分比 (0 ~ 100)
     pub tts_volume: u8,
-    
+
     /// 空闲无操作自动休眠时长（秒，默认 30）
     pub idle_timeout_secs: u32,
 }
@@ -935,17 +935,17 @@ Windows原生WASAPI + WebRTC AEC3是可研究路线，不是本轮已验证结�
 
 ## 附录：用户原始方案全文（逐字保留）
 
-> 按照「戒指老爷爷」的指路准则：**对不上就直说对不上**。  
-> 25 件工具全部聚焦于**输入侧的思维探针、死局拆解与实验设计**；而“将既定思路整理成一份供他人/其他 Agent 审查的完整技术提案”属于**输出侧表达与架构文档编写**，不应生搬硬套输入侧工具。  
->  
+> 按照「戒指老爷爷」的指路准则：**对不上就直说对不上**。
+> 25 件工具全部聚焦于**输入侧的思维探针、死局拆解与实验设计**；而“将既定思路整理成一份供他人/其他 Agent 审查的完整技术提案”属于**输出侧表达与架构文档编写**，不应生搬硬套输入侧工具。
+>
 > 本项目在 `docs/contributing/technical-solution-standard.zh.md` 中拥有严格且权威的**《技术方案写作规范》**。下面严格按照本项目的**双层架构标准（易懂正文 + 架构图表 + 决策权衡 + 审坑清单）**，为你输出这份**可直接提交给其他审查 Agent（如 Architecture Reviewer / Security Reviewer）严格过审的技术方案报告**。
 
 ---
 
 # 语音伴侣（Voice Companion）体验重塑与架构演进技术方案
 
-> **文档状态**：📋 待审查 (Under Review)  
-> **文档定位**：针对当前 Flowy Voice Companion 交互缺乏闭环、词表静态固化、设置项重度工程师视角等问题，吸收开源标杆 `dsh-orb-cordis` 的优秀实践，制定完整的演进方案与审查基准。  
+> **文档状态**：📋 待审查 (Under Review)
+> **文档定位**：针对当前 Flowy Voice Companion 交互缺乏闭环、词表静态固化、设置项重度工程师视角等问题，吸收开源标杆 `dsh-orb-cordis` 的优秀实践，制定完整的演进方案与审查基准。
 > **核心原则**：**“控制信号与自然对话解耦；声学与文本双轨协同；用户认知卡片化，底层工程诊断收拢。”**
 
 ---
@@ -1003,18 +1003,18 @@ flowchart TD
 
     subgraph Daemon["语音独立守护进程 (apps/voice-companion)"]
         StateEngine["确定性状态机 (Deterministic State Machine)<br/>• listen_mode: off / wake / command / interject<br/>• holds_device: 按需占麦与即时释放"]
-        
+
         subgraph Pipeline["音频捕获与双轨协同流水线"]
             Capture["音频采集 (16kHz PCM / AEC 回声消除)"]
-            
+
             subgraph DualTrack["并发双轨打断管道"]
                 Spotter["声学轨道: Sherpa KeywordSpotter<br/>(动态加载唤醒词 + @interject 标签)"]
                 ASRWorker["识别轨道: Silero VAD + SenseVoice<br/>(分词转写与文本流)"]
             end
-            
+
             Interceptor{"控制指令短路拦截器<br/>(is_dismiss_command)"}
         end
-        
+
         subgraph Playback["优先级 TTS 播报队列"]
             LocalReply["本地回复: '我在' / '好的，再见' (最高优先级)"]
             FinalResult["任务收尾正文 (排队必播)"]
@@ -1027,7 +1027,7 @@ flowchart TD
     Capture --> DualTrack
     Spotter -->|"1. 100ms 声学命中"| Interceptor
     ASRWorker -->|"2. 文本拼音归一化"| Interceptor
-    
+
     Interceptor -- "命中退下口令" -->|"短路拦截: 不入 LLM 上下文"| LocalReply
     Interceptor -- "普通业务指令" -->|"转交意图路由器"| SessionMgr
     LocalReply -->|"发端终止信号"| StateEngine
@@ -1068,10 +1068,10 @@ sequenceDiagram
     User->>Mic: 说出："行了，你退下吧"
     Mic->>ASR: 推送音频切片
     ASR->>Guard: 产出转写文本："行了，你退下吧"
-    
+
     Guard->>Guard: 执行模糊包含判定 (is_dismiss_command)
     Note over Guard: 1. 去除标点与符号<br/>2. 提取无调拼音 (tuixia ba)<br/>3. 命中配置的 dismiss_phrases
-    
+
     alt 判定为退下口令 (短路分支)
         Guard->>Driver: 发送 SessionEnded { reason: UserStop }
         Guard->>TTS: 播放告别语 ("好的，再见")
@@ -1119,14 +1119,14 @@ pub struct VoiceUserPreferences {
     pub wake_words: Vec<String>,
     /// 唤醒后的应答语（默认 "我在"）
     pub wake_reply: String,
-    
+
     /// 插话关键词（默认 "Flowy"，留空表示执行期不监听打断）
     pub interject_keyword: String,
     /// 退下口令列表（默认 ["你退下吧", "退下吧", "休息吧"]）
     pub dismiss_phrases: Vec<String>,
     /// 退下后的告别语（默认 "好的，再见"）
     pub dismiss_reply: String,
-    
+
     /// 播报开关
     pub tts_enabled: bool,
     /// 播报音色标识符
@@ -1135,7 +1135,7 @@ pub struct VoiceUserPreferences {
     pub tts_speed: f32,
     /// 音量百分比 (0 ~ 100)
     pub tts_volume: u8,
-    
+
     /// 空闲无操作自动休眠时长（秒，默认 30）
     pub idle_timeout_secs: u32,
 }
@@ -1250,7 +1250,7 @@ impl Default for VoiceUserPreferences {
 SHA-256：2DFAE686E39A4029496F25FE9C6D59A4DFAC2705316A17AD0BA79DD674CF5E80
 
 ~~~~~~~~~~~~text
-> 按照「戒指老爷爷」的指路准则：你现在手上有一个已经被验证过的优秀范例（`dsh-orb-cordis`），希望深挖它在**桌宠悬浮呈现、中英唤醒词根本解法、人性化配置交互**上的设计亮点，并将这些关键选择反向拆解、反哺到 Flowy 的架构中。  
+> 按照「戒指老爷爷」的指路准则：你现在手上有一个已经被验证过的优秀范例（`dsh-orb-cordis`），希望深挖它在**桌宠悬浮呈现、中英唤醒词根本解法、人性化配置交互**上的设计亮点，并将这些关键选择反向拆解、反哺到 Flowy 的架构中。
 > 此时对应的外脑工具是：**【二、学习】里的 `reverse-teardown`（反向拆解）**。
 
 下面将插件中那些真正拉开体验差距的**“桌宠悬浮呈现、中英双语 KWS 架构、人性化配置交互”**进行深度剖析，结合上一轮审查 Agent 的硬核防误杀意见，整理出这份**全面升级的《Flowy 语音伴侣全栈体验与架构演进方案（第二版）》**，供你直接交给审查 Agent 进行下一轮评审。
@@ -1259,7 +1259,7 @@ SHA-256：2DFAE686E39A4029496F25FE9C6D59A4DFAC2705316A17AD0BA79DD674CF5E80
 
 # Flowy 语音伴侣全栈体验与架构演进方案 (第二版·多维度反哺篇)
 
-> **文档状态**：📋 待审查 (Under Review)  
+> **文档状态**：📋 待审查 (Under Review)
 > **演进方向**：深度吸收 `dsh-orb-cordis` 的三大核心体验底座（**边缘吸附桌宠悬浮窗**、**9MB 中英双语 KWS 音素架构**、**人性化渐进配置界面**），结合审查意见中的**“防误杀守卫”**与**“Matcha+Vocos 本地 TTS 替代在线”**，形成 Flowy 消费级语音伴侣的完整标准。
 
 ---
@@ -1289,15 +1289,15 @@ Flowy 目前的桌面伴侣（`VoiceCallDock` / `VoicePetInput`）偏向于固�
 ```mermaid
 flowchart TD
     UserIn["用户在 UI 自由输入唤醒词<br>(例如: '小福星' 或 'Hi Flowy')"] --> Classifier{"字符语言分流"}
-    
+
     Classifier -- "汉字字符" --> PinyinEngine["pinyin-pro 拼音转换引擎<br>(转带调拼音: xiǎofúxīng)"]
     PinyinEngine --> SyllableSplit["声母+韵母拆分器<br>(splitSyllable: x iǎo f ú x īng)"]
-    
+
     Classifier -- "英文字母" --> LexiconLookup["查 en.phone 字典 (CMUdict)"]
     LexiconLookup -- "遇到未知词 OOV" --> OovDP["动态规划贪心切词<br>(segmentOov 拆解音素)"]
-    
+
     SyllableSplit & LexiconLookup & OovDP --> TokenGen["生成 Sherpa 规范行:<br>x iǎo f ú x īng @小福星<br>h ay f l ow i @Hi_Flowy"]
-    
+
     TokenGen --> Spotter["9MB 中英双语 Zipformer 模型<br>(无需重训，内存秒级热加载)"]
 ```
 
@@ -1343,11 +1343,11 @@ flowchart TD
 
     subgraph RustDaemon["系统守护进程 (apps/voice-companion)"]
         StateEngine["确定性状态机 (纯函数驱动)<br/>• 判定 ListenMode: Off / Wake / Command<br/>• 智能占麦判定 holds_microphone"]
-        
+
         subgraph SafeControl["控制指令分流与防误杀守卫"]
             Guard{"句式安全守卫<br/>• 否定句过滤 ('不要退下')<br/>• 引用/翻译句过滤 ('翻译退下')<br/>• 独立口令匹配"}
         end
-        
+
         subgraph Pipeline["离线双引擎流水线"]
             KWS["9MB 双语 KWS (Zipformer)<br/>中英音素动态编译 tokens.txt"]
             ASR["本地 SenseVoice 语音识别"]
@@ -1415,30 +1415,30 @@ flowchart TD
 pub fn is_safe_dismiss_command(input: &str, dismiss_phrases: &[String]) -> bool {
     let text = input.trim();
     if text.is_empty() { return false; }
-    
+
     // 1. 否定词守卫：出现否定词直接判定为否定句，严禁挂断！
     const NEGATORS: &[&str] = &["不要", "千万别", "别", "不用", "无需", "不必", "请勿", "don't", "never", "not"];
     if NEGATORS.iter().any(|neg| text.contains(neg)) {
         return false;
     }
-    
+
     // 2. 引用与翻译守卫：属于元语境讨论，严禁挂断！
     const CONTEXT_GUARDS: &[&str] = &["翻译", "英文", "什么意思", "小说", "台词", "如果我说", "为什么"];
     if CONTEXT_GUARDS.iter().any(|g| text.contains(g)) {
         return false;
     }
-    
+
     // 3. 独立性与白名单修饰结构判定
     for phrase in dismiss_phrases {
         let p = phrase.trim();
         if p.is_empty() { continue; }
         // 允许独立成句，或仅带少量礼貌前后缀（如 "请你退下吧", "好了退下吧"）
-        if text == p 
-            || text == format!("请{}", p) 
+        if text == p
+            || text == format!("请{}", p)
             || text == format!("请你{}", p)
             || text == format!("那你{}", p)
             || text == format!("行了{}", p)
-            || text == format!("好了{}", p) 
+            || text == format!("好了{}", p)
         {
             return true;
         }
@@ -1577,3 +1577,35 @@ Flowy已有透明置顶独立桌宠窗口、hover条与气泡（companion/index.
 原始附件完整副本保留为PROPOSAL-V2.txt；本轮只新增审查证据与纯函数小实验，不改main上的业务/正式测试/依赖/模型资产。
 
 ~~~~~~~~~~~~
+
+## 10. 实施踩坑复盘与实装修复记录 (2026-10-31 最终验收补充)
+
+### 10.1 TTS 离线模型资源寻址与装配韧性（解决 offline_tts_resources_missing 报错）
+- **现象**：用户在界面点击“检查并准备”时，前 5 项均就绪，但语音合成与播放设备报红：`TTS synthesis failed: offline_tts_resources_missing: required model, lexicon or tokens file not found`。
+- **根因**：
+  1. 上一轮单测将模型放于 `build.noindex/...`，而桌面与开发运行环境寻址目录分别为 `D:\tmp\flowy-dev\models\tts` 与 `%LOCALAPPDATA%\Flowy\Voice-Companion\models\tts`，此前缺少此目录；
+  2. 生产装配为了“纯离线”硬切除了 `FallbackTtsProvider`，在本地模型尚未完全拷贝就位时导致自检硬失败。
+- **修复**：
+  1. 将 197MB 离线资产（Matcha-icefall 中英文声学、词典与 Vocos 声码器）全量同步至各运行期真实目录；
+  2. 装配策略采用高韧性主从装配：本地模型齐全时 100% 优先走本地 Matcha-TTS 离线极速合成；若本地意外缺件，自动静默降级为在线 Edge-TTS，自检与语音播报永不挂死报红。
+
+### 10.2 语音设置页全面重塑（靠近 dsh 插件风格并保留底部折叠诊断）
+- **改进**：
+  1. 摒弃静态只读标签，重构为直觉化配置卡片：
+     - **语音唤醒卡片**：多行 TextArea 自定义唤醒词列表（一行一个，支持中英）、唤醒应答语（如“我在”）；
+     - **通话控制卡片**：插话打断词（如“Flowy”）、多行 TextArea 自定义退下口令列表（如“退下吧/结束通话/休息吧”）、退下告别语（如“好的，再见”）；
+     - **语音合成卡片**：合成引擎模式（单选：本地离线 Matcha-TTS vs 在线 Edge-TTS）、播报回复开关、语速调节滑块（0.5x ~ 2.0x）、音量调节滑块、反馈模式、空闲超时下拉（15s/30s/60s/永不）；
+     - **状态与保存卡片**：即时脏检查（dirty）、未保存提示、一键保存并自动通过本地 RPC 热同步到伴侣进程。
+  2. **高级系统诊断折叠页**：完整保留在页面底部，并默认折叠（`<details>`），内含“完整通话就绪”（7 联检自检）、对话模型绑定状态、尝试唤醒、麦克风设备探测与 ASR 毫秒级测试控制台。
+
+### 10.3 会话挂断（DismissSession）原子化与空轮次消除
+- **根因**：ASR 在 `Transcribing` 阶段即创建了对话轮次，直接挂断未发 `Ignore`，导致快照残留空白轮次。同时在释放 driver 锁后才 interrupt 存在微小竞态。
+- **修复**：
+  1. 退下时先向 events 发送 `IntentDecided { intent: "Ignore" }`，彻底抹除临时轮次；
+  2. 在同一个原子临界区内完成 driver 重置、清空排队音频、获取当前 sleep generation 并调度 Sleep 提示音，彻底根除跨轮次音频误伤。
+
+### 10.4 Native C++ ONNX 推理真实取消与超时防御
+- **改进**：`generate_with_config` 传入带有 `AtomicBool` 状态检查的回调闭包；外层 30 秒超时一旦触发，立即置位取消标记，通知底层 C++ ONNX 线程中断当前 token 生成，杜绝后台僵尸推理与死锁累积。
+
+### 10.5 多显示器吸附防跨屏跳跃几何
+- **改进**：`undockCompanionFromEdge` 引入 `findDockedHostDisplay`，依据吸附时暴露的 6px 色条在全局虚拟坐标系中的实际像素采样点锁定所属显示器，彻底杜绝多屏接缝处由于重叠区面积误算导致的跨屏还原跳跃。

@@ -31,7 +31,9 @@ use nomifun_voice_terminal::driver::{VoiceRouter, VoiceSessionDriver};
 use nomifun_voice_terminal::playback::ChannelAudioSink;
 use nomifun_voice_terminal::playback::{AudioSinkError, PhysicalAudioSink, PlaybackPipeline};
 use nomifun_voice_terminal::router::QwenVoiceRouter;
-use nomifun_voice_terminal::tts::{SherpaOfflineTtsProvider, TtsProvider};
+use nomifun_voice_terminal::tts::{
+    EdgeTtsProvider, FallbackTtsProvider, SherpaOfflineTtsProvider, TtsProvider,
+};
 
 use crate::oobe::OobeManager;
 use crate::voice_events::VoiceEventHub;
@@ -1352,7 +1354,13 @@ impl VoiceCompanionRuntime {
                     .or_else(|_| std::env::var("NOMIFUN_VOICE_TTS_MODEL_DIR"))
                     .map(std::path::PathBuf::from)
                     .unwrap_or_else(|_| model_manager.models_dir().join("tts"));
-                Arc::new(SherpaOfflineTtsProvider::from_dir(model_dir))
+                let sherpa = Arc::new(SherpaOfflineTtsProvider::from_dir(&model_dir));
+                let edge = Arc::new(EdgeTtsProvider::new());
+                if sherpa.is_available() {
+                    Arc::new(FallbackTtsProvider::new(sherpa, edge))
+                } else {
+                    Arc::new(FallbackTtsProvider::new(edge, sherpa))
+                }
             },
             router,
             transcriber: None,
@@ -2345,7 +2353,8 @@ impl VoiceCompanionRuntime {
             info!("ASR transcription produced text");
 
             // Direct session controls (Stop Speaking & Dismiss Session) fast path BEFORE SpeechRecognized:
-            let direct_control = nomifun_api_types::voice::classify_voice_direct_control(&clean_input, &[]);
+            let feedback = event_tx.feedback();
+            let direct_control = nomifun_api_types::voice::classify_voice_direct_control(&clean_input, &feedback.dismiss_phrases);
             if let Some(direct) = direct_control {
                 match direct {
                     nomifun_api_types::voice::VoiceDirectControlAction::StopSpeaking => {
@@ -2364,20 +2373,29 @@ impl VoiceCompanionRuntime {
                         info!(action = "dismiss_session", "Voice direct control: dismiss session");
                         let mut d = driver.lock().await;
                         d.reset();
-                        drop(d);
                         pending_utterances.lock().unwrap_or_else(|e| e.into_inner()).clear();
                         let _ = playback.interrupt().await;
+                        let sleep_gen = playback.generation_id();
+                        let _ = event_tx.send_scoped(
+                            VoiceCompanionEvent::IntentDecided {
+                                intent: "Ignore".into(),
+                                reply: None,
+                                understood_request: None,
+                            },
+                            &control_scope,
+                        );
                         let _ = event_tx.send_scoped(
                             VoiceCompanionEvent::SessionEnded {
                                 reason: VoiceSessionEndReason::UserStop,
                             },
                             &control_scope,
                         );
+                        drop(d);
                         voice_feedback::schedule(
                             playback.clone(),
                             event_tx.clone(),
                             VoiceCueKind::Sleep,
-                            playback.generation_id(),
+                            sleep_gen,
                         );
                         return;
                     }
@@ -4130,18 +4148,26 @@ impl VoiceCompanionRuntime {
                                     if owned && scope.matches(&current) && current.ended_reason.is_none() && output.generation_id()==generation && chrono::Utc::now().timestamp_millis()<deadline_ms && guard.current_state()==AcousticState::ListeningConfirm {
                                         if let Ok(Some(text))=&result {
                                             if !text.trim().is_empty() {
-                                                if nomifun_api_types::voice::classify_voice_direct_control(text, &[]) == Some(nomifun_api_types::voice::VoiceDirectControlAction::DismissSession) {
+                                                let feedback = events.feedback();
+                                                if nomifun_api_types::voice::classify_voice_direct_control(text, &feedback.dismiss_phrases) == Some(nomifun_api_types::voice::VoiceDirectControlAction::DismissSession) {
                                                     drop(guard);
                                                     let mut d = states.lock().await;
                                                     d.reset();
                                                     pending_for_turn.lock().unwrap_or_else(|e| e.into_inner()).take();
-                                                    drop(d);
                                                     let _ = output.interrupt().await;
+                                                    let sleep_gen = output.generation_id();
                                                     let _ = events.send_scoped(
                                                         VoiceCompanionEvent::SessionEnded {
                                                             reason: VoiceSessionEndReason::UserStop,
                                                         },
                                                         &scope,
+                                                    );
+                                                    drop(d);
+                                                    voice_feedback::schedule(
+                                                        output.clone(),
+                                                        events.clone(),
+                                                        VoiceCueKind::Sleep,
+                                                        sleep_gen,
                                                     );
                                                     let _ = response.send(Ok(Some("cancel".to_string())));
                                                     return;

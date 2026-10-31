@@ -43,7 +43,7 @@ impl VoiceEventHub {
     }
 
     pub fn feedback(&self) -> nomifun_api_types::voice::VoiceFeedbackConfig {
-        *self.feedback.lock().unwrap_or_else(|e| e.into_inner())
+        self.feedback.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn context(&self) -> Vec<nomifun_voice_terminal::router::ChatMessage> {

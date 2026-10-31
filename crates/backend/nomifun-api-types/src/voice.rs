@@ -15,12 +15,20 @@ pub enum VoiceFeedbackMode {
     Off,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct VoiceFeedbackConfig {
     pub mode: VoiceFeedbackMode,
     pub volume: u8,
     pub speak_replies: bool,
+    pub wake_words: Vec<String>,
+    pub wake_reply: String,
+    pub interject_keyword: String,
+    pub dismiss_phrases: Vec<String>,
+    pub dismiss_reply: String,
+    pub tts_backend: String,
+    pub tts_speed: f32,
+    pub idle_timeout_secs: u32,
 }
 
 impl Default for VoiceFeedbackConfig {
@@ -29,6 +37,14 @@ impl Default for VoiceFeedbackConfig {
             mode: VoiceFeedbackMode::Light,
             volume: 50,
             speak_replies: true,
+            wake_words: vec!["Hey Flowy".into(), "你好 Flowy".into()],
+            wake_reply: "我在".into(),
+            interject_keyword: "Flowy".into(),
+            dismiss_phrases: vec!["退下吧".into(), "结束通话".into(), "休息吧".into()],
+            dismiss_reply: "好的，再见".into(),
+            tts_backend: "local".into(),
+            tts_speed: 1.0,
+            idle_timeout_secs: 30,
         }
     }
 }
@@ -55,6 +71,14 @@ pub struct VoiceFeedbackPatch {
     pub mode: Option<VoiceFeedbackMode>,
     pub volume: Option<u8>,
     pub speak_replies: Option<bool>,
+    pub wake_words: Option<Vec<String>>,
+    pub wake_reply: Option<String>,
+    pub interject_keyword: Option<String>,
+    pub dismiss_phrases: Option<Vec<String>>,
+    pub dismiss_reply: Option<String>,
+    pub tts_backend: Option<String>,
+    pub tts_speed: Option<f32>,
+    pub idle_timeout_secs: Option<u32>,
 }
 
 impl VoiceFeedbackPatch {
@@ -63,6 +87,14 @@ impl VoiceFeedbackPatch {
             mode: self.mode.unwrap_or(current.mode),
             volume: self.volume.unwrap_or(current.volume),
             speak_replies: self.speak_replies.unwrap_or(current.speak_replies),
+            wake_words: self.wake_words.unwrap_or(current.wake_words),
+            wake_reply: self.wake_reply.unwrap_or(current.wake_reply),
+            interject_keyword: self.interject_keyword.unwrap_or(current.interject_keyword),
+            dismiss_phrases: self.dismiss_phrases.unwrap_or(current.dismiss_phrases),
+            dismiss_reply: self.dismiss_reply.unwrap_or(current.dismiss_reply),
+            tts_backend: self.tts_backend.unwrap_or(current.tts_backend),
+            tts_speed: self.tts_speed.unwrap_or(current.tts_speed),
+            idle_timeout_secs: self.idle_timeout_secs.unwrap_or(current.idle_timeout_secs),
         }
     }
 }
@@ -73,6 +105,14 @@ impl From<VoiceFeedbackConfig> for VoiceFeedbackPatch {
             mode: Some(c.mode),
             volume: Some(c.volume),
             speak_replies: Some(c.speak_replies),
+            wake_words: Some(c.wake_words),
+            wake_reply: Some(c.wake_reply),
+            interject_keyword: Some(c.interject_keyword),
+            dismiss_phrases: Some(c.dismiss_phrases),
+            dismiss_reply: Some(c.dismiss_reply),
+            tts_backend: Some(c.tts_backend),
+            tts_speed: Some(c.tts_speed),
+            idle_timeout_secs: Some(c.idle_timeout_secs),
         }
     }
 }

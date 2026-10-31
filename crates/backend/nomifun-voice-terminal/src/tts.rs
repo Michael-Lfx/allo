@@ -1333,6 +1333,14 @@ impl TtsProvider for SherpaOfflineTtsProvider {
         let engines_arc = self.engines.clone();
         let config = self.config.clone();
         let text_owned = text_clean.to_string();
+        let default_locale = if voice.starts_with("en") || voice.contains("en_") || voice.contains("en-") {
+            Some("en-US".to_string())
+        } else {
+            None
+        };
+
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_worker = cancelled.clone();
 
         let blocking_task = tokio::task::spawn_blocking(move || {
             let mut lock = engines_arc.blocking_lock();
@@ -1347,7 +1355,7 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                 ..Default::default()
             };
 
-            let segments = segment_languages(&text_owned);
+            let segments = segment_languages_with_locale(&text_owned, default_locale.as_deref());
             if segments.is_empty() {
                 return Err(TtsError::Synthesis("empty_text".into()));
             }
@@ -1356,6 +1364,10 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             let mut sample_rate = engines.primary.sample_rate();
 
             for (i, seg) in segments.iter().enumerate() {
+                if cancelled_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err(TtsError::Cancelled);
+                }
+
                 let (target_engine, chunk_text) = match seg {
                     LangSegment::Zh(s) => (&engines.primary, s.as_str()),
                     LangSegment::En(s) => {
@@ -1370,8 +1382,13 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                     }
                 };
 
+                let cancel_cb = cancelled_worker.clone();
+                let callback = move |_samples: &[f32], _progress: f32| -> bool {
+                    !cancel_cb.load(std::sync::atomic::Ordering::Relaxed)
+                };
+
                 let audio = target_engine
-                    .generate_with_config::<fn(&[f32], f32) -> bool>(chunk_text, &gen_config, None)
+                    .generate_with_config(chunk_text, &gen_config, Some(callback))
                     .ok_or_else(|| TtsError::Synthesis("sherpa_offline_tts_generation_failed".into()))?;
 
                 let samples = audio.samples();
@@ -1396,6 +1413,11 @@ impl TtsProvider for SherpaOfflineTtsProvider {
                 return Err(TtsError::Synthesis("sherpa_offline_tts_empty_samples".into()));
             }
 
+            // Verify samples are finite
+            if !all_samples.iter().all(|s| s.is_finite()) {
+                return Err(TtsError::Synthesis("tts_non_finite_samples".into()));
+            }
+
             let wav = nomifun_audio::pcm_to_wav(&all_samples, sample_rate as u32);
             tracing::info!(
                 text_len = text_owned.len(),
@@ -1407,10 +1429,13 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             Ok(wav)
         });
 
-        let wav = tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task)
-            .await
-            .map_err(|_| TtsError::Synthesis("tts_generation_timeout".into()))?
-            .map_err(|join_err| TtsError::Synthesis(format!("tts_task_panicked: {join_err}")))??;
+        let wav = match tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task).await {
+            Ok(res) => res.map_err(|join_err| TtsError::Synthesis(format!("tts_task_panicked: {join_err}")))??,
+            Err(_) => {
+                cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(TtsError::Synthesis("tts_generation_timeout".into()));
+            }
+        };
 
         let (tx, rx) = mpsc::channel(1);
         tx.send(wav)
