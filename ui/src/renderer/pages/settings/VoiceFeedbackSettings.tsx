@@ -10,7 +10,6 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
   const [draft, setDraft] = useState<VoiceFeedbackConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  const [refresh, setRefresh] = useState(0);
   const loadRevision = useRef(0);
 
   useEffect(() => {
@@ -29,7 +28,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
       }
     }).catch(() => { if (alive && revision === loadRevision.current) setError(true); });
     return () => { alive = false; };
-  }, [connected, refresh]);
+  }, [connected]);
 
   const save = async () => {
     if (!draft) return;
@@ -145,9 +144,15 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
               ) : !settings ? (
                 t('voice.feedback.loading')
               ) : dirty ? (
-                <span className='text-warning-6 font-medium animate-pulse'>● {t('voice.feedback.unsaved')}</span>
+                <span className='text-warning-6 font-semibold animate-pulse flex items-center gap-1.5'>
+                  <span className='inline-block w-2 h-2 rounded-full bg-warning-6 animate-ping' />
+                  {t('voice.feedback.unsaved')}
+                </span>
               ) : applied ? (
-                <span className='text-success-6 font-medium'>● {t('voice.feedback.applied')}</span>
+                <span className='text-success-6 font-medium flex items-center gap-1.5'>
+                  <span className='inline-block w-2 h-2 rounded-full bg-success-6' />
+                  {t('voice.feedback.applied')}
+                </span>
               ) : (
                 t('voice.feedback.pending')
               )}
@@ -155,16 +160,17 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
           }
           controlLayout='actions'
           control={
-            <div className='flex flex-wrap gap-3'>
-              <Button disabled={busy} onClick={() => setRefresh((value) => value + 1)}>
-                {t('voice.service.retrySync')}
-              </Button>
+            <div className='flex items-center gap-3'>
               <Button
                 type='primary'
                 loading={busy}
                 disabled={!draft || !dirty}
                 onClick={() => void save()}
-                className={dirty ? 'animate-pulse ring-2 ring-primary-5 font-semibold' : ''}
+                className={
+                  dirty
+                    ? 'ring-2 ring-[var(--flowy-attention)] !bg-[var(--flowy-attention)] !border-[var(--flowy-attention)] text-white font-bold shadow-lg animate-pulse'
+                    : ''
+                }
               >
                 {t('voice.feedback.savePreferences')}
               </Button>

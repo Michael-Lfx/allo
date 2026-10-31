@@ -347,6 +347,7 @@
     "downloadAndEnable": "Download & Enable",
     "reinstall": "Re-download & Enable",
     "repair": "Verify & Repair",
+    "more": "More Options",
     "download": "Download",
     "retry": "Retry",
     "releaseSpace": "Release Space",
@@ -520,6 +521,9 @@
   },
   "capabilities": {
     "title": "Full call readiness",
+    "fullReadyTitle": "Voice Calling Ready",
+    "notReadyTitle": "Voice Calling Degraded",
+    "pendingTitle": "Voice Calling Unverified",
     "description": "Run an explicit check before a new full voice call. It uses a fixed, tool-free request through your configured model and fixed bilingual speech samples; it may use a small amount of model quota.",
     "run": "Check and prepare",
     "notChecked": "Not checked yet. A full call needs current evidence for microphone, speech recognition, dialogue, synthesis and playback.",

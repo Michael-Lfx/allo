@@ -7,11 +7,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Button, Message, Switch } from '@arco-design/web-react';
-import { CheckOne, CloseOne, Info } from '@icon-park/react';
+import { Button, Dropdown, Menu, Message, Switch } from '@arco-design/web-react';
+import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
 import { requestDictationIntent } from '@/renderer/pages/guid/dictationIntent';
-import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, wakeVoiceSession, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
+import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
@@ -274,7 +274,6 @@ const VoiceSettings: React.FC = () => {
   const [voiceSnapshot, setVoiceSnapshot] = useState<VoiceSnapshot | null>(null);
   const [voiceSyncError, setVoiceSyncError] = useState<string | null>(null);
   const [voiceStatusRefresh, setVoiceStatusRefresh] = useState(0);
-  const [waking, setWaking] = useState(false);
   const [isTogglingCompanion, setIsTogglingCompanion] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -855,8 +854,18 @@ const VoiceSettings: React.FC = () => {
     rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
-    rowLabel = t(`voice.service.${serviceAvailability}`);
-    rowDescription = serviceDescription;
+    if (!capabilities) {
+      rowLabel = t('voice.capabilities.pendingTitle');
+      rowDescription = t('voice.capabilities.notChecked');
+    } else if (capabilities.can_start_full_call) {
+      rowLabel = t('voice.capabilities.fullReadyTitle');
+      rowDescription = t('voice.capabilities.fullReady');
+    } else {
+      rowLabel = t('voice.capabilities.notReadyTitle');
+      rowDescription = capabilities.degraded_text_only
+        ? t('voice.capabilities.textOnly')
+        : t('voice.capabilities.notReady');
+    }
   } else if (modelStatus === 'Failed') {
     rowLabel = t('voice.status.failed');
     rowDescription = (
@@ -892,19 +901,33 @@ const VoiceSettings: React.FC = () => {
                   label={
                     <div className='flex items-center gap-8px'>
                       {modelStatus === 'Ready' && (
-                        <CheckOne
-                          theme='filled'
-                          size='16'
-                          className='text-primary-6'
-                          style={{
-                            transition: reducedMotion
-                              ? 'none'
-                              : 'transform 240ms cubic-bezier(0.16, 1, 0.3, 1)',
-                            transform: reducedMotion
-                              ? 'scale(1)'
-                              : (readyIconScaled ? 'scale(1)' : 'scale(0.9)'),
-                          }}
-                        />
+                        capabilities?.can_start_full_call ? (
+                          <CheckOne
+                            theme='filled'
+                            size='16'
+                            className='text-success-6'
+                            style={{
+                              transition: reducedMotion
+                                ? 'none'
+                                : 'transform 240ms cubic-bezier(0.16, 1, 0.3, 1)',
+                              transform: reducedMotion
+                                ? 'scale(1)'
+                                : (readyIconScaled ? 'scale(1)' : 'scale(0.9)'),
+                            }}
+                          />
+                        ) : capabilities ? (
+                          <CloseOne
+                            theme='filled'
+                            size='16'
+                            className='text-danger-6'
+                          />
+                        ) : (
+                          <Attention
+                            theme='filled'
+                            size='16'
+                            className='text-warning-6'
+                          />
+                        )
                       )}
                       {modelStatus === 'Failed' && (
                         <CloseOne
@@ -975,25 +998,29 @@ const VoiceSettings: React.FC = () => {
                             loading={isTogglingCompanion}
                             onChange={handleToggleVoiceEnabled}
                           />
-                          <Button
-                            type='text'
-                            size='small'
-                            className='text-t-secondary'
-                            onClick={() => handleInstall(true)}
+                          <Dropdown
+                            droplist={
+                              <Menu>
+                                <Menu.Item key='repair' onClick={() => handleInstall(true)}>
+                                  {t('voice.actions.repair')}
+                                </Menu.Item>
+                                <Menu.Item key='release' onClick={handleReleaseClick} className='text-danger-6'>
+                                  {isConfirmingRelease
+                                    ? t('voice.actions.confirmRelease')
+                                    : t('voice.actions.releaseSpace')}
+                                </Menu.Item>
+                              </Menu>
+                            }
+                            position='br'
                           >
-                            {t('voice.actions.repair')}
-                          </Button>
-                          <Button
-                            type={isConfirmingRelease ? 'secondary' : 'text'}
-                            status={isConfirmingRelease ? 'danger' : 'default'}
-                            size='small'
-                            className={isConfirmingRelease ? 'tabular-nums text-danger-6' : 'text-t-secondary'}
-                            onClick={handleReleaseClick}
-                          >
-                            {isConfirmingRelease
-                              ? t('voice.actions.confirmRelease')
-                              : t('voice.actions.releaseSpace')}
-                          </Button>
+                            <Button
+                              type='secondary'
+                              size='small'
+                              icon={<MoreOne />}
+                              className='text-t-secondary'
+                              aria-label={t('voice.actions.more')}
+                            />
+                          </Dropdown>
                         </div>
                       )}
 
@@ -1044,28 +1071,28 @@ const VoiceSettings: React.FC = () => {
               </div>
             </div>
 
-            {modelStatus === 'Ready' && capabilities && (
-              <div className='flex flex-col gap-2 px-4 pb-3 pt-3 text-12px border-t border-t-solid border-[var(--border-base)]' role='status'>
-                {(['capture', 'kws', 'vad', 'asr', 'llm', 'tts', 'playback'] as const).map((name) => {
-                  const item = capabilities[name];
+            {modelStatus === 'Ready' && (
+              <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
+                {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
+                  const item = capabilities?.[name];
+                  const isReady = item?.status === 'ready';
+                  const isFailed = item?.status === 'failed';
+                  const statusColor = isReady
+                    ? 'text-success-6 border-success-3 bg-success-1'
+                    : isFailed
+                      ? 'text-danger-6 border-danger-3 bg-danger-1'
+                      : 'text-t-tertiary border-[var(--border-base)] bg-fill-2';
+                  const icon = isReady ? '●' : isFailed ? '✕' : '○';
+
                   return (
-                    <div key={name} className='flex items-start justify-between gap-3'>
-                      <span className='text-t-secondary'>{t(`voice.capabilities.item.${name}`)}</span>
-                      <span
-                        className={
-                          item.status === 'ready'
-                            ? 'text-success-6 font-medium'
-                            : item.status === 'failed'
-                              ? 'text-danger-6'
-                              : 'text-t-tertiary'
-                        }
-                      >
-                        {t(`voice.capabilities.status.${item.status}`)}
-                        {item.reason_code && item.status !== 'ready'
-                          ? ` · ${t(`voice.capabilities.reason.${item.reason_code}`, { defaultValue: item.reason_code })}`
-                          : ''}
+                    <React.Fragment key={name}>
+                      {idx > 0 && <span className='text-t-tertiary font-mono select-none'>→</span>}
+                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
+                        <span>{icon}</span>
+                        <span>{t(`voice.capabilities.item.${name}`)}</span>
+                        <span>{item ? t(`voice.capabilities.status.${item.status}`) : t('voice.capabilities.status.unknown')}</span>
                       </span>
-                    </div>
+                    </React.Fragment>
                   );
                 })}
               </div>
@@ -1100,15 +1127,6 @@ const VoiceSettings: React.FC = () => {
 
               <div className='mt-4 flex flex-col gap-4 border-t border-t-solid border-[var(--border-base)] pt-4'>
                 <SettingsList>
-                  <SettingsRow
-                    label={t('voice.session.tryWake')}
-                    description={serviceAvailability === 'ready' ? t('voice.session.tryWakeDescription') : serviceDescription}
-                    controlLayout='actions'
-                    control={<Button size='small' loading={waking} disabled={serviceAvailability !== 'ready' || asrRunning} onClick={() => {
-                      setWaking(true);
-                      void wakeVoiceSession().catch(() => Message.error(t('voice.session.unavailable'))).finally(() => setWaking(false));
-                    }}>{t('voice.session.tryWake')}</Button>}
-                  />
                   <div className='min-h-68px flex items-center'>
                     <div className='w-full'>
                       <SettingsRow

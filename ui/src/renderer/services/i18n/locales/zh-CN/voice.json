@@ -347,6 +347,7 @@
     "downloadAndEnable": "下载并启用",
     "reinstall": "重新下载并启用",
     "repair": "校验修复",
+    "more": "更多操作",
     "download": "下载",
     "retry": "重试",
     "releaseSpace": "释放空间",
@@ -520,6 +521,9 @@
   },
   "capabilities": {
     "title": "完整通话就绪",
+    "fullReadyTitle": "完整语音通话已就绪",
+    "notReadyTitle": "完整通话未就绪",
+    "pendingTitle": "完整通话待检查",
     "description": "新建完整语音通话前运行一次显式检查。检查会通过已配置模型发送一条固定、无工具、无私有上下文的短请求，并使用固定中英短句验证合成；可能产生少量模型额度。",
     "run": "检查并准备",
     "notChecked": "尚未检查。完整通话需要麦克风、识别、对话、合成和播放的当前证据。",
