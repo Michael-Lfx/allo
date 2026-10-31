@@ -2667,6 +2667,18 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     rt.handle_wake().await.unwrap();
     let worker = rt.start_worker();
 
+    let host_manager = Arc::new(nomifun_app::voice_companion_manager::VoiceCompanionProcessManager::new(
+        Arc::new(nomifun_voice_models::ModelManager::new(dir.path())),
+        dir.path(),
+    ).with_recorder(recorder.clone()));
+    let snap_wake = rt.snapshot();
+    let real_session_id = snap_wake.session_id.clone().expect("real session_id must exist at wake");
+    host_manager.project_with_binding_for_test(snap_wake, 0).await;
+    assert!(host_manager.snapshot().binding.is_some(), "Authoritative binding must be frozen by host manager at wake");
+    let authoritative_binding = host_manager.snapshot().binding.unwrap();
+    assert_eq!(authoritative_binding.session_id, real_session_id);
+    assert_eq!(authoritative_binding.conversation_id, conv_id);
+
     // 1. Feed Input A (Task)
     for i in 0..80 {
         producer.push(&vec![if i < 25 { 0.7 } else { 0.0 }; 320]);
@@ -2715,6 +2727,7 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     let r_for_gate = rt.clone();
     let cmd_for_notif = command_id_a.clone();
     let t_rel = tasks_release.clone();
+    let tts_for_notif = tts_calls.clone();
     let competing_notif = tokio::spawn(async move {
         gate_b.reached.notified().await;
         // Input B speech ended and reached dispatch queue gate while Task A was dispatching.
@@ -2732,8 +2745,12 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             goal: Some("请执行任务".into()),
             text: "任务已完成".into(),
         };
+        let tts_before_premature = tts_for_notif.load(std::sync::atomic::Ordering::SeqCst);
         let premature_res = r_for_gate.announce_task_result(premature_req).await;
         assert_eq!(premature_res, Err("voice_busy"), "Notice must yield to active input B and return voice_busy");
+        let tts_after_premature = tts_for_notif.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(tts_after_premature - tts_before_premature, 0, "Busy announcement must consume 0 TTS synthesis");
+
         t_rel.notify_one();
         gate_b.resume.notify_one();
     });
@@ -2744,21 +2761,43 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     }
     competing_notif.await.unwrap();
     finalize_task.await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
+    // Bounded predicate: wait until journal contains Turn B with unprojected status
+    let b_entry = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Ok(bytes) = std::fs::read(&journal_file) {
+                if let Ok(records_json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(arr) = records_json.as_array() {
+                        if let Some(entry) = arr.iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样") {
+                            if entry["output"].as_str().is_some() && entry["projected"] == false {
+                                return entry.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("Journal entry for Turn B must be present and unprojected within deadline");
 
     // Verify B's text is preserved and error is visible
     let s_after_b_err = rt.snapshot();
+    let turn_b_id = s_after_b_err.turn_id.clone().expect("Turn B turn_id must be present");
     assert!(s_after_b_err.ended_reason.is_none(), "Session must not exit upon projection write failure");
     assert!(s_after_b_err.user_text.as_deref().is_some_and(|t| t.contains("今天天气怎么样")), "User text must be preserved");
 
-    // Recover B from journal: original output and message ID are reused without calling the model again!
-    let journal_file = journal_dir.path().join("voice").join(format!("dialogue-{USER}.json"));
-    let records_json: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
-    let b_entry = records_json.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
+    host_manager.project_snapshot_for_test(s_after_b_err.clone(), 0);
+    let snapshot_at_b_failure = host_manager.snapshot();
+    assert!(snapshot_at_b_failure.binding.is_some(), "Authoritative binding must be preserved in failure snapshot");
+    assert!(!snapshot_at_b_failure.projected_turn_ids.contains(&turn_b_id), "Turn B must NOT be projected in failure snapshot");
+    assert_eq!(snapshot_at_b_failure.error.as_ref().map(|e| e.code.as_str()), Some("voice_projection_write_failed"), "Root snapshot must expose projection failure error");
+
     let b_req: VoiceDialogueRequest = serde_json::from_value(b_entry["request"].clone()).unwrap();
     let b_content = b_entry["output"].as_str().unwrap().to_string();
-    assert_eq!(b_entry["projected"], false, "B should not be projected yet due to simulated write failure");
 
+    let model_calls_before_rec = completer.calls.load(std::sync::atomic::Ordering::SeqCst);
+    let submits_before_rec = tasks.calls.load(std::sync::atomic::Ordering::SeqCst);
     let preflight_rec = recorder.preflight(&b_req).await.unwrap();
     assert_eq!(preflight_rec, nomifun_app::voice_dialogue::VoiceDialoguePreflight::Generated {
         conversation_id: conv_id.clone(),
@@ -2766,6 +2805,23 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     });
     // Re-execute record_pair on recovery (fault_gate is now false)
     recorder.record_pair(&conv_id, &b_req, &b_content).await.unwrap();
+    let model_calls_after_rec = completer.calls.load(std::sync::atomic::Ordering::SeqCst);
+    let submits_after_rec = tasks.calls.load(std::sync::atomic::Ordering::SeqCst);
+    let extra_model_calls = model_calls_after_rec - model_calls_before_rec;
+    let extra_submits = submits_after_rec - submits_before_rec;
+    assert_eq!(extra_model_calls, 0, "Recovery must not make additional model calls");
+    assert_eq!(extra_submits, 0, "Recovery must not make additional task submits");
+
+    let s_after_b_rec = rt.snapshot();
+    host_manager.project_snapshot_for_test(s_after_b_rec.clone(), 0);
+    let snapshot_after_b_recovery = host_manager.snapshot();
+    assert!(snapshot_after_b_recovery.projected_turn_ids.contains(&turn_b_id), "Turn B exact ID must be in projected_turn_ids after recovery");
+    assert!(snapshot_after_b_recovery.error.is_none(), "Recovery snapshot must clear root error");
+    let recovered_turn_b = snapshot_after_b_recovery.conversation.iter().find(|t| t.turn_id == turn_b_id).expect("Turn B must exist in recovered snapshot conversation");
+    assert!(recovered_turn_b.error.is_none(), "Turn B error must be cleared in recovered snapshot");
+    assert!(recovered_turn_b.user_message_id.is_some(), "Turn B must have user_message_id assigned after recovery");
+    assert!(recovered_turn_b.assistant_message_id.is_some(), "Turn B must have assistant_message_id assigned after recovery");
+
     let records_after: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_file).unwrap()).unwrap();
     let b_entry_after = records_after.as_array().unwrap().iter().find(|r| r["request"]["raw_user_text"] == "input-B: 今天天气怎么样").unwrap();
     assert_eq!(b_entry_after["projected"], true, "B must be projected after recovery");
@@ -2790,7 +2846,12 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
                 goal: Some("请执行任务".into()),
                 text: "任务已完成".into(),
             };
+            let tts_before_announce = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
             if rt.announce_task_result(announce_req.clone()).await.is_ok() {
+                let tts_after_announce = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(tts_after_announce - tts_before_announce, 1, "First successful announcement must consume 1 TTS synthesis");
+                let notif_receipt = rt.notification_status("attempt-1").await;
+                assert!(notif_receipt.is_some(), "Announcement receipt must be recorded for attempt-1");
                 announced_ok = true;
                 announce_req_to_dup = Some(announce_req);
                 break;
@@ -2802,8 +2863,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
 
     // Duplicate attempt assertion: immediate duplicate attempt_id returns Ok without duplicate speech
     let dup_req = announce_req_to_dup.unwrap();
+    let tts_before_dup = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
     let dup_res = rt.announce_task_result(dup_req).await;
     assert!(dup_res.is_ok(), "Duplicate attempt_id returns Ok immediately");
+    let tts_after_dup = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(tts_after_dup - tts_before_dup, 0, "Duplicate attempt must be deduped and consume 0 TTS synthesis");
 
     // 4. Feed Input C (Follow-up Chat)
     for i in 0..85 {
@@ -2811,12 +2875,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while completer.calls.load(std::sync::atomic::Ordering::SeqCst) < 3 || svc.list_messages(USER, &conv_id, Default::default()).await.map(|m| m.items.len()).unwrap_or(0) < 6 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-    }).await.expect("Turn C must complete routing");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }).await.expect("Turn C routing and 6 durable messages must complete within deadline");
 
     // Test late announcement after UserStop
     let s_end = rt.snapshot();
@@ -2834,8 +2897,11 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
         goal: Some("请执行任务".into()),
         text: "late announcement".into(),
     };
+    let tts_before_late = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
     let late_res = rt.announce_task_result(late_announcement).await;
     assert_eq!(late_res, Err("voice_busy"), "Late announcement after UserStop must return voice_busy");
+    let tts_after_late = tts_calls.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(tts_after_late - tts_before_late, 0, "Late announcement must consume 0 TTS synthesis");
 
     // 5. Verify End-to-End Database Persistence and Exact Sequential 6 Messages
     let messages = svc.list_messages(USER, &conv_id, Default::default()).await.unwrap().items;
@@ -2866,13 +2932,33 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
     assert_eq!(tasks.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "Exactly 1 task submit call");
 
     let snap = rt.snapshot();
+    let turn_c_id = snap.turn_id.clone().expect("Turn C turn_id must exist");
     assert_eq!(stt.0.load(std::sync::atomic::Ordering::SeqCst), 3, "All 3 utterances must be transcribed in order");
     assert_eq!(rt.pending_utterance_count(), 0, "No orphaned pending utterances");
     assert_eq!(snap.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop), "Session ended cleanly with UserStop");
 
+    let real_session_id = snap.session_id.clone().expect("real session_id must exist at finish");
+    host_manager.project_snapshot_for_test(snap.clone(), 0);
+    let snapshot_final = host_manager.snapshot();
+    let binding = snapshot_final.binding.clone().expect("authoritative binding must be present in snapshot");
+    assert_eq!(binding.conversation_id, conv_id);
+    assert_eq!(binding.session_id, real_session_id);
+    assert!(snapshot_final.projected_turn_ids.contains(&turn_c_id), "Turn C must be in projected_turn_ids in final snapshot");
+    assert_eq!(snapshot_final.ended_reason, Some(nomifun_api_types::voice::VoiceSessionEndReason::UserStop));
+    assert_eq!(snapshot_final.session_id, snapshot_at_b_failure.session_id);
+    assert_eq!(snapshot_final.instance_id, snapshot_at_b_failure.instance_id);
+    assert_eq!(snapshot_after_b_recovery.session_id, snapshot_at_b_failure.session_id);
+
     let trace_payload = serde_json::json!({
         "conversation_id": conv_id,
-        "session_id": "scoped-joint-control",
+        "session_id": real_session_id,
+        "instance_id": snapshot_final.instance_id.clone(),
+        "binding": binding,
+        "snapshots": {
+            "at_b_failure": snapshot_at_b_failure,
+            "after_b_recovery": snapshot_after_b_recovery,
+            "final": snapshot_final,
+        },
         "messages": messages.iter().map(|m| serde_json::json!({
             "message_id": m.message_id,
             "position": format!("{:?}", m.position.as_ref().unwrap()).to_lowercase(),
@@ -2882,19 +2968,23 @@ async fn test_voice_companion_joint_worker_to_host_three_sentence_chain() {
             "completer_calls": completer.calls.load(std::sync::atomic::Ordering::SeqCst),
             "task_submits": tasks.calls.load(std::sync::atomic::Ordering::SeqCst),
             "tts_synthesizes": tts_calls.load(std::sync::atomic::Ordering::SeqCst),
-            "announcements": 1,
+            "announcements_succeeded": 1,
+            "announcement_attempts": 2,
+            "extra_model_calls_on_recovery": extra_model_calls,
         },
         "recovery": {
             "turn_b_write_failed_injected": true,
             "turn_b_recovered_from_journal": true,
-            "extra_model_calls_on_recovery": 0
+            "extra_model_calls_on_recovery": extra_model_calls
         }
     });
     let trace_bytes = serde_json::to_vec_pretty(&trace_payload).unwrap();
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().parent().unwrap();
-    let trace_dir = repo_root.join("build.noindex/voice-task-completion-round5-closeout-20261030");
-    if trace_dir.exists() {
-        std::fs::write(trace_dir.join("joint-trace.json"), &trace_bytes).unwrap();
+    if let Ok(out_path) = std::env::var("VOICE_JOINT_TRACE_OUT_PATH") {
+        let path = std::path::Path::new(&out_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create parent directory for VOICE_JOINT_TRACE_OUT_PATH");
+        }
+        nomifun_common::dir_config::write_atomic_replace(path, &trace_bytes).expect("Failed to write VOICE_JOINT_TRACE_OUT_PATH");
     }
 
     worker.abort();
