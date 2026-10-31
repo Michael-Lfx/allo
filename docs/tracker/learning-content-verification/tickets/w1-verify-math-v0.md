@@ -82,3 +82,51 @@ part_of: ../map.md
 - 符号引擎/CAS（v3 决策门）；equation/inequality/导数/积分/ODE kind（w3）；
 - 练习题型接核验器（w2）；网络质证与 KB 溯源（map 雾区已裁决）；
 - jsxgraph/几何图形核验。
+
+## Resolution（2026-10-31 grilling 裁决，影响面核查后；真机结果可复议）
+
+**裁决（用户：按推荐）：**
+
+1. **核验失败语义 = 工具层硬反馈 + 发布面仅信息性留痕，不做 danger**：verify_math
+   失败 → error ToolResult 回模型自愈（同轮循环内，不占轮预算）；发布面无法重放
+   核验（claim 是模型调用时给的，审计是无状态纯函数）——诚实限制记档；finish 门
+   后追加 `math_verify_failed` warning（「本课 verify_math 失败 N 次，未必已修正」，
+   仿 viz_block_lint_dropped 先例），不拦发布。
+2. **f3 viz_lint 读数缺陷顺带修进 w1**：观测帧（lesson_content_loop.rs:342-350）
+   补 `viz_lint_events` 字段 + math_verify 计数同槽；f3 票面补缺陷回写注记。
+3. **接线细节包**：verify_math 进生成面+修复面两面工具清单；R14 条款进
+   CONTENT_DISCIPLINE_V2 块双写（EN learning / 中文孪生 ai-agent，随 V2 开关同命，
+   不新增开关）；白名单测试两向量随批；REPAIR 对照表加 math_verify 行并清掉
+   stale 行 `section_binding_unknown`（全仓无产生点）。
+4. **smoke oracle 形态**：预埋收益序列（期望 σ 事先算死）→ 判据 = 正文字符串
+   包含期望值（容忍 ≈/%/舍入变体）+ verify_math 调用计数 ≥1 + `math_verify
+   read-out: calls/passed/failed` 读数行。
+
+**影响面核查勘误（2026-10-31 实码核实）：**
+
+- **smoke 在 nomifun-app**（`commands/learning_smoke.rs`），不在 learning——票面
+  「R14 条款与 smoke 在该 crate」的 smoke 半边不成立；R14 本身**双宿**（EN
+  `generation/lesson.rs:818-823` CONTENT_DISCIPLINE_V2_BLOCK / 中文
+  `lesson_content_loop.rs:63-68` CONTENT_DISCIPLINE_V2_CN，条款覆盖断言两处
+  1414/tests.rs:1448）。传统线（learning EN 块消费方）**没有工具循环**——EN 版
+  R14 只能写「实算并展示步骤」的纪律，中文版才绑 verify_math；非对称记档。
+- 求值器落 learning 成立：ai-agent → learning 单向依赖（Cargo.toml 核实），
+  validate_body/LessonOp/SectionPack 全部跨用先例；全仓无现成表达式求值器
+  （grep 零命中、无 evalexpr/meval 依赖）——从零手写确认。
+- **f3 读数真缺陷**：smoke 读 calls.jsonl `lesson_agent_publish` 行的
+  viz_lint_events，但写端观测帧只含 capacity_note/estimated_minutes，该字段只进
+  WS `publish_ok` 帧——读数结构性恒 0。
+- 计数接线：`publish_frame` 是拿不到 LoopContext 的 trait 关联函数（牵三流）；
+  verify_math 不落库不经 LessonDraft——计数走 LoopContext 原子槽 → 观测帧
+  （342-350 有 ctx）。
+- audit_findings 无状态整表重算（refresh_audit 806-822）——「预算尽留痕」须
+  finish 门后追加（唯一先例 viz_block_lint_dropped，service/lesson_draft.rs:126-130）。
+- 工具机制：OneShotTool{name,description,input_schema,handler}，工具数组即白名单
+  （lesson_content_tools 798-812），精确向量测试 1565-1635；无 ls_ 前缀执法；
+  一轮可多次工具调用；参数解析 = 严格 serde_json::from_value，失败 Err 字符串
+  回模型（现成）。
+- 测试模子：ScriptedProvider（learning_loop.rs:580-740）；handler 直调样
+  1641-1714；全循环样 1718-1778；预算尽留痕样 1868-1902。
+- 容差先例：ActivityKind::Numeric 绝对容差，缺省/下限 1e-9（progress.rs:493）。
+
+施工图：[blueprints/2026-10-31-w1-verify-math-v0.md](../blueprints/2026-10-31-w1-verify-math-v0.md)。

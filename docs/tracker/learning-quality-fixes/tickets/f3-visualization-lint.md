@@ -151,3 +151,13 @@ HTTP 旅程未踩注入臂，故存量未曝；与本票零代码关联（f3 未
 修复 = `compare_exchange` 仅在 >0 时扣减 + 归零恢复透传回归钉单测；修复后
 注入臂恢复 attempts_used=2/success。提交 `c7048d231`/`515ac83c1`/
 `b701cd1a2`（票本体）。
+
+## 缺陷回写（2026-10-31，learning-content-verification w1 影响面核查发现）
+
+- **viz_lint_events 读数写端缺字段**：smoke 读的是 calls.jsonl `lesson_agent_publish`
+  行，但该观测帧发射端（lesson_content_loop.rs:342-350）不含 viz_lint_events，字段
+  只进 WS `publish_ok` 帧（不进 calls.jsonl）——提交 b701cd1a2 只补了读端。
+- **真机判据修正**：本票真机实录 `viz_lint_events=0 双零` 系结构性恒 0，**不构成
+  「零打回」证据**；lint 本身的单测与 op 拒绝通路不受影响。
+- 修复归 w1（观测帧补字段，math_verify 计数同槽接线）；修复后需一次真机 content
+  档复验读数真实性。
