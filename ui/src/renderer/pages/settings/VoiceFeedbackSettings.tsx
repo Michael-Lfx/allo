@@ -2,12 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button, Input, Message, Select, Slider } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { SettingsList, SettingsRow, SettingsSection } from '@renderer/components/settings/SettingsPagePrimitives';
-import { getVoiceFeedbackSettings, saveVoiceFeedback, type VoiceFeedbackConfig, type VoiceFeedbackSettings } from '@common/adapter/voiceCompanion';
+import { getVoiceFeedbackSettings, saveVoiceFeedback, getVoiceInputDevices, type VoiceFeedbackConfig, type VoiceFeedbackSettings, type AudioDeviceInfo } from '@common/adapter/voiceCompanion';
 
 export default function VoiceFeedbackSettingsSection({ connected }: { connected: boolean }) {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<VoiceFeedbackSettings | null>(null);
   const [draft, setDraft] = useState<VoiceFeedbackConfig | null>(null);
+  const [devices, setDevices] = useState<AudioDeviceInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
   const loadRevision = useRef(0);
@@ -23,10 +24,16 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
           wake_words: value.requested.wake_words ?? ['Hey Flowy'],
           tts_speed: value.requested.tts_speed ?? 1.0,
           idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
+          input_device: value.requested.input_device,
         });
         setError(false);
       }
     }).catch(() => { if (alive && revision === loadRevision.current) setError(true); });
+
+    void getVoiceInputDevices().then((devs) => {
+      if (alive) setDevices(devs);
+    });
+
     return () => { alive = false; };
   }, [connected]);
 
@@ -52,7 +59,8 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
     draft.volume !== settings.requested.volume ||
     JSON.stringify(draft.wake_words ?? []) !== JSON.stringify(settings.requested.wake_words ?? []) ||
     draft.tts_speed !== settings.requested.tts_speed ||
-    draft.idle_timeout_secs !== settings.requested.idle_timeout_secs
+    draft.idle_timeout_secs !== settings.requested.idle_timeout_secs ||
+    (draft.input_device || undefined) !== (settings.requested.input_device || undefined)
   ));
   const applied = Boolean(effective && settings && !dirty);
 
@@ -79,6 +87,31 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
               }}
             />
+          }
+        />
+        <SettingsRow
+          label={t('voice.feedback.inputDevice')}
+          description={t('voice.feedback.inputDeviceHint')}
+          control={
+            <Select
+              aria-label={t('voice.feedback.inputDevice')}
+              value={draft?.input_device || 'default'}
+              disabled={!draft || busy}
+              onChange={(val: string) => {
+                setDraft((prev) => prev && {
+                  ...prev,
+                  input_device: val === 'default' ? undefined : val,
+                });
+              }}
+              className='min-w-240px'
+            >
+              <Select.Option value='default'>{t('voice.feedback.inputDeviceDefault')}</Select.Option>
+              {devices.map((d) => (
+                <Select.Option key={d.id} value={d.name}>
+                  {d.name} {d.is_default ? `(${t('voice.feedback.inputDeviceIsOsDefault')})` : ''}
+                </Select.Option>
+              ))}
+            </Select>
           }
         />
         <SettingsRow

@@ -134,9 +134,30 @@ export interface VoiceFeedbackConfig {
   tts_backend?: string;
   tts_speed?: number;
   idle_timeout_secs?: number;
+  input_device?: string;
+}
+export interface AudioDeviceInfo {
+  id: string;
+  name: string;
+  is_default: boolean;
 }
 export interface VoiceFeedbackSettings { requested: VoiceFeedbackConfig; effective: VoiceFeedbackConfig | null }
 export type VoicePreviewKind = 'wake' | 'recognized' | 'processing' | 'follow_up' | 'sleep' | 'error';
+
+export async function getVoiceInputDevices(): Promise<AudioDeviceInfo[]> {
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/voice/companion/devices`, {
+      headers: buildBackendAuthHeaders('GET'),
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const json = await res.json() as { data?: AudioDeviceInfo[] };
+    return json.data ?? [];
+  } catch {
+    return [];
+  }
+}
 
 async function feedbackRequest(suffix: string, body?: unknown) {
   const method = body === undefined ? 'GET' : 'POST';

@@ -161,7 +161,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         voice_companion::voice::StartupMode::Default => {
-            VoiceCompanionRuntime::assemble(model_manager.clone(), oobe_manager.clone())
+            let preferred_device = feedback.as_ref().and_then(|f| f.input_device.as_deref());
+            VoiceCompanionRuntime::assemble_with_mic(model_manager.clone(), oobe_manager.clone(), preferred_device)
         }
     };
     if let Some(config) = feedback {

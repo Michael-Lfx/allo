@@ -1293,9 +1293,10 @@ pub struct VoiceCompanionRuntime {
     input_generation: Arc<AtomicU64>,
     pending_utterances: Arc<std::sync::Mutex<std::collections::VecDeque<PendingUtterance>>>,
     kws_reload_needed: Arc<AtomicBool>,
+    mic_reload_needed: Arc<AtomicBool>,
     /// Active RAII guard holding the cpal input stream open. Dropping this closes the mic.
     #[allow(dead_code)]
-    mic_source: Option<Arc<nomifun_audio::MicSource>>,
+    mic_source: Arc<std::sync::Mutex<Option<Arc<nomifun_audio::MicSource>>>>,
     #[cfg(any(test, feature = "voice-skeleton"))]
     replay_capture: bool,
     #[cfg(any(test, feature = "voice-skeleton"))]
@@ -1373,8 +1374,17 @@ impl VoiceCompanionRuntime {
     }
     /// Assembles the complete voice pipeline with capture, playback, session driver, and router.
     pub fn assemble(model_manager: Arc<ModelManager>, oobe_manager: Arc<OobeManager>) -> Self {
+        Self::assemble_with_mic(model_manager, oobe_manager, None)
+    }
+
+    /// Assembles the complete voice pipeline with a preferred or default microphone.
+    pub fn assemble_with_mic(
+        model_manager: Arc<ModelManager>,
+        oobe_manager: Arc<OobeManager>,
+        preferred_device: Option<&str>,
+    ) -> Self {
         HARDWARE_MIC_ATTEMPTS.fetch_add(1, Ordering::AcqRel);
-        let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::new(16_000) {
+        let (capture_pipeline, mic_source) = match nomifun_audio::MicSource::with_device(16_000, preferred_device) {
             Ok(mic) => {
                 info!("Hardware microphone successfully initialized for AI Mate");
                 let pipeline = mic.pipeline();
@@ -1449,9 +1459,10 @@ impl VoiceCompanionRuntime {
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
             kws_reload_needed: Arc::new(AtomicBool::new(false)),
+            mic_reload_needed: Arc::new(AtomicBool::new(false)),
             input_generation: Arc::new(AtomicU64::new(0)),
             pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-            mic_source,
+            mic_source: Arc::new(std::sync::Mutex::new(mic_source)),
             #[cfg(any(test, feature = "voice-skeleton"))]
             replay_capture: false,
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -1536,7 +1547,8 @@ impl VoiceCompanionRuntime {
                 input_generation: Arc::new(AtomicU64::new(0)),
                 pending_utterances: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
                 kws_reload_needed: Arc::new(AtomicBool::new(false)),
-                mic_source: None,
+                mic_reload_needed: Arc::new(AtomicBool::new(false)),
+                mic_source: Arc::new(std::sync::Mutex::new(None)),
                 acoustic_ready: Arc::new(AtomicBool::new(true)),
                 self_check_active: Arc::new(AtomicBool::new(false)),
                 self_check_cancel: Arc::new(AtomicBool::new(false)),
@@ -1865,10 +1877,15 @@ impl VoiceCompanionRuntime {
         &self,
         patch: nomifun_api_types::voice::VoiceFeedbackPatch,
     ) -> Result<(), &'static str> {
-        let config = patch.apply(self.feedback());
+        let old = self.feedback();
+        let config = patch.apply(old.clone());
         config.validate()?;
+        let mic_changed = config.input_device != old.input_device;
         self.event_tx.set_feedback(config);
         self.kws_reload_needed.store(true, Ordering::Release);
+        if mic_changed {
+            self.mic_reload_needed.store(true, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -1987,7 +2004,7 @@ impl VoiceCompanionRuntime {
         if self.replay_capture {
             return true;
         }
-        self.mic_source.is_some()
+        self.mic_source.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     async fn models_ready(&self) -> bool {
@@ -3455,7 +3472,7 @@ impl VoiceCompanionRuntime {
         #[cfg(any(test, feature = "voice-skeleton"))]
         let dispatch_queue_gate = self.dispatch_queue_gate.clone();
         let driver = Arc::clone(&self.driver);
-        let capture = Arc::clone(&self.capture_pipeline);
+        let mut capture = Arc::clone(&self.capture_pipeline);
         let playback = Arc::clone(&self.playback);
         let tts = Arc::clone(&self.tts);
         let router = Arc::clone(&self.router);
@@ -3497,6 +3514,8 @@ impl VoiceCompanionRuntime {
         let pending_utterances = Arc::clone(&self.pending_utterances);
         let input_generation = self.input_generation.clone();
         let kws_reload_needed = self.kws_reload_needed.clone();
+        let mic_reload_needed = self.mic_reload_needed.clone();
+        let mic_source_slot = self.mic_source.clone();
         // Native capture has no render reference/AEC yet. Raw VAD is not safe barge-in.
         let barge_in_ready = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -3758,6 +3777,20 @@ impl VoiceCompanionRuntime {
                     if let Ok(Ok(next)) = loaded {
                         native_worker_call!("kws_reload", kws.replace(Box::new(next)).await, ());
                         info!("KWS engine hot-reloaded with custom wake words");
+                    }
+                }
+                if mic_reload_needed.swap(false, Ordering::AcqRel) {
+                    let pref = event_tx.feedback().input_device;
+                    match nomifun_audio::MicSource::with_device(16_000, pref.as_deref()) {
+                        Ok(new_mic) => {
+                            let new_pipeline = new_mic.pipeline();
+                            *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(new_mic));
+                            capture = new_pipeline;
+                            info!(device = ?pref, "Microphone hot-swapped to user-specified device");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to hot-swap microphone");
+                        }
                     }
                 }
                 if !replay

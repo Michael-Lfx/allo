@@ -29,6 +29,7 @@ pub struct VoiceFeedbackConfig {
     pub tts_backend: String,
     pub tts_speed: f32,
     pub idle_timeout_secs: u32,
+    pub input_device: Option<String>,
 }
 
 impl Default for VoiceFeedbackConfig {
@@ -45,6 +46,7 @@ impl Default for VoiceFeedbackConfig {
             tts_backend: "local".into(),
             tts_speed: 1.0,
             idle_timeout_secs: 30,
+            input_device: None,
         }
     }
 }
@@ -104,6 +106,7 @@ pub struct VoiceFeedbackPatch {
     pub tts_backend: Option<String>,
     pub tts_speed: Option<f32>,
     pub idle_timeout_secs: Option<u32>,
+    pub input_device: Option<String>,
 }
 
 impl VoiceFeedbackPatch {
@@ -120,6 +123,7 @@ impl VoiceFeedbackPatch {
             tts_backend: self.tts_backend.unwrap_or(current.tts_backend),
             tts_speed: self.tts_speed.unwrap_or(current.tts_speed),
             idle_timeout_secs: self.idle_timeout_secs.unwrap_or(current.idle_timeout_secs),
+            input_device: self.input_device.or(current.input_device),
         }
     }
 }
@@ -138,6 +142,7 @@ impl From<VoiceFeedbackConfig> for VoiceFeedbackPatch {
             tts_backend: Some(c.tts_backend),
             tts_speed: Some(c.tts_speed),
             idle_timeout_secs: Some(c.idle_timeout_secs),
+            input_device: c.input_device,
         }
     }
 }

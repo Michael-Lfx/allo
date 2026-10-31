@@ -3777,6 +3777,30 @@ pub async fn model_write_guard_middleware(
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AudioDeviceDto {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+async fn companion_devices_handler() -> axum::Json<serde_json::Value> {
+    let mgr = nomifun_audio::devices::AudioDeviceManager::new();
+    let devices = mgr
+        .list_devices(nomifun_audio::devices::DeviceKind::Input)
+        .map(|list| {
+            list.into_iter()
+                .map(|d| AudioDeviceDto {
+                    id: d.id,
+                    name: d.name,
+                    is_default: d.is_default,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    axum::Json(serde_json::json!({ "data": devices }))
+}
+
 async fn companion_capabilities_handler(
     axum::extract::State(manager): axum::extract::State<Arc<VoiceCompanionProcessManager>>,
 ) -> axum::Json<Option<nomifun_api_types::voice::VoiceCapabilityReport>> {
@@ -3949,6 +3973,7 @@ pub fn voice_companion_routes(manager: Arc<VoiceCompanionProcessManager>) -> axu
             post(companion_preview_feedback_handler),
         )
         .route("/api/voice/companion/status", get(companion_status_handler))
+        .route("/api/voice/companion/devices", get(companion_devices_handler))
         .route(
             "/api/voice/companion/capabilities",
             get(companion_capabilities_handler),
