@@ -120,6 +120,7 @@
             points: String::new(),
             visual: "公式".into(),
             body_md: String::new(),
+            degraded: false,
         };
         // Every valid outline closes with exactly one practice section.
         let with_practice = |mut sections: Vec<SectionPack>| {
@@ -130,6 +131,7 @@
                 points: String::new(),
                 visual: String::new(),
                 body_md: String::new(),
+                degraded: false,
             });
             sections
         };
@@ -179,6 +181,7 @@
             points: String::new(),
             visual: String::new(),
             body_md: String::new(),
+            degraded: false,
         };
         let practice_first = SectionOutline {
             tier: Some(ComplexityTier::Mid),
@@ -204,6 +207,7 @@
             points: String::new(),
             visual: "公式".into(),
             body_md: visual_prose.clone(),
+            degraded: false,
         };
         assert!(concept.validate_body().is_ok());
         // Prose-only concept fails the visual-first gate...
@@ -240,6 +244,77 @@
             ..concept
         };
         assert!(practice_overgrown.validate_body().is_err());
+
+        // f3：坏 mermaid 围栏进节级质检门即违约——法证原行（引号错位+括号
+        // 不平衡）命中 MermaidBalance，违约文本带处置指引。
+        let broken_mermaid = SectionPack {
+            body_md: format!(
+                "```mermaid\nflowchart TD\n\
+                 A[[\"第1期 本金 P] -->|\"算利息 P×利率\"| B[利息1\"]\n```\n{visual_prose}"
+            ),
+            ..demo_visual
+        };
+        let error = broken_mermaid.validate_body().unwrap_err();
+        assert!(error.contains("invalid visualization block syntax"), "{error}");
+        assert!(error.contains("括号不配平"), "{error}");
+        assert!(error.contains("修复该围栏块语法"), "{error}");
+    }
+
+    /// f3 传统线 attempts 打回通路（4.2）：lint 并入 validate_body 后，初跑
+    /// 交坏 mermaid 即被拒，定位违约文本带进下一轮 user 提示；修复稿过闸。
+    /// 走 `rewrite_section_body`（无蓝图变体，同一 validate_body 门与
+    /// attempts 形态）。
+    #[tokio::test]
+    async fn section_rewrite_attempts_loop_rejects_then_accepts_fixed_mermaid() {
+        let prose = "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        let planned = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Concept,
+            title: "概念：复利".into(),
+            points: String::new(),
+            visual: "流程图".into(),
+            body_md: String::new(),
+            degraded: false,
+        };
+        let manifest = vec![planned.clone()];
+        let bad_body = format!(
+            "## 概念：复利\n\n```mermaid\nflowchart TD\n\
+             A[[\"第1期 本金 P] -->|\"算利息\"| B[利息1\"]\n```\n\n{prose}"
+        );
+        let good_body = format!(
+            "## 概念：复利\n\n```mermaid\nflowchart TD\n\
+             A[本金] -->|计息| B[本息]\n```\n\n{prose}"
+        );
+        let completer = ScriptedCompleter::new(vec![bad_body, good_body]);
+        let (body, degraded) = super::lesson::rewrite_section_body(
+            &completer,
+            None,
+            TeachingStyle::Standard,
+            "测试课程",
+            "课时一",
+            "理解复利",
+            &planned,
+            0,
+            &manifest,
+            None,
+            None,
+            None,
+            "",
+            ComplexityTier::Low,
+            None,
+        )
+        .await
+        .expect("修复稿过闸");
+        assert!(!degraded);
+        assert!(body.contains("A[本金] -->|计息| B[本息]"), "{body}");
+        let calls = completer.calls();
+        assert_eq!(calls.len(), 2, "初跑 + 一次带定位的修复");
+        assert!(
+            calls[1].1.contains("invalid visualization block syntax"),
+            "违约文本进重提提示: {}",
+            calls[1].1
+        );
+        assert!(calls[1].1.contains("修复该围栏块语法"));
     }
 
     #[tokio::test]
@@ -850,6 +925,7 @@ evidence: None,
             points: "什么是向量".into(),
             visual: "公式".into(),
             body_md: String::new(),
+            degraded: false,
         }];
         let planned = &manifest[0];
         let body_prompt = super::lesson::build_section_body_prompt(
@@ -1111,6 +1187,7 @@ fn section_rewrite_prompt_carries_learner_feedback() {
         points: String::new(),
         visual: "公式".into(),
         body_md: String::new(),
+        degraded: false,
     };
     let manifest = vec![SectionPack {
         section_key: "s1".into(),
@@ -1119,6 +1196,7 @@ fn section_rewrite_prompt_carries_learner_feedback() {
         points: String::new(),
         visual: "公式".into(),
         body_md: String::new(),
+        degraded: false,
     }];
     let base = build_section_rewrite_prompt(
         "Course", "Lesson", "purpose", &planned, 0, &manifest, None, None, None, "",

@@ -1995,6 +1995,7 @@ impl LearningService {
                 &outcome.provenance_known.iter().cloned().collect::<Vec<_>>(),
                 &naming_list,
                 crate::lexicon_enforce_enabled(),
+                &outcome,
             )
             .await;
             provenance_readout.merge(&review.provenance);
@@ -2016,44 +2017,13 @@ impl LearningService {
             // 面之一，正确宿主常常在近邻子集之外（真机 run-1792395614887）。
             // 候选集归属降级为日志注记；反伪造边界不变——concept_id 必须真实
             // 存在且未退役（即 register_alias_tx 可接受的宿主）。
+            // 裁决核验单源（f1 4.2）：过滤与锚装配在
+            // `verify_reuse_rulings`（concept_review 放行域同源——同一 reuse
+            // 两处判定必须一致）；此处只按核验通过的锚重建落池 rulings
+            // （提名名小写 → 宿主 concept_id），行为与原内联循环逐条一致。
             let mut rulings: HashMap<String, String> = HashMap::new();
-            for ruling in &review.reuse {
-                let key = ruling.name.trim().to_lowercase();
-                let Some(plan) = outcome
-                    .nominations
-                    .iter()
-                    .find(|plan| plan.name.to_lowercase() == key)
-                else {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        name = %ruling.name,
-                        "review reuse ruling dropped — name not in this batch"
-                    );
-                    continue;
-                };
-                let concept_id = ruling.concept_id.trim();
-                if !outcome.registry_concept_ids.contains(concept_id) {
-                    tracing::warn!(
-                        course = course_id.as_str(),
-                        name = %ruling.name,
-                        concept_id,
-                        "review reuse ruling dropped — concept_id is not an active registry concept"
-                    );
-                    continue;
-                }
-                if !plan
-                    .candidates
-                    .iter()
-                    .any(|candidate| candidate.concept_id == concept_id)
-                {
-                    tracing::info!(
-                        course = course_id.as_str(),
-                        name = %ruling.name,
-                        concept_id,
-                        "review reuse ruling host outside the nomination candidate set — accepted (registry-valid)"
-                    );
-                }
-                rulings.insert(key, concept_id.to_owned());
+            for anchor in crate::learning_graph::verify_reuse_rulings(&review.reuse, &outcome) {
+                rulings.insert(anchor.name, anchor.concept_id);
             }
             // ── 评审建议机械转化（t4）：advice 指向「裁为别名/复用」且宿主可
             // 机械解析的 teaches/mints 问题，由代码直接执行——合成 reuse 裁决
@@ -2419,6 +2389,7 @@ impl LearningService {
                 review_provenance_invalid: provenance.invalid,
                 review_provenance_retried: provenance.retried,
                 review_provenance_degraded: provenance.degraded,
+                review_provenance_external_hits: provenance.external_hits,
                 review_fragments_total: fragments.fragments,
                 review_fragments_rows: fragments.rows,
                 review_fragments_unhandled: fragments.unhandled,
@@ -3007,6 +2978,14 @@ impl LearningService {
                 provenance_known.insert(name.to_lowercase());
             }
         }
+        // f1：本批复用命中的机械锚（auto_reusals + direct_host 两源，评审
+        // 前已知）——注入块与挂号表放行域同源装配。
+        let external_anchors_mech = crate::learning_graph::assemble_external_anchors(
+            batch,
+            &auto_reusals,
+            &nominations,
+            &registry_entries,
+        );
         Ok(crate::learning_graph::GateOutcome {
             errors,
             nominations,
@@ -3015,6 +2994,7 @@ impl LearningService {
             registry_name_hosts,
             auto_reusals,
             provenance_known,
+            external_anchors_mech,
         })
     }
 

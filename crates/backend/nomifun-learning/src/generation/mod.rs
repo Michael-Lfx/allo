@@ -278,6 +278,11 @@ pub struct LessonOutput {
     /// 观察条；`None` = 未自报（缺席合法）。零内容拦截。
     #[serde(default)]
     pub capacity_note: Option<String>,
+    /// f3 可视化块 lint 事件计数（图线 op 打回 + 终检剔除累计）——随发布
+    /// 帧披露，smoke `viz_lint_events` 读数（非门禁）。传统管线恒 0（其
+    /// lint 打回走 attempts 循环，无事件计数面）。
+    #[serde(default)]
+    pub viz_lint_events: usize,
 }
 
 impl LessonOutput {

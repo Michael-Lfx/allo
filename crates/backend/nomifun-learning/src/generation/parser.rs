@@ -451,5 +451,28 @@ mod tests {
         assert_eq!(fixed, r#"{"n": "用 \\alpha 推导"}"#);
         assert!(serde_json::from_str::<serde_json::Value>(&fixed).is_ok());
     }
+
+    /// f3 邻域补测（fix_mermaid_quotes 原为零单测）：mermaid 围栏内高信号
+    /// 字符且未引号包裹的方括号标签自动补引号；已引号标签与非 mermaid 围栏
+    /// 原样保留（引号卫生先于 lint，行为不因 f3 改变）。
+    #[test]
+    fn fix_mermaid_quotes_wraps_high_signal_labels_only_inside_mermaid() {
+        let raw = "前文\n```mermaid\nflowchart TD\nA[本金|利息] --> B{开关}\n```\n```svg\n<text>|</text>\n```\n后文\n";
+        let fixed = fix_mermaid_quotes(raw);
+        assert!(fixed.contains("A[[\"本金|利息\"]]"), "{fixed}");
+        // B{开关} 不在 [ ] 区间内，原样保留。
+        assert!(fixed.contains(" --> B{开关}"), "{fixed}");
+        // svg 围栏不受引号卫生影响。
+        assert!(fixed.contains("<text>|</text>"), "{fixed}");
+    }
+
+    #[test]
+    fn fix_mermaid_quotes_leaves_quoted_and_plain_lines_untouched() {
+        let raw = "```mermaid\nflowchart LR\nA[\"已引号|文本\"] --> B[普通]\n```\n正文段落 | 不是围栏\n";
+        let fixed = fix_mermaid_quotes(raw);
+        assert!(fixed.contains("A[\"已引号|文本\"]"), "{fixed}");
+        assert!(fixed.contains("B[普通]"), "{fixed}");
+        assert!(fixed.contains("正文段落 | 不是围栏"), "{fixed}");
+    }
 }
 

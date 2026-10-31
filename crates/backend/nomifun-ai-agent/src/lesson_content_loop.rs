@@ -159,6 +159,7 @@ const REPAIR_LESSON_AGENT_SYSTEM: &str = r#"你是一名课时内容修复代理
 - activity_shape_invalid：update_activity 按位置重写该活动（选项数/答案形状/___ 空格/干扰项/容差/顺序与对应关系）。
 - section_binding_unknown：update_activity 把该题的 section_key 改绑到清单里的节 key（跨节综合题用 "general"）。
 - section_invalid（缺可视化）：按清单里该节的 visual 重写正文——用 $$公式$$ / ```svg / ```jsxgraph / ```mermaid / 表格承载核心讲解，文字作旁注。
+- viz_block_lint（mermaid 括号不平衡/引号不配平/节点未定义）：修复该围栏块语法，或改用表格/公式承载该节讲解（终检已系统剔除的 viz_block_lint_dropped 按降级声明保留，无需重画）。
 
 【结束条件】
 - 审计无 danger 时调用 ls_finish；若 ls_finish 被拒绝，认真阅读返回的阻塞报告并继续修复。
@@ -475,6 +476,9 @@ impl FlowCycle for LiveLessonContentAgentEngine {
             "phase": loop_label,
             "activities": output.activities.len(),
             "visuals": visuals,
+            // f3 viz lint 事件计数（op 打回 + 终检剔除累计）：smoke
+            // viz_lint_events 读数的数据源；0 = 生成期零 lint 介入。
+            "viz_lint_events": output.viz_lint_events,
         });
         if let Some(round) = round {
             frame["round"] = serde_json::json!(round);
@@ -2075,7 +2079,8 @@ mod tests {
     }
 
     /// 发布帧披露 visual 声明分布（ADR-0008）：整课「无」独占即可疑的
-    /// 纯文字课时，事后定位「没生成图表」类反馈时有据可查。
+    /// 纯文字课时，事后定位「没生成图表」类反馈时有据可查。f3 起同帧
+    /// 披露 viz lint 事件计数（op 打回 + 终检剔除累计）。
     #[test]
     fn publish_frame_discloses_visual_distribution() {
         use crate::learning_loop::FlowCycle;
@@ -2088,6 +2093,7 @@ mod tests {
             points: String::new(),
             visual: visual.into(),
             body_md: String::new(),
+            degraded: false,
         };
         let output = LessonOutput {
             summary: String::new(),
@@ -2100,6 +2106,7 @@ mod tests {
             ],
             degraded_keys: Vec::new(),
             capacity_note: None,
+            viz_lint_events: 3,
         };
         let frame = <LiveLessonContentAgentEngine as FlowCycle>::publish_frame(
             &output,
@@ -2110,5 +2117,6 @@ mod tests {
         assert_eq!(frame["round"], 2);
         assert_eq!(frame["visuals"]["表格"], 1);
         assert_eq!(frame["visuals"]["无"], 2);
+        assert_eq!(frame["viz_lint_events"], 3, "viz lint 事件计数随帧披露");
     }
 }

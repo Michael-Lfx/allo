@@ -682,3 +682,90 @@ async fn basis_declaration_switch_off_rejects_loudly() {
     let view = service.basis_view(&course).await.unwrap();
     assert!(!view.enabled);
 }
+
+// ── f1：声明概念被复用批，评审挂号表非降级（批外锚放行）─────────────────
+
+/// f1 端到端（法证案例回放，e2e2/server.log 06:46-06:47）：声明铸下的概念
+/// 被生长批复用（defnear 直定宿主 + 评审 reuse 裁决同宿主）时，挂号行
+/// concept 锚定登记表正名放行——评审非降级通过、零白烧重试、登记表零
+/// 重复（提名名落池为宿主活跃别名）。修复前该批两连死降级（本批评审锚定
+/// 全废）。
+#[tokio::test]
+#[serial_test::serial]
+async fn growth_review_reusing_declared_concept_passes_provenance_without_degradation() {
+    let declare = SequencedCompleter::new(vec![BASIS_DECLARE_CAN.to_owned()]);
+    let (service, user, course) = seed_basis_course(declare).await;
+    service
+        .declare_basis(&user, &course, basis_request(&["G1", "G2"]))
+        .await
+        .unwrap();
+    let declared_id: String = sqlx::query_scalar(
+        "SELECT concept_id FROM learning_concept_registry WHERE canonical = '门口判读'",
+    )
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    // 生长落库需要模块行（apply_batch 取首模块；声明零节点课程需补壳）。
+    let module_id = LearningModuleId::new().into_string();
+    sqlx::query(
+        "INSERT INTO learning_modules (module_id, course_id, title, description, position) \
+         VALUES (?, ?, '学习图', '', 0)",
+    )
+    .bind(&module_id)
+    .bind(course.as_str())
+    .execute(service.pool_for_tests())
+    .await
+    .unwrap();
+
+    // 生长批：同定义提名「判读进阶」→ gate 直定宿主 = 声明概念（机械锚）；
+    // 评审 reuse 裁决同宿主（核验锚）；挂号行 concept 锚定声明概念正名。
+    let batch_json = r#"{
+        "nodes": [
+            {"title": "用判读进阶重看门口", "purpose": "从声明判据切入", "est": 15,
+             "teaches": [{"name": "判读进阶", "tier": "know"}], "assumes": []}
+        ],
+        "mints": [
+            {"canonical": "判读进阶", "aliases": [], "definition": "按门口判据读出自身具备状态"}
+        ],
+        "new_aliases": [],
+        "note": "声明复用稿"
+    }"#;
+    let review_json = format!(
+        r#"{{"verdict":"pass","reuse":[{{"name":"判读进阶","concept_id":"{declared_id}"}}],"term_provenance":[
+            {{"concept":"判读进阶","term":"具备状态","source":"常识"}},
+            {{"concept":"门口判读","term":"判据","source":"已教","ref":"门口判读"}}]}}"#
+    );
+    let completer = SequencedCompleter::new(vec![batch_json.to_owned(), review_json]);
+    *service.course_completer.write().unwrap() = Some(completer);
+    service
+        .kick_growth(&user, &course, true, None)
+        .await
+        .unwrap();
+    wait_for_growth_batch(&service, course.as_str()).await;
+
+    // 评审非降级 + 零重试 + 挂号行锚定 registry 概念（external_hits = 1）。
+    let stats = service.growth_run_stats().expect("stats recorded");
+    assert_eq!(stats.stop_reason, "success", "{stats:?}");
+    assert!(!stats.review_provenance_degraded, "评审非降级：{stats:?}");
+    assert_eq!(stats.review_provenance_invalid, 0, "{stats:?}");
+    assert_eq!(stats.review_provenance_retried, 0, "零白烧重试：{stats:?}");
+    assert_eq!(stats.review_provenance_rows, 2, "{stats:?}");
+    assert_eq!(
+        stats.review_provenance_external_hits, 1,
+        "挂号行锚定 registry 概念进读数：{stats:?}"
+    );
+
+    // 登记表零重复：声明 2 + 生长 0（提名名落池为宿主活跃别名）。
+    assert_eq!(basis_registry_count(&service).await, 2);
+    let aliases_json: String = sqlx::query_scalar(
+        "SELECT aliases_json FROM learning_concept_registry WHERE concept_id = ?",
+    )
+    .bind(&declared_id)
+    .fetch_one(service.pool_for_tests())
+    .await
+    .unwrap();
+    assert!(
+        aliases_json.contains("判读进阶"),
+        "提名名落池：{aliases_json}"
+    );
+}

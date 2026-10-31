@@ -40,3 +40,36 @@
 | f1 | 评审挂号表支持批外合法概念锚定（声明/历史批概念） | **高** |
 | f2 | 结构生成模型面打磨（door_list 输出示例 / one_name 报全与自检 / 块数下限弹性） | 高 |
 | f3 | 课时可视化块机械 lint | 中 |
+
+## 裁决记档（2026-10-30 grilling，八问全按推荐；真机结果可复议各裁决）
+
+- **f1**：放行域=本批复用命中集（撞池机械复用 ∪ 直定宿主 ∪ reuse[] 核验通过）；
+  短路 belt 作废改死因指引（重试环 attempt 预算与碎片面 m9 共享，不可砍）；
+  learnhub 核实=结构性回避（禁重教 declared+撞池 refuse），allo 首创缝补成立；
+  行 schema 零变更（ref 对照域已放行）。
+- **f2**：③ 落定 25 硬+25–39 warn+smoke `warnings={n}` 读数；② 校验器已一次
+  报全（打地鼠真因=模型全量重生成新冒名），收窄为自检句+出路指引；落点勘误=
+  gd.* 全在 structure_contract.rs（非 growth_contract.rs）。
+- **f3**：打回并入各线既有通道（弃「恰一次」）；剔除=修复轮前置+系统剔块+降
+  visual 声明（degraded 豁免承诺门+demo 硬门；文字下限实核不撞——prose 剥围栏
+  计算）；lint=块级括号配平（引号段豁免）+flowchart/graph 节点定义查（`---`
+  查砍）；learnhub 有 svg 规格闸先例（cc.svg.spec），首创仅 mermaid 语法闸。
+- **实施编排**：单分支 `feat/learning-quality-fixes`（基 feat/learn0928 尖端）
+  三票顺序、每票一提交；施工图三份（blueprints/，可并发领票）。
+
+## 波次关闭（2026-10-30）
+
+- **三票全部真机验收过、status closed**。integration 尖端 `ddb464348`
+  （含 fixer 修复批 010a7d4e4/2990a89b7 与 e4 存量缺陷修复 ddb464348）。
+  单测基线：learning 707 / ai-agent 1123（+flaky 回归钉）/ workspace check 净。
+- **真机判据**（quality-fixes-verify/ 留档）：f1 旅程=声明 G1+G2 4 概念
+  minted→二批复用声明概念发布、两份 server 日志零 provenance 死亡指纹
+  （e2e2 基线同旅程确定性双死的对照面）；f2=4+ 次结构生成零「G<数字> 形」
+  整行抄写、smoke EXIT=0 且 `warnings=` 读数在场（46 块未踩 warn 档，如实
+  记档）；f3=content 两课 EXIT=0、`viz_lint_events=0` 双零。
+- **验收解锁的存量修复**：e4 flaky_provider 计数下溢（归零回绕掐流永不
+  恢复）——e4 关票真机走 HTTP 旅程未踩注入臂故未曝；ddb464348 修复+回归钉。
+- 并行真机的教训入册：多臂并发必挤兑 provider（480s 超时连环）——真机臂
+  一律严格串行（run-arms.sh 纪律）。
+- 后置票面（触发条件在 f3 备注）：fix_mermaid_quotes 顺序翻转、末轮收容
+  语义、传统线 demo 降级死臂——均方向级，真机复现再立票。

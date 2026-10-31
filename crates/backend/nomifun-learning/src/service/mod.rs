@@ -145,11 +145,13 @@ pub struct GrowthRunStats {
     /// success | early_stop | exhausted | cancelled。
     pub stop_reason: String,
     /// 挂号表机械校验读数（m3）：评审接受的表行数 / 判「结论不可用」次数 /
-    /// 带死因重试次数 / 两连败 Degraded 保守放行。
+    /// 带死因重试次数 / 两连败 Degraded 保守放行 / 行 concept 命中本批复用
+    /// 锚的行数（f1 A5 观察位：挂号行锚定 registry 概念的可观察信号）。
     pub review_provenance_rows: usize,
     pub review_provenance_invalid: usize,
     pub review_provenance_retried: usize,
     pub review_provenance_degraded: bool,
+    pub review_provenance_external_hits: usize,
     /// 碎片裁决机械读数（m9 补接）：点名片段数 / 评审裁决行数 / 未处置片段
     /// 数（report-only 降 findings / enforce 合成打回）/ 两连败 Degraded。
     pub review_fragments_total: usize,
@@ -569,6 +571,29 @@ pub(crate) use generation_tasks::{
     KIND_STRUCTURE, KIND_STRUCTURE_MOUNT, KIND_STRUCTURE_REPAIR, OBJECTIVE_KIND_SQL_LIST,
     STATE_RUNNING,
 };
+
+/// 等待本课程出现 applied 生长批（tests.rs 与 basis_tests.rs 共用的测试
+/// utility，同 [`LearningService::pool_for_tests`] 惯例住本模块——跨测试
+/// 模块不互引，双方各经父模块取用）。只等 applied 批：pending 行在生长
+/// 开始即落库，等它会抢在落库前返回。
+#[cfg(test)]
+async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
+    for _ in 0..500 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM learning_growth_batches \
+             WHERE course_id = ? AND status = 'applied'",
+        )
+        .bind(course_id)
+        .fetch_one(service.pool_for_tests())
+        .await
+        .unwrap();
+        if count > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("growth batch did not land in time");
+}
 
 #[cfg(test)]
 mod basis_tests;

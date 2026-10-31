@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use nomifun_common::{
     AppError, KnowledgeBaseId, LearningActivityId, LearningAttemptId, LearningCourseId,
     LearningEnrollmentId, LearningLessonId, LearningModuleId, LearningReviewItemId, ProviderId,
@@ -474,6 +476,11 @@ pub struct SectionPack {
     /// 节正文（Markdown）。大纲阶段为空。
     #[serde(default)]
     pub body_md: String,
+    /// 终检系统剔块降声明的节级 degraded 标记（f3，系统 mutation 非模型
+    /// op）：demo 硬门对 degraded 节放行（唯一豁免通道）。模型 JSON 入口
+    /// 统一清零，走私的 degraded:true 不生效。
+    #[serde(default)]
+    pub degraded: bool,
 }
 
 impl SectionPack {
@@ -529,7 +536,10 @@ impl SectionPack {
             || body.contains("$$")
             || body.contains("| ---")
             || body.contains("| --- ");
-        if self.kind == SectionKind::Demo && !has_visual {
+        // demo 硬门不按 visual 声明豁免（声明「无」的 demo 仍须带可视化块）
+        // ——唯一例外是 f3 终检系统剔块的 degraded 节：坏块已被系统剔除、
+        // 声明已同步降级，正文不因图烂而整课失败。
+        if self.kind == SectionKind::Demo && !has_visual && !self.degraded {
             return Err(format!(
                 "section {} ({}) is a demo: it must carry its message in a visualization \
                  block (```svg / ```jsxgraph / ```mermaid / $$math$$), not prose",
@@ -552,6 +562,19 @@ impl SectionPack {
                 "section {} ({}) is a practice section: write only the capability goal and \
                  answering guidance (≤{PRACTICE_BODY_TARGET_CHARS} characters target); the \
                  questions come from the bank",
+                self.section_key, self.title
+            ));
+        }
+        // 可视化块机械 lint（f3）在共享汇点收口：坏块直接构成节违约，detail
+        // 进违约文本并附处置指引——打回由各线既有通道承载（传统线 attempts
+        // 循环、图线 op 拒绝重提）。
+        let issues = lint_visual_blocks(body);
+        if !issues.is_empty() {
+            let details = lint_issue_details(&issues);
+            return Err(format!(
+                "section {} ({}) has invalid visualization block syntax: {details} \
+                 — fix the fenced block, or carry the section in a table/formula \
+                 （修复该围栏块语法，或改用表格/公式承载该节讲解）",
                 self.section_key, self.title
             ));
         }
@@ -630,6 +653,457 @@ pub(crate) fn prose_char_count(body: &str) -> usize {
         count += trimmed.chars().filter(|c| !c.is_whitespace()).count();
     }
     count
+}
+
+/// 可视化块机械 lint 的查项类别（f3，最小机械闸——只做「明显是坏的」，
+/// 不追求全语法；语义碎裂/连通性明示非目标）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VizLintKind {
+    /// mermaid 括号不配平：六对 [ ] ( ) { } 块级累计任一对不配平（close-
+    /// before-open 也算），或行内双引号计数为奇（引号段内外无法可信切分）。
+    MermaidBalance,
+    /// flowchart/graph 的边端点引用了未带形状定义的节点 id。
+    MermaidNodeUndefined,
+    /// svg 空壳：块体为空或缺 `<svg` 根标签（防空壳过可视化门）。
+    SvgShell,
+}
+
+/// 一条 lint 结果：kind + 定位摘录（块序号与行内容摘录）——节级质检把它
+/// 并进违约文本，终检兜底按块剔除。
+#[derive(Debug, Clone)]
+pub struct VizLintIssue {
+    pub kind: VizLintKind,
+    pub detail: String,
+}
+
+/// 可视化块机械 lint（f3）：扫 ```mermaid / ```svg / ```jsxgraph 围栏，
+/// 返回机械化可判的语法问题——块级括号配平（引号段豁免）、flowchart/
+/// graph 节点定义、svg 非空壳。状态机形状同 `prose_char_count` 的围栏
+/// 遍历（自足实现，不引 mermaid 解析器）。普通代码围栏零动作；未闭合
+/// 围栏不新增判定（沿用 validate_body 现行行为）；空 mermaid 块合法
+/// （配平过+节点查过，由既有门管）。
+pub(crate) fn lint_visual_blocks(body: &str) -> Vec<VizLintIssue> {
+    let mut issues = Vec::new();
+    let mut ordinal = 0usize;
+    let mut fence: Option<VizFence> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if let Some(open) = fence.take() {
+                issues.extend(open.finish());
+            } else {
+                let language = trimmed[3..].trim();
+                ordinal += 1;
+                fence = match language {
+                    "mermaid" | "svg" | "jsxgraph" => Some(VizFence {
+                        lang: language,
+                        ordinal,
+                        lines: Vec::new(),
+                    }),
+                    _ => None,
+                };
+            }
+            continue;
+        }
+        if let Some(open) = fence.as_mut() {
+            open.lines.push(line);
+        }
+    }
+    issues
+}
+
+/// lint 违约 detail 的汇总串（「；」连接）：节级质检违约文本（validate_body）
+/// 与审计观察条（lesson_draft audit_findings）共用同一拼装——「；」分隔符
+/// 零第二真相，改拼装只动这里。
+pub(crate) fn lint_issue_details(issues: &[VizLintIssue]) -> String {
+    issues
+        .iter()
+        .map(|issue| issue.detail.as_str())
+        .collect::<Vec<_>>()
+        .join("；")
+}
+
+/// f3 终检兜底的机械剔除：lint 仍报坏的围栏块整体剔除（节其余保留），
+/// 返回（剔后正文, 剔除块数）。未闭合围栏零动作（原样保留，与 lint 同
+/// 口径——交由节级质检/审计的既有判定处理）。
+pub(crate) fn strip_broken_visual_blocks(body: &str) -> (String, usize) {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut removed = 0usize;
+    let mut fence: Option<(&str, &str, Vec<&str>)> = None; // (opener, lang, content)
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            if let Some((opener, _lang, content)) = fence.take() {
+                // 块级判定：把整块回喂 lint，坏块整体不走（fence 三行齐剔）。
+                let mut block = String::from(opener);
+                block.push('\n');
+                block.push_str(&content.join("\n"));
+                block.push('\n');
+                block.push_str(trimmed);
+                if lint_visual_blocks(&block).is_empty() {
+                    kept.push(opener);
+                    kept.extend(content);
+                    kept.push(line);
+                } else {
+                    removed += 1;
+                }
+            } else {
+                let language = trimmed[3..].trim();
+                if matches!(language, "mermaid" | "svg" | "jsxgraph") {
+                    fence = Some((line, language, Vec::new()));
+                } else {
+                    kept.push(line);
+                }
+            }
+            continue;
+        }
+        match fence.as_mut() {
+            Some((_, _, content)) => content.push(line),
+            None => kept.push(line),
+        }
+    }
+    // 未闭合围栏：整段原样保留（零动作），行序不变。
+    if let Some((opener, _, content)) = fence {
+        kept.push(opener);
+        kept.extend(content);
+    }
+    (kept.join("\n"), removed)
+}
+
+/// f3 剔后声明降级：按余块形态反查 visual 声明（余 mermaid → 流程图、
+/// svg/jsxgraph → 示意图、$$ → 公式、表格 → 表格、全无 → 无）——全部
+/// 落在 [`VISUAL_OPTIONS`] 菜单内，承诺门按新声明自然复审。
+pub(crate) fn declared_visual_after_strip(body: &str) -> &'static str {
+    if body.contains("```mermaid") {
+        VISUAL_FLOWCHART
+    } else if body.contains("```svg") || body.contains("```jsxgraph") {
+        VISUAL_DIAGRAM
+    } else if body.contains("$$") {
+        VISUAL_FORMULA
+    } else if body.contains("| ---") {
+        VISUAL_TABLE
+    } else {
+        VISUAL_NONE
+    }
+}
+
+/// 一个待判围栏块：语言 + 块序号 + 内容行。
+struct VizFence<'a> {
+    lang: &'a str,
+    ordinal: usize,
+    lines: Vec<&'a str>,
+}
+
+impl VizFence<'_> {
+    fn finish(self) -> Vec<VizLintIssue> {
+        match self.lang {
+            "mermaid" => lint_mermaid_block(self.ordinal, &self.lines),
+            "svg" => {
+                let joined = self.lines.join("\n");
+                let has_body = self.lines.iter().any(|line| !line.trim().is_empty());
+                if !joined.contains("<svg") || !has_body {
+                    vec![VizLintIssue {
+                        kind: VizLintKind::SvgShell,
+                        detail: format!(
+                            "可视化块 #{}（svg）：块体为空或缺 <svg 根标签——防空壳过可视化门",
+                            self.ordinal
+                        ),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            "jsxgraph" => {
+                // 顺带六对括号配平（零成本；不做引号/注释语义）。
+                let mut totals = [0i64; 3];
+                let mut depth = [0i64; 3];
+                for line in &self.lines {
+                    scan_brackets(line, &mut totals, &mut depth);
+                }
+                if brackets_broken(&totals, &depth) {
+                    let head = self
+                        .lines
+                        .iter()
+                        .find(|line| !line.trim().is_empty())
+                        .map(|line| line_excerpt(line))
+                        .unwrap_or_default();
+                    vec![VizLintIssue {
+                        kind: VizLintKind::MermaidBalance,
+                        detail: format!(
+                            "可视化块 #{}（jsxgraph）：括号不配平——「{head}」",
+                            self.ordinal
+                        ),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// mermaid 块级判项：①六对括号配平（引号段豁免、逐行跳过双引号段，行内
+/// 引号计数为奇记「引号不配平」）；②首行前缀 ∈ {flowchart, graph} 时做
+/// 节点定义查（`%%` 注释与引号段内容不参与扫描）。查项依据 A2：配平按块
+/// 累计（classDiagram 跨行块防误杀），节点查仅 flowchart/graph（sequence/
+/// state 参与者免定义防误杀）。
+fn lint_mermaid_block(ordinal: usize, lines: &[&str]) -> Vec<VizLintIssue> {
+    let mut issues = Vec::new();
+    let mut totals = [0i64; 3];
+    let mut depth = [0i64; 3];
+    let mut quote_line: Option<&str> = None;
+    let mut balance_line: Option<&str> = None;
+    let mut last_content: &str = "";
+    let mut clean: Vec<String> = Vec::new();
+    for line in lines {
+        if !line.trim().is_empty() {
+            last_content = line;
+        }
+        let (code, balanced) = outside_quote_text(line);
+        if !balanced {
+            // 引号计数为奇：内外切分不可信——本行不计括号、不进节点扫描。
+            quote_line.get_or_insert(line);
+            continue;
+        }
+        // `%%` 行内注释及以后整段忽略（注释里的括号/箭头不是语法）。
+        let code = match code.find("%%") {
+            Some(at) => code[..at].to_owned(),
+            None => code,
+        };
+        scan_brackets(&code, &mut totals, &mut depth);
+        if balance_line.is_none() && depth.iter().any(|&d| d < 0) {
+            balance_line = Some(line);
+        }
+        clean.push(code);
+    }
+
+    let mut reasons: Vec<String> = Vec::new();
+    if let Some(line) = quote_line {
+        reasons.push(format!("行内双引号计数为奇——「{}」", line_excerpt(line)));
+    }
+    if brackets_broken(&totals, &depth) {
+        let excerpt = balance_line.or(Some(last_content));
+        let pair_names = ["[ ]", "( )", "{ }"];
+        let diffs: Vec<String> = totals
+            .iter()
+            .zip(pair_names)
+            .filter(|(total, _)| **total != 0)
+            .map(|(total, name)| format!("{name} 净差 {total:+}"))
+            .collect();
+        let mut reason = if diffs.is_empty() {
+            "括号中途越界（close-before-open）".to_owned()
+        } else {
+            format!("括号不配平（{}）", diffs.join("、"))
+        };
+        if let Some(line) = excerpt.filter(|line| !line.trim().is_empty()) {
+            reason.push_str(&format!("——「{}」", line_excerpt(line)));
+        }
+        reasons.push(reason);
+    }
+    if !reasons.is_empty() {
+        issues.push(VizLintIssue {
+            kind: VizLintKind::MermaidBalance,
+            detail: format!("可视化块 #{ordinal}（mermaid）：{}", reasons.join("；")),
+        });
+    }
+
+    // 节点定义查仅 flowchart/graph 前缀生效。
+    let header = lines.iter().map(|line| line.trim()).find(|line| !line.is_empty());
+    if let Some(header) = header {
+        if header.starts_with("flowchart") || header.starts_with("graph") {
+            let mut defs = HashSet::new();
+            let mut refs = HashSet::new();
+            for code in &clean {
+                collect_node_defs(code, &mut defs);
+                collect_edge_refs(code, &mut refs);
+            }
+            let mut undefined: Vec<&String> = refs
+                .iter()
+                .filter(|id| !defs.contains(*id))
+                .collect();
+            undefined.sort();
+            for id in undefined {
+                issues.push(VizLintIssue {
+                    kind: VizLintKind::MermaidNodeUndefined,
+                    detail: format!(
+                        "可视化块 #{ordinal}（mermaid）：边端点节点「{id}」没有形状定义（id 后未紧跟 [ ( {{）"
+                    ),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// mermaid 行内双引号段外的代码文本：引号位占位为空格、引号段内容整段
+/// 跳过（`\"` 逃逸成对吞掉，不误开新引号段）；返回（代码文本, 引号计数
+/// 是否配平）。
+fn outside_quote_text(line: &str) -> (String, bool) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut quotes = 0usize;
+    let mut in_quote = false;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_quote {
+            if ch == '\\' && i + 1 < chars.len() {
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                quotes += 1;
+                in_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            quotes += 1;
+            in_quote = true;
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    (out, quotes % 2 == 0)
+}
+
+/// 六对括号 [ ] ( ) { } 的块级累计：totals 记净差、depth 记运行深度——
+/// 中途深度为负（close-before-open）即使总数恰好抵消也算不配平。
+fn scan_brackets(code: &str, totals: &mut [i64; 3], depth: &mut [i64; 3]) {
+    for ch in code.chars() {
+        match ch {
+            '[' => {
+                totals[0] += 1;
+                depth[0] += 1;
+            }
+            ']' => {
+                totals[0] -= 1;
+                depth[0] -= 1;
+            }
+            '(' => {
+                totals[1] += 1;
+                depth[1] += 1;
+            }
+            ')' => {
+                totals[1] -= 1;
+                depth[1] -= 1;
+            }
+            '{' => {
+                totals[2] += 1;
+                depth[2] += 1;
+            }
+            '}' => {
+                totals[2] -= 1;
+                depth[2] -= 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn brackets_broken(totals: &[i64; 3], depth: &[i64; 3]) -> bool {
+    totals.iter().any(|&t| t != 0) || depth.iter().any(|&d| d < 0)
+}
+
+/// 违约摘录：行首尾空白裁掉、超长截断——定位够用、报告面不糊屏。
+fn line_excerpt(line: &str) -> String {
+    line.trim().chars().take(60).collect()
+}
+
+/// 节点定义 id 集：id 后紧跟 [ ( {（`[[`/`((`/`{{` 的首括号同样命中——
+/// 定义只看紧邻的开括号）。
+fn collect_node_defs(code: &str, defs: &mut HashSet<String>) {
+    let chars: Vec<char> = code.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if !matches!(ch, '[' | '(' | '{') {
+            continue;
+        }
+        let mut id = String::new();
+        let mut j = i;
+        while j > 0 && is_id_char(chars[j - 1]) {
+            id.push(chars[j - 1]);
+            j -= 1;
+        }
+        if !id.is_empty() {
+            defs.insert(id.chars().rev().collect());
+        }
+    }
+}
+
+/// 边语句端点 id 集：箭头左侧紧邻 id（紧邻字符是闭合括号 = 定义尾，该
+/// 节点已随形状定义入 defs，不重复记；`-`/`=`/`|` 前缀 = `A -- 文字 -->
+/// B` 形态的连线文字，不是端点）+ 右侧 id（越过箭头本体、紧贴残段与
+/// `|label|`）。连线记号最长优先（`-->` 先于 `--`）。
+fn collect_edge_refs(code: &str, refs: &mut HashSet<String>) {
+    const LINK_TOKENS: [&str; 6] = ["-.->", "-->", "==>", "---", "-.-", "--"];
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let len = LINK_TOKENS
+            .iter()
+            .find(|token| {
+                let bytes = token.chars().collect::<Vec<_>>();
+                i + bytes.len() <= chars.len() && chars[i..i + bytes.len()] == bytes[..]
+            })
+            .map(|token| token.chars().count());
+        let Some(len) = len else {
+            i += 1;
+            continue;
+        };
+        // 左端点。
+        let mut j = i;
+        while j > 0 && chars[j - 1].is_whitespace() {
+            j -= 1;
+        }
+        if j > 0 && !matches!(chars[j - 1], ']' | ')' | '}' | '-' | '=' | '|') {
+            let mut id = String::new();
+            let mut k = j;
+            while k > 0 && is_id_char(chars[k - 1]) {
+                id.push(chars[k - 1]);
+                k -= 1;
+            }
+            if !id.is_empty() {
+                refs.insert(id.chars().rev().collect());
+            }
+        }
+        // 右端点。
+        let mut j = i + len;
+        while j < chars.len() && matches!(chars[j], 'x' | 'o' | '>' | '.' | '=' | '-') {
+            j += 1;
+        }
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j < chars.len() && chars[j] == '|' {
+            // `-->|标签|` 形态：越过起始竖线后再找闭合竖线，标签内容不是端点。
+            j += 1;
+            while j < chars.len() && chars[j] != '|' {
+                j += 1;
+            }
+            j += 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+        }
+        let mut id = String::new();
+        while j < chars.len() && is_id_char(chars[j]) {
+            id.push(chars[j]);
+            j += 1;
+        }
+        if !id.is_empty() {
+            refs.insert(id);
+        }
+        i += len;
+    }
+}
+
+fn is_id_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
 }
 
 /// 节清单的 JSON 形状：`{"tier": "...", "sections": [...]}`，大纲阶段
@@ -727,9 +1201,29 @@ impl TryFrom<&str> for ComplexityTier {
 /// 节清单硬上限（大纲与清单护栏、提示词配比渲染共用）。
 pub(crate) const SECTION_OUTLINE_CAP: usize = 8;
 
+/// visual 菜单词的具名句柄（词面单源）：菜单 [`VISUAL_OPTIONS`] 与
+/// `declared_visual_after_strip` 的剔后反查共用同一份字面量——词表改动
+/// 只改这里；互钉测试（`visual_menu_and_strip_deduction_share_one_vocabulary`）
+/// 防两处漂移。
+pub const VISUAL_FORMULA: &str = "公式";
+pub const VISUAL_FUNCTION_GRAPH: &str = "函数图";
+pub const VISUAL_DIAGRAM: &str = "示意图";
+pub const VISUAL_FLOWCHART: &str = "流程图";
+pub const VISUAL_CHART: &str = "图表";
+pub const VISUAL_TABLE: &str = "表格";
+pub const VISUAL_NONE: &str = "无";
+
 /// 可视化声明菜单：大纲/清单 visual 字段的全部取值（几乎每节都有，确无
 /// 才写「无」）。两处质检门、提示词与工具 schema 枚举共用。
-pub const VISUAL_OPTIONS: [&str; 7] = ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"];
+pub const VISUAL_OPTIONS: [&str; 7] = [
+    VISUAL_FORMULA,
+    VISUAL_FUNCTION_GRAPH,
+    VISUAL_DIAGRAM,
+    VISUAL_FLOWCHART,
+    VISUAL_CHART,
+    VISUAL_TABLE,
+    VISUAL_NONE,
+];
 
 /// 练习节正文的作答引导目标字数（提示词口径；质检门硬拦 250）。
 pub const PRACTICE_BODY_TARGET_CHARS: usize = 120;
@@ -3098,6 +3592,7 @@ mod contract_tests {
             points: String::new(),
             visual: "函数图".into(),
             body_md: body,
+            degraded: false,
         };
         // 计量断言：纯文字恰好过门（全字符口径会因图块文本虚高）。
         let prose_chars = prose_char_count(&pack.body_md);
@@ -3163,5 +3658,212 @@ mod est_key_tests {
         let absent: LessonPack =
             serde_json::from_str(r#"{"title": "t"}"#).expect("absent falls back");
         assert_eq!(absent.est, 10, "缺省 10 不变");
+    }
+}
+
+#[cfg(test)]
+mod viz_lint_tests {
+    //! f3 可视化块机械 lint 的红绿样：法证原行必红（MermaidBalance）、
+    //! 括号不平衡必红、边端点引用未定义节点必红、svg 空壳必红；合法
+    //! flowchart/sequenceDiagram/stateDiagram/classDiagram（跨行块）/
+    //! 含引号文本全绿；空 mermaid 块、普通代码围栏、未闭合围栏零动作。
+
+    use super::*;
+
+    fn kinds(body: &str) -> Vec<VizLintKind> {
+        lint_visual_blocks(body).iter().map(|i| i.kind).collect()
+    }
+
+    /// 法证原行（e2e2「滚雪球」s1）：`[[` 开、单 `]` 收、行内三引号——
+    /// 引号计数为奇 → MermaidBalance，detail 带块序号与行摘录。
+    #[test]
+    fn forensic_unbalanced_line_is_flagged() {
+        let body = "## 概念：滚雪球\n\n```mermaid\nflowchart TD\n\
+                    A[[\"第1期 本金 P] -->|\"算利息 P×利率\"| B[利息1\"]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{issues:?}");
+        assert!(issues[0].detail.contains("#1"), "{issues:?}");
+        assert!(issues[0].detail.contains("本金"), "{issues:?}");
+    }
+
+    /// 引号配平但括号不平衡（`[[` 开、单 `]` 收）：块级累计净差非零必红。
+    #[test]
+    fn bracket_imbalance_is_flagged_by_block_totals() {
+        let body = "```mermaid\nflowchart LR\nA[[\"复利公式\"] --> B[\"利息\"]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{issues:?}");
+        assert!(issues[0].detail.contains("["), "{issues:?}");
+    }
+
+    /// flowchart 边端点引用了未带形状定义的 id → 每个未定义 id 一条
+    /// MermaidNodeUndefined；带形状的端点不误报。
+    #[test]
+    fn edge_referencing_undefined_node_is_flagged() {
+        let body = "```mermaid\nflowchart TD\nA[本金] --> 本息\n本息 --> B[本息和]\n```\n";
+        let issues = lint_visual_blocks(body);
+        assert_eq!(
+            kinds(body),
+            vec![VizLintKind::MermaidNodeUndefined],
+            "{issues:?}"
+        );
+        assert!(issues[0].detail.contains("本息"), "{issues:?}");
+    }
+
+    /// 合法 flowchart：全节点带形状、引号包裹特殊字符——零动作。
+    #[test]
+    fn legal_flowchart_with_quoted_labels_passes() {
+        let body = "```mermaid\nflowchart LR\n\
+                    A[\"本金 (P)\"] -->|\"利率 r\"| B[\"利息 {I}\"]\n\
+                    B --> C[\"本息和\"]\n```\n";
+        assert!(lint_visual_blocks(body).is_empty(), "{body}");
+    }
+
+    /// sequence/state/class 图全绿：`->>` 不在连线记号表、`[*]` 配平、
+    /// classDiagram 的花括号跨行块级累计（按行计会误杀）。
+    #[test]
+    fn sequence_state_and_multiline_class_diagrams_pass() {
+        let sequence = "```mermaid\nsequenceDiagram\n储户->>银行: 存入本金\n\
+                        银行-->>储户: 返还本息\n```\n";
+        assert!(lint_visual_blocks(sequence).is_empty());
+        let state = "```mermaid\nstateDiagram-v2\n[*] --> 活期\n活期 --> [*]: 销户\n```\n";
+        assert!(lint_visual_blocks(state).is_empty());
+        let class = "```mermaid\nclassDiagram\nclass 账户 {\n  +余额: 数值\n\
+                     +计息() 数值\n}\n```\n";
+        assert!(lint_visual_blocks(class).is_empty());
+    }
+
+    /// 空 mermaid 块：配平过 + 节点查过 → 合法（由既有门管）。
+    #[test]
+    fn empty_mermaid_block_passes() {
+        assert!(lint_visual_blocks("```mermaid\n```\n").is_empty());
+    }
+
+    /// svg：块体为空或缺 `<svg` 根 → SvgShell；真 svg 过。
+    #[test]
+    fn svg_shell_blocks_are_flagged_but_real_svg_passes() {
+        assert_eq!(kinds("```svg\n```\n"), vec![VizLintKind::SvgShell]);
+        assert_eq!(kinds("```svg\n占位文本\n```\n"), vec![VizLintKind::SvgShell]);
+        assert!(lint_visual_blocks("```svg\n<svg viewBox=\"0 0 10 10\"></svg>\n```\n").is_empty());
+    }
+
+    /// jsxgraph：顺带六对括号配平（零成本），配平即过。
+    #[test]
+    fn jsxgraph_bracket_balance_is_checked_incidentally() {
+        assert!(lint_visual_blocks("```jsxgraph\nboard.setBoundingBox([0, 10, 20, 30]);\n```\n").is_empty());
+        let body = "```jsxgraph\nJXG.createPoint(board, [1, 2);\n```\n";
+        assert_eq!(kinds(body), vec![VizLintKind::MermaidBalance], "{body}");
+    }
+
+    /// 普通代码围栏（非 mermaid/svg/jsxgraph）零动作；未闭合围栏不新增
+    /// 判定（沿用 validate_body 现行行为）。
+    #[test]
+    fn plain_code_fences_and_unclosed_fences_are_untouched() {
+        let python = "```python\npairs = {'a': [1]}\nprint(pairs['a']\n```\n";
+        assert!(lint_visual_blocks(python).is_empty(), "{python}");
+        let unclosed = "```mermaid\nflowchart TD\nA[本金 --> B[利息]\n";
+        assert!(
+            lint_visual_blocks(unclosed).is_empty(),
+            "未闭合围栏不新增判定"
+        );
+    }
+
+    /// 终检剔除：坏块整体剔除（fence 三行齐走）、节其余原样保留；剔后
+    /// 声明按余块形态降级（余 mermaid → 流程图，无余块 → 无）。
+    #[test]
+    fn strip_removes_only_broken_blocks_and_keeps_the_rest() {
+        let good = "```mermaid\nflowchart LR\nA[复利] -->|计息| B[本息]\n```\n";
+        let bad = "```mermaid\nflowchart TD\n\
+                   A[[\"第1期 本金 P] -->|\"算利息\"| B[利息1\"]\n```\n";
+        let prose = "这是终检剔除后仍保留的讲解正文，用于说明剔块不伤文字。";
+        let body = format!("开头旁注。\n\n{bad}\n中间说明。\n\n{good}\n\n{prose}\n");
+        let (stripped, removed) = strip_broken_visual_blocks(&body);
+        assert_eq!(removed, 1);
+        assert!(stripped.contains("开头旁注") && stripped.contains("中间说明"));
+        assert!(stripped.contains(good.trim_end()) && stripped.contains(prose), "{stripped}");
+        assert!(!stripped.contains("本金 P"), "{stripped}");
+        assert_eq!(
+            declared_visual_after_strip(&stripped),
+            "流程图",
+            "余块形态决定新声明"
+        );
+        let (only_bad, removed) = strip_broken_visual_blocks(&format!("{bad}\n{prose}\n"));
+        assert_eq!(removed, 1);
+        assert!(only_bad.contains(prose));
+        assert_eq!(declared_visual_after_strip(&only_bad), "无");
+    }
+
+    /// 互钉（Standards③）：菜单词表与剔后反查同源——`VISUAL_OPTIONS` 词面
+    /// 按提示词展示序逐字钉死（测试即独立事实源），任一词改名/换序/增删
+    /// 即红；`declared_visual_after_strip` 的五个反查返回值必须始终是菜单
+    /// 成员（剔后声明落回菜单，承诺门按新声明自然复审的前提）。
+    #[test]
+    fn visual_menu_and_strip_deduction_share_one_vocabulary() {
+        assert_eq!(
+            VISUAL_OPTIONS,
+            ["公式", "函数图", "示意图", "流程图", "图表", "表格", "无"]
+        );
+        let cases = [
+            ("```mermaid\nflowchart TD\nA[本金] --> B[本息]\n```", VISUAL_FLOWCHART),
+            ("```svg\n<svg viewBox=\"0 0 10 10\"></svg>\n```", VISUAL_DIAGRAM),
+            ("正文一句。\n\n$$E=mc^2$$", VISUAL_FORMULA),
+            ("| 一 | 二 |\n| --- | --- |\n| 1 | 2 |", VISUAL_TABLE),
+            ("纯文字，无任何可视化块。", VISUAL_NONE),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(declared_visual_after_strip(body), expected, "{body}");
+            assert!(VISUAL_OPTIONS.contains(&expected), "{expected} 必须仍在菜单内");
+        }
+    }
+
+    /// f3 lint 并入 validate_body（4.2）：坏 mermaid 围栏在两线共享汇点
+    /// 直接构成节违约，违约文本带 lint 定位与处置指引。
+    #[test]
+    fn validate_body_folds_lint_into_the_section_contract() {
+        let prose = "这是一个足够长的概念讲解正文段落，用于通过节级质检门的文字下限要求。".repeat(6);
+        let body = format!(
+            "## 概念：复利\n\n```mermaid\nflowchart TD\n\
+             A[[\"第1期 本金 P] -->|\"算利息\"| B[利息1\"]\n```\n\n{prose}"
+        );
+        let pack = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Concept,
+            title: "概念：复利".into(),
+            points: String::new(),
+            visual: "流程图".into(),
+            body_md: body,
+            degraded: false,
+        };
+        let error = pack.validate_body().unwrap_err();
+        assert!(error.contains("invalid visualization block syntax"), "{error}");
+        assert!(error.contains("MermaidBalance") || error.contains("mermaid"), "{error}");
+        assert!(error.contains("修复该围栏块语法"), "{error}");
+    }
+
+    /// demo 硬门不按声明豁免；唯一例外是终检系统剔块的 degraded 节（f3
+    /// A4：正文不因图烂而整课失败）。
+    #[test]
+    fn demo_gate_exempts_only_degraded_sections() {
+        let prose = "演示节旁注，可视化块已被终检系统剔除后仅余讲解文字。".repeat(12);
+        let plain = SectionPack {
+            section_key: "s1".into(),
+            kind: SectionKind::Demo,
+            title: "演示：复利".into(),
+            points: String::new(),
+            visual: "无".into(),
+            body_md: prose,
+            degraded: false,
+        };
+        assert!(
+            plain.validate_body().is_err(),
+            "demo 无可视化块仍拒（不按声明豁免）"
+        );
+        let degraded = SectionPack {
+            degraded: true,
+            ..plain
+        };
+        assert!(
+            degraded.validate_body().is_ok(),
+            "degraded 节豁免 demo 硬门"
+        );
     }
 }

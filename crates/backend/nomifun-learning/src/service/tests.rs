@@ -175,6 +175,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                 sections: Vec::new(),
                 degraded_keys: Vec::new(),
                 capacity_note: None,
+                viz_lint_events: 0,
             })
         }
 
@@ -475,6 +476,7 @@ teaching_style: crate::models::TeachingStyle::Standard,
                     sections: Vec::new(),
                     degraded_keys: Vec::new(),
                     capacity_note: None,
+                    viz_lint_events: 0,
                 })
             }
 
@@ -3322,24 +3324,6 @@ async fn ready_set_follows_cross_course_tier_coverage() {
     assert_eq!(ready.len(), 1);
     assert_eq!(ready[0].as_str(), node_apply);
     let _ = prep_course;
-}
-
-async fn wait_for_growth_batch(service: &LearningService, course_id: &str) {
-    for _ in 0..500 {
-        // 只等 applied 批：pending 行在生长开始即落库，等它会抢在落库前返回。
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM learning_growth_batches              WHERE course_id = ? AND status = 'applied'",
-        )
-        .bind(course_id)
-        .fetch_one(service.pool_for_tests())
-        .await
-        .unwrap();
-        if count > 0 {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    panic!("growth batch did not land in time");
 }
 
 /// 结构读侧投影（t1）：未生成 = 200 形状全空（Missing）；有快照 = 预计算面
