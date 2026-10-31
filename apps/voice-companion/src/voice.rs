@@ -2392,12 +2392,15 @@ impl VoiceCompanionRuntime {
                             &control_scope,
                         );
                         drop(d);
-                        let dismiss_reply = feedback.dismiss_reply.trim().to_string();
-                        if !dismiss_reply.is_empty() {
+                        let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                        let goodbye_text = if is_en { "Goodbye" } else { "好的，再见" };
+                        if event_tx.feedback().speak_replies {
                             let tts_clone = tts.clone();
                             let playback_clone = playback.clone();
+                            let reply = goodbye_text.to_string();
+                            let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
                             tokio::spawn(async move {
-                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &dismiss_reply, "", sleep_gen, || {}).await;
+                                let _ = playback_clone.speak_text_for_generation(tts_clone.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
                             });
                         }
                         voice_feedback::schedule(
@@ -2429,6 +2432,12 @@ impl VoiceCompanionRuntime {
             let current = event_tx.snapshot();
             if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
+                let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
+                let reply_phrase = if is_en { "I'm here" } else { "我在" };
+                let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                if event_tx.feedback().speak_replies {
+                    let _ = playback.speak_text_for_generation(tts.as_ref(), reply_phrase, voice_spec, generation, || {}).await;
+                }
                 Self::discard_utterance(driver, playback, event_tx, generation, &control_scope).await;
                 return;
             } else if let Some(action) = is_local_task_control {
@@ -4144,7 +4153,7 @@ impl VoiceCompanionRuntime {
                             }
                             let response={let mut pending=pending_confirmation.lock().unwrap_or_else(|error|error.into_inner());pending.as_mut().and_then(|pending|pending.response.take().map(|response|(response,pending.generation,pending.deadline_ms,pending.approval_id.clone(),pending.session_id.clone())))};
                             if let Some((response,generation,deadline_ms,approval_id,session_id))=response {
-                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();
+                                let pcm=std::mem::take(&mut utterance_pcm);let stt=transcriber.clone();let output=playback.clone();let events=event_tx.clone();let states=driver.clone();let lease_busy=native_busy.clone();let lease_degraded=native_degraded.clone();let lease_epoch=native_job_epoch.clone();let lease_admission=native_admission.clone();let tts=tts.clone();
                                 let reservation = lease_admission.reserve();
                                 let pending_for_turn = pending_confirmation.clone();
                                 let snapshot = events.snapshot();
@@ -4199,6 +4208,17 @@ impl VoiceCompanionRuntime {
                                                         &scope,
                                                     );
                                                     drop(d);
+                                                    let is_en = nomifun_api_types::voice::is_english_locale(current.locale.as_deref());
+                                                    let goodbye_text = if is_en { "Goodbye" } else { "好的，再见" };
+                                                    if events.feedback().speak_replies {
+                                                        let output_clone = output.clone();
+                                                        let reply = goodbye_text.to_string();
+                                                        let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
+                                                        let tts_prov = tts.clone();
+                                                        tokio::spawn(async move {
+                                                            let _ = output_clone.speak_text_for_generation(tts_prov.as_ref(), &reply, voice_spec, sleep_gen, || {}).await;
+                                                        });
+                                                    }
                                                     voice_feedback::schedule(
                                                         output.clone(),
                                                         events.clone(),

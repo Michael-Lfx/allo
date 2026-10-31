@@ -47,7 +47,12 @@ import {
 } from './memoryPanelGeometry';
 import { useDetachedMemoryPanel } from './useDetachedMemoryPanel';
 import { placeResizedWindow, type GeomRect } from './windowGeometry';
-import { clampSavedCompanionPosition, snapCompanionWindow, workAreasFromMonitors } from './companionScreenClamp';
+import {
+  clampSavedCompanionPosition,
+  snapCompanionWindow,
+  undockCompanionWindow,
+  workAreasFromMonitors,
+} from './companionScreenClamp';
 import { useCompanionPetFeed } from './messages/useCompanionPetFeed';
 import PetStatusToast from './messages/PetStatusToast';
 import { buildCompanionMenuEntries, type CompanionMenuAction } from './companionNativeMenu';
@@ -2011,6 +2016,11 @@ const CompanionPage: React.FC = () => {
       className='nomi-companion-window'
       // 气泡可用高度 = 100vh − 预留（立绘高 + 输入条/边距）。让正文吃满窗口剩余空间又不压到立绘。
       style={{ '--companion-reserve': `${desk.figureHeight + 84}px` } as React.CSSProperties}
+      onMouseEnter={() => {
+        if (!draggingRef.current && isTauriRuntime()) {
+          void undockCompanionWindow();
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         // 同步捕获：不等下个轮询 tick，先确保这次右键不会被透明穿透状态影响。

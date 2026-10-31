@@ -108,12 +108,34 @@ impl KwsEngine {
         model_dir: Option<&std::path::Path>,
     ) -> Option<NeuralKwsSession> {
         let dir = model_dir?;
-        let encoder = dir.join("encoder.int8.onnx");
-        let decoder = dir.join("decoder.int8.onnx");
-        let joiner = dir.join("joiner.int8.onnx");
+        let find_file = |candidates: &[&str]| -> Option<PathBuf> {
+            for c in candidates {
+                let p = dir.join(c);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            None
+        };
+        let encoder = find_file(&[
+            "encoder.int8.onnx",
+            "encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+            "encoder-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        ])?;
+        let decoder = find_file(&[
+            "decoder.int8.onnx",
+            "decoder.onnx",
+            "decoder-epoch-13-avg-2-chunk-16-left-64.onnx",
+            "decoder-epoch-13-avg-2-chunk-8-left-64.onnx",
+        ])?;
+        let joiner = find_file(&[
+            "joiner.int8.onnx",
+            "joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+            "joiner-epoch-13-avg-2-chunk-8-left-64.int8.onnx",
+        ])?;
         let tokens = dir.join("tokens.txt");
 
-        if !encoder.is_file() || !decoder.is_file() || !joiner.is_file() || !tokens.is_file() {
+        if !tokens.is_file() {
             return None;
         }
 
@@ -126,16 +148,22 @@ impl KwsEngine {
         spotter_config.model_config.transducer.joiner = Some(joiner.to_string_lossy().to_string());
         spotter_config.model_config.tokens = Some(tokens.to_string_lossy().to_string());
 
-        // Configure our fixed vocabulary in memory from the authoritative candidate table
-        // without modifying downloaded files or invalidating their checksums.
-        // Calibrated for wide trigger coverage: score 2.2 (strong beam bias), threshold 0.08 (high recall).
-        spotter_config.keywords_buf = Some(default_keywords_bpe());
-        spotter_config.keywords_score = 2.2;
-        spotter_config.keywords_threshold = 0.08;
+        let tokens_str = std::fs::read_to_string(&tokens).unwrap_or_default();
+        let is_bilingual = tokens_str.contains("ao 76") || tokens_str.contains("ang 75") || tokens_str.contains("AA0");
+
+        if is_bilingual {
+            spotter_config.keywords_buf = Some(build_bilingual_keywords_buf(&config.keywords));
+            spotter_config.keywords_score = 1.8;
+            spotter_config.keywords_threshold = 0.20;
+        } else {
+            spotter_config.keywords_buf = Some(default_keywords_bpe());
+            spotter_config.keywords_score = 2.2;
+            spotter_config.keywords_threshold = 0.08;
+        }
 
         let spotter = sherpa_onnx::KeywordSpotter::create(&spotter_config)?;
         let stream = spotter.create_stream();
-        tracing::info!(dir = %dir.display(), "Sherpa-ONNX KeywordSpotter successfully loaded and initialized");
+        tracing::info!(dir = %dir.display(), is_bilingual, "Sherpa-ONNX KeywordSpotter successfully loaded and initialized");
         Some(NeuralKwsSession { spotter, stream })
     }
 
@@ -490,6 +518,79 @@ pub static WAKE_CANDIDATES: &[WakeCandidateDef] = &[
     WakeCandidateDef { phrase: "佛 洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
     WakeCandidateDef { phrase: "佛洛", rule: WakeRule::FullSentenceOnly, kws_bpe: None },
 ];
+
+/// Maps common Chinese characters into standard pinyin initial + final tokens
+/// for Sherpa-ONNX bilingual Zipformer KWS model.
+pub fn convert_chinese_to_kws_pinyin(text: &str) -> Option<String> {
+    let mut tokens = Vec::new();
+    for ch in text.chars() {
+        if ch.is_whitespace() || matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_') {
+            continue;
+        }
+        let pinyin = match ch {
+            '你' => "n i",
+            '好' => "h ao",
+            '小' => "x iao",
+            '白' => "b ai",
+            '福' => "f u",
+            '星' => "x ing",
+            '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f u",
+            '莉' | '力' | '利' | '立' => "l i",
+            '佛' => "f o",
+            '罗' | '洛' => "l uo",
+            '嗨' => "h ai",
+            '嘿' | '黑' => "h ei",
+            '哈' => "h a",
+            '喽' | '楼' => "l ou",
+            '宝' => "b ao",
+            '贝' => "b ei",
+            '同' => "t ong",
+            '学' => "x ue",
+            '助' => "zh u",
+            '手' => "sh ou",
+            '智' => "zh i",
+            '能' => "n eng",
+            '管' => "g uan",
+            '家' => "j ia",
+            '飞' => "f ei",
+            _ => return None,
+        };
+        tokens.push(pinyin);
+    }
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens.join(" "))
+    }
+}
+
+/// Builds dynamic bilingual keywords rules buffer for Sherpa-ONNX Zipformer KWS.
+pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
+    let mut lines = Vec::new();
+
+    // Universal baseline wake phrases
+    lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
+    lines.push("F L OW1 IY0 :2.0 #0.15 @FLOWY".to_string());
+    lines.push("n i h ao :2.0 #0.15 @NI_HAO".to_string());
+    lines.push("n i h ao f l ow i :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+
+    for kw in keywords {
+        let clean = kw.trim();
+        if clean.is_empty() {
+            continue;
+        }
+        let lower = clean.to_ascii_lowercase();
+        if lower == "hey flowy" || lower == "flowy" {
+            continue;
+        }
+        if let Some(pinyin) = convert_chinese_to_kws_pinyin(clean) {
+            let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
+            lines.push(format!("{pinyin} :2.0 #0.15 @{label}"));
+        }
+    }
+
+    lines.join("\n") + "\n"
+}
 
 // Verified against the matching GigaSpeech bpe.model, SHA256
 // c8a2a0129c4ab8e463164c142f82d25649661b122c8cd0b7aab5c9e80b90ad24.

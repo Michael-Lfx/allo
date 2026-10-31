@@ -16,6 +16,10 @@ native-fault-injection = ["dep:async-trait", "voice-skeleton"]
 name = "voice-companion"
 path = "src/main.rs"
 
+[[example]]
+name = "cold_warm_worker_pairing_probe"
+required-features = ["voice-skeleton"]
+
 [dependencies]
 nomifun-common.workspace = true
 nomifun-api-types.workspace = true

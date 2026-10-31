@@ -198,6 +198,36 @@ impl MirrorConfig {
                 "asr/tokens.txt" => {
                     "https://modelscope.cn/api/v1/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue/repo?Revision=master&FilePath=tokens.txt".to_string()
                 }
+                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=lexicon.txt".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/date.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=date.fst".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/number.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=number.fst".to_string()
+                }
+                "tts/matcha-icefall-zh-baker/phone.fst" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-zh-baker/repo?Revision=master&FilePath=phone.fst".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=model-steps-3.onnx".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=tokens.txt".to_string()
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/matcha-icefall-en_US-ljspeech/repo?Revision=master&FilePath=espeak-ng-data/en_dict".to_string()
+                }
+                "tts/vocos-22khz-univ.onnx" => {
+                    "https://modelscope.cn/api/v1/models/csukuangfj/sherpa-onnx-models/repo?Revision=master&FilePath=vocoder-models/vocos-22khz-univ.onnx".to_string()
+                }
                 other => {
                     format!("{}/{}", self.base_url.trim_end_matches('/'), other)
                 }

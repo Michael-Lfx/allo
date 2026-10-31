@@ -89,89 +89,22 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
             description={t('voice.feedback.wakeWordsHint')}
             controlLayout='field'
             control={
-              <Input.TextArea
+              <Input
                 aria-label={t('voice.feedback.wakeWords')}
                 placeholder={t('voice.feedback.wakeWordsPlaceholder')}
-                autoSize={{ minRows: 2, maxRows: 4 }}
-                value={draft?.wake_words?.join('\n') ?? ''}
+                value={draft?.wake_words?.[0] ?? 'Hey Flowy'}
                 disabled={!draft || busy}
                 onChange={(val) => {
-                  const words = val.split('\n').map((w) => w.trim()).filter(Boolean);
-                  setDraft((prev) => prev && { ...prev, wake_words: words });
+                  const word = val.trim();
+                  setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : ['Hey Flowy'] });
                 }}
-              />
-            }
-          />
-          <SettingsRow
-            label={t('voice.feedback.wakeReply')}
-            description={t('voice.feedback.wakeReplyHint')}
-            controlLayout='field'
-            control={
-              <Input
-                aria-label={t('voice.feedback.wakeReply')}
-                placeholder={t('voice.feedback.wakeReplyPlaceholder')}
-                value={draft?.wake_reply ?? ''}
-                disabled={!draft || busy}
-                onChange={(val) => setDraft((prev) => prev && { ...prev, wake_reply: val.trim() })}
               />
             }
           />
         </SettingsList>
       </SettingsSection>
 
-      {/* 卡片 2: 交互指令与退下口令 (可编辑) */}
-      <SettingsSection title={t('voice.callControl.title')} description={t('voice.callControl.description')}>
-        <SettingsList>
-          <SettingsRow
-            label={t('voice.feedback.interjectKeyword')}
-            description={t('voice.feedback.interjectKeywordHint')}
-            controlLayout='field'
-            control={
-              <Input
-                aria-label={t('voice.feedback.interjectKeyword')}
-                placeholder={t('voice.feedback.interjectKeywordPlaceholder')}
-                value={draft?.interject_keyword ?? ''}
-                disabled={!draft || busy}
-                onChange={(val) => setDraft((prev) => prev && { ...prev, interject_keyword: val.trim() })}
-              />
-            }
-          />
-          <SettingsRow
-            label={t('voice.feedback.dismissPhrases')}
-            description={t('voice.feedback.dismissPhrasesHint')}
-            controlLayout='field'
-            control={
-              <Input.TextArea
-                aria-label={t('voice.feedback.dismissPhrases')}
-                placeholder={t('voice.feedback.dismissPhrasesPlaceholder')}
-                autoSize={{ minRows: 2, maxRows: 4 }}
-                value={draft?.dismiss_phrases?.join('\n') ?? ''}
-                disabled={!draft || busy}
-                onChange={(val) => {
-                  const phrases = val.split('\n').map((p) => p.trim()).filter(Boolean);
-                  setDraft((prev) => prev && { ...prev, dismiss_phrases: phrases });
-                }}
-              />
-            }
-          />
-          <SettingsRow
-            label={t('voice.feedback.dismissReply')}
-            description={t('voice.feedback.dismissReplyHint')}
-            controlLayout='field'
-            control={
-              <Input
-                aria-label={t('voice.feedback.dismissReply')}
-                placeholder={t('voice.feedback.dismissReplyPlaceholder')}
-                value={draft?.dismiss_reply ?? ''}
-                disabled={!draft || busy}
-                onChange={(val) => setDraft((prev) => prev && { ...prev, dismiss_reply: val.trim() })}
-              />
-            }
-          />
-        </SettingsList>
-      </SettingsSection>
-
-      {/* 卡片 3: 语音播报与合成 (可编辑) */}
+      {/* 卡片 2: 语音合成与播报 (可编辑) */}
       <SettingsSection title={t('voice.feedback.title')} description={t('voice.feedback.description')}>
         <SettingsList>
           <SettingsRow

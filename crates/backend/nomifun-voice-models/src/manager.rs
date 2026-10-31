@@ -111,10 +111,12 @@ pub struct ModelManager {
 impl ModelManager {
     /// Initializes a new `ModelManager` targeting the specified directory with defaults.
     pub fn new(models_dir: impl AsRef<Path>) -> Self {
+        let mut manifest = crate::verifier::default_canonical_manifest();
+        manifest.extend(crate::verifier::default_tts_manifest());
         Self::with_config(
             models_dir,
             MirrorConfig::default_mirrors(),
-            crate::verifier::default_canonical_manifest(),
+            manifest,
         )
     }
 
@@ -381,12 +383,21 @@ impl ModelManager {
         };
 
         // Step 2: Download files with progress tracking
-        let total_files = DOWNLOAD_FILES.len();
+        let all_files: Vec<&str> = if self.verifier.baseline_manifest().contains_key("tts/matcha-icefall-zh-baker/model-steps-3.onnx") {
+            DOWNLOAD_FILES
+                .iter()
+                .chain(crate::verifier::DOWNLOAD_TTS_FILES.iter())
+                .copied()
+                .collect()
+        } else {
+            DOWNLOAD_FILES.to_vec()
+        };
+        let total_files = all_files.len();
         let mut overall_downloaded: u64 = 0;
         let mut total_estimated_bytes: u64 = 0;
 
         // Estimate size if possible or use cumulative progress
-        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+        for (idx, &rel_path) in all_files.iter().enumerate() {
             let file_index = idx + 1;
             let target_path = self.models_dir.join(rel_path);
 
@@ -509,7 +520,7 @@ impl ModelManager {
         }
 
         // Step 3: SHA256 Verification
-        for (idx, &rel_path) in DOWNLOAD_FILES.iter().enumerate() {
+        for (idx, &rel_path) in all_files.iter().enumerate() {
             self.set_state(ModelInstallState::VerifyingSha256 {
                 current_file: rel_path.to_string(),
                 verified_files: idx,
