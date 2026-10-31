@@ -51,3 +51,28 @@ part_of: ../map.md
 
 - 选择/判断/匹配等非计算题型（无 oracle 需求，现状已够）；
 - 主观题语义判分（AI 批改轨的 LLM 判断部分不动，本票只加确定性核验层）。
+
+## Resolution（2026-10-31 grilling 裁决：范围收窄）
+
+**裁决（用户：按推荐）**：w2 收窄为三件——**numeric 答案键工具算 + 变式换参数
++ 修复变式 `tol: None` 硬编码缺陷**；「多步题型 + 部分分」**剥离为后置票**
+（触发条件：产品要求数学多步题）。等 w1 真机判据落地再动（隔波）。
+
+**影响面核查勘误（2026-10-31 实码核实）：**
+
+- **现状真缺陷**：变式 numeric `tol: None` 硬编码（quiz.rs:819）→ evaluate 按
+  1e-9 精确判（progress.rs:482-494，绝对容差）——模型口算误差直接判错学习者。
+  w2 换工具算同时修复。
+- **「多步题+部分分」无载体**：九题型（models.rs:1464-1481）无多步形态；AI 批改是
+  单文本整体评分（open_judge.rs）；settle 部分分通道（settle_review ratio）生产恒收
+  0/1（xp.rs:132）；quiz 线纯 objective（选题 SQL 白名单）是有意设计——那是新题型
+  设计，非「接核验器」。
+- **票面措辞勘误**：settle.rs 不含 tol 比对，四档（0.9/0.6/0.3）是**整场准确率**
+  授予门槛而非单题部分分；题号铸的是 **UUIDv7**（LearningActivityId）非 ULID。
+- smoke quiz 现只种 single_choice（learning_smoke.rs:1916-1944）——w2 需新增
+  numeric 种子题 + grade 断言（2090-2124）才有真机判据落点。
+- numeric 全链：生成条款 generation/mod.rs:114（answer JSON number + tol）/:129
+  自检；ActivityPack models.rs:1429-1462；落库 config_json（StoredActivityConfig
+  3350-3377，serde default 容旧行→**零迁移可扩表达式+参数字段**）；
+  LESSON_ACTIVITY_SYSTEM（mod.rs:142-166）**无 numeric 形状条款**，换参契约要新增；
+  变式单次 LLM 调用一次给题面+答案，无参数分离（quiz.rs:768-852）。
