@@ -161,3 +161,7 @@ HTTP 旅程未踩注入臂，故存量未曝；与本票零代码关联（f3 未
   「零打回」证据**；lint 本身的单测与 op 拒绝通路不受影响。
 - 修复归 w1（观测帧补字段，math_verify 计数同槽接线）；修复后需一次真机 content
   档复验读数真实性。
+
+**复验闭环（2026-11-01）**：写端修复随 learning-content-verification w1 落地后，
+真机 content 档复验——`viz_lint read-out: viz_lint_events=0` 已为真实观测值
+（w1-content-a/b2 两臂），读数真实性恢复确认。
