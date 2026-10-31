@@ -141,9 +141,9 @@ describe('dockCompanionToEdge / undockCompanionFromEdge', () => {
     expect(docked?.x).toBe(-66);
     expect(docked?.y).toBe(200);
 
-    // Undock back into view
+    // Undock back into view (buffered past threshold to prevent immediate re-dock)
     const restored = undockCompanionFromEdge({ x: docked!.x, y: docked!.y, ...pet }, 'left', [display]);
-    expect(restored).toEqual({ x: 0, y: 200 });
+    expect(restored).toEqual({ x: 36, y: 200 });
   });
 
   test('docks to right edge when close to right margin', () => {
@@ -154,9 +154,9 @@ describe('dockCompanionToEdge / undockCompanionFromEdge', () => {
     expect(docked?.x).toBe(1914);
     expect(docked?.y).toBe(300);
 
-    // Undock back into view
+    // Undock back into view (buffered past threshold to prevent immediate re-dock)
     const restored = undockCompanionFromEdge({ x: docked!.x, y: docked!.y, ...pet }, 'right', [display]);
-    expect(restored).toEqual({ x: 1920 - 72, y: 300 });
+    expect(restored).toEqual({ x: 1920 - 72 - 36, y: 300 });
   });
 
   test('does not dock when window is comfortably in the center', () => {
@@ -176,9 +176,9 @@ describe('dockCompanionToEdge / undockCompanionFromEdge', () => {
     // x = 1920 - 6 = 1914
     expect(dockedRightD0?.x).toBe(1914);
 
-    // Must restore to d0 (x = 1920 - 72 = 1848), NOT jump to d1 (x = 3768)
+    // Must restore to d0 (x = 1920 - 72 - 36 = 1812), NOT jump to d1
     const restoredD0 = undockCompanionFromEdge({ x: dockedRightD0!.x, y: dockedRightD0!.y, ...pet }, 'right', twoDisplays);
-    expect(restoredD0).toEqual({ x: 1848, y: 400 });
+    expect(restoredD0).toEqual({ x: 1812, y: 400 });
 
     // Case 2: Docked to left edge of d1
     const dockedLeftD1 = dockCompanionToEdge({ x: 1930, y: 500, ...pet }, twoDisplays);
@@ -187,8 +187,8 @@ describe('dockCompanionToEdge / undockCompanionFromEdge', () => {
     // x = 1920 - (72 - 6) = 1854
     expect(dockedLeftD1?.x).toBe(1854);
 
-    // Must restore to d1 (x = 1920), NOT jump to d0 (x = 0)
+    // Must restore to d1 (x = 1920 + 36 = 1956), NOT jump to d0
     const restoredD1 = undockCompanionFromEdge({ x: dockedLeftD1!.x, y: dockedLeftD1!.y, ...pet }, 'left', twoDisplays);
-    expect(restoredD1).toEqual({ x: 1920, y: 500 });
+    expect(restoredD1).toEqual({ x: 1956, y: 500 });
   });
 });

@@ -138,6 +138,10 @@ pub fn should_hold_microphone(
     wake_enabled && kws_ready
 }
 
+fn effective_idle_timeout(events: &VoiceEventHub) -> u32 {
+    events.feedback().idle_timeout_secs
+}
+
 /// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
 /// to ensure the leading onset of user speech is not clipped upon barge-in interruption.
 const BARGE_IN_PREROLL_SAMPLES: usize = 8_000;
@@ -1580,7 +1584,7 @@ impl VoiceCompanionRuntime {
                                 turn_id: Some(turn_id.clone()),
                             };
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &scope);
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, &scope);
                         }
                     }
                 }
@@ -2026,7 +2030,7 @@ impl VoiceCompanionRuntime {
             voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             let mut d = driver.lock().await;
             if playback.generation_id() == generation && d.begin_listening_window() {
-                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(&events) });
             }
         });
         Ok(())
@@ -2121,7 +2125,7 @@ impl VoiceCompanionRuntime {
             return;
         }
         if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2192,7 +2196,7 @@ impl VoiceCompanionRuntime {
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2214,7 +2218,7 @@ impl VoiceCompanionRuntime {
             if d.current_state() == AcousticState::FollowUpListening
                 && d.begin_listening_window()
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2235,7 +2239,7 @@ impl VoiceCompanionRuntime {
         if d.handle_event(AcousticEvent::UtteranceIgnored) == Ok(AcousticState::Listening) {
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
         }
     }
 
@@ -2257,7 +2261,7 @@ impl VoiceCompanionRuntime {
             let _ = events.send_scoped(VoiceCompanionEvent::IntentDecided { intent: "Ignore".into(), reply: None, understood_request: None }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Error { stage: "asr".into(), code: code.into() }, scope);
             let _ = events.send_scoped(VoiceCompanionEvent::Listening, scope);
-            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, scope);
+            let _ = events.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(events.as_ref()) }, scope);
         }
     }
 
@@ -3117,7 +3121,7 @@ impl VoiceCompanionRuntime {
                                 let _ = d.handle_event(AcousticEvent::WakeHit);
                                 if d.begin_listening_window() {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
-                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 }, &control_scope);
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, &control_scope);
                                 }
                             }
                         }

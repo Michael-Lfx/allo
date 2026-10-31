@@ -395,10 +395,11 @@ impl EdgeTtsProvider {
             .await
             .map_err(|e| TtsError::Network(format!("Failed to send config: {e}")))?;
 
-        let voice_name = if voice.is_empty() {
+        let actual_voice = voice.split_once(";speed=").map(|(v, _)| v).unwrap_or(voice);
+        let voice_name = if actual_voice.is_empty() {
             &self.default_voice
         } else {
-            voice
+            actual_voice
         };
         let escaped = |value: &str| {
             value

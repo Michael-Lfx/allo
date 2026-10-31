@@ -187,20 +187,22 @@ export function findDockedHostDisplay(
 export function undockCompanionFromEdge(
   rect: GeomRect,
   side: DockSide,
-  displays: GeomRect[]
+  displays: GeomRect[],
+  thresholdPx = DOCK_THRESHOLD_PX
 ): { x: number; y: number } {
   if (displays.length === 0) return { x: rect.x, y: rect.y };
   const host = findDockedHostDisplay(rect, side, displays);
   if (!host) return { x: rect.x, y: rect.y };
 
+  const buffer = thresholdPx + 6;
   if (side === 'left') {
     return {
-      x: host.x,
+      x: host.x + buffer,
       y: clamp(rect.y, host.y, host.y + host.height - rect.height),
     };
   } else {
     return {
-      x: host.x + host.width - rect.width,
+      x: host.x + host.width - rect.width - buffer,
       y: clamp(rect.y, host.y, host.y + host.height - rect.height),
     };
   }
