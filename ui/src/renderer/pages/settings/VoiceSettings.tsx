@@ -1108,6 +1108,37 @@ const VoiceSettings: React.FC = () => {
         )}
 
         <VoiceFeedbackSettingsSection connected={voiceSnapshot?.connection === 'connected'} />
+
+        <SettingsSection
+          title={t('voice.callControl.title')}
+          description={t('voice.callControl.description')}
+        >
+          <SettingsList>
+            <SettingsRow
+              label={t('voice.callControl.dismissLabel')}
+              description={t('voice.callControl.dismissDesc')}
+              controlLayout='field'
+              control={<span className='text-13px text-t-secondary font-mono'>{t('voice.callControl.dismissPhrasesSample')}</span>}
+            />
+            <SettingsRow
+              label={t('voice.callControl.stopSpeakingLabel')}
+              description={t('voice.callControl.stopSpeakingDesc')}
+              controlLayout='field'
+              control={<span className='text-13px text-t-secondary font-mono'>{t('voice.callControl.stopSpeakingPhrasesSample')}</span>}
+            />
+            <SettingsRow
+              label={t('voice.callControl.localTtsLabel')}
+              description={t('voice.callControl.localTtsDesc')}
+              controlLayout='field'
+              control={
+                <span className={`text-13px font-medium ${modelStatus === 'Ready' || voiceSnapshot?.tts?.online === false ? 'text-success-6' : 'text-t-tertiary'}`}>
+                  {modelStatus === 'Ready' || voiceSnapshot?.tts?.online === false ? t('voice.callControl.localTtsStatusReady') : t('voice.callControl.localTtsStatusAbsent')}
+                </span>
+              }
+            />
+          </SettingsList>
+        </SettingsSection>
+
         <p className='m-0 text-12px text-t-secondary' role='status'>
           {voiceSnapshot?.tts ? t('voice.presentation.ttsActual', {
             provider: voiceSnapshot.tts.provider,

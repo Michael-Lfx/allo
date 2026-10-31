@@ -2834,6 +2834,39 @@
         }
     }
 
+    #[tokio::test]
+    async fn direct_voice_session_control_separates_stop_dismiss_and_task_cancel() {
+        use nomifun_api_types::voice::{VoiceDirectControlAction, classify_voice_direct_control};
+
+        // 1. Direct control action classification
+        assert_eq!(
+            classify_voice_direct_control("停止播报", &[]),
+            Some(VoiceDirectControlAction::StopSpeaking)
+        );
+        assert_eq!(
+            classify_voice_direct_control("别念了", &[]),
+            Some(VoiceDirectControlAction::StopSpeaking)
+        );
+        assert_eq!(
+            classify_voice_direct_control("退下吧", &[]),
+            Some(VoiceDirectControlAction::DismissSession)
+        );
+        assert_eq!(
+            classify_voice_direct_control("请你退下吧", &[]),
+            Some(VoiceDirectControlAction::DismissSession)
+        );
+        assert_eq!(
+            classify_voice_direct_control("end the call", &[]),
+            Some(VoiceDirectControlAction::DismissSession)
+        );
+
+        // 2. Strict negative guard checking: no false dismissals
+        assert_eq!(classify_voice_direct_control("不要退下吧", &[]), None);
+        assert_eq!(classify_voice_direct_control("请把退下吧翻译成英文", &[]), None);
+        assert_eq!(classify_voice_direct_control("小说里的角色说退下吧", &[]), None);
+        assert_eq!(classify_voice_direct_control("不要停止播报", &[]), None);
+    }
+
     #[test]
     fn task_status_prompt_is_limited_to_the_current_acoustic_session() {
         use nomifun_api_types::voice::{VoiceSessionSnapshot, VoiceTaskSnapshot, VoiceTaskStatus};
@@ -2862,6 +2895,35 @@
         assert!(status.contains("command-a"));
         assert!(status.contains("accepted"));
         assert!(task_status_for_prompt(None, &same).is_none());
+    }
+
+    #[test]
+    fn test_should_hold_microphone_matrix() {
+        use super::should_hold_microphone;
+
+        // 1. Voice disabled, no self-check -> false
+        assert!(!should_hold_microphone(false, true, true, true, false, true));
+
+        // 2. Voice disabled, but explicit self-check active -> true (temporary)
+        assert!(should_hold_microphone(false, false, false, false, true, false));
+
+        // 3. Wake disabled, no call, no confirmation, no check -> false
+        assert!(!should_hold_microphone(true, false, false, false, false, true));
+
+        // 4. Wake enabled and KWS ready, standby -> true
+        assert!(should_hold_microphone(true, true, false, false, false, true));
+
+        // 5. Wake enabled but KWS not ready -> false
+        assert!(!should_hold_microphone(true, true, false, false, false, false));
+
+        // 6. Wake disabled, BUT call is active -> true (must NOT cut off active conversation!)
+        assert!(should_hold_microphone(true, false, true, false, false, false));
+
+        // 7. Wake disabled, BUT tool confirmation pending -> true (must NOT cut off confirmation!)
+        assert!(should_hold_microphone(true, false, false, true, false, false));
+
+        // 8. Call ended, wake closed -> false (released!)
+        assert!(!should_hold_microphone(true, false, false, false, false, true));
     }
 
     #[test]

@@ -1,7 +1,14 @@
 
 
 import { describe, expect, test } from 'bun:test';
-import { clampRectToDisplays, isReachableOnDisplays, nearestDisplay, placeResizedWindow } from './windowGeometry';
+import {
+  clampRectToDisplays,
+  dockCompanionToEdge,
+  isReachableOnDisplays,
+  nearestDisplay,
+  placeResizedWindow,
+  undockCompanionFromEdge,
+} from './windowGeometry';
 
 const MON = { x: 0, y: 0, width: 2880, height: 1800 };
 
@@ -119,5 +126,69 @@ describe('isReachableOnDisplays / nearestDisplay', () => {
 
   test('picks the geometrically nearest display across a gap', () => {
     expect(nearestDisplay({ x: 1940, y: 100, width: 40, height: 40 }, [left, right])).toEqual(left);
+  });
+});
+
+describe('dockCompanionToEdge / undockCompanionFromEdge', () => {
+  const display = { x: 0, y: 0, width: 1920, height: 1080 };
+  const pet = { width: 72, height: 72 };
+
+  test('docks to left edge when close to left margin', () => {
+    const docked = dockCompanionToEdge({ x: 15, y: 200, ...pet }, [display]);
+    expect(docked).not.toBeNull();
+    expect(docked?.side).toBe('left');
+    // x = 0 - (72 - 6) = -66
+    expect(docked?.x).toBe(-66);
+    expect(docked?.y).toBe(200);
+
+    // Undock back into view
+    const restored = undockCompanionFromEdge({ x: docked!.x, y: docked!.y, ...pet }, 'left', [display]);
+    expect(restored).toEqual({ x: 0, y: 200 });
+  });
+
+  test('docks to right edge when close to right margin', () => {
+    const docked = dockCompanionToEdge({ x: 1840, y: 300, ...pet }, [display]);
+    expect(docked).not.toBeNull();
+    expect(docked?.side).toBe('right');
+    // x = 1920 - 6 = 1914
+    expect(docked?.x).toBe(1914);
+    expect(docked?.y).toBe(300);
+
+    // Undock back into view
+    const restored = undockCompanionFromEdge({ x: docked!.x, y: docked!.y, ...pet }, 'right', [display]);
+    expect(restored).toEqual({ x: 1920 - 72, y: 300 });
+  });
+
+  test('does not dock when window is comfortably in the center', () => {
+    const docked = dockCompanionToEdge({ x: 500, y: 400, ...pet }, [display]);
+    expect(docked).toBeNull();
+  });
+
+  test('multi-monitor: undock restores to the correct owning display without jumping across bezels', () => {
+    const d0 = { x: 0, y: 0, width: 1920, height: 1080 };
+    const d1 = { x: 1920, y: 0, width: 1920, height: 1080 };
+    const twoDisplays = [d0, d1];
+
+    // Case 1: Docked to right edge of d0
+    const dockedRightD0 = dockCompanionToEdge({ x: 1840, y: 400, ...pet }, twoDisplays);
+    expect(dockedRightD0).not.toBeNull();
+    expect(dockedRightD0?.side).toBe('right');
+    // x = 1920 - 6 = 1914
+    expect(dockedRightD0?.x).toBe(1914);
+
+    // Must restore to d0 (x = 1920 - 72 = 1848), NOT jump to d1 (x = 3768)
+    const restoredD0 = undockCompanionFromEdge({ x: dockedRightD0!.x, y: dockedRightD0!.y, ...pet }, 'right', twoDisplays);
+    expect(restoredD0).toEqual({ x: 1848, y: 400 });
+
+    // Case 2: Docked to left edge of d1
+    const dockedLeftD1 = dockCompanionToEdge({ x: 1930, y: 500, ...pet }, twoDisplays);
+    expect(dockedLeftD1).not.toBeNull();
+    expect(dockedLeftD1?.side).toBe('left');
+    // x = 1920 - (72 - 6) = 1854
+    expect(dockedLeftD1?.x).toBe(1854);
+
+    // Must restore to d1 (x = 1920), NOT jump to d0 (x = 0)
+    const restoredD1 = undockCompanionFromEdge({ x: dockedLeftD1!.x, y: dockedLeftD1!.y, ...pet }, 'left', twoDisplays);
+    expect(restoredD1).toEqual({ x: 1920, y: 500 });
   });
 });

@@ -218,6 +218,36 @@ impl MirrorConfig {
                 "asr/tokens.txt" => {
                     format!("{base}/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt")
                 }
+                "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/model-steps-3.onnx")
+                }
+                "tts/matcha-icefall-zh-baker/tokens.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/tokens.txt")
+                }
+                "tts/matcha-icefall-zh-baker/lexicon.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/lexicon.txt")
+                }
+                "tts/matcha-icefall-zh-baker/date.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/date.fst")
+                }
+                "tts/matcha-icefall-zh-baker/number.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/number.fst")
+                }
+                "tts/matcha-icefall-zh-baker/phone.fst" => {
+                    format!("{base}/csukuangfj/matcha-icefall-zh-baker/resolve/main/phone.fst")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/model-steps-3.onnx")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/tokens.txt")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/en_dict")
+                }
+                "tts/vocos-22khz-univ.onnx" => {
+                    format!("{base}/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx")
+                }
                 other => {
                     format!("{base}/{other}")
                 }
@@ -234,7 +264,9 @@ impl MirrorConfig {
             || self.base_url.contains("hf-mirror.com")
             || self.base_url.contains("huggingface.co")
         {
-            return clean_path.starts_with("asr/") || clean_path.starts_with("vad/");
+            return clean_path.starts_with("asr/")
+                || clean_path.starts_with("vad/")
+                || clean_path.starts_with("tts/");
         }
         true
     }

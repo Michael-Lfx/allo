@@ -546,5 +546,19 @@
       "self_check_superseded": "检查已被更新的状态取代",
       "voice_busy": "通话正在进行"
     }
+  },
+  "callControl": {
+    "title": "通话控制与离线语音",
+    "description": "无需键盘鼠标，在对话过程中通过自然语言指令快速结束通话或打断播报。",
+    "dismissLabel": "结束通话口令",
+    "dismissDesc": "说出“退下吧”、“结束通话”、“休息吧”或“end the call”自动退出通话并释放麦克风（后台任务不受影响）。",
+    "stopSpeakingLabel": "停止播报口令",
+    "stopSpeakingDesc": "说出“停止播报”、“别念了”或“stop speaking”立即打断当前语音朗读。",
+    "stopSpeakingPhrasesSample": "停止播报 · 别念了 · stop speaking",
+    "dismissPhrasesSample": "退下吧 · 结束通话 · end the call",
+    "localTtsLabel": "离线语音合成",
+    "localTtsDesc": "使用内置轻量级 Matcha-TTS 与神经声码器离线发音，纯本地计算，无网络延迟与限流风险。",
+    "localTtsStatusReady": "Matcha-TTS + Vocos (本地离线就绪)",
+    "localTtsStatusAbsent": "本地模型未检测到"
   }
 }

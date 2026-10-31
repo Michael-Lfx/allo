@@ -546,5 +546,19 @@
       "self_check_superseded": "the check was superseded by a newer state",
       "voice_busy": "a call is active"
     }
+  },
+  "callControl": {
+    "title": "Call Control & Offline Voice",
+    "description": "End calls or stop playback naturally using voice commands without keyboard or mouse.",
+    "dismissLabel": "Dismiss Command",
+    "dismissDesc": "Say '退下吧', '结束通话', '休息吧', or 'end the call' to end the session and release the microphone (background tasks continue).",
+    "stopSpeakingLabel": "Stop Speaking Command",
+    "stopSpeakingDesc": "Say '停止播报', '别念了', or 'stop speaking' to immediately interrupt current speech playback.",
+    "stopSpeakingPhrasesSample": "停止播报 · 别念了 · stop speaking",
+    "dismissPhrasesSample": "退下吧 · 结束通话 · end the call",
+    "localTtsLabel": "Offline Voice Synthesis",
+    "localTtsDesc": "Synthesizes speech locally using lightweight Matcha-TTS and neural vocoder with zero network latency or rate limits.",
+    "localTtsStatusReady": "Matcha-TTS + Vocos (Local Offline Ready)",
+    "localTtsStatusAbsent": "Local Models Not Detected"
   }
 }

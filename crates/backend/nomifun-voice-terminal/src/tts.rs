@@ -907,6 +907,14 @@ pub struct SherpaOfflineTtsConfig {
     pub noise_scale_w: f32,
     /// Length scale (default 1.0)
     pub length_scale: f32,
+    /// Path to vocoder model (e.g. vocos-22khz-univ.onnx) for Matcha-TTS
+    pub vocoder_path: Option<std::path::PathBuf>,
+    /// Path to English acoustic model for bilingual Matcha-TTS
+    pub en_model_path: Option<std::path::PathBuf>,
+    /// Path to English tokens.txt
+    pub en_tokens_path: Option<std::path::PathBuf>,
+    /// Path to English espeak-ng-data directory
+    pub en_data_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for SherpaOfflineTtsConfig {
@@ -925,6 +933,10 @@ impl Default for SherpaOfflineTtsConfig {
             noise_scale: 0.667,
             noise_scale_w: 0.8,
             length_scale: 1.0,
+            vocoder_path: None,
+            en_model_path: None,
+            en_tokens_path: None,
+            en_data_dir: None,
         }
     }
 }
@@ -933,20 +945,61 @@ impl SherpaOfflineTtsConfig {
     /// Auto-discovers standard VITS / Matcha model layout from a directory.
     pub fn from_dir(dir: impl AsRef<std::path::Path>) -> Self {
         let dir = dir.as_ref();
-        let find_file = |name: &str| {
-            let p = dir.join(name);
+        let find_file = |base: &std::path::Path, name: &str| {
+            let p = base.join(name);
             if p.exists() { Some(p) } else { None }
         };
 
-        let model = find_file("model.onnx")
-            .or_else(|| find_file("vits.onnx"))
-            .or_else(|| find_file("model.int8.onnx"));
-        let lexicon = find_file("lexicon.txt");
-        let tokens = find_file("tokens.txt");
-        let data_dir = find_file("espeak-ng-data");
-        let dict_dir = find_file("dict");
-        let rule_fsts = find_file("rule.fst");
-        let rule_fars = find_file("rule.far");
+        // 1. Check for vocoder in dir, dir/shared, or dir/tts
+        let vocoder = find_file(dir, "vocos-22khz-univ.onnx")
+            .or_else(|| find_file(dir, "vocoder.onnx"))
+            .or_else(|| find_file(&dir.join("shared"), "vocos-22khz-univ.onnx"))
+            .or_else(|| find_file(&dir.join("shared"), "vocoder.onnx"))
+            .or_else(|| find_file(&dir.join("tts"), "vocos-22khz-univ.onnx"));
+
+        // 2. Check for Chinese Matcha sub-directory
+        let zh_sub = if dir.join("matcha-icefall-zh-baker").is_dir() {
+            dir.join("matcha-icefall-zh-baker")
+        } else if dir.join("zh").is_dir() {
+            dir.join("zh")
+        } else if dir.join("tts").join("matcha-icefall-zh-baker").is_dir() {
+            dir.join("tts").join("matcha-icefall-zh-baker")
+        } else {
+            dir.to_path_buf()
+        };
+
+        // 3. Check for English Matcha sub-directory
+        let en_sub = if dir.join("matcha-icefall-en_US-ljspeech").is_dir() {
+            Some(dir.join("matcha-icefall-en_US-ljspeech"))
+        } else if dir.join("en").is_dir() {
+            Some(dir.join("en"))
+        } else if dir.join("tts").join("matcha-icefall-en_US-ljspeech").is_dir() {
+            Some(dir.join("tts").join("matcha-icefall-en_US-ljspeech"))
+        } else {
+            None
+        };
+
+        let model = find_file(&zh_sub, "model-steps-3.onnx")
+            .or_else(|| find_file(&zh_sub, "model.onnx"))
+            .or_else(|| find_file(&zh_sub, "vits.onnx"))
+            .or_else(|| find_file(&zh_sub, "model.int8.onnx"));
+        let lexicon = find_file(&zh_sub, "lexicon.txt");
+        let tokens = find_file(&zh_sub, "tokens.txt");
+        let data_dir = find_file(&zh_sub, "espeak-ng-data");
+        let dict_dir = find_file(&zh_sub, "dict");
+        let rule_fsts = find_file(&zh_sub, "rule.fst")
+            .or_else(|| find_file(&zh_sub, "date.fst"));
+        let rule_fars = find_file(&zh_sub, "rule.far");
+
+        let (en_model, en_tokens, en_data) = if let Some(ref ed) = en_sub {
+            (
+                find_file(ed, "model-steps-3.onnx").or_else(|| find_file(ed, "model.onnx")),
+                find_file(ed, "tokens.txt"),
+                find_file(ed, "espeak-ng-data"),
+            )
+        } else {
+            (None, None, None)
+        };
 
         Self {
             model_path: model,
@@ -962,24 +1015,138 @@ impl SherpaOfflineTtsConfig {
             noise_scale: 0.667,
             noise_scale_w: 0.8,
             length_scale: 1.0,
+            vocoder_path: vocoder,
+            en_model_path: en_model,
+            en_tokens_path: en_tokens,
+            en_data_dir: en_data,
         }
     }
 
     /// Validates whether the required model and vocabulary files exist on disk.
     pub fn is_valid(&self) -> bool {
+        // Matcha validation: model + vocoder + tokens
+        if let (Some(m), Some(v), Some(t)) = (&self.model_path, &self.vocoder_path, &self.tokens_path) {
+            if m.exists() && v.exists() && t.exists() {
+                return true;
+            }
+        }
+        // Vits validation: model + tokens + lexicon
         let model_ok = self.model_path.as_ref().is_some_and(|p| p.exists());
         let tokens_ok = self.tokens_path.as_ref().is_some_and(|p| p.exists());
         let lexicon_ok = self.lexicon_path.as_ref().is_some_and(|p| p.exists());
         model_ok && tokens_ok && lexicon_ok
     }
+
+    pub fn is_matcha(&self) -> bool {
+        self.vocoder_path.as_ref().is_some_and(|p| p.exists())
+            && self.model_path.as_ref().is_some_and(|p| p.exists())
+            && self.tokens_path.as_ref().is_some_and(|p| p.exists())
+    }
+}
+
+/// Strip Markdown formatting for clean TTS speech output.
+pub fn strip_markdown_tts(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_code_block = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\0' {
+            continue;
+        }
+        if ch == '`' {
+            if chars.peek() == Some(&'`') {
+                chars.next();
+                if chars.peek() == Some(&'`') {
+                    chars.next();
+                    in_code_block = !in_code_block;
+                    if in_code_block {
+                        out.push_str("，代码片段，");
+                    }
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
+        if in_code_block {
+            continue;
+        }
+        if ch == '*' {
+            continue; // strip bold/italic asterisks
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LangSegment {
+    Zh(String),
+    En(String),
+}
+
+/// Segment text into language blocks for dual-engine synthesis.
+pub fn segment_languages(text: &str) -> Vec<LangSegment> {
+    segment_languages_with_locale(text, None)
+}
+
+/// Segment text into language blocks with a fallback locale when text has no alphabetic cues.
+pub fn segment_languages_with_locale(text: &str, default_locale: Option<&str>) -> Vec<LangSegment> {
+    let cleaned = strip_markdown_tts(text);
+    let mut segments = Vec::new();
+    let is_default_en = default_locale.map_or(false, |l| l.to_ascii_lowercase().starts_with("en"));
+    let mut current_is_zh: Option<bool> = None;
+    let mut buf = String::new();
+
+    for ch in cleaned.chars() {
+        let is_zh = matches!(ch, '\u{3000}'..='\u{303f}' | '\u{4e00}'..='\u{9fff}' | '\u{ff00}'..='\u{ffef}');
+        let is_en = ch.is_ascii_alphabetic();
+
+        let target_is_zh = if is_zh {
+            Some(true)
+        } else if is_en {
+            Some(false)
+        } else {
+            current_is_zh.or(Some(!is_default_en))
+        };
+
+        if target_is_zh == current_is_zh {
+            buf.push(ch);
+        } else {
+            let trimmed = buf.trim();
+            if !trimmed.is_empty() {
+                match current_is_zh {
+                    Some(false) => segments.push(LangSegment::En(trimmed.to_string())),
+                    _ => segments.push(LangSegment::Zh(trimmed.to_string())),
+                }
+            }
+            buf.clear();
+            current_is_zh = target_is_zh;
+            buf.push(ch);
+        }
+    }
+    let trimmed = buf.trim();
+    if !trimmed.is_empty() {
+        match current_is_zh {
+            Some(false) => segments.push(LangSegment::En(trimmed.to_string())),
+            _ => segments.push(LangSegment::Zh(trimmed.to_string())),
+        }
+    }
+    segments
+}
+
+#[cfg(feature = "local-tts")]
+struct ActiveTtsEngines {
+    primary: sherpa_onnx::OfflineTts,
+    english: Option<sherpa_onnx::OfflineTts>,
 }
 
 #[cfg(feature = "local-tts")]
 #[derive(Clone)]
 pub struct SherpaOfflineTtsProvider {
-    #[allow(dead_code)]
     config: SherpaOfflineTtsConfig,
-    engine: std::sync::Arc<tokio::sync::Mutex<Option<sherpa_onnx::OfflineTts>>>,
+    engines: std::sync::Arc<tokio::sync::Mutex<Option<ActiveTtsEngines>>>,
 }
 
 #[cfg(feature = "local-tts")]
@@ -987,7 +1154,7 @@ impl SherpaOfflineTtsProvider {
     pub fn new(config: SherpaOfflineTtsConfig) -> Self {
         Self {
             config,
-            engine: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            engines: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -999,47 +1166,136 @@ impl SherpaOfflineTtsProvider {
         self.config.is_valid()
     }
 
-    fn init_engine(&self) -> Result<sherpa_onnx::OfflineTts, TtsError> {
-        if !self.config.is_valid() {
+    fn init_engines_sync(config: &SherpaOfflineTtsConfig) -> Result<ActiveTtsEngines, TtsError> {
+        if !config.is_valid() {
             return Err(TtsError::Synthesis(
                 "offline_tts_resources_missing: required model, lexicon or tokens file not found".into(),
             ));
         }
 
-        let model_str = self.config.model_path.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let lexicon_str = self.config.lexicon_path.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let tokens_str = self.config.tokens_path.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let data_dir_str = self.config.data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let dict_dir_str = self.config.dict_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let rule_fsts_str = self.config.rule_fsts.as_ref().map(|p| p.to_string_lossy().into_owned());
-        let rule_fars_str = self.config.rule_fars.as_ref().map(|p| p.to_string_lossy().into_owned());
+        if config.is_matcha() {
+            let acoustic_str = config.model_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let vocoder_str = config.vocoder_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let lexicon_str = config.lexicon_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let tokens_str = config.tokens_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let dict_dir_str = config.dict_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let data_dir_str = config.data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
 
-        let tts_config = sherpa_onnx::OfflineTtsConfig {
-            model: sherpa_onnx::OfflineTtsModelConfig {
-                vits: sherpa_onnx::OfflineTtsVitsModelConfig {
-                    model: model_str,
-                    lexicon: lexicon_str,
-                    tokens: tokens_str,
-                    data_dir: data_dir_str,
-                    dict_dir: dict_dir_str,
-                    noise_scale: self.config.noise_scale,
-                    noise_scale_w: self.config.noise_scale_w,
-                    length_scale: self.config.length_scale,
+            // Check for fsts
+            let rule_fsts = if let Some(ref m_path) = config.model_path {
+                let parent = m_path.parent().unwrap_or(m_path);
+                let mut fsts = Vec::new();
+                for f in ["date.fst", "number.fst", "phone.fst", "rule.fst"] {
+                    let fp = parent.join(f);
+                    if fp.exists() {
+                        fsts.push(fp.to_string_lossy().into_owned());
+                    }
+                }
+                if fsts.is_empty() { None } else { Some(fsts.join(",")) }
+            } else {
+                None
+            };
+
+            let primary_config = sherpa_onnx::OfflineTtsConfig {
+                model: sherpa_onnx::OfflineTtsModelConfig {
+                    matcha: sherpa_onnx::OfflineTtsMatchaModelConfig {
+                        acoustic_model: acoustic_str,
+                        vocoder: vocoder_str.clone(),
+                        lexicon: lexicon_str,
+                        tokens: tokens_str,
+                        data_dir: data_dir_str,
+                        dict_dir: dict_dir_str,
+                        noise_scale: config.noise_scale,
+                        length_scale: config.length_scale,
+                    },
+                    num_threads: config.num_threads,
+                    debug: false,
+                    provider: Some("cpu".into()),
+                    ..Default::default()
                 },
-                num_threads: self.config.num_threads,
-                debug: false,
-                provider: Some("cpu".into()),
-                ..Default::default()
-            },
-            rule_fsts: rule_fsts_str,
-            rule_fars: rule_fars_str,
-            max_num_sentences: 1,
-            silence_scale: 0.2,
-        };
+                rule_fsts,
+                rule_fars: None,
+                max_num_sentences: 1,
+                silence_scale: 0.2,
+            };
 
-        sherpa_onnx::OfflineTts::create(&tts_config).ok_or_else(|| {
-            TtsError::Synthesis("failed_to_create_sherpa_offline_tts_engine".into())
-        })
+            let primary = sherpa_onnx::OfflineTts::create(&primary_config).ok_or_else(|| {
+                TtsError::Synthesis("failed_to_create_sherpa_offline_tts_matcha_engine".into())
+            })?;
+
+            let english = if let (Some(en_m), Some(en_t)) = (&config.en_model_path, &config.en_tokens_path) {
+                if en_m.exists() && en_t.exists() {
+                    let en_data_str = config.en_data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+                    let en_config = sherpa_onnx::OfflineTtsConfig {
+                        model: sherpa_onnx::OfflineTtsModelConfig {
+                            matcha: sherpa_onnx::OfflineTtsMatchaModelConfig {
+                                acoustic_model: Some(en_m.to_string_lossy().into_owned()),
+                                vocoder: vocoder_str,
+                                lexicon: None,
+                                tokens: Some(en_t.to_string_lossy().into_owned()),
+                                data_dir: en_data_str,
+                                dict_dir: None,
+                                noise_scale: config.noise_scale,
+                                length_scale: config.length_scale,
+                            },
+                            num_threads: config.num_threads,
+                            debug: false,
+                            provider: Some("cpu".into()),
+                            ..Default::default()
+                        },
+                        rule_fsts: None,
+                        rule_fars: None,
+                        max_num_sentences: 1,
+                        silence_scale: 0.2,
+                    };
+                    sherpa_onnx::OfflineTts::create(&en_config)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            Ok(ActiveTtsEngines { primary, english })
+        } else {
+            // Legacy VITS
+            let model_str = config.model_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let lexicon_str = config.lexicon_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let tokens_str = config.tokens_path.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let data_dir_str = config.data_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let dict_dir_str = config.dict_dir.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let rule_fsts_str = config.rule_fsts.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let rule_fars_str = config.rule_fars.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+            let tts_config = sherpa_onnx::OfflineTtsConfig {
+                model: sherpa_onnx::OfflineTtsModelConfig {
+                    vits: sherpa_onnx::OfflineTtsVitsModelConfig {
+                        model: model_str,
+                        lexicon: lexicon_str,
+                        tokens: tokens_str,
+                        data_dir: data_dir_str,
+                        dict_dir: dict_dir_str,
+                        noise_scale: config.noise_scale,
+                        noise_scale_w: config.noise_scale_w,
+                        length_scale: config.length_scale,
+                    },
+                    num_threads: config.num_threads,
+                    debug: false,
+                    provider: Some("cpu".into()),
+                    ..Default::default()
+                },
+                rule_fsts: rule_fsts_str,
+                rule_fars: rule_fars_str,
+                max_num_sentences: 1,
+                silence_scale: 0.2,
+            };
+
+            let primary = sherpa_onnx::OfflineTts::create(&tts_config).ok_or_else(|| {
+                TtsError::Synthesis("failed_to_create_sherpa_offline_tts_engine".into())
+            })?;
+
+            Ok(ActiveTtsEngines { primary, english: None })
+        }
     }
 }
 
@@ -1060,9 +1316,12 @@ impl TtsProvider for SherpaOfflineTtsProvider {
         text: &str,
         voice: &str,
     ) -> Result<mpsc::Receiver<Vec<u8>>, TtsError> {
-        let text = text.trim();
-        if text.is_empty() {
+        let text_clean = text.trim();
+        if text_clean.is_empty() {
             return Err(TtsError::Synthesis("empty_text".into()));
+        }
+        if text_clean.contains('\0') {
+            return Err(TtsError::Synthesis("null_byte_detected".into()));
         }
 
         let sid = if voice.is_empty() {
@@ -1071,40 +1330,87 @@ impl TtsProvider for SherpaOfflineTtsProvider {
             voice.parse::<i32>().unwrap_or(self.config.sid)
         };
 
-        let wav = {
-            let mut lock = self.engine.lock().await;
-            if lock.is_none() {
-                let engine = self.init_engine()?;
-                *lock = Some(engine);
-            }
+        let engines_arc = self.engines.clone();
+        let config = self.config.clone();
+        let text_owned = text_clean.to_string();
 
-            let engine = lock.as_ref().expect("engine must be initialized");
+        let blocking_task = tokio::task::spawn_blocking(move || {
+            let mut lock = engines_arc.blocking_lock();
+            if lock.is_none() {
+                let eng = Self::init_engines_sync(&config)?;
+                *lock = Some(eng);
+            }
+            let engines = lock.as_ref().expect("engines initialized");
             let gen_config = sherpa_onnx::GenerationConfig {
-                speed: self.config.speed,
+                speed: config.speed,
                 sid,
                 ..Default::default()
             };
 
-            let audio = engine
-                .generate_with_config::<fn(&[f32], f32) -> bool>(text, &gen_config, None)
-                .ok_or_else(|| TtsError::Synthesis("sherpa_offline_tts_generation_failed".into()))?;
+            let segments = segment_languages(&text_owned);
+            if segments.is_empty() {
+                return Err(TtsError::Synthesis("empty_text".into()));
+            }
 
-            let samples = audio.samples();
-            let sample_rate = audio.sample_rate();
-            if samples.is_empty() || sample_rate <= 0 {
+            let mut all_samples = Vec::new();
+            let mut sample_rate = engines.primary.sample_rate();
+
+            for (i, seg) in segments.iter().enumerate() {
+                let (target_engine, chunk_text) = match seg {
+                    LangSegment::Zh(s) => (&engines.primary, s.as_str()),
+                    LangSegment::En(s) => {
+                        if let Some(ref en) = engines.english {
+                            (en, s.as_str())
+                        } else if !config.is_matcha() {
+                            // Single-model legacy VITS handles both
+                            (&engines.primary, s.as_str())
+                        } else {
+                            return Err(TtsError::Synthesis("english_tts_engine_unavailable".into()));
+                        }
+                    }
+                };
+
+                let audio = target_engine
+                    .generate_with_config::<fn(&[f32], f32) -> bool>(chunk_text, &gen_config, None)
+                    .ok_or_else(|| TtsError::Synthesis("sherpa_offline_tts_generation_failed".into()))?;
+
+                let samples = audio.samples();
+                let seg_sr = audio.sample_rate();
+                if samples.is_empty() || seg_sr <= 0 {
+                    return Err(TtsError::Synthesis("tts_segment_empty_samples".into()));
+                }
+                if sample_rate == 0 {
+                    sample_rate = seg_sr;
+                } else if sample_rate != seg_sr {
+                    return Err(TtsError::Synthesis("tts_inconsistent_sample_rates".into()));
+                }
+
+                if i > 0 && !all_samples.is_empty() {
+                    let gap = vec![0.0f32; (sample_rate as f32 * 0.08) as usize];
+                    all_samples.extend_from_slice(&gap);
+                }
+                all_samples.extend_from_slice(samples);
+            }
+
+            if all_samples.is_empty() {
                 return Err(TtsError::Synthesis("sherpa_offline_tts_empty_samples".into()));
             }
 
-            let wav = nomifun_audio::pcm_to_wav(samples, sample_rate as u32);
+            let wav = nomifun_audio::pcm_to_wav(&all_samples, sample_rate as u32);
             tracing::info!(
-                text_len = text.len(),
-                sample_count = samples.len(),
+                text_len = text_owned.len(),
+                sample_count = all_samples.len(),
                 sample_rate,
                 wav_bytes = wav.len(),
                 "sherpa_offline_tts_synthesized"
             );
-            wav
-        };
+            Ok(wav)
+        });
+
+        let wav = tokio::time::timeout(std::time::Duration::from_secs(30), blocking_task)
+            .await
+            .map_err(|_| TtsError::Synthesis("tts_generation_timeout".into()))?
+            .map_err(|join_err| TtsError::Synthesis(format!("tts_task_panicked: {join_err}")))??;
 
         let (tx, rx) = mpsc::channel(1);
         tx.send(wav)
@@ -1340,5 +1646,40 @@ mod fallback_and_sherpa_tests {
         assert_eq!(cfg2.model_path, Some(path.join("model.onnx")));
         assert_eq!(cfg2.lexicon_path, Some(path.join("lexicon.txt")));
         assert_eq!(cfg2.tokens_path, Some(path.join("tokens.txt")));
+    }
+
+    #[test]
+    fn sherpa_offline_tts_auto_discovers_matcha_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path();
+
+        let zh_dir = path.join("matcha-icefall-zh-baker");
+        std::fs::create_dir_all(&zh_dir).unwrap();
+        std::fs::write(zh_dir.join("model-steps-3.onnx"), b"fake matcha").unwrap();
+        std::fs::write(zh_dir.join("tokens.txt"), b"fake tokens").unwrap();
+        std::fs::write(path.join("vocos-22khz-univ.onnx"), b"fake vocos").unwrap();
+
+        let cfg = SherpaOfflineTtsConfig::from_dir(path);
+        assert!(cfg.is_valid());
+        assert!(cfg.is_matcha());
+        assert_eq!(cfg.model_path, Some(zh_dir.join("model-steps-3.onnx")));
+        assert_eq!(cfg.vocoder_path, Some(path.join("vocos-22khz-univ.onnx")));
+        assert_eq!(cfg.tokens_path, Some(zh_dir.join("tokens.txt")));
+    }
+
+    #[test]
+    fn test_tts_strip_markdown_and_language_segmentation() {
+        let md = "好的，我正在使用 `Docker` 构建镜像：\n```bash\ndocker build -t app .\n```\n请稍候。";
+        let cleaned = strip_markdown_tts(md);
+        assert!(!cleaned.contains("```"));
+        assert!(!cleaned.contains("`"));
+        assert!(cleaned.contains("代码片段"));
+
+        let mixed = "正在使用 Docker 部署应用。";
+        let segs = segment_languages(mixed);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0], LangSegment::Zh("正在使用".into()));
+        assert_eq!(segs[1], LangSegment::En("Docker".into()));
+        assert_eq!(segs[2], LangSegment::Zh("部署应用。".into()));
     }
 }

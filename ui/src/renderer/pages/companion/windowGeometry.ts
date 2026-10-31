@@ -104,3 +104,104 @@ export function clampRectToDisplays(rect: GeomRect, displays: GeomRect[]): { x: 
     y: clamp(rect.y, host.y, host.y + host.height - rect.height),
   };
 }
+
+export const DOCK_TAB_WIDTH = 6;
+export const DOCK_THRESHOLD_PX = 30;
+
+export type DockSide = 'left' | 'right';
+
+export interface DockResult {
+  x: number;
+  y: number;
+  side: DockSide;
+}
+
+/**
+ * Snaps a companion window to the left or right edge of the monitor when within threshold.
+ * Returns null if the window is comfortably inside the work area.
+ */
+export function dockCompanionToEdge(
+  rect: GeomRect,
+  displays: GeomRect[],
+  thresholdPx = DOCK_THRESHOLD_PX,
+  tabWidth = DOCK_TAB_WIDTH
+): DockResult | null {
+  if (displays.length === 0) return null;
+  const overlapping = pickHost(rect, displays, (d) => d);
+  const host =
+    overlapping && overlapArea(rect, overlapping) > 0 ? overlapping : nearestDisplay(rect, displays);
+  if (!host) return null;
+
+  const distToLeft = rect.x - host.x;
+  const distToRight = host.x + host.width - (rect.x + rect.width);
+
+  if (distToLeft <= thresholdPx) {
+    return {
+      x: host.x - (rect.width - tabWidth),
+      y: clamp(rect.y, host.y, host.y + host.height - rect.height),
+      side: 'left',
+    };
+  }
+  if (distToRight <= thresholdPx) {
+    return {
+      x: host.x + host.width - tabWidth,
+      y: clamp(rect.y, host.y, host.y + host.height - rect.height),
+      side: 'right',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Finds the display that owns the docked tab.
+ * For a right-docked window, the exposed tab is at [rect.x, rect.x + tabWidth] (inside host).
+ * For a left-docked window, the exposed tab is at [rect.x + rect.width - tabWidth, rect.x + rect.width] (inside host).
+ */
+export function findDockedHostDisplay(
+  rect: GeomRect,
+  side: DockSide,
+  displays: GeomRect[]
+): GeomRect | null {
+  if (displays.length === 0) return null;
+  const sampleX = side === 'right' ? rect.x + 1 : rect.x + rect.width - 1;
+  const sampleY = rect.y + rect.height / 2;
+
+  for (const display of displays) {
+    if (
+      sampleX >= display.x &&
+      sampleX <= display.x + display.width &&
+      sampleY >= display.y &&
+      sampleY <= display.y + display.height
+    ) {
+      return display;
+    }
+  }
+
+  return nearestDisplay(rect, displays);
+}
+
+/**
+ * Undocks an edge-docked companion window back into full view on its owning display.
+ */
+export function undockCompanionFromEdge(
+  rect: GeomRect,
+  side: DockSide,
+  displays: GeomRect[]
+): { x: number; y: number } {
+  if (displays.length === 0) return { x: rect.x, y: rect.y };
+  const host = findDockedHostDisplay(rect, side, displays);
+  if (!host) return { x: rect.x, y: rect.y };
+
+  if (side === 'left') {
+    return {
+      x: host.x,
+      y: clamp(rect.y, host.y, host.y + host.height - rect.height),
+    };
+  } else {
+    return {
+      x: host.x + host.width - rect.width,
+      y: clamp(rect.y, host.y, host.y + host.height - rect.height),
+    };
+  }
+}

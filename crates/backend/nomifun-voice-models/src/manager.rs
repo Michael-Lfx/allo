@@ -192,7 +192,10 @@ impl ModelManager {
     /// Returns the current status response of local voice models.
     pub async fn get_status(&self) -> VoiceModelStatusResponse {
         let _operation = self.install_task.lock().await;
-        let (disk_state, files, total_size_bytes) = inspect_model_files(&self.models_dir);
+        let (disk_state, mut files, mut total_size_bytes) = inspect_model_files(&self.models_dir);
+        let (_, tts_files, tts_size) = crate::layout::inspect_tts_files(&self.models_dir);
+        files.extend(tts_files);
+        total_size_bytes = total_size_bytes.saturating_add(tts_size);
         let state = self.refresh_integrity(disk_state).await;
 
         VoiceModelStatusResponse {
@@ -543,7 +546,7 @@ impl ModelManager {
         let mut failures: Vec<String> = Vec::new();
 
         let mut targets: Vec<PathBuf> = Vec::new();
-        for &rel in EXPECTED_FILES {
+        for &rel in EXPECTED_FILES.iter().chain(crate::layout::EXPECTED_TTS_FILES.iter()) {
             let path = self.models_dir.join(rel);
             targets.push(path.clone());
             targets.push(PathBuf::from(format!("{}.part", path.display())));
@@ -571,7 +574,7 @@ impl ModelManager {
             }
         }
 
-        for directory in ["kws", "vad", "asr"] {
+        for directory in ["kws", "vad", "asr", "tts"] {
             let _ = tokio::fs::remove_dir(self.models_dir.join(directory)).await;
         }
 

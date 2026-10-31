@@ -21,6 +21,16 @@ pub const DOWNLOAD_FILES: &[&str] = &[
     "asr/tokens.txt",
 ];
 
+/// The downloaded distribution model asset files for local offline TTS.
+pub const DOWNLOAD_TTS_FILES: &[&str] = &[
+    "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
+    "tts/matcha-icefall-zh-baker/tokens.txt",
+    "tts/matcha-icefall-zh-baker/lexicon.txt",
+    "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+    "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
+    "tts/vocos-22khz-univ.onnx",
+];
+
 /// Default canonical checksums embedded in the binary.
 /// In production, these are the authoritative baseline hashes for the pinned models.
 pub fn default_canonical_manifest() -> HashMap<String, String> {
@@ -33,6 +43,22 @@ pub fn default_canonical_manifest() -> HashMap<String, String> {
     manifest.insert("vad/silero_vad.onnx".to_string(), "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28".to_string());
     manifest.insert("asr/model.int8.onnx".to_string(), "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51".to_string());
     manifest.insert("asr/tokens.txt".to_string(), "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc".to_string());
+    manifest
+}
+
+/// Default canonical checksums for local offline TTS models.
+pub fn default_tts_manifest() -> HashMap<String, String> {
+    let mut manifest = HashMap::new();
+    manifest.insert("tts/matcha-icefall-zh-baker/model-steps-3.onnx".to_string(), "78a9fd17e9a6c20198dca4e69d18f941303f8ab39ec61dde04cfc7595262ddfd".to_string());
+    manifest.insert("tts/matcha-icefall-zh-baker/tokens.txt".to_string(), "56209b2bf609d5ac1d66ede6dae7bf5254bd3f8aa24c4a6823713d5b884d87ba".to_string());
+    manifest.insert("tts/matcha-icefall-zh-baker/lexicon.txt".to_string(), "38b886d46aefa50da6322a64d72fd595d5f4fae1051adb160d647541b1e0a4a2".to_string());
+    manifest.insert("tts/matcha-icefall-zh-baker/date.fst".to_string(), "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718".to_string());
+    manifest.insert("tts/matcha-icefall-zh-baker/number.fst".to_string(), "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd".to_string());
+    manifest.insert("tts/matcha-icefall-zh-baker/phone.fst".to_string(), "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx".to_string(), "4d7771c0ec063ca74f2fa92ba0ecfe14f73fa3f61c236d9469b92e102d8e9574".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/tokens.txt".to_string(), "bcb4a50830e9402112fe8cb57d53ae8523908868a5015f2040dde5f5fd231697".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict".to_string(), "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35".to_string());
+    manifest.insert("tts/vocos-22khz-univ.onnx".to_string(), "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081".to_string());
     manifest
 }
 

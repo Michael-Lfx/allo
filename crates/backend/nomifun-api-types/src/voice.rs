@@ -1596,6 +1596,192 @@ mod locale_helper_tests {
     }
 }
 
+/// Direct voice session control action that bypasses dialogue LLM routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceDirectControlAction {
+    /// 停止当前正在播放的声音，后台任务保持运行
+    StopSpeaking,
+    /// 结束当前语音通话/退出倾听，后台任务保持运行
+    DismissSession,
+}
+
+fn is_exact_or_polite_wrapped(normalized: &str, core: &str) -> bool {
+    let norm = normalized.trim().trim_matches(|c: char| c.is_whitespace() || c == '，' || c == ',');
+    if norm == core {
+        return true;
+    }
+    const PREFIXES: &[&str] = &[
+        "请你", "请您", "麻烦你", "那你就", "ok please", "okay please",
+        "好的", "行了", "好了", "那你", "那就", "麻烦", "请", "please", "ok", "okay"
+    ];
+    const SUFFIXES: &[&str] = &[
+        "一下", "please", "吧", "了", "呀"
+    ];
+
+    for &p in PREFIXES {
+        if let Some(rest) = norm.strip_prefix(p) {
+            let rest_clean = rest.trim().trim_matches(|c: char| c.is_whitespace() || c == '，' || c == ',');
+            if rest_clean == core {
+                return true;
+            }
+            for &s in SUFFIXES {
+                if let Some(inner) = rest_clean.strip_suffix(s) {
+                    if inner.trim().trim_matches(|c: char| c.is_whitespace() || c == '，' || c == ',') == core {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    for &s in SUFFIXES {
+        if let Some(inner) = norm.strip_suffix(s) {
+            if inner.trim().trim_matches(|c: char| c.is_whitespace() || c == '，' || c == ',') == core {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Classifies direct non-LLM voice control commands (Stop Speaking & Dismiss Session).
+///
+/// Strictly guards against negations, hypotheticals, quotations, translations,
+/// and complex compound conditional clauses to avoid false dismissals.
+pub fn classify_voice_direct_control(
+    input: &str,
+    custom_dismiss: &[String],
+) -> Option<VoiceDirectControlAction> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Explicit quotation guard: quoted statements must never trigger destructive session controls
+    if trimmed.contains('"') || trimmed.contains('“') || trimmed.contains('”') || trimmed.contains('‘') || trimmed.contains('’') {
+        return None;
+    }
+
+    // 1. Unicode NFKC normalization and boundary punctuation strip
+    use unicode_normalization::UnicodeNormalization;
+    let nfkc: String = trimmed.nfkc().collect();
+    let clean = nfkc
+        .trim_matches(|c: char| c.is_whitespace() || matches!(c, '，' | '。' | '！' | '？' | '；' | '：' | ',' | '.' | '!' | '?' | ';' | ':'));
+    if clean.is_empty() {
+        return None;
+    }
+
+    let lower = clean.to_ascii_lowercase();
+
+    // 2. Reject explicit negation
+    const NEGATORS: &[&str] = &[
+        "不要", "千万别", "千万不要", "不用", "不能", "请勿", "无需", "不必", "不准", "绝不", "永不", "禁止", "勿",
+        "别退下", "别挂断", "别关", "别结束", "别停止", "别取消",
+        "don't", "dont", "never", "without", "no "
+    ];
+    for neg in NEGATORS {
+        if lower.contains(neg) {
+            return None;
+        }
+    }
+
+    // 3. Reject meta-context, quotes, translation, hypotheticals, compound conditionals
+    const META_GUARDS: &[&str] = &[
+        "翻译", "translate", "英文", "english", "小说", "台词", "角色", "如果我说", "如果说", "假如", "会怎样", "做什么",
+        "什么意思", "meaning", "what does", "after", "之后", "然后再", "接着", "then"
+    ];
+    for guard in META_GUARDS {
+        if lower.contains(guard) {
+            return None;
+        }
+    }
+
+    // 4. Match Stop Speaking
+    const ZH_STOP_CORE: &[&str] = &["停止播报", "别念了", "闭嘴", "别说了", "不用念了", "不要说了", "安静"];
+    const EN_STOP_CORE: &[&str] = &["stop speaking", "stop talking", "be quiet", "shut up", "silence"];
+    for core in ZH_STOP_CORE.iter().chain(EN_STOP_CORE.iter()) {
+        if is_exact_or_polite_wrapped(&lower, core) {
+            return Some(VoiceDirectControlAction::StopSpeaking);
+        }
+    }
+
+    // 5. Match Dismiss Session
+    const ZH_DISMISS_CORE: &[&str] = &["退下吧", "退下", "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了"];
+    const EN_DISMISS_CORE: &[&str] = &["end the call", "hang up", "exit voice", "goodbye flowy", "dismiss"];
+
+    for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {
+        if is_exact_or_polite_wrapped(&lower, core) {
+            return Some(VoiceDirectControlAction::DismissSession);
+        }
+    }
+
+    for custom in custom_dismiss {
+        let c = custom.trim().to_ascii_lowercase();
+        if !c.is_empty() && is_exact_or_polite_wrapped(&lower, &c) {
+            return Some(VoiceDirectControlAction::DismissSession);
+        }
+    }
+
+    None
+}
+
+fn default_true() -> bool { true }
+fn default_wake_words() -> Vec<String> { vec!["Hey Flowy".into(), "你好 Flowy".into()] }
+fn default_wake_reply() -> String { "我在".into() }
+fn default_interject_keyword() -> String { "Flowy".into() }
+fn default_dismiss_phrases() -> Vec<String> { vec!["退下吧".into(), "结束通话".into(), "休息吧".into()] }
+fn default_dismiss_reply() -> String { "好的，再见".into() }
+fn default_tts_speed() -> f32 { 1.0 }
+fn default_tts_volume() -> u8 { 100 }
+fn default_idle_secs() -> u32 { 30 }
+
+/// User-facing voice companion preferences with safe serde backward compatibility defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VoiceUserPreferences {
+    #[serde(default = "default_true")]
+    pub voice_enabled: bool,
+    #[serde(default = "default_true")]
+    pub wake_enabled: bool,
+    #[serde(default = "default_wake_words")]
+    pub wake_words: Vec<String>,
+    #[serde(default = "default_wake_reply")]
+    pub wake_reply: String,
+    #[serde(default = "default_interject_keyword")]
+    pub interject_keyword: String,
+    #[serde(default = "default_dismiss_phrases")]
+    pub dismiss_phrases: Vec<String>,
+    #[serde(default = "default_dismiss_reply")]
+    pub dismiss_reply: String,
+    #[serde(default = "default_true")]
+    pub tts_enabled: bool,
+    #[serde(default = "default_tts_speed")]
+    pub tts_speed: f32,
+    #[serde(default = "default_tts_volume")]
+    pub tts_volume: u8,
+    #[serde(default = "default_idle_secs")]
+    pub idle_timeout_secs: u32,
+}
+
+impl Default for VoiceUserPreferences {
+    fn default() -> Self {
+        Self {
+            voice_enabled: default_true(),
+            wake_enabled: default_true(),
+            wake_words: default_wake_words(),
+            wake_reply: default_wake_reply(),
+            interject_keyword: default_interject_keyword(),
+            dismiss_phrases: default_dismiss_phrases(),
+            dismiss_reply: default_dismiss_reply(),
+            tts_enabled: default_true(),
+            tts_speed: default_tts_speed(),
+            tts_volume: default_tts_volume(),
+            idle_timeout_secs: default_idle_secs(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod voice_task_control_contract_tests {
     use super::*;
@@ -1700,5 +1886,95 @@ mod task_control_classifier_tests {
                 "host guard input={input:?}"
             );
         }
+    }
+
+    #[test]
+    fn direct_control_c01_positive_and_c02_negative_controls() {
+        use VoiceDirectControlAction::{DismissSession, StopSpeaking};
+        let custom = vec!["跪安吧".to_string()];
+
+        // C01 Positive controls
+        let positives = [
+            ("退下吧", Some(DismissSession)),
+            ("退下", Some(DismissSession)),
+            ("请退下吧", Some(DismissSession)),
+            ("请你退下吧", Some(DismissSession)),
+            ("好的，退下吧", Some(DismissSession)),
+            ("行了，退下吧", Some(DismissSession)),
+            ("结束通话", Some(DismissSession)),
+            ("请结束通话", Some(DismissSession)),
+            ("挂断吧", Some(DismissSession)),
+            ("end the call", Some(DismissSession)),
+            ("please end the call", Some(DismissSession)),
+            ("hang up", Some(DismissSession)),
+            ("跪安吧", Some(DismissSession)),
+            ("请跪安吧", Some(DismissSession)),
+            ("停止播报", Some(StopSpeaking)),
+            ("请停止播报", Some(StopSpeaking)),
+            ("别念了", Some(StopSpeaking)),
+            ("好的，别念了", Some(StopSpeaking)),
+            ("闭嘴", Some(StopSpeaking)),
+            ("stop speaking", Some(StopSpeaking)),
+            ("please stop speaking", Some(StopSpeaking)),
+        ];
+        for (input, expected) in positives {
+            assert_eq!(
+                classify_voice_direct_control(input, &custom),
+                expected,
+                "positive control input={input:?}"
+            );
+        }
+
+        // C02 Negative safety controls (must NOT trigger dismissal or stop)
+        let negatives = [
+            "不要退下吧",
+            "千万别退下吧",
+            "你别退下",
+            "请把退下吧翻译成英文",
+            "如果我说退下吧你会做什么",
+            "如果说退下吧会怎样",
+            "小说里的角色说退下吧",
+            "剧本里的台词是退下吧",
+            "退下一步是海阔天空",
+            "退一步海阔天空",
+            "明天退下吧会议",
+            "什么是退下吧",
+            "退下是什么意思",
+            "不要停止播报",
+            "千万别停止播报",
+            "小说里写停止播报",
+            "end the call after sending the email",
+            "don't end the call",
+            "what does end the call mean",
+            "if I end the call then what happens",
+            "\"end the call\"",
+            "“退下吧”",
+            "“停止播报”",
+            "他说“退下吧”",
+        ];
+        for input in negatives {
+            assert_eq!(
+                classify_voice_direct_control(input, &custom),
+                None,
+                "negative guard check failed for input={input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preferences_serde_roundtrip_and_backward_compatibility() {
+        let prefs = VoiceUserPreferences::default();
+        let json = serde_json::to_string(&prefs).unwrap();
+        let decoded: VoiceUserPreferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(prefs, decoded);
+
+        // Backward compatibility: deserializing empty JSON {} must populate all defaults
+        let empty_json = "{}";
+        let from_empty: VoiceUserPreferences = serde_json::from_str(empty_json).unwrap();
+        assert_eq!(from_empty, prefs);
+        assert_eq!(from_empty.tts_speed, 1.0);
+        assert_eq!(from_empty.tts_volume, 100);
+        assert!(from_empty.wake_enabled);
+        assert_eq!(from_empty.dismiss_phrases.len(), 3);
     }
 }

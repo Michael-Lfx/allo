@@ -12,6 +12,7 @@ uuid.workspace = true
 # (deserialize_with/deny_unknown_fields) — harmless, but each would print a
 # pseudo-compiler warning on every build.
 ts-rs = { workspace = true, features = ["no-serde-warnings"] }
+unicode-normalization.workspace = true
 
 [dev-dependencies]
 # Mirrors axum's Query extractor deserializer so wire-contract tests exercise

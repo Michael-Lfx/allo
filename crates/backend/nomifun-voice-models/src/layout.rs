@@ -20,6 +20,20 @@ pub const EXPECTED_FILES: &[&str] = &[
     "checksums.sha256",
 ];
 
+/// Authoritative list of expected files in local offline TTS models distribution (~197MB Matcha + Vocos suite).
+pub const EXPECTED_TTS_FILES: &[&str] = &[
+    "tts/matcha-icefall-zh-baker/model-steps-3.onnx",
+    "tts/matcha-icefall-zh-baker/tokens.txt",
+    "tts/matcha-icefall-zh-baker/lexicon.txt",
+    "tts/matcha-icefall-zh-baker/date.fst",
+    "tts/matcha-icefall-zh-baker/number.fst",
+    "tts/matcha-icefall-zh-baker/phone.fst",
+    "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
+    "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+    "tts/vocos-22khz-univ.onnx",
+];
+
 /// Minimum realistic byte thresholds for model assets to detect corruption, truncation, or mock stubs.
 pub fn min_expected_size(rel_path: &str, strict: bool) -> u64 {
     if !strict {
@@ -35,6 +49,12 @@ pub fn min_expected_size(rel_path: &str, strict: bool) -> u64 {
         "kws/tokens.txt" => 500,               // ~5KB KWS vocabulary
         "kws/keywords.txt" => 10,              // ~184B wake word configuration
         "checksums.sha256" => 50,              // ~4KB SHA256 checksums
+        "tts/matcha-icefall-zh-baker/model-steps-3.onnx" => 50_000_000, // ~73MB
+        "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx" => 50_000_000, // ~74MB
+        "tts/vocos-22khz-univ.onnx" => 30_000_000, // ~53MB
+        "tts/matcha-icefall-zh-baker/lexicon.txt" => 1_000_000, // ~1.4MB
+        "tts/matcha-icefall-zh-baker/tokens.txt" => 10_000, // ~20KB
+        "tts/matcha-icefall-en_US-ljspeech/tokens.txt" => 500, // ~1KB
         _ => 1,
     }
 }
@@ -123,6 +143,43 @@ pub fn check_model_layout(models_dir: &Path) -> ModelInstallState {
     inspect_model_files(models_dir).0
 }
 
+/// Inspects the local TTS files in `models_dir` and determines whether local offline TTS is available.
+pub fn inspect_tts_files(
+    models_dir: &Path,
+) -> (bool, Vec<VoiceModelFileDetail>, u64) {
+    let strict = is_strict_mode();
+    let mut details = Vec::with_capacity(EXPECTED_TTS_FILES.len());
+    let mut total_size_bytes: u64 = 0;
+    let mut all_exist = true;
+
+    for &rel_path in EXPECTED_TTS_FILES {
+        let full_path = models_dir.join(rel_path);
+        let min_size = min_expected_size(rel_path, strict);
+        let (exists, size_bytes) = match std::fs::metadata(&full_path) {
+            Ok(meta) if meta.is_file() => {
+                let len = meta.len();
+                (len >= min_size, len)
+            }
+            _ => (false, 0),
+        };
+
+        if !exists {
+            all_exist = false;
+        }
+        total_size_bytes = total_size_bytes.saturating_add(size_bytes);
+
+        details.push(VoiceModelFileDetail {
+            path: rel_path.to_string(),
+            size_bytes,
+            expected_sha256: None,
+            actual_sha256: None,
+            exists,
+        });
+    }
+
+    (all_exist, details, total_size_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +261,27 @@ mod tests {
         assert!(matches!(state_lenient, ModelInstallState::Ready { .. }));
         let asr_lenient = details_lenient.iter().find(|d| d.path == "asr/model.int8.onnx").unwrap();
         assert!(asr_lenient.exists);
+    }
+
+    #[test]
+    fn test_tts_files_inspection() {
+        let temp = tempdir().expect("create temp dir");
+        let (ready, details, total) = inspect_tts_files(temp.path());
+        assert!(!ready);
+        assert_eq!(total, 0);
+        assert_eq!(details.len(), EXPECTED_TTS_FILES.len());
+
+        for rel in EXPECTED_TTS_FILES {
+            let full = temp.path().join(rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("create parent");
+            }
+            std::fs::write(&full, "fake-tts-bytes").expect("write file");
+        }
+
+        let (ready_after, details_after, total_after) = inspect_tts_files(temp.path());
+        assert!(ready_after);
+        assert_eq!(total_after, (EXPECTED_TTS_FILES.len() * 14) as u64);
+        assert!(details_after.iter().all(|d| d.exists));
     }
 }
