@@ -942,10 +942,11 @@ const VoiceSettings: React.FC = () => {
                   label={
                     <div className='flex items-center gap-8px'>
                       {modelStatus === 'Ready' && (
-                        capabilities?.can_start_full_call ? (
+                        (capabilities?.can_start_full_call || allStagesReady) ? (
                           <CheckOne
                             theme='filled'
                             size='16'
+                            fill='currentColor'
                             className='text-success-6'
                             style={{
                               transition: reducedMotion
@@ -960,12 +961,14 @@ const VoiceSettings: React.FC = () => {
                           <CloseOne
                             theme='filled'
                             size='16'
+                            fill='currentColor'
                             className='text-danger-6'
                           />
                         ) : (
                           <Attention
                             theme='filled'
                             size='16'
+                            fill='currentColor'
                             className='text-warning-6'
                           />
                         )

@@ -4574,6 +4574,13 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::FollowUpListening => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // 180-second follow-up window (seamless continuous dialogue without wake phrase)
                         if listen_start.is_none() {
                             listen_start = Some(std::time::Instant::now());
@@ -4750,6 +4757,13 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::Deciding | AcousticState::DispatchingTask => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                         if is_active {
                             utterance_pcm.extend_from_slice(&chunk);

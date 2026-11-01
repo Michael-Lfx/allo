@@ -198,6 +198,11 @@ impl ConversationVoiceDialogueRecorder {
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
             if let Some(row) = row {
                 let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
+                let is_voice_conv = extra.get("voice_task_workspace").is_some()
+                    || extra.get("is_voice_conversation").is_some()
+                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("voice")
+                    || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion")
+                    || row.name.starts_with("语音");
                 let is_temp_workspace = extra.get("temp_workspace_id").is_some();
                 let candidate_ws = extra.get("voice_task_workspace").and_then(|v| v.as_str())
                     .or_else(|| {
@@ -208,7 +213,11 @@ impl ConversationVoiceDialogueRecorder {
                         }
                     })
                     .map(|s| s.to_string());
-                (candidate_ws, Some(id))
+                if is_voice_conv {
+                    (candidate_ws, Some(id))
+                } else {
+                    (candidate_ws, None)
+                }
             } else {
                 return Err(VoiceDialogueRecorderError::BindingInvalid("unsupported_source_conversation".into()));
             }

@@ -340,8 +340,11 @@ const GlobalVoiceWakeListener: React.FC = () => {
 
         if (isVoiceActive) {
           const targetConvId = snapshot.binding?.conversation_id;
-          if (targetConvId && (location.pathname === '/' || location.pathname === '' || location.pathname === '/guid')) {
-            void navigate(`/conversation/${encodeURIComponent(targetConvId)}`);
+          if (targetConvId) {
+            const isTargetActive = location.pathname === `/conversation/${encodeURIComponent(targetConvId)}`;
+            if (!isTargetActive) {
+              void navigate(`/conversation/${encodeURIComponent(targetConvId)}`);
+            }
           }
         }
       }).then((unsub) => {

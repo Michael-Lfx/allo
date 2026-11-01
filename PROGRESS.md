@@ -38,3 +38,6 @@
 - [x] **T28**: `playback.rs` 与 `voice.rs` 重构回声冷却状态：仅在实际有播报任务运行时绑定 `playback.is_speaking()`，彻底解除因声卡缓冲悬挂导致的麦克风永久静音假死。
 - [x] **T29**: `VoiceSettings.tsx` 设置页防并发自检：检查按钮绑定 `self_check_active` 状态自动 Loading 锁定，静默拦截 409 `self_check_in_progress` 并平滑等待结果，绝不弹红报错。
 - [x] **T30**: `VoiceAudioStatus.tsx` 音浪感知升级为 RMS + Peak 复合运算，修复低电平设备与虚拟麦克风音浪表死直平线。
+- [x] **T31**: `voice.rs` 声学回声全状态覆盖：在 `DispatchingTask`、`Deciding` 和 `FollowUpListening` 全面加入 `in_echo_cooldown` 拦截，杜绝任务派发播报期间 5.5 秒自身语音录入 ASR 导致二次连环派发。
+- [x] **T32**: `VoiceSettings.tsx` 修正 `CheckOne` 图标 fill 样式：显式设置 `fill="currentColor"` 并绑定 `allStagesReady`，消除深灰色硬编码，图标恢复 Arco 鲜亮绿色。
+- [x] **T33**: `recorder.rs` 与 `Router.tsx` 落地三场景智能唤醒分流：首页/新建页新建语音通话，普通会话自动新建语音通话并跳转，已有语音通话原地接续。
