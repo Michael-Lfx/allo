@@ -2487,7 +2487,14 @@ impl VoiceCompanionRuntime {
                         );
                         drop(d);
                         let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                        let goodbye_text = if is_en { "Goodbye" } else { "好的，再见" };
+                        let custom_dismiss = feedback.dismiss_reply.trim();
+                        let goodbye_text = if !custom_dismiss.is_empty() && (custom_dismiss != "好的，再见" || !is_en) {
+                            custom_dismiss
+                        } else if is_en {
+                            "Goodbye"
+                        } else {
+                            "好的，再见"
+                        };
                         if event_tx.feedback().speak_replies {
                             let tts_clone = tts.clone();
                             let playback_clone = playback.clone();
@@ -2527,7 +2534,14 @@ impl VoiceCompanionRuntime {
             if playback.generation_id() != generation || !control_scope.matches(&current) || current.ended_reason.is_some() { return; }
             if clean_input.is_empty() {
                 let is_en = nomifun_api_types::voice::is_english_locale(scope.locale.as_deref());
-                let reply_phrase = if is_en { "I'm here" } else { "我在" };
+                let custom_wake = feedback.wake_reply.trim();
+                let reply_phrase = if !custom_wake.is_empty() && (custom_wake != "我在" || !is_en) {
+                    custom_wake
+                } else if is_en {
+                    "I'm here"
+                } else {
+                    "我在"
+                };
                 let voice_spec = if is_en { "en-US-JennyNeural" } else { "" };
                 if event_tx.feedback().speak_replies {
                     let _ = playback.speak_text_for_generation(tts.as_ref(), reply_phrase, voice_spec, generation, || {}).await;

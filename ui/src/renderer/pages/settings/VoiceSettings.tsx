@@ -10,13 +10,11 @@ import { useTranslation } from 'react-i18next';
 import { Button, Dropdown, Menu, Message, Switch } from '@arco-design/web-react';
 import { Attention, CheckOne, CloseOne, Info, MoreOne } from '@icon-park/react';
 import { buildBackendAuthHeaders, getBaseUrl } from '@/common/adapter/httpBridge';
-import { requestDictationIntent } from '@/renderer/pages/guid/dictationIntent';
 import { getVoiceCapabilities, parseVoiceModelOperation, parseVoiceModelProgressLine, runVoiceSelfCheck, subscribeVoiceSession, voiceServiceAvailability, type VoiceCapabilityReport, type VoiceSnapshot } from '@common/adapter/voiceCompanion';
 import VoiceAudioStatus from '@renderer/pages/voiceSession/VoiceAudioStatus';
 import VoiceTaskDiagnostics from '@renderer/pages/voiceSession/VoiceTaskDiagnostics';
 import { voiceErrorKey, voiceErrorTranslationKey } from '@renderer/pages/voiceSession/VoiceErrorStatus';
 import VoiceFeedbackSettingsSection from './VoiceFeedbackSettings';
-import VoiceDialogueStatusSection from './VoiceDialogueStatus';
 import { prefersReducedMotion } from '@/renderer/utils/motion/flowyMotion';
 import {
   SettingsList,
@@ -611,10 +609,6 @@ const VoiceSettings: React.FC = () => {
     }
   }, [t]);
 
-  const handleUseTextReply = useCallback(() => {
-    const intent = requestDictationIntent('/');
-    navigate('/', { state: { dictationIntentId: intent.id } });
-  }, [navigate]);
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();

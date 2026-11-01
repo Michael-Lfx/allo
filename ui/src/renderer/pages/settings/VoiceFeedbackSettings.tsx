@@ -177,8 +177,8 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
               ) : !settings ? (
                 t('voice.feedback.loading')
               ) : dirty ? (
-                <span className='text-warning-6 font-semibold animate-pulse flex items-center gap-1.5'>
-                  <span className='inline-block w-2 h-2 rounded-full bg-warning-6 animate-ping' />
+                <span className='text-warning-6 font-semibold animate-pulse motion-reduce:animate-none flex items-center gap-1.5'>
+                  <span className='inline-block w-2 h-2 rounded-full bg-warning-6 animate-ping motion-reduce:animate-none' />
                   {t('voice.feedback.unsaved')}
                 </span>
               ) : applied ? (
@@ -201,7 +201,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
                 onClick={() => void save()}
                 className={
                   dirty
-                    ? 'ring-2 ring-[var(--flowy-attention)] !bg-[var(--flowy-attention)] !border-[var(--flowy-attention)] text-white font-bold shadow-lg animate-pulse'
+                    ? 'ring-2 ring-[var(--flowy-attention)] !bg-[var(--flowy-attention)] !border-[var(--flowy-attention)] text-white font-bold shadow-lg animate-pulse motion-reduce:animate-none'
                     : ''
                 }
               >
