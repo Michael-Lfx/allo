@@ -3625,6 +3625,24 @@ impl VoiceCompanionRuntime {
             let kws = NativeKws::new(Box::new(kws), native_runner.clone());
             let vad = NativeVad::new(vad, native_runner.clone());
             info!(silence_ms = 800, "voice_vad_loaded");
+
+            if transcriber.is_none() && !replay {
+                let dir = models.models_dir().to_path_buf();
+                match native_runner
+                    .load(std::time::Duration::from_secs(30), move || {
+                        nomifun_audio::stt::try_load_sherpa(Some(&dir))
+                    })
+                    .await
+                {
+                    Ok(Ok(Some(stt))) => {
+                        transcriber = Some(Arc::new(stt));
+                        info!("SenseVoice ASR engine loaded and standing by for cascade wake");
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(e)) => warn!(error = %e, "Failed to load SenseVoice ASR on startup"),
+                    Err(r) => warn!(reason = %r, "Timeout loading SenseVoice ASR on startup"),
+                }
+            }
             macro_rules! native_worker_call {
                 ($operation:expr, $call:expr, $default:expr) => {{
                     match $call {
@@ -4198,6 +4216,9 @@ impl VoiceCompanionRuntime {
                         if hit.is_none() {
                             let is_active = native_worker_frame!("vad_process", vad.process_frame(&chunk).await);
                             if is_active {
+                                if utterance_pcm.is_empty() {
+                                    info!(peak = audio.peak_milli, rms = audio.rms_milli, "[KWS-LISTEN] Standby VAD detected voice activity; recording snippet");
+                                }
                                 utterance_pcm.extend_from_slice(&chunk);
                                 if utterance_pcm.len() > 16_000 * 4 {
                                     utterance_pcm.drain(0..16_000);
@@ -4227,12 +4248,25 @@ impl VoiceCompanionRuntime {
                                         .await;
                                         match transcribe_res {
                                             Ok(Some(text)) => {
-                                                if let Some(matched) = nomifun_audio::match_wake_phrase(&text) {
-                                                    info!(matched = %matched.matched_phrase, "Cascade wake hit accepted via SenseVoice");
+                                                info!(text = %text, "[KWS-CASCADE] Standby audio transcribed via SenseVoice");
+                                                let feedback = event_tx.feedback();
+                                                let mut matched_custom = None;
+                                                for custom_kw in &feedback.wake_words {
+                                                    if let Some(remainder) = strip_custom_wake_word(&text, custom_kw) {
+                                                        matched_custom = Some((custom_kw.clone(), if remainder.trim().is_empty() { None } else { Some(remainder) }));
+                                                        break;
+                                                    }
+                                                }
+                                                if let Some((kw, rem)) = matched_custom {
+                                                    info!(matched = %kw, "[KWS-CASCADE] Custom wake word matched successfully!");
+                                                    wake_command = rem;
+                                                    hit = Some(kw);
+                                                } else if let Some(matched) = nomifun_audio::match_wake_phrase(&text) {
+                                                    info!(matched = %matched.matched_phrase, "[KWS-CASCADE] Standard wake phrase matched via SenseVoice");
                                                     wake_command = matched.remainder;
                                                     hit = Some(matched.matched_phrase);
                                                 } else {
-                                                    debug!(stage = "text_no_match", chars = text.chars().count(), "Cascade ASR transcription did not match wake phrase");
+                                                    info!(text = %text, "[KWS-CASCADE] Standby transcription did not match any wake words");
                                                 }
                                             }
                                             Ok(None) => {

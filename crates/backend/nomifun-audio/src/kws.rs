@@ -527,89 +527,192 @@ pub static WAKE_CANDIDATES: &[WakeCandidateDef] = &[
 /// Maps common Chinese characters into standard pinyin initial + final tokens
 /// for Sherpa-ONNX bilingual Zipformer KWS model.
 pub fn convert_chinese_to_kws_pinyin(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, false, false)
+}
+
+/// Maps Chinese characters into toned initial + final tokens.
+pub fn convert_chinese_to_kws_pinyin_toned(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, true, false)
+}
+
+/// Maps Chinese characters into tone-sandhi tokens (e.g. 你好 nǐ hǎo -> ní hǎo).
+pub fn convert_chinese_to_kws_pinyin_sandhi(text: &str) -> Option<String> {
+    convert_chinese_to_kws_pinyin_mode(text, true, true)
+}
+
+fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
     let mut tokens = Vec::new();
-    for ch in text.chars() {
-        if ch.is_whitespace() || matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_') {
-            continue;
-        }
-        let pinyin = match ch {
-            '你' => "n i",
-            '好' => "h ao",
-            '小' => "x iao",
-            '白' => "b ai",
-            '福' => "f u",
-            '星' => "x ing",
-            '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f u",
-            '莉' | '力' | '利' | '立' => "l i",
-            '佛' => "f o",
-            '罗' | '洛' => "l uo",
-            '嗨' => "h ai",
-            '嘿' | '黑' => "h ei",
-            '哈' => "h a",
-            '喽' | '楼' => "l ou",
-            '宝' => "b ao",
-            '贝' => "b ei",
-            '同' => "t ong",
-            '学' => "x ue",
-            '助' => "zh u",
-            '手' => "sh ou",
-            '智' => "zh i",
-            '能' => "n eng",
-            '管' => "g uan",
-            '家' => "j ia",
-            '飞' => "f ei",
-            '爱' => "ai",
-            '度' => "d u",
-            '达' | '大' => "d a",
-            '米' => "m i",
-            '奇' => "q i",
-            '华' => "h ua",
-            '为' | '维' => "w ei",
-            '灵' => "l ing",
-            '猫' | '毛' => "m ao",
-            '天' | '甜' => "t ian",
-            '精' | '金' => "j in",
-            '美' | '妹' => "m ei",
-            '特' => "t e",
-            '斯' | '四' => "s i",
-            '丁' => "d ing",
-            '旺' | '王' => "w ang",
-            '财' => "c ai",
-            '豆' => "d ou",
-            '卡' => "k a",
-            '波' | '伯' => "b o",
-            '比' => "b i",
-            '布' => "b u",
-            '多' | '朵' => "d uo",
-            '可' => "k e",
-            '乐' => "l e",
-            '欢' => "h uan",
-            '迎' | '银' => "y in",
-            '电' => "d ian",
-            '脑' => "n ao",
-            '呼' | '虎' => "h u",
-            '叫' => "j iao",
-            '唤' => "h uan",
-            '贾' => "j ia",
-            '安' => "an",
-            '娜' => "n a",
-            '莫' => "m o",
-            '妮' => "n i",
-            '希' => "x i",
-            '瑞' => "r ui",
-            '龙' => "l ong",
-            '兔' => "t u",
-            '狗' => "g ou",
-            '阿' => "a",
-            '文' => "w en",
-            '森' => "s en",
-            '木' => "m u",
-            '杰' => "j ie",
-            '克' => "k e",
-            '西' => "x i",
-            '球' => "q iu",
-            '咪' => "m i",
-            _ => return None,
+    let chars: Vec<char> = text.chars().filter(|c| !c.is_whitespace() && !matches!(c, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_')).collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        let pinyin = if toned {
+            match ch {
+                '你' => if sandhi && chars.get(i + 1).is_some_and(|&next| matches!(next, '好' | '小' | '宝' | '美' | '米' | '比' | '可')) { "n í" } else { "n ǐ" },
+                '好' => "h ǎo",
+                '小' => if sandhi && chars.get(i + 1).is_some_and(|&next| matches!(next, '米' | '宝' | '美' | '比' | '可')) { "x iáo" } else { "x iǎo" },
+                '白' => "b ái",
+                '福' => "f ú",
+                '星' => "x īng",
+                '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f ú",
+                '莉' | '力' | '利' | '立' => "l ì",
+                '佛' => "f ó",
+                '罗' | '洛' => "l uó",
+                '嗨' => "h āi",
+                '嘿' | '黑' => "h ēi",
+                '哈' => "h ā",
+                '喽' | '楼' => "l óu",
+                '宝' => "b ǎo",
+                '贝' => "b èi",
+                '同' => "t óng",
+                '学' => "x ué",
+                '助' => "zh ù",
+                '手' => "sh ǒu",
+                '智' => "zh ì",
+                '能' => "n éng",
+                '管' => "g uǎn",
+                '家' => "j iā",
+                '飞' => "f ēi",
+                '爱' => "ài",
+                '度' => "d ù",
+                '达' => "d á",
+                '大' => "d à",
+                '米' => "m ǐ",
+                '奇' => "q í",
+                '华' => "h uá",
+                '为' | '维' => "w éi",
+                '灵' => "l íng",
+                '猫' => "m āo",
+                '毛' => "m áo",
+                '天' => "t iān",
+                '甜' => "t ián",
+                '精' | '金' => "j īn",
+                '美' => "m ěi",
+                '妹' => "m èi",
+                '特' => "t è",
+                '斯' => "s ī",
+                '四' => "s ì",
+                '丁' => "d īng",
+                '旺' => "w àng",
+                '王' => "w áng",
+                '财' => "c ái",
+                '豆' => "d òu",
+                '卡' => "k ǎ",
+                '波' => "b ō",
+                '伯' => "b ó",
+                '比' => "b ǐ",
+                '布' => "b ù",
+                '多' => "d uō",
+                '朵' => "d uǒ",
+                '可' => "k ě",
+                '乐' => "l è",
+                '欢' => "h uān",
+                '迎' => "y íng",
+                '银' => "y ín",
+                '电' => "d iàn",
+                '脑' => "n ǎo",
+                '呼' | '虎' => "h ū",
+                '叫' => "j iào",
+                '唤' => "h uàn",
+                '贾' => "j iǎ",
+                '安' => "ān",
+                '娜' => "n à",
+                '莫' => "m ò",
+                '妮' => "n ī",
+                '希' => "x ī",
+                '瑞' => "r uì",
+                '龙' => "l óng",
+                '兔' => "t ù",
+                '狗' => "g ǒu",
+                '阿' => "ā",
+                '文' => "w én",
+                '森' => "s ēn",
+                '木' => "m ù",
+                '杰' => "j ié",
+                '克' => "k è",
+                '西' => "x ī",
+                '球' => "q iú",
+                '咪' => "m ī",
+                _ => return None,
+            }
+        } else {
+            match ch {
+                '你' => "n i",
+                '好' => "h ao",
+                '小' => "x iao",
+                '白' => "b ai",
+                '福' => "f u",
+                '星' => "x ing",
+                '芙' | '弗' | '伏' | '服' | '符' | '浮' => "f u",
+                '莉' | '力' | '利' | '立' => "l i",
+                '佛' => "f o",
+                '罗' | '洛' => "l uo",
+                '嗨' => "h ai",
+                '嘿' | '黑' => "h ei",
+                '哈' => "h a",
+                '喽' | '楼' => "l ou",
+                '宝' => "b ao",
+                '贝' => "b ei",
+                '同' => "t ong",
+                '学' => "x ue",
+                '助' => "zh u",
+                '手' => "sh ou",
+                '智' => "zh i",
+                '能' => "n eng",
+                '管' => "g uan",
+                '家' => "j ia",
+                '飞' => "f ei",
+                '爱' => "ai",
+                '度' => "d u",
+                '达' | '大' => "d a",
+                '米' => "m i",
+                '奇' => "q i",
+                '华' => "h ua",
+                '为' | '维' => "w ei",
+                '灵' => "l ing",
+                '猫' | '毛' => "m ao",
+                '天' | '甜' => "t ian",
+                '精' | '金' => "j in",
+                '美' | '妹' => "m ei",
+                '特' => "t e",
+                '斯' | '四' => "s i",
+                '丁' => "d ing",
+                '旺' | '王' => "w ang",
+                '财' => "c ai",
+                '豆' => "d ou",
+                '卡' => "k a",
+                '波' | '伯' => "b o",
+                '比' => "b i",
+                '布' => "b u",
+                '多' | '朵' => "d uo",
+                '可' => "k e",
+                '乐' => "l e",
+                '欢' => "h uan",
+                '迎' | '银' => "y in",
+                '电' => "d ian",
+                '脑' => "n ao",
+                '呼' | '虎' => "h u",
+                '叫' => "j iao",
+                '唤' => "h uan",
+                '贾' => "j ia",
+                '安' => "an",
+                '娜' => "n a",
+                '莫' => "m o",
+                '妮' => "n i",
+                '希' => "x i",
+                '瑞' => "r ui",
+                '龙' => "l ong",
+                '兔' => "t u",
+                '狗' => "g ou",
+                '阿' => "a",
+                '文' => "w en",
+                '森' => "s en",
+                '木' => "m u",
+                '杰' => "j ie",
+                '克' => "k e",
+                '西' => "x i",
+                '球' => "q iu",
+                '咪' => "m i",
+                _ => return None,
+            }
         };
         tokens.push(pinyin);
     }
@@ -648,6 +751,10 @@ pub fn convert_english_to_kws_phonemes(text: &str) -> Option<String> {
 
 /// Converts any bilingual Chinese/English mixed wake phrase into standard Sherpa-ONNX Zipformer tokens.
 pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
+    convert_bilingual_phrase_to_tokens_mode(text, true, true)
+}
+
+fn convert_bilingual_phrase_to_tokens_mode(text: &str, toned: bool, sandhi: bool) -> Option<String> {
     let clean = text.trim();
     if clean.is_empty() {
         return None;
@@ -668,7 +775,8 @@ pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
         }
     };
 
-    for ch in clean.chars() {
+    let chars: Vec<char> = clean.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
         if ch.is_whitespace() || matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_') {
             if !flush_en(&mut current_en_word, &mut result_tokens) {
                 return None;
@@ -681,7 +789,8 @@ pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
             if !flush_en(&mut current_en_word, &mut result_tokens) {
                 return None;
             }
-            if let Some(pinyin) = convert_chinese_to_kws_pinyin(&ch.to_string()) {
+            let sub: String = chars[i..].iter().collect();
+            if let Some(pinyin) = convert_chinese_to_kws_pinyin_mode(&sub[..ch.len_utf8()], toned, sandhi) {
                 result_tokens.push(pinyin);
             } else {
                 return None;
@@ -704,11 +813,17 @@ pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
 pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
     let mut lines = Vec::new();
 
-    // Universal baseline wake phrases
+    // Universal baseline wake phrases: both toned, sandhi and untoned
     lines.push("HH EY1 F L OW1 IY0 :2.0 #0.08 @HEY_FLOWY".to_string());
     lines.push("F L OW1 IY0 :2.0 #0.08 @FLOWY".to_string());
+    lines.push("n ǐ h ǎo :2.0 #0.08 @NI_HAO".to_string());
+    lines.push("n í h ǎo :2.0 #0.08 @NI_HAO".to_string());
     lines.push("n i h ao :2.0 #0.08 @NI_HAO".to_string());
+    lines.push("n ǐ h ǎo F L OW1 IY0 :2.0 #0.08 @NI_HAO_FLOWY".to_string());
+    lines.push("n í h ǎo F L OW1 IY0 :2.0 #0.08 @NI_HAO_FLOWY".to_string());
     lines.push("n i h ao F L OW1 IY0 :2.0 #0.08 @NI_HAO_FLOWY".to_string());
+
+    let mut seen = std::collections::HashSet::new();
 
     for kw in keywords {
         let clean = kw.trim();
@@ -719,11 +834,31 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
         if lower == "hey flowy" || lower == "flowy" {
             continue;
         }
-        if let Some(tokens) = convert_bilingual_phrase_to_tokens(clean) {
-            let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
-            lines.push(format!("{tokens} :2.0 #0.08 @{label}"));
-        } else {
+        let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
+
+        let mut variants = Vec::new();
+        // 1. Toned variant with tone sandhi (most common in natural speech)
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, true, true) {
+            variants.push(tokens);
+        }
+        // 2. Standard toned variant
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, true, false) {
+            variants.push(tokens);
+        }
+        // 3. Untoned fallback variant
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens_mode(clean, false, false) {
+            variants.push(tokens);
+        }
+
+        if variants.is_empty() {
             tracing::warn!(keyword = %clean, "Custom wake phrase contains unsupported characters; skipping KWS rule generation");
+        } else {
+            for tokens in variants {
+                let rule = format!("{tokens} :2.0 #0.08 @{label}");
+                if seen.insert(rule.clone()) {
+                    lines.push(rule);
+                }
+            }
         }
     }
 

@@ -496,11 +496,13 @@ impl VoiceCompanionRuntime {
             return Err("voice_busy".into());
         }
         let is_en = nomifun_api_types::voice::is_english_locale(locale);
+        let is_silent = stage == Some("silent");
         let (zh_text, en_text) = match stage {
             Some("task") | Some("create_task") => ("创建语音任务中", "Creating voice task..."),
             Some("prepare") | Some("preparing") => ("正在准备语音通话。", "Preparing your voice call."),
             Some("connect") | Some("connecting") => ("正在连接语音通话。", "Connecting voice call."),
             Some("start") | Some("starting") => ("正在启动语音服务。", "Starting voice service."),
+            Some("silent") => ("正在启动语音服务。", "Starting voice service."),
             _ => ("正在启动语音服务。", "Starting voice service."),
         };
         let cases = [
@@ -535,7 +537,7 @@ impl VoiceCompanionRuntime {
                     return Err("self_check_cancelled".into());
                 }
                 if play_this {
-                    if is_muted {
+                    if is_muted || is_silent {
                         let silent_pcm = vec![0.0f32; pcm.len()];
                         let silent_wav = nomifun_audio::pcm_to_wav(&silent_pcm, rate);
                         self.playback

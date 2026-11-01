@@ -63,6 +63,7 @@ x iao f u x ing @XIAO_FU_XING
 
     // Test dynamic keyword compilation for both Chinese and English
     let custom_keywords = vec![
+        "你好，小白".to_string(),
         "你好小白".to_string(),
         "Hey Flowy".to_string(),
         "Hi Flowy".to_string(),
@@ -72,6 +73,7 @@ x iao f u x ing @XIAO_FU_XING
         "你好 Flowy".to_string(),
     ];
     let dynamic_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&custom_keywords);
+    println!("=== DYNAMIC KEYWORDS BUF ===\n{}", dynamic_buf);
     assert!(dynamic_buf.contains("n i h ao x iao b ai"), "must contain pinyin for 你好小白");
     assert!(dynamic_buf.contains("HH EY1 F L OW1 IY0"), "must contain phonemes for HEY_FLOWY");
     assert!(dynamic_buf.contains("HH AY1 F L OW1 IY0"), "must contain phonemes for HI_FLOWY");

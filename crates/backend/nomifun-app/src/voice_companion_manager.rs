@@ -714,7 +714,7 @@ impl VoiceCompanionProcessManager {
         };
         self.push_admission("wake", false, 0).await;
         self.push_admission("call", false, 0).await;
-        let signature = self.capability_signature().await;
+        let _signature = self.capability_signature().await;
         let evidence = |status: VoiceCapabilityStatus,
                         reason_code: Option<&str>,
                         evidence: &str| VoiceCapabilityEvidence {
@@ -1037,12 +1037,7 @@ impl VoiceCompanionProcessManager {
         {
             let _admission = self.call_start_lock.lock().await;
             let current_signature = self.capability_signature().await;
-            let current_daemon_source = self.source.read().ok().and_then(|s| s.clone());
             let current = attempt == self.self_check_attempt.load(Ordering::Acquire)
-                && generation == self.generation.load(Ordering::Acquire)
-                && signature == current_signature
-                && daemon_source.is_some()
-                && daemon_source.as_ref().map(|(id, _)| id) == current_daemon_source.as_ref().map(|(id, _)| id)
                 && readiness_runtime_scope_valid(&self.snapshot(), nomifun_common::now_ms());
             if current {
                 *self
@@ -1052,7 +1047,7 @@ impl VoiceCompanionProcessManager {
                     report: report.clone(),
                     attempt,
                     expires_at_ms: i64::MAX,
-                    signature,
+                    signature: current_signature,
                 });
             } else {
                 report.can_start_full_call = false;
@@ -1110,7 +1105,7 @@ impl VoiceCompanionProcessManager {
             .dialogue_recorder
             .as_ref()
             .and_then(|recorder| recorder.current_call_reservation())
-            .is_some();
+            .is_some_and(|r| chrono::Utc::now().timestamp_millis().saturating_sub(r.reserved_at_epoch_ms) < 3_000);
         active_call || unsettled_task || pending_approval || pending_queue || pending_start
     }
 
@@ -2707,6 +2702,7 @@ impl VoiceCompanionProcessManager {
                 .as_ref()
                 .is_some_and(|report| report.can_start_full_call);
             if !can_start {
+                recorder.take_call_reservation(&request.request_id);
                 let reason_code = capabilities
                     .as_ref()
                     .and_then(|report| report.reason_code.clone())
@@ -3166,9 +3162,20 @@ impl VoiceCompanionProcessManager {
 
         let mgr = Arc::clone(self);
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if !mgr.read_autostart_config() || mgr.shutdown_requested.load(Ordering::Acquire) {
+                    return;
+                }
+                let snap = mgr.snapshot();
+                if snap.connection == VoiceConnectionState::Connected && snap.acoustic_ready {
+                    break;
+                }
+            }
             if mgr.read_autostart_config() && !mgr.shutdown_requested.load(Ordering::Acquire) {
-                let _ = mgr.run_self_check(false).await;
+                let _ = mgr
+                    .run_self_check_with_locale_and_stage(false, None, Some("silent".into()))
+                    .await;
             }
         });
         Ok(())
