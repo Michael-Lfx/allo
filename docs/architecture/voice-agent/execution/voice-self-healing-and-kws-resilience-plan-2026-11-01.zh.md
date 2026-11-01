@@ -1,8 +1,8 @@
 # 语音伴侣自愈架构、常驻唤醒与全局路由增强方案设计（草案 · 待实验验证）
 
-> **文档版本**：v0.1.0-draft  
-> **设计日期**：2026-11-01  
-> **状态**：方案草案（Draft · 待通过最小实验验证后定稿）  
+> **文档版本**：v0.1.0-draft
+> **设计日期**：2026-11-01
+> **状态**：方案草案（Draft · 待通过最小实验验证后定稿）
 > **适用范围**：`apps/voice-companion`、`crates/backend/nomifun-app`、`crates/backend/nomifun-audio`、`ui/src`
 
 ---

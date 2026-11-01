@@ -124,6 +124,8 @@
     "applied": "已保存，并已在当前语音服务生效。",
     "pending": "已保存的设置尚未在语音服务核实；请启用服务，或再次保存重试。",
     "save": "保存声音设置",
+    "wakeEnabled": "语音唤醒",
+    "wakeEnabledHint": "开启后可在后台通过唤醒词随时呼叫发起对话。关闭后麦克风在空闲时完全释放。",
     "wakeWords": "主唤醒词",
     "wakeWordsHint": "默认推荐使用 Hey Flowy，中英文环境均可自然免按唤醒。支持自定义修改。",
     "wakeWordsPlaceholder": "Hey Flowy\n你好 Flowy",

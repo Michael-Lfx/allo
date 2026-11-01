@@ -156,6 +156,8 @@
     "idle60": "60 seconds",
     "idleNever": "Never auto-sleep",
     "savePreferences": "Save Preferences",
+    "wakeEnabled": "Voice Wake Word",
+    "wakeEnabledHint": "Listens in background for wake words. When disabled, microphone is completely released when idle.",
     "saveSuccess": "Voice preferences saved and applied successfully!",
     "voicePreferencesTitle": "Voice Preferences",
     "voicePreferencesDesc": "Customize wake words, dismiss phrases, and local TTS playback.",

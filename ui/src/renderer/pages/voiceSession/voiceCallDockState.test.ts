@@ -368,4 +368,18 @@ describe('voice dock presentation mapping', () => {
     expect(state.syncFailed).toBe(true);
     expect(state.hasDetails).toBe(true);
   });
+
+  test('an idle ended call without tasks returns waitingWake when wake is ready', () => {
+    const state = view(
+      boundSnapshot({
+        phase: 'idle',
+        ended_reason: 'user_stop',
+        task: null,
+        queue: [],
+      })
+    );
+    expect(state.labelKey).toBe('voice.dock.waitingWake');
+    expect(state.tone).toBe('active');
+    expect(state.activity).toBe('breathe');
+  });
 });

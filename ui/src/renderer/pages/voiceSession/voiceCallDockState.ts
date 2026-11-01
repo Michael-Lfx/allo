@@ -222,6 +222,10 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
           TASK_NEEDS_CONTROL.has(task.status))
     );
     const taskRunning = Boolean(task && TASK_ACTIVE.has(task.status));
+    const hasQueue =
+      snapshot.queue?.some(
+        (item) => item.task.conversation_id === conversationId && item.position > 0
+      ) ?? false;
 
     if (snapshot.error) {
       return presentation(input, {
@@ -237,6 +241,26 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
       });
     }
     if (snapshot.ended_reason) {
+      if (
+        !task &&
+        !hasQueue &&
+        snapshot.audio?.kws_ready === true &&
+        snapshot.audio?.capture_state === 'receiving' &&
+        snapshot.phase === 'idle' &&
+        snapshot.enabled
+      ) {
+        return presentation(input, {
+          key: 'waiting-wake',
+          tone: 'active',
+          activity: 'breathe',
+          labelKey: 'voice.dock.waitingWake',
+          labelFallback: 'Waiting for wake word',
+          alert: false,
+          canInterrupt: false,
+          taskRunning: false,
+          needsApproval: false,
+        });
+      }
       return presentation(input, {
         key: 'ended',
         tone: 'neutral',

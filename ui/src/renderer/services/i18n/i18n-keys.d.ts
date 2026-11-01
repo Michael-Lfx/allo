@@ -11310,6 +11310,8 @@ export type I18nKey =
   | 'voice.feedback.voicePreferencesTitle'
   | 'voice.feedback.volume'
   | 'voice.feedback.volumeHint'
+  | 'voice.feedback.wakeEnabled'
+  | 'voice.feedback.wakeEnabledHint'
   | 'voice.feedback.wakeReply'
   | 'voice.feedback.wakeReplyHint'
   | 'voice.feedback.wakeReplyPlaceholder'

@@ -1454,8 +1454,8 @@ impl VoiceCompanionRuntime {
             worker_epoch: Arc::new(AtomicU64::new(0)),
             engine_check_tx: std::sync::Mutex::new(Some(engine_check_tx)),
             engine_check_rx: std::sync::Mutex::new(Some(engine_check_rx)),
-            wake_admission_until_ms: Arc::new(AtomicU64::new(0)),
-            call_admission_until_ms: Arc::new(AtomicU64::new(0)),
+            wake_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
+            call_admission_until_ms: Arc::new(AtomicU64::new(u64::MAX)),
             event_tx,
             active_turn: Arc::new(std::sync::Mutex::new(None)),
             kws_reload_needed: Arc::new(AtomicBool::new(false)),
@@ -3919,9 +3919,10 @@ impl VoiceCompanionRuntime {
                 let snapshot = event_tx.snapshot();
                 let has_confirmation = pending_confirmation.lock().unwrap_or_else(|e| e.into_inner()).is_some();
                 let active_call = snapshot.phase != nomifun_api_types::voice::VoiceSessionPhase::Idle;
+                let wake_enabled = event_tx.feedback().wake_enabled;
                 let hold_mic = should_hold_microphone(
                     snapshot.enabled,
-                    true,
+                    wake_enabled,
                     active_call,
                     has_confirmation,
                     self_check_active.load(Ordering::Acquire),

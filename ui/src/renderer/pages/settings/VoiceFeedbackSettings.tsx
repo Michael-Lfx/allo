@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Input, Message, Select, Slider } from '@arco-design/web-react';
+import { Button, Input, Message, Select, Slider, Switch } from '@arco-design/web-react';
 import { useTranslation } from 'react-i18next';
 import { SettingsList, SettingsRow, SettingsSection } from '@renderer/components/settings/SettingsPagePrimitives';
 import { getVoiceFeedbackSettings, saveVoiceFeedback, getVoiceInputDevices, type VoiceFeedbackConfig, type VoiceFeedbackSettings, type AudioDeviceInfo } from '@common/adapter/voiceCompanion';
@@ -21,6 +21,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
         setSettings(value);
         setDraft((current) => current ?? {
           ...value.requested,
+          wake_enabled: value.requested.wake_enabled ?? true,
           wake_words: value.requested.wake_words ?? ['Hey Flowy'],
           tts_speed: value.requested.tts_speed ?? 1.0,
           idle_timeout_secs: value.requested.idle_timeout_secs ?? 30,
@@ -57,6 +58,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
   const effective = settings?.effective;
   const dirty = Boolean(draft && settings && (
     draft.volume !== settings.requested.volume ||
+    draft.wake_enabled !== settings.requested.wake_enabled ||
     JSON.stringify(draft.wake_words ?? []) !== JSON.stringify(settings.requested.wake_words ?? []) ||
     draft.tts_speed !== settings.requested.tts_speed ||
     draft.idle_timeout_secs !== settings.requested.idle_timeout_secs ||
@@ -67,6 +69,18 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
   return (
     <SettingsSection title={t('voice.feedback.voicePreferencesTitle')} description={t('voice.feedback.voicePreferencesDesc')}>
       <SettingsList>
+        <SettingsRow
+          label={t('voice.feedback.wakeEnabled')}
+          description={t('voice.feedback.wakeEnabledHint')}
+          control={
+            <Switch
+              aria-label={t('voice.feedback.wakeEnabled')}
+              checked={draft?.wake_enabled ?? true}
+              disabled={!draft || busy}
+              onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
+            />
+          }
+        />
         <SettingsRow
           label={t('voice.feedback.wakeWords')}
           description={t('voice.feedback.wakeWordsHint')}

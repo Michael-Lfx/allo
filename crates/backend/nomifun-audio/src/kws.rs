@@ -153,8 +153,8 @@ impl KwsEngine {
 
         if is_bilingual {
             spotter_config.keywords_buf = Some(build_bilingual_keywords_buf(&config.keywords));
-            spotter_config.keywords_score = 1.8;
-            spotter_config.keywords_threshold = 0.20;
+            spotter_config.keywords_score = 2.0;
+            spotter_config.keywords_threshold = 0.08;
         } else {
             spotter_config.keywords_buf = Some(default_keywords_bpe());
             spotter_config.keywords_score = 2.2;
@@ -705,10 +705,10 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
     let mut lines = Vec::new();
 
     // Universal baseline wake phrases
-    lines.push("HH EY1 F L OW1 IY0 :2.0 #0.15 @HEY_FLOWY".to_string());
-    lines.push("F L OW1 IY0 :2.0 #0.15 @FLOWY".to_string());
-    lines.push("n i h ao :2.0 #0.15 @NI_HAO".to_string());
-    lines.push("n i h ao F L OW1 IY0 :2.0 #0.15 @NI_HAO_FLOWY".to_string());
+    lines.push("HH EY1 F L OW1 IY0 :2.0 #0.08 @HEY_FLOWY".to_string());
+    lines.push("F L OW1 IY0 :2.0 #0.08 @FLOWY".to_string());
+    lines.push("n i h ao :2.0 #0.08 @NI_HAO".to_string());
+    lines.push("n i h ao F L OW1 IY0 :2.0 #0.08 @NI_HAO_FLOWY".to_string());
 
     for kw in keywords {
         let clean = kw.trim();
@@ -721,7 +721,7 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
         }
         if let Some(tokens) = convert_bilingual_phrase_to_tokens(clean) {
             let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
-            lines.push(format!("{tokens} :2.0 #0.15 @{label}"));
+            lines.push(format!("{tokens} :2.0 #0.08 @{label}"));
         } else {
             tracing::warn!(keyword = %clean, "Custom wake phrase contains unsupported characters; skipping KWS rule generation");
         }

@@ -126,6 +126,7 @@ export interface VoiceFeedbackConfig {
   mode: 'light' | 'essential' | 'off';
   volume: number;
   speak_replies: boolean;
+  wake_enabled?: boolean;
   wake_words?: string[];
   wake_reply?: string;
   interject_keyword?: string;

@@ -302,7 +302,7 @@ fn readiness_runtime_scope_valid(
         value.frames_received > 0
             && value
                 .last_frame_at_ms
-                .is_some_and(|at| now_ms.saturating_sub(at) <= 2_000)
+                .is_some_and(|at| now_ms.saturating_sub(at) <= 15_000)
             && value.capture_state != "closed"
     });
     snapshot.enabled
@@ -591,11 +591,10 @@ impl VoiceCompanionProcessManager {
             .unwrap_or_else(|| "none".into());
         let worker_epoch = snapshot.worker_epoch.unwrap_or(0);
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             snapshot.instance_id,
             daemon_instance_id,
             worker_epoch,
-            self.generation.load(Ordering::Acquire),
             status.state.status_name(),
             status.models_dir.display(),
             status.total_size_bytes,
@@ -627,7 +626,6 @@ impl VoiceCompanionProcessManager {
         let observed_generation = stored.report.generation;
         if nomifun_common::now_ms() > stored.expires_at_ms
             || observed_attempt != self.self_check_attempt.load(Ordering::Acquire)
-            || observed_generation != self.generation.load(Ordering::Acquire)
             || stored.signature != self.capability_signature().await
         {
             self.invalidate_capabilities_if(observed_attempt, observed_generation);
@@ -1053,7 +1051,7 @@ impl VoiceCompanionProcessManager {
                     .unwrap_or_else(|error| error.into_inner()) = Some(StoredCapabilities {
                     report: report.clone(),
                     attempt,
-                    expires_at_ms: checked_at_ms.saturating_add(60_000),
+                    expires_at_ms: i64::MAX,
                     signature,
                 });
             } else {
@@ -1067,7 +1065,7 @@ impl VoiceCompanionProcessManager {
             "wake",
             report.can_wake,
             if report.can_wake {
-                checked_at_ms.saturating_add(60_000)
+                i64::MAX
             } else {
                 0
             },
@@ -1077,7 +1075,7 @@ impl VoiceCompanionProcessManager {
             "call",
             report.can_start_full_call,
             if report.can_start_full_call {
-                checked_at_ms.saturating_add(60_000)
+                i64::MAX
             } else {
                 0
             },
@@ -3165,6 +3163,14 @@ impl VoiceCompanionProcessManager {
         self.generation.fetch_add(1, Ordering::AcqRel);
         *self.source.write().unwrap_or_else(|err| err.into_inner()) = None;
         self.process_changed.notify_one();
+
+        let mgr = Arc::clone(self);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if mgr.read_autostart_config() && !mgr.shutdown_requested.load(Ordering::Acquire) {
+                let _ = mgr.run_self_check(false).await;
+            }
+        });
         Ok(())
     }
 
