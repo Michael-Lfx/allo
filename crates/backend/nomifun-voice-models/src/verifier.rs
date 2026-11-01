@@ -43,11 +43,11 @@ pub const DOWNLOAD_TTS_FILES: &[&str] = &[
 /// In production, these are the authoritative baseline hashes for the pinned models.
 pub fn default_canonical_manifest() -> HashMap<String, String> {
     let mut manifest = HashMap::new();
-    // Authoritative pinned canonical hashes for Flowy Voice Suite upstream ModelScope assets
-    manifest.insert("kws/encoder.int8.onnx".to_string(), "1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678".to_string());
-    manifest.insert("kws/decoder.int8.onnx".to_string(), "e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a".to_string());
-    manifest.insert("kws/joiner.int8.onnx".to_string(), "eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c".to_string());
-    manifest.insert("kws/tokens.txt".to_string(), "fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53".to_string());
+    // Authoritative pinned canonical hashes for Flowy Voice Suite bilingual Zipformer KWS, VAD and SenseVoice ASR
+    manifest.insert("kws/encoder.int8.onnx".to_string(), "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48".to_string());
+    manifest.insert("kws/decoder.int8.onnx".to_string(), "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21".to_string());
+    manifest.insert("kws/joiner.int8.onnx".to_string(), "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1".to_string());
+    manifest.insert("kws/tokens.txt".to_string(), "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0".to_string());
     manifest.insert("vad/silero_vad.onnx".to_string(), "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28".to_string());
     manifest.insert("asr/model.int8.onnx".to_string(), "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51".to_string());
     manifest.insert("asr/tokens.txt".to_string(), "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc".to_string());
@@ -218,13 +218,17 @@ impl ModelVerifier {
                                     && actual_hash.eq_ignore_ascii_case("1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"))
                                 || (rel_path == &"kws/encoder.int8.onnx"
                                     && (actual_hash.eq_ignore_ascii_case("408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48")
-                                        || actual_hash.eq_ignore_ascii_case("2ca84d6bfe73e1ea3c9c49f600f7cad1c9ddd423c53c906b8bfe802444dd78d5")))
+                                        || actual_hash.eq_ignore_ascii_case("2ca84d6bfe73e1ea3c9c49f600f7cad1c9ddd423c53c906b8bfe802444dd78d5")
+                                        || actual_hash.eq_ignore_ascii_case("1e721676515bcd42a186979733981213c66c80db680e1cc582dfedf3be76e678")))
                                 || (rel_path == &"kws/decoder.int8.onnx"
-                                    && actual_hash.eq_ignore_ascii_case("63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21"))
+                                    && (actual_hash.eq_ignore_ascii_case("63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21")
+                                        || actual_hash.eq_ignore_ascii_case("e40ff43297abe815e8898494c17e71bba2152d9d40fa3eb803f75d0f7533329a")))
                                 || (rel_path == &"kws/joiner.int8.onnx"
-                                    && actual_hash.eq_ignore_ascii_case("190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1"))
+                                    && (actual_hash.eq_ignore_ascii_case("190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1")
+                                        || actual_hash.eq_ignore_ascii_case("eae9da0c7e1e6c6a3f4cc42d167899c388f6c6701b94cb96320e4f55df79624c")))
                                 || (rel_path == &"kws/tokens.txt"
-                                    && actual_hash.eq_ignore_ascii_case("2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0"));
+                                    && (actual_hash.eq_ignore_ascii_case("2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0")
+                                        || actual_hash.eq_ignore_ascii_case("fd2ded4050a55d2b1578870ba8697d02371980217806b7558bd0a5cc60f3ba53")));
 
                             if !is_match {
                                 return ModelInstallState::Failed {
