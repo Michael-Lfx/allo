@@ -129,7 +129,7 @@
     "wakeDisabledNotice": "语音唤醒已停用，空闲时不占用麦克风",
     "wakeWords": "主唤醒词",
     "wakeWordsHint": "默认推荐使用 Hey Flowy，中英文环境均可自然免按唤醒。支持自定义修改。",
-    "wakeWordsPlaceholder": "Hey Flowy\n你好 Flowy",
+    "wakeWordsPlaceholder": "例如：你好小白 或 Hey Flowy",
     "wakeReply": "唤醒应答语",
     "wakeReplyHint": "唤醒成功后助理说的话（如：我在、请吩咐），留空则不发声。",
     "wakeReplyPlaceholder": "我在",

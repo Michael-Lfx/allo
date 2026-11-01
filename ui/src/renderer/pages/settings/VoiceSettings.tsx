@@ -612,6 +612,10 @@ const VoiceSettings: React.FC = () => {
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();
+      // Auto-trigger background silent self-check on settings mount if not yet cached
+      void runVoiceSelfCheck(false, undefined, 'silent')
+        .then((report) => setCapabilities(report))
+        .catch(() => {});
     }
   }, [modelStatus, fetchCapabilities]);
 
@@ -829,6 +833,41 @@ const VoiceSettings: React.FC = () => {
     : serviceAvailability === 'syncFailed' && voiceSyncError === 'voice_status_api_missing'
       ? t('voice.service.apiMissingDesc')
       : t(`voice.service.${serviceAvailability}Desc`);
+
+  const resolveStageStatus = useCallback((name: 'capture' | 'kws' | 'vad' | 'asr' | 'tts' | 'playback'): 'ready' | 'failed' | 'unknown' => {
+    if (capabilities?.[name]?.status) {
+      return capabilities[name].status;
+    }
+    if (!voiceSnapshot || voiceSnapshot.connection !== 'connected') {
+      return 'unknown';
+    }
+    const audio = voiceSnapshot.audio;
+    switch (name) {
+      case 'capture':
+        return audio?.capture_state === 'receiving' && (audio?.frames_received ?? 0) > 0
+          ? 'ready'
+          : audio?.capture_state === 'closed' || audio?.capture_state === 'no_pcm'
+            ? 'failed'
+            : 'unknown';
+      case 'kws':
+        return audio?.kws_ready ? 'ready' : 'unknown';
+      case 'vad':
+        return audio?.vad_ready ? 'ready' : 'unknown';
+      case 'asr':
+        return audio?.asr_ready ? 'ready' : 'unknown';
+      case 'tts':
+        return voiceSnapshot.tts && !voiceSnapshot.tts.fallback_reason ? 'ready' : 'unknown';
+      case 'playback':
+        return voiceSnapshot.playback_ready ? 'ready' : 'unknown';
+      default:
+        return 'unknown';
+    }
+  }, [capabilities, voiceSnapshot]);
+
+  const allStagesReady = (['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).every(
+    (name) => resolveStageStatus(name) === 'ready'
+  );
+
   let rowLabel = t('voice.phases.notInstalled');
   let rowDescription: React.ReactNode = t('voice.phases.notInstalledDesc');
 
@@ -848,15 +887,15 @@ const VoiceSettings: React.FC = () => {
     rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
-    if (!capabilities) {
-      rowLabel = t('voice.capabilities.pendingTitle');
-      rowDescription = t('voice.capabilities.notChecked');
-    } else if (capabilities.can_start_full_call) {
+    if (capabilities?.can_start_full_call || allStagesReady) {
       rowLabel = t('voice.capabilities.fullReadyTitle');
       rowDescription = t('voice.capabilities.fullReady');
+    } else if (!capabilities && !allStagesReady) {
+      rowLabel = t('voice.capabilities.pendingTitle');
+      rowDescription = t('voice.capabilities.notChecked');
     } else {
       rowLabel = t('voice.capabilities.notReadyTitle');
-      rowDescription = capabilities.degraded_text_only
+      rowDescription = capabilities?.degraded_text_only
         ? t('voice.capabilities.textOnly')
         : t('voice.capabilities.notReady');
     }
@@ -1068,9 +1107,9 @@ const VoiceSettings: React.FC = () => {
             {modelStatus === 'Ready' && (
               <div className='flex flex-wrap items-center gap-2 px-4 py-3 border-t border-t-solid border-[var(--border-base)] bg-fill-1 text-12px' role='status'>
                 {(['capture', 'kws', 'vad', 'asr', 'tts', 'playback'] as const).map((name, idx) => {
-                  const item = capabilities?.[name];
-                  const isReady = item?.status === 'ready';
-                  const isFailed = item?.status === 'failed';
+                  const status = resolveStageStatus(name);
+                  const isReady = status === 'ready';
+                  const isFailed = status === 'failed';
                   const statusColor = isReady
                     ? 'text-success-6 border-success-3 bg-success-1'
                     : isFailed
@@ -1084,7 +1123,7 @@ const VoiceSettings: React.FC = () => {
                       <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-solid text-11px font-medium ${statusColor}`}>
                         <span>{icon}</span>
                         <span>{t(`voice.capabilities.item.${name}`)}</span>
-                        <span>{item ? t(`voice.capabilities.status.${item.status}`) : t('voice.capabilities.status.unknown')}</span>
+                        <span>{t(`voice.capabilities.status.${status}`)}</span>
                       </span>
                     </React.Fragment>
                   );

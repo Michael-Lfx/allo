@@ -23,3 +23,7 @@
 - [x] **T13**: `Router.tsx` 增加设置页保护：身处设置页时绝对不自动跳转离开到会话。
 - [x] **T14**: `ZH_DISMISS_CORE` 扩充收录“退一下”、“退一下吧”、“退下啦”，避免轻声吞字被当成普通聊天。
 - [x] **T15**: `voiceCallDockState.ts` 将 `!task` 更正为 `!activeTask`，会话中有历史完成/失败任务挂断后秒级回归“等待唤醒”（`waitingWake`），17 项单测全绿。
+- [x] **T16**: `kws.rs` 清除 baseline 孤立 2 音节短词 `NI_HAO`（“你好”）与 `FLOWY`，避免底噪特征碰撞，门限收敛为 `#0.15`，根除误触风暴与伪 30s 超时失效。
+- [x] **T17**: `voice.rs` 引入扬声器播报 600ms 声学冷却（Playback Muting Cooldown），播报中及刚结束 600ms 内丢弃麦克风帧，彻底阻断回声自吞（如“再见”录入 ASR）。
+- [x] **T18**: `VoiceFeedbackSettings.tsx` 交互极简重构为双行标准布局，清除冗长大段说教文本。
+- [x] **T19**: `VoiceSettings.tsx` 6 大能力指示灯全面绑定实时 `voiceSnapshot` 动态健康流，并自动后台触发无声自检（`stage = "silent"`），开机即全绿。

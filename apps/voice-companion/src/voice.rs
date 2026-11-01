@@ -3681,6 +3681,7 @@ impl VoiceCompanionRuntime {
             let mut last_pcm = std::time::Instant::now();
             let mut last_asr_load_warning: Option<std::time::Instant> = None;
             let mut processing_feedback: Option<(String, std::time::Instant, u8)> = None;
+            let mut last_playback_busy: Option<std::time::Instant> = None;
             let quiet_input = Arc::new(AtomicBool::new(false));
             let mut quiet_since: Option<std::time::Instant> = None;
             let mut reminded_session: Option<String> = None;
@@ -4207,8 +4208,22 @@ impl VoiceCompanionRuntime {
                     d.current_state()
                 };
 
+                let is_playback_active = playback.has_pending_audio();
+                if is_playback_active {
+                    last_playback_busy = Some(std::time::Instant::now());
+                }
+                let in_echo_cooldown = is_playback_active
+                    || last_playback_busy.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(600));
+
                 match current_state {
                     AcousticState::Idle => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // Standby: feed audio chunk to Keyword Spotter
                         let mut hit = native_worker_frame!("kws_process", kws.process_pcm_chunk(&chunk).await).map(|r| r.keyword);
                         let mut wake_command = None;
@@ -4339,7 +4354,7 @@ impl VoiceCompanionRuntime {
                     }
 
                     AcousticState::ListeningConfirm=>{
-                        if !barge_in_ready && playback.has_pending_audio() {
+                        if !barge_in_ready && in_echo_cooldown {
                             utterance_pcm.clear();
                             speech_started = false;
                             native_worker_call!("vad_reset", vad.reset().await, ());
@@ -4445,6 +4460,13 @@ impl VoiceCompanionRuntime {
                         }
                     }
                     AcousticState::Listening => {
+                        if !barge_in_ready && in_echo_cooldown {
+                            utterance_pcm.clear();
+                            speech_started = false;
+                            native_worker_call!("vad_reset", vad.reset().await, ());
+                            continue;
+                        }
+
                         // Match follow-up listening: retain VAD onset, not the
                         // preceding silence, in the 30-second utterance budget.
                         utterance_pcm.extend_from_slice(&chunk);

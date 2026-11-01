@@ -72,47 +72,38 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
         <SettingsRow
           label={t('voice.feedback.wakeEnabled')}
           description={t('voice.feedback.wakeEnabledHint')}
-          controlLayout='field'
           control={
-            <div className='flex flex-col gap-3 w-full'>
-              <div className='flex items-center justify-between'>
-                <span className='text-12px text-t-secondary'>
-                  {draft?.wake_enabled ?? true
-                    ? t('voice.feedback.wakeWordsHint')
-                    : t('voice.feedback.wakeDisabledNotice', { defaultValue: '语音唤醒已停用，空闲时不占用麦克风' })}
-                </span>
-                <Switch
-                  aria-label={t('voice.feedback.wakeEnabled')}
-                  checked={draft?.wake_enabled ?? true}
-                  disabled={!draft || busy}
-                  onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
-                />
-              </div>
-              {(draft?.wake_enabled ?? true) && (
-                <div className='flex flex-col gap-1.5 pt-1'>
-                  <div className='text-12px font-medium text-t-primary'>
-                    {t('voice.feedback.wakeWords')}
-                  </div>
-                  <Input
-                    aria-label={t('voice.feedback.wakeWords')}
-                    placeholder={t('voice.feedback.wakeWordsPlaceholder')}
-                    value={
-                      !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
-                        ? ''
-                        : draft.wake_words[0]
-                    }
-                    allowClear
-                    disabled={!draft || busy}
-                    onChange={(val) => {
-                      const word = val.trim();
-                      setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
-                    }}
-                  />
-                </div>
-              )}
-            </div>
+            <Switch
+              aria-label={t('voice.feedback.wakeEnabled')}
+              checked={draft?.wake_enabled ?? true}
+              disabled={!draft || busy}
+              onChange={(val) => setDraft((prev) => prev && { ...prev, wake_enabled: val })}
+            />
           }
         />
+        {(draft?.wake_enabled ?? true) && (
+          <SettingsRow
+            label={t('voice.feedback.wakeWords')}
+            controlLayout='field'
+            control={
+              <Input
+                aria-label={t('voice.feedback.wakeWords')}
+                placeholder={t('voice.feedback.wakeWordsPlaceholder')}
+                value={
+                  !draft?.wake_words?.length || draft.wake_words[0].trim().toLowerCase() === 'hey flowy'
+                    ? ''
+                    : draft.wake_words[0]
+                }
+                allowClear
+                disabled={!draft || busy}
+                onChange={(val) => {
+                  const word = val.trim();
+                  setDraft((prev) => prev && { ...prev, wake_words: word ? [word] : [] });
+                }}
+              />
+            }
+          />
+        )}
         <SettingsRow
           label={t('voice.feedback.inputDevice')}
           description={t('voice.feedback.inputDeviceHint')}

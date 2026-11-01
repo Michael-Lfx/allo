@@ -126,7 +126,7 @@
     "save": "Save sound settings",
     "wakeWords": "Primary Wake Word",
     "wakeWordsHint": "Hey Flowy is recommended across languages with high recognition accuracy. Supports custom input.",
-    "wakeWordsPlaceholder": "Hey Flowy\nHello Flowy",
+    "wakeWordsPlaceholder": "e.g. Hey Flowy or Hello",
     "wakeReply": "Wake Reply",
     "wakeReplyHint": "Phrase spoken after wake (e.g. 'I\\'m here'). Empty means silence.",
     "wakeReplyPlaceholder": "I'm here",
