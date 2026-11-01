@@ -58,8 +58,13 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
     ++loadRevision.current;
     setBusy(true);
     try {
-      const res = await saveVoiceFeedback(draft);
+      const payload = {
+        ...draft,
+        input_device: draft.input_device && draft.input_device !== 'default' ? draft.input_device : 'default',
+      };
+      const res = await saveVoiceFeedback(payload);
       setSettings(res);
+      setDraft(res.requested);
       setError(false);
       Message.success(t('voice.feedback.saveSuccess'));
     } catch {

@@ -42,3 +42,4 @@
 - [x] **T32**: `VoiceSettings.tsx` 修正 `CheckOne` 图标 fill 样式：显式设置 `fill="currentColor"` 并绑定 `allStagesReady`，消除深灰色硬编码，图标恢复 Arco 鲜亮绿色。
 - [x] **T33**: `recorder.rs` 与 `Router.tsx` 落地三场景智能唤醒分流：首页/新建页新建语音通话，普通会话自动新建语音通话并跳转，已有语音通话原地接续。
 - [x] **T34**: 彻底根除会话劫持（当前会话原地接续、首页/文本会话自动新建独立通话）：在 `recorder.rs` 中实行“当前语音会话不可剥夺原则”，直接就地返回 `source_id`；首页与普通文本会话唤醒彻底废除 `retained_default_call` 历史单例查表，直接调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音通话；并在 `voice_session_bridge.rs` 中增加首页清空候选会话守卫，通过集成回归单测。
+- [x] **T35**: 闭环 opencode 审计重点项：① `recorder.rs` 语音会话识别全面覆盖 `extra["voice"]`/`is_default_voice` 与英文/改名场景；② `VoiceFeedbackSettings.tsx` 默认麦克风选择发送 `"default"` 哨兵，彻底解除设置脏状态卡死；③ `VoiceSettings.tsx` 就绪判断以 `capabilities` 为最高优先级；④ `voice.rs` 追问超时对齐 `effective_idle_timeout`。通过全套前端与后端单测。

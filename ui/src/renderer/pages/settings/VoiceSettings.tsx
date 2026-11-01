@@ -895,7 +895,8 @@ const VoiceSettings: React.FC = () => {
     rowLabel = t('voice.phases.verifyingSha256', { current: cur, total });
     rowDescription = t('voice.phases.verifyingSha256', { current: cur, total });
   } else if (modelStatus === 'Ready') {
-    if (capabilities?.can_start_full_call || allStagesReady) {
+    const isReady = capabilities ? capabilities.can_start_full_call : allStagesReady;
+    if (isReady) {
       rowLabel = t('voice.capabilities.fullReadyTitle');
       rowDescription = t('voice.capabilities.fullReady');
     } else if (!capabilities && !allStagesReady) {
@@ -942,7 +943,7 @@ const VoiceSettings: React.FC = () => {
                   label={
                     <div className='flex items-center gap-8px'>
                       {modelStatus === 'Ready' && (
-                        (capabilities?.can_start_full_call || allStagesReady) ? (
+                        (capabilities ? capabilities.can_start_full_call : allStagesReady) ? (
                           <CheckOne
                             theme='filled'
                             size='16'

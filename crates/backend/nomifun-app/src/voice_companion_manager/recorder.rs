@@ -195,11 +195,14 @@ impl ConversationVoiceDialogueRecorder {
                 .filter(|row| row.user_id == self.user_id && row.r#type == "nomi");
             if let Some(row) = row {
                 let extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_default();
-                let is_voice_conv = extra.get("voice_task_workspace").is_some()
-                    || extra.get("is_voice_conversation").is_some()
+                let is_voice_conv = extra.get("voice").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("is_default_voice").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("is_voice_conversation").and_then(|v| v.as_bool()) == Some(true)
+                    || extra.get("voice_task_workspace").is_some()
                     || extra.get("session_mode").and_then(|v| v.as_str()) == Some("voice")
                     || extra.get("session_mode").and_then(|v| v.as_str()) == Some("companion")
-                    || row.name.starts_with("语音");
+                    || row.name.starts_with("语音")
+                    || row.name.starts_with("Voice");
                 if is_voice_conv {
                     // 🛡️ Rule 1: Waking inside an existing voice conversation must stay in it!
                     return Ok((id.clone(), Some(id)));

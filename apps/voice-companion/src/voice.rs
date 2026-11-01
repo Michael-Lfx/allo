@@ -2222,8 +2222,9 @@ impl VoiceCompanionRuntime {
         if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
-        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window_with_secs(idle_secs) {
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: idle_secs }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2291,10 +2292,11 @@ impl VoiceCompanionRuntime {
             if playback.generation_id() != fallback_generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Err(code);
             }
+            let idle_secs = effective_idle_timeout(event_tx.as_ref());
             if d.current_state() == AcousticState::FollowUpListening
-                && d.begin_listening_window()
+                && d.begin_listening_window_with_secs(idle_secs)
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: idle_secs }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2313,10 +2315,11 @@ impl VoiceCompanionRuntime {
             if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Ok(());
             }
+            let idle_secs = effective_idle_timeout(event_tx.as_ref());
             if d.current_state() == AcousticState::FollowUpListening
-                && d.begin_listening_window()
+                && d.begin_listening_window_with_secs(idle_secs)
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: idle_secs }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
