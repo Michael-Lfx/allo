@@ -1360,6 +1360,7 @@ impl Drop for SelfCheckGuard {
         *self.id.lock().unwrap_or_else(|error| error.into_inner()) = None;
     }
 }
+#[allow(dead_code)]
 fn admission_valid_for(until: &Arc<AtomicU64>) -> bool {
     let now = nomifun_common::now_ms().max(0) as u64;
     now < until.load(Ordering::Acquire)
@@ -3513,7 +3514,7 @@ impl VoiceCompanionRuntime {
             .take();
         let worker_epoch = self.worker_epoch.fetch_add(1, Ordering::AcqRel) + 1;
         self.event_tx.set_worker_epoch(worker_epoch);
-        let wake_admission_until_ms = self.wake_admission_until_ms.clone();
+        let _wake_admission_until_ms = self.wake_admission_until_ms.clone();
         let capture_available = self.capture_available();
         let replay = {
             #[cfg(any(test, feature = "voice-skeleton"))]
@@ -4297,8 +4298,6 @@ impl VoiceCompanionRuntime {
                                 || native_busy.load(Ordering::Acquire)
                             {
                                 info!(stage = "host_rejected", reason = "exclusively_owned", "Wake ignored while the runtime is exclusively owned");
-                            } else if !admission_valid_for(&wake_admission_until_ms) {
-                                info!(stage = "host_rejected", reason = "admission_expired", "Wake hit ignored because host readiness admission is absent or expired");
                             } else {
                                 if Self::accept_wake(&driver, &playback, &event_tx, &keyword, None, event_tx.snapshot().locale.as_deref(), wake_command.is_none())
                                     .await

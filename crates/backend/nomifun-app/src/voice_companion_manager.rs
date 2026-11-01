@@ -529,19 +529,13 @@ impl VoiceCompanionProcessManager {
             self.push_admission("call", false, 0).await;
             return;
         }
-        let capabilities = self.current_capabilities().await;
-        let expires_at_ms = capabilities
-            .as_ref()
-            .and_then(|report| report.checked_at_ms)
-            .map(|checked| checked.saturating_add(60_000))
-            .unwrap_or(0);
-        let wake = capabilities.as_ref().is_some_and(|report| report.can_wake);
-        let call = capabilities
-            .as_ref()
-            .is_some_and(|report| report.can_start_full_call);
-        self.push_admission("wake", wake, if wake { expires_at_ms } else { 0 })
+        let autostart = self.read_autostart_config();
+        let models_ready = self.models_manager.get_status().await.state.is_ready();
+        let wake = autostart && models_ready;
+        let call = autostart && models_ready;
+        self.push_admission("wake", wake, if wake { i64::MAX } else { 0 })
             .await;
-        self.push_admission("call", call, if call { expires_at_ms } else { 0 })
+        self.push_admission("call", call, if call { i64::MAX } else { 0 })
             .await;
     }
     fn invalidate_capabilities_if(&self, attempt: u64, generation: u64) {

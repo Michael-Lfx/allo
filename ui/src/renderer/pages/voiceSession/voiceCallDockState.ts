@@ -222,9 +222,10 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
           TASK_NEEDS_CONTROL.has(task.status))
     );
     const taskRunning = Boolean(task && TASK_ACTIVE.has(task.status));
-    const hasQueue =
+    const activeTask = taskRunning;
+    const activeQueue =
       snapshot.queue?.some(
-        (item) => item.task.conversation_id === conversationId && item.position > 0
+        (item) => item.task.conversation_id === conversationId && TASK_ACTIVE.has(item.task.status)
       ) ?? false;
 
     if (snapshot.error) {
@@ -242,8 +243,8 @@ export function resolveVoiceDockPresentation(input: VoiceDockInput): VoiceDockPr
     }
     if (snapshot.ended_reason) {
       if (
-        !task &&
-        !hasQueue &&
+        !activeTask &&
+        !activeQueue &&
         snapshot.audio?.kws_ready === true &&
         snapshot.audio?.capture_state === 'receiving' &&
         snapshot.phase === 'idle' &&

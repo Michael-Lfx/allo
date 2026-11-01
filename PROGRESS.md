@@ -19,3 +19,7 @@
 - [x] **T9**: 破除 `voice_suite_in_use` 悬空预定锁，`start_call` 拒绝时即刻清理，`voice_suite_in_use` 增加 3 秒超时过滤，彻底解除自检死锁。
 - [x] **T10**: 开机自检采用 `stage = "silent"` 实现扬声器零发声静默自查，修复能力签名对比使 6 节点绿灯开机即常驻。
 - [x] **T11**: 设置页重构将“语音唤醒”开关与“主唤醒词”输入框合一联动，开则展开，关则收起并释放麦克风。
+- [x] **T12**: 彻底删除 `voice.rs` 中的 `!admission_valid_for` 拦截，宿主 `refresh_wake_admission` 保持常驻准入，彻底杜绝 `admission_expired` 错误丢弃唤醒词。
+- [x] **T13**: `Router.tsx` 增加设置页保护：身处设置页时绝对不自动跳转离开到会话。
+- [x] **T14**: `ZH_DISMISS_CORE` 扩充收录“退一下”、“退一下吧”、“退下啦”，避免轻声吞字被当成普通聊天。
+- [x] **T15**: `voiceCallDockState.ts` 将 `!task` 更正为 `!activeTask`，会话中有历史完成/失败任务挂断后秒级回归“等待唤醒”（`waitingWake`），17 项单测全绿。

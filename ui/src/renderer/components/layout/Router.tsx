@@ -319,6 +319,7 @@ const GlobalVoiceWakeListener: React.FC = () => {
 
   useEffect(() => {
     if (typeof window === 'undefined' || window.location.hash.startsWith('#/companion')) return;
+    if (location.pathname.startsWith('/settings') || location.pathname.startsWith('/models')) return;
 
     let disposed = false;
     let cleanup: (() => void) | undefined;
@@ -327,6 +328,8 @@ const GlobalVoiceWakeListener: React.FC = () => {
       if (disposed) return;
       void subscribeVoiceSession((snapshot) => {
         if (disposed) return;
+        if (snapshot.self_check_active) return;
+
         const isVoiceActive = Boolean(
           snapshot.enabled &&
           snapshot.connection === 'connected' &&

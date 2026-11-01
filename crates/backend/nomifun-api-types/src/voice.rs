@@ -1798,7 +1798,10 @@ pub fn classify_voice_direct_control(
     }
 
     // 5. Match Dismiss Session
-    const ZH_DISMISS_CORE: &[&str] = &["退下吧", "退下", "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了"];
+    const ZH_DISMISS_CORE: &[&str] = &[
+        "退下吧", "退下", "退一下", "退一下吧", "退下啦", "退退退",
+        "结束通话", "挂断", "挂断吧", "退出语音", "关闭语音", "休息吧", "退下了"
+    ];
     const EN_DISMISS_CORE: &[&str] = &["end the call", "hang up", "exit voice", "goodbye flowy", "dismiss"];
 
     for core in ZH_DISMISS_CORE.iter().chain(EN_DISMISS_CORE.iter()) {

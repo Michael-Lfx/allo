@@ -382,4 +382,29 @@ describe('voice dock presentation mapping', () => {
     expect(state.tone).toBe('active');
     expect(state.activity).toBe('breathe');
   });
+
+  test('an idle ended call with completed historical task returns waitingWake', () => {
+    const state = view(
+      boundSnapshot({
+        phase: 'idle',
+        ended_reason: 'user_stop',
+        task: {
+          command_id: 'cmd-done',
+          session_id: 'call',
+          acoustic_turn_id: 'turn-1',
+          conversation_id: 'conv-a',
+          message_id: 'msg-1',
+          runtime_turn_id: null,
+          status: 'completed',
+          result_ok: true,
+          result_text: 'Weather reported',
+          error_code: null,
+        },
+        queue: [],
+      })
+    );
+    expect(state.labelKey).toBe('voice.dock.waitingWake');
+    expect(state.tone).toBe('active');
+    expect(state.activity).toBe('breathe');
+  });
 });

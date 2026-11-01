@@ -2852,6 +2852,14 @@
             Some(VoiceDirectControlAction::DismissSession)
         );
         assert_eq!(
+            classify_voice_direct_control("退一下", &[]),
+            Some(VoiceDirectControlAction::DismissSession)
+        );
+        assert_eq!(
+            classify_voice_direct_control("退一下吧", &[]),
+            Some(VoiceDirectControlAction::DismissSession)
+        );
+        assert_eq!(
             classify_voice_direct_control("请你退下吧", &[]),
             Some(VoiceDirectControlAction::DismissSession)
         );
