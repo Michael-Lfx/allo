@@ -127,6 +127,8 @@
     "wakeEnabled": "语音唤醒",
     "wakeEnabledHint": "开启后可在后台通过唤醒词随时呼叫发起对话。关闭后麦克风在空闲时完全释放。",
     "wakeDisabledNotice": "语音唤醒已停用，空闲时不占用麦克风",
+    "kwsDirectReady": "双核流式秒级唤醒",
+    "cascadeFallbackReady": "SenseVoice 级联双核兜底",
     "wakeWords": "主唤醒词",
     "wakeWordsHint": "默认推荐使用 Hey Flowy，中英文环境均可自然免按唤醒。支持自定义修改。",
     "wakeWordsPlaceholder": "例如：你好小白 或 Hey Flowy",

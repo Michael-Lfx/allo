@@ -3039,6 +3039,18 @@
             Some("what time is it".to_string())
         );
         assert_eq!(
+            strip_custom_wake_word("好，香芋片，查一下天气", "香芋片"),
+            Some("查一下天气".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("香鱼片", "香芋片"),
+            Some("".to_string())
+        );
+        assert_eq!(
+            strip_custom_wake_word("小百同学", "小白同学"),
+            Some("".to_string())
+        );
+        assert_eq!(
             strip_custom_wake_word("今天天气不错", "你好小白"),
             None
         );

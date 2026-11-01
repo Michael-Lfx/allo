@@ -124,6 +124,8 @@
     "applied": "Saved and applied to the current voice service.",
     "pending": "Saved preference has not been verified on the voice service. Enable the service or save again to retry.",
     "save": "Save sound settings",
+    "kwsDirectReady": "Streaming KWS Instant",
+    "cascadeFallbackReady": "SenseVoice Cascade Ready",
     "wakeWords": "Primary Wake Word",
     "wakeWordsHint": "Hey Flowy is recommended across languages with high recognition accuracy. Supports custom input.",
     "wakeWordsPlaceholder": "e.g. Hey Flowy or Hello",

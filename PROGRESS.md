@@ -27,3 +27,8 @@
 - [x] **T17**: `voice.rs` 引入扬声器播报 600ms 声学冷却（Playback Muting Cooldown），播报中及刚结束 600ms 内丢弃麦克风帧，彻底阻断回声自吞（如“再见”录入 ASR）。
 - [x] **T18**: `VoiceFeedbackSettings.tsx` 交互极简重构为双行标准布局，清除冗长大段说教文本。
 - [x] **T19**: `VoiceSettings.tsx` 6 大能力指示灯全面绑定实时 `voiceSnapshot` 动态健康流，并自动后台触发无声自检（`stage = "silent"`），开机即全绿。
+- [x] **T20**: `voice.rs` 强化 Stage-2 级联唤醒算法：实现全局滑动窗口子串匹配（支持前置语气词与重复呼叫）并引入 $\ge 3$ 字符允许 1 字近音/同音容错（如“香鱼片”容错匹配“香芋片”）。
+- [x] **T21**: `kws.rs` 拼音映射表扩充加入“香”、“芋”、“片”、“茶”、“糖”等常用字符。
+- [x] **T22**: `VoiceFeedbackSettings.tsx` 视觉卡片完全融合：消除独立行分割线，封装于同一优雅 sub-card 容器中。
+- [x] **T23**: `VoiceFeedbackSettings.tsx` 实现未保存状态全链路高亮（输入框与选择框琥珀边框光晕、标签旁 `● 未保存` 脉冲徽标）与 Vibrant Primary 醒目保存按钮。
+- [x] **T24**: 唤醒词输入框动态回显引擎工作路径状态微章（`● 双核流式秒级唤醒` vs `◈ SenseVoice 级联双核兜底`）。

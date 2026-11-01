@@ -165,41 +165,49 @@ fn strip_custom_wake_word(input: &str, custom_kw: &str) -> Option<String> {
                     | '…'
             )
     };
-    let kw_chars: Vec<char> = custom_kw.chars().filter(|c| !is_punct_or_ws(*c)).collect();
+    let kw_chars: Vec<char> = custom_kw.chars().filter(|c| !is_punct_or_ws(*c)).map(|c| c.to_ascii_lowercase()).collect();
     if kw_chars.is_empty() {
         return None;
     }
-    let mut input_iter = input.char_indices().peekable();
-    let mut matched_count = 0;
-    let mut end_idx = 0;
+    let input_filtered: Vec<(usize, char)> = input.char_indices().filter(|(_, c)| !is_punct_or_ws(*c)).collect();
+    if input_filtered.is_empty() {
+        return None;
+    }
 
-    while let Some(&(idx, ch)) = input_iter.peek() {
-        if is_punct_or_ws(ch) {
-            input_iter.next();
-            if matched_count > 0 {
-                end_idx = idx + ch.len_utf8();
+    let kw_len = kw_chars.len();
+    let n = input_filtered.len();
+
+    // Sliding window search across the whole input string
+    // Allows leading filler ("喂", "好", "哎", "请问"), repetitions ("香芋片香芋片")
+    // and 1-character homophone substitution tolerance for words >= 3 chars.
+    for start in 0..=n.saturating_sub(kw_len) {
+        let window = &input_filtered[start..start + kw_len];
+        let mut diff_count = 0;
+        for (i, &(_, ch)) in window.iter().enumerate() {
+            if ch.to_ascii_lowercase() != kw_chars[i] {
+                diff_count += 1;
             }
-            continue;
         }
-        if matched_count < kw_chars.len()
-            && ch.to_lowercase().eq(kw_chars[matched_count].to_lowercase())
-        {
-            matched_count += 1;
-            end_idx = idx + ch.len_utf8();
-            input_iter.next();
+
+        let matched = if diff_count == 0 {
+            true
+        } else if diff_count == 1 && kw_len >= 3 {
+            // For 3+ character words, allow 1 substituted homophone character
+            true
         } else {
-            break;
+            false
+        };
+
+        if matched {
+            let match_end_byte_idx = window.last().map(|(idx, ch)| idx + ch.len_utf8()).unwrap_or(input.len());
+            let remainder = input[match_end_byte_idx..]
+                .trim_start_matches(is_punct_or_ws)
+                .to_string();
+            return Some(remainder);
         }
     }
 
-    if matched_count == kw_chars.len() {
-        let remainder = input[end_idx..]
-            .trim_start_matches(is_punct_or_ws)
-            .to_string();
-        Some(remainder)
-    } else {
-        None
-    }
+    None
 }
 
 /// Pre-roll sample buffer (500ms @ 16kHz) preserved during active playback
