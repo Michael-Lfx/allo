@@ -121,11 +121,12 @@ impl VoiceCompanionRuntime {
                 .send(VoiceCompanionEvent::ResponseReady { text: text.into() });
             if snapshot.session_id.is_some() && snapshot.ended_reason.is_none() {
                 let _ = driver.handle_event(AcousticEvent::WakeHit);
-                if driver.begin_listening_window() {
+                let idle_secs = self.event_tx.feedback().idle_timeout_secs;
+                if driver.begin_listening_window_with_secs(idle_secs) {
                     let _ = self.event_tx.send(VoiceCompanionEvent::Listening);
                     let _ = self
                         .event_tx
-                        .send(VoiceCompanionEvent::ListeningReady { timeout_secs: 180 });
+                        .send(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs });
                 }
             } else {
                 let _ = self.event_tx.send(VoiceCompanionEvent::Idle);

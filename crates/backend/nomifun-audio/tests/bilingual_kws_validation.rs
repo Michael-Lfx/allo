@@ -69,6 +69,7 @@ x iao f u x ing @XIAO_FU_XING
         "小度".to_string(),
         "贾维斯".to_string(),
         "旺财".to_string(),
+        "你好 Flowy".to_string(),
     ];
     let dynamic_buf = nomifun_audio::kws::build_bilingual_keywords_buf(&custom_keywords);
     assert!(dynamic_buf.contains("n i h ao x iao b ai"), "must contain pinyin for 你好小白");
@@ -77,6 +78,7 @@ x iao f u x ing @XIAO_FU_XING
     assert!(dynamic_buf.contains("x iao d u"), "must contain pinyin for 小度");
     assert!(dynamic_buf.contains("j ia w ei s i"), "must contain pinyin for 贾维斯");
     assert!(dynamic_buf.contains("w ang c ai"), "must contain pinyin for 旺财");
+    assert!(dynamic_buf.contains("n i h ao F L OW1 IY0"), "must contain mixed tokens for 你好 Flowy");
 
     // Test KwsEngine integration with custom keywords
     let kws_engine = nomifun_audio::kws::KwsEngine::new(nomifun_audio::kws::KwsEngineConfig {

@@ -250,9 +250,13 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::ListeningReady { timeout_secs } => {
                 if state.phase == Phase::Listening {
-                    state.listening_deadline_ms = Some(
-                        chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000,
-                    );
+                    if *timeout_secs == 0 {
+                        state.listening_deadline_ms = None;
+                    } else {
+                        state.listening_deadline_ms = Some(
+                            chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000,
+                        );
+                    }
                 }
             }
             VoiceCompanionEvent::SpeechStarted => {
@@ -404,8 +408,12 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::FollowUpWindow { timeout_secs } => {
                 state.phase = Phase::FollowUp;
-                state.follow_up_deadline_ms =
-                    Some(chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000);
+                if *timeout_secs == 0 {
+                    state.follow_up_deadline_ms = None;
+                } else {
+                    state.follow_up_deadline_ms =
+                        Some(chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000);
+                }
             }
             VoiceCompanionEvent::FollowUpStarted { text_only } => {
                 state.phase = if *text_only {
@@ -417,8 +425,12 @@ impl VoiceEventHub {
             }
             VoiceCompanionEvent::TextFollowUpWindow { timeout_secs } => {
                 state.phase = Phase::TextFollowUp;
-                state.follow_up_deadline_ms =
-                    Some(chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000);
+                if *timeout_secs == 0 {
+                    state.follow_up_deadline_ms = None;
+                } else {
+                    state.follow_up_deadline_ms =
+                        Some(chrono::Utc::now().timestamp_millis() + i64::from(*timeout_secs) * 1000);
+                }
             }
             VoiceCompanionEvent::Error { stage, code } => {
                 let has_active_turn = !matches!(state.phase, Phase::Idle | Phase::Listening);

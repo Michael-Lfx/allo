@@ -646,6 +646,60 @@ pub fn convert_english_to_kws_phonemes(text: &str) -> Option<String> {
     }
 }
 
+/// Converts any bilingual Chinese/English mixed wake phrase into standard Sherpa-ONNX Zipformer tokens.
+pub fn convert_bilingual_phrase_to_tokens(text: &str) -> Option<String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return None;
+    }
+    let mut result_tokens = Vec::new();
+    let mut current_en_word = String::new();
+
+    let flush_en = |en: &mut String, out: &mut Vec<String>| -> bool {
+        if en.is_empty() {
+            return true;
+        }
+        if let Some(phones) = convert_english_to_kws_phonemes(en) {
+            out.push(phones);
+            en.clear();
+            true
+        } else {
+            false
+        }
+    };
+
+    for ch in clean.chars() {
+        if ch.is_whitespace() || matches!(ch, '，' | '。' | '！' | '？' | ',' | '.' | '!' | '?' | '-' | '_') {
+            if !flush_en(&mut current_en_word, &mut result_tokens) {
+                return None;
+            }
+            continue;
+        }
+        if ch.is_ascii_alphabetic() {
+            current_en_word.push(ch);
+        } else {
+            if !flush_en(&mut current_en_word, &mut result_tokens) {
+                return None;
+            }
+            if let Some(pinyin) = convert_chinese_to_kws_pinyin(&ch.to_string()) {
+                result_tokens.push(pinyin);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    if !flush_en(&mut current_en_word, &mut result_tokens) {
+        return None;
+    }
+
+    if result_tokens.is_empty() {
+        None
+    } else {
+        Some(result_tokens.join(" "))
+    }
+}
+
 /// Builds dynamic bilingual keywords rules buffer for Sherpa-ONNX Zipformer KWS.
 pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
     let mut lines = Vec::new();
@@ -665,12 +719,11 @@ pub fn build_bilingual_keywords_buf(keywords: &[String]) -> String {
         if lower == "hey flowy" || lower == "flowy" {
             continue;
         }
-        if let Some(pinyin) = convert_chinese_to_kws_pinyin(clean) {
+        if let Some(tokens) = convert_bilingual_phrase_to_tokens(clean) {
             let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_");
-            lines.push(format!("{pinyin} :2.0 #0.15 @{label}"));
-        } else if let Some(phones) = convert_english_to_kws_phonemes(clean) {
-            let label = clean.replace(|c: char| c.is_whitespace() || c == '，' || c == ',', "_").to_uppercase();
-            lines.push(format!("{phones} :2.0 #0.15 @{label}"));
+            lines.push(format!("{tokens} :2.0 #0.15 @{label}"));
+        } else {
+            tracing::warn!(keyword = %clean, "Custom wake phrase contains unsupported characters; skipping KWS rule generation");
         }
     }
 

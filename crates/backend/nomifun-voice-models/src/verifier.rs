@@ -32,6 +32,10 @@ pub const DOWNLOAD_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
     "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
     "tts/vocos-22khz-univ.onnx",
 ];
 
@@ -62,6 +66,10 @@ pub fn default_tts_manifest() -> HashMap<String, String> {
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx".to_string(), "4d7771c0ec063ca74f2fa92ba0ecfe14f73fa3f61c236d9469b92e102d8e9574".to_string());
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/tokens.txt".to_string(), "bcb4a50830e9402112fe8cb57d53ae8523908868a5015f2040dde5f5fd231697".to_string());
     manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict".to_string(), "71bd330ba8a2e3e8076e631508208ef49449d6147c17b7bd2b4b1e1468292e35".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab".to_string(), "886f3fa402cb0ba73d483aa8ad000af47a6b7cc06293c75a97913fba68a530f6".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex".to_string(), "3ca7b8fa3b42624e4b0f152707e7a39245fce569aa99ea47c055d9e622fcf0c4".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata".to_string(), "4e0288957874029a8c3c9f41a8f517ad4bf18127046decbdd4b9d1d6807ce3a3".to_string());
+    manifest.insert("tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations".to_string(), "3f8af65fd3eda9759a10f021d61361c120871f463515229c925995c7f90918cc".to_string());
     manifest.insert("tts/vocos-22khz-univ.onnx".to_string(), "0574a135aa1db2de6e181050db2ec528496cacd4a4701fc5d7faf9f9804c0081".to_string());
     manifest
 }

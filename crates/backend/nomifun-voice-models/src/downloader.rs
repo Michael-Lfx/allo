@@ -275,6 +275,18 @@ impl MirrorConfig {
                 "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict" => {
                     format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/en_dict")
                 }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phontab")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phonindex")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/phondata")
+                }
+                "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations" => {
+                    format!("{base}/csukuangfj/matcha-icefall-en_US-ljspeech/resolve/main/espeak-ng-data/intonations")
+                }
                 "tts/vocos-22khz-univ.onnx" => {
                     format!("{base}/k2-fsa/sherpa-onnx-models/resolve/main/vocoder-models/vocos-22khz-univ.onnx")
                 }
@@ -289,6 +301,11 @@ impl MirrorConfig {
 
     pub fn supports(&self, rel_path: &str) -> bool {
         let clean_path = rel_path.replace('\\', "/");
+        if self.is_modelscope && self.base_url.contains("modelscope.cn") {
+            // ModelScope upstream hosts ASR, KWS and VAD models directly.
+            // Offline TTS models (Matcha + Vocos) are hosted on HuggingFace / hf-mirror.
+            return !clean_path.starts_with("tts/");
+        }
         if self.id == "hf_mirror"
             || self.id == "hf_official"
             || self.base_url.contains("hf-mirror.com")

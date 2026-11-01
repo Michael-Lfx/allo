@@ -31,6 +31,10 @@ pub const EXPECTED_TTS_FILES: &[&str] = &[
     "tts/matcha-icefall-en_US-ljspeech/model-steps-3.onnx",
     "tts/matcha-icefall-en_US-ljspeech/tokens.txt",
     "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/en_dict",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phontab",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phonindex",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/phondata",
+    "tts/matcha-icefall-en_US-ljspeech/espeak-ng-data/intonations",
     "tts/vocos-22khz-univ.onnx",
 ];
 

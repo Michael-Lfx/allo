@@ -60,7 +60,7 @@ export default function VoiceFeedbackSettingsSection({ connected }: { connected:
     JSON.stringify(draft.wake_words ?? []) !== JSON.stringify(settings.requested.wake_words ?? []) ||
     draft.tts_speed !== settings.requested.tts_speed ||
     draft.idle_timeout_secs !== settings.requested.idle_timeout_secs ||
-    (draft.input_device || undefined) !== (settings.requested.input_device || undefined)
+    (draft.input_device || '') !== (settings.requested.input_device || '')
   ));
   const applied = Boolean(effective && settings && !dirty);
 

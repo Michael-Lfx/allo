@@ -1652,14 +1652,15 @@ impl VoiceCompanionRuntime {
                     let _ = d.handle_event(AcousticEvent::PlaybackDone);
                     if d.current_state() == AcousticState::Idle {
                         let _ = d.handle_event(AcousticEvent::WakeHit);
-                        if d.begin_listening_window() {
+                        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                        if d.begin_listening_window_with_secs(idle_secs) {
                             let scope = VoiceSessionControlRequest {
                                 instance_id: snapshot.instance_id.clone(),
                                 session_id: Some(session_id.clone()),
                                 turn_id: Some(turn_id.clone()),
                             };
                             let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &scope);
-                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, &scope);
+                            let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &scope);
                         }
                     }
                 }
@@ -2110,8 +2111,9 @@ impl VoiceCompanionRuntime {
         tokio::spawn(async move {
             voice_feedback::play(&playback, &events, VoiceCueKind::Wake, generation).await;
             let mut d = driver.lock().await;
-            if playback.generation_id() == generation && d.begin_listening_window() {
-                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(&events) });
+            let idle_secs = effective_idle_timeout(&events);
+            if playback.generation_id() == generation && d.begin_listening_window_with_secs(idle_secs) {
+                let _ = events.send(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs });
             }
         });
         Ok(())
@@ -2165,7 +2167,8 @@ impl VoiceCompanionRuntime {
             }
             if matches!(d.current_state(), AcousticState::SpeakingFast | AcousticState::SpeakingSummary | AcousticState::SpeakingControl) {
                 let _ = d.handle_event(AcousticEvent::PlaybackDone);
-                if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
+                let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window_with_secs(idle_secs) {
                     let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, scope);
                 }
             }
@@ -2205,8 +2208,9 @@ impl VoiceCompanionRuntime {
         if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
             return;
         }
-        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window() {
-            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+        let idle_secs = effective_idle_timeout(event_tx.as_ref());
+        if d.current_state() == AcousticState::FollowUpListening && d.begin_listening_window_with_secs(idle_secs) {
+            let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: idle_secs }, scope);
         } else if d.current_state() != AcousticState::FollowUpListening {
             d.reset();
         }
@@ -2274,10 +2278,11 @@ impl VoiceCompanionRuntime {
             if playback.generation_id() != fallback_generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Err(code);
             }
+            let idle_secs = effective_idle_timeout(event_tx.as_ref());
             if d.current_state() == AcousticState::FollowUpListening
-                && d.begin_listening_window()
+                && d.begin_listening_window_with_secs(idle_secs)
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::TextFollowUpWindow { timeout_secs: idle_secs }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -2296,10 +2301,11 @@ impl VoiceCompanionRuntime {
             if playback.generation_id() != generation || !scope.matches(&current) || current.ended_reason.is_some() {
                 return Ok(());
             }
+            let idle_secs = effective_idle_timeout(event_tx.as_ref());
             if d.current_state() == AcousticState::FollowUpListening
-                && d.begin_listening_window()
+                && d.begin_listening_window_with_secs(idle_secs)
             {
-                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: 180 }, scope);
+                let _ = event_tx.send_scoped(VoiceCompanionEvent::FollowUpWindow { timeout_secs: idle_secs }, scope);
             } else if d.current_state() != AcousticState::FollowUpListening {
                 d.reset();
             }
@@ -3206,9 +3212,10 @@ impl VoiceCompanionRuntime {
                             }
                             if d.current_state() == AcousticState::Idle {
                                 let _ = d.handle_event(AcousticEvent::WakeHit);
-                                if d.begin_listening_window() {
+                                let idle_secs = effective_idle_timeout(event_tx.as_ref());
+                                if d.begin_listening_window_with_secs(idle_secs) {
                                     let _ = event_tx.send_scoped(VoiceCompanionEvent::Listening, &control_scope);
-                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: effective_idle_timeout(event_tx.as_ref()) }, &control_scope);
+                                    let _ = event_tx.send_scoped(VoiceCompanionEvent::ListeningReady { timeout_secs: idle_secs }, &control_scope);
                                 }
                             }
                         }
@@ -3910,10 +3917,22 @@ impl VoiceCompanionRuntime {
                     kws.is_initialized(),
                 );
                 if !hold_mic {
-                    let mut cap = capture.lock().await;
-                    while let CaptureReadResult::Chunk(_) = cap.try_next_chunk() {}
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    // Physically release the microphone stream so OS privacy indicator turns off
+                    if mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+                        *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        info!("Microphone physically released for privacy indicator compliance");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue;
+                } else if mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()).is_none() && !replay {
+                    // Re-acquire microphone when needed
+                    let pref = event_tx.feedback().input_device;
+                    if let Ok(new_mic) = nomifun_audio::MicSource::with_device(16_000, pref.as_deref()) {
+                        let new_pipeline = new_mic.pipeline();
+                        *mic_source_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(new_mic));
+                        capture = new_pipeline;
+                        info!(device = ?pref, "Microphone re-acquired upon active listening");
+                    }
                 }
                 if matches!(
                     snapshot.phase,
@@ -3948,14 +3967,14 @@ impl VoiceCompanionRuntime {
                     if native_owned
                         && matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening)
                     {
-                        d.begin_listening_window();
+                        d.begin_listening_window_with_secs(effective_idle_timeout(event_tx.as_ref()));
                     }
                     if matches!(timed_state, AcousticState::Listening | AcousticState::FollowUpListening) {
                         let task_active = snapshot.task.as_ref().is_some_and(|t| {
                             !matches!(t.status, nomifun_api_types::voice::VoiceTaskStatus::Completed | nomifun_api_types::voice::VoiceTaskStatus::Failed)
                         });
                         if task_active {
-                            d.begin_listening_window();
+                            d.begin_listening_window_with_secs(effective_idle_timeout(event_tx.as_ref()));
                         }
                     }
                     if timed_state == AcousticState::Listening

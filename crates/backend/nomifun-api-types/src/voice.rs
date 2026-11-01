@@ -111,6 +111,11 @@ pub struct VoiceFeedbackPatch {
 
 impl VoiceFeedbackPatch {
     pub fn apply(self, current: VoiceFeedbackConfig) -> VoiceFeedbackConfig {
+        let input_device = match self.input_device {
+            Some(ref d) if d.trim().is_empty() || d == "default" => None,
+            Some(d) => Some(d),
+            None => current.input_device,
+        };
         VoiceFeedbackConfig {
             mode: self.mode.unwrap_or(current.mode),
             volume: self.volume.unwrap_or(current.volume),
@@ -123,7 +128,7 @@ impl VoiceFeedbackPatch {
             tts_backend: self.tts_backend.unwrap_or(current.tts_backend),
             tts_speed: self.tts_speed.unwrap_or(current.tts_speed),
             idle_timeout_secs: self.idle_timeout_secs.unwrap_or(current.idle_timeout_secs),
-            input_device: self.input_device.or(current.input_device),
+            input_device,
         }
     }
 }
@@ -1753,6 +1758,15 @@ pub fn classify_voice_direct_control(
     ];
     for neg in NEGATORS {
         if lower.contains(neg) {
+            // Permit affirmative imperative stop phrases like "不用念了", "不要说了"
+            if (*neg == "不用" || *neg == "不要")
+                && (lower.contains("不用念了")
+                    || lower.contains("不用说了")
+                    || lower.contains("不要说了")
+                    || lower.contains("不要念了"))
+            {
+                continue;
+            }
             return None;
         }
     }
