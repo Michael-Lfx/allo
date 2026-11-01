@@ -3054,4 +3054,16 @@
             strip_custom_wake_word("今天天气不错", "你好小白"),
             None
         );
+        assert_eq!(
+            strip_custom_wake_word("한 폭", "荷包蛋"),
+            None
+        );
+        assert_eq!(
+            strip_custom_wake_word("a", "abc"),
+            None
+        );
+        assert_eq!(
+            strip_custom_wake_word("", "荷包蛋"),
+            None
+        );
     }

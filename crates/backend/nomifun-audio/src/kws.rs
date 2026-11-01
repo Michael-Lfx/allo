@@ -645,6 +645,9 @@ fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> 
                 '鸟' => "n iǎo",
                 '月' => "y uè",
                 '日' => "r ì",
+                '荷' => "h é",
+                '包' => "b āo",
+                '蛋' => "d àn",
                 _ => return None,
             }
         } else {
@@ -739,6 +742,9 @@ fn convert_chinese_to_kws_pinyin_mode(text: &str, toned: bool, sandhi: bool) -> 
                 '鸟' => "n iao",
                 '月' => "y ue",
                 '日' => "r i",
+                '荷' => "h e",
+                '包' => "b ao",
+                '蛋' => "d an",
                 _ => return None,
             }
         };

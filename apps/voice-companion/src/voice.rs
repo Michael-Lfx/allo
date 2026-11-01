@@ -176,11 +176,14 @@ fn strip_custom_wake_word(input: &str, custom_kw: &str) -> Option<String> {
 
     let kw_len = kw_chars.len();
     let n = input_filtered.len();
+    if n < kw_len {
+        return None;
+    }
 
     // Sliding window search across the whole input string
     // Allows leading filler ("喂", "好", "哎", "请问"), repetitions ("香芋片香芋片")
     // and 1-character homophone substitution tolerance for words >= 3 chars.
-    for start in 0..=n.saturating_sub(kw_len) {
+    for start in 0..=(n - kw_len) {
         let window = &input_filtered[start..start + kw_len];
         let mut diff_count = 0;
         for (i, &(_, ch)) in window.iter().enumerate() {
@@ -200,7 +203,9 @@ fn strip_custom_wake_word(input: &str, custom_kw: &str) -> Option<String> {
 
         if matched {
             let match_end_byte_idx = window.last().map(|(idx, ch)| idx + ch.len_utf8()).unwrap_or(input.len());
-            let remainder = input[match_end_byte_idx..]
+            let remainder = input
+                .get(match_end_byte_idx..)
+                .unwrap_or("")
                 .trim_start_matches(is_punct_or_ws)
                 .to_string();
             return Some(remainder);
