@@ -41,3 +41,4 @@
 - [x] **T31**: `voice.rs` 声学回声全状态覆盖：在 `DispatchingTask`、`Deciding` 和 `FollowUpListening` 全面加入 `in_echo_cooldown` 拦截，杜绝任务派发播报期间 5.5 秒自身语音录入 ASR 导致二次连环派发。
 - [x] **T32**: `VoiceSettings.tsx` 修正 `CheckOne` 图标 fill 样式：显式设置 `fill="currentColor"` 并绑定 `allStagesReady`，消除深灰色硬编码，图标恢复 Arco 鲜亮绿色。
 - [x] **T33**: `recorder.rs` 与 `Router.tsx` 落地三场景智能唤醒分流：首页/新建页新建语音通话，普通会话自动新建语音通话并跳转，已有语音通话原地接续。
+- [x] **T34**: 彻底根除会话劫持（当前会话原地接续、首页/文本会话自动新建独立通话）：在 `recorder.rs` 中实行“当前语音会话不可剥夺原则”，直接就地返回 `source_id`；首页与普通文本会话唤醒彻底废除 `retained_default_call` 历史单例查表，直接调用 `create_provisional_voice_conversation_with_locale` 创建全新独立语音通话；并在 `voice_session_bridge.rs` 中增加首页清空候选会话守卫，通过集成回归单测。

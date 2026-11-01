@@ -1176,6 +1176,51 @@ async fn review_standalone_binding_must_not_borrow_an_unselected_project() {
 }
 
 #[tokio::test]
+async fn test_wake_in_existing_voice_conv_stays_and_homepage_creates_new() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = fixture_service().await;
+    let ws_path = dir.path().to_string_lossy().to_string();
+
+    // 1. Create Voice Conversation 1
+    let voice_conv_1 = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "语音会话 1",
+        "extra": { "workspace": ws_path.clone(), "voice": true, "session_mode": "yolo" },
+    })).unwrap()).await.unwrap();
+
+    // 2. Create Voice Conversation 2
+    let voice_conv_2 = service.create(USER_ID, serde_json::from_value(serde_json::json!({
+        "type": "nomi",
+        "name": "语音会话 2",
+        "extra": { "workspace": ws_path.clone(), "voice": true, "session_mode": "yolo" },
+    })).unwrap()).await.unwrap();
+
+    let candidate = std::sync::Arc::new(std::sync::RwLock::new(VoiceWindowContext::default()));
+    let recorder = std::sync::Arc::new(
+        ConversationVoiceDialogueRecorder::new(service.clone(), USER_ID.into(), dir.path())
+            .with_active_window_candidate(candidate.clone())
+    );
+
+    // Call 1 happens in voice_conv_1
+    candidate.write().unwrap().conversation_id = Some(voice_conv_1.conversation_id.clone());
+    let binding_1 = recorder.freeze_session("session-call-1", None).await.unwrap().unwrap();
+    assert_eq!(binding_1.conversation_id, voice_conv_1.conversation_id, "Waking in voice_conv_1 must stay in voice_conv_1!");
+
+    // User navigates to Voice Conversation 2, and says wake word (session-call-2)
+    candidate.write().unwrap().conversation_id = Some(voice_conv_2.conversation_id.clone());
+    let binding_2 = recorder.freeze_session("session-call-2", None).await.unwrap().unwrap();
+    assert_eq!(binding_2.conversation_id, voice_conv_2.conversation_id, "Waking in voice_conv_2 must stay in voice_conv_2!");
+
+    // User navigates to homepage (conversation_id = None), and says wake word (session-call-3)
+    candidate.write().unwrap().conversation_id = None;
+    candidate.write().unwrap().workspace = None;
+    let binding_3 = recorder.freeze_session("session-call-3", None).await.unwrap().unwrap();
+    // On homepage, wake must create a brand NEW voice conversation!
+    assert_ne!(binding_3.conversation_id, voice_conv_1.conversation_id, "Waking on homepage must NOT hijack to voice_conv_1!");
+    assert_ne!(binding_3.conversation_id, voice_conv_2.conversation_id, "Waking on homepage must NOT hijack to voice_conv_2!");
+}
+
+#[tokio::test]
 async fn review_handoff_must_preserve_the_prior_user_city() {
     let dir = tempfile::tempdir().unwrap();
     let service = fixture_service().await;
