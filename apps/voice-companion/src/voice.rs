@@ -4221,7 +4221,7 @@ impl VoiceCompanionRuntime {
                     d.current_state()
                 };
 
-                let is_playback_active = playback.has_pending_audio();
+                let is_playback_active = playback.is_speaking();
                 if is_playback_active {
                     last_playback_busy = Some(std::time::Instant::now());
                 }

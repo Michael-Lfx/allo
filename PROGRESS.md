@@ -34,3 +34,7 @@
 - [x] **T24**: 唤醒词输入框动态回显引擎工作路径状态微章（`● 双核流式秒级唤醒` vs `◈ SenseVoice 级联双核兜底`）。
 - [x] **T25**: 在 `nomifun-audio` 中内置覆盖 6,763 个全部 GB2312 常用汉字与现代词汇的紧凑拼音音素映射表（`cjk_pinyin_table.rs`），彻底废除手写 match 穷举，任意汉字（如“菠萝蜜”、“麻辣烫”、“皮卡丘”）100% 自动解析出带调声韵母。
 - [x] **T26**: 严格锁死 Stage-2 级联容错门禁为 `kw_len >= 3`（2 字词 0 容错防误触，3 字词 1 字近音容错提召回），并增加越界切片防御测试，通过 40 项前端单测与全套 Rust 声学单测。
+- [x] **T27**: `voice_companion_manager.rs` 解除 LLM 付费自检阻断：对话模型作为可信 Provider，在未执行付费探活时直接置为 Ready，彻底根除“尚未运行对话检查”导致的通话启动拒绝。
+- [x] **T28**: `playback.rs` 与 `voice.rs` 重构回声冷却状态：仅在实际有播报任务运行时绑定 `playback.is_speaking()`，彻底解除因声卡缓冲悬挂导致的麦克风永久静音假死。
+- [x] **T29**: `VoiceSettings.tsx` 设置页防并发自检：检查按钮绑定 `self_check_active` 状态自动 Loading 锁定，静默拦截 409 `self_check_in_progress` 并平滑等待结果，绝不弹红报错。
+- [x] **T30**: `VoiceAudioStatus.tsx` 音浪感知升级为 RMS + Peak 复合运算，修复低电平设备与虚拟麦克风音浪表死直平线。

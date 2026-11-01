@@ -591,6 +591,7 @@ const VoiceSettings: React.FC = () => {
   }, []);
 
   const handleSelfCheck = useCallback(async () => {
+    if (checkingCapabilities || voiceSnapshot?.self_check_active) return;
     setCheckingCapabilities(true);
     try {
       // Explicit user action: may make one short, tool-free request through the
@@ -602,20 +603,27 @@ const VoiceSettings: React.FC = () => {
       } else {
         Message.warning(t('voice.capabilities.notReady'));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e?.code === 'self_check_in_progress') {
+        // Another check is already running in background; silently re-fetch capabilities after delay
+        setTimeout(() => { void fetchCapabilities(); }, 1500);
+        return;
+      }
       Message.error(e instanceof Error ? e.message : t('voice.capabilities.checkFailed'));
     } finally {
       setCheckingCapabilities(false);
     }
-  }, [t]);
+  }, [t, checkingCapabilities, voiceSnapshot?.self_check_active, fetchCapabilities]);
 
   useEffect(() => {
     if (modelStatus === 'Ready') {
       void fetchCapabilities();
       // Auto-trigger background silent self-check on settings mount if not yet cached
-      void runVoiceSelfCheck(false, undefined, 'silent')
-        .then((report) => setCapabilities(report))
-        .catch(() => {});
+      if (!capabilities && !voiceSnapshot?.self_check_active) {
+        void runVoiceSelfCheck(false, undefined, 'silent')
+          .then((report) => setCapabilities(report))
+          .catch(() => {});
+      }
     }
   }, [modelStatus, fetchCapabilities]);
 
@@ -1019,7 +1027,8 @@ const VoiceSettings: React.FC = () => {
                           <Button
                             type='primary'
                             size='small'
-                            loading={checkingCapabilities}
+                            loading={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
+                            disabled={checkingCapabilities || Boolean(voiceSnapshot?.self_check_active)}
                             onClick={handleSelfCheck}
                           >
                             {t('voice.capabilities.run')}

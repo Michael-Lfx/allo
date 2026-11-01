@@ -302,7 +302,7 @@ fn readiness_runtime_scope_valid(
         value.frames_received > 0
             && value
                 .last_frame_at_ms
-                .is_some_and(|at| now_ms.saturating_sub(at) <= 15_000)
+                .is_some_and(|at| now_ms.saturating_sub(at) <= 2_000)
             && value.capture_state != "closed"
     });
     snapshot.enabled
@@ -936,11 +936,15 @@ impl VoiceCompanionProcessManager {
         };
 
         let llm = if !include_llm {
-            evidence(
-                VoiceCapabilityStatus::Unknown,
-                Some("llm_check_not_run"),
-                "live_response",
-            )
+            if self.snapshot().dialogue_ready || self.dialogue_completer.is_some() {
+                evidence(VoiceCapabilityStatus::Ready, None, "configured")
+            } else {
+                evidence(
+                    VoiceCapabilityStatus::Failed,
+                    Some("dialogue_provider_missing"),
+                    "configured",
+                )
+            }
         } else if let Some(completer) = &self.dialogue_completer {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(12),
